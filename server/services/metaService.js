@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+ import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 
 const META_API_VERSION = 'v19.0';
