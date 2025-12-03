@@ -761,3 +761,102 @@ export function getCampaignsByPlacement(store, params) {
     metaCac: c.conversions > 0 ? c.spend / c.conversions : 0
   }));
 }
+
+// Get daily order trends per country
+export function getCountryTrends(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  
+  // Generate all dates in range
+  const allDates = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    allDates.push(d.toISOString().split('T')[0]);
+  }
+  
+  // Get ecommerce orders by country by date
+  let ecomQuery;
+  if (store === 'vironax') {
+    ecomQuery = db.prepare(`
+      SELECT date, country_code as country, COUNT(*) as orders, SUM(order_total) as revenue
+      FROM salla_orders 
+      WHERE store = ? AND date BETWEEN ? AND ?
+      GROUP BY date, country_code
+    `);
+  } else {
+    ecomQuery = db.prepare(`
+      SELECT date, country_code as country, COUNT(*) as orders, SUM(order_total) as revenue
+      FROM shopify_orders 
+      WHERE store = ? AND date BETWEEN ? AND ?
+      GROUP BY date, country_code
+    `);
+  }
+  const ecomData = ecomQuery.all(store, startDate, endDate);
+  
+  // Get manual orders by country by date
+  const manualData = db.prepare(`
+    SELECT date, country, SUM(orders_count) as orders, SUM(revenue) as revenue
+    FROM manual_orders
+    WHERE store = ? AND date BETWEEN ? AND ?
+    GROUP BY date, country
+  `).all(store, startDate, endDate);
+  
+  // Combine data by country
+  const countryDataMap = new Map();
+  
+  // Process ecom orders
+  for (const row of ecomData) {
+    if (!countryDataMap.has(row.country)) {
+      countryDataMap.set(row.country, new Map());
+    }
+    const countryDates = countryDataMap.get(row.country);
+    if (!countryDates.has(row.date)) {
+      countryDates.set(row.date, { orders: 0, revenue: 0 });
+    }
+    const dateData = countryDates.get(row.date);
+    dateData.orders += row.orders || 0;
+    dateData.revenue += row.revenue || 0;
+  }
+  
+  // Process manual orders
+  for (const row of manualData) {
+    if (!countryDataMap.has(row.country)) {
+      countryDataMap.set(row.country, new Map());
+    }
+    const countryDates = countryDataMap.get(row.country);
+    if (!countryDates.has(row.date)) {
+      countryDates.set(row.date, { orders: 0, revenue: 0 });
+    }
+    const dateData = countryDates.get(row.date);
+    dateData.orders += row.orders || 0;
+    dateData.revenue += row.revenue || 0;
+  }
+  
+  // Format output: array of countries with their daily trends
+  const result = [];
+  for (const [country, datesMap] of countryDataMap) {
+    const countryInfo = getCountryInfo(country);
+    const trends = allDates.map(date => {
+      const data = datesMap.get(date) || { orders: 0, revenue: 0 };
+      return {
+        date,
+        orders: data.orders,
+        revenue: data.revenue
+      };
+    });
+    
+    const totalOrders = trends.reduce((sum, t) => sum + t.orders, 0);
+    
+    result.push({
+      country: countryInfo.name,
+      countryCode: country,
+      flag: countryInfo.flag,
+      totalOrders,
+      trends
+    });
+  }
+  
+  // Sort by total orders descending
+  return result.sort((a, b) => b.totalOrders - a.totalOrders);
+}
