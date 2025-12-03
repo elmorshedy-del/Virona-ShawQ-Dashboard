@@ -1,13 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { 
-  LineChart, Line, AreaChart, Area, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend 
+  LineChart, Line, AreaChart, Area,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
-import { RefreshCw, TrendingUp, TrendingDown, Plus, Trash2, Calendar, Store, ChevronDown, ChevronUp, ArrowUpDown } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Plus, Trash2, Store, ChevronDown, ChevronUp, ArrowUpDown, Calendar } from 'lucide-react';
 
 const API_BASE = '/api';
 
-// Store configurations
 const STORES = {
   vironax: {
     id: 'vironax',
@@ -31,14 +30,28 @@ const STORES = {
 
 const TABS = ['Dashboard', 'Budget Efficiency', 'Manual Data'];
 
+// Get saved store from localStorage or default to vironax
+function getSavedStore() {
+  try {
+    const saved = localStorage.getItem('selectedStore');
+    if (saved && STORES[saved]) return saved;
+  } catch (e) {}
+  return 'vironax';
+}
+
 export default function App() {
-  const [currentStore, setCurrentStore] = useState('vironax');
+  const [currentStore, setCurrentStore] = useState(getSavedStore);
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   
   const [dateRange, setDateRange] = useState({ type: 'days', value: 7 });
+  const [customRange, setCustomRange] = useState({ 
+    start: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], 
+    end: new Date().toISOString().split('T')[0] 
+  });
+  const [showCustomPicker, setShowCustomPicker] = useState(false);
   
   const [dashboard, setDashboard] = useState(null);
   const [efficiency, setEfficiency] = useState(null);
@@ -46,7 +59,7 @@ export default function App() {
   const [recommendations, setRecommendations] = useState([]);
   const [manualOrders, setManualOrders] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
-  const [campaignsByCountry, setCampaignsByCountry] = useState([]);
+  const [breakdownData, setBreakdownData] = useState([]);
   
   const [expandedKpi, setExpandedKpi] = useState(null);
   const [breakdown, setBreakdown] = useState('none');
@@ -54,13 +67,20 @@ export default function App() {
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
     date: new Date().toISOString().split('T')[0],
-    country: currentStore === 'vironax' ? 'SA' : 'US',
+    country: 'SA',
     campaign: '',
     orders_count: 1,
-    revenue: store.defaultAOV,
+    revenue: 280,
     source: 'whatsapp',
     notes: ''
   });
+
+  // Save store selection to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('selectedStore', currentStore);
+    } catch (e) {}
+  }, [currentStore]);
 
   useEffect(() => {
     const newStore = STORES[currentStore];
@@ -71,23 +91,20 @@ export default function App() {
     }));
   }, [currentStore]);
 
-  useEffect(() => {
-    loadData();
-  }, [currentStore, dateRange]);
-
-  useEffect(() => {
-    if (breakdown === 'country') {
-      loadCampaignsByCountry();
-    }
-  }, [breakdown, currentStore, dateRange]);
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({
-        store: currentStore,
-        [dateRange.type]: dateRange.value
-      });
+      const params = new URLSearchParams({ store: currentStore });
+      
+      // Handle different date range types
+      if (dateRange.type === 'custom') {
+        params.set('startDate', dateRange.start);
+        params.set('endDate', dateRange.end);
+      } else if (dateRange.type === 'yesterday') {
+        params.set('yesterday', '1');
+      } else {
+        params.set(dateRange.type, dateRange.value);
+      }
       
       const [dashData, effData, effTrends, recs, orders, countries] = await Promise.all([
         fetch(`${API_BASE}/analytics/dashboard?${params}`).then(r => r.json()),
@@ -108,25 +125,43 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }
+  }, [currentStore, dateRange]);
 
-  async function loadCampaignsByCountry() {
-    try {
-      const params = new URLSearchParams({
-        store: currentStore,
-        [dateRange.type]: dateRange.value
-      });
-      const data = await fetch(`${API_BASE}/analytics/campaigns/by-country?${params}`).then(r => r.json());
-      setCampaignsByCountry(data);
-    } catch (error) {
-      console.error('Error loading campaigns by country:', error);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Load breakdown data when breakdown changes
+  useEffect(() => {
+    async function loadBreakdown() {
+      if (breakdown === 'none') {
+        setBreakdownData([]);
+        return;
+      }
+      
+      try {
+        const params = new URLSearchParams({
+          store: currentStore,
+          [dateRange.type]: dateRange.value
+        });
+        
+        const endpoint = `${API_BASE}/analytics/campaigns/by-${breakdown}?${params}`;
+        const data = await fetch(endpoint).then(r => r.json());
+        setBreakdownData(data);
+      } catch (error) {
+        console.error('Error loading breakdown:', error);
+        setBreakdownData([]);
+      }
     }
-  }
+    
+    loadBreakdown();
+  }, [breakdown, currentStore, dateRange]);
 
   async function handleSync() {
     setSyncing(true);
     try {
       await fetch(`${API_BASE}/sync?store=${currentStore}`, { method: 'POST' });
+      // Reload data without changing store
       await loadData();
     } catch (error) {
       console.error('Sync error:', error);
@@ -193,6 +228,15 @@ export default function App() {
   };
 
   const getDateRangeLabel = () => {
+    if (dateRange.type === 'custom') {
+      const formatDate = (d) => {
+        const date = new Date(d);
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      };
+      return `${formatDate(dateRange.start)} - ${formatDate(dateRange.end)}`;
+    }
+    if (dateRange.type === 'yesterday') return 'Yesterday';
+    if (dateRange.type === 'days' && dateRange.value === 1) return 'Today';
     if (dateRange.type === 'days') return `Last ${dateRange.value} days`;
     if (dateRange.type === 'weeks') return `Last ${dateRange.value} weeks`;
     if (dateRange.type === 'months') return `Last ${dateRange.value} months`;
@@ -282,49 +326,111 @@ export default function App() {
           ))}
         </div>
 
-        <div className="flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm mb-6">
+        {/* Date Range Picker with TODAY, YESTERDAY, and Custom Range */}
+        <div className="flex items-center gap-3 bg-white p-4 rounded-xl shadow-sm mb-6 flex-wrap">
           <span className="text-sm font-medium text-gray-700">Period:</span>
           
-          <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg border border-gray-200">
-            <span className="text-sm text-gray-600">Last</span>
-            <input
-              type="number"
-              min="1"
-              max="90"
-              value={dateRange.type === 'days' ? dateRange.value : ''}
-              onChange={(e) => setDateRange({ type: 'days', value: parseInt(e.target.value) || 7 })}
-              placeholder="-"
-              className="w-12 px-2 py-1 text-center border border-gray-200 rounded text-sm"
-            />
-            <span className="text-sm text-gray-600">days</span>
-          </div>
+          {/* TODAY button */}
+          <button
+            onClick={() => { setDateRange({ type: 'days', value: 1 }); setShowCustomPicker(false); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              dateRange.type === 'days' && dateRange.value === 1
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+            }`}
+          >
+            Today
+          </button>
+          
+          {/* YESTERDAY button */}
+          <button
+            onClick={() => { setDateRange({ type: 'yesterday', value: 1 }); setShowCustomPicker(false); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              dateRange.type === 'yesterday'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+            }`}
+          >
+            Yesterday
+          </button>
+          
+          {/* Quick select buttons */}
+          {[7, 14, 30].map(d => (
+            <button
+              key={d}
+              onClick={() => { setDateRange({ type: 'days', value: d }); setShowCustomPicker(false); }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                dateRange.type === 'days' && dateRange.value === d
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+              }`}
+            >
+              {d}D
+            </button>
+          ))}
 
-          <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg border border-gray-200">
-            <span className="text-sm text-gray-600">Last</span>
-            <input
-              type="number"
-              min="1"
-              max="12"
-              value={dateRange.type === 'weeks' ? dateRange.value : ''}
-              onChange={(e) => setDateRange({ type: 'weeks', value: parseInt(e.target.value) || 1 })}
-              placeholder="-"
-              className="w-12 px-2 py-1 text-center border border-gray-200 rounded text-sm"
-            />
-            <span className="text-sm text-gray-600">weeks</span>
-          </div>
-
-          <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg border border-gray-200">
-            <span className="text-sm text-gray-600">Last</span>
-            <input
-              type="number"
-              min="1"
-              max="12"
-              value={dateRange.type === 'months' ? dateRange.value : ''}
-              onChange={(e) => setDateRange({ type: 'months', value: parseInt(e.target.value) || 1 })}
-              placeholder="-"
-              className="w-12 px-2 py-1 text-center border border-gray-200 rounded text-sm"
-            />
-            <span className="text-sm text-gray-600">months</span>
+          {/* Custom Range Button */}
+          <div className="relative">
+            <button
+              onClick={() => setShowCustomPicker(!showCustomPicker)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+                dateRange.type === 'custom'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+              }`}
+            >
+              <Calendar className="w-4 h-4" />
+              Custom
+            </button>
+            
+            {/* Custom Date Picker Dropdown */}
+            {showCustomPicker && (
+              <div className="absolute top-full mt-2 left-0 bg-white rounded-xl shadow-lg border border-gray-200 p-4 z-50 min-w-[280px]">
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Start Date</label>
+                    <input
+                      type="date"
+                      value={customRange.start}
+                      onChange={(e) => setCustomRange({ ...customRange, start: e.target.value })}
+                      max={customRange.end || new Date().toISOString().split('T')[0]}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">End Date</label>
+                    <input
+                      type="date"
+                      value={customRange.end}
+                      onChange={(e) => setCustomRange({ ...customRange, end: e.target.value })}
+                      min={customRange.start}
+                      max={new Date().toISOString().split('T')[0]}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                  </div>
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={() => {
+                        if (customRange.start && customRange.end) {
+                          setDateRange({ type: 'custom', start: customRange.start, end: customRange.end });
+                          setShowCustomPicker(false);
+                        }
+                      }}
+                      disabled={!customRange.start || !customRange.end}
+                      className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                    >
+                      Apply
+                    </button>
+                    <button
+                      onClick={() => setShowCustomPicker(false)}
+                      className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="ml-auto text-sm text-gray-500">
@@ -341,8 +447,8 @@ export default function App() {
             formatNumber={formatNumber}
             breakdown={breakdown}
             setBreakdown={setBreakdown}
+            breakdownData={breakdownData}
             store={store}
-            campaignsByCountry={campaignsByCountry}
           />
         )}
         
@@ -398,7 +504,7 @@ function SortableHeader({ label, field, sortConfig, onSort, className = '' }) {
   );
 }
 
-function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, formatNumber, breakdown, setBreakdown, store, campaignsByCountry }) {
+function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, formatNumber, breakdown, setBreakdown, breakdownData, store }) {
   const { overview, trends, campaigns, countries, diagnostics } = dashboard;
   
   const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
@@ -427,7 +533,7 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
     return campaignSortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
   });
 
-  const sortedCampaignsByCountry = [...campaignsByCountry].sort((a, b) => {
+  const sortedBreakdownData = [...breakdownData].sort((a, b) => {
     const aVal = a[campaignSortConfig.field] || 0;
     const bVal = b[campaignSortConfig.field] || 0;
     return campaignSortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
@@ -447,6 +553,22 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
     }));
   };
 
+  // Get breakdown label for display
+  const getBreakdownLabel = (row) => {
+    switch(breakdown) {
+      case 'country':
+        return <span className="flex items-center gap-2"><span>{row.countryFlag}</span> {row.country}</span>;
+      case 'age':
+        return <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">{row.age}</span>;
+      case 'gender':
+        return <span>{row.genderLabel || row.gender}</span>;
+      case 'placement':
+        return <span className="text-xs">{row.placementLabel || `${row.platform} - ${row.placement}`}</span>;
+      default:
+        return null;
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="grid grid-cols-6 gap-4">
@@ -462,7 +584,32 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
         ))}
       </div>
 
-      {expandedKpi && trends && trends.length > 0 && (
+      {/* AOV Trend Chart */}
+      {trends && trends.length > 0 && (
+        <div className="bg-white rounded-xl p-6 shadow-sm">
+          <h3 className="text-lg font-semibold mb-4">AOV Trend</h3>
+          <div className="h-64">
+            <ResponsiveContainer>
+              <AreaChart data={trends}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip formatter={(v) => formatCurrency(v)} />
+                <Area 
+                  type="monotone" 
+                  dataKey="aov" 
+                  stroke="#f59e0b"
+                  fill="#f59e0b"
+                  fillOpacity={0.2}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Expanded KPI Chart */}
+      {expandedKpi && trends && trends.length > 0 && expandedKpi !== 'aov' && (
         <div className="bg-white rounded-xl p-6 shadow-sm animate-fade-in">
           <h3 className="text-lg font-semibold mb-4 capitalize">{expandedKpi} Trend</h3>
           <div className="h-64">
@@ -485,6 +632,7 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
         </div>
       )}
 
+      {/* Campaign Table */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         <div className="p-6 border-b border-gray-100">
           <div className="flex items-center justify-between">
@@ -496,6 +644,9 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
             >
               <option value="none">No Breakdown</option>
               <option value="country">By Country</option>
+              <option value="age">By Age</option>
+              <option value="gender">By Gender</option>
+              <option value="placement">By Placement</option>
             </select>
           </div>
         </div>
@@ -504,7 +655,7 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
             <thead>
               <tr className="bg-gray-50">
                 <th>Campaign</th>
-                {breakdown === 'country' && <th>Country</th>}
+                {breakdown !== 'none' && <th>{breakdown.charAt(0).toUpperCase() + breakdown.slice(1)}</th>}
                 <SortableHeader label="Spend" field="spend" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
                 <SortableHeader label="ROAS" field="metaRoas" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
                 <SortableHeader label="AOV" field="metaAov" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
@@ -516,40 +667,29 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
                 <SortableHeader label="Clicks" field="clicks" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
                 <th>CTR</th>
                 <th>CPC</th>
-                <SortableHeader label="LPV" field="lpv" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
-                <th>ATC</th>
-                <th>Checkout</th>
                 <SortableHeader label="Conv" field="conversions" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
                 <th>CR</th>
               </tr>
             </thead>
             <tbody>
-              {breakdown === 'country' ? (
-                sortedCampaignsByCountry.map((c, idx) => (
-                  <tr key={`${c.campaignId}-${c.country}-${idx}`}>
+              {breakdown !== 'none' ? (
+                sortedBreakdownData.map((c, idx) => (
+                  <tr key={`${c.campaignId}-${idx}`}>
                     <td className="font-medium">{c.campaignName}</td>
-                    <td>
-                      <span className="flex items-center gap-2">
-                        <span>{c.countryFlag}</span>
-                        <span className="text-xs text-gray-500">{c.country}</span>
-                      </span>
-                    </td>
+                    <td>{getBreakdownLabel(c)}</td>
                     <td className="text-indigo-600 font-semibold">{formatCurrency(c.spend)}</td>
-                    <td className="text-green-600 font-semibold">{c.metaRoas.toFixed(2)}×</td>
-                    <td>{formatCurrency(c.metaAov)}</td>
-                    <td className={c.metaCac > 100 ? 'text-amber-600' : ''}>{formatCurrency(c.metaCac)}</td>
-                    <td>{formatNumber(c.impressions)}</td>
-                    <td>{formatNumber(c.reach)}</td>
-                    <td>{formatCurrency(c.cpm, 2)}</td>
-                    <td>{c.frequency?.toFixed(2) || '0.00'}</td>
-                    <td>{formatNumber(c.clicks)}</td>
-                    <td>{c.ctr.toFixed(2)}%</td>
-                    <td>{formatCurrency(c.cpc, 2)}</td>
-                    <td>{formatNumber(c.lpv)}</td>
-                    <td>{c.atc}</td>
-                    <td>{c.checkout}</td>
-                    <td>{c.conversions}</td>
-                    <td>{c.cr.toFixed(2)}%</td>
+                    <td className="text-green-600 font-semibold">{(c.metaRoas || 0).toFixed(2)}×</td>
+                    <td>{formatCurrency(c.metaAov || 0)}</td>
+                    <td className={(c.metaCac || 0) > 100 ? 'text-amber-600' : ''}>{formatCurrency(c.metaCac || 0)}</td>
+                    <td>{formatNumber(c.impressions || 0)}</td>
+                    <td>{formatNumber(c.reach || 0)}</td>
+                    <td>{formatCurrency(c.cpm || 0, 2)}</td>
+                    <td>{(c.frequency || 0).toFixed(2)}</td>
+                    <td>{formatNumber(c.clicks || 0)}</td>
+                    <td>{(c.ctr || 0).toFixed(2)}%</td>
+                    <td>{formatCurrency(c.cpc || 0, 2)}</td>
+                    <td>{c.conversions || 0}</td>
+                    <td>{(c.cr || 0).toFixed(2)}%</td>
                   </tr>
                 ))
               ) : (
@@ -567,9 +707,6 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
                     <td>{formatNumber(c.clicks)}</td>
                     <td>{c.ctr.toFixed(2)}%</td>
                     <td>{formatCurrency(c.cpc, 2)}</td>
-                    <td>{formatNumber(c.lpv)}</td>
-                    <td>{c.atc}</td>
-                    <td>{c.checkout}</td>
                     <td>{c.conversions}</td>
                     <td>{c.cr.toFixed(2)}%</td>
                   </tr>
@@ -577,18 +714,19 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
               )}
               <tr className="bg-gray-50 font-semibold">
                 <td>TOTAL</td>
-                {breakdown === 'country' && <td></td>}
+                {breakdown !== 'none' && <td></td>}
                 <td className="text-indigo-600">{formatCurrency(campaigns.reduce((s, c) => s + c.spend, 0))}</td>
                 <td className="text-green-600">
                   {(campaigns.reduce((s, c) => s + c.conversionValue, 0) / campaigns.reduce((s, c) => s + c.spend, 0) || 0).toFixed(2)}×
                 </td>
-                <td colSpan={breakdown === 'country' ? 14 : 14}></td>
+                <td colSpan={breakdown !== 'none' ? 11 : 11}></td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
 
+      {/* Diagnostics */}
       {diagnostics && diagnostics.length > 0 && (
         <div className={`rounded-xl p-6 ${
           diagnostics.some(d => d.type === 'warning') 
@@ -613,6 +751,7 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
         </div>
       )}
 
+      {/* Countries Table */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         <div className="p-6 border-b border-gray-100">
           <h2 className="text-lg font-semibold">Countries Performance</h2>
@@ -662,15 +801,10 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
 function KPICard({ kpi, trends, expanded, onClick, formatCurrency }) {
   const trendData = trends && trends.length > 0 ? trends.slice(-7).map(t => ({ value: t[kpi.key] || 0 })) : [];
   
-  const current = trends && trends.length > 0 ? (trends[trends.length - 1]?.[kpi.key] || 0) : 0;
-  const previous = trends && trends.length > 7 ? (trends[Math.max(0, trends.length - 8)]?.[kpi.key] || current) : current;
-  const change = previous > 0 ? ((current - previous) / previous) * 100 : 0;
-  const isPositive = kpi.key === 'cac' ? change < 0 : change > 0;
-
   const formatValue = () => {
     if (kpi.format === 'currency') return formatCurrency(kpi.value);
-    if (kpi.format === 'roas') return kpi.value.toFixed(2) + '×';
-    return Math.round(kpi.value);
+    if (kpi.format === 'roas') return (kpi.value || 0).toFixed(2) + '×';
+    return Math.round(kpi.value || 0);
   };
 
   return (
@@ -680,14 +814,6 @@ function KPICard({ kpi, trends, expanded, onClick, formatCurrency }) {
     >
       <div className="flex items-start justify-between mb-2">
         <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{kpi.label}</span>
-        {change !== 0 && (
-          <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full ${
-            isPositive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-          }`}>
-            {isPositive ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-            {Math.abs(change).toFixed(1)}%
-          </span>
-        )}
       </div>
       <div className="text-2xl font-bold text-gray-900 mb-1">{formatValue()}</div>
       {kpi.subtitle && <div className="text-xs text-gray-400">{kpi.subtitle}</div>}
@@ -734,20 +860,6 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
               <p className="text-sm text-gray-500">Overall efficiency status</p>
             </div>
           </div>
-          <div className="space-y-3">
-            <div className="flex justify-between p-3 bg-gray-50 rounded-lg">
-              <span className="text-sm text-gray-600">Spend vs Last Period</span>
-              <span className={`font-semibold ${efficiency.spendChange > 0 ? 'text-gray-900' : 'text-green-600'}`}>
-                {efficiency.spendChange > 0 ? '↑' : '↓'} {Math.abs(efficiency.spendChange).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between p-3 bg-gray-50 rounded-lg">
-              <span className="text-sm text-gray-600">ROAS vs Last Period</span>
-              <span className={`font-semibold ${efficiency.roasChange > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                {efficiency.roasChange > 0 ? '↑' : '↓'} {Math.abs(efficiency.roasChange).toFixed(1)}%
-              </span>
-            </div>
-          </div>
         </div>
 
         <div className="bg-white rounded-xl p-6 shadow-sm">
@@ -759,9 +871,7 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
             </div>
             <div className="flex justify-between p-3 bg-gray-50 rounded-lg">
               <span className="text-sm text-gray-600">Marginal CAC</span>
-              <span className={`font-semibold ${efficiency.marginalPremium > 30 ? 'text-red-600' : efficiency.marginalPremium > 15 ? 'text-amber-600' : 'text-green-600'}`}>
-                {formatCurrency(efficiency.marginalCac, 2)}
-              </span>
+              <span className="font-semibold">{formatCurrency(efficiency.marginalCac, 2)}</span>
             </div>
           </div>
         </div>
@@ -950,7 +1060,6 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete
                   <span>
                     <strong>{order.orders_count}</strong> orders • <span className="text-green-600 font-medium">{formatCurrency(order.revenue)}</span>
                   </span>
-                  {order.campaign && <span className="text-gray-500 text-sm">{order.campaign}</span>}
                 </div>
                 <button
                   onClick={() => onDelete(order.id)}
