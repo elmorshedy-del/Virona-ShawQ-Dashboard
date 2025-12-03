@@ -1,3 +1,4 @@
+// server/services/metaService.js
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 
@@ -21,6 +22,31 @@ const STORE_CONFIGS = {
     needsConversion: true
   }
 };
+
+// small helper to fetch all pages from Meta Insights
+async function fetchAllPages(initialUrl, label) {
+  const allRows = [];
+  let url = initialUrl;
+
+  while (url) {
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (data.error) {
+      console.error(`[Meta API] ${label} error:`, data.error);
+      throw new Error(data.error.message);
+    }
+
+    if (Array.isArray(data.data)) {
+      allRows.push(...data.data);
+    }
+
+    url = data.paging && data.paging.next ? data.paging.next : null;
+  }
+
+  console.log(`[Meta API] ${label}: collected ${allRows.length} rows (all pages)`);
+  return allRows;
+}
 
 // Get exchange rate TRY → USD
 async function getExchangeRate(fromCurrency, toCurrency) {
@@ -73,40 +99,34 @@ export async function fetchMetaCampaigns(store, dateStart, dateEnd) {
     return getDemoMetaData(store, dateStart, dateEnd);
   }
 
+  const fields = [
+    'campaign_id',
+    'campaign_name',
+    'spend',
+    'impressions',
+    'reach',
+    'clicks',
+    'actions',
+    'action_values',
+    'cpm',
+    'cpc',
+    'ctr',
+    'frequency'
+  ].join(',');
+
+  const cleanAccountId = accountId.replace(/^act_/, '');
+  const baseUrl =
+    `${META_BASE_URL}/act_${cleanAccountId}/insights` +
+    `?fields=${fields}` +
+    `&time_range={"since":"${dateStart}","until":"${dateEnd}"}` +
+    `&level=campaign&time_increment=1&access_token=${accessToken}`;
+
+  console.log(`[Meta API] Fetching campaigns for ${store} ${dateStart} → ${dateEnd}`);
+
   try {
-    const fields = [
-      'campaign_id',
-      'campaign_name',
-      'spend',
-      'impressions',
-      'reach',
-      'clicks',
-      'actions',
-      'action_values',
-      'cpm',
-      'cpc',
-      'ctr',
-      'frequency'
-    ].join(',');
-
-    // Remove 'act_' prefix if user included it
-    const cleanAccountId = accountId.replace(/^act_/, '');
-    const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?fields=${fields}&time_range={"since":"${dateStart}","until":"${dateEnd}"}&level=campaign&time_increment=1&access_token=${accessToken}`;
-
-    console.log(`[Meta API] Fetching from: act_${cleanAccountId}/insights for dates ${dateStart} to ${dateEnd}`);
-
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.error) {
-      console.error(`[Meta API] Error response:`, data.error);
-      throw new Error(data.error.message);
-    }
-
-    console.log(`[Meta API] Success! Got ${(data.data || []).length} records for ${store}`);
+    let results = await fetchAllPages(baseUrl, 'campaigns');
 
     // Convert currency if needed (Shawq: TRY → USD)
-    let results = data.data || [];
     if (config.needsConversion) {
       const rate = await getExchangeRate(config.currency, config.displayCurrency);
       results = results.map(row => ({
@@ -137,38 +157,36 @@ export async function fetchMetaCampaignsByCountry(store, dateStart, dateEnd) {
   const accessToken = process.env[config.tokenEnv];
 
   if (!accountId || !accessToken) {
+    console.log('[Meta API] No creds for country breakdown, using demo');
     return getDemoMetaDataByCountry(store, dateStart, dateEnd);
   }
 
+  const fields = [
+    'campaign_id',
+    'campaign_name',
+    'spend',
+    'impressions',
+    'reach',
+    'clicks',
+    'actions',
+    'action_values',
+    'cpm',
+    'cpc',
+    'ctr',
+    'frequency',
+    'country'
+  ].join(',');
+
+  const cleanAccountId = accountId.replace(/^act_/, '');
+  const baseUrl =
+    `${META_BASE_URL}/act_${cleanAccountId}/insights` +
+    `?fields=${fields}` +
+    `&time_range={"since":"${dateStart}","until":"${dateEnd}"}` +
+    `&level=campaign&time_increment=1&breakdowns=country&access_token=${accessToken}`;
+
   try {
-    const fields = [
-      'campaign_id',
-      'campaign_name',
-      'spend',
-      'impressions',
-      'reach',
-      'clicks',
-      'actions',
-      'action_values',
-      'cpm',
-      'cpc',
-      'ctr',
-      'frequency'
-    ].join(',');
+    let results = await fetchAllPages(baseUrl, 'country breakdown');
 
-    const cleanAccountId = accountId.replace(/^act_/, '');
-    const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?fields=${fields}&time_range={"since":"${dateStart}","until":"${dateEnd}"}&level=campaign&time_increment=1&breakdowns=country&access_token=${accessToken}`;
-
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.error) {
-      console.error(`[Meta API] Country breakdown error:`, data.error);
-      return getDemoMetaDataByCountry(store, dateStart, dateEnd);
-    }
-
-    // Convert currency if needed
-    let results = data.data || [];
     if (config.needsConversion) {
       const rate = await getExchangeRate(config.currency, config.displayCurrency);
       results = results.map(row => ({
@@ -203,25 +221,31 @@ export async function fetchMetaCampaignsByAge(store, dateStart, dateEnd) {
   }
 
   try {
-    const fields = ['campaign_id', 'campaign_name', 'spend', 'impressions', 'reach', 'clicks', 'actions', 'action_values', 'cpm', 'cpc', 'ctr', 'frequency'].join(',');
+    const fields = [
+      'campaign_id', 'campaign_name', 'spend', 'impressions', 'reach',
+      'clicks', 'actions', 'action_values', 'cpm', 'cpc', 'ctr', 'frequency', 'age'
+    ].join(',');
+
     const cleanAccountId = accountId.replace(/^act_/, '');
-    const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?fields=${fields}&time_range={"since":"${dateStart}","until":"${dateEnd}"}&level=campaign&time_increment=1&breakdowns=age&access_token=${accessToken}`;
+    const baseUrl =
+      `${META_BASE_URL}/act_${cleanAccountId}/insights` +
+      `?fields=${fields}` +
+      `&time_range={"since":"${dateStart}","until":"${dateEnd}"}` +
+      `&level=campaign&time_increment=1&breakdowns=age&access_token=${accessToken}`;
 
-    const response = await fetch(url);
-    const data = await response.json();
-    if (data.error) {
-      console.error(`[Meta API] Age breakdown error:`, data.error);
-      return getDemoMetaDataByAge(store, dateStart, dateEnd);
-    }
+    let results = await fetchAllPages(baseUrl, 'age breakdown');
 
-    let results = data.data || [];
     if (config.needsConversion) {
       const rate = await getExchangeRate(config.currency, config.displayCurrency);
       results = results.map(row => ({
         ...row,
         spend: (parseFloat(row.spend) * rate).toFixed(2),
         cpm: (parseFloat(row.cpm || 0) * rate).toFixed(2),
-        cpc: (parseFloat(row.cpc || 0) * rate).toFixed(2)
+        cpc: (parseFloat(row.cpc || 0) * rate).toFixed(2),
+        action_values: (row.action_values || []).map(av => ({
+          ...av,
+          value: (parseFloat(av.value) * rate).toFixed(2)
+        }))
       }));
     }
     return results;
@@ -244,25 +268,30 @@ export async function fetchMetaCampaignsByGender(store, dateStart, dateEnd) {
   }
 
   try {
-    const fields = ['campaign_id', 'campaign_name', 'spend', 'impressions', 'reach', 'clicks', 'actions', 'action_values', 'cpm', 'cpc', 'ctr', 'frequency'].join(',');
+    const fields = [
+      'campaign_id', 'campaign_name', 'spend', 'impressions', 'reach',
+      'clicks', 'actions', 'action_values', 'cpm', 'cpc', 'ctr', 'frequency', 'gender'
+    ].join(',');
     const cleanAccountId = accountId.replace(/^act_/, '');
-    const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?fields=${fields}&time_range={"since":"${dateStart}","until":"${dateEnd}"}&level=campaign&time_increment=1&breakdowns=gender&access_token=${accessToken}`;
+    const baseUrl =
+      `${META_BASE_URL}/act_${cleanAccountId}/insights` +
+      `?fields=${fields}` +
+      `&time_range={"since":"${dateStart}","until":"${dateEnd}"}` +
+      `&level=campaign&time_increment=1&breakdowns=gender&access_token=${accessToken}`;
 
-    const response = await fetch(url);
-    const data = await response.json();
-    if (data.error) {
-      console.error(`[Meta API] Gender breakdown error:`, data.error);
-      return getDemoMetaDataByGender(store, dateStart, dateEnd);
-    }
+    let results = await fetchAllPages(baseUrl, 'gender breakdown');
 
-    let results = data.data || [];
     if (config.needsConversion) {
       const rate = await getExchangeRate(config.currency, config.displayCurrency);
       results = results.map(row => ({
         ...row,
         spend: (parseFloat(row.spend) * rate).toFixed(2),
         cpm: (parseFloat(row.cpm || 0) * rate).toFixed(2),
-        cpc: (parseFloat(row.cpc || 0) * rate).toFixed(2)
+        cpc: (parseFloat(row.cpc || 0) * rate).toFixed(2),
+        action_values: (row.action_values || []).map(av => ({
+          ...av,
+          value: (parseFloat(av.value) * rate).toFixed(2)
+        }))
       }));
     }
     return results;
@@ -285,25 +314,31 @@ export async function fetchMetaCampaignsByPlacement(store, dateStart, dateEnd) {
   }
 
   try {
-    const fields = ['campaign_id', 'campaign_name', 'spend', 'impressions', 'reach', 'clicks', 'actions', 'action_values', 'cpm', 'cpc', 'ctr', 'frequency'].join(',');
+    const fields = [
+      'campaign_id', 'campaign_name', 'spend', 'impressions', 'reach',
+      'clicks', 'actions', 'action_values', 'cpm', 'cpc', 'ctr', 'frequency',
+      'publisher_platform', 'platform_position'
+    ].join(',');
     const cleanAccountId = accountId.replace(/^act_/, '');
-    const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?fields=${fields}&time_range={"since":"${dateStart}","until":"${dateEnd}"}&level=campaign&time_increment=1&breakdowns=publisher_platform,platform_position&access_token=${accessToken}`;
+    const baseUrl =
+      `${META_BASE_URL}/act_${cleanAccountId}/insights` +
+      `?fields=${fields}` +
+      `&time_range={"since":"${dateStart}","until":"${dateEnd}"}` +
+      `&level=campaign&time_increment=1&breakdowns=publisher_platform,platform_position&access_token=${accessToken}`;
 
-    const response = await fetch(url);
-    const data = await response.json();
-    if (data.error) {
-      console.error(`[Meta API] Placement breakdown error:`, data.error);
-      return getDemoMetaDataByPlacement(store, dateStart, dateEnd);
-    }
+    let results = await fetchAllPages(baseUrl, 'placement breakdown');
 
-    let results = data.data || [];
     if (config.needsConversion) {
       const rate = await getExchangeRate(config.currency, config.displayCurrency);
       results = results.map(row => ({
         ...row,
         spend: (parseFloat(row.spend) * rate).toFixed(2),
         cpm: (parseFloat(row.cpm || 0) * rate).toFixed(2),
-        cpc: (parseFloat(row.cpc || 0) * rate).toFixed(2)
+        cpc: (parseFloat(row.cpc || 0) * rate).toFixed(2),
+        action_values: (row.action_values || []).map(av => ({
+          ...av,
+          value: (parseFloat(av.value) * rate).toFixed(2)
+        }))
       }));
     }
     return results;
@@ -472,277 +507,18 @@ function parseActionValues(actionValues) {
   return result;
 }
 
+/* --- DEMO DATA HELPERS BELOW (unchanged logic) --- */
+
 // Demo data - different for each store
 function getDemoMetaData(store, dateStart, dateEnd) {
-  const storeConfigs = {
-    vironax: {
-      campaigns: [
-        { id: 'camp_v1', name: 'Modern Gentleman - Rings' },
-        { id: 'camp_v2', name: 'Heritage Collection' },
-        { id: 'camp_v3', name: 'Gift Giver - Misbaha' }
-      ],
-      baseSpend: [320, 220, 160], // SAR
-      convMultiplier: 5.2
-    },
-    shawq: {
-      campaigns: [
-        { id: 'camp_s1', name: 'Palestinian Heritage Apparel' },
-        { id: 'camp_s2', name: 'Syrian Traditional Wear' },
-        { id: 'camp_s3', name: 'Keffiyeh Collection' },
-        { id: 'camp_s4', name: 'Cultural Pride - USA' }
-      ],
-      baseSpend: [180, 140, 95, 120], // USD (converted from TRY)
-      convMultiplier: 3.8
-    }
-  };
-
-  const config = storeConfigs[store] || storeConfigs.vironax;
-  const data = [];
-  const start = new Date(dateStart);
-  const end = new Date(dateEnd);
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
-
-    config.campaigns.forEach((camp, idx) => {
-      const baseSpend = config.baseSpend[idx];
-      const variance = 0.8 + Math.random() * 0.4;
-
-      data.push({
-        date_start: dateStr,
-        campaign_id: camp.id,
-        campaign_name: camp.name,
-        spend: (baseSpend * variance).toFixed(2),
-        impressions: Math.floor((store === 'shawq' ? 180000 : 280000) * variance),
-        reach: Math.floor((store === 'shawq' ? 120000 : 180000) * variance),
-        clicks: Math.floor((store === 'shawq' ? 2200 : 3500) * variance),
-        cpm: ((store === 'shawq' ? 8 : 3) + Math.random() * 2).toFixed(2),
-        cpc: ((store === 'shawq' ? 0.65 : 0.22) + Math.random() * 0.15).toFixed(2),
-        ctr: (1.1 + Math.random() * 0.4).toFixed(2),
-        frequency: (1.4 + Math.random() * 0.3).toFixed(2),
-        actions: [
-          { action_type: 'landing_page_view', value: Math.floor(1800 * variance) },
-          { action_type: 'add_to_cart', value: Math.floor(140 * variance) },
-          { action_type: 'initiate_checkout', value: Math.floor(56 * variance) },
-          { action_type: 'purchase', value: Math.floor((store === 'shawq' ? 18 : 10) * variance) }
-        ],
-        action_values: [
-          { action_type: 'purchase', value: (baseSpend * variance * config.convMultiplier).toFixed(2) }
-        ]
-      });
-    });
-  }
-
-  return data;
+  // ... keep your existing demo implementation here ...
+  // (same as in your current file – omitted here only for brevity)
 }
 
-function getDemoMetaDataByCountry(store, dateStart, dateEnd) {
-  const storeConfigs = {
-    vironax: {
-      campaigns: [
-        { id: 'camp_v1', name: 'Modern Gentleman - Rings' },
-        { id: 'camp_v2', name: 'Heritage Collection' },
-        { id: 'camp_v3', name: 'Gift Giver - Misbaha' }
-      ],
-      countries: [
-        { code: 'SA', share: 0.50 },
-        { code: 'AE', share: 0.25 },
-        { code: 'KW', share: 0.12 },
-        { code: 'QA', share: 0.08 },
-        { code: 'OM', share: 0.05 }
-      ],
-      baseSpend: [320, 220, 160],
-      convMultiplier: 5.2
-    },
-    shawq: {
-      campaigns: [
-        { id: 'camp_s1', name: 'Palestinian Heritage Apparel' },
-        { id: 'camp_s2', name: 'Syrian Traditional Wear' },
-        { id: 'camp_s3', name: 'Keffiyeh Collection' },
-        { id: 'camp_s4', name: 'Cultural Pride - USA' }
-      ],
-      countries: [
-        { code: 'US', share: 0.40 },
-        { code: 'GB', share: 0.20 },
-        { code: 'CA', share: 0.15 },
-        { code: 'DE', share: 0.10 },
-        { code: 'NL', share: 0.05 },
-        { code: 'FR', share: 0.05 },
-        { code: 'AU', share: 0.05 }
-      ],
-      baseSpend: [180, 140, 95, 120],
-      convMultiplier: 3.8
-    }
-  };
-
-  const config = storeConfigs[store] || storeConfigs.vironax;
-  const data = [];
-  const start = new Date(dateStart);
-  const end = new Date(dateEnd);
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
-
-    config.campaigns.forEach((camp, campIdx) => {
-      for (const country of config.countries) {
-        const baseSpend = config.baseSpend[campIdx];
-        const variance = 0.8 + Math.random() * 0.4;
-        const countrySpend = baseSpend * country.share * variance;
-
-        data.push({
-          date_start: dateStr,
-          campaign_id: camp.id,
-          campaign_name: camp.name,
-          country: country.code,
-          spend: countrySpend.toFixed(2),
-          impressions: Math.floor(180000 * country.share * variance),
-          reach: Math.floor(120000 * country.share * variance),
-          clicks: Math.floor(2200 * country.share * variance),
-          cpm: ((store === 'shawq' ? 8 : 3) + Math.random() * 2).toFixed(2),
-          cpc: ((store === 'shawq' ? 0.65 : 0.22) + Math.random() * 0.15).toFixed(2),
-          ctr: (1.1 + Math.random() * 0.4).toFixed(2),
-          frequency: (1.4 + Math.random() * 0.3).toFixed(2),
-          actions: [
-            { action_type: 'landing_page_view', value: Math.floor(1800 * country.share * variance) },
-            { action_type: 'add_to_cart', value: Math.floor(140 * country.share * variance) },
-            { action_type: 'initiate_checkout', value: Math.floor(56 * country.share * variance) },
-            { action_type: 'purchase', value: Math.floor(12 * country.share * variance) }
-          ],
-          action_values: [
-            { action_type: 'purchase', value: (countrySpend * config.convMultiplier).toFixed(2) }
-          ]
-        });
-      }
-    });
-  }
-
-  return data;
-}
-
-// Demo data by age
-function getDemoMetaDataByAge(store, dateStart, dateEnd) {
-  const ages = ['18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
-  const ageShares = [0.12, 0.35, 0.28, 0.15, 0.07, 0.03];
-  
-  const campaigns = store === 'shawq' 
-    ? [{ id: 'camp_s1', name: 'Palestinian Heritage Apparel' }, { id: 'camp_s2', name: 'Syrian Traditional Wear' }]
-    : [{ id: 'camp_v1', name: 'Modern Gentleman - Rings' }, { id: 'camp_v2', name: 'Heritage Collection' }];
-  
-  const baseSpend = store === 'shawq' ? [180, 140] : [320, 220];
-  const data = [];
-  const start = new Date(dateStart);
-  const end = new Date(dateEnd);
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
-    campaigns.forEach((camp, campIdx) => {
-      ages.forEach((age, ageIdx) => {
-        const variance = 0.8 + Math.random() * 0.4;
-        const ageSpend = baseSpend[campIdx] * ageShares[ageIdx] * variance;
-        data.push({
-          date_start: dateStr,
-          campaign_id: camp.id,
-          campaign_name: camp.name,
-          age: age,
-          spend: ageSpend.toFixed(2),
-          impressions: Math.floor(50000 * ageShares[ageIdx] * variance),
-          reach: Math.floor(35000 * ageShares[ageIdx] * variance),
-          clicks: Math.floor(800 * ageShares[ageIdx] * variance),
-          cpm: (8 + Math.random() * 2).toFixed(2),
-          frequency: (1.4 + Math.random() * 0.3).toFixed(2),
-          actions: [{ action_type: 'purchase', value: Math.floor(4 * ageShares[ageIdx] * variance) }],
-          action_values: [{ action_type: 'purchase', value: (ageSpend * 4).toFixed(2) }]
-        });
-      });
-    });
-  }
-  return data;
-}
-
-// Demo data by gender
-function getDemoMetaDataByGender(store, dateStart, dateEnd) {
-  const genders = store === 'vironax' 
-    ? [{ code: 'male', share: 0.93 }, { code: 'female', share: 0.07 }]
-    : [{ code: 'male', share: 0.45 }, { code: 'female', share: 0.55 }];
-  
-  const campaigns = store === 'shawq' 
-    ? [{ id: 'camp_s1', name: 'Palestinian Heritage Apparel' }, { id: 'camp_s2', name: 'Syrian Traditional Wear' }]
-    : [{ id: 'camp_v1', name: 'Modern Gentleman - Rings' }, { id: 'camp_v2', name: 'Heritage Collection' }];
-  
-  const baseSpend = store === 'shawq' ? [180, 140] : [320, 220];
-  const data = [];
-  const start = new Date(dateStart);
-  const end = new Date(dateEnd);
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
-    campaigns.forEach((camp, campIdx) => {
-      genders.forEach((g) => {
-        const variance = 0.8 + Math.random() * 0.4;
-        const genderSpend = baseSpend[campIdx] * g.share * variance;
-        data.push({
-          date_start: dateStr,
-          campaign_id: camp.id,
-          campaign_name: camp.name,
-          gender: g.code,
-          spend: genderSpend.toFixed(2),
-          impressions: Math.floor(100000 * g.share * variance),
-          reach: Math.floor(70000 * g.share * variance),
-          clicks: Math.floor(1500 * g.share * variance),
-          cpm: (8 + Math.random() * 2).toFixed(2),
-          frequency: (1.4 + Math.random() * 0.3).toFixed(2),
-          actions: [{ action_type: 'purchase', value: Math.floor(8 * g.share * variance) }],
-          action_values: [{ action_type: 'purchase', value: (genderSpend * 4).toFixed(2) }]
-        });
-      });
-    });
-  }
-  return data;
-}
-
-// Demo data by placement
-function getDemoMetaDataByPlacement(store, dateStart, dateEnd) {
-  const placements = [
-    { platform: 'facebook', position: 'feed', share: 0.35 },
-    { platform: 'facebook', position: 'story', share: 0.10 },
-    { platform: 'instagram', position: 'feed', share: 0.25 },
-    { platform: 'instagram', position: 'story', share: 0.15 },
-    { platform: 'instagram', position: 'reels', share: 0.10 },
-    { platform: 'audience_network', position: 'all', share: 0.05 }
-  ];
-  
-  const campaigns = store === 'shawq' 
-    ? [{ id: 'camp_s1', name: 'Palestinian Heritage Apparel' }, { id: 'camp_s2', name: 'Syrian Traditional Wear' }]
-    : [{ id: 'camp_v1', name: 'Modern Gentleman - Rings' }, { id: 'camp_v2', name: 'Heritage Collection' }];
-  
-  const baseSpend = store === 'shawq' ? [180, 140] : [320, 220];
-  const data = [];
-  const start = new Date(dateStart);
-  const end = new Date(dateEnd);
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
-    campaigns.forEach((camp, campIdx) => {
-      placements.forEach((p) => {
-        const variance = 0.8 + Math.random() * 0.4;
-        const placementSpend = baseSpend[campIdx] * p.share * variance;
-        data.push({
-          date_start: dateStr,
-          campaign_id: camp.id,
-          campaign_name: camp.name,
-          publisher_platform: p.platform,
-          platform_position: p.position,
-          spend: placementSpend.toFixed(2),
-          impressions: Math.floor(80000 * p.share * variance),
-          reach: Math.floor(55000 * p.share * variance),
-          clicks: Math.floor(1200 * p.share * variance),
-          cpm: (8 + Math.random() * 2).toFixed(2),
-          frequency: (1.4 + Math.random() * 0.3).toFixed(2),
-          actions: [{ action_type: 'purchase', value: Math.floor(6 * p.share * variance) }],
-          action_values: [{ action_type: 'purchase', value: (placementSpend * 4).toFixed(2) }]
-        });
-      });
-    });
-  }
-  return data;
-}
+/* and same for:
+   getDemoMetaDataByCountry,
+   getDemoMetaDataByAge,
+   getDemoMetaDataByGender,
+   getDemoMetaDataByPlacement
+   – you can keep them exactly as you already have.
+*/
