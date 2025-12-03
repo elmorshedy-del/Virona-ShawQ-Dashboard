@@ -236,6 +236,14 @@ export function getDashboard(store, params) {
 function getTrends(store, startDate, endDate) {
   const db = getDb();
   
+  // Generate all dates in range
+  const allDates = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    allDates.push(d.toISOString().split('T')[0]);
+  }
+  
   // Meta daily data
   const metaDaily = db.prepare(`
     SELECT 
@@ -272,13 +280,20 @@ function getTrends(store, startDate, endDate) {
     GROUP BY date
   `).all(store, startDate, endDate);
 
-  // Combine into daily trends
+  // Initialize all dates
   const dateMap = new Map();
+  for (const date of allDates) {
+    dateMap.set(date, { date, spend: 0, orders: 0, revenue: 0 });
+  }
   
+  // Add Meta data
   for (const m of metaDaily) {
-    dateMap.set(m.date, { date: m.date, spend: m.spend || 0, orders: 0, revenue: 0 });
+    if (dateMap.has(m.date)) {
+      dateMap.get(m.date).spend = m.spend || 0;
+    }
   }
 
+  // Add e-commerce orders
   for (const e of ecomDaily) {
     if (dateMap.has(e.date)) {
       dateMap.get(e.date).orders += e.orders || 0;
@@ -286,6 +301,7 @@ function getTrends(store, startDate, endDate) {
     }
   }
 
+  // Add manual orders
   for (const m of manualDaily) {
     if (dateMap.has(m.date)) {
       dateMap.get(m.date).orders += m.orders || 0;
@@ -564,4 +580,47 @@ export function getAvailableCountries(store) {
     code: c.code,
     ...getCountryInfo(c.code)
   }));
+}
+
+// Get campaigns broken down by country
+export function getCampaignsByCountry(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  
+  const data = db.prepare(`
+    SELECT 
+      campaign_id as campaignId,
+      campaign_name as campaignName,
+      country,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversionValue,
+      AVG(cpm) as cpm,
+      AVG(frequency) as frequency
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+    GROUP BY campaign_id, campaign_name, country
+    ORDER BY campaign_name, spend DESC
+  `).all(store, startDate, endDate);
+
+  return data.map(c => {
+    const countryInfo = getCountryInfo(c.country);
+    return {
+      ...c,
+      countryName: countryInfo.name,
+      countryFlag: countryInfo.flag,
+      cpc: c.clicks > 0 ? c.spend / c.clicks : 0,
+      ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0,
+      cr: c.clicks > 0 ? (c.conversions / c.clicks) * 100 : 0,
+      metaRoas: c.spend > 0 ? c.conversionValue / c.spend : 0,
+      metaAov: c.conversions > 0 ? c.conversionValue / c.conversions : 0,
+      metaCac: c.conversions > 0 ? c.spend / c.conversions : 0
+    };
+  });
 }
