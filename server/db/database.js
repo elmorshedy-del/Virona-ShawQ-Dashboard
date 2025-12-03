@@ -1,6 +1,5 @@
 import Database from 'better-sqlite3';
 import path from 'path';
-import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -8,24 +7,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let db = null;
 
 export function initDb() {
-  // Avoid re-initializing if already done
-  if (db) return db;
-
-  const dbPath =
-    process.env.DATABASE_PATH ||
-    path.join(__dirname, '../../data/dashboard.db');
-
-  // ✅ Ensure data directory exists *synchronously* before opening DB
+  const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/dashboard.db');
+  
+  // Ensure data directory exists
   const dataDir = path.dirname(dbPath);
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
+  import('fs').then(fs => {
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+  });
 
-  // Open SQLite database
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
 
-  // Meta daily metrics - with store column
+  // Meta daily metrics - with store column and breakdown fields
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta_daily_metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,6 +29,10 @@ export function initDb() {
       campaign_id TEXT NOT NULL,
       campaign_name TEXT NOT NULL,
       country TEXT DEFAULT 'ALL',
+      age TEXT DEFAULT '',
+      gender TEXT DEFAULT '',
+      publisher_platform TEXT DEFAULT '',
+      platform_position TEXT DEFAULT '',
       spend REAL DEFAULT 0,
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
@@ -48,9 +47,23 @@ export function initDb() {
       ctr REAL DEFAULT 0,
       frequency REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(store, date, campaign_id, country)
+      UNIQUE(store, date, campaign_id, country, age, gender, publisher_platform, platform_position)
     )
   `);
+
+  // Add columns if they don't exist (for existing databases)
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN age TEXT DEFAULT ''`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN gender TEXT DEFAULT ''`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN publisher_platform TEXT DEFAULT ''`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN platform_position TEXT DEFAULT ''`);
+  } catch (e) { /* column exists */ }
 
   // Salla orders (VironaX only)
   db.exec(`
@@ -141,19 +154,19 @@ export function initDb() {
     )
   `);
 
-  // Indexes
+  // Create indexes for performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_store_date ON meta_daily_metrics(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_salla_store_date ON salla_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
 
-  console.log(`✅ Database initialized at ${dbPath}`);
+  console.log('✅ Database initialized');
   return db;
 }
 
 export function getDb() {
   if (!db) {
-    return initDb();
+    initDb();
   }
   return db;
 }
