@@ -38,6 +38,14 @@ function getDateRange(params) {
   const now = new Date();
   const today = now.toISOString().split('T')[0];
   
+  // Handle custom date range (startDate and endDate provided)
+  if (params.startDate && params.endDate) {
+    const start = new Date(params.startDate);
+    const end = new Date(params.endDate);
+    const days = Math.ceil((end - start) / (24 * 60 * 60 * 1000)) + 1;
+    return { startDate: params.startDate, endDate: params.endDate, days };
+  }
+  
   // Handle yesterday specifically
   if (params.yesterday) {
     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
