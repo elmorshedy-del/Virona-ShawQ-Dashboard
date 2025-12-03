@@ -34,15 +34,28 @@ function getCountryInfo(code) {
 }
 
 function getDateRange(params) {
+  // Get current date in local timezone
   const now = new Date();
+  const today = now.toISOString().split('T')[0];
+  
+  // Handle yesterday specifically
+  if (params.yesterday) {
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    return { startDate: yesterday, endDate: yesterday, days: 1 };
+  }
+  
   let days = 7;
   
   if (params.days) days = parseInt(params.days);
   else if (params.weeks) days = parseInt(params.weeks) * 7;
   else if (params.months) days = parseInt(params.months) * 30;
   
-  const endDate = now.toISOString().split('T')[0];
-  const startDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  // End date is always today
+  const endDate = today;
+  
+  // Start date: for days=1, start=today (same day). For days=7, go back 6 days.
+  const startMs = now.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
+  const startDate = new Date(startMs).toISOString().split('T')[0];
   
   return { startDate, endDate, days };
 }
@@ -623,4 +636,120 @@ export function getCampaignsByCountry(store, params) {
       metaCac: c.conversions > 0 ? c.spend / c.conversions : 0
     };
   });
+}
+
+// Get campaigns broken down by age
+export function getCampaignsByAge(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  
+  const data = db.prepare(`
+    SELECT 
+      campaign_id as campaignId,
+      campaign_name as campaignName,
+      age,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversionValue,
+      AVG(cpm) as cpm,
+      AVG(frequency) as frequency
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND age IS NOT NULL AND age != ''
+    GROUP BY campaign_id, campaign_name, age
+    ORDER BY campaign_name, spend DESC
+  `).all(store, startDate, endDate);
+
+  return data.map(c => ({
+    ...c,
+    cpc: c.clicks > 0 ? c.spend / c.clicks : 0,
+    ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0,
+    cr: c.clicks > 0 ? (c.conversions / c.clicks) * 100 : 0,
+    metaRoas: c.spend > 0 ? c.conversionValue / c.spend : 0,
+    metaAov: c.conversions > 0 ? c.conversionValue / c.conversions : 0,
+    metaCac: c.conversions > 0 ? c.spend / c.conversions : 0
+  }));
+}
+
+// Get campaigns broken down by gender
+export function getCampaignsByGender(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  
+  const data = db.prepare(`
+    SELECT 
+      campaign_id as campaignId,
+      campaign_name as campaignName,
+      gender,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversionValue,
+      AVG(cpm) as cpm,
+      AVG(frequency) as frequency
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND gender IS NOT NULL AND gender != ''
+    GROUP BY campaign_id, campaign_name, gender
+    ORDER BY campaign_name, spend DESC
+  `).all(store, startDate, endDate);
+
+  return data.map(c => ({
+    ...c,
+    genderLabel: c.gender === 'male' ? '👨 Male' : c.gender === 'female' ? '👩 Female' : '❓ Unknown',
+    cpc: c.clicks > 0 ? c.spend / c.clicks : 0,
+    ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0,
+    cr: c.clicks > 0 ? (c.conversions / c.clicks) * 100 : 0,
+    metaRoas: c.spend > 0 ? c.conversionValue / c.spend : 0,
+    metaAov: c.conversions > 0 ? c.conversionValue / c.conversions : 0,
+    metaCac: c.conversions > 0 ? c.spend / c.conversions : 0
+  }));
+}
+
+// Get campaigns broken down by placement
+export function getCampaignsByPlacement(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  
+  const data = db.prepare(`
+    SELECT 
+      campaign_id as campaignId,
+      campaign_name as campaignName,
+      publisher_platform as platform,
+      platform_position as placement,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversionValue,
+      AVG(cpm) as cpm,
+      AVG(frequency) as frequency
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND publisher_platform IS NOT NULL AND publisher_platform != ''
+    GROUP BY campaign_id, campaign_name, publisher_platform, platform_position
+    ORDER BY campaign_name, spend DESC
+  `).all(store, startDate, endDate);
+
+  const platformIcons = {
+    'facebook': '📘',
+    'instagram': '📸',
+    'messenger': '💬',
+    'audience_network': '🌐'
+  };
+
+  return data.map(c => ({
+    ...c,
+    platformIcon: platformIcons[c.platform] || '📱',
+    placementLabel: `${platformIcons[c.platform] || '📱'} ${c.platform || 'unknown'} - ${c.placement || 'all'}`,
+    cpc: c.clicks > 0 ? c.spend / c.clicks : 0,
+    ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0,
+    cr: c.clicks > 0 ? (c.conversions / c.clicks) * 100 : 0,
+    metaRoas: c.spend > 0 ? c.conversionValue / c.spend : 0,
+    metaAov: c.conversions > 0 ? c.conversionValue / c.conversions : 0,
+    metaCac: c.conversions > 0 ? c.spend / c.conversions : 0
+  }));
 }
