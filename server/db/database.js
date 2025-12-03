@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -7,16 +8,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let db = null;
 
 export function initDb() {
-  const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/dashboard.db');
-  
-  // Ensure data directory exists
-  const dataDir = path.dirname(dbPath);
-  import('fs').then(fs => {
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-  });
+  // Avoid re-initializing if already done
+  if (db) return db;
 
+  const dbPath =
+    process.env.DATABASE_PATH ||
+    path.join(__dirname, '../../data/dashboard.db');
+
+  // ✅ Ensure data directory exists *synchronously* before opening DB
+  const dataDir = path.dirname(dbPath);
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  // Open SQLite database
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
 
@@ -136,19 +141,19 @@ export function initDb() {
     )
   `);
 
-  // Create indexes for performance
+  // Indexes
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_store_date ON meta_daily_metrics(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_salla_store_date ON salla_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
 
-  console.log('✅ Database initialized');
+  console.log(`✅ Database initialized at ${dbPath}`);
   return db;
 }
 
 export function getDb() {
   if (!db) {
-    initDb();
+    return initDb();
   }
   return db;
 }
