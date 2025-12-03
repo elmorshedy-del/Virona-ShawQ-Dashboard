@@ -108,8 +108,8 @@ app.listen(PORT, () => {
   }, 5000);
 });
 
-// Hourly sync cron job
-cron.schedule('0 * * * *', async () => {
-  console.log('Running hourly sync...');
+// Sync every 15 minutes for fresh Meta data
+cron.schedule('*/15 * * * *', async () => {
+  console.log('Running 15-minute sync...');
   await syncAllStores();
 });
