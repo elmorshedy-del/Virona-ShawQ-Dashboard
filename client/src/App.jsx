@@ -3,7 +3,10 @@ import {
   LineChart, Line, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
-import { RefreshCw, TrendingUp, TrendingDown, Plus, Trash2, Store, ChevronDown, ChevronUp, ArrowUpDown, Calendar } from 'lucide-react';
+import { 
+  RefreshCw, TrendingUp, TrendingDown, Plus, Trash2, Store,
+  ChevronDown, ChevronUp, ArrowUpDown, Calendar, AlertTriangle 
+} from 'lucide-react';
 
 const API_BASE = '/api';
 
@@ -156,10 +159,17 @@ export default function App() {
       }
       
       try {
-        const params = new URLSearchParams({
-          store: currentStore,
-          [dateRange.type]: dateRange.value
-        });
+        const params = new URLSearchParams({ store: currentStore });
+
+        // Mirror the same date-range logic used in loadData
+        if (dateRange.type === 'custom') {
+          params.set('startDate', dateRange.start);
+          params.set('endDate', dateRange.end);
+        } else if (dateRange.type === 'yesterday') {
+          params.set('yesterday', '1');
+        } else {
+          params.set(dateRange.type, dateRange.value);
+        }
         
         const endpoint = `${API_BASE}/analytics/campaigns/by-${breakdown}?${params}`;
         const data = await fetch(endpoint).then(r => r.json());
@@ -571,6 +581,31 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
     }));
   };
 
+  // --- Meta debug detection (demo vs live) ---
+  const demoCampaignNames =
+    store.id === 'shawq'
+      ? [
+          'Palestinian Heritage Apparel',
+          'Syrian Traditional Wear',
+          'Keffiyeh Collection',
+          'Cultural Pride - USA'
+        ]
+      : [
+          'Modern Gentleman - Rings',
+          'Heritage Collection',
+          'Gift Giver - Misbaha'
+        ];
+
+  const campaignNamesSet = new Set((campaigns || []).map(c => c.campaignName));
+  const isDemoCampaignSet =
+    demoCampaignNames.length > 0 &&
+    demoCampaignNames.every(name => campaignNamesSet.has(name)) &&
+    campaignNamesSet.size === demoCampaignNames.length &&
+    (campaigns || []).length >= demoCampaignNames.length;
+
+  const hasSpendButNoCampaigns =
+    (!campaigns || campaigns.length === 0) && (overview?.spend || 0) > 0;
+
   // Get breakdown label for display
   const getBreakdownLabel = (row) => {
     switch(breakdown) {
@@ -581,7 +616,7 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
       case 'gender':
         return <span>{row.genderLabel || row.gender}</span>;
       case 'placement':
-        return <span className="text-xs">{row.placementLabel || `${row.platform} - ${row.placement}`}</span>;
+        return <span className="text-xs">{row.placementLabel || `${row.publisher_platform || row.platform} - ${row.platform_position || row.placement}`}</span>;
       default:
         return null;
     }
@@ -646,6 +681,43 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
                 />
               </AreaChart>
             </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Meta debug banner */}
+      {(isDemoCampaignSet || hasSpendButNoCampaigns) && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex gap-3 items-start">
+          <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5" />
+          <div className="text-sm text-amber-900">
+            <p className="font-semibold mb-1">
+              Meta campaign data looks like <span className="underline">DEMO / not live</span>.
+            </p>
+            {isDemoCampaignSet && (
+              <p className="mb-1">
+                The campaigns shown match the built-in demo set for <strong>{store.name}</strong>
+                : {demoCampaignNames.join(', ')}. When Meta credentials are missing or the API
+                errors, the backend falls back to this demo data.
+              </p>
+            )}
+            {hasSpendButNoCampaigns && (
+              <p className="mb-1">
+                There is Meta ad spend in this period, but no campaigns were synced into the
+                dashboard. That usually means the Meta sync failed (API error or wrong account).
+              </p>
+            )}
+            <p className="mt-1">
+              Check your Railway variables for this project:
+            </p>
+            <p className="mt-1 font-mono text-xs bg-amber-100 inline-block px-2 py-1 rounded">
+              {store.id === 'shawq'
+                ? 'SHAWQ_META_ACCESS_TOKEN, SHAWQ_META_AD_ACCOUNT_ID'
+                : 'META_ACCESS_TOKEN, META_AD_ACCOUNT_ID'}
+            </p>
+            <p className="mt-1 text-xs text-amber-800">
+              If those are empty or point to the wrong ad account, the dashboard will keep using
+              demo data even though the UI looks “alive”.
+            </p>
           </div>
         </div>
       )}
@@ -733,11 +805,17 @@ function DashboardTab({ dashboard, expandedKpi, setExpandedKpi, formatCurrency, 
               <tr className="bg-gray-50 font-semibold">
                 <td>TOTAL</td>
                 {breakdown !== 'none' && <td></td>}
-                <td className="text-indigo-600">{formatCurrency(campaigns.reduce((s, c) => s + c.spend, 0))}</td>
-                <td className="text-green-600">
-                  {(campaigns.reduce((s, c) => s + c.conversionValue, 0) / campaigns.reduce((s, c) => s + c.spend, 0) || 0).toFixed(2)}×
+                <td className="text-indigo-600">
+                  {formatCurrency((campaigns || []).reduce((s, c) => s + c.spend, 0))}
                 </td>
-                <td colSpan={breakdown !== 'none' ? 11 : 11}></td>
+                <td className="text-green-600">
+                  {(
+                    ((campaigns || []).reduce((s, c) => s + c.conversionValue, 0) /
+                      (campaigns || []).reduce((s, c) => s + c.spend, 0) || 0
+                    ).toFixed(2)
+                  )}×
+                </td>
+                <td colSpan={11}></td>
               </tr>
             </tbody>
           </table>
