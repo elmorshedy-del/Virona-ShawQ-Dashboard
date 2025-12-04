@@ -4,7 +4,10 @@ import {
   LineChart, Line, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
-import { RefreshCw, TrendingUp, TrendingDown, Plus, Trash2, Store, ChevronDown, ChevronUp, ArrowUpDown, Calendar } from 'lucide-react';
+import { 
+  RefreshCw, TrendingUp, TrendingDown, Plus, Trash2, 
+  Store, ChevronDown, ChevronUp, ArrowUpDown, Calendar 
+} from 'lucide-react';
 
 const API_BASE = '/api';
 
@@ -54,9 +57,11 @@ export default function App() {
   const [availableCountries, setAvailableCountries] = useState([]);
   const [breakdownData, setBreakdownData] = useState([]);
   
-  // NEW: allow multiple expanded KPI charts
+  // KPI charts
   const [expandedKpis, setExpandedKpis] = useState([]);
+  // Section 2 breakdown (pure meta)
   const [breakdown, setBreakdown] = useState('none');
+  // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
   
   const store = STORES[currentStore];
@@ -85,7 +90,7 @@ export default function App() {
 
   // Save store selection to localStorage whenever it changes
   useEffect(() => {
-    if (!storeLoaded) return; // Don't save during initial load
+    if (!storeLoaded) return;
     try {
       localStorage.setItem('selectedStore', currentStore);
     } catch (e) {
@@ -107,7 +112,6 @@ export default function App() {
     try {
       const params = new URLSearchParams({ store: currentStore });
       
-      // Handle different date range types
       if (dateRange.type === 'custom') {
         params.set('startDate', dateRange.start);
         params.set('endDate', dateRange.end);
@@ -117,7 +121,15 @@ export default function App() {
         params.set(dateRange.type, dateRange.value);
       }
       
-      const [dashData, effData, effTrends, recs, orders, countries, cTrends] = await Promise.all([
+      const [
+        dashData,
+        effData,
+        effTrends,
+        recs,
+        orders,
+        countries,
+        cTrends
+      ] = await Promise.all([
         fetch(`${API_BASE}/analytics/dashboard?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/efficiency?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/efficiency/trends?${params}`).then(r => r.json()),
@@ -140,14 +152,13 @@ export default function App() {
     setLoading(false);
   }, [currentStore, dateRange]);
 
-  // Only load data after store is loaded from localStorage
   useEffect(() => {
     if (storeLoaded) {
       loadData();
     }
   }, [loadData, storeLoaded]);
 
-  // Load breakdown data when breakdown changes
+  // Load breakdown data for Section 2 (pure meta)
   useEffect(() => {
     if (!storeLoaded) return;
     
@@ -160,7 +171,6 @@ export default function App() {
       try {
         const params = new URLSearchParams({ store: currentStore });
 
-        // use same date-range logic as main loader
         if (dateRange.type === 'custom') {
           params.set('startDate', dateRange.start);
           params.set('endDate', dateRange.end);
@@ -201,7 +211,12 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(orderForm)
       });
-      setOrderForm(prev => ({ ...prev, orders_count: 1, revenue: STORES[currentStore].defaultAOV, notes: '' }));
+      setOrderForm(prev => ({
+        ...prev,
+        orders_count: 1,
+        revenue: STORES[currentStore].defaultAOV,
+        notes: ''
+      }));
       loadData();
     } catch (error) {
       console.error('Error adding order:', error);
@@ -240,15 +255,16 @@ export default function App() {
         currency: 'USD',
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals
-      }).format(value);
+      }).format(value || 0);
     }
-    return `${Math.round(value).toLocaleString()} ${symbol}`;
+    return `${Math.round(value || 0).toLocaleString()} ${symbol}`;
   };
 
   const formatNumber = (value) => {
-    if (value >= 1000000) return (value / 1000000).toFixed(2) + 'M';
-    if (value >= 1000) return (value / 1000).toFixed(1) + 'K';
-    return Math.round(value).toString();
+    const v = value || 0;
+    if (v >= 1000000) return (v / 1000000).toFixed(2) + 'M';
+    if (v >= 1000) return (v / 1000).toFixed(1) + 'K';
+    return Math.round(v).toString();
   };
 
   const getDateRangeLabel = () => {
@@ -291,7 +307,11 @@ export default function App() {
                 >
                   <Store className="w-4 h-4 text-gray-600" />
                   <span className="font-bold text-gray-900">{store.name}</span>
-                  <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${storeDropdownOpen ? 'rotate-180' : ''}`} />
+                  <ChevronDown
+                    className={`w-4 h-4 text-gray-500 transition-transform ${
+                      storeDropdownOpen ? 'rotate-180' : ''
+                    }`}
+                  />
                 </button>
                 
                 {storeDropdownOpen && (
@@ -302,24 +322,31 @@ export default function App() {
                         onClick={() => {
                           setCurrentStore(s.id);
                           setStoreDropdownOpen(false);
-                          setExpandedKpis([]); // reset charts when switching store
+                          setExpandedKpis([]);
                         }}
-                        className={`w-full px-4 py-3 text-left hover:bg-gray-50 ${currentStore === s.id ? 'bg-indigo-50' : ''}`}
+                        className={`w-full px-4 py-3 text-left hover:bg-gray-50 ${
+                          currentStore === s.id ? 'bg-indigo-50' : ''
+                        }`}
                       >
                         <div className="font-semibold text-gray-900">{s.name}</div>
-                        <div className="text-sm text-gray-500">{s.tagline} • {s.ecommerce}</div>
+                        <div className="text-sm text-gray-500">
+                          {s.tagline} • {s.ecommerce}
+                        </div>
                       </button>
                     ))}
                   </div>
                 )}
               </div>
               
-              <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded">Dashboard</span>
+              <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded">
+                Dashboard
+              </span>
             </div>
             
             <div className="flex items-center gap-4">
               <span className="text-sm text-gray-500">
-                {dashboard?.dateRange && `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
+                {dashboard?.dateRange &&
+                  `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
               </span>
               <button 
                 onClick={handleSync}
@@ -355,7 +382,7 @@ export default function App() {
         <div className="flex items-center gap-3 bg-white p-4 rounded-xl shadow-sm mb-6 flex-wrap">
           <span className="text-sm font-medium text-gray-700">Period:</span>
           
-          {/* TODAY button */}
+          {/* Today */}
           <button
             onClick={() => { setDateRange({ type: 'days', value: 1 }); setShowCustomPicker(false); }}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -367,7 +394,7 @@ export default function App() {
             Today
           </button>
           
-          {/* YESTERDAY button */}
+          {/* Yesterday */}
           <button
             onClick={() => { setDateRange({ type: 'yesterday', value: 1 }); setShowCustomPicker(false); }}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -379,7 +406,6 @@ export default function App() {
             Yesterday
           </button>
           
-          {/* Quick select buttons */}
           {[3, 7, 14, 30].map(d => (
             <button
               key={d}
@@ -394,7 +420,7 @@ export default function App() {
             </button>
           ))}
 
-          {/* Custom Range Button */}
+          {/* Custom Range */}
           <div className="relative">
             <button
               onClick={() => setShowCustomPicker(!showCustomPicker)}
@@ -408,12 +434,13 @@ export default function App() {
               Custom
             </button>
             
-            {/* Custom Date Picker Dropdown */}
             {showCustomPicker && (
               <div className="absolute top-full mt-2 left-0 bg-white rounded-xl shadow-lg border border-gray-200 p-4 z-50 min-w-[280px]">
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Start Date</label>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Start Date
+                    </label>
                     <input
                       type="date"
                       value={customRange.start}
@@ -423,7 +450,9 @@ export default function App() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">End Date</label>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      End Date
+                    </label>
                     <input
                       type="date"
                       value={customRange.end}
@@ -547,14 +576,22 @@ function DashboardTab({
   const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
   const [showCountryTrends, setShowCountryTrends] = useState(false);
-  const [showMetaBreakdown, setShowMetaBreakdown] = useState(false);
+  const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
+  const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   
   const ecomLabel = store.ecommerce;
   
   const kpis = [
     { key: 'revenue', label: 'Revenue', value: overview.revenue, format: 'currency', color: '#8b5cf6' },
     { key: 'spend', label: 'Ad Spend', value: overview.spend, format: 'currency', color: '#6366f1' },
-    { key: 'orders', label: 'Orders', value: overview.orders, format: 'number', subtitle: `${overview.sallaOrders || overview.shopifyOrders || 0} ${ecomLabel} + ${overview.manualOrders} Manual`, color: '#22c55e' },
+    { 
+      key: 'orders',
+      label: 'Orders',
+      value: overview.orders,
+      format: 'number',
+      subtitle: `${overview.sallaOrders || overview.shopifyOrders || 0} ${ecomLabel} + ${overview.manualOrders} Manual`,
+      color: '#22c55e'
+    },
     { key: 'aov', label: 'AOV', value: overview.aov, format: 'currency', color: '#f59e0b' },
     { key: 'cac', label: 'CAC', value: overview.cac, format: 'currency', color: '#ef4444' },
     { key: 'roas', label: 'ROAS', value: overview.roas, format: 'roas', color: '#10b981' },
@@ -592,17 +629,28 @@ function DashboardTab({
     }));
   };
 
-  // Get breakdown label for display
-  const getBreakdownLabel = (row) => {
-    switch(breakdown) {
+  const getBreakdownLabel = (row, currentBreakdown) => {
+    switch(currentBreakdown) {
       case 'country':
-        return <span className="flex items-center gap-2"><span>{row.countryFlag}</span> {row.country}</span>;
+        return (
+          <span className="flex items-center gap-2">
+            <span>{row.countryFlag}</span> {row.countryName || row.country}
+          </span>
+        );
       case 'age':
-        return <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">{row.age}</span>;
+        return (
+          <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+            {row.age}
+          </span>
+        );
       case 'gender':
         return <span>{row.genderLabel || row.gender}</span>;
       case 'placement':
-        return <span className="text-xs">{row.placementLabel || `${row.platform} - ${row.placement}`}</span>;
+        return (
+          <span className="text-xs">
+            {row.placementLabel || `${row.platform} - ${row.placement}`}
+          </span>
+        );
       default:
         return null;
     }
@@ -616,13 +664,89 @@ function DashboardTab({
     );
   };
 
-  // quick aggregates for the section header
-  const totalCampaignSpend = campaigns.reduce((s, c) => s + (c.spend || 0), 0);
-  const totalCampaignRevenue = campaigns.reduce((s, c) => s + (c.conversionValue || 0), 0);
-  const headerRoas = totalCampaignSpend > 0 ? totalCampaignRevenue / totalCampaignSpend : 0;
+  // SECTION 2 meta rows depending on breakdown
+  const metaRows =
+    breakdown === 'none' ? sortedCampaigns : sortedBreakdownData;
+
+  const metaSpendTotal = metaRows.reduce((s, r) => s + (r.spend || 0), 0);
+  const metaRevenueTotal = metaRows.reduce((s, r) => s + (r.conversionValue || 0), 0);
+  const metaRoasTotal = metaSpendTotal > 0 ? metaRevenueTotal / metaSpendTotal : 0;
+  const metaCampaignCount =
+    breakdown === 'none'
+      ? campaigns.length
+      : new Set(metaRows.map(r => r.campaignId)).size;
+
+  // SECTION 1 rows based on metaView
+  const section1Rows =
+    metaView === 'campaign' ? sortedCampaigns : sortedCountries;
+
+  const section1Totals = (() => {
+    const rows = section1Rows;
+    const totalSpend = rows.reduce((s, r) => s + (r.spend || 0), 0);
+    const totalMetaRevenue = rows.reduce(
+      (s, r) => s + (metaView === 'campaign'
+        ? (r.conversionValue || 0)
+        : (r.revenue || 0)),
+      0
+    );
+    const totalOrders = rows.reduce(
+      (s, r) => s + (metaView === 'campaign'
+        ? (r.conversions || 0)
+        : (r.totalOrders || 0)),
+      0
+    );
+    const totalImpr = rows.reduce((s, r) => s + (r.impressions || 0), 0);
+    const totalReach = rows.reduce((s, r) => s + (r.reach || 0), 0);
+    const totalClicks = rows.reduce((s, r) => s + (r.clicks || 0), 0);
+    const totalLpv = rows.reduce((s, r) => s + (r.lpv || 0), 0);
+    const totalAtc = rows.reduce((s, r) => s + (r.atc || 0), 0);
+    const totalCheckout = rows.reduce((s, r) => s + (r.checkout || 0), 0);
+    const totalMetaConversions = rows.reduce(
+      (s, r) => s + (metaView === 'campaign'
+        ? (r.conversions || 0)
+        : (r.metaOrders || 0)),
+      0
+    );
+
+    const roas = totalSpend > 0 ? totalMetaRevenue / totalSpend : 0;
+    const aov = totalOrders > 0 ? totalMetaRevenue / totalOrders : 0;
+    const cac = totalOrders > 0 ? totalSpend / totalOrders : 0;
+    const cpm = totalImpr > 0 ? (totalSpend / totalImpr) * 1000 : 0;
+    const freq = totalReach > 0 ? totalImpr / totalReach : 0;
+    const ctr = totalImpr > 0 ? (totalClicks / totalImpr) * 100 : 0;
+    const cpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
+    const cr =
+      totalClicks > 0
+        ? (metaView === 'campaign'
+            ? (totalMetaConversions / totalClicks) * 100
+            : (totalOrders / totalClicks) * 100)
+        : 0;
+
+    return {
+      totalSpend,
+      totalMetaRevenue,
+      totalOrders,
+      totalImpr,
+      totalReach,
+      totalClicks,
+      totalLpv,
+      totalAtc,
+      totalCheckout,
+      totalMetaConversions,
+      roas,
+      aov,
+      cac,
+      cpm,
+      freq,
+      ctr,
+      cpc,
+      cr
+    };
+  })();
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* KPI CARDS */}
       <div className="grid grid-cols-6 gap-4">
         {kpis.map((kpi) => (
           <KPICard 
@@ -636,7 +760,7 @@ function DashboardTab({
         ))}
       </div>
 
-      {/* Orders Trend Chart (global) */}
+      {/* Global Orders Trend */}
       {trends && trends.length > 0 && (
         <div className="bg-white rounded-xl p-6 shadow-sm">
           <h3 className="text-lg font-semibold mb-4">Orders Trend</h3>
@@ -660,7 +784,7 @@ function DashboardTab({
         </div>
       )}
 
-      {/* Expanded KPI Charts – multiple at once */}
+      {/* Expanded KPI charts */}
       {expandedKpis.length > 0 && trends && trends.length > 0 && (
         <div className="space-y-6">
           {expandedKpis.map((key) => {
@@ -692,51 +816,372 @@ function DashboardTab({
         </div>
       )}
 
-      {/* Section 2 — Pure Meta Breakdown World (collapsible) */}
+      {/* SECTION 1 — META FUNNEL (INTEGRATED) */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <button
-          onClick={() => setShowMetaBreakdown(prev => !prev)}
-          className="w-full p-6 flex items-center justify-between hover:bg-gray-50 transition-colors border-b border-gray-100"
-        >
-          <div className="text-left">
-            <h2 className="text-lg font-semibold">Section 2 — Pure Meta Breakdown World</h2>
+        <div className="px-6 pt-6 pb-4 border-b border-gray-100 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Section 1 — Meta Funnel (Integrated)</h2>
             <p className="text-sm text-gray-500">
-              Detailed Meta campaign & breakdown metrics. Click to {showMetaBreakdown ? 'collapse' : 'expand'}.
+              Meta funnel metrics with{" "}
+              <span className="font-semibold">true revenue & orders</span> when
+              you switch to By Country.
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="hidden sm:flex items-center gap-6 text-sm text-gray-600">
-              <span>
-                Campaigns:{' '}
-                <span className="font-semibold">{campaigns.length}</span>
-              </span>
-              <span>
-                Spend:{' '}
-                <span className="font-semibold">
-                  {formatCurrency(totalCampaignSpend)}
-                </span>
-              </span>
-              <span>
-                ROAS:{' '}
-                <span className="font-semibold">
-                  {headerRoas.toFixed(2)}×
-                </span>
-              </span>
-            </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 mr-2">View:</span>
+            <button
+              onClick={() => setMetaView('campaign')}
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
+                metaView === 'campaign'
+                  ? 'bg-gray-900 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              Campaigns
+            </button>
+            <button
+              onClick={() => setMetaView('country')}
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
+                metaView === 'country'
+                  ? 'bg-gray-900 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              By Country (True)
+            </button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table>
+            <thead>
+              {/* Highlight header row */}
+              <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                <th className="text-left px-4 py-2">
+                  {metaView === 'campaign' ? 'Campaign' : 'Country'}
+                </th>
+                <th colSpan={5} className="text-center border-l border-gray-100">
+                  Meta Financials
+                </th>
+                <th colSpan={4} className="text-center border-l border-gray-100">
+                  Upper Funnel
+                </th>
+                <th colSpan={4} className="text-center border-l border-gray-100">
+                  Mid Funnel
+                </th>
+                <th colSpan={5} className="text-center border-l border-gray-100">
+                  Lower Funnel
+                </th>
+              </tr>
+              <tr className="bg-gray-50 text-xs text-gray-500">
+                <SortableHeader
+                  label="Name"
+                  field={metaView === 'campaign' ? 'campaignName' : 'name'}
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                  className="text-left px-4 py-2"
+                />
+                <SortableHeader
+                  label="Spend"
+                  field="spend"
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                />
+                <th>Revenue</th>
+                <SortableHeader
+                  label="ROAS"
+                  field={metaView === 'campaign' ? 'metaRoas' : 'roas'}
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                  className="bg-indigo-50 text-indigo-700"
+                />
+                <SortableHeader
+                  label="AOV"
+                  field={metaView === 'campaign' ? 'metaAov' : 'aov'}
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                  className="bg-indigo-50 text-indigo-700"
+                />
+                <SortableHeader
+                  label="CAC"
+                  field={metaView === 'campaign' ? 'metaCac' : 'cac'}
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                  className="bg-indigo-50 text-indigo-700"
+                />
+
+                <SortableHeader
+                  label="Impr"
+                  field="impressions"
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                />
+                <SortableHeader
+                  label="Reach"
+                  field="reach"
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                />
+                <th>CPM</th>
+                <th>Freq</th>
+
+                <SortableHeader
+                  label="Clicks"
+                  field="clicks"
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                />
+                <th>CTR</th>
+                <th>CPC</th>
+                <th>LPV</th>
+
+                <th>ATC</th>
+                <th>Checkout</th>
+                <th>Orders</th>
+                <SortableHeader
+                  label="Conv"
+                  field={metaView === 'campaign' ? 'conversions' : 'metaOrders'}
+                  sortConfig={metaView === 'campaign' ? campaignSortConfig : countrySortConfig}
+                  onSort={metaView === 'campaign' ? handleCampaignSort : handleCountrySort}
+                />
+                <th>CR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {section1Rows.map((row) => {
+                const isCampaign = metaView === 'campaign';
+                const nameCell = isCampaign ? (
+                  <span className="font-medium">{row.campaignName}</span>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">{row.flag}</span>
+                    <span className="font-medium">{row.name}</span>
+                  </div>
+                );
+
+                const revenueCell = isCampaign
+                  ? formatCurrency(row.conversionValue || 0)
+                  : formatCurrency(row.revenue || 0);
+
+                const roas = isCampaign ? row.metaRoas || 0 : row.roas || 0;
+                const aov = isCampaign ? row.metaAov || 0 : row.aov || 0;
+                const cac = isCampaign ? row.metaCac || 0 : row.cac || 0;
+
+                const orders = isCampaign
+                  ? row.conversions || 0
+                  : row.totalOrders || 0;
+
+                const metaConv = isCampaign
+                  ? row.conversions || 0
+                  : row.metaOrders || 0;
+
+                const cr =
+                  row.clicks > 0
+                    ? (isCampaign
+                        ? (metaConv / row.clicks) * 100
+                        : (orders / row.clicks) * 100)
+                    : 0;
+
+                return (
+                  <tr key={isCampaign ? row.campaignId : row.code}>
+                    <td className="px-4 py-2">{nameCell}</td>
+                    <td className="text-indigo-600 font-semibold">
+                      {formatCurrency(row.spend || 0)}
+                    </td>
+                    <td className="text-green-600 font-semibold">{revenueCell}</td>
+                    <td className="text-green-600 font-semibold">
+                      {roas.toFixed(2)}×
+                    </td>
+                    <td>{formatCurrency(aov || 0)}</td>
+                    <td className={cac > 100 ? 'text-amber-600 font-medium' : ''}>
+                      {formatCurrency(cac || 0)}
+                    </td>
+
+                    <td>{formatNumber(row.impressions || 0)}</td>
+                    <td>{formatNumber(row.reach || 0)}</td>
+                    <td>{formatCurrency(row.cpm || 0, 2)}</td>
+                    <td>{(row.frequency || 0).toFixed(2)}</td>
+
+                    <td>{formatNumber(row.clicks || 0)}</td>
+                    <td>{(row.ctr || 0).toFixed(2)}%</td>
+                    <td>{formatCurrency(row.cpc || 0, 2)}</td>
+                    <td>{formatNumber(row.lpv || 0)}</td>
+
+                    <td>{formatNumber(row.atc || 0)}</td>
+                    <td>{formatNumber(row.checkout || 0)}</td>
+                    <td>{orders}</td>
+                    <td>{metaConv}</td>
+                    <td>{cr.toFixed(2)}%</td>
+                  </tr>
+                );
+              })}
+
+              {/* TOTAL ROW */}
+              <tr className="bg-gray-50 font-semibold">
+                <td className="px-4 py-2">
+                  {metaView === 'campaign' ? 'TOTAL (Campaigns)' : 'TOTAL (Countries)'}
+                </td>
+                <td className="text-indigo-600">
+                  {formatCurrency(section1Totals.totalSpend)}
+                </td>
+                <td className="text-green-600">
+                  {formatCurrency(section1Totals.totalMetaRevenue)}
+                </td>
+                <td className="text-green-600">
+                  {section1Totals.roas.toFixed(2)}×
+                </td>
+                <td>{formatCurrency(section1Totals.aov || 0)}</td>
+                <td>{formatCurrency(section1Totals.cac || 0)}</td>
+
+                <td>{formatNumber(section1Totals.totalImpr)}</td>
+                <td>{formatNumber(section1Totals.totalReach)}</td>
+                <td>{formatCurrency(section1Totals.cpm || 0, 2)}</td>
+                <td>{section1Totals.freq.toFixed(2)}</td>
+
+                <td>{formatNumber(section1Totals.totalClicks)}</td>
+                <td>{section1Totals.ctr.toFixed(2)}%</td>
+                <td>{formatCurrency(section1Totals.cpc || 0, 2)}</td>
+                <td>{formatNumber(section1Totals.totalLpv)}</td>
+
+                <td>{formatNumber(section1Totals.totalAtc)}</td>
+                <td>{formatNumber(section1Totals.totalCheckout)}</td>
+                <td>{section1Totals.totalOrders}</td>
+                <td>{section1Totals.totalMetaConversions}</td>
+                <td>{section1Totals.cr.toFixed(2)}%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Countries Performance (true world, same as before) */}
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div className="p-6 border-b border-gray-100">
+          <h2 className="text-lg font-semibold">Countries Performance</h2>
+          <p className="text-sm text-gray-500">
+            Combined: Meta Spend + {store.ecommerce} Orders + Manual Orders • Click
+            headers to sort
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Country</th>
+                <SortableHeader
+                  label="Spend"
+                  field="spend"
+                  sortConfig={countrySortConfig}
+                  onSort={handleCountrySort}
+                />
+                <SortableHeader
+                  label="Revenue"
+                  field="revenue"
+                  sortConfig={countrySortConfig}
+                  onSort={handleCountrySort}
+                />
+                <SortableHeader
+                  label="Share"
+                  field="spend"
+                  sortConfig={countrySortConfig}
+                  onSort={handleCountrySort}
+                />
+                <SortableHeader
+                  label="Orders"
+                  field="totalOrders"
+                  sortConfig={countrySortConfig}
+                  onSort={handleCountrySort}
+                />
+                <SortableHeader
+                  label="AOV"
+                  field="aov"
+                  sortConfig={countrySortConfig}
+                  onSort={handleCountrySort}
+                />
+                <SortableHeader
+                  label="CAC"
+                  field="cac"
+                  sortConfig={countrySortConfig}
+                  onSort={handleCountrySort}
+                />
+                <SortableHeader
+                  label="ROAS"
+                  field="roas"
+                  sortConfig={countrySortConfig}
+                  onSort={handleCountrySort}
+                />
+              </tr>
+            </thead>
+            <tbody>
+              {sortedCountries.map((c) => {
+                const totalSpend = countries.reduce((s, x) => s + (x.spend || 0), 0);
+                const share = totalSpend > 0 ? (c.spend / totalSpend) * 100 : 0;
+                return (
+                  <tr key={c.code}>
+                    <td>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xl">{c.flag}</span>
+                        <div>
+                          <div className="font-medium">{c.name}</div>
+                          <div className="text-xs text-gray-400">{c.code}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="text-indigo-600 font-semibold">
+                      {formatCurrency(c.spend)}
+                    </td>
+                    <td className="text-green-600 font-semibold">
+                      {formatCurrency(c.revenue || 0)}
+                    </td>
+                    <td>{share.toFixed(0)}%</td>
+                    <td>
+                      <span className="badge badge-green">{c.totalOrders}</span>
+                    </td>
+                    <td>{formatCurrency(c.aov)}</td>
+                    <td className={c.cac > 80 ? 'text-amber-600 font-medium' : ''}>
+                      {formatCurrency(c.cac, 2)}
+                    </td>
+                    <td className="text-green-600 font-semibold">
+                      {c.roas.toFixed(2)}×
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* SECTION 2 — PURE META BREAKDOWN WORLD */}
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+        <button
+          onClick={() => setShowMetaBreakdown(!showMetaBreakdown)}
+          className="w-full px-6 pt-5 pb-4 flex items-center justify-between hover:bg-gray-50 transition-colors border-b border-gray-100"
+        >
+          <div>
+            <h2 className="text-lg font-semibold">Section 2 — Pure Meta Breakdown World</h2>
+            <p className="text-sm text-gray-500">
+              Detailed Meta campaign & breakdown metrics. Click to{" "}
+              {showMetaBreakdown ? 'collapse' : 'expand'}.
+            </p>
+          </div>
+          <div className="flex items-center gap-4 text-sm text-gray-500">
+            <span>Campaigns: <strong>{metaCampaignCount}</strong></span>
+            <span>Spend: <strong>{formatCurrency(metaSpendTotal)}</strong></span>
+            <span>Meta Rev: <strong>{formatCurrency(metaRevenueTotal)}</strong></span>
+            <span>ROAS: <strong>{metaRoasTotal.toFixed(2)}×</strong></span>
             <ChevronDown
-              className={`w-5 h-5 text-gray-500 transform transition-transform ${showMetaBreakdown ? 'rotate-180' : ''}`}
+              className={`w-5 h-5 text-gray-500 transform transition-transform ${
+                showMetaBreakdown ? 'rotate-180' : ''
+              }`}
             />
           </div>
         </button>
 
         {showMetaBreakdown && (
           <>
-            <div className="px-6 pt-4 pb-4 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <h3 className="text-base font-semibold">Meta Campaign Performance</h3>
-                <span className="text-xs text-gray-400 uppercase tracking-wide">
-                  Pure Meta
-                </span>
+            <div className="px-6 pt-4 pb-2 flex items-center justify-between">
+              <div className="text-xs uppercase tracking-wide text-gray-400">
+                Meta Campaign Performance <span className="ml-2 text-gray-300">PURE META</span>
               </div>
               <select 
                 value={breakdown}
@@ -750,80 +1195,67 @@ function DashboardTab({
                 <option value="placement">By Placement</option>
               </select>
             </div>
-
             <div className="overflow-x-auto">
               <table>
                 <thead>
-                  <tr className="bg-gray-50">
-                    <th>Campaign</th>
-                    {breakdown !== 'none' && <th>{breakdown.charAt(0).toUpperCase() + breakdown.slice(1)}</th>}
-                    <SortableHeader label="Spend" field="spend" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
-                    <SortableHeader label="ROAS" field="metaRoas" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
-                    <SortableHeader label="AOV" field="metaAov" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
-                    <SortableHeader label="CAC" field="metaCac" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
-                    <SortableHeader label="Impr" field="impressions" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
-                    <SortableHeader label="Reach" field="reach" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
+                  <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                    <th className="text-left px-4 py-2">Campaign</th>
+                    {breakdown !== 'none' && <th>{breakdown}</th>}
+                    <th>Spend</th>
+                    <th className="bg-indigo-50 text-indigo-700">ROAS</th>
+                    <th className="bg-indigo-50 text-indigo-700">AOV</th>
+                    <th className="bg-indigo-50 text-indigo-700">CAC</th>
+                    <th>Impr</th>
+                    <th>Reach</th>
                     <th>CPM</th>
                     <th>Freq</th>
-                    <SortableHeader label="Clicks" field="clicks" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
+                    <th>Clicks</th>
                     <th>CTR</th>
                     <th>CPC</th>
-                    <SortableHeader label="Conv" field="conversions" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
+                    <th>Conv</th>
                     <th>CR</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {breakdown !== 'none' ? (
-                    sortedBreakdownData.map((c, idx) => (
-                      <tr key={`${c.campaignId}-${idx}`}>
-                        <td className="font-medium">{c.campaignName}</td>
-                        <td>{getBreakdownLabel(c)}</td>
-                        <td className="text-indigo-600 font-semibold">{formatCurrency(c.spend)}</td>
-                        <td className="text-green-600 font-semibold">{(c.metaRoas || 0).toFixed(2)}×</td>
-                        <td>{formatCurrency(c.metaAov || 0)}</td>
-                        <td className={(c.metaCac || 0) > 100 ? 'text-amber-600' : ''}>{formatCurrency(c.metaCac || 0)}</td>
-                        <td>{formatNumber(c.impressions || 0)}</td>
-                        <td>{formatNumber(c.reach || 0)}</td>
-                        <td>{formatCurrency(c.cpm || 0, 2)}</td>
-                        <td>{(c.frequency || 0).toFixed(2)}</td>
-                        <td>{formatNumber(c.clicks || 0)}</td>
-                        <td>{(c.ctr || 0).toFixed(2)}%</td>
-                        <td>{formatCurrency(c.cpc || 0, 2)}</td>
-                        <td>{c.conversions || 0}</td>
-                        <td>{(c.cr || 0).toFixed(2)}%</td>
-                      </tr>
-                    ))
-                  ) : (
-                    sortedCampaigns.map((c) => (
-                      <tr key={c.campaignId}>
-                        <td className="font-medium">{c.campaignName}</td>
-                        <td className="text-indigo-600 font-semibold">{formatCurrency(c.spend)}</td>
-                        <td className="text-green-600 font-semibold">{c.metaRoas.toFixed(2)}×</td>
-                        <td>{formatCurrency(c.metaAov)}</td>
-                        <td className={c.metaCac > 100 ? 'text-amber-600' : ''}>{formatCurrency(c.metaCac)}</td>
-                        <td>{formatNumber(c.impressions)}</td>
-                        <td>{formatNumber(c.reach)}</td>
-                        <td>{formatCurrency(c.cpm, 2)}</td>
-                        <td>{c.frequency.toFixed(2)}</td>
-                        <td>{formatNumber(c.clicks)}</td>
-                        <td>{c.ctr.toFixed(2)}%</td>
-                        <td>{formatCurrency(c.cpc, 2)}</td>
-                        <td>{c.conversions}</td>
-                        <td>{c.cr.toFixed(2)}%</td>
-                      </tr>
-                    ))
-                  )}
+                  {metaRows.map((c, idx) => (
+                    <tr key={`${c.campaignId}-${idx}`}>
+                      <td className="px-4 py-2 font-medium">{c.campaignName}</td>
+                      {breakdown !== 'none' && (
+                        <td>{getBreakdownLabel(c, breakdown)}</td>
+                      )}
+                      <td className="text-indigo-600 font-semibold">
+                        {formatCurrency(c.spend)}
+                      </td>
+                      <td className="text-green-600 font-semibold">
+                        {(c.metaRoas || 0).toFixed(2)}×
+                      </td>
+                      <td>{formatCurrency(c.metaAov || 0)}</td>
+                      <td className={(c.metaCac || 0) > 100 ? 'text-amber-600' : ''}>
+                        {formatCurrency(c.metaCac || 0)}
+                      </td>
+                      <td>{formatNumber(c.impressions || 0)}</td>
+                      <td>{formatNumber(c.reach || 0)}</td>
+                      <td>{formatCurrency(c.cpm || 0, 2)}</td>
+                      <td>{(c.frequency || 0).toFixed(2)}</td>
+                      <td>{formatNumber(c.clicks || 0)}</td>
+                      <td>{(c.ctr || 0).toFixed(2)}%</td>
+                      <td>{formatCurrency(c.cpc || 0, 2)}</td>
+                      <td>{c.conversions || 0}</td>
+                      <td>{(c.cr || 0).toFixed(2)}%</td>
+                    </tr>
+                  ))}
                   <tr className="bg-gray-50 font-semibold">
-                    <td>TOTAL</td>
+                    <td className="px-4 py-2">
+                      TOTAL
+                    </td>
                     {breakdown !== 'none' && <td></td>}
                     <td className="text-indigo-600">
-                      {formatCurrency(campaigns.reduce((s, c) => s + c.spend, 0))}
+                      {formatCurrency(metaSpendTotal)}
                     </td>
                     <td className="text-green-600">
-                      {(campaigns.reduce((s, c) => s + c.conversionValue, 0) /
-                        campaigns.reduce((s, c) => s + c.spend, 0) || 0).toFixed(2)}×
+                      {metaRoasTotal.toFixed(2)}×
                     </td>
-                    <td colSpan={breakdown !== 'none' ? 11 : 11}></td>
+                    <td colSpan={11}></td>
                   </tr>
                 </tbody>
               </table>
@@ -832,13 +1264,15 @@ function DashboardTab({
         )}
       </div>
 
-      {/* Diagnostics */}
+      {/* Funnel Diagnostics */}
       {diagnostics && diagnostics.length > 0 && (
-        <div className={`rounded-xl p-6 ${
-          diagnostics.some(d => d.type === 'warning') 
-            ? 'bg-gradient-to-r from-amber-50 to-yellow-50 border border-amber-200'
-            : 'bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200'
-        }`}>
+        <div
+          className={`rounded-xl p-6 ${
+            diagnostics.some(d => d.type === 'warning') 
+              ? 'bg-gradient-to-r from-amber-50 to-yellow-50 border border-amber-200'
+              : 'bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200'
+          }`}
+        >
           <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
             🔍 Funnel Diagnostics
           </h3>
@@ -857,59 +1291,7 @@ function DashboardTab({
         </div>
       )}
 
-      {/* Countries Table */}
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div className="p-6 border-b border-gray-100">
-          <h2 className="text-lg font-semibold">Countries Performance</h2>
-          <p className="text-sm text-gray-500">
-            Combined: Meta Spend + {store.ecommerce} Orders + Manual Orders • Click headers to sort
-          </p>
-        </div>
-        <div className="overflow-x-auto">
-          <table>
-            <thead>
-              <tr>
-                <th>Country</th>
-                <SortableHeader label="Spend" field="spend" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <SortableHeader label="Revenue" field="revenue" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <SortableHeader label="Share" field="spend" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <SortableHeader label="Orders" field="totalOrders" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <SortableHeader label="AOV" field="aov" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <SortableHeader label="CAC" field="cac" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <SortableHeader label="ROAS" field="roas" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-              </tr>
-            </thead>
-            <tbody>
-              {sortedCountries.map((c) => {
-                const totalSpend = countries.reduce((s, x) => s + x.spend, 0);
-                const share = totalSpend > 0 ? (c.spend / totalSpend) * 100 : 0;
-                return (
-                  <tr key={c.code}>
-                    <td>
-                      <div className="flex items-center gap-3">
-                        <span className="text-xl">{c.flag}</span>
-                        <div>
-                          <div className="font-medium">{c.name}</div>
-                          <div className="text-xs text-gray-400">{c.code}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="text-indigo-600 font-semibold">{formatCurrency(c.spend)}</td>
-                    <td className="text-green-600 font-semibold">{formatCurrency(c.revenue || 0)}</td>
-                    <td>{share.toFixed(0)}%</td>
-                    <td><span className="badge badge-green">{c.totalOrders}</span></td>
-                    <td>{formatCurrency(c.aov)}</td>
-                    <td className={c.cac > 80 ? 'text-amber-600 font-medium' : ''}>{formatCurrency(c.cac, 2)}</td>
-                    <td className="text-green-600 font-semibold">{c.roas.toFixed(2)}×</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Collapsible Per-Country Order Trends */}
+      {/* Country order trends (collapsible) */}
       {countryTrends && countryTrends.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">
           <button
@@ -919,10 +1301,15 @@ function DashboardTab({
             <div>
               <h2 className="text-lg font-semibold text-left">Order Trends by Country</h2>
               <p className="text-sm text-gray-500 text-left">
-                Click to {showCountryTrends ? 'collapse' : 'expand'} daily order trends per country
+                Click to {showCountryTrends ? 'collapse' : 'expand'} daily order trends
+                per country
               </p>
             </div>
-            <div className={`transform transition-transform ${showCountryTrends ? 'rotate-180' : ''}`}>
+            <div
+              className={`transform transition-transform ${
+                showCountryTrends ? 'rotate-180' : ''
+              }`}
+            >
               <ChevronDown className="w-5 h-5 text-gray-500" />
             </div>
           </button>
@@ -930,11 +1317,16 @@ function DashboardTab({
           {showCountryTrends && (
             <div className="p-6 pt-0 space-y-6">
               {countryTrends.slice(0, 5).map((country) => (
-                <div key={country.countryCode} className="border-t border-gray-100 pt-4 first:border-0 first:pt-0">
+                <div
+                  key={country.countryCode}
+                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                >
                   <div className="flex items-center gap-2 mb-3">
                     <span className="text-xl">{country.flag}</span>
                     <span className="font-semibold">{country.country}</span>
-                    <span className="text-sm text-gray-500">({country.totalOrders} orders)</span>
+                    <span className="text-sm text-gray-500">
+                      ({country.totalOrders} orders)
+                    </span>
                   </div>
                   <div className="h-32">
                     <ResponsiveContainer>
@@ -943,12 +1335,26 @@ function DashboardTab({
                         <XAxis 
                           dataKey="date" 
                           tick={{ fontSize: 10 }}
-                          tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                          tickFormatter={(d) =>
+                            new Date(d).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric'
+                            })
+                          }
                         />
                         <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                         <Tooltip 
-                          labelFormatter={(d) => new Date(d).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                          formatter={(value, name) => [value, name === 'orders' ? 'Orders' : 'Revenue']}
+                          labelFormatter={(d) =>
+                            new Date(d).toLocaleDateString('en-US', {
+                              weekday: 'short',
+                              month: 'short',
+                              day: 'numeric'
+                            })
+                          }
+                          formatter={(value, name) => [
+                            value,
+                            name === 'orders' ? 'Orders' : 'Revenue'
+                          ]}
                         />
                         <Area 
                           type="monotone" 
@@ -964,7 +1370,8 @@ function DashboardTab({
               ))}
               {countryTrends.length > 5 && (
                 <p className="text-sm text-gray-500 text-center pt-2">
-                  Showing top 5 countries by orders. {countryTrends.length - 5} more countries available.
+                  Showing top 5 countries by orders. {countryTrends.length - 5} more
+                  countries available.
                 </p>
               )}
             </div>
@@ -972,12 +1379,14 @@ function DashboardTab({
         </div>
       )}
 
-      {/* DEBUG PANEL */}
+      {/* Debug panel */}
       <div className="bg-gray-900 text-gray-100 rounded-xl p-4 mt-6 text-sm">
         <h3 className="font-semibold mb-2">Debug · Meta vs Dashboard</h3>
-        <p>Store: <span className="font-mono">{store.id}</span></p>
         <p>
-          Date range (API):{" "}
+          Store: <span className="font-mono">{store.id}</span>
+        </p>
+        <p>
+          Date range (API):{' '}
           <span className="font-mono">
             {dashboard?.dateRange?.startDate} → {dashboard?.dateRange?.endDate}
           </span>
@@ -986,29 +1395,38 @@ function DashboardTab({
         <div className="grid grid-cols-2 gap-4 mt-3">
           <div>
             <p className="text-xs text-gray-400 uppercase mb-1">Campaigns</p>
-            <p>Total rows: <span className="font-mono">{campaigns.length}</span></p>
             <p>
-              Spend (sum of campaigns):{" "}
+              Total rows: <span className="font-mono">{campaigns.length}</span>
+            </p>
+            <p>
+              Spend (sum of campaigns):{' '}
               <span className="font-mono">
-                {formatCurrency(campaigns.reduce((s, c) => s + (c.spend || 0), 0))}
+                {formatCurrency(
+                  campaigns.reduce((s, c) => s + (c.spend || 0), 0)
+                )}
               </span>
             </p>
           </div>
           <div>
             <p className="text-xs text-gray-400 uppercase mb-1">Overview</p>
             <p>
-              Overview spend:{" "}
-              <span className="font-mono">{formatCurrency(overview.spend || 0)}</span>
+              Overview spend:{' '}
+              <span className="font-mono">
+                {formatCurrency(overview.spend || 0)}
+              </span>
             </p>
             <p>
-              Overview revenue:{" "}
-              <span className="font-mono">{formatCurrency(overview.revenue || 0)}</span>
+              Overview revenue:{' '}
+              <span className="font-mono">
+                {formatCurrency(overview.revenue || 0)}
+              </span>
             </p>
           </div>
         </div>
 
         <p className="mt-3 text-xs text-gray-400">
-          If campaign spend is far below Ads Manager, suspect: pagination, date filters, or currency conversion.
+          If campaign spend is far below Ads Manager, suspect pagination, date
+          filters, or currency conversion.
         </p>
       </div>
     </div>
@@ -1020,7 +1438,6 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
     ? trends.slice(-7).map(t => ({ value: t[kpi.key] || 0 }))
     : [];
   
-  // Calculate percentage change (compare last half to first half of period)
   const calculateChange = () => {
     if (!trends || trends.length < 2) return { value: 0, isPositive: true };
     
@@ -1038,7 +1455,6 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
     
     const change = ((secondAvg - firstAvg) / firstAvg) * 100;
     
-    // For CAC and spend, lower is better (so invert the "positive" logic)
     const isGoodChange = kpi.key === 'cac' || kpi.key === 'spend' 
       ? change < 0 
       : change > 0;
@@ -1057,12 +1473,20 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
   return (
     <div 
       onClick={onToggle}
-      className={`bg-white rounded-xl p-5 shadow-sm cursor-pointer card-hover ${expanded ? 'ring-2 ring-indigo-500' : ''}`}
+      className={`bg-white rounded-xl p-5 shadow-sm cursor-pointer card-hover ${
+        expanded ? 'ring-2 ring-indigo-500' : ''
+      }`}
     >
       <div className="flex items-start justify-between mb-2">
-        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{kpi.label}</span>
+        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+          {kpi.label}
+        </span>
         {change.value > 0 && (
-          <span className={`flex items-center gap-1 text-xs font-medium ${change.isGood ? 'text-green-600' : 'text-red-500'}`}>
+          <span
+            className={`flex items-center gap-1 text-xs font-medium ${
+              change.isGood ? 'text-green-600' : 'text-red-500'
+            }`}
+          >
             {change.isPositive ? (
               <TrendingUp className="w-3 h-3" />
             ) : (
@@ -1072,8 +1496,12 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
           </span>
         )}
       </div>
-      <div className="text-2xl font-bold text-gray-900 mb-1">{formatValue()}</div>
-      {kpi.subtitle && <div className="text-xs text-gray-400">{kpi.subtitle}</div>}
+      <div className="text-2xl font-bold text-gray-900 mb-1">
+        {formatValue()}
+      </div>
+      {kpi.subtitle && (
+        <div className="text-xs text-gray-400">{kpi.subtitle}</div>
+      )}
       
       {trendData.length > 0 && (
         <div className="h-10 mt-3">
@@ -1126,11 +1554,15 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
           <div className="space-y-3">
             <div className="flex justify-between p-3 bg-gray-50 rounded-lg">
               <span className="text-sm text-gray-600">Average CAC</span>
-              <span className="font-semibold text-green-600">{formatCurrency(efficiency.averageCac, 2)}</span>
+              <span className="font-semibold text-green-600">
+                {formatCurrency(efficiency.averageCac, 2)}
+              </span>
             </div>
             <div className="flex justify-between p-3 bg-gray-50 rounded-lg">
               <span className="text-sm text-gray-600">Marginal CAC</span>
-              <span className="font-semibold">{formatCurrency(efficiency.marginalCac, 2)}</span>
+              <span className="font-semibold">
+                {formatCurrency(efficiency.marginalCac, 2)}
+              </span>
             </div>
           </div>
         </div>
@@ -1139,13 +1571,23 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
           <h3 className="font-semibold mb-4">Scaling Headroom</h3>
           <div className="space-y-2">
             {efficiency.countries && efficiency.countries.map(c => (
-              <div key={c.code} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+              <div
+                key={c.code}
+                className="flex justify-between items-center p-3 bg-gray-50 rounded-lg"
+              >
                 <span className="text-sm">
-                  {c.scaling === 'green' ? '🟢' : c.scaling === 'yellow' ? '🟡' : '🔴'} {c.name}
+                  {c.scaling === 'green' ? '🟢' : c.scaling === 'yellow' ? '🟡' : '🔴'}{' '}
+                  {c.name}
                 </span>
-                <span className={`text-sm font-medium ${
-                  c.scaling === 'green' ? 'text-green-600' : c.scaling === 'yellow' ? 'text-amber-600' : 'text-red-600'
-                }`}>
+                <span
+                  className={`text-sm font-medium ${
+                    c.scaling === 'green'
+                      ? 'text-green-600'
+                      : c.scaling === 'yellow'
+                      ? 'text-amber-600'
+                      : 'text-red-600'
+                  }`}
+                >
                   {c.headroom}
                 </span>
               </div>
@@ -1165,7 +1607,14 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
                   <Tooltip />
-                  <Line type="monotone" dataKey="cac" name="Daily CAC" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line
+                    type="monotone"
+                    dataKey="cac"
+                    name="Daily CAC"
+                    stroke="#6366f1"
+                    strokeWidth={2}
+                    dot={false}
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -1180,7 +1629,14 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
                   <Tooltip />
-                  <Area type="monotone" dataKey="roas" name="Daily ROAS" stroke="#10b981" fill="#10b981" fillOpacity={0.2} />
+                  <Area
+                    type="monotone"
+                    dataKey="roas"
+                    name="Daily ROAS"
+                    stroke="#10b981"
+                    fill="#10b981"
+                    fillOpacity={0.2}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -1195,14 +1651,22 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
             <div 
               key={i}
               className={`flex gap-4 p-4 rounded-xl border-l-4 ${
-                r.type === 'urgent' ? 'bg-red-50 border-red-500' :
-                r.type === 'positive' ? 'bg-green-50 border-green-500' :
-                'bg-gray-50 border-indigo-500'
+                r.type === 'urgent'
+                  ? 'bg-red-50 border-red-500'
+                  : r.type === 'positive'
+                  ? 'bg-green-50 border-green-500'
+                  : 'bg-gray-50 border-indigo-500'
               }`}
             >
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white ${
-                r.type === 'urgent' ? 'bg-red-500' : r.type === 'positive' ? 'bg-green-500' : 'bg-indigo-500'
-              }`}>
+              <div
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white ${
+                  r.type === 'urgent'
+                    ? 'bg-red-500'
+                    : r.type === 'positive'
+                    ? 'bg-green-500'
+                    : 'bg-indigo-500'
+                }`}
+              >
                 {i + 1}
               </div>
               <div className="flex-1">
@@ -1217,7 +1681,17 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
   );
 }
 
-function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete, formatCurrency, store, availableCountries }) {
+function ManualDataTab({
+  orders,
+  form,
+  setForm,
+  onSubmit,
+  onDelete,
+  onBulkDelete,
+  formatCurrency,
+  store,
+  availableCountries
+}) {
   const [deleteScope, setDeleteScope] = useState('day');
   const [deleteDate, setDeleteDate] = useState(new Date().toISOString().split('T')[0]);
 
@@ -1231,19 +1705,25 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete
         <form onSubmit={onSubmit}>
           <div className="grid grid-cols-6 gap-4 mb-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Country
+              </label>
               <select
                 value={form.country}
                 onChange={(e) => setForm({ ...form, country: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               >
                 {availableCountries.map(c => (
-                  <option key={c.code} value={c.code}>{c.flag} {c.name}</option>
+                  <option key={c.code} value={c.code}>
+                    {c.flag} {c.name}
+                  </option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Campaign</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Campaign
+              </label>
               <input
                 type="text"
                 value={form.campaign}
@@ -1253,7 +1733,9 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Date
+              </label>
               <input
                 type="date"
                 value={form.date}
@@ -1262,27 +1744,37 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1"># Orders</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                # Orders
+              </label>
               <input
                 type="number"
                 min="1"
                 value={form.orders_count}
-                onChange={(e) => setForm({ ...form, orders_count: parseInt(e.target.value) })}
+                onChange={(e) =>
+                  setForm({ ...form, orders_count: parseInt(e.target.value) })
+                }
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Revenue ({store.currencySymbol})</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Revenue ({store.currencySymbol})
+              </label>
               <input
                 type="number"
                 min="0"
                 value={form.revenue}
-                onChange={(e) => setForm({ ...form, revenue: parseFloat(e.target.value) })}
+                onChange={(e) =>
+                  setForm({ ...form, revenue: parseFloat(e.target.value) })
+                }
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Source</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Source
+              </label>
               <select
                 value={form.source}
                 onChange={(e) => setForm({ ...form, source: e.target.value })}
@@ -1295,7 +1787,10 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete
               </select>
             </div>
           </div>
-          <button type="submit" className="px-6 py-2.5 bg-gray-900 text-white rounded-lg font-medium hover:bg-gray-800 transition-colors">
+          <button
+            type="submit"
+            className="px-6 py-2.5 bg-gray-900 text-white rounded-lg font-medium hover:bg-gray-800 transition-colors"
+          >
             Add Order
           </button>
         </form>
@@ -1311,13 +1806,23 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete
         ) : (
           <div className="space-y-3">
             {orders.map((order) => (
-              <div key={order.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border-l-4 border-indigo-500">
+              <div
+                key={order.id}
+                className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border-l-4 border-indigo-500"
+              >
                 <div className="flex items-center gap-6">
                   <span className="font-medium">{order.date}</span>
-                  <span className="px-2 py-1 bg-gray-200 rounded text-sm">{order.country}</span>
-                  <span className="px-2 py-1 bg-gray-200 rounded text-sm capitalize">{order.source}</span>
+                  <span className="px-2 py-1 bg-gray-200 rounded text-sm">
+                    {order.country}
+                  </span>
+                  <span className="px-2 py-1 bg-gray-200 rounded text-sm capitalize">
+                    {order.source}
+                  </span>
                   <span>
-                    <strong>{order.orders_count}</strong> orders • <span className="text-green-600 font-medium">{formatCurrency(order.revenue)}</span>
+                    <strong>{order.orders_count}</strong> orders •{' '}
+                    <span className="text-green-600 font-medium">
+                      {formatCurrency(order.revenue)}
+                    </span>
                   </span>
                 </div>
                 <button
@@ -1339,7 +1844,9 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete
         </h3>
         <div className="flex items-end gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Delete data for</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Delete data for
+            </label>
             <select
               value={deleteScope}
               onChange={(e) => setDeleteScope(e.target.value)}
@@ -1353,7 +1860,9 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, onBulkDelete
           </div>
           {deleteScope !== 'all' && (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Date
+              </label>
               <input
                 type="date"
                 value={deleteDate}
