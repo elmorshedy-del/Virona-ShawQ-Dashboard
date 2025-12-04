@@ -160,7 +160,7 @@ export default function App() {
       try {
         const params = new URLSearchParams({ store: currentStore });
 
-        // 🔧 FIX: use same date-range logic as main loader
+        // use same date-range logic as main loader
         if (dateRange.type === 'custom') {
           params.set('startDate', dateRange.start);
           params.set('endDate', dateRange.end);
@@ -351,7 +351,7 @@ export default function App() {
           ))}
         </div>
 
-        {/* Date Range Picker with TODAY, YESTERDAY, and Custom Range */}
+        {/* Date Range Picker */}
         <div className="flex items-center gap-3 bg-white p-4 rounded-xl shadow-sm mb-6 flex-wrap">
           <span className="text-sm font-medium text-gray-700">Period:</span>
           
@@ -547,6 +547,7 @@ function DashboardTab({
   const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
   const [showCountryTrends, setShowCountryTrends] = useState(false);
+  const [showMetaBreakdown, setShowMetaBreakdown] = useState(false);
   
   const ecomLabel = store.ecommerce;
   
@@ -614,6 +615,11 @@ function DashboardTab({
         : [...prev, key]
     );
   };
+
+  // quick aggregates for the section header
+  const totalCampaignSpend = campaigns.reduce((s, c) => s + (c.spend || 0), 0);
+  const totalCampaignRevenue = campaigns.reduce((s, c) => s + (c.conversionValue || 0), 0);
+  const headerRoas = totalCampaignSpend > 0 ? totalCampaignRevenue / totalCampaignSpend : 0;
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -686,101 +692,144 @@ function DashboardTab({
         </div>
       )}
 
-      {/* Campaign Table */}
+      {/* Section 2 — Pure Meta Breakdown World (collapsible) */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div className="p-6 border-b border-gray-100">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Meta Campaign Performance</h2>
-            <select 
-              value={breakdown}
-              onChange={(e) => setBreakdown(e.target.value)}
-              className="px-3 py-2 border border-gray-200 rounded-lg text-sm"
-            >
-              <option value="none">No Breakdown</option>
-              <option value="country">By Country</option>
-              <option value="age">By Age</option>
-              <option value="gender">By Gender</option>
-              <option value="placement">By Placement</option>
-            </select>
+        <button
+          onClick={() => setShowMetaBreakdown(prev => !prev)}
+          className="w-full p-6 flex items-center justify-between hover:bg-gray-50 transition-colors border-b border-gray-100"
+        >
+          <div className="text-left">
+            <h2 className="text-lg font-semibold">Section 2 — Pure Meta Breakdown World</h2>
+            <p className="text-sm text-gray-500">
+              Detailed Meta campaign & breakdown metrics. Click to {showMetaBreakdown ? 'collapse' : 'expand'}.
+            </p>
           </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table>
-            <thead>
-              <tr className="bg-gray-50">
-                <th>Campaign</th>
-                {breakdown !== 'none' && <th>{breakdown.charAt(0).toUpperCase() + breakdown.slice(1)}</th>}
-                <SortableHeader label="Spend" field="spend" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
-                <SortableHeader label="ROAS" field="metaRoas" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
-                <SortableHeader label="AOV" field="metaAov" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
-                <SortableHeader label="CAC" field="metaCac" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
-                <SortableHeader label="Impr" field="impressions" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
-                <SortableHeader label="Reach" field="reach" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
-                <th>CPM</th>
-                <th>Freq</th>
-                <SortableHeader label="Clicks" field="clicks" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
-                <th>CTR</th>
-                <th>CPC</th>
-                <SortableHeader label="Conv" field="conversions" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
-                <th>CR</th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdown !== 'none' ? (
-                sortedBreakdownData.map((c, idx) => (
-                  <tr key={`${c.campaignId}-${idx}`}>
-                    <td className="font-medium">{c.campaignName}</td>
-                    <td>{getBreakdownLabel(c)}</td>
-                    <td className="text-indigo-600 font-semibold">{formatCurrency(c.spend)}</td>
-                    <td className="text-green-600 font-semibold">{(c.metaRoas || 0).toFixed(2)}×</td>
-                    <td>{formatCurrency(c.metaAov || 0)}</td>
-                    <td className={(c.metaCac || 0) > 100 ? 'text-amber-600' : ''}>{formatCurrency(c.metaCac || 0)}</td>
-                    <td>{formatNumber(c.impressions || 0)}</td>
-                    <td>{formatNumber(c.reach || 0)}</td>
-                    <td>{formatCurrency(c.cpm || 0, 2)}</td>
-                    <td>{(c.frequency || 0).toFixed(2)}</td>
-                    <td>{formatNumber(c.clicks || 0)}</td>
-                    <td>{(c.ctr || 0).toFixed(2)}%</td>
-                    <td>{formatCurrency(c.cpc || 0, 2)}</td>
-                    <td>{c.conversions || 0}</td>
-                    <td>{(c.cr || 0).toFixed(2)}%</td>
+          <div className="flex items-center gap-4">
+            <div className="hidden sm:flex items-center gap-6 text-sm text-gray-600">
+              <span>
+                Campaigns:{' '}
+                <span className="font-semibold">{campaigns.length}</span>
+              </span>
+              <span>
+                Spend:{' '}
+                <span className="font-semibold">
+                  {formatCurrency(totalCampaignSpend)}
+                </span>
+              </span>
+              <span>
+                ROAS:{' '}
+                <span className="font-semibold">
+                  {headerRoas.toFixed(2)}×
+                </span>
+              </span>
+            </div>
+            <ChevronDown
+              className={`w-5 h-5 text-gray-500 transform transition-transform ${showMetaBreakdown ? 'rotate-180' : ''}`}
+            />
+          </div>
+        </button>
+
+        {showMetaBreakdown && (
+          <>
+            <div className="px-6 pt-4 pb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-semibold">Meta Campaign Performance</h3>
+                <span className="text-xs text-gray-400 uppercase tracking-wide">
+                  Pure Meta
+                </span>
+              </div>
+              <select 
+                value={breakdown}
+                onChange={(e) => setBreakdown(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm"
+              >
+                <option value="none">No Breakdown</option>
+                <option value="country">By Country</option>
+                <option value="age">By Age</option>
+                <option value="gender">By Gender</option>
+                <option value="placement">By Placement</option>
+              </select>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table>
+                <thead>
+                  <tr className="bg-gray-50">
+                    <th>Campaign</th>
+                    {breakdown !== 'none' && <th>{breakdown.charAt(0).toUpperCase() + breakdown.slice(1)}</th>}
+                    <SortableHeader label="Spend" field="spend" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
+                    <SortableHeader label="ROAS" field="metaRoas" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
+                    <SortableHeader label="AOV" field="metaAov" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
+                    <SortableHeader label="CAC" field="metaCac" sortConfig={campaignSortConfig} onSort={handleCampaignSort} className="bg-indigo-50 text-indigo-700" />
+                    <SortableHeader label="Impr" field="impressions" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
+                    <SortableHeader label="Reach" field="reach" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
+                    <th>CPM</th>
+                    <th>Freq</th>
+                    <SortableHeader label="Clicks" field="clicks" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
+                    <th>CTR</th>
+                    <th>CPC</th>
+                    <SortableHeader label="Conv" field="conversions" sortConfig={campaignSortConfig} onSort={handleCampaignSort} />
+                    <th>CR</th>
                   </tr>
-                ))
-              ) : (
-                sortedCampaigns.map((c) => (
-                  <tr key={c.campaignId}>
-                    <td className="font-medium">{c.campaignName}</td>
-                    <td className="text-indigo-600 font-semibold">{formatCurrency(c.spend)}</td>
-                    <td className="text-green-600 font-semibold">{c.metaRoas.toFixed(2)}×</td>
-                    <td>{formatCurrency(c.metaAov)}</td>
-                    <td className={c.metaCac > 100 ? 'text-amber-600' : ''}>{formatCurrency(c.metaCac)}</td>
-                    <td>{formatNumber(c.impressions)}</td>
-                    <td>{formatNumber(c.reach)}</td>
-                    <td>{formatCurrency(c.cpm, 2)}</td>
-                    <td>{c.frequency.toFixed(2)}</td>
-                    <td>{formatNumber(c.clicks)}</td>
-                    <td>{c.ctr.toFixed(2)}%</td>
-                    <td>{formatCurrency(c.cpc, 2)}</td>
-                    <td>{c.conversions}</td>
-                    <td>{c.cr.toFixed(2)}%</td>
+                </thead>
+                <tbody>
+                  {breakdown !== 'none' ? (
+                    sortedBreakdownData.map((c, idx) => (
+                      <tr key={`${c.campaignId}-${idx}`}>
+                        <td className="font-medium">{c.campaignName}</td>
+                        <td>{getBreakdownLabel(c)}</td>
+                        <td className="text-indigo-600 font-semibold">{formatCurrency(c.spend)}</td>
+                        <td className="text-green-600 font-semibold">{(c.metaRoas || 0).toFixed(2)}×</td>
+                        <td>{formatCurrency(c.metaAov || 0)}</td>
+                        <td className={(c.metaCac || 0) > 100 ? 'text-amber-600' : ''}>{formatCurrency(c.metaCac || 0)}</td>
+                        <td>{formatNumber(c.impressions || 0)}</td>
+                        <td>{formatNumber(c.reach || 0)}</td>
+                        <td>{formatCurrency(c.cpm || 0, 2)}</td>
+                        <td>{(c.frequency || 0).toFixed(2)}</td>
+                        <td>{formatNumber(c.clicks || 0)}</td>
+                        <td>{(c.ctr || 0).toFixed(2)}%</td>
+                        <td>{formatCurrency(c.cpc || 0, 2)}</td>
+                        <td>{c.conversions || 0}</td>
+                        <td>{(c.cr || 0).toFixed(2)}%</td>
+                      </tr>
+                    ))
+                  ) : (
+                    sortedCampaigns.map((c) => (
+                      <tr key={c.campaignId}>
+                        <td className="font-medium">{c.campaignName}</td>
+                        <td className="text-indigo-600 font-semibold">{formatCurrency(c.spend)}</td>
+                        <td className="text-green-600 font-semibold">{c.metaRoas.toFixed(2)}×</td>
+                        <td>{formatCurrency(c.metaAov)}</td>
+                        <td className={c.metaCac > 100 ? 'text-amber-600' : ''}>{formatCurrency(c.metaCac)}</td>
+                        <td>{formatNumber(c.impressions)}</td>
+                        <td>{formatNumber(c.reach)}</td>
+                        <td>{formatCurrency(c.cpm, 2)}</td>
+                        <td>{c.frequency.toFixed(2)}</td>
+                        <td>{formatNumber(c.clicks)}</td>
+                        <td>{c.ctr.toFixed(2)}%</td>
+                        <td>{formatCurrency(c.cpc, 2)}</td>
+                        <td>{c.conversions}</td>
+                        <td>{c.cr.toFixed(2)}%</td>
+                      </tr>
+                    ))
+                  )}
+                  <tr className="bg-gray-50 font-semibold">
+                    <td>TOTAL</td>
+                    {breakdown !== 'none' && <td></td>}
+                    <td className="text-indigo-600">
+                      {formatCurrency(campaigns.reduce((s, c) => s + c.spend, 0))}
+                    </td>
+                    <td className="text-green-600">
+                      {(campaigns.reduce((s, c) => s + c.conversionValue, 0) /
+                        campaigns.reduce((s, c) => s + c.spend, 0) || 0).toFixed(2)}×
+                    </td>
+                    <td colSpan={breakdown !== 'none' ? 11 : 11}></td>
                   </tr>
-                ))
-              )}
-              <tr className="bg-gray-50 font-semibold">
-                <td>TOTAL</td>
-                {breakdown !== 'none' && <td></td>}
-                <td className="text-indigo-600">
-                  {formatCurrency(campaigns.reduce((s, c) => s + c.spend, 0))}
-                </td>
-                <td className="text-green-600">
-                  {(campaigns.reduce((s, c) => s + c.conversionValue, 0) /
-                    campaigns.reduce((s, c) => s + c.spend, 0) || 0).toFixed(2)}×
-                </td>
-                <td colSpan={breakdown !== 'none' ? 11 : 11}></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Diagnostics */}
@@ -822,7 +871,6 @@ function DashboardTab({
               <tr>
                 <th>Country</th>
                 <SortableHeader label="Spend" field="spend" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                {/* NEW Revenue column */}
                 <SortableHeader label="Revenue" field="revenue" sortConfig={countrySortConfig} onSort={handleCountrySort} />
                 <SortableHeader label="Share" field="spend" sortConfig={countrySortConfig} onSort={handleCountrySort} />
                 <SortableHeader label="Orders" field="totalOrders" sortConfig={countrySortConfig} onSort={handleCountrySort} />
