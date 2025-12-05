@@ -12,6 +12,16 @@ import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 
 const API_BASE = '/api';
 
+const countryCodeToFlag = (code) => {
+  if (!code || !/^[A-Z]{2}$/i.test(code)) return '🏳️';
+  return String.fromCodePoint(...code.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0)));
+};
+
+const MASTER_COUNTRIES_WITH_FLAGS = MASTER_COUNTRIES.map(country => ({
+  ...country,
+  flag: countryCodeToFlag(country.code)
+}));
+
 const STORES = {
   vironax: {
     id: 'vironax',
@@ -172,7 +182,25 @@ export default function App() {
       setBudgetIntelligence(intel);
       setManualOrders(orders);
       setManualSpendOverrides(spendOverrides);
-      setAvailableCountries(countries);
+
+      const safeCountries = (Array.isArray(countries) && countries.length > 0)
+        ? countries.map(country => ({ ...country, flag: country.flag || countryCodeToFlag(country.code) }))
+        : MASTER_COUNTRIES_WITH_FLAGS;
+
+      setAvailableCountries(safeCountries);
+      setOrderForm(prev =>
+        safeCountries.some(c => c.code === prev.country)
+          ? prev
+          : { ...prev, country: safeCountries[0]?.code || prev.country }
+      );
+
+      setSpendOverrideForm(prev => {
+        if (prev.country === 'ALL') return prev;
+        return safeCountries.some(c => c.code === prev.country)
+          ? prev
+          : { ...prev, country: safeCountries[0]?.code || prev.country };
+      });
+
       setCountryTrends(cTrends);
       const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
       const timeOfDayZone = typeof timeOfDay?.timezone === 'string' ? timeOfDay.timezone : null;
@@ -2694,7 +2722,11 @@ function ManualDataTab({
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               >
                 <option value="ALL">All Countries (override total)</option>
-                <option value="US">United States only</option>
+                {availableCountries.map(c => (
+                  <option key={c.code} value={c.code}>
+                    {c.flag} {c.name}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
