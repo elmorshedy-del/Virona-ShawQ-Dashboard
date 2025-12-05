@@ -241,9 +241,32 @@ export function getDashboard(store, params) {
     // For US orders, aggregate by state (regardless of city) so the breakdown is state-first
     if (cityRow.countryCode === 'US') {
       const stateName = cityRow.state?.trim() || 'Unknown';
-      const existing = usStateAggregates.get(stateName) || { city: stateName, orders: 0, revenue: 0 };
+      const cityName = cityRow.city?.trim() || 'Unknown';
+
+      const existing = usStateAggregates.get(stateName) || {
+        city: stateName,
+        orders: 0,
+        revenue: 0,
+        cities: []
+      };
+
       existing.orders += cityRow.orders || 0;
       existing.revenue += cityRow.revenue || 0;
+
+      // Track per-city totals within the state (only for cities that actually ordered)
+      if (cityRow.orders || cityRow.revenue) {
+        const cityList = existing.cities || [];
+        const existingCity = cityList.find(c => c.city === cityName) || { city: cityName, orders: 0, revenue: 0 };
+        existingCity.orders += cityRow.orders || 0;
+        existingCity.revenue += cityRow.revenue || 0;
+
+        if (!cityList.includes(existingCity)) {
+          cityList.push(existingCity);
+        }
+
+        existing.cities = cityList;
+      }
+
       usStateAggregates.set(stateName, existing);
       continue;
     }
@@ -261,7 +284,7 @@ export function getDashboard(store, params) {
 
   // Attach aggregated US states with medal rankings (top 3 by orders) and alphabetical ordering
   if (usStateAggregates.size > 0 && countryMap.has('US')) {
-    const usStates = Array.from(usStateAggregates.values());
+    const usStates = Array.from(usStateAggregates.values()).filter(state => state.orders > 0);
     const rankedStates = [...usStates].sort((a, b) => b.orders - a.orders);
 
     rankedStates.slice(0, 3).forEach((state, idx) => {
@@ -273,8 +296,19 @@ export function getDashboard(store, params) {
       }
     });
 
-    usStates.sort((a, b) => a.city.localeCompare(b.city));
-    countryMap.get('US').cities = usStates;
+    const topStates = rankedStates.slice(0, 3);
+    const remainingStates = usStates
+      .filter(state => !topStates.some(top => top.city === state.city))
+      .sort((a, b) => a.city.localeCompare(b.city));
+
+    const orderedStates = [...topStates, ...remainingStates].map(state => ({
+      ...state,
+      cities: (state.cities || [])
+        .filter(city => city.orders > 0)
+        .sort((a, b) => b.orders - a.orders)
+    }));
+
+    countryMap.get('US').cities = orderedStates;
   }
 
   // Add Meta spend countries (spend only, NOT revenue - to avoid double counting)
@@ -298,10 +332,20 @@ export function getDashboard(store, params) {
   const countries = Array.from(countryMap.values())
     .map(c => {
       const totalOrders = c.ecomOrders + c.manualOrders;
-      const citiesWithAov = (c.cities || []).map(city => ({
-        ...city,
-        aov: city.orders > 0 ? city.revenue / city.orders : 0
-      }));
+      const citiesWithAov = (c.code === 'US'
+        ? (c.cities || []).map(city => ({
+            ...city,
+            aov: city.orders > 0 ? city.revenue / city.orders : 0,
+            cities: (city.cities || []).map(innerCity => ({
+              ...innerCity,
+              aov: innerCity.orders > 0 ? innerCity.revenue / innerCity.orders : 0
+            }))
+          }))
+        : (c.cities || []).map(city => ({
+            ...city,
+            aov: city.orders > 0 ? city.revenue / city.orders : 0
+          }))
+      );
       return {
         ...c,
         cities: citiesWithAov,
