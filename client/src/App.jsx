@@ -63,8 +63,6 @@ export default function App() {
   const [metaBreakdown, setMetaBreakdown] = useState('none');
   // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
-  // State-level expansion (for US city breakdowns)
-  const [expandedStates, setExpandedStates] = useState(new Set());
   
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
@@ -583,6 +581,7 @@ function DashboardTab({
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
+  const [expandedStates, setExpandedStates] = useState(new Set());
   
   const ecomLabel = store.ecommerce;
   
