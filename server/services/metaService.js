@@ -511,14 +511,30 @@ function parseActionValues(actionValues) {
 
 // Demo data - different for each store
 function getDemoMetaData(store, dateStart, dateEnd) {
-  // ... keep your existing demo implementation here ...
-  // (same as in your current file – omitted here only for brevity)
+  // Returns empty array as demo data when Meta API is not configured
+  return [];
 }
 
-/* and same for:
-   getDemoMetaDataByCountry,
-   getDemoMetaDataByAge,
-   getDemoMetaDataByGender,
-   getDemoMetaDataByPlacement
-   – you can keep them exactly as you already have.
-*/
+// Demo data for country breakdown
+function getDemoMetaDataByCountry(store, dateStart, dateEnd) {
+  // Returns empty array as demo data when Meta API is not configured
+  return [];
+}
+
+// Demo data for age breakdown
+function getDemoMetaDataByAge(store, dateStart, dateEnd) {
+  // Returns empty array as demo data when Meta API is not configured
+  return [];
+}
+
+// Demo data for gender breakdown
+function getDemoMetaDataByGender(store, dateStart, dateEnd) {
+  // Returns empty array as demo data when Meta API is not configured
+  return [];
+}
+
+// Demo data for placement breakdown
+function getDemoMetaDataByPlacement(store, dateStart, dateEnd) {
+  // Returns empty array as demo data when Meta API is not configured
+  return [];
+}
