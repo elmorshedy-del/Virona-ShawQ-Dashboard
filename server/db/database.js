@@ -70,6 +70,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN city TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN state TEXT`);
+  } catch (e) { /* column exists */ }
 
   // Salla orders (VironaX only)
   db.exec(`
@@ -81,6 +84,7 @@ export function initDb() {
       country TEXT,
       country_code TEXT,
       city TEXT,
+      state TEXT,
       order_total REAL DEFAULT 0,
       subtotal REAL DEFAULT 0,
       shipping REAL DEFAULT 0,
@@ -104,6 +108,7 @@ export function initDb() {
       country TEXT,
       country_code TEXT,
       city TEXT,
+      state TEXT,
       order_total REAL DEFAULT 0,
       subtotal REAL DEFAULT 0,
       shipping REAL DEFAULT 0,

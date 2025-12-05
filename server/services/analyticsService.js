@@ -179,11 +179,12 @@ export function getDashboard(store, params) {
       SELECT
         country_code as countryCode,
         COALESCE(NULLIF(city, ''), 'Unknown') as city,
+        COALESCE(NULLIF(state, ''), '') as state,
         COUNT(*) as orders,
         SUM(subtotal) as revenue
       FROM shopify_orders
       WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL AND country_code != '' AND city IS NOT NULL
-      GROUP BY country_code, city
+      GROUP BY country_code, city, state
     `).all(store, startDate, endDate);
   }
 
@@ -236,8 +237,11 @@ export function getDashboard(store, params) {
     if (!country) continue;
     if (!cityRow.orders && !cityRow.revenue) continue;
     const cityName = cityRow.city?.trim() || 'Unknown';
+    const formattedCity = cityRow.countryCode === 'US' && (cityRow.state?.trim())
+      ? `${cityName}, ${cityRow.state.trim()}`
+      : cityName;
     country.cities.push({
-      city: cityName,
+      city: formattedCity,
       orders: cityRow.orders || 0,
       revenue: cityRow.revenue || 0
     });

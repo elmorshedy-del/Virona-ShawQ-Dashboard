@@ -35,6 +35,7 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             country: getCountryName(countryCode),
             country_code: countryCode,
             city: order.shipping_address?.city || order.billing_address?.city || null,
+            state: order.shipping_address?.province || order.billing_address?.province || null,
             order_total: parseFloat(order.total_price) || 0,
             subtotal: parseFloat(order.subtotal_price) || 0,
             shipping: parseFloat(order.total_shipping_price_set?.shop_money?.amount) || 0,
@@ -78,9 +79,9 @@ export async function syncShopifyOrders() {
 
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_orders
-      (store, order_id, date, country, country_code, city, order_total, subtotal, shipping, tax, discount,
+      (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount,
        items_count, status, financial_status, fulfillment_status, payment_method, currency)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let recordsInserted = 0;
@@ -91,6 +92,7 @@ export async function syncShopifyOrders() {
         order.country,
         order.country_code,
         order.city,
+        order.state,
         order.order_total,
         order.subtotal,
         order.shipping,
@@ -193,6 +195,7 @@ function getDemoShopifyOrders(dateStart, dateEnd) {
         country: selectedCountry.name,
         country_code: selectedCountry.code,
         city: null,
+        state: null,
         order_total: orderTotal + shipping,
         subtotal: orderTotal,
         shipping: shipping,
