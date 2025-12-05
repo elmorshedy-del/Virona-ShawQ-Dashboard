@@ -1957,7 +1957,6 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
 
 function BudgetIntelligenceTab({ data, formatCurrency, store }) {
   const [selectedCountry, setSelectedCountry] = useState('');
-  const [countryInput, setCountryInput] = useState('');
   const [objective, setObjective] = useState('purchases');
   const [brandSelection, setBrandSelection] = useState(store.id);
 
@@ -1981,27 +1980,20 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
     });
   }, [countryCodeToFlag, data]);
 
-  useEffect(() => {
-    if (!selectedCountry) {
-      if (data?.startPlans?.length) {
-        setSelectedCountry(data.startPlans[0].country);
-      } else if (masterCountries.length) {
-        setSelectedCountry(masterCountries[0].code);
-      }
-    }
-    setBrandSelection(store.id);
-  }, [data, store.id, masterCountries, selectedCountry]);
+  const countryOptions = useMemo(() => {
+    const apiCountries = Array.isArray(data?.availableCountries) ? data.availableCountries : [];
+    if (apiCountries.length > 0) return apiCountries;
+    return masterCountries;
+  }, [data?.availableCountries, masterCountries]);
 
   useEffect(() => {
     if (!selectedCountry) {
-      setCountryInput('');
-      return;
+      if (countryOptions.length) {
+        setSelectedCountry(countryOptions[0].code);
+      }
     }
-    const match = masterCountries.find(c => c.code === selectedCountry);
-    if (match) {
-      setCountryInput(`${match.name} (${match.code})`);
-    }
-  }, [selectedCountry, masterCountries]);
+    setBrandSelection(store.id);
+  }, [store.id, selectedCountry, countryOptions]);
 
   const planningDefaults = data?.planningDefaults || {};
   const priors = data?.priors || {};
@@ -2083,20 +2075,6 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
   const guidance = data?.liveGuidance || [];
   const learningMap = data?.learningMap || {};
 
-  const handleCountryInput = (value) => {
-    setCountryInput(value);
-    const normalized = value.trim().toLowerCase();
-    const match = masterCountries.find(c =>
-      normalized === c.code.toLowerCase() ||
-      normalized === c.name.toLowerCase() ||
-      normalized === `${c.name.toLowerCase()} (${c.code.toLowerCase()})`
-    );
-
-    if (match) {
-      setSelectedCountry(match.code);
-    }
-  };
-
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="bg-white rounded-xl p-6 shadow-sm">
@@ -2113,21 +2091,17 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
           <div className="md:col-span-2">
             <label className="text-sm font-medium text-gray-700">Country</label>
-            <input
-              list="country-options"
-              value={countryInput}
-              onChange={(e) => handleCountryInput(e.target.value)}
-              placeholder="Type or select a country"
-              className="mt-2 w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
-            />
-            <datalist id="country-options">
-              {masterCountries.map(c => (
-                <option
-                  key={c.code}
-                  value={`${c.name} (${c.code})`}
-                >{`${c.flag} ${c.name}`}</option>
+            <select
+              value={selectedCountry}
+              onChange={(e) => setSelectedCountry(e.target.value)}
+              className="mt-2 w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white"
+            >
+              {countryOptions.map(c => (
+                <option key={c.code} value={c.code}>
+                  {`${c.flag || countryCodeToFlag(c.code)} ${c.name} (${c.code})`}
+                </option>
               ))}
-            </datalist>
+            </select>
             <div className="flex items-center gap-2 mt-2 text-xs">
               <span
                 className={`px-2 py-0.5 rounded-full font-semibold ${
