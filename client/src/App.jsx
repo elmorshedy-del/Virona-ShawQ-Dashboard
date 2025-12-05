@@ -64,7 +64,7 @@ export default function App() {
   // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
   // State-level expansion (for US city breakdowns)
-  const [expandedStates, setExpandedStates] = useState(new Set());
+  const [expandedStates, setExpandedStates] = useState([]);
   
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
@@ -592,11 +592,11 @@ function DashboardTab({
   const [showCountryTrends, setShowCountryTrends] = useState(false);
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
-  const [expandedCountries, setExpandedCountries] = useState(new Set());
+  const [expandedCountries, setExpandedCountries] = useState([]);
 
   useEffect(() => {
-    setExpandedCountries(new Set());
-    setExpandedStates?.(new Set());
+    setExpandedCountries([]);
+    setExpandedStates?.([]);
   }, [countries, setExpandedStates]);
   
   const ecomLabel = store.ecommerce;
@@ -617,6 +617,13 @@ function DashboardTab({
     { key: 'roas', label: 'ROAS', value: overview.roas, format: 'roas', color: '#10b981' },
   ];
 
+  const normalizeList = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (value instanceof Set) return Array.from(value);
+    return [...value];
+  };
+
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
     const bVal = b[countrySortConfig.field] || 0;
@@ -625,9 +632,7 @@ function DashboardTab({
 
   const totalCountrySpend = countries.reduce((s, x) => s + (x.spend || 0), 0);
 
-  const normalizeSet = (value) => value instanceof Set ? value : new Set(value || []);
-
-  const safeExpandedStates = normalizeSet(expandedStates);
+  const safeExpandedStates = new Set(normalizeList(expandedStates));
 
   const sortedCampaigns = [...campaigns].sort((a, b) => {
     const aVal = a[campaignSortConfig.field] || 0;
@@ -652,31 +657,35 @@ function DashboardTab({
 
   const toggleCountryRow = (code) => {
     setExpandedCountries(prev => {
-      const next = new Set(prev);
+      const current = new Set(normalizeList(prev));
+      const next = new Set(current);
+
       if (next.has(code)) {
         next.delete(code);
         if (code === 'US') {
-          setExpandedStates?.(prevStates => {
-            const current = normalizeSet(prevStates);
-            return new Set([...current].filter(key => !key.startsWith(`${code}-`)));
-          });
+          setExpandedStates?.(prevStates => normalizeList(prevStates)
+            .filter(key => !key.startsWith(`${code}-`)));
         }
       } else {
         next.add(code);
       }
-      return next;
+
+      return Array.from(next);
     });
   };
 
   const toggleStateRow = (stateKey) => {
     setExpandedStates?.(prev => {
-      const next = new Set(prev);
+      const current = new Set(normalizeList(prev));
+      const next = new Set(current);
+
       if (next.has(stateKey)) {
         next.delete(stateKey);
       } else {
         next.add(stateKey);
       }
-      return next;
+
+      return Array.from(next);
     });
   };
 
