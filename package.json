@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "private": true,
   "scripts": {
-    "build": "cd client && npm install && npm run build",
-    "start": "cd server && npm install && node server.js"
+    "build": "cd server && npm install && cd ../client && npm install && npm run build",
+    "start": "cd server && node server.js"
   }
 }
