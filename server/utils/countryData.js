@@ -9,9 +9,6 @@ function countryCodeToFlag(code) {
 }
 
 function resolveRegionCodes() {
-  if (typeof Intl.supportedValuesOf === 'function') {
-    return Intl.supportedValuesOf('region').filter(code => /^[A-Z]{2}$/.test(code));
-  }
   return FALLBACK_REGION_CODES;
 }
 
