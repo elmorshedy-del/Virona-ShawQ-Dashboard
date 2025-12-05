@@ -56,6 +56,7 @@ export default function App() {
   const [recommendations, setRecommendations] = useState([]);
   const [budgetIntelligence, setBudgetIntelligence] = useState(null);
   const [manualOrders, setManualOrders] = useState([]);
+  const [manualSpendOverrides, setManualSpendOverrides] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
   const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [] });
@@ -67,7 +68,7 @@ export default function App() {
   const [metaBreakdown, setMetaBreakdown] = useState('none');
   // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
-  
+
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -77,6 +78,12 @@ export default function App() {
     orders_count: 1,
     revenue: 280,
     source: 'whatsapp',
+    notes: ''
+  });
+  const [spendOverrideForm, setSpendOverrideForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    country: 'ALL',
+    amount: 0,
     notes: ''
   });
 
@@ -136,6 +143,7 @@ export default function App() {
         recs,
         intel,
         orders,
+        spendOverrides,
         countries,
         cTrends,
         timeOfDay
@@ -146,6 +154,7 @@ export default function App() {
         fetch(`${API_BASE}/analytics/recommendations?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/budget-intelligence?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/manual?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/manual/spend?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/countries?store=${currentStore}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/countries/trends?${params}`).then(r => r.json()),
         currentStore === 'shawq'
@@ -159,6 +168,7 @@ export default function App() {
       setRecommendations(recs);
       setBudgetIntelligence(intel);
       setManualOrders(orders);
+      setManualSpendOverrides(spendOverrides);
       setAvailableCountries(countries);
       setCountryTrends(cTrends);
       const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
@@ -247,6 +257,25 @@ export default function App() {
     }
   }
 
+  async function handleAddSpendOverride(e) {
+    e.preventDefault();
+    try {
+      await fetch(`${API_BASE}/manual/spend?store=${currentStore}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spendOverrideForm)
+      });
+      setSpendOverrideForm(prev => ({
+        ...prev,
+        amount: 0,
+        notes: ''
+      }));
+      loadData();
+    } catch (error) {
+      console.error('Error adding spend override:', error);
+    }
+  }
+
   async function handleDeleteOrder(id) {
     if (!confirm('Delete this order?')) return;
     try {
@@ -254,6 +283,16 @@ export default function App() {
       loadData();
     } catch (error) {
       console.error('Error deleting order:', error);
+    }
+  }
+
+  async function handleDeleteSpendOverride(id) {
+    if (!confirm('Delete this manual spend entry?')) return;
+    try {
+      await fetch(`${API_BASE}/manual/spend/${id}`, { method: 'DELETE' });
+      loadData();
+    } catch (error) {
+      console.error('Error deleting manual spend:', error);
     }
   }
 
@@ -558,6 +597,11 @@ export default function App() {
             setForm={setOrderForm}
             onSubmit={handleAddOrder}
             onDelete={handleDeleteOrder}
+            manualSpendOverrides={manualSpendOverrides}
+            spendOverrideForm={spendOverrideForm}
+            setSpendOverrideForm={setSpendOverrideForm}
+            onAddSpendOverride={handleAddSpendOverride}
+            onDeleteSpendOverride={handleDeleteSpendOverride}
             onBulkDelete={handleBulkDelete}
             formatCurrency={formatCurrency}
             store={store}
@@ -2427,6 +2471,11 @@ function ManualDataTab({
   setForm,
   onSubmit,
   onDelete,
+  manualSpendOverrides,
+  spendOverrideForm,
+  setSpendOverrideForm,
+  onAddSpendOverride,
+  onDeleteSpendOverride,
   onBulkDelete,
   formatCurrency,
   store,
@@ -2434,6 +2483,12 @@ function ManualDataTab({
 }) {
   const [deleteScope, setDeleteScope] = useState('day');
   const [deleteDate, setDeleteDate] = useState(new Date().toISOString().split('T')[0]);
+
+  const overrideLabel = (code) => {
+    if (code === 'ALL') return 'All Countries (override total spend)';
+    const country = availableCountries.find(c => c.code === code);
+    return country ? `${country.flag} ${country.name}` : code;
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -2548,6 +2603,101 @@ function ManualDataTab({
             Add Order
           </button>
         </form>
+      </div>
+
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <Plus className="w-5 h-5" />
+          Manual Spend Overrides
+        </h3>
+        <form onSubmit={onAddSpendOverride} className="space-y-4">
+          <div className="grid grid-cols-4 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Date
+              </label>
+              <input
+                type="date"
+                value={spendOverrideForm.date}
+                onChange={(e) => setSpendOverrideForm({ ...spendOverrideForm, date: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Scope
+              </label>
+              <select
+                value={spendOverrideForm.country}
+                onChange={(e) => setSpendOverrideForm({ ...spendOverrideForm, country: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
+              >
+                <option value="ALL">All Countries (override total)</option>
+                <option value="US">United States only</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Spend ({store.currencySymbol})
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={spendOverrideForm.amount}
+                onChange={(e) => setSpendOverrideForm({ ...spendOverrideForm, amount: parseFloat(e.target.value) || 0 })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Notes (optional)
+              </label>
+              <input
+                type="text"
+                value={spendOverrideForm.notes}
+                onChange={(e) => setSpendOverrideForm({ ...spendOverrideForm, notes: e.target.value })}
+                placeholder="Reason or details"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            className="px-6 py-2.5 bg-gray-900 text-white rounded-lg font-medium hover:bg-gray-800 transition-colors"
+          >
+            Save Manual Spend
+          </button>
+        </form>
+
+        <div className="mt-6 space-y-3">
+          {manualSpendOverrides.length === 0 ? (
+            <div className="text-gray-500 text-sm">No manual spend overrides added for this period.</div>
+          ) : (
+            manualSpendOverrides.map((entry) => (
+              <div
+                key={entry.id}
+                className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200"
+              >
+                <div className="space-y-1">
+                  <div className="font-medium text-gray-900">{overrideLabel(entry.country)}</div>
+                  <div className="text-sm text-gray-600">{entry.date}</div>
+                  <div className="text-sm text-indigo-700 font-semibold">
+                    {formatCurrency(entry.amount || 0)}
+                  </div>
+                  {entry.notes ? (
+                    <div className="text-sm text-gray-500">{entry.notes}</div>
+                  ) : null}
+                </div>
+                <button
+                  onClick={() => onDeleteSpendOverride(entry.id)}
+                  className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="bg-white rounded-xl p-6 shadow-sm">

@@ -150,6 +150,21 @@ export function initDb() {
     db.exec(`ALTER TABLE manual_orders ADD COLUMN spend REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
+  // Manual spend overrides (per store/date/country)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS manual_spend_overrides (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'vironax',
+      date TEXT NOT NULL,
+      country TEXT NOT NULL DEFAULT 'ALL',
+      amount REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, date, country)
+    )
+  `);
+
   // Sync log
   db.exec(`
     CREATE TABLE IF NOT EXISTS sync_log (
@@ -181,6 +196,7 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_salla_store_date ON salla_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_spend_store_date ON manual_spend_overrides(store, date)`);
 
   console.log('✅ Database initialized');
   return db;

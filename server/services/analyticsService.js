@@ -168,6 +168,15 @@ export function getDashboard(store, params) {
     GROUP BY country
   `).all(store, startDate, endDate);
 
+  const manualSpendOverrides = db.prepare(`
+    SELECT
+      country as countryCode,
+      SUM(amount) as amount
+    FROM manual_spend_overrides
+    WHERE store = ? AND date BETWEEN ? AND ?
+    GROUP BY country
+  `).all(store, startDate, endDate);
+
   // Get meta spend by country (DYNAMIC - from actual data)
   const metaByCountry = db.prepare(`
     SELECT 
@@ -300,6 +309,18 @@ export function getDashboard(store, params) {
     country.revenue += m.revenue || 0;
   }
 
+  const overrideMap = new Map(
+    manualSpendOverrides.map(o => [o.countryCode || 'ALL', o.amount || 0])
+  );
+
+  for (const [countryCode, amount] of overrideMap.entries()) {
+    if (countryCode === 'ALL') continue;
+    if (!countryMap.has(countryCode)) continue;
+    const country = countryMap.get(countryCode);
+    country.spend = amount || 0;
+    country.manualSpend = amount || 0;
+  }
+
   // Calculate country metrics
   const countries = Array.from(countryMap.values())
     .map(c => {
@@ -331,7 +352,10 @@ export function getDashboard(store, params) {
     .sort((a, b) => b.spend - a.spend);
 
   // Calculate overview
-  const totalSpend = campaigns.reduce((s, c) => s + c.spend, 0) + manualOrders.reduce((s, m) => s + (m.spend || 0), 0);
+  const overallOverride = overrideMap.get('ALL');
+  const totalSpend = overallOverride != null
+    ? overallOverride
+    : countries.reduce((s, c) => s + (c.spend || 0), 0);
   const totalEcomOrders = ecomOrders.reduce((s, e) => s + e.orders, 0);
   const totalManualOrders = manualOrders.reduce((s, m) => s + m.orders, 0);
   const totalOrders = totalEcomOrders + totalManualOrders;

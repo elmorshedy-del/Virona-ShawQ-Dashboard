@@ -8,23 +8,61 @@ router.get('/', (req, res) => {
   try {
     const db = getDb();
     const store = req.query.store || 'vironax';
-    
-    let days = 7;
-    if (req.query.days) days = parseInt(req.query.days);
-    else if (req.query.weeks) days = parseInt(req.query.weeks) * 7;
-    else if (req.query.months) days = parseInt(req.query.months) * 30;
-    
-    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    
+
+    let startDate = req.query.startDate;
+    let endDate = req.query.endDate || new Date().toISOString().split('T')[0];
+
+    if (!startDate) {
+      let days = 7;
+      if (req.query.days) days = parseInt(req.query.days);
+      else if (req.query.weeks) days = parseInt(req.query.weeks) * 7;
+      else if (req.query.months) days = parseInt(req.query.months) * 30;
+      else if (req.query.yesterday) days = 1;
+
+      startDate = new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    }
+
     const orders = db.prepare(`
-      SELECT * FROM manual_orders 
-      WHERE store = ? AND date >= ?
+      SELECT * FROM manual_orders
+      WHERE store = ? AND date BETWEEN ? AND ?
       ORDER BY date DESC, created_at DESC
-    `).all(store, startDate);
-    
+    `).all(store, startDate, endDate);
+
     res.json(orders);
   } catch (error) {
     console.error('Get manual orders error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get manual spend overrides
+router.get('/spend', (req, res) => {
+  try {
+    const db = getDb();
+    const store = req.query.store || 'vironax';
+
+    let startDate = req.query.startDate;
+    let endDate = req.query.endDate || new Date().toISOString().split('T')[0];
+
+    if (!startDate) {
+      let days = 7;
+      if (req.query.days) days = parseInt(req.query.days);
+      else if (req.query.weeks) days = parseInt(req.query.weeks) * 7;
+      else if (req.query.months) days = parseInt(req.query.months) * 30;
+      else if (req.query.yesterday) days = 1;
+
+      startDate = new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    }
+
+    const overrides = db.prepare(`
+      SELECT * FROM manual_spend_overrides
+      WHERE store = ? AND date BETWEEN ? AND ?
+      ORDER BY date DESC, created_at DESC
+    `).all(store, startDate, endDate);
+
+    res.json(overrides);
+  } catch (error) {
+    console.error('Get manual spend overrides error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -58,12 +96,49 @@ router.post('/', (req, res) => {
   }
 });
 
+// Add manual spend override
+router.post('/spend', (req, res) => {
+  try {
+    const db = getDb();
+    const store = req.query.store || req.body.store || 'vironax';
+    const { date, country = 'ALL', amount = 0, notes = '' } = req.body;
+
+    const result = db.prepare(`
+      INSERT INTO manual_spend_overrides (store, date, country, amount, notes)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(store, date, country) DO UPDATE SET
+        amount = excluded.amount,
+        notes = excluded.notes,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(store, date, country, amount, notes);
+
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (error) {
+    console.error('Add manual spend override error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete manual spend override
+router.delete('/spend/:id', (req, res) => {
+  try {
+    const db = getDb();
+    const { id } = req.params;
+
+    db.prepare('DELETE FROM manual_spend_overrides WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete manual spend override error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Delete single order
 router.delete('/:id', (req, res) => {
   try {
     const db = getDb();
     const { id } = req.params;
-    
+
     db.prepare('DELETE FROM manual_orders WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (error) {
