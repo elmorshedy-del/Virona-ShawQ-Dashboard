@@ -625,9 +625,9 @@ function DashboardTab({
 
   const totalCountrySpend = countries.reduce((s, x) => s + (x.spend || 0), 0);
 
-  const safeExpandedStates = expandedStates instanceof Set
-    ? expandedStates
-    : new Set(expandedStates || []);
+  const normalizeSet = (value) => value instanceof Set ? value : new Set(value || []);
+
+  const safeExpandedStates = normalizeSet(expandedStates);
 
   const sortedCampaigns = [...campaigns].sort((a, b) => {
     const aVal = a[campaignSortConfig.field] || 0;
@@ -656,9 +656,10 @@ function DashboardTab({
       if (next.has(code)) {
         next.delete(code);
         if (code === 'US') {
-          setExpandedStates?.(
-            prevStates => new Set([...prevStates].filter(key => !key.startsWith(`${code}-`)))
-          );
+          setExpandedStates?.(prevStates => {
+            const current = normalizeSet(prevStates);
+            return new Set([...current].filter(key => !key.startsWith(`${code}-`)));
+          });
         }
       } else {
         next.add(code);
