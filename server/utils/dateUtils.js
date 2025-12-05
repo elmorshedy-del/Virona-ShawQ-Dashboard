@@ -1,6 +1,8 @@
-// Utility to format dates using the local timezone (no UTC shift)
-export function formatLocalDate(date = new Date()) {
-  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
-  const localDate = new Date(date.getTime() - offsetMs);
-  return localDate.toISOString().split('T')[0];
+// Utility to format dates in GMT+3 (used for order/day-level reporting)
+const GMT3_OFFSET_HOURS = 3;
+const GMT3_OFFSET_MS = GMT3_OFFSET_HOURS * 60 * 60 * 1000;
+
+export function formatDateAsGmt3(date = new Date()) {
+  const gmt3Date = new Date(date.getTime() + GMT3_OFFSET_MS);
+  return gmt3Date.toISOString().split('T')[0];
 }

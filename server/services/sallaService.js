@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
-import { formatLocalDate } from '../utils/dateUtils.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 export async function fetchSallaOrders(dateStart, dateEnd) {
   const accessToken = process.env.VIRONAX_SALLA_ACCESS_TOKEN;
@@ -65,8 +65,8 @@ export async function fetchSallaOrders(dateStart, dateEnd) {
 
 export async function syncSallaOrders() {
   const db = getDb();
-  const endDate = formatLocalDate(new Date());
-  const startDate = formatLocalDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 
   try {
     const orders = await fetchSallaOrders(startDate, endDate);
@@ -130,7 +130,7 @@ function getDemoSallaOrders(dateStart, dateEnd) {
   let orderId = 100000;
 
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = formatLocalDate(d);
+    const dateStr = formatDateAsGmt3(d);
     const dayOfWeek = d.getDay();
     const baseOrders = dayOfWeek === 5 || dayOfWeek === 6 ? 28 : 22; // More on weekends
     const dailyOrders = Math.floor(baseOrders * (0.85 + Math.random() * 0.3));
