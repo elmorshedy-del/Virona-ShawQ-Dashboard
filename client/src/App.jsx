@@ -2810,6 +2810,27 @@ function ManualDataTab({
             >
               {metaImportLoading ? 'Importing…' : 'Import Meta CSV'}
             </button>
+
+            <button
+              onClick={async () => {
+                if(!confirm('Are you sure? This deletes ALL Meta data for this store. Use this if your data looks inflated or wrong.')) return;
+                try {
+                  const res = await fetch(`/api/analytics/meta/clear?store=${store.id}`, { method: 'DELETE' });
+                  const json = await res.json();
+                  if(json.success) {
+                    alert('Data cleared! You can now re-upload your clean CSV.');
+                    window.location.reload();
+                  } else {
+                    alert('Error: ' + (json.error || 'Failed to clear'));
+                  }
+                } catch(e) {
+                  alert('Error: ' + e.message);
+                }
+              }}
+              className="px-4 py-2 bg-red-100 text-red-700 rounded-lg text-sm font-medium hover:bg-red-200"
+            >
+              Reset Data
+            </button>
             {metaImportError && (
               <span className="text-sm text-red-600">{metaImportError}</span>
             )}

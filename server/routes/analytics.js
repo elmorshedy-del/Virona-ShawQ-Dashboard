@@ -1,191 +1,116 @@
-// server/routes/analytics.js
-import express from 'express';
+import { Router } from 'express';
 import {
-  getDashboard,
-  getEfficiency,
+  getDashboardData,
+  getEfficiencyData,
   getEfficiencyTrends,
   getRecommendations,
   getAvailableCountries,
-  getCampaignsByCountry,
-  getCampaignsByAge,
-  getCampaignsByGender,
-  getCampaignsByPlacement,
   getCountryTrends,
-  getCampaignsByAgeGender,
-  getShopifyTimeOfDay
+  getShopifyTimeOfDay,
+  getMetaBreakdowns
 } from '../services/analyticsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 
-const router = express.Router();
+const router = Router();
 
-// Dashboard endpoint
-router.get('/dashboard', (req, res) => {
+router.get('/dashboard', async (req, res) => {
   try {
-    const store = req.query.store || 'vironax';
-    const data = getDashboard(store, req.query);
+    const { store, ...params } = req.query;
+    const data = getDashboardData(store, params);
     res.json(data);
-  } catch (error) {
-    console.error('Dashboard error:', error);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load dashboard' });
   }
 });
 
-// Campaigns by country breakdown
-router.get('/campaigns/by-country', (req, res) => {
+// Manual Meta import (temporary replacement for token-based sync)
+// Expects JSON body: { store?: string, rows: [...] }
+router.post('/meta/import', async (req, res) => {
   try {
-    const store = req.query.store || 'vironax';
-    const data = getCampaignsByCountry(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Campaigns by country error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Campaigns by age breakdown
-router.get('/campaigns/by-age', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getCampaignsByAge(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Campaigns by age error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Campaigns by gender breakdown
-router.get('/campaigns/by-gender', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getCampaignsByGender(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Campaigns by gender error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Campaigns by placement breakdown
-router.get('/campaigns/by-placement', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getCampaignsByPlacement(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Campaigns by placement error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Campaigns by combined age and gender breakdown
-router.get('/campaigns/by-age-gender', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getCampaignsByAgeGender(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Campaigns by age_gender error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Efficiency endpoint
-router.get('/efficiency', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getEfficiency(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Efficiency error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Efficiency trends endpoint
-router.get('/efficiency/trends', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getEfficiencyTrends(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Efficiency trends error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Recommendations endpoint
-router.get('/recommendations', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getRecommendations(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Recommendations error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get available countries for a store (dynamic from data)
-router.get('/countries', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const countries = getAvailableCountries(store);
-    res.json(countries);
-  } catch (error) {
-    console.error('Countries error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Per-country order trends
-router.get('/countries/trends', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getCountryTrends(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Country trends error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Shopify time-of-day trends (last 7 days by default)
-router.get('/shopify/time-of-day', (req, res) => {
-  try {
-    const store = req.query.store || 'vironax';
-    const data = getShopifyTimeOfDay(store, req.query);
-    res.json(data);
-  } catch (error) {
-    console.error('Shopify time-of-day error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// *** NEW: Manual Meta CSV import (temporary replacement for token sync) ***
-router.post('/meta/import', (req, res) => {
-  try {
-    const store = req.query.store || req.body.store || 'vironax';
-    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const store = req.query.store || req.body.store;
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
 
     if (!store) {
       return res.status(400).json({ error: 'store is required' });
     }
     if (rows.length === 0) {
-      return res.json({
-        ok: true,
-        inserted: 0,
-        updated: 0,
-        skipped: 0,
-        reason: 'No rows provided'
-      });
+      return res.json({ ok: true, inserted: 0, updated: 0, skipped: 0, reason: 'No rows provided' });
     }
 
     const result = importMetaDailyRows(store, rows);
     res.json({ ok: true, ...result });
-  } catch (error) {
-    console.error('Meta import error:', error);
-    res.status(500).json({ error: error.message || 'Meta import failed' });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Meta import failed' });
+  }
+});
+
+router.get('/efficiency', async (req, res) => {
+  try {
+    const { store, ...params } = req.query;
+    const data = getEfficiencyData(store, params);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load efficiency' });
+  }
+});
+
+router.get('/efficiency/trends', async (req, res) => {
+  try {
+    const { store, ...params } = req.query;
+    const data = getEfficiencyTrends(store, params);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load efficiency trends' });
+  }
+});
+
+router.get('/recommendations', async (req, res) => {
+  try {
+    const { store, ...params } = req.query;
+    const data = getRecommendations(store, params);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load recommendations' });
+  }
+});
+
+router.get('/countries', async (req, res) => {
+  try {
+    const { store } = req.query;
+    const data = getAvailableCountries(store);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load countries' });
+  }
+});
+
+router.get('/countries/trends', async (req, res) => {
+  try {
+    const { store, ...params } = req.query;
+    const data = getCountryTrends(store, params);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load country trends' });
+  }
+});
+
+router.get('/shopify/time-of-day', async (req, res) => {
+  try {
+    const { store, ...params } = req.query;
+    const data = getShopifyTimeOfDay(store, params);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load Shopify time of day' });
+  }
+});
+
+router.get('/meta/breakdowns', async (req, res) => {
+  try {
+    const { store, ...params } = req.query;
+    const data = getMetaBreakdowns(store, params);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load Meta breakdowns' });
   }
 });
 
