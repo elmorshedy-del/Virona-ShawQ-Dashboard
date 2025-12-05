@@ -1982,10 +1982,12 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
   }, [countryCodeToFlag, data]);
 
   useEffect(() => {
-    if (data?.startPlans?.length) {
-      setSelectedCountry(data.startPlans[0].country);
-    } else if (!selectedCountry && masterCountries.length) {
-      setSelectedCountry(masterCountries[0].code);
+    if (!selectedCountry) {
+      if (data?.startPlans?.length) {
+        setSelectedCountry(data.startPlans[0].country);
+      } else if (masterCountries.length) {
+        setSelectedCountry(masterCountries[0].code);
+      }
     }
     setBrandSelection(store.id);
   }, [data, store.id, masterCountries, selectedCountry]);
