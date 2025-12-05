@@ -165,8 +165,8 @@ router.post('/delete-bulk', (req, res) => {
       params.push(date);
     } else if (scope === 'week' && date) {
       const d = new Date(date);
-      const weekStart = formatDateAsGmt3(new Date(d.setDate(d.getDate() - d.getDay())));
-      const weekEnd = formatDateAsGmt3(new Date(d.setDate(d.getDate() + 6)));
+      const weekStart = formatDateAsGmt3(new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay()));
+      const weekEnd = formatDateAsGmt3(new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay() + 6));
       sql += ' AND date BETWEEN ? AND ?';
       params.push(weekStart, weekEnd);
     } else if (scope === 'month' && date) {
