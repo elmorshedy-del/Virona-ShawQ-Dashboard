@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
+import { formatLocalDate } from '../utils/dateUtils.js';
 
 export async function fetchShopifyOrders(dateStart, dateEnd) {
   const shopifyStore = process.env.SHAWQ_SHOPIFY_STORE;
@@ -79,8 +80,8 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
 
 export async function syncShopifyOrders() {
   const db = getDb();
-  const endDate = new Date().toISOString().split('T')[0];
-  const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const endDate = formatLocalDate(new Date());
+  const startDate = formatLocalDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 
   try {
     const orders = await fetchShopifyOrders(startDate, endDate);
@@ -174,7 +175,7 @@ function getDemoShopifyOrders(dateStart, dateEnd) {
   let orderId = 500000;
 
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
+    const dateStr = formatLocalDate(d);
     const dayOfWeek = d.getDay();
     const baseOrders = dayOfWeek === 0 || dayOfWeek === 6 ? 22 : 18;
     const dailyOrders = Math.floor(baseOrders * (0.8 + Math.random() * 0.4));

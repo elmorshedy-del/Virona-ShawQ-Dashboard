@@ -1,6 +1,7 @@
 // server/services/metaService.js
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
+import { formatLocalDate } from '../utils/dateUtils.js';
 
 const META_API_VERSION = 'v19.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -51,7 +52,7 @@ async function fetchAllPages(initialUrl, label) {
 // Get exchange rate TRY → USD
 async function getExchangeRate(fromCurrency, toCurrency) {
   const db = getDb();
-  const today = new Date().toISOString().split('T')[0];
+  const today = formatLocalDate(new Date());
   
   // Check cache first
   const cached = db.prepare(`
@@ -350,8 +351,8 @@ export async function fetchMetaCampaignsByPlacement(store, dateStart, dateEnd) {
 
 export async function syncMetaData(store) {
   const db = getDb();
-  const endDate = new Date().toISOString().split('T')[0];
-  const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const endDate = formatLocalDate(new Date());
+  const startDate = formatLocalDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 
   try {
     const campaigns = await fetchMetaCampaigns(store, startDate, endDate);

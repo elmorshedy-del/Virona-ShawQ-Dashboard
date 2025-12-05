@@ -1,5 +1,6 @@
 import { getDb } from '../db/database.js';
 import { getAvailableCountries } from './analyticsService.js';
+import { formatLocalDate } from '../utils/dateUtils.js';
 
 const FX_SAR_RATES = {
   SAR: 1,
@@ -23,7 +24,7 @@ const BRAND_CONSTANTS = {
 
 function getDateRange(params) {
   const now = new Date();
-  const today = now.toISOString().split('T')[0];
+  const today = formatLocalDate(now);
 
   if (params.startDate && params.endDate) {
     const start = new Date(params.startDate);
@@ -33,7 +34,7 @@ function getDateRange(params) {
   }
 
   if (params.yesterday) {
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const yesterday = formatLocalDate(new Date(now.getTime() - 24 * 60 * 60 * 1000));
     return { startDate: yesterday, endDate: yesterday, days: 1 };
   }
 
@@ -45,7 +46,7 @@ function getDateRange(params) {
 
   const endDate = today;
   const startMs = now.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
-  const startDate = new Date(startMs).toISOString().split('T')[0];
+  const startDate = formatLocalDate(new Date(startMs));
 
   return { startDate, endDate, days };
 }
@@ -55,8 +56,8 @@ function getPriorRange(endDate, daysBack = 60) {
   const start = new Date(end);
   start.setDate(end.getDate() - (daysBack - 1));
   return {
-    startDate: start.toISOString().split('T')[0],
-    endDate: end.toISOString().split('T')[0],
+    startDate: formatLocalDate(start),
+    endDate: formatLocalDate(end),
     days: daysBack
   };
 }

@@ -1,10 +1,11 @@
 import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
+import { formatLocalDate } from '../utils/dateUtils.js';
 
 function getDateRange(params) {
   // Get current date in local timezone
   const now = new Date();
-  const today = now.toISOString().split('T')[0];
+  const today = formatLocalDate(now);
   
   // Handle custom date range (startDate and endDate provided)
   if (params.startDate && params.endDate) {
@@ -16,7 +17,7 @@ function getDateRange(params) {
   
   // Handle yesterday specifically
   if (params.yesterday) {
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const yesterday = formatLocalDate(new Date(now.getTime() - 24 * 60 * 60 * 1000));
     return { startDate: yesterday, endDate: yesterday, days: 1 };
   }
   
@@ -31,7 +32,7 @@ function getDateRange(params) {
   
   // Start date: for days=1, start=today (same day). For days=7, go back 6 days.
   const startMs = now.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
-  const startDate = new Date(startMs).toISOString().split('T')[0];
+  const startDate = formatLocalDate(new Date(startMs));
   
   return { startDate, endDate, days };
 }
@@ -410,7 +411,7 @@ function getTrends(store, startDate, endDate) {
   const start = new Date(startDate);
   const end = new Date(endDate);
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    allDates.push(d.toISOString().split('T')[0]);
+    allDates.push(formatLocalDate(d));
   }
   
   // Meta daily data
@@ -557,7 +558,7 @@ export function getEfficiency(store, params) {
   const { startDate, endDate, days } = getDateRange(params);
   
   // Compare current vs previous period
-  const prevStartDate = new Date(new Date(startDate).getTime() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const prevStartDate = formatLocalDate(new Date(new Date(startDate).getTime() - days * 24 * 60 * 60 * 1000));
   
   const currentPeriod = db.prepare(`
     SELECT SUM(spend) as spend, SUM(conversions) as orders, SUM(conversion_value) as revenue
@@ -946,7 +947,7 @@ export function getCountryTrends(store, params) {
   const start = new Date(startDate);
   const end = new Date(endDate);
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    allDates.push(d.toISOString().split('T')[0]);
+    allDates.push(formatLocalDate(d));
   }
   
   // Get ecommerce orders by country by date

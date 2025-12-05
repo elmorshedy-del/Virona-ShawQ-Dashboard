@@ -12,6 +12,12 @@ import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 
 const API_BASE = '/api';
 
+const getLocalDateString = (date = new Date()) => {
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  const localDate = new Date(date.getTime() - offsetMs);
+  return localDate.toISOString().split('T')[0];
+};
+
 const countryCodeToFlag = (code) => {
   if (!code || !/^[A-Z]{2}$/i.test(code)) return '🏳️';
   return String.fromCodePoint(...code.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0)));
@@ -54,9 +60,9 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   
   const [dateRange, setDateRange] = useState({ type: 'days', value: 7 });
-  const [customRange, setCustomRange] = useState({ 
-    start: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], 
-    end: new Date().toISOString().split('T')[0] 
+  const [customRange, setCustomRange] = useState({
+    start: getLocalDateString(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)),
+    end: getLocalDateString()
   });
   const [showCustomPicker, setShowCustomPicker] = useState(false);
   
@@ -83,7 +89,7 @@ export default function App() {
 
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: getLocalDateString(),
     country: 'SA',
     campaign: '',
     spend: 0,
@@ -93,7 +99,7 @@ export default function App() {
     notes: ''
   });
   const [spendOverrideForm, setSpendOverrideForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: getLocalDateString(),
     country: 'ALL',
     amount: 0,
     notes: ''
@@ -615,7 +621,7 @@ export default function App() {
                       type="date"
                       value={customRange.start}
                       onChange={(e) => setCustomRange({ ...customRange, start: e.target.value })}
-                      max={customRange.end || new Date().toISOString().split('T')[0]}
+                      max={customRange.end || getLocalDateString()}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                     />
                   </div>
@@ -628,7 +634,7 @@ export default function App() {
                       value={customRange.end}
                       onChange={(e) => setCustomRange({ ...customRange, end: e.target.value })}
                       min={customRange.start}
-                      max={new Date().toISOString().split('T')[0]}
+                      max={getLocalDateString()}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                     />
                   </div>
@@ -2571,7 +2577,7 @@ function ManualDataTab({
   availableCountries
 }) {
   const [deleteScope, setDeleteScope] = useState('day');
-  const [deleteDate, setDeleteDate] = useState(new Date().toISOString().split('T')[0]);
+  const [deleteDate, setDeleteDate] = useState(getLocalDateString());
 
   const overrideLabel = (code) => {
     if (code === 'ALL') return 'All Countries (override total spend)';

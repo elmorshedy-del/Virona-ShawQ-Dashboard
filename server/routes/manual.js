@@ -1,5 +1,6 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
+import { formatLocalDate } from '../utils/dateUtils.js';
 
 const router = express.Router();
 
@@ -10,7 +11,7 @@ router.get('/', (req, res) => {
     const store = req.query.store || 'vironax';
 
     let startDate = req.query.startDate;
-    let endDate = req.query.endDate || new Date().toISOString().split('T')[0];
+    let endDate = req.query.endDate || formatLocalDate(new Date());
 
     if (!startDate) {
       let days = 7;
@@ -19,7 +20,7 @@ router.get('/', (req, res) => {
       else if (req.query.months) days = parseInt(req.query.months) * 30;
       else if (req.query.yesterday) days = 1;
 
-      startDate = new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      startDate = formatLocalDate(new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000));
     }
 
     const orders = db.prepare(`
@@ -42,7 +43,7 @@ router.get('/spend', (req, res) => {
     const store = req.query.store || 'vironax';
 
     let startDate = req.query.startDate;
-    let endDate = req.query.endDate || new Date().toISOString().split('T')[0];
+    let endDate = req.query.endDate || formatLocalDate(new Date());
 
     if (!startDate) {
       let days = 7;
@@ -51,7 +52,7 @@ router.get('/spend', (req, res) => {
       else if (req.query.months) days = parseInt(req.query.months) * 30;
       else if (req.query.yesterday) days = 1;
 
-      startDate = new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      startDate = formatLocalDate(new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000));
     }
 
     const overrides = db.prepare(`
@@ -164,8 +165,8 @@ router.post('/delete-bulk', (req, res) => {
       params.push(date);
     } else if (scope === 'week' && date) {
       const d = new Date(date);
-      const weekStart = new Date(d.setDate(d.getDate() - d.getDay())).toISOString().split('T')[0];
-      const weekEnd = new Date(d.setDate(d.getDate() + 6)).toISOString().split('T')[0];
+      const weekStart = formatLocalDate(new Date(d.setDate(d.getDate() - d.getDay())));
+      const weekEnd = formatLocalDate(new Date(d.setDate(d.getDate() + 6)));
       sql += ' AND date BETWEEN ? AND ?';
       params.push(weekStart, weekEnd);
     } else if (scope === 'month' && date) {
