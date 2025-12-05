@@ -1028,51 +1028,6 @@ export function getShopifyTimeOfDay(store, params) {
 
   const timezone = region === 'europe' ? 'Europe/London' : 'America/Chicago';
 
-  const normalizeCountry = (value) => {
-    if (!value || typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-
-    const upper = trimmed.toUpperCase();
-
-    if (['UNITED STATES', 'USA', 'US'].includes(upper)) return 'US';
-    if (['UNITED KINGDOM', 'UK', 'GB', 'GREAT BRITAIN'].includes(upper)) return 'GB';
-
-    if (upper.length === 2) return upper;
-    if (upper.length === 3 && upper === 'USA') return 'US';
-
-    return null;
-  };
-
-  const getRowCountry = (row) => {
-    const countryCandidates = [
-      row?.shipping_country_code,
-      row?.country_code,
-      row?.shipping_country,
-      row?.country,
-      row?.billing_country_code,
-      row?.billing_country
-    ];
-
-    for (const candidate of countryCandidates) {
-      const normalized = normalizeCountry(candidate);
-      if (normalized) return normalized;
-    }
-
-    return null;
-  };
-
-  const europeAllowlist = new Set([
-    'GB', 'IE', 'FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'SE', 'NO', 'DK', 'FI', 'CH', 'AT', 'PT', 'PL', 'CZ', 'HU', 'RO', 'BG', 'GR', 'HR', 'SK', 'SI', 'EE', 'LV', 'LT', 'LU', 'MT', 'CY', 'IS', 'UA', 'TR', 'RS', 'BA', 'ME', 'MK', 'AL', 'MD', 'LI', 'MC', 'SM', 'AD'
-  ]);
-
-  const isRegionMatch = (countryCode) => {
-    if (!countryCode) return false;
-    if (region === 'us') return countryCode === 'US';
-    if (region === 'europe') return europeAllowlist.has(countryCode);
-    return true;
-  };
-
   if (store !== 'shawq') {
     return { data: [], timezone, sampleTimestamps: [] };
   }
@@ -1080,8 +1035,77 @@ export function getShopifyTimeOfDay(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
 
+  const tableInfo = db.prepare('PRAGMA table_info(shopify_orders)').all();
+  const countryPriority = [
+    'shipping_country_code',
+    'shipping_country',
+    'billing_country_code',
+    'billing_country',
+    'country_code',
+    'country'
+  ];
+
+  const countryColumn = countryPriority.find(col => tableInfo.some(info => info.name === col));
+
+  const normalizeCountryValue = (value) => {
+    if (value === null || value === undefined) return null;
+    if (typeof value !== 'string') return null;
+
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    return trimmed.toUpperCase();
+  };
+
+  const usAllowlist = new Set([
+    'US',
+    'USA',
+    'UNITED STATES',
+    'UNITED STATES OF AMERICA'
+  ]);
+
+  const europeAllowlist = new Set([
+    'GB', 'UK', 'UNITED KINGDOM',
+    'IE', 'IRELAND',
+    'FR', 'FRANCE',
+    'DE', 'GERMANY',
+    'ES', 'SPAIN',
+    'IT', 'ITALY',
+    'NL', 'NETHERLANDS',
+    'BE', 'BELGIUM',
+    'SE', 'SWEDEN',
+    'NO', 'NORWAY',
+    'DK', 'DENMARK',
+    'FI', 'FINLAND',
+    'CH', 'SWITZERLAND',
+    'AT', 'AUSTRIA',
+    'PL', 'POLAND',
+    'PT', 'PORTUGAL',
+    'GR', 'GREECE',
+    'CZ', 'CZECH REPUBLIC',
+    'RO', 'ROMANIA',
+    'HU', 'HUNGARY'
+  ]);
+
+  const isRegionMatch = (countryValue) => {
+    if (!countryColumn) return true;
+
+    const normalized = normalizeCountryValue(countryValue);
+    if (!normalized) return false;
+
+    if (region === 'us') {
+      return usAllowlist.has(normalized);
+    }
+
+    if (region === 'europe') {
+      return europeAllowlist.has(normalized);
+    }
+
+    return true;
+  };
+
   const rows = db.prepare(`
-    SELECT order_created_at, created_at, subtotal, shipping_country_code, country_code, shipping_country, country, billing_country_code, billing_country
+    SELECT order_created_at, created_at, subtotal${countryColumn ? `, ${countryColumn} as country_value` : ''}
     FROM shopify_orders
     WHERE store = ? AND date BETWEEN ? AND ? AND (order_created_at IS NOT NULL OR created_at IS NOT NULL)
   `).all(store, startDate, endDate);
@@ -1101,8 +1125,8 @@ export function getShopifyTimeOfDay(store, params) {
   });
 
   for (const row of rows) {
-    const countryCode = getRowCountry(row);
-    if (countryCode && !isRegionMatch(countryCode)) continue;
+    const countryValue = countryColumn ? row?.country_value : null;
+    if (!isRegionMatch(countryValue)) continue;
 
     const rawTimestamp = row?.order_created_at || row?.created_at;
     if (!rawTimestamp) continue;
