@@ -29,9 +29,15 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
           const countryCode = order.shipping_address?.country_code || 
                              order.billing_address?.country_code || 'US';
           
+          const createdAtIso = typeof order.created_at === 'string' ? order.created_at : null;
+          const createdAtDate = createdAtIso ? new Date(createdAtIso) : null;
+          const createdAtUtc = createdAtDate && !isNaN(createdAtDate.getTime())
+            ? createdAtDate.toISOString()
+            : null;
+
           orders.push({
             order_id: order.id.toString(),
-            date: order.created_at.split('T')[0],
+            date: createdAtUtc ? createdAtUtc.split('T')[0] : (createdAtIso?.split('T')[0] || null),
             country: getCountryName(countryCode),
             country_code: countryCode,
             city: order.shipping_address?.city || order.billing_address?.city || null,
@@ -41,15 +47,16 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             shipping: parseFloat(order.total_shipping_price_set?.shop_money?.amount) || 0,
             tax: parseFloat(order.total_tax) || 0,
             discount: parseFloat(order.total_discounts) || 0,
-          items_count: order.line_items?.length || 1,
-          status: order.fulfillment_status || 'unfulfilled',
-          financial_status: order.financial_status || 'pending',
-          fulfillment_status: order.fulfillment_status || null,
-          payment_method: order.payment_gateway_names?.[0] || 'unknown',
-          currency: order.currency || 'USD',
-          order_created_at: order.created_at
-        });
-      }
+            items_count: order.line_items?.length || 1,
+            status: order.fulfillment_status || 'unfulfilled',
+            financial_status: order.financial_status || 'pending',
+            fulfillment_status: order.fulfillment_status || null,
+            payment_method: order.payment_gateway_names?.[0] || 'unknown',
+            currency: order.currency || 'USD',
+            order_created_at: createdAtUtc,
+            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
+          });
+        }
       }
 
       // Handle pagination via Link header

@@ -1029,39 +1029,10 @@ export function getShopifyTimeOfDay(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
 
-  const timezoneSample = db.prepare(`
-    SELECT order_created_at, created_at
+  const rows = db.prepare(`
+    SELECT order_created_at, created_at, subtotal
     FROM shopify_orders
     WHERE store = ? AND date BETWEEN ? AND ? AND (order_created_at IS NOT NULL OR created_at IS NOT NULL)
-    LIMIT 1
-  `).get(store, startDate, endDate);
-
-  const rawTimestamp = timezoneSample?.order_created_at || timezoneSample?.created_at;
-  let timezone = null;
-
-  if (rawTimestamp) {
-    const tzMatch = /([+-]\d{2}:?\d{2}|Z)$/i.exec(rawTimestamp);
-
-    if (tzMatch) {
-      const tz = tzMatch[1];
-      if (tz.toUpperCase() === 'Z') {
-        timezone = 'UTC';
-      } else {
-        const normalized = tz.includes(':') ? tz : `${tz.slice(0, 3)}:${tz.slice(3)}`;
-        timezone = `UTC${normalized}`;
-      }
-    }
-  }
-
-  const rows = db.prepare(`
-    SELECT
-      strftime('%H', datetime(COALESCE(order_created_at, created_at))) as hour,
-      COUNT(*) as orders,
-      SUM(subtotal) as revenue
-    FROM shopify_orders
-    WHERE store = ? AND date BETWEEN ? AND ?
-    GROUP BY hour
-    ORDER BY hour
   `).all(store, startDate, endDate);
 
   const hourlyBuckets = Array.from({ length: 24 }, (_, idx) => ({
@@ -1070,17 +1041,29 @@ export function getShopifyTimeOfDay(store, params) {
     revenue: 0
   }));
 
+  const hourFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    hour12: false
+  });
+
   for (const row of rows) {
-    if (!row.hour) continue;
-    const hourIdx = parseInt(row.hour, 10);
+    const rawTimestamp = row.order_created_at || row.created_at;
+    if (!rawTimestamp) continue;
+
+    const parsed = new Date(rawTimestamp);
+    if (Number.isNaN(parsed.getTime())) continue;
+
+    const hourStr = hourFormatter.format(parsed);
+    const hourIdx = parseInt(hourStr, 10);
     if (hourIdx >= 0 && hourIdx < 24) {
-      hourlyBuckets[hourIdx].orders = row.orders || 0;
-      hourlyBuckets[hourIdx].revenue = row.revenue || 0;
+      hourlyBuckets[hourIdx].orders += 1;
+      hourlyBuckets[hourIdx].revenue += row.subtotal || 0;
     }
   }
 
   return {
     data: hourlyBuckets,
-    timezone,
+    timezone: 'America/New_York',
   };
 }
