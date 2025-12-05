@@ -61,7 +61,7 @@ export default function App() {
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
   const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [] });
   const [selectedShopifyRegion, setSelectedShopifyRegion] = useState('us');
-  const [latestOrderTimestamp, setLatestOrderTimestamp] = useState(null);
+  const [notifications, setNotifications] = useState([]);
   const [showNotificationPanel, setShowNotificationPanel] = useState(false);
   
   // KPI charts
@@ -121,25 +121,6 @@ export default function App() {
     }));
   }, [currentStore]);
 
-  useEffect(() => {
-    if (!manualOrders || manualOrders.length === 0) {
-      setLatestOrderTimestamp(null);
-      return;
-    }
-
-    const newestOrder = manualOrders
-      .map((order) => {
-        const raw = order.created_at || order.createdAt || order.timestamp || order.date;
-        const parsed = raw ? new Date(raw) : null;
-        return { time: parsed ? parsed.getTime() : null, raw };
-      })
-      .filter((entry) => entry.time)
-      .sort((a, b) => b.time - a.time)[0];
-
-    if (newestOrder?.raw) {
-      setLatestOrderTimestamp(new Date(newestOrder.raw).toISOString());
-    }
-  }, [manualOrders]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -273,8 +254,15 @@ export default function App() {
         revenue: STORES[currentStore].defaultAOV,
         notes: ''
       }));
-      setLatestOrderTimestamp(new Date().toISOString());
-      setShowNotificationPanel(true);
+      const newNotification = {
+        id: Date.now(),
+        type: 'order',
+        message: `New order added: ${orderForm.orders_count} order(s) for ${formatCurrency(orderForm.revenue)}`,
+        timestamp: new Date().toISOString(),
+        country: orderForm.country,
+        source: orderForm.source
+      };
+      setNotifications(prev => [newNotification, ...prev].slice(0, 10));
       loadData();
     } catch (error) {
       console.error('Error adding order:', error);
@@ -441,45 +429,64 @@ export default function App() {
               </span>
             </div>
             
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-500">
-              {dashboard?.dateRange &&
-                `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
-            </span>
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowNotificationPanel(prev => !prev)}
-                className={`relative p-2 rounded-lg border text-sm font-medium transition-colors ${
-                  showNotificationPanel ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                }`}
-                aria-label="Recent order notifications"
-              >
-                <Bell className="w-4 h-4" />
-                {latestOrderTimestamp && (
-                  <span className="absolute -top-1 -right-1 block h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white" />
-                )}
-              </button>
-              {showNotificationPanel && (
-                <div className="absolute right-0 mt-2 w-72 rounded-xl border border-gray-200 bg-white shadow-lg p-4 z-10">
-                  {latestOrderTimestamp ? (
-                    <div>
-                      <p className="text-sm font-semibold text-gray-900">Recent order added</p>
-                      <p className="text-xs text-gray-600 mt-1">
-                        Added at {formatNotificationTime(latestOrderTimestamp)}
-                      </p>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-500">No manual orders added yet.</p>
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-gray-500">
+                {dashboard?.dateRange &&
+                  `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
+              </span>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowNotificationPanel(prev => !prev)}
+                  className={`relative p-2 rounded-lg border text-sm font-medium transition-colors ${
+                    showNotificationPanel ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                  }`}
+                  aria-label="Order notifications"
+                >
+                  <Bell className="w-4 h-4" />
+                  {notifications.length > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white ring-2 ring-white">
+                      {notifications.length > 9 ? '9+' : notifications.length}
+                    </span>
                   )}
-                </div>
-              )}
-            </div>
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition-colors"
-            >
+                </button>
+                {showNotificationPanel && (
+                  <div className="absolute right-0 mt-2 w-80 rounded-xl border border-gray-200 bg-white shadow-lg z-50">
+                    <div className="flex items-center justify-between p-3 border-b border-gray-100">
+                      <span className="text-sm font-semibold text-gray-900">Notifications</span>
+                      {notifications.length > 0 && (
+                        <button
+                          onClick={() => setNotifications([])}
+                          className="text-xs text-gray-500 hover:text-gray-700"
+                        >
+                          Clear all
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-64 overflow-y-auto">
+                      {notifications.length > 0 ? (
+                        notifications.map((notif) => (
+                          <div key={notif.id} className="p-3 border-b border-gray-50 last:border-b-0 hover:bg-gray-50">
+                            <p className="text-sm text-gray-900">{notif.message}</p>
+                            <p className="text-xs text-gray-500 mt-1">
+                              {notif.source && <span className="capitalize">{notif.source}</span>}
+                              {notif.country && <span> • {notif.country}</span>}
+                              <span> • {formatNotificationTime(notif.timestamp)}</span>
+                            </p>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="p-4 text-sm text-gray-500 text-center">No notifications yet</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition-colors"
+              >
                 <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
                 {syncing ? 'Syncing...' : 'Refresh'}
               </button>
