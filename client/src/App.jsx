@@ -820,7 +820,8 @@ function DashboardTab({
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         <div className="px-6 pt-6 pb-4 border-b border-gray-100 flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Section 1 — Meta Funnel (Integrated)</h2>
+            <h2 className="text-lg font-semibold">Section 1 — Meta Funnel (Shopify Data Included)</h2>
+            <p className="text-xs text-gray-400">manual data included as well</p>
             <p className="text-sm text-gray-500">
               Meta funnel metrics with{" "}
               <span className="font-semibold">true revenue & orders</span> when
