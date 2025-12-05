@@ -1,37 +1,5 @@
+import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
-
-// Country info lookup
-const COUNTRY_INFO = {
-  // GCC
-  'SA': { name: 'Saudi Arabia', flag: '🇸🇦' },
-  'AE': { name: 'United Arab Emirates', flag: '🇦🇪' },
-  'KW': { name: 'Kuwait', flag: '🇰🇼' },
-  'QA': { name: 'Qatar', flag: '🇶🇦' },
-  'OM': { name: 'Oman', flag: '🇴🇲' },
-  'BH': { name: 'Bahrain', flag: '🇧🇭' },
-  // Western
-  'US': { name: 'United States', flag: '🇺🇸' },
-  'GB': { name: 'United Kingdom', flag: '🇬🇧' },
-  'CA': { name: 'Canada', flag: '🇨🇦' },
-  'DE': { name: 'Germany', flag: '🇩🇪' },
-  'NL': { name: 'Netherlands', flag: '🇳🇱' },
-  'FR': { name: 'France', flag: '🇫🇷' },
-  'AU': { name: 'Australia', flag: '🇦🇺' },
-  'IT': { name: 'Italy', flag: '🇮🇹' },
-  'ES': { name: 'Spain', flag: '🇪🇸' },
-  'SE': { name: 'Sweden', flag: '🇸🇪' },
-  'NO': { name: 'Norway', flag: '🇳🇴' },
-  'DK': { name: 'Denmark', flag: '🇩🇰' },
-  'BE': { name: 'Belgium', flag: '🇧🇪' },
-  'CH': { name: 'Switzerland', flag: '🇨🇭' },
-  'AT': { name: 'Austria', flag: '🇦🇹' },
-  'IE': { name: 'Ireland', flag: '🇮🇪' },
-  'NZ': { name: 'New Zealand', flag: '🇳🇿' }
-};
-
-function getCountryInfo(code) {
-  return COUNTRY_INFO[code] || { name: code, flag: '🏳️' };
-}
 
 function getDateRange(params) {
   // Get current date in local timezone
@@ -745,19 +713,7 @@ export function getRecommendations(store, params) {
 
 // Get dynamic countries list from actual data
 export function getAvailableCountries(store) {
-  const db = getDb();
-  
-  const countries = db.prepare(`
-    SELECT DISTINCT country as code
-    FROM meta_daily_metrics
-    WHERE store = ? AND country != 'ALL' AND country != 'UNKNOWN'
-    ORDER BY country
-  `).all(store);
-
-  return countries.map(c => ({
-    code: c.code,
-    ...getCountryInfo(c.code)
-  }));
+  return getAllCountries();
 }
 
 // Get campaigns broken down by country
