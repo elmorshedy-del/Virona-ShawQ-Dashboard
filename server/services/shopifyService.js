@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
-import { formatLocalDate } from '../utils/dateUtils.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 export async function fetchShopifyOrders(dateStart, dateEnd) {
   const shopifyStore = process.env.SHAWQ_SHOPIFY_STORE;
@@ -36,7 +36,7 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             ? createdAtDate.toISOString()
             : null;
           const dateGmt3 = createdAtDate && !isNaN(createdAtDate.getTime())
-            ? formatLocalDate(createdAtDate)
+            ? formatDateAsGmt3(createdAtDate)
             : (createdAtIso?.split('T')[0] || null);
 
           orders.push({
@@ -83,8 +83,8 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
 
 export async function syncShopifyOrders() {
   const db = getDb();
-  const endDate = formatLocalDate(new Date());
-  const startDate = formatLocalDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 
   try {
     const orders = await fetchShopifyOrders(startDate, endDate);
@@ -178,7 +178,7 @@ function getDemoShopifyOrders(dateStart, dateEnd) {
   let orderId = 500000;
 
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = formatLocalDate(d);
+    const dateStr = formatDateAsGmt3(d);
     const dayOfWeek = d.getDay();
     const baseOrders = dayOfWeek === 0 || dayOfWeek === 6 ? 22 : 18;
     const dailyOrders = Math.floor(baseOrders * (0.8 + Math.random() * 0.4));
