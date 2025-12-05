@@ -1470,92 +1470,88 @@ function DashboardTab({
                                 </tr>
                               </thead>
                               <tbody>
-                {c.cities.map((city, idx) => {
-                  if (isUsCountry) {
-                    const stateKey = `${c.code}-${city.city || 'unknown'}`;
-                    const hasStateCities = Array.isArray(city.cities) && city.cities.length > 0;
-                    const stateExpanded = expandedStates.has(stateKey);
-                    const orderedStateCities = hasStateCities
-                      ? [...city.cities].sort((a, b) => (b.orders || 0) - (a.orders || 0))
-                      : [];
+                {isUsCountry
+                  ? [...c.cities]
+                      .sort((a, b) => (b.orders || 0) - (a.orders || 0))
+                      .map((state, stateIdx) => {
+                        const stateKey = `${c.code}-${state.city || 'unknown'}`;
+                        const hasStateCities = Array.isArray(state.cities) && state.cities.length > 0;
+                        const stateExpanded = expandedStates.has(stateKey);
+                        const orderedStateCities = hasStateCities
+                          ? [...state.cities].sort((a, b) => (b.orders || 0) - (a.orders || 0))
+                          : [];
 
-                    return (
-                      <Fragment key={stateKey}>
-                        <tr
-                          className={hasStateCities ? 'cursor-pointer hover:bg-gray-50' : ''}
-                          onClick={() => hasStateCities && toggleStateRow(stateKey)}
-                        >
-                          <td>
-                            <div className="flex items-center gap-2">
-                              {city.rank ? (
+                        const medal = stateIdx === 0 ? '🥇' : stateIdx === 1 ? '🥈' : stateIdx === 2 ? '🥉' : null;
+
+                        return (
+                          <Fragment key={stateKey}>
+                            <tr
+                              className={hasStateCities ? 'cursor-pointer hover:bg-gray-50' : ''}
+                              onClick={() => hasStateCities && toggleStateRow(stateKey)}
+                            >
+                              <td>
                                 <div className="flex items-center gap-2">
-                                  <span>{city.medal}</span>
-                                  <span className="text-xs text-gray-500">#{city.rank}</span>
+                                  {medal && <span>{medal}</span>}
+                                  <span className="text-xs text-gray-500">#{stateIdx + 1}</span>
+                                  {hasStateCities && (
+                                    <span className="text-gray-400">
+                                      {stateExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                    </span>
+                                  )}
                                 </div>
-                              ) : (
-                                '—'
-                              )}
-                              {hasStateCities && (
-                                <span className="text-gray-400">
-                                  {stateExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td>{city.city || 'Unknown'}</td>
-                          <td>{city.orders || 0}</td>
-                          <td className="text-green-600 font-semibold">{formatCurrency(city.revenue || 0)}</td>
-                          <td>{formatCurrency(city.aov || 0)}</td>
-                          <td>—</td>
-                          <td>—</td>
-                          <td>—</td>
-                        </tr>
+                              </td>
+                              <td>{state.city || 'Unknown'}</td>
+                              <td>{state.orders || 0}</td>
+                              <td className="text-green-600 font-semibold">{formatCurrency(state.revenue || 0)}</td>
+                              <td>{formatCurrency(state.aov || 0)}</td>
+                              <td>—</td>
+                              <td>—</td>
+                              <td>—</td>
+                            </tr>
 
-                        {stateExpanded && hasStateCities && (
-                          <tr key={`${stateKey}-cities`}>
-                            <td colSpan={8} className="bg-gray-50">
-                              <div className="pl-10 pr-4 py-3 space-y-2">
-                                <div className="text-xs font-semibold text-gray-600">Cities</div>
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="text-left text-gray-500">
-                                      <th>City</th>
-                                      <th>Orders</th>
-                                      <th>Revenue</th>
-                                      <th>AOV</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {orderedStateCities.map((innerCity, cityIdx) => (
-                                      <tr key={`${stateKey}-${innerCity.city || 'unknown'}-${cityIdx}`}>
-                                        <td>{innerCity.city || 'Unknown'}</td>
-                                        <td>{innerCity.orders || 0}</td>
-                                        <td className="text-green-600 font-semibold">{formatCurrency(innerCity.revenue || 0)}</td>
-                                        <td>{formatCurrency(innerCity.aov || 0)}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  }
-
-                  return (
-                    <tr key={`${c.code}-${city.city || 'unknown'}-${idx}`}>
-                      <td>{city.city || 'Unknown'}</td>
-                      <td>{city.orders || 0}</td>
-                      <td className="text-green-600 font-semibold">{formatCurrency(city.revenue || 0)}</td>
-                      <td>{formatCurrency(city.aov || 0)}</td>
-                      <td>—</td>
-                      <td>—</td>
-                      <td>—</td>
-                    </tr>
-                  );
-                })}
+                            {stateExpanded && hasStateCities && (
+                              <tr key={`${stateKey}-cities`}>
+                                <td colSpan={8} className="bg-gray-50">
+                                  <div className="pl-10 pr-4 py-3 space-y-2">
+                                    <div className="text-xs font-semibold text-gray-600">Cities</div>
+                                    <table className="w-full text-xs">
+                                      <thead>
+                                        <tr className="text-left text-gray-500">
+                                          <th>City</th>
+                                          <th>Orders</th>
+                                          <th>Revenue</th>
+                                          <th>AOV</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {orderedStateCities.map((innerCity, cityIdx) => (
+                                          <tr key={`${stateKey}-${innerCity.city || 'unknown'}-${cityIdx}`}>
+                                            <td>{innerCity.city || 'Unknown'}</td>
+                                            <td>{innerCity.orders || 0}</td>
+                                            <td className="text-green-600 font-semibold">{formatCurrency(innerCity.revenue || 0)}</td>
+                                            <td>{formatCurrency(innerCity.aov || 0)}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })
+                  : c.cities.map((city, idx) => (
+                      <tr key={`${c.code}-${city.city || 'unknown'}-${idx}`}>
+                        <td>{city.city || 'Unknown'}</td>
+                        <td>{city.orders || 0}</td>
+                        <td className="text-green-600 font-semibold">{formatCurrency(city.revenue || 0)}</td>
+                        <td>{formatCurrency(city.aov || 0)}</td>
+                        <td>—</td>
+                        <td>—</td>
+                        <td>—</td>
+                      </tr>
+                    ))}
               </tbody>
             </table>
           </div>
