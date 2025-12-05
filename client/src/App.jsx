@@ -2589,6 +2589,94 @@ function ManualDataTab({
   const [deleteScope, setDeleteScope] = useState('day');
   const [deleteDate, setDeleteDate] = useState(getLocalDateString());
 
+  // --- CSV Import State & Logic ---
+  const [metaImportLoading, setMetaImportLoading] = useState(false);
+  const [metaImportError, setMetaImportError] = useState('');
+  const [metaImportResult, setMetaImportResult] = useState(null);
+  const [metaCsvText, setMetaCsvText] = useState('');
+
+  function parseCsvLine(line) {
+    const out = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      const next = line[i + 1];
+      if (ch === '"' && inQuotes && next === '"') {
+        cur += '"';
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        inQuotes = !inQuotes;
+        continue;
+      }
+      if (ch === ',' && !inQuotes) {
+        out.push(cur);
+        cur = '';
+        continue;
+      }
+      cur += ch;
+    }
+    out.push(cur);
+    return out.map(s => s.trim());
+  }
+
+  function parseCsvToRows(text) {
+    const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (lines.length < 2) return [];
+    const headers = parseCsvLine(lines[0]).map(h => h.replace(/^"|"$/g, '').trim());
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCsvLine(lines[i]);
+      const obj = {};
+      headers.forEach((h, idx) => {
+        obj[h] = cols[idx] !== undefined ? cols[idx].replace(/^"|"$/g, '') : '';
+      });
+      rows.push(obj);
+    }
+    return rows;
+  }
+
+  async function handleMetaCsvFile(file) {
+    setMetaImportError('');
+    setMetaImportResult(null);
+    if (!file) return;
+    const text = await file.text();
+    setMetaCsvText(text);
+  }
+
+  async function submitMetaImport() {
+    try {
+      setMetaImportLoading(true);
+      setMetaImportError('');
+      setMetaImportResult(null);
+
+      const rows = parseCsvToRows(metaCsvText);
+      if (!rows.length) {
+        setMetaImportError('CSV looks empty or unreadable. Export a daily Meta report as CSV and try again.');
+        return;
+      }
+
+      const res = await fetch(`/api/analytics/meta/import?store=${store.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store: store.id, rows })
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || 'Meta import failed');
+      }
+
+      setMetaImportResult(json);
+    } catch (e) {
+      setMetaImportError(e?.message || 'Meta import failed');
+    } finally {
+      setMetaImportLoading(false);
+    }
+  }
+
   const overrideLabel = (code) => {
     if (code === 'ALL') return 'All Countries (override total spend)';
     const country = availableCountries.find(c => c.code === code);
@@ -2597,6 +2685,8 @@ function ManualDataTab({
 
   return (
     <div className="space-y-6 animate-fade-in">
+      
+      {/* 1. Manual Order Form */}
       <div className="bg-white rounded-xl p-6 shadow-sm">
         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
           <Plus className="w-5 h-5" />
@@ -2605,25 +2695,19 @@ function ManualDataTab({
         <form onSubmit={onSubmit}>
           <div className="grid grid-cols-7 gap-4 mb-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Country
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
               <select
                 value={form.country}
                 onChange={(e) => setForm({ ...form, country: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               >
                 {availableCountries.map(c => (
-                  <option key={c.code} value={c.code}>
-                    {c.flag} {c.name}
-                  </option>
+                  <option key={c.code} value={c.code}>{c.flag} {c.name}</option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Campaign
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Campaign</label>
               <input
                 type="text"
                 value={form.campaign}
@@ -2633,9 +2717,7 @@ function ManualDataTab({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Date
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
               <input
                 type="date"
                 value={form.date}
@@ -2644,51 +2726,37 @@ function ManualDataTab({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                # Orders
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1"># Orders</label>
               <input
                 type="number"
                 min="1"
                 value={form.orders_count}
-                onChange={(e) =>
-                  setForm({ ...form, orders_count: parseInt(e.target.value) })
-                }
+                onChange={(e) => setForm({ ...form, orders_count: parseInt(e.target.value) })}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Revenue ({store.currencySymbol})
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Revenue ({store.currencySymbol})</label>
               <input
                 type="number"
                 min="0"
                 value={form.revenue}
-                onChange={(e) =>
-                  setForm({ ...form, revenue: parseFloat(e.target.value) })
-                }
+                onChange={(e) => setForm({ ...form, revenue: parseFloat(e.target.value) })}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Spend ({store.currencySymbol})
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Spend ({store.currencySymbol})</label>
               <input
                 type="number"
                 min="0"
                 value={form.spend}
-                onChange={(e) =>
-                  setForm({ ...form, spend: parseFloat(e.target.value) || 0 })
-                }
+                onChange={(e) => setForm({ ...form, spend: parseFloat(e.target.value) || 0 })}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Source
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Source</label>
               <select
                 value={form.source}
                 onChange={(e) => setForm({ ...form, source: e.target.value })}
@@ -2710,6 +2778,51 @@ function ManualDataTab({
         </form>
       </div>
 
+      {/* 2. Meta CSV Import (NEW SECTION) */}
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <h3 className="text-lg font-semibold mb-2">Temporary Meta Import (CSV)</h3>
+        <p className="text-sm text-gray-500 mb-4">
+          Export a daily report from Meta Ads Manager as CSV (campaign + country or breakdowns),
+          then upload it here. We will ingest it into the dashboard as a temporary replacement
+          until the token sync is fixed.
+        </p>
+
+        <div className="flex flex-col gap-3">
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(e) => handleMetaCsvFile(e.target.files?.[0])}
+            className="text-sm"
+          />
+
+          <textarea
+            className="w-full border rounded-lg p-3 text-xs font-mono min-h-[120px]"
+            placeholder="Optional: paste CSV content here"
+            value={metaCsvText}
+            onChange={(e) => setMetaCsvText(e.target.value)}
+          />
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={submitMetaImport}
+              disabled={metaImportLoading}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {metaImportLoading ? 'Importing…' : 'Import Meta CSV'}
+            </button>
+            {metaImportError && (
+              <span className="text-sm text-red-600">{metaImportError}</span>
+            )}
+            {metaImportResult && (
+              <span className="text-sm text-green-700">
+                Imported: {metaImportResult.inserted} • Updated: {metaImportResult.updated} • Skipped: {metaImportResult.skipped}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 3. Manual Spend Overrides */}
       <div className="bg-white rounded-xl p-6 shadow-sm">
         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
           <Plus className="w-5 h-5" />
@@ -2718,9 +2831,7 @@ function ManualDataTab({
         <form onSubmit={onAddSpendOverride} className="space-y-4">
           <div className="grid grid-cols-4 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Date
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
               <input
                 type="date"
                 value={spendOverrideForm.date}
@@ -2729,9 +2840,7 @@ function ManualDataTab({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Scope
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Scope</label>
               <select
                 value={spendOverrideForm.country}
                 onChange={(e) => setSpendOverrideForm({ ...spendOverrideForm, country: e.target.value })}
@@ -2739,16 +2848,12 @@ function ManualDataTab({
               >
                 <option value="ALL">All Countries (override total)</option>
                 {availableCountries.map(c => (
-                  <option key={c.code} value={c.code}>
-                    {c.flag} {c.name}
-                  </option>
+                  <option key={c.code} value={c.code}>{c.flag} {c.name}</option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Spend ({store.currencySymbol})
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Spend ({store.currencySymbol})</label>
               <input
                 type="number"
                 min="0"
@@ -2758,9 +2863,7 @@ function ManualDataTab({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Notes (optional)
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Notes (optional)</label>
               <input
                 type="text"
                 value={spendOverrideForm.notes}
@@ -2783,19 +2886,12 @@ function ManualDataTab({
             <div className="text-gray-500 text-sm">No manual spend overrides added for this period.</div>
           ) : (
             manualSpendOverrides.map((entry) => (
-              <div
-                key={entry.id}
-                className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200"
-              >
+              <div key={entry.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
                 <div className="space-y-1">
                   <div className="font-medium text-gray-900">{overrideLabel(entry.country)}</div>
                   <div className="text-sm text-gray-600">{entry.date}</div>
-                  <div className="text-sm text-indigo-700 font-semibold">
-                    {formatCurrency(entry.amount || 0)}
-                  </div>
-                  {entry.notes ? (
-                    <div className="text-sm text-gray-500">{entry.notes}</div>
-                  ) : null}
+                  <div className="text-sm text-indigo-700 font-semibold">{formatCurrency(entry.amount || 0)}</div>
+                  {entry.notes && <div className="text-sm text-gray-500">{entry.notes}</div>}
                 </div>
                 <button
                   onClick={() => onDeleteSpendOverride(entry.id)}
@@ -2809,6 +2905,7 @@ function ManualDataTab({
         </div>
       </div>
 
+      {/* 4. Orders History */}
       <div className="bg-white rounded-xl p-6 shadow-sm">
         <h3 className="text-lg font-semibold mb-4">Manual Orders History</h3>
         {orders.length === 0 ? (
@@ -2819,28 +2916,15 @@ function ManualDataTab({
         ) : (
           <div className="space-y-3">
             {orders.map((order) => (
-              <div
-                key={order.id}
-                className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border-l-4 border-indigo-500"
-              >
+              <div key={order.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border-l-4 border-indigo-500">
                 <div className="flex items-center gap-6">
                   <span className="font-medium">{order.date}</span>
-                  <span className="px-2 py-1 bg-gray-200 rounded text-sm">
-                    {order.country}
-                  </span>
-                  <span className="px-2 py-1 bg-gray-200 rounded text-sm capitalize">
-                    {order.source}
-                  </span>
+                  <span className="px-2 py-1 bg-gray-200 rounded text-sm">{order.country}</span>
+                  <span className="px-2 py-1 bg-gray-200 rounded text-sm capitalize">{order.source}</span>
                   <span>
                     <strong>{order.orders_count}</strong> orders •{' '}
-                    <span className="text-green-600 font-medium">
-                      {formatCurrency(order.revenue)}
-                    </span>
-                    {order.spend ? (
-                      <span className="ml-2 text-indigo-600 font-medium">
-                        Spend: {formatCurrency(order.spend)}
-                      </span>
-                    ) : null}
+                    <span className="text-green-600 font-medium">{formatCurrency(order.revenue)}</span>
+                    {order.spend ? <span className="ml-2 text-indigo-600 font-medium">Spend: {formatCurrency(order.spend)}</span> : null}
                   </span>
                 </div>
                 <button
@@ -2855,6 +2939,7 @@ function ManualDataTab({
         )}
       </div>
 
+      {/* 5. Delete Manual Data */}
       <div className="bg-red-50 border border-red-200 rounded-xl p-6">
         <h3 className="text-lg font-semibold text-red-700 mb-4 flex items-center gap-2">
           <Trash2 className="w-5 h-5" />
@@ -2862,9 +2947,7 @@ function ManualDataTab({
         </h3>
         <div className="flex items-end gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Delete data for
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Delete data for</label>
             <select
               value={deleteScope}
               onChange={(e) => setDeleteScope(e.target.value)}
@@ -2878,9 +2961,7 @@ function ManualDataTab({
           </div>
           {deleteScope !== 'all' && (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Date
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
               <input
                 type="date"
                 value={deleteDate}
