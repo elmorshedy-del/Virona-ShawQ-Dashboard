@@ -12,6 +12,8 @@ import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 
 const API_BASE = '/api';
 
+const getRegionFromTimezone = (tz) => (tz === 'Europe/London' ? 'EUROPE' : 'US');
+
 const STORES = {
   vironax: {
     id: 'vironax',
@@ -58,7 +60,7 @@ export default function App() {
   const [manualOrders, setManualOrders] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
-  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: null, sampleTimestamps: [] });
+  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/New_York', sampleTimestamps: [], region: 'US' });
   const [selectedShopifyTz, setSelectedShopifyTz] = useState('America/New_York');
   
   // KPI charts
@@ -149,7 +151,7 @@ export default function App() {
         fetch(`${API_BASE}/analytics/countries/trends?${params}`).then(r => r.json()),
         currentStore === 'shawq'
           ? fetch(`${API_BASE}/analytics/shopify/time-of-day?${timeOfDayParams}`).then(r => r.json())
-          : Promise.resolve({ data: [], timezone: selectedShopifyTz, sampleTimestamps: [] })
+          : Promise.resolve({ data: [], timezone: selectedShopifyTz, sampleTimestamps: [], region: getRegionFromTimezone(selectedShopifyTz) })
       ]);
 
       setDashboard(dashData);
@@ -163,7 +165,9 @@ export default function App() {
       const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
       const timeOfDayZone = typeof timeOfDay?.timezone === 'string' ? timeOfDay.timezone : null;
       const timeOfDaySamples = Array.isArray(timeOfDay?.sampleTimestamps) ? timeOfDay.sampleTimestamps.slice(0, 5) : [];
-      setShopifyTimeOfDay({ data: timeOfDayData, timezone: timeOfDayZone, sampleTimestamps: timeOfDaySamples });
+      const safeTimezone = timeOfDayZone || selectedShopifyTz || 'America/New_York';
+      const timeOfDayRegion = typeof timeOfDay?.region === 'string' ? timeOfDay.region : getRegionFromTimezone(safeTimezone);
+      setShopifyTimeOfDay({ data: timeOfDayData, timezone: safeTimezone, sampleTimestamps: timeOfDaySamples, region: timeOfDayRegion });
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -602,7 +606,7 @@ function DashboardTab({
   metaBreakdownData = [],
   store = {},
   countryTrends = [],
-  shopifyTimeOfDay = { data: [], timezone: null, sampleTimestamps: [] },
+  shopifyTimeOfDay = { data: [], timezone: 'America/New_York', sampleTimestamps: [], region: 'US' },
   selectedShopifyTz = 'America/New_York',
   setSelectedShopifyTz = () => {}
 }) {

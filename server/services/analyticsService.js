@@ -1025,16 +1025,62 @@ export function getShopifyTimeOfDay(store, params) {
   const allowedTimezones = ['America/New_York', 'Europe/London'];
   const requestedTz = params.tz;
   const timezone = allowedTimezones.includes(requestedTz) ? requestedTz : 'America/New_York';
+  const effectiveRegion = timezone === 'Europe/London' ? 'EUROPE' : 'US';
+
+  const normalizeCountry = (value) => {
+    if (!value || typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    const upper = trimmed.toUpperCase();
+
+    if (['UNITED STATES', 'USA', 'US'].includes(upper)) return 'US';
+    if (['UNITED KINGDOM', 'UK', 'GB', 'GREAT BRITAIN'].includes(upper)) return 'GB';
+
+    if (upper.length === 2) return upper;
+    if (upper.length === 3 && upper === 'USA') return 'US';
+
+    return null;
+  };
+
+  const getRowCountry = (row) => {
+    const countryCandidates = [
+      row?.shipping_country_code,
+      row?.country_code,
+      row?.shipping_country,
+      row?.country,
+      row?.billing_country_code,
+      row?.billing_country
+    ];
+
+    for (const candidate of countryCandidates) {
+      const normalized = normalizeCountry(candidate);
+      if (normalized) return normalized;
+    }
+
+    return null;
+  };
+
+  const europeAllowlist = new Set([
+    'GB', 'IE', 'FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'SE', 'NO', 'DK', 'FI', 'CH', 'AT', 'PT', 'PL', 'CZ', 'HU', 'RO', 'BG', 'GR', 'HR', 'SK', 'SI', 'EE', 'LV', 'LT', 'LU', 'MT', 'CY', 'IS', 'UA', 'TR', 'RS', 'BA', 'ME', 'MK', 'AL', 'MD', 'LI', 'MC', 'SM', 'AD'
+  ]);
+
+  const isRegionMatch = (countryCode) => {
+    if (!countryCode) return false;
+    if (effectiveRegion === 'US') return countryCode === 'US';
+    if (effectiveRegion === 'EUROPE') return europeAllowlist.has(countryCode);
+    return true;
+  };
 
   if (store !== 'shawq') {
-    return { data: [], timezone, sampleTimestamps: [] };
+    return { data: [], timezone, sampleTimestamps: [], region: effectiveRegion };
   }
 
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
 
   const rows = db.prepare(`
-    SELECT order_created_at, created_at, subtotal
+    SELECT order_created_at, created_at, subtotal, shipping_country_code, country_code, shipping_country, country, billing_country_code, billing_country
     FROM shopify_orders
     WHERE store = ? AND date BETWEEN ? AND ? AND (order_created_at IS NOT NULL OR created_at IS NOT NULL)
   `).all(store, startDate, endDate);
@@ -1054,7 +1100,10 @@ export function getShopifyTimeOfDay(store, params) {
   });
 
   for (const row of rows) {
-    const rawTimestamp = row.order_created_at || row.created_at;
+    const countryCode = getRowCountry(row);
+    if (!isRegionMatch(countryCode)) continue;
+
+    const rawTimestamp = row?.order_created_at || row?.created_at;
     if (!rawTimestamp) continue;
 
     if (sampleTimestamps.length < 5) {
@@ -1068,13 +1117,14 @@ export function getShopifyTimeOfDay(store, params) {
     const hourIdx = parseInt(hourStr, 10);
     if (Number.isInteger(hourIdx) && hourIdx >= 0 && hourIdx < 24) {
       hourlyBuckets[hourIdx].orders += 1;
-      hourlyBuckets[hourIdx].revenue += row.subtotal || 0;
+      hourlyBuckets[hourIdx].revenue += row?.subtotal || 0;
     }
   }
 
   return {
     data: hourlyBuckets,
     timezone,
-    sampleTimestamps
+    sampleTimestamps,
+    region: effectiveRegion
   };
 }
