@@ -818,7 +818,7 @@ function DashboardTab({
 
   const parseLocalDate = useCallback((dateString) => {
     if (!dateString) return null;
-    const safeDate = dateString.includes('T') ? dateString : `${dateString}T00:00:00`;
+    const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(dateString) ? `${dateString}T00:00:00` : dateString;
     const parsed = new Date(safeDate);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }, []);
