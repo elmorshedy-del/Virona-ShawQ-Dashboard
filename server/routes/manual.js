@@ -34,12 +34,22 @@ router.post('/', (req, res) => {
   try {
     const db = getDb();
     const store = req.query.store || req.body.store || 'vironax';
-    const { date, country, campaign, orders_count, revenue, source, notes } = req.body;
+    const { date, country, campaign, spend, orders_count, revenue, source, notes } = req.body;
     
     const result = db.prepare(`
-      INSERT INTO manual_orders (store, date, country, campaign, orders_count, revenue, source, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(store, date, country, campaign || '', orders_count || 1, revenue || 0, source || 'whatsapp', notes || '');
+      INSERT INTO manual_orders (store, date, country, campaign, spend, orders_count, revenue, source, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      store,
+      date,
+      country,
+      campaign || '',
+      spend || 0,
+      orders_count || 1,
+      revenue || 0,
+      source || 'whatsapp',
+      notes || ''
+    );
     
     res.json({ success: true, id: result.lastInsertRowid });
   } catch (error) {

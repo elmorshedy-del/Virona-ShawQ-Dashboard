@@ -180,7 +180,7 @@ export function getBudgetIntelligence(store, params) {
   }
 
   const manualOrders = db.prepare(`
-    SELECT country as country, SUM(orders_count) as orders, SUM(revenue) as revenue
+    SELECT country as country, SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
     FROM manual_orders
     WHERE store = ? AND date BETWEEN ? AND ?
     GROUP BY country
@@ -209,6 +209,7 @@ export function getBudgetIntelligence(store, params) {
     revenue: row.revenue
   }));
   manualOrders.forEach(row => addToCountry(row.country, {
+    spend: row.spend,
     orders: row.orders,
     revenue: row.revenue
   }));

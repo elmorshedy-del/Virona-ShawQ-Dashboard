@@ -137,6 +137,7 @@ export function initDb() {
       date TEXT NOT NULL,
       country TEXT NOT NULL,
       campaign TEXT,
+      spend REAL DEFAULT 0,
       orders_count INTEGER DEFAULT 1,
       revenue REAL DEFAULT 0,
       source TEXT DEFAULT 'whatsapp',
@@ -144,6 +145,10 @@ export function initDb() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  try {
+    db.exec(`ALTER TABLE manual_orders ADD COLUMN spend REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Sync log
   db.exec(`

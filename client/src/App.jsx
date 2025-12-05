@@ -71,6 +71,7 @@ export default function App() {
     date: new Date().toISOString().split('T')[0],
     country: 'SA',
     campaign: '',
+    spend: 0,
     orders_count: 1,
     revenue: 280,
     source: 'whatsapp',
@@ -227,6 +228,7 @@ export default function App() {
       });
       setOrderForm(prev => ({
         ...prev,
+        spend: 0,
         orders_count: 1,
         revenue: STORES[currentStore].defaultAOV,
         notes: ''
@@ -2329,7 +2331,7 @@ function ManualDataTab({
           Add Manual Order
         </h3>
         <form onSubmit={onSubmit}>
-          <div className="grid grid-cols-6 gap-4 mb-4">
+          <div className="grid grid-cols-7 gap-4 mb-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Country
@@ -2399,6 +2401,20 @@ function ManualDataTab({
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
+                Spend ({store.currencySymbol})
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={form.spend}
+                onChange={(e) =>
+                  setForm({ ...form, spend: parseFloat(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
                 Source
               </label>
               <select
@@ -2449,6 +2465,11 @@ function ManualDataTab({
                     <span className="text-green-600 font-medium">
                       {formatCurrency(order.revenue)}
                     </span>
+                    {order.spend ? (
+                      <span className="ml-2 text-indigo-600 font-medium">
+                        Spend: {formatCurrency(order.spend)}
+                      </span>
+                    ) : null}
                   </span>
                 </div>
                 <button

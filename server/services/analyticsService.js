@@ -190,8 +190,9 @@ export function getDashboard(store, params) {
 
   // Get manual orders
   const manualOrders = db.prepare(`
-    SELECT 
+    SELECT
       country as countryCode,
+      SUM(spend) as spend,
       SUM(orders_count) as orders,
       SUM(revenue) as revenue
     FROM manual_orders
@@ -222,6 +223,7 @@ export function getDashboard(store, params) {
       name: info.name,
       flag: info.flag,
       spend: 0,
+      manualSpend: 0,
       metaOrders: 0,
       metaRevenue: 0,
       ecomOrders: e.orders || 0,
@@ -325,6 +327,8 @@ export function getDashboard(store, params) {
     if (!countryMap.has(m.countryCode)) continue;
     const country = countryMap.get(m.countryCode);
     country.manualOrders = (country.manualOrders || 0) + (m.orders || 0);
+    country.manualSpend = (country.manualSpend || 0) + (m.spend || 0);
+    country.spend = (country.spend || 0) + (m.spend || 0);
     country.revenue += m.revenue || 0;
   }
 
@@ -359,7 +363,7 @@ export function getDashboard(store, params) {
     .sort((a, b) => b.spend - a.spend);
 
   // Calculate overview
-  const totalSpend = campaigns.reduce((s, c) => s + c.spend, 0);
+  const totalSpend = campaigns.reduce((s, c) => s + c.spend, 0) + manualOrders.reduce((s, m) => s + (m.spend || 0), 0);
   const totalEcomOrders = ecomOrders.reduce((s, e) => s + e.orders, 0);
   const totalManualOrders = manualOrders.reduce((s, m) => s + m.orders, 0);
   const totalOrders = totalEcomOrders + totalManualOrders;
@@ -448,7 +452,7 @@ function getTrends(store, startDate, endDate) {
 
   // Manual daily
   const manualDaily = db.prepare(`
-    SELECT date, SUM(orders_count) as orders, SUM(revenue) as revenue
+    SELECT date, SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
     FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?
     GROUP BY date
   `).all(store, startDate, endDate);
@@ -477,6 +481,7 @@ function getTrends(store, startDate, endDate) {
   // Add manual orders
   for (const m of manualDaily) {
     if (dateMap.has(m.date)) {
+      dateMap.get(m.date).spend += m.spend || 0;
       dateMap.get(m.date).orders += m.orders || 0;
       dateMap.get(m.date).revenue += m.revenue || 0;
     }
