@@ -1,5 +1,5 @@
 // client/src/App.jsx
-import { Fragment, useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   LineChart, Line, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
@@ -32,7 +32,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Manual Data'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -53,6 +53,7 @@ export default function App() {
   const [efficiency, setEfficiency] = useState(null);
   const [efficiencyTrends, setEfficiencyTrends] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
+  const [budgetIntelligence, setBudgetIntelligence] = useState(null);
   const [manualOrders, setManualOrders] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
@@ -126,6 +127,7 @@ export default function App() {
         effData,
         effTrends,
         recs,
+        intel,
         orders,
         countries,
         cTrends
@@ -134,6 +136,7 @@ export default function App() {
         fetch(`${API_BASE}/analytics/efficiency?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/efficiency/trends?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/recommendations?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/budget-intelligence?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/manual?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/countries?store=${currentStore}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/countries/trends?${params}`).then(r => r.json())
@@ -143,6 +146,7 @@ export default function App() {
       setEfficiency(effData);
       setEfficiencyTrends(effTrends);
       setRecommendations(recs);
+      setBudgetIntelligence(intel);
       setManualOrders(orders);
       setAvailableCountries(countries);
       setCountryTrends(cTrends);
@@ -510,15 +514,23 @@ export default function App() {
         )}
         
         {activeTab === 1 && efficiency && (
-          <EfficiencyTab 
+          <EfficiencyTab
             efficiency={efficiency}
             trends={efficiencyTrends}
             recommendations={recommendations}
             formatCurrency={formatCurrency}
           />
         )}
-        
-        {activeTab === 2 && (
+
+        {activeTab === 2 && budgetIntelligence && (
+          <BudgetIntelligenceTab
+            data={budgetIntelligence}
+            formatCurrency={formatCurrency}
+            store={store}
+          />
+        )}
+
+        {activeTab === 3 && (
           <ManualDataTab
             orders={manualOrders}
             form={orderForm}
@@ -1788,6 +1800,295 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
       )}
       <div className="text-xs text-gray-400 mt-1 text-center">
         {expanded ? 'Click to hide chart' : 'Click to expand'}
+      </div>
+    </div>
+  );
+}
+
+function BudgetIntelligenceTab({ data, formatCurrency, store }) {
+  const [selectedCountry, setSelectedCountry] = useState('');
+  const [objective, setObjective] = useState('purchases');
+  const [brandSelection, setBrandSelection] = useState(store.id);
+
+  useEffect(() => {
+    if (data?.startPlans?.length) {
+      setSelectedCountry(data.startPlans[0].country);
+    }
+    setBrandSelection(store.id);
+  }, [data, store.id]);
+
+  const planningDefaults = data?.planningDefaults || {};
+  const priors = data?.priors || {};
+
+  const buildPlanFromPriors = (countryCode) => {
+    const targetRange = planningDefaults.targetPurchasesRange || { min: 8, max: 15 };
+    const targetPurchases = (targetRange.min + targetRange.max) / 2;
+    const testDays = planningDefaults.testDays || 4;
+    const baseCac = priors.meanCAC || priors.targetCAC || 1;
+    let daily = (baseCac * targetPurchases) / testDays;
+
+    const comparables = planningDefaults.comparableDailySpends || [];
+    if (comparables.length > 0) {
+      let nearest = comparables[0];
+      let minDiff = Math.abs(daily - nearest);
+      for (const val of comparables) {
+        const diff = Math.abs(daily - val);
+        if (diff < minDiff) {
+          minDiff = diff;
+          nearest = val;
+        }
+      }
+      daily = Math.max(nearest * 0.7, Math.min(nearest * 1.3, daily));
+    }
+
+    if (planningDefaults.minDaily) {
+      daily = Math.max(daily, planningDefaults.minDaily);
+    }
+    if (planningDefaults.maxDaily) {
+      daily = Math.min(daily, planningDefaults.maxDaily);
+    }
+
+    const expectedPurchases = (daily * testDays) / Math.max(baseCac, 1);
+
+    return {
+      country: countryCode,
+      name: countryCode,
+      flag: '🏳️',
+      recommendedDaily: daily,
+      recommendedTotal: daily * testDays,
+      testDays,
+      posteriorCAC: baseCac,
+      posteriorROAS: priors.meanROAS || priors.targetROAS || 0,
+      expectedPurchases,
+      expectedRange: {
+        low: Math.max(targetRange.min * 0.8, expectedPurchases * 0.8),
+        high: Math.min(targetRange.max * 1.2, expectedPurchases * 1.2)
+      },
+      confidence: 'Low',
+      confidenceBand: {
+        low: (priors.meanROAS || 0) * 0.8,
+        high: (priors.meanROAS || 0) * 1.2
+      },
+      rationale: 'Brand priors applied because no geo history',
+      effectiveN: 1
+    };
+  };
+
+  const startPlan = useMemo(() => {
+    if (!data) return null;
+    const fromServer = data.startPlans?.find(p => p.country === selectedCountry);
+    if (fromServer) return fromServer;
+    if (selectedCountry) return buildPlanFromPriors(selectedCountry);
+    return data.startPlans?.[0] || null;
+  }, [data, selectedCountry]);
+
+  const formatMetric = (value, decimals = 2) =>
+    value === null || value === undefined || Number.isNaN(value)
+      ? '—'
+      : Number(value).toFixed(decimals);
+
+  const formatCurrencySafe = (value, decimals = 0) =>
+    value === null || value === undefined || Number.isNaN(value)
+      ? '—'
+      : formatCurrency(value, decimals);
+
+  const guidance = data?.liveGuidance || [];
+  const learningMap = data?.learningMap || {};
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900 mb-1">Start Budget Planner (New Geo)</h2>
+            <p className="text-sm text-gray-600">Disciplined starting budgets grounded in brand priors and nearby performance.</p>
+          </div>
+          <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+            Prior window: {data?.priorRange?.startDate || '—'} to {data?.priorRange?.endDate || '—'}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+          <div className="md:col-span-2">
+            <label className="text-sm font-medium text-gray-700">Country</label>
+            <input
+              list="country-options"
+              value={selectedCountry}
+              onChange={(e) => setSelectedCountry(e.target.value.toUpperCase())}
+              placeholder="Type or select a country code"
+              className="mt-2 w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+            />
+            <datalist id="country-options">
+              {(data?.availableCountries || []).map(c => (
+                <option key={c.code} value={c.code}>{`${c.flag} ${c.name}`}</option>
+              ))}
+            </datalist>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700">Brand</label>
+            <select
+              value={brandSelection}
+              onChange={(e) => setBrandSelection(e.target.value)}
+              className="mt-2 w-full px-4 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-700"
+              disabled
+            >
+              <option value="vironax">VironaX</option>
+              <option value="shawq">Shawq</option>
+            </select>
+            <p className="text-[11px] text-gray-500 mt-1">Use the store switcher above to change brand.</p>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700">Objective</label>
+            <select
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              className="mt-2 w-full px-4 py-2 border border-gray-200 rounded-lg"
+            >
+              <option value="purchases">Purchases (default)</option>
+              <option value="atc">Add To Cart (fallback)</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+          <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
+            <p className="text-sm text-gray-500">Recommended starting daily</p>
+            <div className="text-3xl font-bold text-gray-900 mt-1">
+              {startPlan ? formatCurrencySafe(startPlan.recommendedDaily, 0) : '—'}
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Test for {startPlan?.testDays || planningDefaults.testDays || 4} days • Objective: {objective === 'atc' ? 'ATC' : 'Purchases'}</p>
+          </div>
+          <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
+            <p className="text-sm text-gray-500">Expected purchases (range)</p>
+            <div className="text-2xl font-bold text-gray-900 mt-1">
+              {startPlan ? `${formatMetric(startPlan.expectedRange.low, 1)} - ${formatMetric(startPlan.expectedRange.high, 1)}` : '—'}
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Posterior CAC {formatCurrencySafe(startPlan?.posteriorCAC || priors.meanCAC, 0)} | ROAS {formatMetric(startPlan?.posteriorROAS || priors.meanROAS, 2)}</p>
+          </div>
+          <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
+            <p className="text-sm text-gray-500">Confidence band</p>
+            <div className="text-xl font-semibold text-gray-900 mt-1">
+              {startPlan ? `${formatMetric(startPlan.confidenceBand.low, 2)} - ${formatMetric(startPlan.confidenceBand.high, 2)}` : '—'}
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Signal strength: {startPlan?.confidence || 'Low'} • {startPlan?.rationale || 'Using priors'}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900">Live Scale/Hold/Cut Guidance</h2>
+            <p className="text-sm text-gray-600">Posterior performance with uncertainty-aware probabilities.</p>
+          </div>
+          <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+            Targets — ROAS ≥ {priors.targetROAS || '—'} | CAC ≤ {formatCurrencySafe(priors.targetCAC, 0)}
+          </div>
+        </div>
+
+        {guidance.length === 0 ? (
+          <div className="text-center py-10 text-gray-500">No Meta campaigns found for this window.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-gray-600">
+                  <th className="py-3 px-4 text-left">Campaign × Country</th>
+                  <th className="py-3 px-4 text-right">Spend</th>
+                  <th className="py-3 px-4 text-right">Purchases</th>
+                  <th className="py-3 px-4 text-right">Revenue</th>
+                  <th className="py-3 px-4 text-right">AOV</th>
+                  <th className="py-3 px-4 text-right">CAC</th>
+                  <th className="py-3 px-4 text-right">ROAS</th>
+                  <th className="py-3 px-4 text-right">Posterior CAC</th>
+                  <th className="py-3 px-4 text-right">Posterior ROAS</th>
+                  <th className="py-3 px-4 text-left">Action</th>
+                  <th className="py-3 px-4 text-left">Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {guidance.map((row) => {
+                  const badgeStyles = row.action === 'Scale'
+                    ? 'bg-green-100 text-green-700'
+                    : row.action === 'Cut'
+                      ? 'bg-red-100 text-red-700'
+                      : row.action === 'Insufficient Data'
+                        ? 'bg-amber-100 text-amber-700'
+                        : 'bg-gray-100 text-gray-700';
+                  return (
+                    <tr key={`${row.campaignId}-${row.country}`} className="border-t border-gray-100">
+                      <td className="py-3 px-4">
+                        <div className="font-medium text-gray-900">{row.campaignName || 'Unnamed Campaign'}</div>
+                        <div className="text-xs text-gray-500">{row.country || '—'}</div>
+                      </td>
+                      <td className="py-3 px-4 text-right">{formatCurrency(row.spend, 0)}</td>
+                      <td className="py-3 px-4 text-right">{formatMetric(row.purchases, 0)}</td>
+                      <td className="py-3 px-4 text-right">{formatCurrencySafe(row.revenue, 0)}</td>
+                      <td className="py-3 px-4 text-right">{formatMetric(row.aov, 0)}</td>
+                      <td className="py-3 px-4 text-right">{formatCurrencySafe(row.cac, 0)}</td>
+                      <td className="py-3 px-4 text-right">{formatMetric(row.roas, 2)}</td>
+                      <td className="py-3 px-4 text-right">{formatCurrencySafe(row.posteriorCAC, 0)}</td>
+                      <td className="py-3 px-4 text-right">{formatMetric(row.posteriorROAS, 2)}</td>
+                      <td className="py-3 px-4">
+                        <span className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ${badgeStyles}`}>
+                          {row.action}
+                        </span>
+                        {row.action === 'Scale' && <div className="text-[11px] text-gray-500">Suggest +15% to +25% daily</div>}
+                        {row.action === 'Cut' && <div className="text-[11px] text-gray-500">Suggest -20% to -35% daily</div>}
+                      </td>
+                      <td className="py-3 px-4 text-gray-600 text-sm max-w-xs">{row.reason}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-xs text-gray-500 mt-3">These are probabilistic recommendations using smoothed performance to avoid overreacting to noise.</p>
+      </div>
+
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900">Learning Health &amp; Expansion Map</h2>
+            <p className="text-sm text-gray-600">Ranked by smoothed ROAS minus CAC with signal strength bonus.</p>
+          </div>
+          <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full">Signal bonus grows with purchases/orders</div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <LearningColumn title="High priority to test" data={learningMap.highPriority} accent="border-green-500" />
+          <LearningColumn title="Promising but noisy" data={learningMap.noisy} accent="border-amber-500" />
+          <LearningColumn title="Likely poor fit" data={learningMap.poorFit} accent="border-red-500" />
+          <LearningColumn title="Not enough signal" data={learningMap.lowSignal} accent="border-gray-300" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LearningColumn({ title, data, accent }) {
+  return (
+    <div className={`border rounded-xl p-4 ${accent} bg-gray-50`}>
+      <h3 className="font-semibold text-gray-900 mb-3">{title}</h3>
+      {(!data || data.length === 0) && (
+        <p className="text-sm text-gray-500">—</p>
+      )}
+      <div className="space-y-3">
+        {(data || []).map((item) => (
+          <div key={item.country} className="bg-white rounded-lg p-3 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span>{item.flag}</span>
+                <div>
+                  <div className="font-medium text-gray-900 text-sm">{item.name || item.country}</div>
+                  <div className="text-xs text-gray-500">Posterior ROAS {item.posteriorROAS ? item.posteriorROAS.toFixed(2) : '—'} | CAC {item.posteriorCAC ? Math.round(item.posteriorCAC) : '—'}</div>
+                </div>
+              </div>
+              <div className="text-xs text-gray-500">N={item.effectiveN}</div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
