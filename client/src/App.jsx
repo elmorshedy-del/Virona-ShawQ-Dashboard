@@ -579,7 +579,13 @@ function DashboardTab({
   expandedStates,
   setExpandedStates
 }) {
-  const { overview, trends, campaigns, countries, diagnostics } = dashboard;
+  const {
+    overview = {},
+    trends = [],
+    campaigns = [],
+    countries = [],
+    diagnostics = {}
+  } = dashboard || {};
 
   const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
@@ -618,6 +624,10 @@ function DashboardTab({
   });
 
   const totalCountrySpend = countries.reduce((s, x) => s + (x.spend || 0), 0);
+
+  const safeExpandedStates = expandedStates instanceof Set
+    ? expandedStates
+    : new Set(expandedStates || []);
 
   const sortedCampaigns = [...campaigns].sort((a, b) => {
     const aVal = a[campaignSortConfig.field] || 0;
@@ -1485,7 +1495,7 @@ function DashboardTab({
                   if (isUsCountry) {
                     const stateKey = `${c.code}-${city.city || 'unknown'}`;
                     const hasStateCities = Array.isArray(city.cities) && city.cities.length > 0;
-                    const stateExpanded = expandedStates.has(stateKey);
+                    const stateExpanded = safeExpandedStates.has(stateKey);
                     const orderedStateCities = hasStateCities
                       ? [...city.cities].sort((a, b) => (b.orders || 0) - (a.orders || 0))
                       : [];
