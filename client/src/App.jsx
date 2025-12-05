@@ -816,6 +816,27 @@ function DashboardTab({
 
   const orderedCountryTrends = [...countryTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
 
+  const parseLocalDate = useCallback((dateString) => {
+    if (!dateString) return null;
+    const safeDate = dateString.includes('T') ? dateString : `${dateString}T00:00:00`;
+    const parsed = new Date(safeDate);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }, []);
+
+  const formatCountryTick = useCallback((dateString) => {
+    const date = parseLocalDate(dateString);
+    return date
+      ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      : dateString;
+  }, [parseLocalDate]);
+
+  const formatCountryTooltip = useCallback((dateString) => {
+    const date = parseLocalDate(dateString);
+    return date
+      ? date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+      : dateString;
+  }, [parseLocalDate]);
+
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const shopifyTimeZone = shopifyTimeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
   const shopifyTimeOfDayData = Array.isArray(shopifyTimeOfDay?.data) ? shopifyTimeOfDay.data : [];
@@ -1887,25 +1908,14 @@ function DashboardTab({
                     <ResponsiveContainer>
                       <AreaChart data={country.trends}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis 
-                          dataKey="date" 
+                        <XAxis
+                          dataKey="date"
                           tick={{ fontSize: 10 }}
-                          tickFormatter={(d) =>
-                            new Date(d).toLocaleDateString('en-US', {
-                              month: 'short',
-                              day: 'numeric'
-                            })
-                          }
+                          tickFormatter={formatCountryTick}
                         />
                         <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip 
-                          labelFormatter={(d) =>
-                            new Date(d).toLocaleDateString('en-US', {
-                              weekday: 'short',
-                              month: 'short',
-                              day: 'numeric'
-                            })
-                          }
+                        <Tooltip
+                          labelFormatter={formatCountryTooltip}
                           formatter={(value, name) => [
                             value,
                             name === 'orders' ? 'Orders' : 'Revenue'
