@@ -1022,8 +1022,12 @@ export function getCountryTrends(store, params) {
 
 // Shopify hourly orders for the selected range (defaults to last 7 days)
 export function getShopifyTimeOfDay(store, params) {
+  const allowedTimezones = ['America/New_York', 'Europe/London'];
+  const requestedTz = params.tz;
+  const timezone = allowedTimezones.includes(requestedTz) ? requestedTz : 'America/New_York';
+
   if (store !== 'shawq') {
-    return [];
+    return { data: [], timezone, sampleTimestamps: [] };
   }
 
   const db = getDb();
@@ -1041,8 +1045,10 @@ export function getShopifyTimeOfDay(store, params) {
     revenue: 0
   }));
 
+  const sampleTimestamps = [];
+
   const hourFormatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
+    timeZone: timezone,
     hour: '2-digit',
     hour12: false
   });
@@ -1051,12 +1057,16 @@ export function getShopifyTimeOfDay(store, params) {
     const rawTimestamp = row.order_created_at || row.created_at;
     if (!rawTimestamp) continue;
 
+    if (sampleTimestamps.length < 5) {
+      sampleTimestamps.push(rawTimestamp);
+    }
+
     const parsed = new Date(rawTimestamp);
     if (Number.isNaN(parsed.getTime())) continue;
 
     const hourStr = hourFormatter.format(parsed);
     const hourIdx = parseInt(hourStr, 10);
-    if (hourIdx >= 0 && hourIdx < 24) {
+    if (Number.isInteger(hourIdx) && hourIdx >= 0 && hourIdx < 24) {
       hourlyBuckets[hourIdx].orders += 1;
       hourlyBuckets[hourIdx].revenue += row.subtotal || 0;
     }
@@ -1064,6 +1074,7 @@ export function getShopifyTimeOfDay(store, params) {
 
   return {
     data: hourlyBuckets,
-    timezone: 'America/New_York',
+    timezone,
+    sampleTimestamps
   };
 }

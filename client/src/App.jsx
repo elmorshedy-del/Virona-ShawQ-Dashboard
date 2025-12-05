@@ -58,8 +58,8 @@ export default function App() {
   const [manualOrders, setManualOrders] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
-  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState([]);
-  const [shopifyTimeZone, setShopifyTimeZone] = useState(null);
+  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: null, sampleTimestamps: [] });
+  const [selectedShopifyTz, setSelectedShopifyTz] = useState('America/New_York');
   
   // KPI charts
   const [expandedKpis, setExpandedKpis] = useState([]);
@@ -126,7 +126,7 @@ export default function App() {
         params.set(dateRange.type, dateRange.value);
       }
 
-      const timeOfDayParams = new URLSearchParams({ store: currentStore, days: 7 });
+      const timeOfDayParams = new URLSearchParams({ store: currentStore, days: 7, tz: selectedShopifyTz });
 
       const [
         dashData,
@@ -149,7 +149,7 @@ export default function App() {
         fetch(`${API_BASE}/analytics/countries/trends?${params}`).then(r => r.json()),
         currentStore === 'shawq'
           ? fetch(`${API_BASE}/analytics/shopify/time-of-day?${timeOfDayParams}`).then(r => r.json())
-          : Promise.resolve([])
+          : Promise.resolve({ data: [], timezone: selectedShopifyTz, sampleTimestamps: [] })
       ]);
 
       setDashboard(dashData);
@@ -160,15 +160,15 @@ export default function App() {
       setManualOrders(orders);
       setAvailableCountries(countries);
       setCountryTrends(cTrends);
-      const timeOfDayData = Array.isArray(timeOfDay) ? timeOfDay : timeOfDay?.data || [];
-      const timeOfDayZone = Array.isArray(timeOfDay) ? null : timeOfDay?.timezone || null;
-      setShopifyTimeZone(timeOfDayZone);
-      setShopifyTimeOfDay(timeOfDayData);
+      const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
+      const timeOfDayZone = typeof timeOfDay?.timezone === 'string' ? timeOfDay.timezone : null;
+      const timeOfDaySamples = Array.isArray(timeOfDay?.sampleTimestamps) ? timeOfDay.sampleTimestamps.slice(0, 5) : [];
+      setShopifyTimeOfDay({ data: timeOfDayData, timezone: timeOfDayZone, sampleTimestamps: timeOfDaySamples });
     } catch (error) {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange]);
+  }, [currentStore, dateRange, selectedShopifyTz]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -652,12 +652,14 @@ function DashboardTab({
 
   const orderedCountryTrends = [...countryTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
 
-  const shopifyHourlyChartData = shopifyTimeOfDay.map((point) => ({
+  const shopifyTimeZone = shopifyTimeOfDay?.timezone ?? selectedShopifyTz ?? 'America/New_York';
+  const shopifyTimeOfDayData = Array.isArray(shopifyTimeOfDay?.data) ? shopifyTimeOfDay.data : [];
+  const shopifyHourlyChartData = shopifyTimeOfDayData.map((point) => ({
     ...point,
     hourLabel: `${point.hour}:00`
   }));
 
-  const totalShopifyHourlyOrders = shopifyTimeOfDay.reduce((sum, point) => sum + (point.orders || 0), 0);
+  const totalShopifyHourlyOrders = shopifyTimeOfDayData.reduce((sum, point) => sum + (point.orders || 0), 0);
 
   const handleCountrySort = (field) => {
     setCountrySortConfig(prev => ({
@@ -1394,7 +1396,7 @@ function DashboardTab({
       )}
 
       {/* Shopify time of day trends */}
-      {store.id === 'shawq' && shopifyHourlyChartData.length > 0 && (
+      {store.id === 'shawq' && (
         <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
@@ -1402,12 +1404,31 @@ function DashboardTab({
               <p className="text-sm text-gray-500">
                 Shopify orders grouped by hour. Use this to spot when customers are most active.
               </p>
-              <p className="text-xs text-gray-600 mt-2">
-                Time Zone:{' '}
+              <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
+                <span>Time Zone:</span>
                 <span className="inline-flex items-center px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 font-medium">
-                  {shopifyTimeZone || 'Probably Istanbul Zone'}
+                  {shopifyTimeZone}
                 </span>
-              </p>
+                <div className="flex items-center gap-1">
+                  <button
+                    className={`px-2 py-1 rounded ${selectedShopifyTz === 'America/New_York' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
+                    onClick={() => setSelectedShopifyTz('America/New_York')}
+                  >
+                    NY
+                  </button>
+                  <button
+                    className={`px-2 py-1 rounded ${selectedShopifyTz === 'Europe/London' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
+                    onClick={() => setSelectedShopifyTz('Europe/London')}
+                  >
+                    London
+                  </button>
+                </div>
+              </div>
+              {shopifyTimeOfDay?.sampleTimestamps?.length > 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Sample timestamps: {shopifyTimeOfDay.sampleTimestamps.join(', ')}
+                </p>
+              )}
             </div>
             <div className="text-right">
               <div className="text-xs uppercase text-gray-400">Total orders</div>
@@ -1415,27 +1436,31 @@ function DashboardTab({
             </div>
           </div>
 
-          <div className="h-64 mt-4">
-            <ResponsiveContainer>
-              <LineChart data={shopifyHourlyChartData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="hourLabel" tick={{ fontSize: 10 }} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
-                <Tooltip
-                  formatter={(value, name) => [value, name === 'orders' ? 'Orders' : 'Revenue']}
-                  labelFormatter={(label) => `${label}`}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="orders"
-                  stroke="#6366f1"
-                  strokeWidth={3}
-                  dot={{ r: 2 }}
-                  activeDot={{ r: 4 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+          {shopifyHourlyChartData.length > 0 ? (
+            <div className="h-64 mt-4">
+              <ResponsiveContainer>
+                <LineChart data={shopifyHourlyChartData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                  <XAxis dataKey="hourLabel" tick={{ fontSize: 10 }} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+                  <Tooltip
+                    formatter={(value, name) => [value, name === 'orders' ? 'Orders' : 'Revenue']}
+                    labelFormatter={(label) => `${label}`}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="orders"
+                    stroke="#6366f1"
+                    strokeWidth={3}
+                    dot={{ r: 2 }}
+                    activeDot={{ r: 4 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500 mt-4">No Shopify time-of-day data available for this range.</p>
+          )}
         </div>
       )}
 
