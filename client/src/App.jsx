@@ -1957,6 +1957,7 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
 
 function BudgetIntelligenceTab({ data, formatCurrency, store }) {
   const [selectedCountry, setSelectedCountry] = useState('');
+  const [countryInput, setCountryInput] = useState('');
   const [objective, setObjective] = useState('purchases');
   const [brandSelection, setBrandSelection] = useState(store.id);
 
@@ -1988,6 +1989,17 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
     }
     setBrandSelection(store.id);
   }, [data, store.id, masterCountries, selectedCountry]);
+
+  useEffect(() => {
+    if (!selectedCountry) {
+      setCountryInput('');
+      return;
+    }
+    const match = masterCountries.find(c => c.code === selectedCountry);
+    if (match) {
+      setCountryInput(`${match.name} (${match.code})`);
+    }
+  }, [selectedCountry, masterCountries]);
 
   const planningDefaults = data?.planningDefaults || {};
   const priors = data?.priors || {};
@@ -2069,6 +2081,20 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
   const guidance = data?.liveGuidance || [];
   const learningMap = data?.learningMap || {};
 
+  const handleCountryInput = (value) => {
+    setCountryInput(value);
+    const normalized = value.trim().toLowerCase();
+    const match = masterCountries.find(c =>
+      normalized === c.code.toLowerCase() ||
+      normalized === c.name.toLowerCase() ||
+      normalized === `${c.name.toLowerCase()} (${c.code.toLowerCase()})`
+    );
+
+    if (match) {
+      setSelectedCountry(match.code);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="bg-white rounded-xl p-6 shadow-sm">
@@ -2087,14 +2113,17 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
             <label className="text-sm font-medium text-gray-700">Country</label>
             <input
               list="country-options"
-              value={selectedCountry}
-              onChange={(e) => setSelectedCountry(e.target.value.toUpperCase())}
-              placeholder="Type or select a country code"
+              value={countryInput}
+              onChange={(e) => handleCountryInput(e.target.value)}
+              placeholder="Type or select a country"
               className="mt-2 w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
             />
             <datalist id="country-options">
               {masterCountries.map(c => (
-                <option key={c.code} value={c.code}>{`${c.flag} ${c.name}`}</option>
+                <option
+                  key={c.code}
+                  value={`${c.name} (${c.code})`}
+                >{`${c.flag} ${c.name}`}</option>
               ))}
             </datalist>
             <div className="flex items-center gap-2 mt-2 text-xs">
@@ -2108,35 +2137,6 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
               {!hasSelectedCountryData && (
                 <span className="text-amber-700">No historical data yet — using global baseline.</span>
               )}
-            </div>
-            <div className="mt-3 max-h-40 overflow-y-auto border border-gray-100 rounded-lg p-2 bg-gray-50">
-              <div className="flex flex-wrap gap-2">
-                {masterCountries.map(c => {
-                  const hasData = countriesWithData.has(c.code);
-                  return (
-                    <button
-                      key={c.code}
-                      type="button"
-                      onClick={() => setSelectedCountry(c.code)}
-                      className={`px-3 py-1 rounded-full text-xs flex items-center gap-2 border transition-colors ${
-                        selectedCountry === c.code
-                          ? 'bg-indigo-100 border-indigo-300 text-indigo-800'
-                          : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'
-                      }`}
-                    >
-                      <span>{c.flag}</span>
-                      <span className="font-semibold">{c.code}</span>
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                          hasData ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-700'
-                        }`}
-                      >
-                        {hasData ? 'data' : 'new'}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
             </div>
           </div>
           <div>
