@@ -58,6 +58,8 @@ export default function App() {
   const [manualOrders, setManualOrders] = useState([]);
   const [manualSpendOverrides, setManualSpendOverrides] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
+  const [xlsImports, setXlsImports] = useState([]);
+  const [xlsUploading, setXlsUploading] = useState(false);
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
   const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [] });
   const [selectedShopifyRegion, setSelectedShopifyRegion] = useState('us');
@@ -149,7 +151,8 @@ export default function App() {
         spendOverrides,
         countries,
         cTrends,
-        timeOfDay
+        timeOfDay,
+        imports
       ] = await Promise.all([
         fetch(`${API_BASE}/analytics/dashboard?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/efficiency?${params}`).then(r => r.json()),
@@ -162,7 +165,8 @@ export default function App() {
         fetch(`${API_BASE}/analytics/countries/trends?${params}`).then(r => r.json()),
         currentStore === 'shawq'
           ? fetch(`${API_BASE}/analytics/shopify/time-of-day?${timeOfDayParams}`).then(r => r.json())
-          : Promise.resolve({ data: [], timezone: shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago', sampleTimestamps: [] })
+          : Promise.resolve({ data: [], timezone: shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago', sampleTimestamps: [] }),
+        fetch(`${API_BASE}/meta/imports?store=${currentStore}`).then(r => r.json())
       ]);
 
       setDashboard(dashData);
@@ -174,6 +178,7 @@ export default function App() {
       setManualSpendOverrides(spendOverrides);
       setAvailableCountries(countries);
       setCountryTrends(cTrends);
+      setXlsImports(Array.isArray(imports) ? imports : []);
       const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
       const timeOfDayZone = typeof timeOfDay?.timezone === 'string' ? timeOfDay.timezone : null;
       const timeOfDaySamples = Array.isArray(timeOfDay?.sampleTimestamps) ? timeOfDay.sampleTimestamps.slice(0, 5) : [];
@@ -323,6 +328,55 @@ export default function App() {
       loadData();
     } catch (error) {
       console.error('Bulk delete error:', error);
+    }
+  }
+
+  async function handleXlsUpload(file, notes = '') {
+    if (!file) return;
+
+    setXlsUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('notes', notes);
+
+      const response = await fetch(`${API_BASE}/meta/imports/upload?store=${currentStore}`, {
+        method: 'POST',
+        body: formData
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Upload failed');
+      }
+
+      alert(`Successfully imported ${result.recordCount} records from ${result.originalFilename}`);
+      await loadData();
+    } catch (error) {
+      console.error('XLS upload error:', error);
+      alert(`Import failed: ${error.message}`);
+    }
+    setXlsUploading(false);
+  }
+
+  async function handleDeleteXlsImport(importId) {
+    if (!confirm('Delete this import and all its data? This cannot be undone.')) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/meta/imports/${importId}?store=${currentStore}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error || 'Delete failed');
+      }
+
+      await loadData();
+    } catch (error) {
+      console.error('Delete import error:', error);
+      alert(`Delete failed: ${error.message}`);
     }
   }
 
@@ -685,6 +739,10 @@ export default function App() {
             formatCurrency={formatCurrency}
             store={store}
             availableCountries={availableCountries}
+            xlsImports={xlsImports}
+            xlsUploading={xlsUploading}
+            onXlsUpload={handleXlsUpload}
+            onDeleteXlsImport={handleDeleteXlsImport}
           />
         )}
       </div>
@@ -2540,10 +2598,15 @@ function ManualDataTab({
   onBulkDelete,
   formatCurrency,
   store,
-  availableCountries
+  availableCountries,
+  xlsImports,
+  xlsUploading,
+  onXlsUpload,
+  onDeleteXlsImport
 }) {
   const [deleteScope, setDeleteScope] = useState('day');
   const [deleteDate, setDeleteDate] = useState(new Date().toISOString().split('T')[0]);
+  const [xlsNotes, setXlsNotes] = useState('');
 
   const overrideLabel = (code) => {
     if (code === 'ALL') return 'All Countries (override total spend)';
@@ -2551,8 +2614,131 @@ function ManualDataTab({
     return country ? `${country.flag} ${country.name}` : code;
   };
 
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      onXlsUpload(file, xlsNotes);
+      e.target.value = '';
+      setXlsNotes('');
+    }
+  };
+
+  const formatBreakdownType = (type) => {
+    const types = {
+      campaign: 'By Campaign',
+      country: 'By Country',
+      age: 'By Age',
+      gender: 'By Gender',
+      age_gender: 'By Age + Gender',
+      placement: 'By Placement'
+    };
+    return types[type] || type;
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Meta XLS Import Section */}
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-6 shadow-sm border border-blue-200">
+        <h3 className="text-lg font-semibold mb-2 flex items-center gap-2 text-blue-900">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+          </svg>
+          Import Meta Ads XLS Data
+        </h3>
+        <p className="text-sm text-blue-700 mb-4">
+          Upload your exported Meta Ads Manager XLS/XLSX file. The data will populate Section 1, Section 2, Spend Card, and Countries table based on dates in the file.
+        </p>
+
+        <div className="flex items-end gap-4 mb-4">
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Notes (optional)
+            </label>
+            <input
+              type="text"
+              value={xlsNotes}
+              onChange={(e) => setXlsNotes(e.target.value)}
+              placeholder="e.g., December week 1 data"
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="relative cursor-pointer">
+              <input
+                type="file"
+                accept=".xls,.xlsx,.csv"
+                onChange={handleFileChange}
+                disabled={xlsUploading}
+                className="hidden"
+              />
+              <span className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium transition-colors ${
+                xlsUploading
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}>
+                {xlsUploading ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                    Upload XLS File
+                  </>
+                )}
+              </span>
+            </label>
+          </div>
+        </div>
+
+        {/* Import History */}
+        {xlsImports && xlsImports.length > 0 && (
+          <div className="mt-4 border-t border-blue-200 pt-4">
+            <h4 className="text-sm font-medium text-gray-700 mb-3">Import History</h4>
+            <div className="space-y-2">
+              {xlsImports.map((imp) => (
+                <div
+                  key={imp.id}
+                  className="flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3">
+                      <span className="font-medium text-gray-900">{imp.original_filename}</span>
+                      <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full">
+                        {formatBreakdownType(imp.breakdown_type)}
+                      </span>
+                    </div>
+                    <div className="text-sm text-gray-500 mt-1">
+                      {imp.date_from} to {imp.date_to} • {imp.records_count} records
+                      {imp.notes && <span className="ml-2 text-gray-400">• {imp.notes}</span>}
+                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      Imported: {new Date(imp.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => onDeleteXlsImport(imp.id)}
+                    className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                    title="Delete this import"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(!xlsImports || xlsImports.length === 0) && (
+          <div className="text-center py-4 text-gray-500 text-sm">
+            No imports yet. Upload a Meta Ads export file to get started.
+          </div>
+        )}
+      </div>
+
       <div className="bg-white rounded-xl p-6 shadow-sm">
         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
           <Plus className="w-5 h-5" />

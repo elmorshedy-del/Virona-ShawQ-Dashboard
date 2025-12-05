@@ -11,6 +11,7 @@ import { syncShopifyOrders } from './services/shopifyService.js';
 import analyticsRoutes from './routes/analytics.js';
 import manualRoutes from './routes/manual.js';
 import budgetIntelligenceRoutes from './routes/budgetIntelligence.js';
+import metaImportRoutes from './routes/metaImport.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -27,6 +28,7 @@ app.use(express.json());
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/manual', manualRoutes);
 app.use('/api/budget-intelligence', budgetIntelligenceRoutes);
+app.use('/api/meta/imports', metaImportRoutes);
 
 // List available stores
 app.get('/api/stores', (req, res) => {

@@ -191,12 +191,34 @@ export function initDb() {
     )
   `);
 
+  // Meta XLS imports tracking table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_xls_imports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'vironax',
+      filename TEXT NOT NULL,
+      original_filename TEXT NOT NULL,
+      date_from TEXT NOT NULL,
+      date_to TEXT NOT NULL,
+      records_count INTEGER DEFAULT 0,
+      breakdown_type TEXT DEFAULT 'campaign',
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Add import_id column to meta_daily_metrics if it doesn't exist
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN import_id INTEGER REFERENCES meta_xls_imports(id)`);
+  } catch (e) { /* column exists */ }
+
   // Create indexes for performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_store_date ON meta_daily_metrics(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_salla_store_date ON salla_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_spend_store_date ON manual_spend_overrides(store, date)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_import_id ON meta_daily_metrics(import_id)`);
 
   console.log('✅ Database initialized');
   return db;
