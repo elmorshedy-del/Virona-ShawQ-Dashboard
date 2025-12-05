@@ -1034,14 +1034,21 @@ export function getShopifyTimeOfDay(store, params) {
     if (!trimmed) return null;
 
     const upper = trimmed.toUpperCase();
+    const compact = upper.replace(/[^A-Z]/g, '');
 
-    if (['UNITED STATES', 'USA', 'US'].includes(upper)) return 'US';
-    if (['UNITED KINGDOM', 'UK', 'GB', 'GREAT BRITAIN'].includes(upper)) return 'GB';
+    if (upper.includes('UNITED STATES')) return 'US';
+    if (compact === 'USA') return 'US';
+    if (compact === 'US') return 'US';
+
+    if (upper.includes('UNITED KINGDOM')) return 'GB';
+    if (upper.includes('GREAT BRITAIN')) return 'GB';
+    if (compact === 'UK' || compact === 'GB') return 'GB';
 
     if (countryNameMap.has(upper)) return countryNameMap.get(upper);
+    if (countryNameMap.has(compact)) return countryNameMap.get(compact);
 
     if (upper.length === 2) return upper;
-    if (upper.length === 3 && upper === 'USA') return 'US';
+    if (compact.length === 2) return compact;
 
     return null;
   };
