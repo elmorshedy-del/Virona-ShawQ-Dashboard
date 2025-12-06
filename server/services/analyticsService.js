@@ -194,6 +194,9 @@ export function getDashboard(store, params) {
     WHERE store = ? AND date BETWEEN ? AND ?
   `).get(store, startDate, endDate) || {};
 
+  // *** THIS IS THE LINE THAT WAS MISSING ***
+  const metaCampaignCount = metaTotals.campaign_count || 0;
+  
   const metaImpressionsTotal = metaTotals.impressions_total || 0;
   const metaClicksTotal = metaTotals.clicks_total || 0;
 
@@ -209,7 +212,7 @@ export function getDashboard(store, params) {
     dateRange: { startDate, endDate },
     
     // Meta Specifics
-    metaCampaignCount: metaTotals.campaign_count || 0,
+    metaCampaignCount, // No longer undefined
     metaSpendTotal: current.spend, 
     metaRevenueTotal: current.revenue, 
     metaRoasTotal: current.roas,
