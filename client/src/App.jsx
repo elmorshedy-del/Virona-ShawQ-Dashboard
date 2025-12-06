@@ -1,5 +1,5 @@
 // client/src/App.jsx
-import { Fragment, useState, useEffect, useCallback, useMemo } from 'react';
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   LineChart, Line, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
@@ -72,22 +72,79 @@ export default function App() {
   const [recommendations, setRecommendations] = useState([]);
   const [budgetIntelligence, setBudgetIntelligence] = useState(null);
   const [manualOrders, setManualOrders] = useState([]);
-  const [manualSpendOverrides, setManualSpendOverrides] = useState([]);
-  const [availableCountries, setAvailableCountries] = useState([]);
-  const [metaBreakdownData, setMetaBreakdownData] = useState([]);
-  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [] });
-  const [selectedShopifyRegion, setSelectedShopifyRegion] = useState('us');
-  const [notifications, setNotifications] = useState([]);
-  const [showNotificationPanel, setShowNotificationPanel] = useState(false);
-  
-  // KPI charts
-  const [expandedKpis, setExpandedKpis] = useState([]);
-  // Section 2 breakdown (pure meta)
-  const [metaBreakdown, setMetaBreakdown] = useState('none');
-  // Country trends
-  const [countryTrends, setCountryTrends] = useState([]);
+  const [manualSpendOverrides, setManualSpendOverrides] = useState([]);
+  const [availableCountries, setAvailableCountries] = useState([]);
+  const [metaBreakdownData, setMetaBreakdownData] = useState([]);
+  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [] });
+  const [selectedShopifyRegion, setSelectedShopifyRegion] = useState('us');
 
-  const store = STORES[currentStore];
+  // KPI charts
+  const [expandedKpis, setExpandedKpis] = useState([]);
+  // Section 2 breakdown (pure meta)
+  const [metaBreakdown, setMetaBreakdown] = useState('none');
+  // Country trends
+  const [countryTrends, setCountryTrends] = useState([]);
+
+  // --- NOTIFICATION LOGIC START ---
+  const [notifications, setNotifications] = useState([]);
+  const [showNotificationPanel, setShowNotificationPanel] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  // Refs to track changes
+  const prevOrdersRef = useRef(null);
+  const notifiedCampaignsRef = useRef(new Set());
+
+  // Auto-hide Toast
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
+  const addNotification = (type, title, message) => {
+    const newNote = {
+      id: Date.now(),
+      type,
+      message: title,
+      country: message,
+      timestamp: new Date().toISOString(),
+      source: 'System'
+    };
+    setNotifications(prev => [newNote, ...prev].slice(0, 20));
+    setToast({ type, title, message });
+  };
+
+  // Watcher: New Orders
+  useEffect(() => {
+    if (!dashboard?.overview) return;
+    const currentOrders = dashboard.overview.orders;
+    if (prevOrdersRef.current !== null && currentOrders > prevOrdersRef.current) {
+      const diff = currentOrders - prevOrdersRef.current;
+      addNotification('success', `🎉 ${diff} New Order${diff > 1 ? 's' : ''}!`, `Total: ${currentOrders}`);
+    }
+    prevOrdersRef.current = currentOrders;
+  }, [dashboard?.overview?.orders]);
+
+  // Watcher: Budget Alerts
+  useEffect(() => {
+    if (!budgetIntelligence?.liveGuidance) return;
+    budgetIntelligence.liveGuidance.forEach(item => {
+      const key = `${item.campaignId}-${item.action}`;
+      if (!notifiedCampaignsRef.current.has(key)) {
+        if (item.action === 'Scale') {
+          addNotification('success', `🚀 Scale: ${item.campaignName}`, `ROAS ${item.roas?.toFixed(2)}x`);
+          notifiedCampaignsRef.current.add(key);
+        } else if (item.action === 'Cut') {
+          addNotification('error', `🔻 Cut: ${item.campaignName}`, `ROAS ${item.roas?.toFixed(2)}x`);
+          notifiedCampaignsRef.current.add(key);
+        }
+      }
+    });
+  }, [budgetIntelligence]);
+  // --- NOTIFICATION LOGIC END ---
+
+  const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
     date: getLocalDateString(),
     country: 'SA',
