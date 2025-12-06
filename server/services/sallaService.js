@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
+import { createOrderNotifications } from './notificationService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 export async function fetchSallaOrders(dateStart, dateEnd) {
@@ -102,7 +103,8 @@ export async function syncSallaOrders() {
       INSERT INTO sync_log (store, source, status, records_synced)
       VALUES ('vironax', 'salla', 'success', ?)
     `).run(recordsInserted);
-
+const notificationCount = createOrderNotifications('vironax', 'salla', orders);
+console.log(`[Salla] Created ${notificationCount} notifications`);
     return { success: true, records: recordsInserted };
   } catch (error) {
     db.prepare(`
