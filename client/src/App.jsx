@@ -140,8 +140,9 @@ export default function App() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    try {
-      const params = new URLSearchParams({ store: currentStore });
+    try {
+      const params = new URLSearchParams({ store: currentStore });
+      const countryTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
       
       if (dateRange.type === 'custom') {
         params.set('startDate', dateRange.start);
@@ -155,30 +156,30 @@ export default function App() {
       const shopifyRegion = selectedShopifyRegion ?? 'us';
       const timeOfDayParams = new URLSearchParams({ store: currentStore, days: 7, region: shopifyRegion });
 
-      const [
-        dashData,
-        effData,
-        effTrends,
+      const [
+        dashData,
+        effData,
+        effTrends,
         recs,
         intel,
         orders,
-        spendOverrides,
-        countries,
-        cTrends,
-        timeOfDay
-      ] = await Promise.all([
-        fetch(`${API_BASE}/analytics/dashboard?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/efficiency?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/efficiency/trends?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/recommendations?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/budget-intelligence?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/manual?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/manual/spend?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/countries?store=${currentStore}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/countries/trends?${params}`).then(r => r.json()),
-        currentStore === 'shawq'
-          ? fetch(`${API_BASE}/analytics/shopify/time-of-day?${timeOfDayParams}`).then(r => r.json())
-          : Promise.resolve({ data: [], timezone: shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago', sampleTimestamps: [] })
+        spendOverrides,
+        countries,
+        cTrends,
+        timeOfDay
+      ] = await Promise.all([
+        fetch(`${API_BASE}/analytics/dashboard?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/efficiency?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/efficiency/trends?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/recommendations?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/budget-intelligence?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/manual?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/manual/spend?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/countries?store=${currentStore}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/countries/trends?${countryTrendParams}`).then(r => r.json()),
+        currentStore === 'shawq'
+          ? fetch(`${API_BASE}/analytics/shopify/time-of-day?${timeOfDayParams}`).then(r => r.json())
+          : Promise.resolve({ data: [], timezone: shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago', sampleTimestamps: [] })
       ]);
 
       setDashboard(dashData);
