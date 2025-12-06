@@ -155,7 +155,7 @@ export function createOrderNotifications(store, source, orders) {
     const orderText = data.count === 1 ? 'order' : 'orders';
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
     
-    const message = `${data.count} ${orderText} from ${country} • ${currency} ${data.total.toFixed(2)} • ${sourceLabel}`;
+    const message = `${country} • ${currency} ${data.total.toFixed(2)} • ${sourceLabel}`;
     
     createNotification({
       store,
