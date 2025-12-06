@@ -779,19 +779,12 @@ function DashboardTab({
   const ecomLabel = store.ecommerce;
   
   const kpis = [
-    { key: 'revenue', label: 'Revenue', value: overview.revenue, format: 'currency', color: '#8b5cf6' },
-    { key: 'spend', label: 'Ad Spend', value: overview.spend, format: 'currency', color: '#6366f1' },
-    { 
-      key: 'orders',
-      label: 'Orders',
-      value: overview.orders,
-      format: 'number',
-      subtitle: `${overview.sallaOrders || overview.shopifyOrders || 0} ${ecomLabel} + ${overview.manualOrders} Manual`,
-      color: '#22c55e'
-    },
-    { key: 'aov', label: 'AOV', value: overview.aov, format: 'currency', color: '#f59e0b' },
-    { key: 'cac', label: 'CAC', value: overview.cac, format: 'currency', color: '#ef4444' },
-    { key: 'roas', label: 'ROAS', value: overview.roas, format: 'roas', color: '#10b981' },
+    { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6' },
+    { key: 'spend', label: 'Ad Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1' },
+    { key: 'orders', label: 'Orders', value: overview.orders, change: overview.ordersChange, format: 'number', color: '#22c55e' },
+    { key: 'aov', label: 'AOV', value: overview.aov, change: overview.aovChange, format: 'currency', color: '#f59e0b' },
+    { key: 'cac', label: 'CAC', value: overview.cac, change: overview.cacChange, format: 'currency', color: '#ef4444' },
+    { key: 'roas', label: 'ROAS', value: overview.roas, change: overview.roasChange, format: 'roas', color: '#10b981' },
   ];
 
   const sortedCountries = [...countries].sort((a, b) => {
