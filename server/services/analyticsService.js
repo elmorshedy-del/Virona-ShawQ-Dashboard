@@ -77,75 +77,31 @@ export function getDashboard(store, params) {
       SUM(landing_page_views) as lpv_total,
       SUM(add_to_cart) as atc_total,
       SUM(checkouts_initiated) as checkout_total,
-      SUM(conversions) as conversions_total
+      SUM(conversions) as conversions_total,
+      COUNT(DISTINCT campaign_name) as campaign_count
     FROM meta_daily_metrics
     WHERE store = ? AND date BETWEEN ? AND ?
   `).get(store, startDate, endDate) || {};
 
-  // *** FIX: Define metaCampaignCount ***
-  const metaCampaignCount = db.prepare(`
-    SELECT COUNT(DISTINCT campaign_name) as count
-    FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND spend > 0
-  `).get(store, startDate, endDate)?.count || 0;
-
+  const metaCampaignCount = metaTotals.campaign_count || 0;
   const metaSpendTotal = metaTotals.metaSpendTotal || 0;
   const metaRevenueTotal = metaTotals.metaRevenueTotal || 0;
-  const impressions_total = metaTotals.impressions_total || 0;
-  const reach_total = metaTotals.reach_total || 0;
-  const clicks_total = metaTotals.clicks_total || 0;
-  const lpv_total = metaTotals.lpv_total || 0;
-  const atc_total = metaTotals.atc_total || 0;
-  const checkout_total = metaTotals.checkout_total || 0;
   const conversions_total = metaTotals.conversions_total || 0;
-  const metaRoasTotal = metaSpendTotal > 0 ? metaRevenueTotal / metaSpendTotal : null;
-  const ctr_total = impressions_total > 0 ? clicks_total / impressions_total : null;
-  const meta_cac_total = conversions_total > 0 ? metaSpendTotal / conversions_total : null;
+  
+  // 3. OVERVIEW (SWITCHED TO META ONLY as requested)
+  const overview = {
+    revenue: metaRevenueTotal, // Taking directly from Meta Pixel Revenue
+    spend: metaSpendTotal,
+    orders: conversions_total, // Taking directly from Meta Pixel Purchases
+    sallaOrders: 0, // Ignored for now
+    shopifyOrders: 0, // Ignored for now
+    manualOrders: 0,
+    aov: conversions_total > 0 ? metaRevenueTotal / conversions_total : 0,
+    cac: conversions_total > 0 ? metaSpendTotal / conversions_total : 0,
+    roas: metaSpendTotal > 0 ? metaRevenueTotal / metaSpendTotal : 0
+  };
 
-  // 3. E-COMMERCE DATA
-  let ecomOrders;
-  let ecomCityOrders;
-
-  if (store === 'vironax') {
-    ecomOrders = db.prepare(`
-      SELECT country_code as countryCode, COUNT(*) as orders, SUM(order_total) as revenue
-      FROM salla_orders
-      WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
-      GROUP BY country_code
-    `).all(store, startDate, endDate);
-    
-    ecomCityOrders = db.prepare(`
-      SELECT country_code as countryCode, COALESCE(NULLIF(city, ''), 'Unknown') as city, COUNT(*) as orders, SUM(order_total) as revenue
-      FROM salla_orders
-      WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
-      GROUP BY country_code, city
-    `).all(store, startDate, endDate);
-  } else {
-    ecomOrders = db.prepare(`
-      SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders
-      WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
-      GROUP BY country_code
-    `).all(store, startDate, endDate);
-
-    ecomCityOrders = db.prepare(`
-      SELECT country_code as countryCode, COALESCE(NULLIF(city, ''), 'Unknown') as city, COALESCE(NULLIF(state, ''), '') as state, COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders
-      WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
-      GROUP BY country_code, city, state
-    `).all(store, startDate, endDate);
-  }
-
-  const manualOrders = db.prepare(`
-    SELECT country as countryCode, SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
-    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY country
-  `).all(store, startDate, endDate);
-
-  const manualSpendOverrides = db.prepare(`
-    SELECT country as countryCode, SUM(amount) as amount
-    FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ? GROUP BY country
-  `).all(store, startDate, endDate);
-
+  // 4. META BY COUNTRY
   const metaByCountry = db.prepare(`
     SELECT 
       country as countryCode, 
@@ -159,58 +115,13 @@ export function getDashboard(store, params) {
     GROUP BY country
   `).all(store, startDate, endDate);
 
-  // 4. MERGE DATA
+  // 5. BUILD COUNTRY LIST (Dynamic - only if data exists)
   const countryMap = new Map();
-  for (const e of ecomOrders) {
-    const info = getCountryInfo(e.countryCode);
-    countryMap.set(e.countryCode, {
-      code: e.countryCode, name: info.name, flag: info.flag,
-      spend: 0, manualSpend: 0, metaOrders: 0, metaRevenue: 0,
-      impressions: 0, clicks: 0,
-      ecomOrders: e.orders || 0, manualOrders: 0, revenue: e.revenue || 0, cities: []
-    });
-  }
-
-  const usStateAggregates = new Map();
-  for (const cityRow of ecomCityOrders || []) {
-    const country = countryMap.get(cityRow.countryCode);
-    if (!country) continue;
-    if (!cityRow.orders && !cityRow.revenue) continue;
-
-    if (cityRow.countryCode === 'US') {
-      const stateName = cityRow.state?.trim() || 'Unknown';
-      const cityName = cityRow.city?.trim() || 'Unknown';
-      const existing = usStateAggregates.get(stateName) || { city: stateName, orders: 0, revenue: 0, cities: [] };
-      existing.orders += cityRow.orders || 0;
-      existing.revenue += cityRow.revenue || 0;
-      if (cityRow.orders || cityRow.revenue) {
-        const cityList = existing.cities || [];
-        const existingCity = cityList.find(c => c.city === cityName) || { city: cityName, orders: 0, revenue: 0 };
-        existingCity.orders += cityRow.orders || 0;
-        existingCity.revenue += cityRow.revenue || 0;
-        if (!cityList.includes(existingCity)) cityList.push(existingCity);
-        existing.cities = cityList;
-      }
-      usStateAggregates.set(stateName, existing);
-      continue;
-    }
-
-    const formattedCity = cityRow.countryCode === 'US' && (cityRow.state?.trim()) 
-      ? `${cityRow.city}, ${cityRow.state}` : cityRow.city;
-    country.cities.push({ city: formattedCity, orders: cityRow.orders || 0, revenue: cityRow.revenue || 0 });
-  }
-
-  if (usStateAggregates.size > 0 && countryMap.has('US')) {
-    const usStates = Array.from(usStateAggregates.values()).filter(state => state.orders > 0);
-    const rankedStates = [...usStates].sort((a, b) => b.orders - a.orders);
-    rankedStates.slice(0, 3).forEach((state, idx) => {
-      state.medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉';
-      state.rank = idx + 1;
-    });
-    countryMap.get('US').cities = rankedStates;
-  }
-
+  
   for (const m of metaByCountry) {
+    // Skip if no spend and no conversions (Truly empty rows)
+    if (!m.spend && !m.conversions) continue;
+
     if (!countryMap.has(m.countryCode)) {
       const info = getCountryInfo(m.countryCode);
       countryMap.set(m.countryCode, {
@@ -226,67 +137,20 @@ export function getDashboard(store, params) {
     country.metaRevenue = (country.metaRevenue || 0) + (m.conversionValue || 0);
     country.impressions = (country.impressions || 0) + (m.impressions || 0);
     country.clicks = (country.clicks || 0) + (m.clicks || 0);
-  }
-
-  for (const m of manualOrders) {
-    if (!countryMap.has(m.countryCode)) {
-      const info = getCountryInfo(m.countryCode);
-      countryMap.set(m.countryCode, {
-        code: m.countryCode, name: info.name, flag: info.flag,
-        spend: 0, manualSpend: 0, metaOrders: 0, metaRevenue: 0,
-        impressions: 0, clicks: 0,
-        ecomOrders: 0, manualOrders: 0, revenue: 0, cities: []
-      });
-    }
-    const country = countryMap.get(m.countryCode);
-    country.manualOrders = (country.manualOrders || 0) + (m.orders || 0);
-    country.manualSpend = (country.manualSpend || 0) + (m.spend || 0);
-    country.spend = (country.spend || 0) + (m.spend || 0);
-    country.revenue += m.revenue || 0;
-  }
-
-  const overrideMap = new Map(manualSpendOverrides.map(o => [o.countryCode || 'ALL', o.amount || 0]));
-  for (const [countryCode, amount] of overrideMap.entries()) {
-    if (countryCode === 'ALL') continue;
-    if (countryMap.has(countryCode)) {
-      const country = countryMap.get(countryCode);
-      country.spend = amount || 0;
-      country.manualSpend = amount || 0;
-    }
+    
+    // Populate "Revenue" and "Orders" columns from Meta for now
+    country.revenue = country.metaRevenue;
+    country.totalOrders = country.metaOrders;
   }
 
   const countries = Array.from(countryMap.values())
-    .map(c => {
-      const totalOrders = c.ecomOrders + c.manualOrders;
-      return {
-        ...c,
-        totalOrders,
-        aov: totalOrders > 0 ? c.revenue / totalOrders : 0,
-        cac: totalOrders > 0 ? c.spend / totalOrders : 0,
-        roas: c.spend > 0 ? c.revenue / c.spend : 0
-      };
-    })
-    .filter(c => (c.ecomOrders > 0 || c.revenue > 0 || c.spend > 0 || c.metaOrders > 0))
+    .map(c => ({
+      ...c,
+      aov: c.totalOrders > 0 ? c.revenue / c.totalOrders : 0,
+      cac: c.totalOrders > 0 ? c.spend / c.totalOrders : 0,
+      roas: c.spend > 0 ? c.revenue / c.spend : 0
+    }))
     .sort((a, b) => b.spend - a.spend);
-
-  const overallOverride = overrideMap.get('ALL');
-  const totalSpend = overallOverride != null ? overallOverride : countries.reduce((s, c) => s + (c.spend || 0), 0);
-  const totalEcomOrders = ecomOrders.reduce((s, e) => s + e.orders, 0);
-  const totalManualOrders = manualOrders.reduce((s, m) => s + m.orders, 0);
-  const totalOrders = totalEcomOrders + totalManualOrders;
-  const totalRevenue = countries.reduce((s, c) => s + c.revenue, 0);
-
-  const overview = {
-    revenue: totalRevenue,
-    spend: totalSpend,
-    orders: totalOrders,
-    sallaOrders: store === 'vironax' ? totalEcomOrders : 0,
-    shopifyOrders: store === 'shawq' ? totalEcomOrders : 0,
-    manualOrders: totalManualOrders,
-    aov: totalOrders > 0 ? totalRevenue / totalOrders : 0,
-    cac: totalOrders > 0 ? totalSpend / totalOrders : 0,
-    roas: totalSpend > 0 ? totalRevenue / totalSpend : 0
-  };
 
   const trends = getTrends(store, startDate, endDate);
   const diagnostics = generateDiagnostics(campaigns, overview);
@@ -298,22 +162,23 @@ export function getDashboard(store, params) {
     trends,
     diagnostics,
     dateRange: { startDate, endDate },
-    metaCampaignCount, // No longer undefined!
+    metaCampaignCount,
     metaSpendTotal,
     metaRevenueTotal,
-    metaRoasTotal,
-    metaImpressionsTotal: impressions_total,
-    metaReachTotal: reach_total,
-    metaClicksTotal: clicks_total,
-    metaCtrTotal: ctr_total,
-    metaLpvTotal: lpv_total,
-    metaAtcTotal: atc_total,
-    metaCheckoutTotal: checkout_total,
+    metaRoasTotal: overview.roas,
+    metaImpressionsTotal: metaTotals.impressions_total || 0,
+    metaReachTotal: metaTotals.reach_total || 0,
+    metaClicksTotal: metaTotals.clicks_total || 0,
+    metaCtrTotal: (metaTotals.impressions_total > 0 ? metaTotals.clicks_total / metaTotals.impressions_total : 0),
+    metaLpvTotal: metaTotals.lpv_total || 0,
+    metaAtcTotal: metaTotals.atc_total || 0,
+    metaCheckoutTotal: metaTotals.checkout_total || 0,
     metaConversionsTotal: conversions_total,
-    metaCacTotal: meta_cac_total
+    metaCacTotal: overview.cac
   };
 }
 
+// UPDATED: Now includes Meta Data in the trend lines
 function getTrends(store, startDate, endDate) {
   const db = getDb();
   const allDates = [];
@@ -323,6 +188,7 @@ function getTrends(store, startDate, endDate) {
     allDates.push(formatDateAsGmt3(d));
   }
   
+  // 1. Get Meta Daily Data (Grouped by Date)
   const metaDaily = db.prepare(`
     SELECT 
       date,
@@ -332,28 +198,6 @@ function getTrends(store, startDate, endDate) {
     FROM meta_daily_metrics
     WHERE store = ? AND date BETWEEN ? AND ?
     GROUP BY date
-    ORDER BY date
-  `).all(store, startDate, endDate);
-
-  let ecomDaily;
-  if (store === 'vironax') {
-    ecomDaily = db.prepare(`
-      SELECT date, COUNT(*) as orders, SUM(order_total) as revenue
-      FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ?
-      GROUP BY date
-    `).all(store, startDate, endDate);
-  } else {
-    ecomDaily = db.prepare(`
-      SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?
-      GROUP BY date
-    `).all(store, startDate, endDate);
-  }
-
-  const manualDaily = db.prepare(`
-    SELECT date, SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
-    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?
-    GROUP BY date
   `).all(store, startDate, endDate);
 
   const dateMap = new Map();
@@ -361,24 +205,13 @@ function getTrends(store, startDate, endDate) {
     dateMap.set(date, { date, spend: 0, orders: 0, revenue: 0 });
   }
   
+  // 2. Fill with Meta Data (Since user wants Meta to drive charts)
   for (const m of metaDaily) {
     if (dateMap.has(m.date)) {
-      dateMap.get(m.date).spend = m.spend || 0;
-    }
-  }
-
-  for (const e of ecomDaily) {
-    if (dateMap.has(e.date)) {
-      dateMap.get(e.date).orders += e.orders || 0;
-      dateMap.get(e.date).revenue += e.revenue || 0;
-    }
-  }
-
-  for (const m of manualDaily) {
-    if (dateMap.has(m.date)) {
-      dateMap.get(m.date).spend += m.spend || 0;
-      dateMap.get(m.date).orders += m.orders || 0;
-      dateMap.get(m.date).revenue += m.revenue || 0;
+      const d = dateMap.get(m.date);
+      d.spend = m.spend || 0;
+      d.orders = m.metaConversions || 0; // Use Meta conversions for orders
+      d.revenue = m.metaRevenue || 0;    // Use Meta value for revenue
     }
   }
 
@@ -406,16 +239,67 @@ function generateDiagnostics(campaigns, overview) {
   return diagnostics;
 }
 
-// Dynamic Countries: Returns only countries with data
+// FIXED: Dynamic Countries + Meta Data Source
+// Returns daily trends per country, sourced from Meta
+export function getCountryTrends(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const allDates = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    allDates.push(formatDateAsGmt3(d));
+  }
+
+  // Get Meta Daily by Country
+  const metaData = db.prepare(`
+    SELECT date, country, SUM(conversions) as orders, SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+    GROUP BY date, country
+  `).all(store, startDate, endDate);
+
+  const countryMap = new Map();
+
+  for (const row of metaData) {
+    if (!row.country) continue;
+    if (!countryMap.has(row.country)) {
+      countryMap.set(row.country, new Map());
+    }
+    const dates = countryMap.get(row.country);
+    dates.set(row.date, { orders: row.orders || 0, revenue: row.revenue || 0 });
+  }
+
+  const result = [];
+  for (const [country, datesMap] of countryMap) {
+    const countryInfo = getCountryInfo(country);
+    const trends = allDates.map(date => {
+      const d = datesMap.get(date) || { orders: 0, revenue: 0 };
+      return { date, ...d };
+    });
+    
+    const totalOrders = trends.reduce((s, t) => s + t.orders, 0);
+    if (totalOrders > 0) { // Only include if data exists
+        result.push({
+            country: countryInfo.name,
+            countryCode: country,
+            flag: countryInfo.flag,
+            totalOrders,
+            trends
+        });
+    }
+  }
+
+  return result.sort((a, b) => b.totalOrders - a.totalOrders);
+}
+
 export function getAvailableCountries(store) {
   const db = getDb();
+  // Only return countries that have Meta Spend or Conversions
   const rows = db.prepare(`
-    SELECT DISTINCT country as code FROM meta_daily_metrics WHERE store = ? AND country != 'ALL' AND spend > 0
-    UNION
-    SELECT DISTINCT country_code as code FROM shopify_orders WHERE store = ?
-    UNION
-    SELECT DISTINCT country_code as code FROM salla_orders WHERE store = ?
-  `).all(store, store, store);
+    SELECT DISTINCT country as code FROM meta_daily_metrics 
+    WHERE store = ? AND country != 'ALL' AND (spend > 0 OR conversions > 0)
+  `).all(store);
 
   return rows.map(r => getCountryInfo(r.code)).filter(c => c && c.name);
 }
@@ -453,6 +337,5 @@ export function getCampaignsByAge(store, params) { return []; }
 export function getCampaignsByGender(store, params) { return []; }
 export function getCampaignsByPlacement(store, params) { return []; }
 export function getCampaignsByAgeGender(store, params) { return []; }
-export function getCountryTrends(store, params) { return []; }
 export function getShopifyTimeOfDay(store, params) { return { data: [], timezone: 'UTC', sampleTimestamps: [] }; }
 export function getMetaBreakdowns(store, params) { return []; }
