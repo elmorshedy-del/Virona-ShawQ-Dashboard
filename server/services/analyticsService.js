@@ -2,7 +2,7 @@ import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
-// 1. Date Helpers
+// 1. Date Helper
 function getDateRange(params) {
   const now = new Date();
   const today = formatDateAsGmt3(now);
@@ -31,15 +31,13 @@ function getDateRange(params) {
   return { startDate, endDate, days };
 }
 
-// Calculate the EXACT previous period (Rolling Window) for Trend Arrows
+// 2. Calculate Previous Period (For Arrows)
 function getPreviousDateRange(startDate, endDate) {
   const start = new Date(startDate);
   const end = new Date(endDate);
   const durationMs = end.getTime() - start.getTime();
   
-  // End of previous period = 1 day before current start
   const prevEnd = new Date(start.getTime() - (24 * 60 * 60 * 1000)); 
-  // Start of previous period = End - duration
   const prevStart = new Date(prevEnd.getTime() - durationMs);
   
   return {
@@ -48,92 +46,65 @@ function getPreviousDateRange(startDate, endDate) {
   };
 }
 
-// 2. Data Calculation Helper (The "Engine")
+// 3. Get Totals for Any Range (The "Engine")
 function getTotalsForRange(db, store, startDate, endDate) {
-  // A. Get Meta Data (Always needed for Spend)
+  // Meta Totals
   const metaTotals = db.prepare(`
-    SELECT
-      SUM(spend) as metaSpendTotal,
-      SUM(conversion_value) as metaRevenueTotal,
-      SUM(conversions) as conversions_total
-    FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?
+    SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?
   `).get(store, startDate, endDate) || {};
 
-  const metaSpend = metaTotals.metaSpendTotal || 0;
-  const metaRevenue = metaTotals.metaRevenueTotal || 0;
-  const metaOrders = metaTotals.conversions_total || 0;
+  let totalSpend = metaTotals.spend || 0;
+  let totalRevenue = metaTotals.revenue || 0;
+  let totalOrders = metaTotals.orders || 0;
 
-  // B. Get Shopify Data (Shawq Only)
-  let ecomOrders = 0;
-  let ecomRevenue = 0;
-
+  // Shopify Data (Shawq Only)
   if (store === 'shawq') {
     const ecomData = db.prepare(`
       SELECT COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders
-      WHERE store = ? AND date BETWEEN ? AND ?
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?
     `).get(store, startDate, endDate) || {};
-    ecomOrders = ecomData.orders || 0;
-    ecomRevenue = ecomData.revenue || 0;
+    totalOrders = ecomData.orders || 0; // Use Real Shopify Orders
+    totalRevenue = ecomData.revenue || 0; // Use Real Shopify Revenue
   }
 
-  // C. Get Manual Data
+  // Manual Data (Always Added)
   const manualData = db.prepare(`
     SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
     FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?
   `).get(store, startDate, endDate) || {};
 
-  const manualSpend = manualData.spend || 0;
-  const manualOrders = manualData.orders || 0;
-  const manualRevenue = manualData.revenue || 0;
+  totalSpend += manualData.spend || 0;
+  totalRevenue += manualData.revenue || 0;
+  // For Virona, manual orders add to Meta orders. For Shawq, they add to Shopify orders.
+  totalOrders += manualData.orders || 0;
 
-  // D. Get Overrides
-  const overrides = db.prepare(`
-    SELECT SUM(amount) as amount FROM manual_spend_overrides 
-    WHERE store = ? AND date BETWEEN ? AND ?
+  // Overrides
+  const override = db.prepare(`
+    SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
   `).get(store, startDate, endDate);
-  const overrideSpend = overrides?.amount || null;
-
-  // E. Combine Logic
-  // Spend is always Meta + Manual (unless overridden)
-  const finalSpend = overrideSpend !== null ? overrideSpend : (metaSpend + manualSpend);
-
-  // Revenue/Orders Logic
-  let finalRevenue = 0;
-  let finalOrders = 0;
-
-  if (store === 'shawq') {
-    // Shawq: Shopify + Manual
-    finalRevenue = ecomRevenue + manualRevenue;
-    finalOrders = ecomOrders + manualOrders;
-  } else {
-    // Virona: Meta Pixel + Manual
-    finalRevenue = metaRevenue + manualRevenue;
-    finalOrders = metaOrders + manualOrders;
-  }
+  if (override?.amount) totalSpend = override.amount;
 
   return {
-    spend: finalSpend,
-    revenue: finalRevenue,
-    orders: finalOrders,
-    aov: finalOrders > 0 ? finalRevenue / finalOrders : 0,
-    cac: finalOrders > 0 ? finalSpend / finalOrders : 0,
-    roas: finalSpend > 0 ? finalRevenue / finalSpend : 0
+    spend: totalSpend,
+    revenue: totalRevenue,
+    orders: totalOrders,
+    aov: totalOrders > 0 ? totalRevenue / totalOrders : 0,
+    cac: totalOrders > 0 ? totalSpend / totalOrders : 0,
+    roas: totalSpend > 0 ? totalRevenue / totalSpend : 0
   };
 }
 
-// 3. Main Dashboard Function
+// 4. Main Dashboard Function
 export function getDashboard(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
   const prevRange = getPreviousDateRange(startDate, endDate);
 
-  // A. Calculate Current & Previous Totals (Fixes Arrows)
+  // A. Calculate Current vs Previous (For Arrows)
   const current = getTotalsForRange(db, store, startDate, endDate);
   const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate);
 
-  // B. Calculate Percentage Changes
   const calcChange = (curr, prev) => prev > 0 ? ((curr - prev) / prev) * 100 : 0;
 
   const overview = {
@@ -144,24 +115,16 @@ export function getDashboard(store, params) {
     aovChange: calcChange(current.aov, previous.aov),
     cacChange: calcChange(current.cac, previous.cac),
     roasChange: calcChange(current.roas, previous.roas),
-    
-    manualOrders: 0 // Placeholder
+    manualOrders: 0, sallaOrders: 0, shopifyOrders: 0 // Placeholders
   };
 
-  // C. Get Campaign Breakdown (Current Period)
+  // B. Campaign List (Aggregated from Meta)
   const campaignData = db.prepare(`
     SELECT 
-      campaign_id as campaignId,
-      campaign_name as campaignName,
-      SUM(spend) as spend,
-      SUM(impressions) as impressions,
-      SUM(reach) as reach,
-      SUM(clicks) as clicks,
-      SUM(landing_page_views) as lpv,
-      SUM(add_to_cart) as atc,
-      SUM(checkouts_initiated) as checkout,
-      SUM(conversions) as conversions,
-      SUM(conversion_value) as conversionValue
+      campaign_id as campaignId, campaign_name as campaignName,
+      SUM(spend) as spend, SUM(impressions) as impressions, SUM(reach) as reach,
+      SUM(clicks) as clicks, SUM(conversions) as conversions, SUM(conversion_value) as conversionValue,
+      SUM(landing_page_views) as lpv, SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout
     FROM meta_daily_metrics
     WHERE store = ? AND date BETWEEN ? AND ?
     GROUP BY campaign_name
@@ -180,27 +143,24 @@ export function getDashboard(store, params) {
     frequency: c.reach > 0 ? c.impressions / c.reach : 0
   }));
 
-  // D. Get Raw Meta Totals (For Section 2 & Funnel)
+  // C. Meta Raw Totals (Section 2)
   const metaTotals = db.prepare(`
     SELECT
-      SUM(impressions) as impressions_total,
-      SUM(reach) as reach_total,
-      SUM(clicks) as clicks_total,
-      SUM(landing_page_views) as lpv_total,
-      SUM(add_to_cart) as atc_total,
-      SUM(checkouts_initiated) as checkout_total,
+      SUM(impressions) as impressions_total, SUM(reach) as reach_total,
+      SUM(clicks) as clicks_total, SUM(landing_page_views) as lpv_total,
+      SUM(add_to_cart) as atc_total, SUM(checkouts_initiated) as checkout_total,
       COUNT(DISTINCT campaign_name) as campaign_count
     FROM meta_daily_metrics
     WHERE store = ? AND date BETWEEN ? AND ?
   `).get(store, startDate, endDate) || {};
 
-  // *** THIS IS THE LINE THAT WAS MISSING ***
+  // *** CRASH FIX: Defined metaCampaignCount ***
   const metaCampaignCount = metaTotals.campaign_count || 0;
   
   const metaImpressionsTotal = metaTotals.impressions_total || 0;
   const metaClicksTotal = metaTotals.clicks_total || 0;
 
-  // E. Dynamic Countries
+  // D. Dynamic Countries
   const countries = getDynamicCountries(db, store, startDate, endDate);
 
   return {
@@ -211,8 +171,7 @@ export function getDashboard(store, params) {
     diagnostics: generateDiagnostics(campaigns, overview),
     dateRange: { startDate, endDate },
     
-    // Meta Specifics
-    metaCampaignCount, // No longer undefined
+    metaCampaignCount, // Variable is now safe to use
     metaSpendTotal: current.spend, 
     metaRevenueTotal: current.revenue, 
     metaRoasTotal: current.roas,
@@ -228,74 +187,61 @@ export function getDashboard(store, params) {
   };
 }
 
-// Helper: Build the Country Table (Restored logic)
+// 5. Country Table Helper
 function getDynamicCountries(db, store, startDate, endDate) {
-  // 1. Get Meta Data
-  const metaByCountry = db.prepare(`
+  // Get Meta
+  const metaData = db.prepare(`
     SELECT country as countryCode, SUM(spend) as spend, SUM(conversions) as conversions, 
            SUM(conversion_value) as conversionValue, SUM(impressions) as impressions, SUM(clicks) as clicks
-    FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
-    GROUP BY country
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL' GROUP BY country
   `).all(store, startDate, endDate);
 
-  // 2. Get Ecom Data (Shawq Only)
-  let ecomOrders = [];
+  // Get Ecom (Shawq)
+  let ecomData = [];
   if (store === 'shawq') {
-    ecomOrders = db.prepare(`
+    ecomData = db.prepare(`
       SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders
-      WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
-      GROUP BY country_code
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
     `).all(store, startDate, endDate);
   }
 
-  // 3. Merge
-  const countryMap = new Map();
-
-  // Load Ecom first (Shawq)
-  for (const e of ecomOrders) {
+  const map = new Map();
+  
+  // Load Ecom
+  ecomData.forEach(e => {
     const info = getCountryInfo(e.countryCode);
-    countryMap.set(e.countryCode, {
-      code: e.countryCode, name: info.name, flag: info.flag,
-      spend: 0, revenue: e.revenue || 0, totalOrders: e.orders || 0,
-      impressions: 0, clicks: 0, cities: []
+    map.set(e.countryCode, { 
+      code: e.countryCode, name: info.name, flag: info.flag, 
+      spend: 0, revenue: e.revenue, totalOrders: e.orders, 
+      impressions: 0, clicks: 0, cities: [] 
     });
-  }
+  });
 
   // Load Meta
-  for (const m of metaByCountry) {
-    if (!m.spend && !m.conversions) continue;
-    if (!countryMap.has(m.countryCode)) {
+  metaData.forEach(m => {
+    if(!m.spend && !m.conversions) return;
+    if(!map.has(m.countryCode)) {
       const info = getCountryInfo(m.countryCode);
-      countryMap.set(m.countryCode, {
-        code: m.countryCode, name: info.name, flag: info.flag,
-        spend: 0, revenue: 0, totalOrders: 0, impressions: 0, clicks: 0, cities: []
+      map.set(m.countryCode, { 
+        code: m.countryCode, name: info.name, flag: info.flag, 
+        spend: 0, revenue: 0, totalOrders: 0, impressions: 0, clicks: 0, cities: [] 
       });
     }
-    const c = countryMap.get(m.countryCode);
+    const c = map.get(m.countryCode);
     c.spend += m.spend || 0;
     c.impressions += m.impressions || 0;
     c.clicks += m.clicks || 0;
     
-    if (store === 'vironax') {
+    if (store === 'vironax') { // Virona uses Meta for sales
       c.revenue = m.conversionValue || 0;
       c.totalOrders = m.conversions || 0;
     }
-  }
+  });
 
-  // Calculate Metrics
-  return Array.from(countryMap.values())
-    .map(c => ({
-      ...c,
-      aov: c.totalOrders > 0 ? c.revenue / c.totalOrders : 0,
-      cac: c.totalOrders > 0 ? c.spend / c.totalOrders : 0,
-      roas: c.spend > 0 ? c.revenue / c.spend : 0
-    }))
-    .sort((a, b) => b.spend - a.spend);
+  return Array.from(map.values()).sort((a, b) => b.spend - a.spend);
 }
 
-// Trends Helper
+// 6. Trends Helper (Fixed for Both Stores)
 function getTrends(store, startDate, endDate) {
   const db = getDb();
   const allDates = [];
@@ -305,39 +251,31 @@ function getTrends(store, startDate, endDate) {
     allDates.push(formatDateAsGmt3(d));
   }
 
-  let data = [];
+  let salesData = [];
   if (store === 'shawq') {
-    data = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
   } else {
-    data = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
   }
   
-  const metaData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+  const spendData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
 
-  const dateMap = new Map();
-  allDates.forEach(d => dateMap.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
+  const map = new Map();
+  allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
   
-  // Add Sales Data
-  data.forEach(r => { 
-      if(dateMap.has(r.date)) { 
-          dateMap.get(r.date).orders = r.orders; 
-          dateMap.get(r.date).revenue = r.revenue; 
-      }
-  });
-  
-  // Add Spend Data (Always from Meta)
-  metaData.forEach(r => {
-      if(dateMap.has(r.date)) {
-          dateMap.get(r.date).spend = r.spend;
-      }
-  });
+  salesData.forEach(r => { if(map.has(r.date)) { map.get(r.date).orders = r.orders; map.get(r.date).revenue = r.revenue; }});
+  spendData.forEach(r => { if(map.has(r.date)) { map.get(r.date).spend = r.spend; }});
 
-  return Array.from(dateMap.values());
+  return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
+    ...d, 
+    aov: d.orders > 0 ? d.revenue / d.orders : 0,
+    cac: d.orders > 0 ? d.spend / d.orders : 0,
+    roas: d.spend > 0 ? d.revenue / d.spend : 0
+  }));
 }
 
 function generateDiagnostics(campaigns, overview) { return []; }
 
-// FIX: Restore the correct country list logic
 export function getAvailableCountries(store) {
   const db = getDb();
   const rows = db.prepare(`
@@ -360,45 +298,11 @@ export function getCampaignsByAge(store, params) { return []; }
 export function getCampaignsByGender(store, params) { return []; }
 export function getCampaignsByPlacement(store, params) { return []; }
 export function getCampaignsByAgeGender(store, params) { return []; }
-
-// FIX: Restore correct trend query for Shawq/Virona
 export function getCountryTrends(store, params) { 
     const db = getDb();
     const { startDate, endDate } = getDateRange(params);
-    
-    // Generate All Dates
-    const allDates = [];
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      allDates.push(formatDateAsGmt3(d));
-    }
-
-    let data = [];
-    if(store === 'shawq') {
-        data = db.prepare(`SELECT date, country_code as country, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date, country_code`).all(store, startDate, endDate);
-    } else {
-        data = db.prepare(`SELECT date, country, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL' GROUP BY date, country`).all(store, startDate, endDate);
-    }
-    
-    // Transform into required format
-    const countryMap = new Map();
-    for(const row of data) {
-        if(!countryMap.has(row.country)) countryMap.set(row.country, new Map());
-        countryMap.get(row.country).set(row.date, { orders: row.orders, revenue: row.revenue });
-    }
-
-    const result = [];
-    for(const [code, dateMap] of countryMap) {
-        const trends = allDates.map(d => ({ date: d, ...dateMap.get(d) || { orders: 0, revenue: 0 } }));
-        const totalOrders = trends.reduce((s, t) => s + t.orders, 0);
-        if(totalOrders > 0) {
-            const info = getCountryInfo(code);
-            result.push({ country: info.name, countryCode: code, flag: info.flag, totalOrders, trends });
-        }
-    }
-    
-    return result.sort((a, b) => b.totalOrders - a.totalOrders);
+    if(store === 'shawq') return db.prepare(`SELECT date, country_code as country, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date, country_code`).all(store, startDate, endDate);
+    return db.prepare(`SELECT date, country, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL' GROUP BY date, country`).all(store, startDate, endDate);
 }
 export function getShopifyTimeOfDay(store, params) { return { data: [], timezone: 'UTC', sampleTimestamps: [] }; }
 export function getMetaBreakdowns(store, params) { return []; }
