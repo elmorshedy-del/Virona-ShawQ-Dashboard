@@ -1,4 +1,3 @@
-cat > client/src/App.jsx <<'EOF'
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   LineChart, Line, AreaChart, Area,
@@ -6,7 +5,7 @@ import {
 } from 'recharts';
 import {
   RefreshCw, TrendingUp, TrendingDown, Plus, Trash2,
-  Store, ChevronDown, ArrowUpDown, Calendar, Bell, X
+  Store, ChevronDown, ArrowUpDown, Calendar, Bell, X, ChevronUp
 } from 'lucide-react';
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 
@@ -434,7 +433,9 @@ export default function App() {
 function DashboardTab({ dashboard, expandedKpis, setExpandedKpis, formatCurrency, formatNumber, store, countryTrends }) {
   const { overview, campaigns, countries } = dashboard;
   const [metaView, setMetaView] = useState('campaign');
-  
+  const [countrySortConfig, setCountrySortConfig] = useState({ field: 'spend', direction: 'desc' });
+  const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
+
   const kpis = [
     { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6' },
     { key: 'spend', label: 'Ad Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1' },
@@ -445,6 +446,24 @@ function DashboardTab({ dashboard, expandedKpis, setExpandedKpis, formatCurrency
   ];
 
   const toggleKpi = (key) => setExpandedKpis(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
+
+  const handleSort = (config, setConfig, field) => {
+    setConfig(prev => ({
+      field,
+      direction: prev.field === field && prev.direction === 'desc' ? 'asc' : 'desc'
+    }));
+  };
+
+  const sortData = (data, config) => {
+    return [...data].sort((a, b) => {
+      const aVal = a[config.field] || 0;
+      const bVal = b[config.field] || 0;
+      return config.direction === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+  };
+
+  const sortedCampaigns = sortData(campaigns, campaignSortConfig);
+  const sortedCountries = sortData(countries, countrySortConfig);
 
   return (
     <div className="space-y-6">
@@ -464,13 +483,13 @@ function DashboardTab({ dashboard, expandedKpis, setExpandedKpis, formatCurrency
           <table className="w-full text-sm text-left">
             <thead className="bg-gray-50 text-gray-500">
               <tr>
-                <th className="px-4 py-2">{metaView === 'campaign' ? 'Name' : 'Country'}</th>
-                <th>Spend</th>
+                <SortableHeader label={metaView === 'campaign' ? 'Name' : 'Country'} field={metaView === 'campaign' ? 'campaignName' : 'name'} config={metaView === 'campaign' ? campaignSortConfig : countrySortConfig} onSort={(f) => handleSort(metaView === 'campaign' ? campaignSortConfig : countrySortConfig, metaView === 'campaign' ? setCampaignSortConfig : setCountrySortConfig, f)} />
+                <SortableHeader label="Spend" field="spend" config={metaView === 'campaign' ? campaignSortConfig : countrySortConfig} onSort={(f) => handleSort(metaView === 'campaign' ? campaignSortConfig : countrySortConfig, metaView === 'campaign' ? setCampaignSortConfig : setCountrySortConfig, f)} />
                 <th className="text-xs text-gray-400">Share</th>
-                <th>Revenue</th>
+                <SortableHeader label="Revenue" field={metaView === 'campaign' ? 'conversionValue' : 'revenue'} config={metaView === 'campaign' ? campaignSortConfig : countrySortConfig} onSort={(f) => handleSort(metaView === 'campaign' ? campaignSortConfig : countrySortConfig, metaView === 'campaign' ? setCampaignSortConfig : setCountrySortConfig, f)} />
                 <th className="text-xs text-gray-400">Share</th>
-                <th>ROAS</th>
-                <th>Orders</th>
+                <SortableHeader label="ROAS" field={metaView === 'campaign' ? 'metaRoas' : 'roas'} config={metaView === 'campaign' ? campaignSortConfig : countrySortConfig} onSort={(f) => handleSort(metaView === 'campaign' ? campaignSortConfig : countrySortConfig, metaView === 'campaign' ? setCampaignSortConfig : setCountrySortConfig, f)} />
+                <SortableHeader label="Orders" field={metaView === 'campaign' ? 'conversions' : 'totalOrders'} config={metaView === 'campaign' ? campaignSortConfig : countrySortConfig} onSort={(f) => handleSort(metaView === 'campaign' ? campaignSortConfig : countrySortConfig, metaView === 'campaign' ? setCampaignSortConfig : setCountrySortConfig, f)} />
                 <th>CAC</th>
                 <th>Impr</th>
                 <th>Clicks</th>
@@ -478,7 +497,7 @@ function DashboardTab({ dashboard, expandedKpis, setExpandedKpis, formatCurrency
               </tr>
             </thead>
             <tbody>
-              {(metaView === 'campaign' ? campaigns : countries).map((row, i) => {
+              {(metaView === 'campaign' ? sortedCampaigns : sortedCountries).map((row, i) => {
                 const shareSpend = overview.spend > 0 ? ((row.spend || 0) / overview.spend) * 100 : 0;
                 const shareRev = overview.revenue > 0 ? ((row.revenue || row.conversionValue || 0) / overview.revenue) * 100 : 0;
                 return (
@@ -505,11 +524,22 @@ function DashboardTab({ dashboard, expandedKpis, setExpandedKpis, formatCurrency
   );
 }
 
+function SortableHeader({ label, field, config, onSort }) {
+  return (
+    <th className="px-4 py-2 cursor-pointer hover:text-gray-700" onClick={() => onSort(field)}>
+      <div className="flex items-center gap-1">
+        {label}
+        {config.field === field && (config.direction === 'asc' ? <ChevronUp size={14}/> : <ChevronDown size={14}/>)}
+      </div>
+    </th>
+  );
+}
+
 function KPICard({ kpi, expanded, onToggle, formatCurrency }) {
   const changeValue = kpi.change || 0;
   const isPositive = changeValue >= 0;
   const isGood = (kpi.key === 'cac' || kpi.key === 'spend') ? changeValue < 0 : changeValue > 0;
-  const val = kpi.format === 'currency' ? formatCurrency(kpi.value) : kpi.format === 'roas' ? kpi.value.toFixed(2) + 'x' : kpi.value;
+  const val = kpi.format === 'currency' ? formatCurrency(kpi.value) : kpi.format === 'roas' ? (kpi.value || 0).toFixed(2) + 'x' : kpi.value;
 
   return (
     <div onClick={onToggle} className={`bg-white rounded-xl p-5 shadow-sm cursor-pointer hover:shadow-md transition-all ${expanded ? 'ring-2 ring-indigo-500' : ''}`}>
@@ -553,7 +583,6 @@ function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, manualSpendO
           <button onClick={handleResetData} className="px-3 py-1 bg-red-100 text-red-700 text-xs font-bold rounded hover:bg-red-200">RESET ALL DATA</button>
         </div>
       </div>
-
       {/* Manual Order Form */}
       <div className="bg-white rounded-xl p-6 shadow-sm">
         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><Plus className="w-5 h-5" /> Add Manual Order</h3>
