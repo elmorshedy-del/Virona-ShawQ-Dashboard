@@ -102,12 +102,13 @@ function getDateRange(params) {
   return { startDate, endDate, days };
 }
 
-// 2. Calculate Previous Period (For Arrows)
+// 2. Calculate Previous Period (For Arrows) - FIXED
 function getPreviousDateRange(startDate, endDate) {
   const start = new Date(startDate);
   const end = new Date(endDate);
   const durationMs = end.getTime() - start.getTime();
   
+  // Go back exactly one period from the start date
   const prevEnd = new Date(start.getTime() - (24 * 60 * 60 * 1000)); 
   const prevStart = new Date(prevEnd.getTime() - durationMs);
   
@@ -476,5 +477,428 @@ export function getCountryTrends(store, params) {
     return [];
   }
 }
-export function getShopifyTimeOfDay(store, params) { return { data: [], timezone: 'UTC', sampleTimestamps: [] }; }
-export function getMetaBreakdowns(store, params) { return []; }
+export function getShopifyTimeOfDay(store, params) { 
+  if (store !== 'shawq') {
+    return { data: [], timezone: 'UTC', sampleTimestamps: [] };
+  }
+
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const region = params.region || 'all';
+
+  try {
+    // Get timezone mapping based on region
+    const timezoneMap = {
+      'us': 'America/Chicago',
+      'europe': 'Europe/London',
+      'all': 'UTC'
+    };
+    const timezone = timezoneMap[region] || 'UTC';
+
+    // Query Shopify orders
+    let query = `
+      SELECT 
+        CAST(strftime('%H', datetime(created_at)) AS INTEGER) as hour,
+        COUNT(*) as orders,
+        SUM(subtotal) as revenue
+      FROM shopify_orders
+      WHERE store = ? AND date BETWEEN ? AND ?
+    `;
+
+    const params_list = [store, startDate, endDate];
+
+    // Filter by country for regions
+    if (region === 'us') {
+      query += ` AND country_code IN ('US', 'CA')`;
+    } else if (region === 'europe') {
+      query += ` AND country_code IN ('GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL')`;
+    }
+
+    query += ` GROUP BY hour ORDER BY hour ASC`;
+
+    const data = db.prepare(query).all(...params_list);
+
+    // Map hours to 0-23 format with labels
+    const hourLabels = {
+      0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
+      6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
+      12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
+      18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
+    };
+
+    const formattedData = data.map(d => ({
+      hour: d.hour,
+      label: hourLabels[d.hour] || `${d.hour}:00`,
+      orders: d.orders || 0,
+      revenue: d.revenue || 0,
+      aov: d.orders > 0 ? d.revenue / d.orders : 0
+    }));
+
+    return {
+      data: formattedData,
+      timezone,
+      region,
+      sampleTimestamps: []
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting time of day:', error);
+    return { data: [], timezone: 'UTC', sampleTimestamps: [] };
+  }
+}
+
+// ============================================================================
+// BUDGET EFFICIENCY FUNCTIONS (NEW)
+// ============================================================================
+
+function getOverviewKPIs(startDate, endDate) {
+  const db = getDb();
+
+  const metaSpend = db.prepare(`
+    SELECT COALESCE(SUM(spend), 0) as total
+    FROM meta_daily_metrics
+    WHERE date BETWEEN ? AND ? AND country = 'ALL'
+  `).get(startDate, endDate);
+
+  const sallaData = db.prepare(`
+    SELECT 
+      COUNT(*) as orders,
+      COALESCE(SUM(order_total), 0) as revenue
+    FROM salla_orders
+    WHERE date BETWEEN ? AND ?
+  `).get(startDate, endDate);
+
+  const manualData = db.prepare(`
+    SELECT 
+      COALESCE(SUM(orders_count), 0) as orders,
+      COALESCE(SUM(revenue), 0) as revenue
+    FROM manual_orders
+    WHERE date BETWEEN ? AND ?
+  `).get(startDate, endDate);
+
+  const totalOrders = (sallaData?.orders || 0) + (manualData?.orders || 0);
+  const totalRevenue = (sallaData?.revenue || 0) + (manualData?.revenue || 0);
+  const spend = metaSpend?.total || 0;
+
+  return {
+    spend,
+    orders: totalOrders,
+    sallaOrders: sallaData?.orders || 0,
+    manualOrders: manualData?.orders || 0,
+    revenue: totalRevenue,
+    aov: totalOrders > 0 ? totalRevenue / totalOrders : 0,
+    cac: totalOrders > 0 ? spend / totalOrders : 0,
+    roas: spend > 0 ? totalRevenue / spend : 0
+  };
+}
+
+function getKPITrends(startDate, endDate) {
+  const db = getDb();
+
+  const spendByDay = db.prepare(`
+    SELECT date, SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE date BETWEEN ? AND ? AND country = 'ALL'
+    GROUP BY date
+    ORDER BY date
+  `).all(startDate, endDate);
+
+  const sallaByDay = db.prepare(`
+    SELECT date, COUNT(*) as orders, SUM(order_total) as revenue
+    FROM salla_orders
+    WHERE date BETWEEN ? AND ?
+    GROUP BY date
+    ORDER BY date
+  `).all(startDate, endDate);
+
+  const manualByDay = db.prepare(`
+    SELECT date, SUM(orders_count) as orders, SUM(revenue) as revenue
+    FROM manual_orders
+    WHERE date BETWEEN ? AND ?
+    GROUP BY date
+    ORDER BY date
+  `).all(startDate, endDate);
+
+  const dateMap = {};
+
+  for (const row of spendByDay) {
+    if (!dateMap[row.date]) dateMap[row.date] = { date: row.date, spend: 0, orders: 0, revenue: 0 };
+    dateMap[row.date].spend = row.spend;
+  }
+
+  for (const row of sallaByDay) {
+    if (!dateMap[row.date]) dateMap[row.date] = { date: row.date, spend: 0, orders: 0, revenue: 0 };
+    dateMap[row.date].orders += row.orders;
+    dateMap[row.date].revenue += row.revenue;
+  }
+
+  for (const row of manualByDay) {
+    if (!dateMap[row.date]) dateMap[row.date] = { date: row.date, spend: 0, orders: 0, revenue: 0 };
+    dateMap[row.date].orders += row.orders || 0;
+    dateMap[row.date].revenue += row.revenue || 0;
+  }
+
+  const trends = Object.values(dateMap).sort((a, b) => a.date.localeCompare(b.date));
+
+  return trends.map(day => ({
+    ...day,
+    aov: day.orders > 0 ? day.revenue / day.orders : 0,
+    cac: day.orders > 0 ? day.spend / day.orders : 0,
+    roas: day.spend > 0 ? day.revenue / day.spend : 0
+  }));
+}
+
+function getCampaignMetrics(startDate, endDate) {
+  const db = getDb();
+
+  const campaigns = db.prepare(`
+    SELECT 
+      campaign_id,
+      campaign_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value,
+      AVG(frequency) as frequency
+    FROM meta_daily_metrics
+    WHERE date BETWEEN ? AND ? AND country = 'ALL'
+    GROUP BY campaign_id, campaign_name
+    ORDER BY spend DESC
+  `).all(startDate, endDate);
+
+  return campaigns.map(c => {
+    const cpm = c.impressions > 0 ? (c.spend / c.impressions) * 1000 : 0;
+    const cpc = c.clicks > 0 ? c.spend / c.clicks : 0;
+    const ctr = c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0;
+    const cr = c.clicks > 0 ? (c.conversions / c.clicks) * 100 : 0;
+    const metaRoas = c.spend > 0 ? c.conversion_value / c.spend : 0;
+    const metaAov = c.conversions > 0 ? c.conversion_value / c.conversions : 0;
+    const metaCac = c.conversions > 0 ? c.spend / c.conversions : 0;
+
+    return {
+      campaignId: c.campaign_id,
+      campaignName: c.campaign_name,
+      spend: c.spend,
+      impressions: c.impressions,
+      reach: c.reach,
+      clicks: c.clicks,
+      lpv: c.lpv,
+      atc: c.atc,
+      checkout: c.checkout,
+      conversions: c.conversions,
+      conversionValue: c.conversion_value,
+      cpm,
+      cpc,
+      ctr,
+      cr,
+      frequency: c.frequency,
+      metaRoas,
+      metaAov,
+      metaCac
+    };
+  });
+}
+
+function getCountryMetrics(startDate, endDate) {
+  const db = getDb();
+
+  const metaByCountry = db.prepare(`
+    SELECT 
+      country,
+      SUM(spend) as spend
+    FROM meta_daily_metrics
+    WHERE date BETWEEN ? AND ? AND country != 'ALL'
+    GROUP BY country
+  `).all(startDate, endDate);
+
+  const sallaByCountry = db.prepare(`
+    SELECT 
+      country,
+      COUNT(*) as orders,
+      SUM(order_total) as revenue
+    FROM salla_orders
+    WHERE date BETWEEN ? AND ?
+    GROUP BY country
+  `).all(startDate, endDate);
+
+  const manualByCountry = db.prepare(`
+    SELECT 
+      country,
+      SUM(orders_count) as orders,
+      SUM(revenue) as revenue
+    FROM manual_orders
+    WHERE date BETWEEN ? AND ?
+    GROUP BY country
+  `).all(startDate, endDate);
+
+  const countryMap = {};
+
+  for (const row of metaByCountry) {
+    const code = row.country;
+    if (!countryMap[code]) {
+      countryMap[code] = {
+        code,
+        name: getCountryInfo(code)?.name || code,
+        flag: getCountryInfo(code)?.flag || '🏳️',
+        spend: 0,
+        sallaOrders: 0,
+        manualOrders: 0,
+        sallaRevenue: 0,
+        manualRevenue: 0
+      };
+    }
+    countryMap[code].spend = row.spend;
+  }
+
+  for (const row of sallaByCountry) {
+    const code = row.country;
+    if (!countryMap[code]) {
+      countryMap[code] = {
+        code,
+        name: getCountryInfo(code)?.name || code,
+        flag: getCountryInfo(code)?.flag || '🏳️',
+        spend: 0,
+        sallaOrders: 0,
+        manualOrders: 0,
+        sallaRevenue: 0,
+        manualRevenue: 0
+      };
+    }
+    countryMap[code].sallaOrders = row.orders;
+    countryMap[code].sallaRevenue = row.revenue;
+  }
+
+  for (const row of manualByCountry) {
+    const code = row.country;
+    if (!countryMap[code]) {
+      countryMap[code] = {
+        code,
+        name: getCountryInfo(code)?.name || code,
+        flag: getCountryInfo(code)?.flag || '🏳️',
+        spend: 0,
+        sallaOrders: 0,
+        manualOrders: 0,
+        sallaRevenue: 0,
+        manualRevenue: 0
+      };
+    }
+    countryMap[code].manualOrders = row.orders || 0;
+    countryMap[code].manualRevenue = row.revenue || 0;
+  }
+
+  return Object.values(countryMap).map(c => {
+    const totalOrders = c.sallaOrders + c.manualOrders;
+    const totalRevenue = c.sallaRevenue + c.manualRevenue;
+    return {
+      ...c,
+      totalOrders,
+      totalRevenue,
+      aov: totalOrders > 0 ? totalRevenue / totalOrders : 0,
+      cac: totalOrders > 0 ? c.spend / totalOrders : 0,
+      roas: c.spend > 0 ? totalRevenue / c.spend : 0
+    };
+  }).sort((a, b) => b.spend - a.spend);
+}
+
+function getBudgetEfficiency(startDate, endDate) {
+  const current = getOverviewKPIs(startDate, endDate);
+  const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24));
+  const prevEndDate = new Date(startDate);
+  prevEndDate.setDate(prevEndDate.getDate() - 1);
+  const prevStartDate = new Date(prevEndDate);
+  prevStartDate.setDate(prevStartDate.getDate() - daysDiff);
+
+  const previous = getOverviewKPIs(
+    formatDateAsGmt3(prevStartDate),
+    formatDateAsGmt3(prevEndDate)
+  );
+
+  const spendChange = previous.spend > 0 ? ((current.spend - previous.spend) / previous.spend) * 100 : 0;
+  const roasChange = previous.roas > 0 ? ((current.roas - previous.roas) / previous.roas) * 100 : 0;
+  const efficiencyRatio = spendChange !== 0 && roasChange !== 0 
+    ? (1 + roasChange/100) / (1 + spendChange/100) 
+    : 1;
+
+  const incrementalSpend = current.spend - previous.spend;
+  const incrementalOrders = current.orders - previous.orders;
+  const marginalCac = incrementalOrders > 0 ? incrementalSpend / incrementalOrders : current.cac;
+
+  let status = 'green';
+  if (efficiencyRatio < 0.85 || marginalCac > current.cac * 1.3) {
+    status = 'yellow';
+  }
+  if (efficiencyRatio < 0.7 || marginalCac > current.cac * 1.5) {
+    status = 'red';
+  }
+
+  return {
+    status,
+    current,
+    previous,
+    spendChange,
+    roasChange,
+    efficiencyRatio,
+    averageCac: current.cac,
+    marginalCac,
+    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0
+  };
+}
+
+export function getEfficiency(store, params) {
+  const { startDate, endDate } = getDateRange(params);
+  return getBudgetEfficiency(startDate, endDate);
+}
+
+export function getEfficiencyTrends(store, params) {
+  const { startDate, endDate } = getDateRange(params);
+  const trends = getKPITrends(startDate, endDate);
+  const windowSize = 3;
+  
+  return trends.map((day, i) => {
+    const start = Math.max(0, i - windowSize + 1);
+    const window = trends.slice(start, i + 1);
+    
+    const rollingSpend = window.reduce((s, d) => s + d.spend, 0);
+    const rollingOrders = window.reduce((s, d) => s + d.orders, 0);
+    const rollingRevenue = window.reduce((s, d) => s + d.revenue, 0);
+    
+    return {
+      date: day.date,
+      spend: day.spend,
+      orders: day.orders,
+      revenue: day.revenue,
+      cac: day.cac,
+      roas: day.roas,
+      rollingCac: rollingOrders > 0 ? rollingSpend / rollingOrders : 0,
+      rollingRoas: rollingSpend > 0 ? rollingRevenue / rollingSpend : 0,
+      marginalCac: i > 0 && (day.orders - trends[i-1].orders) > 0
+        ? (day.spend - trends[i-1].spend) / (day.orders - trends[i-1].orders)
+        : day.cac
+    };
+  });
+}
+
+export function getRecommendations(store, params) {
+  const { startDate, endDate } = getDateRange(params);
+  const efficiency = getBudgetEfficiency(startDate, endDate);
+  const campaigns = getCampaignMetrics(startDate, endDate);
+  const recommendations = [];
+
+  for (const camp of campaigns) {
+    if (camp.frequency > 3.5) {
+      recommendations.push({
+        priority: 1,
+        type: 'urgent',
+        title: `${camp.campaignName}: High Frequency`,
+        detail: `Frequency at ${camp.frequency.toFixed(1)}. Reduce budget 20%.`,
+        impact: `Save ~$${(camp.spend * 0.2).toFixed(0)}`
+      });
+    }
+  }
+
+  return recommendations;
+}
