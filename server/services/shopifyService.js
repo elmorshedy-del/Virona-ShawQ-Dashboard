@@ -6,7 +6,6 @@ import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 export async function fetchShopifyOrders(dateStart, dateEnd) {
   const shopifyStore = process.env.SHAWQ_SHOPIFY_STORE;
   const accessToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
-  
 
   if (!shopifyStore || !accessToken) {
     console.log('Shopify credentials not configured for Shawq - using demo data');
@@ -29,17 +28,24 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
 
       if (data.orders) {
         for (const order of data.orders) {
-          const countryCode = order.shipping_address?.country_code || 
-                             order.billing_address?.country_code || 'US';
-          
-          const createdAtIso = typeof order.created_at === 'string' ? order.created_at : null;
+          const countryCode =
+            order.shipping_address?.country_code ||
+            order.billing_address?.country_code ||
+            'US';
+
+          const createdAtIso =
+            typeof order.created_at === 'string' ? order.created_at : null;
           const createdAtDate = createdAtIso ? new Date(createdAtIso) : null;
-          const createdAtUtc = createdAtDate && !isNaN(createdAtDate.getTime())
-            ? createdAtDate.toISOString()
-            : null;
-          const dateGmt3 = createdAtDate && !isNaN(createdAtDate.getTime())
-            ? formatDateAsGmt3(createdAtDate)
-            : (createdAtIso?.split('T')[0] || null);
+
+          const createdAtUtc =
+            createdAtDate && !isNaN(createdAtDate.getTime())
+              ? createdAtDate.toISOString()
+              : null;
+
+          const dateGmt3 =
+            createdAtDate && !isNaN(createdAtDate.getTime())
+              ? formatDateAsGmt3(createdAtDate)
+              : (createdAtIso?.split('T')[0] || null);
 
           orders.push({
             order_id: order.id.toString(),
@@ -68,6 +74,7 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
       // Handle pagination via Link header
       const linkHeader = response.headers.get('Link');
       url = null;
+
       if (linkHeader) {
         const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
         if (nextMatch) {
@@ -86,7 +93,9 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
 export async function syncShopifyOrders() {
   const db = getDb();
   const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const startDate = formatDateAsGmt3(
+    new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+  );
 
   try {
     const orders = await fetchShopifyOrders(startDate, endDate);
@@ -99,6 +108,7 @@ export async function syncShopifyOrders() {
     `);
 
     let recordsInserted = 0;
+
     for (const order of orders) {
       insertStmt.run(
         order.order_id,
@@ -127,12 +137,10 @@ export async function syncShopifyOrders() {
       INSERT INTO sync_log (store, source, status, records_synced)
       VALUES ('shawq', 'shopify', 'success', ?)
     `).run(recordsInserted);
-').run(recordsInserted);
 
-const notificationCount = createOrderNotifications('shawq', 'shopify', orders);
-console.log(`[Shopify] Created ${notificationCount} notifications`);
+    const notificationCount = createOrderNotifications('shawq', 'shopify', orders);
+    console.log(`[Shopify] Created ${notificationCount} notifications`);
 
-return { success: true, records: recordsInserted };
     return { success: true, records: recordsInserted };
   } catch (error) {
     db.prepare(`
@@ -164,6 +172,7 @@ function getCountryName(code) {
     'IE': 'Ireland',
     'NZ': 'New Zealand'
   };
+
   return countries[code] || code;
 }
 
@@ -187,6 +196,7 @@ function getDemoShopifyOrders(dateStart, dateEnd) {
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const dateStr = formatDateAsGmt3(d);
     const dayOfWeek = d.getDay();
+
     const baseOrders = dayOfWeek === 0 || dayOfWeek === 6 ? 22 : 18;
     const dailyOrders = Math.floor(baseOrders * (0.8 + Math.random() * 0.4));
 
@@ -205,9 +215,12 @@ function getDemoShopifyOrders(dateStart, dateEnd) {
 
       const variance = 0.6 + Math.random() * 0.8;
       const orderTotal = selectedCountry.avgOrder * variance;
+
       // US gets free shipping over $75
-      const shipping = selectedCountry.code === 'US' && orderTotal > 75 ? 0 :
-                      selectedCountry.code === 'US' ? 8 : 15;
+      const shipping =
+        selectedCountry.code === 'US' && orderTotal > 75 ? 0 :
+        selectedCountry.code === 'US' ? 8 : 15;
+
       const hour = Math.floor(Math.random() * 24).toString().padStart(2, '0');
       const minute = Math.floor(Math.random() * 60).toString().padStart(2, '0');
       const orderCreatedAt = `${dateStr}T${hour}:${minute}:00Z`;
