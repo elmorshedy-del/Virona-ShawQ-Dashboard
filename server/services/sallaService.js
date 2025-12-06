@@ -103,8 +103,9 @@ export async function syncSallaOrders() {
       INSERT INTO sync_log (store, source, status, records_synced)
       VALUES ('vironax', 'salla', 'success', ?)
     `).run(recordsInserted);
-const notificationCount = createOrderNotifications('vironax', 'salla', orders);
-console.log(`[Salla] Created ${notificationCount} notifications`);
+
+    const notificationCount = createOrderNotifications('vironax', 'salla', orders);
+    console.log(`[Salla] Created ${notificationCount} notifications`);
     return { success: true, records: recordsInserted };
   } catch (error) {
     db.prepare(`

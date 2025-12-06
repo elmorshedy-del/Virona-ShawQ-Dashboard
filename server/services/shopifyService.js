@@ -127,12 +127,10 @@ export async function syncShopifyOrders() {
       INSERT INTO sync_log (store, source, status, records_synced)
       VALUES ('shawq', 'shopify', 'success', ?)
     `).run(recordsInserted);
-').run(recordsInserted);
 
-const notificationCount = createOrderNotifications('shawq', 'shopify', orders);
-console.log(`[Shopify] Created ${notificationCount} notifications`);
+    const notificationCount = createOrderNotifications('shawq', 'shopify', orders);
+    console.log(`[Shopify] Created ${notificationCount} notifications`);
 
-return { success: true, records: recordsInserted };
     return { success: true, records: recordsInserted };
   } catch (error) {
     db.prepare(`

@@ -6,10 +6,11 @@ import { 
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
 import {
-  RefreshCw, TrendingUp, TrendingDown, Plus, Trash2,
-  Store, ChevronDown, ChevronUp, ArrowUpDown, Calendar, Bell
+  RefreshCw, TrendingUp, TrendingDown, Plus, Trash2,
+  Store, ChevronDown, ChevronUp, ArrowUpDown, Calendar
 } from 'lucide-react';
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
+
 import NotificationCenter from './components/NotificationCenter';
 const API_BASE = '/api';
 
@@ -78,11 +79,8 @@ export default function App() {
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
   const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [] });
   const [selectedShopifyRegion, setSelectedShopifyRegion] = useState('us');
-  const [notifications, setNotifications] = useState([]);
-  const [showNotificationPanel, setShowNotificationPanel] = useState(false);
-  
-  // KPI charts
-  const [expandedKpis, setExpandedKpis] = useState([]);
+  // KPI charts
+  const [expandedKpis, setExpandedKpis] = useState([]);
   // Section 2 breakdown (pure meta)
   const [metaBreakdown, setMetaBreakdown] = useState('none');
   // Country trends
@@ -283,31 +281,18 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(orderForm)
       });
-      setOrderForm(prev => ({
-        ...prev,
-        spend: 0,
-        orders_count: 1,
-        revenue: STORES[currentStore].defaultAOV,
-        notes: ''
-      }));
-      try {
-        const newNotification = {
-          id: Date.now(),
-          type: 'order',
-          message: `New order added: ${orderForm.orders_count || 1} order(s) for ${formatCurrency(orderForm.revenue || 0)}`,
-          timestamp: new Date().toISOString(),
-          country: orderForm.country || '',
-          source: orderForm.source || ''
-        };
-        setNotifications(prev => Array.isArray(prev) ? [newNotification, ...prev].slice(0, 10) : [newNotification]);
-      } catch (e) {
-        console.error('Notification error:', e);
-      }
-      loadData();
-    } catch (error) {
-      console.error('Error adding order:', error);
-    }
-  }
+      setOrderForm(prev => ({
+        ...prev,
+        spend: 0,
+        orders_count: 1,
+        revenue: STORES[currentStore].defaultAOV,
+        notes: ''
+      }));
+      loadData();
+    } catch (error) {
+      console.error('Error adding order:', error);
+    }
+  }
 
   async function handleAddSpendOverride(e) {
     e.preventDefault();
@@ -382,26 +367,11 @@ export default function App() {
     return Math.round(v).toString();
   };
 
-  const formatNotificationTime = (timestamp) => {
-    if (!timestamp) return '';
-    try {
-      return new Date(timestamp).toLocaleString('en-US', {
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit'
-      });
-    } catch {
-      return '';
-    }
-  };
-
-  const getDateRangeLabel = () => {
-    if (dateRange.type === 'custom') {
-      const formatDate = (d) => {
-        const date = new Date(d);
-        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const getDateRangeLabel = () => {
+    if (dateRange.type === 'custom') {
+      const formatDate = (d) => {
+        const date = new Date(d);
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       };
       return `${formatDate(dateRange.start)} - ${formatDate(dateRange.end)}`;
     }
@@ -473,23 +443,21 @@ export default function App() {
               </span>
             </div>
             
-            <div className="flex items-center gap-4">
-              <span className="text-sm text-gray-500">
-                {dashboard?.dateRange &&
-                  `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
-              </span>
-              <NotificationCenter currentStore={currentStore} />
-                )}
-              </div>
-              <button
-                onClick={handleSync}
-                disabled={syncing}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition-colors"
-              >
-                <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-                {syncing ? 'Syncing...' : 'Refresh'}
-              </button>
-            </div>
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-gray-500">
+                {dashboard?.dateRange &&
+                  `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
+              </span>
+              <NotificationCenter currentStore={currentStore} />
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition-colors"
+              >
+                <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+                {syncing ? 'Syncing...' : 'Refresh'}
+              </button>
+            </div>
           </div>
         </div>
       </header>
