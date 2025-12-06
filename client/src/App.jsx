@@ -12,8 +12,6 @@ import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 
 const API_BASE = '/api';
 
-const getRegionFromTimezone = (tz) => (tz === 'Europe/London' ? 'EUROPE' : 'US');
-
 const STORES = {
   vironax: {
     id: 'vironax',
@@ -60,8 +58,8 @@ export default function App() {
   const [manualOrders, setManualOrders] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
-  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/New_York', sampleTimestamps: [], region: 'US' });
-  const [selectedShopifyTz, setSelectedShopifyTz] = useState('America/New_York');
+  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [] });
+  const [selectedShopifyRegion, setSelectedShopifyRegion] = useState('us');
   
   // KPI charts
   const [expandedKpis, setExpandedKpis] = useState([]);
@@ -128,7 +126,8 @@ export default function App() {
         params.set(dateRange.type, dateRange.value);
       }
 
-      const timeOfDayParams = new URLSearchParams({ store: currentStore, days: 7, tz: selectedShopifyTz });
+      const shopifyRegion = selectedShopifyRegion ?? 'us';
+      const timeOfDayParams = new URLSearchParams({ store: currentStore, days: 7, region: shopifyRegion });
 
       const [
         dashData,
@@ -151,7 +150,7 @@ export default function App() {
         fetch(`${API_BASE}/analytics/countries/trends?${params}`).then(r => r.json()),
         currentStore === 'shawq'
           ? fetch(`${API_BASE}/analytics/shopify/time-of-day?${timeOfDayParams}`).then(r => r.json())
-          : Promise.resolve({ data: [], timezone: selectedShopifyTz, sampleTimestamps: [], region: getRegionFromTimezone(selectedShopifyTz) })
+          : Promise.resolve({ data: [], timezone: shopifyRegion === 'us' ? 'America/Chicago' : 'Europe/London', sampleTimestamps: [] })
       ]);
 
       setDashboard(dashData);
@@ -165,14 +164,17 @@ export default function App() {
       const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
       const timeOfDayZone = typeof timeOfDay?.timezone === 'string' ? timeOfDay.timezone : null;
       const timeOfDaySamples = Array.isArray(timeOfDay?.sampleTimestamps) ? timeOfDay.sampleTimestamps.slice(0, 5) : [];
-      const safeTimezone = timeOfDayZone || selectedShopifyTz || 'America/New_York';
-      const timeOfDayRegion = typeof timeOfDay?.region === 'string' ? timeOfDay.region : getRegionFromTimezone(safeTimezone);
-      setShopifyTimeOfDay({ data: timeOfDayData, timezone: safeTimezone, sampleTimestamps: timeOfDaySamples, region: timeOfDayRegion });
+      const fallbackTimezone = shopifyRegion === 'us' ? 'America/Chicago' : 'Europe/London';
+      const safeTimezone = timeOfDayZone || fallbackTimezone;
+      setShopifyTimeOfDay({ data: timeOfDayData, timezone: safeTimezone, sampleTimestamps: timeOfDaySamples });
     } catch (error) {
       console.error('Error loading data:', error);
+      const fallbackRegion = selectedShopifyRegion ?? 'us';
+      const fallbackTimezone = fallbackRegion === 'us' ? 'America/Chicago' : 'Europe/London';
+      setShopifyTimeOfDay({ data: [], timezone: fallbackTimezone, sampleTimestamps: [] });
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyTz]);
+  }, [currentStore, dateRange, selectedShopifyRegion]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -523,16 +525,16 @@ export default function App() {
             expandedKpis={expandedKpis}
             setExpandedKpis={setExpandedKpis}
             formatCurrency={formatCurrency}
-              formatNumber={formatNumber}
-              metaBreakdown={metaBreakdown}
-              setMetaBreakdown={setMetaBreakdown}
-              metaBreakdownData={metaBreakdownData}
-              store={store}
-              countryTrends={countryTrends}
-              shopifyTimeOfDay={shopifyTimeOfDay}
-              selectedShopifyTz={selectedShopifyTz}
-              setSelectedShopifyTz={setSelectedShopifyTz}
-            />
+            formatNumber={formatNumber}
+            metaBreakdown={metaBreakdown}
+            setMetaBreakdown={setMetaBreakdown}
+            metaBreakdownData={metaBreakdownData}
+            store={store}
+            countryTrends={countryTrends}
+            shopifyTimeOfDay={shopifyTimeOfDay}
+            selectedShopifyRegion={selectedShopifyRegion}
+            setSelectedShopifyRegion={setSelectedShopifyRegion}
+          />
           )}
         
         {activeTab === 1 && efficiency && (
@@ -606,9 +608,9 @@ function DashboardTab({
   metaBreakdownData = [],
   store = {},
   countryTrends = [],
-  shopifyTimeOfDay = { data: [], timezone: 'America/New_York', sampleTimestamps: [], region: 'US' },
-  selectedShopifyTz = 'America/New_York',
-  setSelectedShopifyTz = () => {}
+  shopifyTimeOfDay = { data: [], timezone: 'America/Chicago', sampleTimestamps: [] },
+  selectedShopifyRegion = 'us',
+  setSelectedShopifyRegion = () => {}
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
@@ -660,7 +662,8 @@ function DashboardTab({
 
   const orderedCountryTrends = [...countryTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
 
-  const shopifyTimeZone = shopifyTimeOfDay?.timezone ?? selectedShopifyTz ?? 'America/New_York';
+  const shopifyRegion = selectedShopifyRegion ?? 'us';
+  const shopifyTimeZone = shopifyTimeOfDay?.timezone ?? (shopifyRegion === 'us' ? 'America/Chicago' : 'Europe/London');
   const shopifyTimeOfDayData = Array.isArray(shopifyTimeOfDay?.data) ? shopifyTimeOfDay.data : [];
   const shopifyHourlyChartData = shopifyTimeOfDayData.map((point) => ({
     ...point,
@@ -1417,18 +1420,21 @@ function DashboardTab({
                 <span className="inline-flex items-center px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 font-medium">
                   {shopifyTimeZone}
                 </span>
+              </div>
+              <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
+                <span>Region:</span>
                 <div className="flex items-center gap-1">
                   <button
-                    className={`px-2 py-1 rounded ${selectedShopifyTz === 'America/New_York' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
-                    onClick={() => setSelectedShopifyTz('America/New_York')}
+                    className={`px-2 py-1 rounded ${shopifyRegion === 'us' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
+                    onClick={() => setSelectedShopifyRegion('us')}
                   >
-                    NY
+                    US Orders
                   </button>
                   <button
-                    className={`px-2 py-1 rounded ${selectedShopifyTz === 'Europe/London' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
-                    onClick={() => setSelectedShopifyTz('Europe/London')}
+                    className={`px-2 py-1 rounded ${shopifyRegion === 'europe' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
+                    onClick={() => setSelectedShopifyRegion('europe')}
                   >
-                    London
+                    Europe Orders
                   </button>
                 </div>
               </div>

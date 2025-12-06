@@ -1022,10 +1022,11 @@ export function getCountryTrends(store, params) {
 
 // Shopify hourly orders for the selected range (defaults to last 7 days)
 export function getShopifyTimeOfDay(store, params) {
-  const allowedTimezones = ['America/New_York', 'Europe/London'];
-  const requestedTz = params.tz;
-  const timezone = allowedTimezones.includes(requestedTz) ? requestedTz : 'America/New_York';
-  const effectiveRegion = timezone === 'Europe/London' ? 'EUROPE' : 'US';
+  const allowedRegions = new Set(['us', 'europe']);
+  const requestedRegion = typeof params.region === 'string' ? params.region.toLowerCase() : '';
+  const region = allowedRegions.has(requestedRegion) ? requestedRegion : 'us';
+
+  const effectiveTimezone = region === 'europe' ? 'Europe/London' : 'America/Chicago';
 
   const normalizeCountry = (value) => {
     if (!value || typeof value !== 'string') return null;
@@ -1067,13 +1068,13 @@ export function getShopifyTimeOfDay(store, params) {
 
   const isRegionMatch = (countryCode) => {
     if (!countryCode) return false;
-    if (effectiveRegion === 'US') return countryCode === 'US';
-    if (effectiveRegion === 'EUROPE') return europeAllowlist.has(countryCode);
+    if (region === 'us') return countryCode === 'US';
+    if (region === 'europe') return europeAllowlist.has(countryCode);
     return true;
   };
 
   if (store !== 'shawq') {
-    return { data: [], timezone, sampleTimestamps: [], region: effectiveRegion };
+    return { data: [], timezone: effectiveTimezone, sampleTimestamps: [] };
   }
 
   const db = getDb();
@@ -1094,14 +1095,14 @@ export function getShopifyTimeOfDay(store, params) {
   const sampleTimestamps = [];
 
   const hourFormatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
+    timeZone: effectiveTimezone,
     hour: '2-digit',
     hour12: false
   });
 
   for (const row of rows) {
     const countryCode = getRowCountry(row);
-    if (!isRegionMatch(countryCode)) continue;
+    if (countryCode && !isRegionMatch(countryCode)) continue;
 
     const rawTimestamp = row?.order_created_at || row?.created_at;
     if (!rawTimestamp) continue;
@@ -1123,8 +1124,7 @@ export function getShopifyTimeOfDay(store, params) {
 
   return {
     data: hourlyBuckets,
-    timezone,
-    sampleTimestamps,
-    region: effectiveRegion
+    timezone: effectiveTimezone,
+    sampleTimestamps
   };
 }
