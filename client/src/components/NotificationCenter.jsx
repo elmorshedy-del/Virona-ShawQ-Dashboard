@@ -1,16 +1,22 @@
+// client/src/components/NotificationCenter.jsx
 import { useState, useEffect, useRef } from 'react';
-import { Bell, Check, Volume2, VolumeX, Trash2 } from 'lucide-react';
+import { Bell, Check, Volume2, VolumeX, Trash2, X } from 'lucide-react';
 
 export default function NotificationCenter({ currentStore }) {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isOpen, setIsOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const [lastNotificationId, setLastNotificationId] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [lastFetchTime, setLastFetchTime] = useState(null);
   const dropdownRef = useRef(null);
   const audioRef = useRef(null);
+  const pollIntervalRef = useRef(null);
+  const lastNotificationIdRef = useRef(null);
 
-  // Load sound preference from localStorage
+  // ============================================================================
+  // Load sound preference from localStorage on mount
+  // ============================================================================
   useEffect(() => {
     const savedPref = localStorage.getItem('notificationSoundEnabled');
     if (savedPref !== null) {
@@ -18,74 +24,123 @@ export default function NotificationCenter({ currentStore }) {
     }
   }, []);
 
-  // Save sound preference
+  // ============================================================================
+  // Save sound preference when it changes
+  // ============================================================================
   const toggleSound = () => {
     const newValue = !soundEnabled;
     setSoundEnabled(newValue);
     localStorage.setItem('notificationSoundEnabled', JSON.stringify(newValue));
   };
 
+  // ============================================================================
   // Play notification sound
+  // ============================================================================
   const playSound = () => {
     if (soundEnabled && audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.volume = 0.5;
-      audioRef.current.play().catch(err => console.log('Audio play failed:', err));
+      try {
+        audioRef.current.currentTime = 0;
+        audioRef.current.volume = 0.5;
+        audioRef.current.play().catch(err => {
+          console.log('Audio play failed:', err);
+        });
+      } catch (err) {
+        console.log('Error playing sound:', err);
+      }
     }
   };
 
-  // Fetch notifications
+  // ============================================================================
+  // Fetch notifications from API
+  // ============================================================================
   const fetchNotifications = async () => {
     try {
+      setLoading(true);
       const response = await fetch('/api/notifications');
-      const data = await response.json();
       
+      if (!response.ok) {
+        console.error('[Notifications] API error:', response.status);
+        return;
+      }
+
+      const data = await response.json();
+
       if (data.success) {
-        setNotifications(data.notifications);
-        setUnreadCount(data.unreadCount);
-        
+        setNotifications(data.notifications || []);
+        setUnreadCount(data.unreadCount || 0);
+        setLastFetchTime(new Date().toISOString());
+
         // Check for new notifications and play sound
-        if (data.notifications.length > 0) {
-          const latestId = data.notifications[0].id;
-          
-          if (lastNotificationId && latestId > lastNotificationId) {
-            // New notification detected!
+        if (data.notifications && data.notifications.length > 0) {
+          const latestNotification = data.notifications[0];
+          const latestId = latestNotification.id;
+
+          // New notification detected!
+          if (lastNotificationIdRef.current && latestId > lastNotificationIdRef.current) {
+            console.log('[Notifications] New notification detected:', latestNotification.message);
             playSound();
-            
+
             // Show browser notification if permission granted
-            if (Notification.permission === 'granted') {
-              const latest = data.notifications[0];
-              new Notification('New Order! 🎉', {
-                body: latest.message,
+            if ('Notification' in window && Notification.permission === 'granted') {
+              const isCrossStore = latestNotification.store !== currentStore;
+              const title = isCrossStore 
+                ? `New Order from ${latestNotification.store.toUpperCase()}! 🎉` 
+                : 'New Order! 🎉';
+              
+              new Notification(title, {
+                body: latestNotification.message,
                 icon: '/favicon.ico',
-                tag: `order-${latestId}`
+                tag: `order-${latestId}`,
+                badge: '/favicon.ico'
               });
             }
           }
-          
-          setLastNotificationId(latestId);
+
+          lastNotificationIdRef.current = latestId;
         }
       }
     } catch (error) {
-      console.error('Failed to fetch notifications:', error);
+      console.error('[Notifications] Failed to fetch:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Request notification permission
+  // ============================================================================
+  // Request browser notification permission
+  // ============================================================================
   useEffect(() => {
     if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
+      Notification.requestPermission().then(permission => {
+        console.log('[Notifications] Permission status:', permission);
+      });
     }
   }, []);
 
-  // Poll for new notifications every 30 seconds
+  // ============================================================================
+  // Polling: Fetch notifications every 10 seconds
+  // Also refetch when store changes
+  // ============================================================================
   useEffect(() => {
+    // Fetch immediately on load
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 30000);
-    return () => clearInterval(interval);
-  }, [lastNotificationId]);
 
+    // Set up polling interval (10 seconds)
+    pollIntervalRef.current = setInterval(() => {
+      fetchNotifications();
+    }, 10000);
+
+    // Cleanup
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, [currentStore]); // Re-setup when store changes
+
+  // ============================================================================
   // Close dropdown when clicking outside
+  // ============================================================================
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -97,57 +152,97 @@ export default function NotificationCenter({ currentStore }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // ============================================================================
   // Mark notification as read
+  // ============================================================================
   const markAsRead = async (id) => {
     try {
-      await fetch(`/api/notifications/${id}/read`, { method: 'POST' });
-      fetchNotifications();
-    } catch (error) {
-      console.error('Failed to mark as read:', error);
-    }
-  };
-
-  // Mark all as read
-  const markAllAsRead = async () => {
-    try {
-      await fetch('/api/notifications/read-all', {
+      const response = await fetch(`/api/notifications/${id}/read`, { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
-      fetchNotifications();
+
+      if (response.ok) {
+        console.log(`[Notifications] Marked ${id} as read`);
+        fetchNotifications();
+      }
     } catch (error) {
-      console.error('Failed to mark all as read:', error);
+      console.error('[Notifications] Failed to mark as read:', error);
     }
   };
 
-  // Get time ago string
+  // ============================================================================
+  // Mark all as read
+  // ============================================================================
+  const markAllAsRead = async () => {
+    try {
+      const response = await fetch('/api/notifications/read-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (response.ok) {
+        console.log('[Notifications] Marked all as read');
+        fetchNotifications();
+      }
+    } catch (error) {
+      console.error('[Notifications] Failed to mark all as read:', error);
+    }
+  };
+
+  // ============================================================================
+  // Delete notification
+  // ============================================================================
+  const deleteNotification = async (id) => {
+    try {
+      const response = await fetch(`/api/notifications/${id}`, { 
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (response.ok) {
+        console.log(`[Notifications] Deleted ${id}`);
+        fetchNotifications();
+      }
+    } catch (error) {
+      console.error('[Notifications] Failed to delete:', error);
+    }
+  };
+
+  // ============================================================================
+  // Get relative time string ("2 min ago", "1 hour ago", etc)
+  // ============================================================================
   const getTimeAgo = (timestamp) => {
     const now = new Date();
     const then = new Date(timestamp);
     const diffMs = now - then;
     const diffMins = Math.floor(diffMs / 60000);
-    
+
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins} min ago`;
-    
+
     const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    
+    if (diffHours < 24) return `${diffHours}h ago`;
+
     const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+
+    return then.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
-  // Get source icon and color
-  const getSourceBadge = (source, store) => {
+  // ============================================================================
+  // Get source badge (Shopify, Meta, Salla, Manual)
+  // ============================================================================
+  const getSourceBadge = (source) => {
     const badges = {
       shopify: { label: 'Shopify', color: 'bg-green-100 text-green-700' },
-      salla: { label: 'Salla', color: 'bg-green-100 text-green-700' },
+      salla: { label: 'Salla', color: 'bg-blue-100 text-blue-700' },
       meta: { label: 'Meta', color: 'bg-yellow-100 text-yellow-700' },
-      manual: { label: 'Manual', color: 'bg-blue-100 text-blue-700' }
+      manual: { label: 'Manual', color: 'bg-purple-100 text-purple-700' }
     };
-    
-    const badge = badges[source] || { label: source, color: 'bg-gray-100 text-gray-700' };
-    
+
+    const badge = badges[source] || { label: source || 'Unknown', color: 'bg-gray-100 text-gray-700' };
+
     return (
       <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge.color}`}>
         {badge.label}
@@ -155,15 +250,35 @@ export default function NotificationCenter({ currentStore }) {
     );
   };
 
+  // ============================================================================
+  // Format message for display (add store name for cross-store)
+  // ============================================================================
+  const formatNotificationMessage = (notification) => {
+    const isCrossStore = notification.store !== currentStore;
+    
+    if (isCrossStore) {
+      // Format: [STORE] Country • Amount • Source
+      // Example: [VIRONAX] SA • SAR 1,400 • Salla
+      return `[${notification.store.toUpperCase()}] ${notification.message}`;
+    }
+    
+    return notification.message;
+  };
+
+  // ============================================================================
+  // RENDER
+  // ============================================================================
+
   return (
     <div className="relative" ref={dropdownRef}>
-      {/* Hidden audio element */}
-      <audio ref={audioRef} src="/sounds/ch-ching.mp3" preload="auto" />
-      
-      {/* Bell Icon */}
+      {/* Hidden audio element for notification sound */}
+      <audio ref={audioRef} src="/sounds/notification.mp3" preload="auto" />
+
+      {/* Bell Icon Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="relative p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+        title="Notifications"
       >
         <Bell className="w-5 h-5" />
         {unreadCount > 0 && (
@@ -176,9 +291,10 @@ export default function NotificationCenter({ currentStore }) {
       {/* Dropdown Panel */}
       {isOpen && (
         <div className="absolute right-0 mt-2 w-96 bg-white rounded-xl shadow-2xl border border-gray-200 z-50 max-h-[600px] overflow-hidden flex flex-col">
+          
           {/* Header */}
           <div className="p-4 border-b border-gray-200 bg-gradient-to-r from-indigo-50 to-purple-50">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold text-gray-900 flex items-center gap-2">
                 <Bell className="w-4 h-4" />
                 Notifications
@@ -187,7 +303,7 @@ export default function NotificationCenter({ currentStore }) {
                 <button
                   onClick={toggleSound}
                   className="p-1.5 hover:bg-white rounded-lg transition-colors"
-                  title={soundEnabled ? 'Mute notifications' : 'Unmute notifications'}
+                  title={soundEnabled ? 'Mute' : 'Unmute'}
                 >
                   {soundEnabled ? (
                     <Volume2 className="w-4 h-4 text-indigo-600" />
@@ -197,6 +313,8 @@ export default function NotificationCenter({ currentStore }) {
                 </button>
               </div>
             </div>
+
+            {/* Action buttons */}
             {unreadCount > 0 && (
               <button
                 onClick={markAllAsRead}
@@ -206,6 +324,13 @@ export default function NotificationCenter({ currentStore }) {
                 Mark all as read
               </button>
             )}
+
+            {/* Last fetch time */}
+            {lastFetchTime && (
+              <p className="text-xs text-gray-500 mt-2">
+                Updated: {getTimeAgo(lastFetchTime)}
+              </p>
+            )}
           </div>
 
           {/* Notifications List */}
@@ -213,48 +338,77 @@ export default function NotificationCenter({ currentStore }) {
             {notifications.length === 0 ? (
               <div className="p-8 text-center text-gray-500">
                 <Bell className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-                <p className="text-sm">No notifications yet</p>
-                <p className="text-xs mt-1">We'll notify you when orders come in</p>
+                <p className="text-sm font-medium">No notifications</p>
+                <p className="text-xs mt-1">New orders will appear here</p>
               </div>
             ) : (
               <div className="divide-y divide-gray-100">
                 {notifications.map((notification) => {
                   const isCrossStore = notification.store !== currentStore;
-                  
+                  const displayMessage = formatNotificationMessage(notification);
+
                   return (
                     <div
                       key={notification.id}
-                      className={`p-4 hover:bg-gray-50 transition-colors cursor-pointer ${
-                        !notification.is_read ? 'bg-indigo-50/50' : ''
+                      className={`p-4 hover:bg-gray-50 transition-colors ${
+                        !notification.is_read ? 'bg-indigo-50/50 border-l-4 border-l-indigo-500' : ''
                       } ${isCrossStore ? 'border-l-4 border-l-purple-500' : ''}`}
-                      onClick={() => !notification.is_read && markAsRead(notification.id)}
                     >
                       <div className="flex items-start gap-3">
-                        <div className="text-2xl">
+                        {/* Icon */}
+                        <div className="text-2xl flex-shrink-0">
                           {notification.type === 'order' ? '🛍️' : '📊'}
                         </div>
+
+                        {/* Content */}
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            {getSourceBadge(notification.source, notification.store)}
-                            <span className="text-xs font-medium text-gray-900 uppercase">
+                          {/* Badges */}
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            {getSourceBadge(notification.source)}
+                            
+                            <span className="text-xs font-medium text-gray-900 uppercase px-2 py-0.5 bg-gray-100 rounded">
                               {notification.store}
                             </span>
+
                             {isCrossStore && (
                               <span className="text-xs px-2 py-0.5 bg-purple-100 text-purple-700 rounded font-medium">
-                                Other Store
+                                📍 From {notification.store}
                               </span>
                             )}
                           </div>
-                          <p className="text-sm text-gray-900 font-medium">
-                            {notification.message}
+
+                          {/* Message */}
+                          <p className="text-sm text-gray-900 font-medium break-words">
+                            {displayMessage}
                           </p>
-                          <p className="text-xs text-gray-500 mt-1">
+
+                          {/* Time */}
+                          <p className="text-xs text-gray-500 mt-1.5">
                             {getTimeAgo(notification.timestamp)}
                           </p>
                         </div>
-                        {!notification.is_read && (
-                          <div className="w-2 h-2 bg-indigo-500 rounded-full flex-shrink-0 mt-1"></div>
-                        )}
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {!notification.is_read && (
+                            <>
+                              <button
+                                onClick={() => markAsRead(notification.id)}
+                                className="p-1 text-indigo-500 hover:bg-indigo-50 rounded transition-colors"
+                                title="Mark as read"
+                              >
+                                <Check className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                          <button
+                            onClick={() => deleteNotification(notification.id)}
+                            className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -262,9 +416,17 @@ export default function NotificationCenter({ currentStore }) {
               </div>
             )}
           </div>
+
+          {/* Footer */}
+          <div className="p-3 border-t border-gray-200 bg-gray-50 text-center text-xs text-gray-500">
+            {loading ? (
+              <span>Updating...</span>
+            ) : (
+              <span>Checking every 10 seconds</span>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
 }
-
