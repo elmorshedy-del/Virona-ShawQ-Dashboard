@@ -78,8 +78,11 @@ export default function App() {
   const [manualSpendOverrides, setManualSpendOverrides] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
-  const [shopifyTimeOfDay, setShopifyTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [] });
+  const [timeOfDay, setTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [], source: '' });
   const [selectedShopifyRegion, setSelectedShopifyRegion] = useState('us');
+  // Days of week
+  const [daysOfWeek, setDaysOfWeek] = useState({ data: [], source: '', totalOrders: 0, period: '14d' });
+  const [daysOfWeekPeriod, setDaysOfWeekPeriod] = useState('14d');
   // KPI charts
   const [expandedKpis, setExpandedKpis] = useState([]);
   // Section 2 breakdown (pure meta)
@@ -144,12 +147,8 @@ export default function App() {
       const params = new URLSearchParams({ store: currentStore });
       const countryTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
       
-      // Determine if we should show arrows (skip incomplete "Today")
-      let shouldShowArrows = true;
-      if (dateRange.type === 'days' && dateRange.value === 1) {
-        // Today - incomplete day, don't show arrows
-        shouldShowArrows = false;
-      }
+      // Fix 7: Always show arrows for comparison (Today compares to Yesterday, Yesterday compares to day before)
+      const shouldShowArrows = true;
       
       if (dateRange.type === 'custom') {
         params.set('startDate', dateRange.start);
@@ -179,7 +178,8 @@ export default function App() {
         spendOverrides,
         countries,
         cTrends,
-        timeOfDay
+        timeOfDayData,
+        dowData
       ] = await Promise.all([
         fetch(`${API_BASE}/analytics/dashboard?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/efficiency?${params}`).then(r => r.json()),
@@ -190,9 +190,10 @@ export default function App() {
         fetch(`${API_BASE}/manual/spend?${params}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/countries?store=${currentStore}`).then(r => r.json()),
         fetch(`${API_BASE}/analytics/countries/trends?${countryTrendParams}`).then(r => r.json()),
-        currentStore === 'shawq'
-          ? fetch(`${API_BASE}/analytics/shopify/time-of-day?${timeOfDayParams}`).then(r => r.json())
-          : Promise.resolve({ data: [], timezone: shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago', sampleTimestamps: [] })
+        // Time of day - now fetches for both stores
+        fetch(`${API_BASE}/analytics/time-of-day?${timeOfDayParams}`).then(r => r.json()),
+        // Days of week
+        fetch(`${API_BASE}/analytics/days-of-week?store=${currentStore}&period=${daysOfWeekPeriod}`).then(r => r.json())
       ]);
 
       setDashboard(dashData);
@@ -222,17 +223,24 @@ export default function App() {
       });
 
       setCountryTrends(cTrends);
-      const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
-      const timeOfDayZone = typeof timeOfDay?.timezone === 'string' ? timeOfDay.timezone : null;
-      const timeOfDaySamples = Array.isArray(timeOfDay?.sampleTimestamps) ? timeOfDay.sampleTimestamps.slice(0, 5) : [];
+
+      // Set time of day data
+      const todData = Array.isArray(timeOfDayData?.data) ? timeOfDayData.data : [];
+      const todZone = typeof timeOfDayData?.timezone === 'string' ? timeOfDayData.timezone : null;
+      const todSamples = Array.isArray(timeOfDayData?.sampleTimestamps) ? timeOfDayData.sampleTimestamps.slice(0, 5) : [];
+      const todSource = timeOfDayData?.source || '';
+      const todMessage = timeOfDayData?.message || '';
       const fallbackTimezone = shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago';
-      const safeTimezone = timeOfDayZone || fallbackTimezone;
-      setShopifyTimeOfDay({ data: timeOfDayData, timezone: safeTimezone, sampleTimestamps: timeOfDaySamples });
+      const safeTimezone = todZone || fallbackTimezone;
+      setTimeOfDay({ data: todData, timezone: safeTimezone, sampleTimestamps: todSamples, source: todSource, message: todMessage });
+
+      // Set days of week data
+      setDaysOfWeek(dowData || { data: [], source: '', totalOrders: 0, period: '14d' });
     } catch (error) {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion]);
+  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -619,9 +627,12 @@ export default function App() {
             metaBreakdownData={metaBreakdownData}
             store={store}
             countryTrends={countryTrends}
-            shopifyTimeOfDay={shopifyTimeOfDay}
+            timeOfDay={timeOfDay}
             selectedShopifyRegion={selectedShopifyRegion}
             setSelectedShopifyRegion={setSelectedShopifyRegion}
+            daysOfWeek={daysOfWeek}
+            daysOfWeekPeriod={daysOfWeekPeriod}
+            setDaysOfWeekPeriod={setDaysOfWeekPeriod}
           />
           )}
         
@@ -704,9 +715,12 @@ function DashboardTab({
   metaBreakdownData = [],
   store = {},
   countryTrends = [],
-  shopifyTimeOfDay = { data: [], timezone: 'America/Chicago', sampleTimestamps: [] },
+  timeOfDay = { data: [], timezone: 'America/Chicago', sampleTimestamps: [], source: '' },
   selectedShopifyRegion = 'us',
-  setSelectedShopifyRegion = () => {}
+  setSelectedShopifyRegion = () => {},
+  daysOfWeek = { data: [], source: '', totalOrders: 0, period: '14d' },
+  daysOfWeekPeriod = '14d',
+  setDaysOfWeekPeriod = () => {}
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
@@ -773,14 +787,16 @@ function DashboardTab({
   }, [parseLocalDate]);
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
-  const shopifyTimeZone = shopifyTimeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
-  const shopifyTimeOfDayData = Array.isArray(shopifyTimeOfDay?.data) ? shopifyTimeOfDay.data : [];
-  const shopifyHourlyChartData = shopifyTimeOfDayData.map((point) => ({
+  const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
+  const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
+  const timeOfDaySource = timeOfDay?.source || '';
+  const timeOfDayMessage = timeOfDay?.message || '';
+  const hourlyChartData = timeOfDayData.map((point) => ({
     ...point,
     hourLabel: `${point.hour}:00`
   }));
 
-  const totalShopifyHourlyOrders = shopifyTimeOfDayData.reduce((sum, point) => sum + (point.orders || 0), 0);
+  const totalHourlyOrders = timeOfDayData.reduce((sum, point) => sum + (point.orders || 0), 0);
 
   const handleCountrySort = (field) => {
     setCountrySortConfig(prev => ({
@@ -1516,21 +1532,29 @@ function DashboardTab({
         </div>
       )}
 
-      {/* Shopify time of day trends */}
-      {store.id === 'shawq' && (
-        <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div>
-              <h2 className="text-lg font-semibold">Orders by Time of Day (Last 7 Days)</h2>
-              <p className="text-sm text-gray-500">
-                Shopify orders grouped by hour. Use this to spot when customers are most active.
-              </p>
+      {/* Time of day trends - Now shows for both stores */}
+      <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-lg font-semibold">Orders by Time of Day (Last 14 Days)</h2>
+            <p className="text-sm text-gray-500">
+              Orders grouped by hour. Use this to spot when customers are most active.
+            </p>
+            {timeOfDaySource && (
               <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
-                <span>Time Zone:</span>
-                <span className="inline-flex items-center px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 font-medium">
-                  {shopifyTimeZone}
+                <span>Data source:</span>
+                <span className="inline-flex items-center px-2 py-1 rounded-full bg-green-50 text-green-700 font-medium">
+                  {timeOfDaySource}
                 </span>
               </div>
+            )}
+            <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
+              <span>Time Zone:</span>
+              <span className="inline-flex items-center px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 font-medium">
+                {timeOfDayTimezone}
+              </span>
+            </div>
+            {store.id === 'shawq' && (
               <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
                 <span>Region:</span>
                 <div className="flex items-center gap-1">
@@ -1554,45 +1578,49 @@ function DashboardTab({
                   </button>
                 </div>
               </div>
-              {shopifyTimeOfDay?.sampleTimestamps?.length > 0 && (
-                <p className="text-xs text-gray-500 mt-1">
-                  Sample timestamps: {shopifyTimeOfDay.sampleTimestamps.join(', ')}
-                </p>
-              )}
-            </div>
-            <div className="text-right">
-              <div className="text-xs uppercase text-gray-400">Total orders</div>
-              <div className="text-2xl font-bold text-gray-900">{totalShopifyHourlyOrders}</div>
-            </div>
+            )}
+            {timeOfDay?.sampleTimestamps?.length > 0 && (
+              <p className="text-xs text-gray-500 mt-1">
+                Sample timestamps: {timeOfDay.sampleTimestamps.join(', ')}
+              </p>
+            )}
           </div>
-
-          {shopifyHourlyChartData.length > 0 ? (
-            <div className="h-64 mt-4">
-              <ResponsiveContainer>
-                <LineChart data={shopifyHourlyChartData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                  <XAxis dataKey="hourLabel" tick={{ fontSize: 10 }} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
-                  <Tooltip
-                    formatter={(value, name) => [value, name === 'orders' ? 'Orders' : 'Revenue']}
-                    labelFormatter={(label) => `${label}`}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="orders"
-                    stroke="#6366f1"
-                    strokeWidth={3}
-                    dot={{ r: 2 }}
-                    activeDot={{ r: 4 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <p className="text-sm text-gray-500 mt-4">No Shopify time-of-day data available for this range.</p>
-          )}
+          <div className="text-right">
+            <div className="text-xs uppercase text-gray-400">Total orders</div>
+            <div className="text-2xl font-bold text-gray-900">{totalHourlyOrders}</div>
+          </div>
         </div>
-      )}
+
+        {hourlyChartData.length > 0 && totalHourlyOrders > 0 ? (
+          <div className="h-64 mt-4">
+            <ResponsiveContainer>
+              <LineChart data={hourlyChartData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="hourLabel" tick={{ fontSize: 10 }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+                <Tooltip
+                  formatter={(value, name) => [value, name === 'orders' ? 'Orders' : 'Revenue']}
+                  labelFormatter={(label) => `${label}`}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="orders"
+                  stroke="#6366f1"
+                  strokeWidth={3}
+                  dot={{ r: 2 }}
+                  activeDot={{ r: 4 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+            <p className="text-sm text-gray-500">
+              {timeOfDayMessage || 'Time of Day data unavailable for this store.'}
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* Countries Performance (ecommerce-driven with cities) */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
@@ -1872,6 +1900,87 @@ function DashboardTab({
           )}
         </div>
       )}
+
+      {/* Orders by Day of Week (Fix 8) */}
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden mt-6">
+        <div className="p-6 border-b border-gray-100">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <h2 className="text-lg font-semibold">Orders by Day of Week</h2>
+              <p className="text-sm text-gray-500">
+                Which days get the most orders? Use this to plan your marketing.
+              </p>
+              {daysOfWeek.source && (
+                <div className="flex items-center gap-2 mt-2 text-xs text-gray-600">
+                  <span>Data source:</span>
+                  <span className="inline-flex items-center px-2 py-1 rounded-full bg-green-50 text-green-700 font-medium">
+                    {daysOfWeek.source}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Period:</span>
+              <button
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium ${daysOfWeekPeriod === '14d' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                onClick={() => setDaysOfWeekPeriod('14d')}
+              >
+                14D
+              </button>
+              <button
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium ${daysOfWeekPeriod === '30d' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                onClick={() => setDaysOfWeekPeriod('30d')}
+              >
+                30D
+              </button>
+              <button
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium ${daysOfWeekPeriod === 'all' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                onClick={() => setDaysOfWeekPeriod('all')}
+              >
+                All Time
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table>
+            <thead>
+              <tr>
+                <th className="text-left">Rank</th>
+                <th className="text-left">Day</th>
+                <th className="text-right">Orders</th>
+                <th className="text-right">% of Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {daysOfWeek.data && daysOfWeek.data.map((day) => (
+                <tr key={day.day}>
+                  <td>
+                    <div className="flex items-center gap-2">
+                      {day.rank === 1 && <span>🥇</span>}
+                      {day.rank === 2 && <span>🥈</span>}
+                      {day.rank === 3 && <span>🥉</span>}
+                      <span className="text-gray-500">#{day.rank}</span>
+                    </div>
+                  </td>
+                  <td className="font-medium">{day.day}</td>
+                  <td className="text-right">
+                    <span className="badge badge-green">{day.orders}</span>
+                  </td>
+                  <td className="text-right text-gray-600">{day.percentage}%</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-gray-50 font-semibold">
+                <td colSpan={2}>Total</td>
+                <td className="text-right">{daysOfWeek.totalOrders}</td>
+                <td className="text-right">100%</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
 
       {/* Debug panel */}
       <div className="bg-gray-900 text-gray-100 rounded-xl p-4 mt-6 text-sm">

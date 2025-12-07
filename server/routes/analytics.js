@@ -12,7 +12,10 @@ import {
   getCampaignsByPlacement,
   getCountryTrends,
   getCampaignsByAgeGender,
-  getShopifyTimeOfDay
+  getShopifyTimeOfDay,
+  getTimeOfDay,
+  getOrdersByDayOfWeek,
+  getCitiesByCountry
 } from '../services/analyticsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData } from '../services/metaService.js';
@@ -130,8 +133,36 @@ router.get('/countries/trends', (req, res) => {
 });
 
 router.get('/shopify/time-of-day', (req, res) => {
-  try { res.json(getShopifyTimeOfDay(req.query.store, req.query)); } 
+  try { res.json(getShopifyTimeOfDay(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Combined time of day endpoint (supports both stores)
+router.get('/time-of-day', (req, res) => {
+  try { res.json(getTimeOfDay(req.query.store, req.query)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Days of week endpoint
+router.get('/days-of-week', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const period = req.query.period || '14d';
+    res.json(getOrdersByDayOfWeek(store, { period }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cities by country endpoint
+router.get('/cities/:countryCode', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { countryCode } = req.params;
+    res.json(getCitiesByCountry(store, countryCode, req.query));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 export default router;

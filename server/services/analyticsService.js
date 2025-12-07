@@ -79,27 +79,63 @@ function isSallaActive() {
 // ============================================================================
 // CITIES BY COUNTRY
 // ============================================================================
-function getCitiesByCountry(store, countryCode, params) {
-  if (store !== 'shawq') {
-    return [];
-  }
-
+export function getCitiesByCountry(store, countryCode, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
 
   try {
-    const citiesData = db.prepare(`
-      SELECT 
-        city,
-        state,
-        COUNT(*) as orders,
-        SUM(subtotal) as revenue
-      FROM shopify_orders
-      WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
-      AND city IS NOT NULL
-      GROUP BY city, state
-      ORDER BY orders DESC
-    `).all(store, countryCode, startDate, endDate);
+    let citiesData = [];
+    let source = '';
+
+    if (store === 'shawq') {
+      // Shopify cities for Shawq
+      citiesData = db.prepare(`
+        SELECT
+          city,
+          state,
+          COUNT(*) as orders,
+          SUM(subtotal) as revenue
+        FROM shopify_orders
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        AND city IS NOT NULL AND city != ''
+        GROUP BY city, state
+        ORDER BY orders DESC
+      `).all(store, countryCode, startDate, endDate);
+      source = 'Shopify';
+    } else if (store === 'vironax') {
+      // Try Salla cities for VironaX
+      citiesData = db.prepare(`
+        SELECT
+          city,
+          state,
+          COUNT(*) as orders,
+          SUM(subtotal) as revenue
+        FROM salla_orders
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        AND city IS NOT NULL AND city != ''
+        GROUP BY city, state
+        ORDER BY orders DESC
+      `).all(store, countryCode, startDate, endDate);
+      source = 'Salla';
+
+      // If no Salla data, return message
+      if (!citiesData || citiesData.length === 0) {
+        return [{
+          name: 'City data unavailable',
+          city: 'City data unavailable',
+          state: null,
+          orders: 0,
+          revenue: 0,
+          rank: 1,
+          source: 'none',
+          message: 'City breakdown requires Salla order data'
+        }];
+      }
+    }
+
+    if (!citiesData || citiesData.length === 0) {
+      return [];
+    }
 
     return citiesData.map((city, index) => ({
       name: city.state ? `${city.city}, ${city.state}` : city.city,
@@ -107,7 +143,9 @@ function getCitiesByCountry(store, countryCode, params) {
       state: city.state || null,
       orders: city.orders || 0,
       revenue: city.revenue || 0,
-      rank: index + 1
+      aov: city.orders > 0 ? (city.revenue || 0) / city.orders : 0,
+      rank: index + 1,
+      source
     }));
   } catch (error) {
     console.error(`[Analytics] Error getting cities for ${countryCode}:`, error);
@@ -256,7 +294,7 @@ export function getDashboard(store, params) {
 // ============================================================================
 function getDynamicCountries(db, store, startDate, endDate) {
   const metaData = db.prepare(`
-    SELECT country as countryCode, SUM(spend) as spend, SUM(conversions) as conversions, 
+    SELECT country as countryCode, SUM(spend) as spend, SUM(conversions) as conversions,
            SUM(conversion_value) as conversionValue
     FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL' GROUP BY country
   `).all(store, startDate, endDate);
@@ -267,16 +305,22 @@ function getDynamicCountries(db, store, startDate, endDate) {
       SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
       FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
     `).all(store, startDate, endDate);
+  } else if (store === 'vironax') {
+    // Try to get Salla data for VironaX
+    ecomData = db.prepare(`
+      SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
+      FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+    `).all(store, startDate, endDate);
   }
 
   const map = new Map();
-  
+
   ecomData.forEach(e => {
     const info = getCountryInfo(e.countryCode);
-    map.set(e.countryCode, { 
-      code: e.countryCode, name: info.name, flag: info.flag, 
-      spend: 0, revenue: e.revenue, totalOrders: e.orders, 
-      impressions: 0, clicks: 0, cities: [] 
+    map.set(e.countryCode, {
+      code: e.countryCode, name: info.name, flag: info.flag,
+      spend: 0, revenue: e.revenue || 0, totalOrders: e.orders || 0,
+      impressions: 0, clicks: 0, cities: []
     });
   });
 
@@ -284,21 +328,38 @@ function getDynamicCountries(db, store, startDate, endDate) {
     if(!m.spend && !m.conversions) return;
     if(!map.has(m.countryCode)) {
       const info = getCountryInfo(m.countryCode);
-      map.set(m.countryCode, { 
-        code: m.countryCode, name: info.name, flag: info.flag, 
-        spend: 0, revenue: 0, totalOrders: 0, impressions: 0, clicks: 0, cities: [] 
+      map.set(m.countryCode, {
+        code: m.countryCode, name: info.name, flag: info.flag,
+        spend: 0, revenue: 0, totalOrders: 0, impressions: 0, clicks: 0, cities: []
       });
     }
     const c = map.get(m.countryCode);
     c.spend += m.spend || 0;
-    
-    if (store === 'vironax') {
+
+    // For VironaX without Salla data, use Meta conversions
+    if (store === 'vironax' && c.totalOrders === 0) {
       c.revenue = m.conversionValue || 0;
       c.totalOrders = m.conversions || 0;
     }
   });
 
-  return Array.from(map.values()).sort((a, b) => b.spend - a.spend);
+  // Add cities data for each country
+  for (const [countryCode, countryData] of map.entries()) {
+    const cities = getCitiesByCountry(store, countryCode, { startDate, endDate });
+    countryData.cities = cities;
+  }
+
+  // Calculate AOV, CAC, ROAS for each country and filter
+  return Array.from(map.values())
+    .map(c => ({
+      ...c,
+      aov: c.totalOrders > 0 ? c.revenue / c.totalOrders : 0,
+      cac: c.totalOrders > 0 ? c.spend / c.totalOrders : 0,
+      roas: c.spend > 0 ? c.revenue / c.spend : 0
+    }))
+    .filter(c => c.totalOrders > 0)  // Fix 5: Hide 0-order countries
+    .filter(c => c.code && c.code !== 'ALL' && c.code.toLowerCase() !== 'unknown')
+    .sort((a, b) => b.totalOrders - a.totalOrders);  // Sort by orders
 }
 
 // ============================================================================
@@ -341,9 +402,9 @@ function getTrends(store, startDate, endDate) {
 // ============================================================================
 export function getCountryTrends(store, params) {
   const db = getDb();
-  // FIXED: Always use last 7 days, ignore date picker
+  // Fix 6: Changed from 7 days to 14 days
   const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000));
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
 
   try {
     let rawData = [];
@@ -424,7 +485,11 @@ export function getCountryTrends(store, params) {
       }
     }
 
-    const result = Array.from(countriesMap.values()).sort((a, b) => b.totalOrders - a.totalOrders);
+    // Fix 6: Filter out countries with 0 total orders and unknown countries
+    const result = Array.from(countriesMap.values())
+      .filter(c => c.totalOrders > 0)
+      .filter(c => c.countryCode && c.countryCode.toLowerCase() !== 'unknown')
+      .sort((a, b) => b.totalOrders - a.totalOrders);
 
     return result;
   } catch (error) {
@@ -525,11 +590,192 @@ export function getShopifyTimeOfDay(store, params) {
       timezone,
       region,
       totalOrders: rawData.length,
-      sampleTimestamps: []
+      sampleTimestamps: [],
+      source: 'Shopify'
     };
   } catch (error) {
     console.error('[Analytics] Error getting time of day:', error);
-    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [] };
+    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [], source: 'error' };
+  }
+}
+
+// ============================================================================
+// TIME OF DAY FOR SALLA (VironaX)
+// ============================================================================
+export function getSallaTimeOfDay(store, params) {
+  const db = getDb();
+  // Use 14 days for better distribution
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+
+  // Riyadh timezone is GMT+3
+  const timezone = 'Asia/Riyadh';
+  const offset = 3;
+
+  const hourLabels = {
+    0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
+    6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
+    12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
+    18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
+  };
+
+  try {
+    // Check if salla_orders table has created_at with time info
+    const rawData = db.prepare(`
+      SELECT
+        created_at,
+        country_code,
+        subtotal as revenue
+      FROM salla_orders
+      WHERE store = ? AND date BETWEEN ? AND ?
+      AND created_at IS NOT NULL
+    `).all(store, startDate, endDate);
+
+    if (!rawData || rawData.length === 0) {
+      return { data: [], timezone, totalOrders: 0, sampleTimestamps: [], source: 'Salla', message: 'No Salla order data with timestamps' };
+    }
+
+    const hourBuckets = {};
+    for (let h = 0; h < 24; h++) {
+      hourBuckets[h] = { orders: 0, revenue: 0 };
+    }
+
+    for (const order of rawData) {
+      if (!order.created_at) continue;
+
+      const orderDate = new Date(order.created_at);
+      if (isNaN(orderDate.getTime())) continue;
+
+      // Convert UTC to Riyadh time (GMT+3)
+      let hour = orderDate.getUTCHours() + offset;
+      if (hour >= 24) hour -= 24;
+      if (hour < 0) hour += 24;
+
+      hourBuckets[hour].orders += 1;
+      hourBuckets[hour].revenue += order.revenue || 0;
+    }
+
+    const formattedData = [];
+    for (let hour = 0; hour < 24; hour++) {
+      const stats = hourBuckets[hour];
+      formattedData.push({
+        hour,
+        label: hourLabels[hour],
+        orders: stats.orders,
+        revenue: stats.revenue,
+        aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
+      });
+    }
+
+    return {
+      data: formattedData,
+      timezone,
+      totalOrders: rawData.length,
+      sampleTimestamps: [],
+      source: 'Salla'
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting Salla time of day:', error);
+    return { data: [], timezone: 'Asia/Riyadh', sampleTimestamps: [], source: 'error' };
+  }
+}
+
+// ============================================================================
+// COMBINED TIME OF DAY (supports both stores)
+// ============================================================================
+export function getTimeOfDay(store, params) {
+  if (store === 'shawq') {
+    return getShopifyTimeOfDay(store, params);
+  }
+
+  if (store === 'vironax') {
+    // Try Salla first
+    const sallaResult = getSallaTimeOfDay(store, params);
+    if (sallaResult.data && sallaResult.data.length > 0) {
+      const hasOrders = sallaResult.data.some(d => d.orders > 0);
+      if (hasOrders) {
+        return sallaResult;
+      }
+    }
+
+    // If no Salla data, return message
+    return {
+      data: [],
+      timezone: 'Asia/Riyadh',
+      totalOrders: 0,
+      sampleTimestamps: [],
+      source: 'none',
+      message: 'Time of Day data unavailable - requires Salla order timestamps'
+    };
+  }
+
+  return { data: [], timezone: 'UTC', totalOrders: 0, sampleTimestamps: [], source: 'none', message: 'Unknown store' };
+}
+
+// ============================================================================
+// ORDERS BY DAY OF WEEK (Fix 8)
+// ============================================================================
+export function getOrdersByDayOfWeek(store, params) {
+  const db = getDb();
+  const period = params.period || '14d';
+
+  // Calculate date range based on period
+  const endDate = formatDateAsGmt3(new Date());
+  let startDate;
+  if (period === '14d') {
+    startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  } else if (period === '30d') {
+    startDate = formatDateAsGmt3(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000));
+  } else { // 'all'
+    startDate = formatDateAsGmt3(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
+  }
+
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  try {
+    let orders = [];
+    let source = '';
+
+    if (store === 'shawq') {
+      orders = db.prepare(`SELECT date FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+      source = 'Shopify';
+    } else if (store === 'vironax') {
+      // Try Salla first
+      orders = db.prepare(`SELECT date FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+      source = 'Salla';
+
+      // Fallback to Meta if no Salla orders
+      if (!orders || orders.length === 0) {
+        orders = db.prepare(`SELECT date FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND conversions > 0`).all(store, startDate, endDate);
+        source = 'Meta';
+      }
+    }
+
+    // Count by day of week
+    const dayCounts = [0, 0, 0, 0, 0, 0, 0];
+    for (const row of orders) {
+      const dayIndex = new Date(row.date).getDay();
+      dayCounts[dayIndex]++;
+    }
+
+    const total = dayCounts.reduce((sum, c) => sum + c, 0);
+
+    // Build result array
+    const result = dayNames.map((day, idx) => ({
+      day,
+      dayIndex: idx,
+      orders: dayCounts[idx],
+      percentage: total > 0 ? ((dayCounts[idx] / total) * 100).toFixed(1) : '0.0'
+    }));
+
+    // Sort by orders descending, add rank
+    result.sort((a, b) => b.orders - a.orders);
+    result.forEach((item, idx) => item.rank = idx + 1);
+
+    return { data: result, source, totalOrders: total, period };
+  } catch (error) {
+    console.error('[Analytics] Days of week error:', error);
+    return { data: [], source: 'error', totalOrders: 0, period };
   }
 }
 
