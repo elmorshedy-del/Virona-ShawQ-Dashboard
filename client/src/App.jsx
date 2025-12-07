@@ -750,7 +750,6 @@ function DashboardTab({
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
-  const [expandedStates, setExpandedStates] = useState(new Set());
   
   const ecomLabel = store.ecommerce;
   
@@ -835,18 +834,6 @@ function DashboardTab({
         }
       } else {
         next.add(code);
-      }
-      return next;
-    });
-  };
-
-  const toggleStateRow = (stateKey) => {
-    setExpandedStates(prev => {
-      const next = new Set(prev);
-      if (next.has(stateKey)) {
-        next.delete(stateKey);
-      } else {
-        next.add(stateKey);
       }
       return next;
     });
@@ -1762,8 +1749,7 @@ function DashboardTab({
                             <table className="w-full text-sm">
                               <thead>
                                 <tr className="text-left text-gray-500">
-                                  {isUsCountry && <th className="w-28">Rank</th>}
-                                  <th>{isUsCountry ? 'State' : 'City'}</th>
+                                  <th>{isUsCountry ? 'City, State' : 'City'}</th>
                                   <th>Orders</th>
                                   <th>Revenue</th>
                                   <th>AOV</th>
@@ -1773,78 +1759,7 @@ function DashboardTab({
                                 </tr>
                               </thead>
                               <tbody>
-                {isUsCountry
-                  ? [...c.cities]
-                      .sort((a, b) => (b.orders || 0) - (a.orders || 0))
-                      .map((state, stateIdx) => {
-                        const stateKey = `${c.code}-${state.city || 'unknown'}`;
-                        const hasStateCities = Array.isArray(state.cities) && state.cities.length > 0;
-                        const stateExpanded = expandedStates.has(stateKey);
-                        const orderedStateCities = hasStateCities
-                          ? [...state.cities].sort((a, b) => (b.orders || 0) - (a.orders || 0))
-                          : [];
-
-                        const medal = stateIdx === 0 ? '🥇' : stateIdx === 1 ? '🥈' : stateIdx === 2 ? '🥉' : null;
-
-                        return (
-                          <Fragment key={stateKey}>
-                            <tr
-                              className={hasStateCities ? 'cursor-pointer hover:bg-gray-50' : ''}
-                              onClick={() => hasStateCities && toggleStateRow(stateKey)}
-                            >
-                              <td>
-                                <div className="flex items-center gap-2">
-                                  {medal && <span>{medal}</span>}
-                                  <span className="text-xs text-gray-500">#{stateIdx + 1}</span>
-                                  {hasStateCities && (
-                                    <span className="text-gray-400">
-                                      {stateExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
-                              <td>{state.city || 'Unknown'}</td>
-                              <td>{state.orders || 0}</td>
-                              <td className="text-green-600 font-semibold">{formatCurrency(state.revenue || 0)}</td>
-                              <td>{formatCurrency(state.aov || 0)}</td>
-                              <td>—</td>
-                              <td>—</td>
-                              <td>—</td>
-                            </tr>
-
-                            {stateExpanded && hasStateCities && (
-                              <tr key={`${stateKey}-cities`}>
-                                <td colSpan={8} className="bg-gray-50">
-                                  <div className="pl-10 pr-4 py-3 space-y-2">
-                                    <div className="text-xs font-semibold text-gray-600">Cities</div>
-                                    <table className="w-full text-xs">
-                                      <thead>
-                                        <tr className="text-left text-gray-500">
-                                          <th>City</th>
-                                          <th>Orders</th>
-                                          <th>Revenue</th>
-                                          <th>AOV</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {orderedStateCities.map((innerCity, cityIdx) => (
-                                          <tr key={`${stateKey}-${innerCity.city || 'unknown'}-${cityIdx}`}>
-                                            <td>{innerCity.city || 'Unknown'}</td>
-                                            <td>{innerCity.orders || 0}</td>
-                                            <td className="text-green-600 font-semibold">{formatCurrency(innerCity.revenue || 0)}</td>
-                                            <td>{formatCurrency(innerCity.aov || 0)}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </Fragment>
-                        );
-                      })
-                  : c.cities.some(city => city.requiresSalla)
+                {c.cities.some(city => city.requiresSalla)
                     ? (
                       <tr>
                         <td colSpan={7} className="text-center py-4">
@@ -1855,9 +1770,15 @@ function DashboardTab({
                         </td>
                       </tr>
                     )
-                    : c.cities.map((city, idx) => (
+                    : [...c.cities]
+                        .sort((a, b) => (b.orders || 0) - (a.orders || 0))
+                        .map((city, idx) => (
                       <tr key={`${c.code}-${city.city || 'unknown'}-${idx}`}>
-                        <td>{city.city || 'Unknown'}</td>
+                        <td>
+                          {isUsCountry && city.state
+                            ? `${city.city || 'Unknown'}, ${city.state}`
+                            : (city.city || 'Unknown')}
+                        </td>
                         <td>{city.orders || 0}</td>
                         <td className="text-green-600 font-semibold">{formatCurrency(city.revenue || 0)}</td>
                         <td>{formatCurrency(city.aov || 0)}</td>

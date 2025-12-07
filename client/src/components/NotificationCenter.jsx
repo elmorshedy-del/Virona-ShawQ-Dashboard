@@ -10,7 +10,6 @@ export default function NotificationCenter({ currentStore }) {
   const [loading, setLoading] = useState(false);
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const dropdownRef = useRef(null);
-  const audioRef = useRef(null);
   const pollIntervalRef = useRef(null);
   const lastNotificationIdRef = useRef(null);
 
@@ -34,19 +33,49 @@ export default function NotificationCenter({ currentStore }) {
   };
 
   // ============================================================================
-  // Play notification sound
+  // Play notification sound using Web Audio API (cha-ching cash register sound)
   // ============================================================================
   const playSound = () => {
-    if (soundEnabled && audioRef.current) {
-      try {
-        audioRef.current.currentTime = 0;
-        audioRef.current.volume = 0.5;
-        audioRef.current.play().catch(err => {
-          console.log('Audio play failed:', err);
-        });
-      } catch (err) {
-        console.log('Error playing sound:', err);
-      }
+    if (!soundEnabled) return;
+
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+      // Create a pleasant two-tone "cha-ching" coin sound
+      const playTone = (frequency, startTime, duration, volume = 0.3) => {
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(frequency, startTime);
+
+        // Bell-like envelope: quick attack, gradual decay
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(volume, startTime + 0.01);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
+
+        oscillator.start(startTime);
+        oscillator.stop(startTime + duration);
+      };
+
+      const now = audioContext.currentTime;
+
+      // First chime (lower note) - the "cha"
+      playTone(880, now, 0.15, 0.25);        // A5
+      playTone(1760, now, 0.15, 0.15);       // A6 overtone
+
+      // Second chime (higher note) - the "ching"
+      playTone(1318.5, now + 0.1, 0.25, 0.3);  // E6
+      playTone(2637, now + 0.1, 0.25, 0.15);   // E7 overtone
+
+      // Add a subtle metallic shimmer
+      playTone(1975.5, now + 0.12, 0.2, 0.1);  // B6
+
+    } catch (err) {
+      console.log('Web Audio API sound failed:', err);
     }
   };
 
@@ -271,8 +300,7 @@ export default function NotificationCenter({ currentStore }) {
 
   return (
     <div className="relative" ref={dropdownRef}>
-      {/* Hidden audio element for notification sound */}
-      <audio ref={audioRef} src="/sounds/notification.mp3" preload="auto" />
+      {/* Notification sound is generated via Web Audio API - no audio element needed */}
 
       {/* Bell Icon Button */}
       <button
