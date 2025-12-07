@@ -89,6 +89,8 @@ export default function App() {
   const [metaBreakdown, setMetaBreakdown] = useState('none');
   // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
+  const [countryTrendsDataSource, setCountryTrendsDataSource] = useState('');
+  const [countriesDataSource, setCountriesDataSource] = useState('');
 
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
@@ -222,7 +224,21 @@ export default function App() {
           : { ...prev, country: safeCountries[0]?.code || prev.country };
       });
 
-      setCountryTrends(cTrends);
+      // Handle country trends - now returns { data: [...], dataSource: ... }
+      if (cTrends && typeof cTrends === 'object' && Array.isArray(cTrends.data)) {
+        setCountryTrends(cTrends.data);
+        setCountryTrendsDataSource(cTrends.dataSource || '');
+      } else if (Array.isArray(cTrends)) {
+        // Backwards compatibility
+        setCountryTrends(cTrends);
+        setCountryTrendsDataSource('');
+      } else {
+        setCountryTrends([]);
+        setCountryTrendsDataSource('');
+      }
+
+      // Set countries data source from dashboard
+      setCountriesDataSource(dashData?.countriesDataSource || '');
 
       // Set time of day data
       const todData = Array.isArray(timeOfDayData?.data) ? timeOfDayData.data : [];
@@ -1615,9 +1631,16 @@ function DashboardTab({
           </div>
         ) : (
           <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-            <p className="text-sm text-gray-500">
-              {timeOfDayMessage || 'Time of Day data unavailable for this store.'}
-            </p>
+            {timeOfDayMessage === 'Requires Salla connection' ? (
+              <div className="flex items-center justify-center gap-2 text-amber-600 py-2">
+                <AlertCircle className="w-5 h-5" />
+                <span className="font-medium">Requires Salla connection</span>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">
+                {timeOfDayMessage || 'Time of Day data unavailable for this store.'}
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -1627,8 +1650,20 @@ function DashboardTab({
         <div className="p-6 border-b border-gray-100">
           <h2 className="text-lg font-semibold">Countries Performance</h2>
           <p className="text-sm text-gray-500">
-            Combined: Meta Spend + {store.ecommerce} Orders + Manual Orders • Click headers to sort
+            Click headers to sort
           </p>
+          {countriesDataSource && (
+            <div className="flex items-center gap-2 mt-2 text-xs text-gray-600">
+              <span>Data source:</span>
+              <span className={`inline-flex items-center px-2 py-1 rounded-full font-medium ${
+                countriesDataSource === 'Meta' ? 'bg-blue-50 text-blue-700' :
+                countriesDataSource === 'Salla' ? 'bg-green-50 text-green-700' :
+                'bg-purple-50 text-purple-700'
+              }`}>
+                {countriesDataSource}
+              </span>
+            </div>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table>
@@ -1805,7 +1840,18 @@ function DashboardTab({
                           </Fragment>
                         );
                       })
-                  : c.cities.map((city, idx) => (
+                  : c.cities.some(city => city.requiresSalla)
+                    ? (
+                      <tr>
+                        <td colSpan={7} className="text-center py-4">
+                          <div className="flex items-center justify-center gap-2 text-amber-600">
+                            <AlertCircle className="w-4 h-4" />
+                            <span className="text-sm font-medium">Requires Salla connection</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                    : c.cities.map((city, idx) => (
                       <tr key={`${c.code}-${city.city || 'unknown'}-${idx}`}>
                         <td>{city.city || 'Unknown'}</td>
                         <td>{city.orders || 0}</td>
@@ -1843,6 +1889,18 @@ function DashboardTab({
                 Click to {showCountryTrends ? 'collapse' : 'expand'} daily order trends
                 per country
               </p>
+              {countryTrendsDataSource && (
+                <div className="flex items-center gap-2 mt-2 text-xs text-gray-600">
+                  <span>Data source:</span>
+                  <span className={`inline-flex items-center px-2 py-1 rounded-full font-medium ${
+                    countryTrendsDataSource === 'Meta' ? 'bg-blue-50 text-blue-700' :
+                    countryTrendsDataSource === 'Salla' ? 'bg-green-50 text-green-700' :
+                    'bg-purple-50 text-purple-700'
+                  }`}>
+                    {countryTrendsDataSource}
+                  </span>
+                </div>
+              )}
             </div>
             <div
               className={`transform transition-transform ${
