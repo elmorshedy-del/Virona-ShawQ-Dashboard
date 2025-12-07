@@ -643,6 +643,8 @@ export default function App() {
             metaBreakdownData={metaBreakdownData}
             store={store}
             countryTrends={countryTrends}
+            countryTrendsDataSource={countryTrendsDataSource}
+            countriesDataSource={countriesDataSource}
             timeOfDay={timeOfDay}
             selectedShopifyRegion={selectedShopifyRegion}
             setSelectedShopifyRegion={setSelectedShopifyRegion}
@@ -731,6 +733,8 @@ function DashboardTab({
   metaBreakdownData = [],
   store = {},
   countryTrends = [],
+  countryTrendsDataSource = '',
+  countriesDataSource = '',
   timeOfDay = { data: [], timezone: 'America/Chicago', sampleTimestamps: [], source: '' },
   selectedShopifyRegion = 'us',
   setSelectedShopifyRegion = () => {},
