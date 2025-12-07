@@ -54,22 +54,22 @@ function getPreviousDateRange(startDate, endDate) {
 // SALLA DETECTION
 // ============================================================================
 function isSallaActive() {
-  const sallaToken = process.env.SALLA_ACCESS_TOKEN;
-  const sallaMerchantId = process.env.SALLA_MERCHANT_ID;
-  
-  if (!sallaToken || !sallaMerchantId) {
+  // Use the same environment variable as sallaService.js
+  const sallaToken = process.env.VIRONAX_SALLA_ACCESS_TOKEN;
+
+  if (!sallaToken) {
     return false;
   }
-  
+
   const db = getDb();
   try {
-    const recentSync = db.prepare(`
-      SELECT COUNT(*) as count FROM salla_orders 
-      WHERE store = 'vironax' 
-      AND created_at > datetime('now', '-24 hours')
+    // Check if we have recent Salla orders
+    const recentOrders = db.prepare(`
+      SELECT COUNT(*) as count FROM salla_orders
+      WHERE store = 'vironax'
     `).get();
-    
-    return recentSync.count > 0;
+
+    return recentOrders.count > 0;
   } catch (error) {
     console.warn('[Analytics] Error checking Salla active status:', error);
     return false;
@@ -118,17 +118,18 @@ export function getCitiesByCountry(store, countryCode, params) {
       `).all(store, countryCode, startDate, endDate);
       source = 'Salla';
 
-      // If no Salla data, return message
+      // If no Salla data, return "Requires Salla connection" message
       if (!citiesData || citiesData.length === 0) {
         return [{
-          name: 'City data unavailable',
-          city: 'City data unavailable',
+          name: 'Requires Salla connection',
+          city: 'Requires Salla connection',
           state: null,
           orders: 0,
           revenue: 0,
           rank: 1,
           source: 'none',
-          message: 'City breakdown requires Salla order data'
+          message: 'Requires Salla connection',
+          requiresSalla: true
         }];
       }
     }
@@ -263,16 +264,17 @@ export function getDashboard(store, params) {
   const metaImpressionsTotal = metaTotals.impressions_total || 0;
   const metaClicksTotal = metaTotals.clicks_total || 0;
 
-  const countries = getDynamicCountries(db, store, startDate, endDate);
+  const { countries, dataSource: countriesDataSource } = getDynamicCountries(db, store, startDate, endDate);
 
   return {
     overview,
     campaigns,
     countries,
+    countriesDataSource,
     trends: getTrends(store, startDate, endDate),
     diagnostics: [],
     dateRange: { startDate, endDate },
-    
+
     metaCampaignCount,
     metaSpendTotal: current.spend,
     metaRevenueTotal: current.revenue,
@@ -300,20 +302,31 @@ function getDynamicCountries(db, store, startDate, endDate) {
   `).all(store, startDate, endDate);
 
   let ecomData = [];
+  let dataSource = 'Meta'; // Default to Meta
+
   if (store === 'shawq') {
     ecomData = db.prepare(`
       SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
       FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
     `).all(store, startDate, endDate);
+    dataSource = 'Shopify';
   } else if (store === 'vironax') {
     // Try to get Salla data for VironaX
     ecomData = db.prepare(`
       SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
       FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
     `).all(store, startDate, endDate);
+
+    // Check if we have Salla data
+    if (ecomData && ecomData.length > 0) {
+      dataSource = 'Salla';
+    } else {
+      dataSource = 'Meta';
+    }
   }
 
   const map = new Map();
+  let usedMetaFallback = false;
 
   ecomData.forEach(e => {
     const info = getCountryInfo(e.countryCode);
@@ -340,8 +353,14 @@ function getDynamicCountries(db, store, startDate, endDate) {
     if (store === 'vironax' && c.totalOrders === 0) {
       c.revenue = m.conversionValue || 0;
       c.totalOrders = m.conversions || 0;
+      usedMetaFallback = true;
     }
   });
+
+  // If VironaX used Meta fallback, set dataSource to Meta
+  if (store === 'vironax' && usedMetaFallback && ecomData.length === 0) {
+    dataSource = 'Meta';
+  }
 
   // Add cities data for each country
   for (const [countryCode, countryData] of map.entries()) {
@@ -350,7 +369,7 @@ function getDynamicCountries(db, store, startDate, endDate) {
   }
 
   // Calculate AOV, CAC, ROAS for each country and filter
-  return Array.from(map.values())
+  const countries = Array.from(map.values())
     .map(c => ({
       ...c,
       aov: c.totalOrders > 0 ? c.revenue / c.totalOrders : 0,
@@ -360,6 +379,8 @@ function getDynamicCountries(db, store, startDate, endDate) {
     .filter(c => c.totalOrders > 0)  // Fix 5: Hide 0-order countries
     .filter(c => c.code && c.code !== 'ALL' && c.code.toLowerCase() !== 'unknown')
     .sort((a, b) => b.totalOrders - a.totalOrders);  // Sort by orders
+
+  return { countries, dataSource };
 }
 
 // ============================================================================
@@ -408,50 +429,59 @@ export function getCountryTrends(store, params) {
 
   try {
     let rawData = [];
+    let dataSource = 'Meta';
 
     if (store === 'shawq') {
       rawData = db.prepare(`
-        SELECT 
-          date, 
+        SELECT
+          date,
           country_code as countryCode,
-          COUNT(*) as orders, 
+          COUNT(*) as orders,
           SUM(subtotal) as revenue
-        FROM shopify_orders 
+        FROM shopify_orders
         WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
         GROUP BY date, country_code
         ORDER BY date ASC, country_code ASC
       `).all(store, startDate, endDate);
+      dataSource = 'Shopify';
 
     } else if (store === 'vironax') {
-      const sallaActive = isSallaActive();
-      
-      if (sallaActive) {
+      // First check if we have any Salla data
+      const sallaCount = db.prepare(`
+        SELECT COUNT(*) as count FROM salla_orders
+        WHERE store = ? AND date BETWEEN ? AND ?
+      `).get(store, startDate, endDate);
+
+      if (sallaCount && sallaCount.count > 0) {
         rawData = db.prepare(`
-          SELECT 
-            date, 
+          SELECT
+            date,
             country_code as countryCode,
-            COUNT(*) as orders, 
+            COUNT(*) as orders,
             SUM(total_price) as revenue
-          FROM salla_orders 
+          FROM salla_orders
           WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
           GROUP BY date, country_code
           ORDER BY date ASC, country_code ASC
         `).all(store, startDate, endDate);
+        dataSource = 'Salla';
       } else {
+        // Fallback to Meta data
         rawData = db.prepare(`
-          SELECT 
-            date, 
+          SELECT
+            date,
             country as countryCode,
-            SUM(conversions) as orders, 
+            SUM(conversions) as orders,
             SUM(conversion_value) as revenue
-          FROM meta_daily_metrics 
+          FROM meta_daily_metrics
           WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
           GROUP BY date, country
           ORDER BY date ASC, country ASC
         `).all(store, startDate, endDate);
+        dataSource = 'Meta';
       }
     } else {
-      return [];
+      return { data: [], dataSource: 'none' };
     }
 
     const countriesMap = new Map();
@@ -491,10 +521,10 @@ export function getCountryTrends(store, params) {
       .filter(c => c.countryCode && c.countryCode.toLowerCase() !== 'unknown')
       .sort((a, b) => b.totalOrders - a.totalOrders);
 
-    return result;
+    return { data: result, dataSource };
   } catch (error) {
     console.error(`[Analytics] Error getting country trends:`, error);
-    return [];
+    return { data: [], dataSource: 'error' };
   }
 }
 
@@ -698,14 +728,15 @@ export function getTimeOfDay(store, params) {
       }
     }
 
-    // If no Salla data, return message
+    // If no Salla data, return "Requires Salla connection" message
     return {
       data: [],
       timezone: 'Asia/Riyadh',
       totalOrders: 0,
       sampleTimestamps: [],
       source: 'none',
-      message: 'Time of Day data unavailable - requires Salla order timestamps'
+      message: 'Requires Salla connection',
+      requiresSalla: true
     };
   }
 

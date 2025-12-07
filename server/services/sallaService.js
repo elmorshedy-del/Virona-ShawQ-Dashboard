@@ -7,8 +7,8 @@ export async function fetchSallaOrders(dateStart, dateEnd) {
   const accessToken = process.env.VIRONAX_SALLA_ACCESS_TOKEN;
 
   if (!accessToken) {
-    console.log('Salla credentials not configured - using demo data');
-    return getDemoSallaOrders(dateStart, dateEnd);
+    console.log('Salla credentials not configured - returning empty array (no demo data)');
+    return [];
   }
 
   try {
@@ -117,62 +117,4 @@ export async function syncSallaOrders() {
   }
 }
 
-// Demo data for Salla (GCC markets)
-function getDemoSallaOrders(dateStart, dateEnd) {
-  const countries = [
-    { name: 'Saudi Arabia', code: 'SA', share: 0.50, avgOrder: 320 },
-    { name: 'United Arab Emirates', code: 'AE', share: 0.25, avgOrder: 380 },
-    { name: 'Kuwait', code: 'KW', share: 0.12, avgOrder: 350 },
-    { name: 'Qatar', code: 'QA', share: 0.08, avgOrder: 400 },
-    { name: 'Oman', code: 'OM', share: 0.05, avgOrder: 290 }
-  ];
-
-  const orders = [];
-  const start = new Date(dateStart);
-  const end = new Date(dateEnd);
-  let orderId = 100000;
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = formatDateAsGmt3(d);
-    const dayOfWeek = d.getDay();
-    const baseOrders = dayOfWeek === 5 || dayOfWeek === 6 ? 28 : 22; // More on weekends
-    const dailyOrders = Math.floor(baseOrders * (0.85 + Math.random() * 0.3));
-
-    for (let i = 0; i < dailyOrders; i++) {
-      const rand = Math.random();
-      let cumShare = 0;
-      let selectedCountry = countries[0];
-
-      for (const country of countries) {
-        cumShare += country.share;
-        if (rand < cumShare) {
-          selectedCountry = country;
-          break;
-        }
-      }
-
-      const variance = 0.7 + Math.random() * 0.6;
-      const orderTotal = selectedCountry.avgOrder * variance;
-      const shipping = Math.random() > 0.7 ? 25 : 0;
-
-      orders.push({
-        order_id: (orderId++).toString(),
-        date: dateStr,
-        country: selectedCountry.name,
-        country_code: selectedCountry.code,
-        city: null,
-        order_total: orderTotal,
-        subtotal: orderTotal - shipping,
-        shipping: shipping,
-        tax: orderTotal * 0.15,
-        discount: Math.random() > 0.8 ? orderTotal * 0.1 : 0,
-        items_count: Math.floor(1 + Math.random() * 2),
-        status: 'completed',
-        payment_method: Math.random() > 0.3 ? 'credit_card' : 'cod',
-        currency: 'SAR'
-      });
-    }
-  }
-
-  return orders;
-}
+// Demo data removed - only real Salla API data is used

@@ -8,8 +8,8 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
   const accessToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
 
   if (!shopifyStore || !accessToken) {
-    console.log('Shopify credentials not configured for Shawq - using demo data');
-    return getDemoShopifyOrders(dateStart, dateEnd);
+    console.log('Shopify credentials not configured for Shawq - returning empty array (no demo data)');
+    return [];
   }
 
   try {
@@ -176,77 +176,4 @@ function getCountryName(code) {
   return countries[code] || code;
 }
 
-// Demo data for Shopify (Western markets)
-function getDemoShopifyOrders(dateStart, dateEnd) {
-  const countries = [
-    { name: 'United States', code: 'US', share: 0.40, avgOrder: 85 },
-    { name: 'United Kingdom', code: 'GB', share: 0.20, avgOrder: 75 },
-    { name: 'Canada', code: 'CA', share: 0.15, avgOrder: 80 },
-    { name: 'Germany', code: 'DE', share: 0.10, avgOrder: 70 },
-    { name: 'Netherlands', code: 'NL', share: 0.05, avgOrder: 65 },
-    { name: 'France', code: 'FR', share: 0.05, avgOrder: 72 },
-    { name: 'Australia', code: 'AU', share: 0.05, avgOrder: 78 }
-  ];
-
-  const orders = [];
-  const start = new Date(dateStart);
-  const end = new Date(dateEnd);
-  let orderId = 500000;
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = formatDateAsGmt3(d);
-    const dayOfWeek = d.getDay();
-
-    const baseOrders = dayOfWeek === 0 || dayOfWeek === 6 ? 22 : 18;
-    const dailyOrders = Math.floor(baseOrders * (0.8 + Math.random() * 0.4));
-
-    for (let i = 0; i < dailyOrders; i++) {
-      const rand = Math.random();
-      let cumShare = 0;
-      let selectedCountry = countries[0];
-
-      for (const country of countries) {
-        cumShare += country.share;
-        if (rand < cumShare) {
-          selectedCountry = country;
-          break;
-        }
-      }
-
-      const variance = 0.6 + Math.random() * 0.8;
-      const orderTotal = selectedCountry.avgOrder * variance;
-
-      // US gets free shipping over $75
-      const shipping =
-        selectedCountry.code === 'US' && orderTotal > 75 ? 0 :
-        selectedCountry.code === 'US' ? 8 : 15;
-
-      const hour = Math.floor(Math.random() * 24).toString().padStart(2, '0');
-      const minute = Math.floor(Math.random() * 60).toString().padStart(2, '0');
-      const orderCreatedAt = `${dateStr}T${hour}:${minute}:00Z`;
-
-      orders.push({
-        order_id: (orderId++).toString(),
-        date: dateStr,
-        country: selectedCountry.name,
-        country_code: selectedCountry.code,
-        city: null,
-        state: null,
-        order_total: orderTotal + shipping,
-        subtotal: orderTotal,
-        shipping: shipping,
-        tax: selectedCountry.code === 'US' ? 0 : orderTotal * 0.2,
-        discount: Math.random() > 0.85 ? orderTotal * 0.15 : 0,
-        items_count: Math.floor(1 + Math.random() * 3),
-        status: Math.random() > 0.1 ? 'fulfilled' : 'unfulfilled',
-        financial_status: 'paid',
-        fulfillment_status: Math.random() > 0.1 ? 'fulfilled' : null,
-        payment_method: Math.random() > 0.4 ? 'shopify_payments' : 'paypal',
-        currency: 'USD',
-        order_created_at: orderCreatedAt
-      });
-    }
-  }
-
-  return orders;
-}
+// Demo data removed - only real Shopify API data is used
