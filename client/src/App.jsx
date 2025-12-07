@@ -2099,31 +2099,12 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
     ? trends.slice(-7).map(t => ({ value: t[kpi.key] || 0 }))
     : [];
   
-  const calculateChange = () => {
-    if (!trends || trends.length < 2) return { value: 0, isPositive: true };
-    
-    const midPoint = Math.floor(trends.length / 2);
-    const firstHalf = trends.slice(0, midPoint);
-    const secondHalf = trends.slice(midPoint);
-    
-    const firstSum = firstHalf.reduce((sum, t) => sum + (t[kpi.key] || 0), 0);
-    const secondSum = secondHalf.reduce((sum, t) => sum + (t[kpi.key] || 0), 0);
-    
-    const firstAvg = firstHalf.length > 0 ? firstSum / firstHalf.length : 0;
-    const secondAvg = secondHalf.length > 0 ? secondSum / secondHalf.length : 0;
-    
-    if (firstAvg === 0) return { value: 0, isPositive: true };
-    
-    const change = ((secondAvg - firstAvg) / firstAvg) * 100;
-    
-    const isGoodChange = kpi.key === 'cac' || kpi.key === 'spend' 
-      ? change < 0 
-      : change > 0;
-    
-    return { value: Math.abs(change), isPositive: change >= 0, isGood: isGoodChange };
-  };
-  
-  const change = calculateChange();
+  // Use the pre-calculated change from backend (works correctly for Today/Yesterday)
+  const change = kpi.change || 0;
+  const isPositive = change >= 0;
+  const isGoodChange = (kpi.key === 'cac' || kpi.key === 'spend')
+    ? change < 0
+    : change > 0;
   
   const formatValue = () => {
     if (kpi.format === 'currency') return formatCurrency(kpi.value);
@@ -2142,18 +2123,10 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
         <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
           {kpi.label}
         </span>
-        {change.value > 0 && (
-          <span
-            className={`flex items-center gap-1 text-xs font-medium ${
-              change.isGood ? 'text-green-600' : 'text-red-500'
-            }`}
-          >
-            {change.isPositive ? (
-              <TrendingUp className="w-3 h-3" />
-            ) : (
-              <TrendingDown className="w-3 h-3" />
-            )}
-            {change.value.toFixed(1)}%
+        {change !== 0 && (
+          <span className={`flex items-center gap-1 text-xs font-medium ${isGoodChange ? 'text-green-600' : 'text-red-500'}`}>
+            {isPositive ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+            {Math.abs(change).toFixed(1)}%
           </span>
         )}
       </div>
