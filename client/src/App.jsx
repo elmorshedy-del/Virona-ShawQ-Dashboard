@@ -11,6 +11,7 @@ import {
   Bell, X, AlertCircle, CheckCircle2
 } from 'lucide-react';
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
+import NotificationCenter from './components/NotificationCenter';
 
 const API_BASE = '/api';
 
@@ -461,7 +462,7 @@ export default function App() {
                 {dashboard?.dateRange &&
                   `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
               </span>
-              <NotificationCenter currentStore={currentStore} dashboard={dashboard} />
+              <NotificationCenter currentStore={currentStore} />
               <button
                 onClick={handleSync}
                 disabled={syncing}
@@ -669,182 +670,6 @@ export default function App() {
 }
 
 
-// -----------------------------
-// Notification Center (inline)
-// If the external component was removed or not committed, this inline version
-// keeps the app running and provides a basic, robust notification UX.
-// -----------------------------
-function NotificationCenter({ currentStore, dashboard }) {
-  const [notifications, setNotifications] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [toast, setToast] = useState(null);
-  const prevOrdersRef = useRef(null);
-  const prevRevenueRef = useRef(null);
-
-  const addNotification = useCallback((type, title, message) => {
-    const newNote = {
-      id: Date.now(),
-      type,
-      title,
-      message,
-      store: currentStore,
-      timestamp: new Date().toISOString(),
-      source: 'System'
-    };
-
-    setNotifications(prev => [newNote, ...prev].slice(0, 20));
-    setToast({ type, title, message });
-  }, [currentStore]);
-
-  // Auto-hide toast
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 4500);
-    return () => clearTimeout(t);
-  }, [toast]);
-
-  // Watch total orders & revenue for simple delta-based notifications
-  useEffect(() => {
-    const orders = dashboard?.overview?.orders;
-    const revenue = dashboard?.overview?.revenue;
-
-    const prevOrders = prevOrdersRef.current;
-    const prevRevenue = prevRevenueRef.current;
-
-    if (typeof orders === 'number') {
-      if (typeof prevOrders === 'number' && orders > prevOrders) {
-        const delta = orders - prevOrders;
-        addNotification(
-          'success',
-          'New orders detected',
-          `${delta} new order${delta > 1 ? 's' : ''} since last refresh.`
-        );
-      }
-      prevOrdersRef.current = orders;
-    }
-
-    if (typeof revenue === 'number') {
-      if (typeof prevRevenue === 'number' && revenue > prevRevenue) {
-        const delta = revenue - prevRevenue;
-        // Only surface revenue delta if it's meaningfully positive
-        if (delta > 0) {
-          addNotification(
-            'info',
-            'Revenue increased',
-            `Revenue is up by ${Math.round(delta).toLocaleString()} since last refresh.`
-          );
-        }
-      }
-      prevRevenueRef.current = revenue;
-    }
-  }, [dashboard, addNotification]);
-
-  const unreadCount = notifications.length;
-
-  const typeMeta = {
-    success: { icon: CheckCircle2, badge: 'bg-emerald-500', text: 'text-emerald-700', bg: 'bg-emerald-50' },
-    info: { icon: Bell, badge: 'bg-indigo-500', text: 'text-indigo-700', bg: 'bg-indigo-50' },
-    warning: { icon: AlertCircle, badge: 'bg-amber-500', text: 'text-amber-700', bg: 'bg-amber-50' },
-    error: { icon: AlertCircle, badge: 'bg-red-500', text: 'text-red-700', bg: 'bg-red-50' }
-  };
-
-  const renderIcon = (type, className = 'w-4 h-4') => {
-    const Icon = (typeMeta[type] || typeMeta.info).icon;
-    return <Icon className={className} />;
-  };
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="relative flex items-center justify-center w-9 h-9 rounded-lg bg-gray-100 hover:bg-gray-200 transition-colors"
-        title="Notifications"
-        aria-label="Notifications"
-      >
-        <Bell className="w-4 h-4 text-gray-700" />
-        {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
-            {unreadCount > 9 ? '9+' : unreadCount}
-          </span>
-        )}
-      </button>
-
-      {open && (
-        <div className="absolute right-0 mt-2 w-80 bg-white border border-gray-200 rounded-xl shadow-lg z-50 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-            <div className="text-sm font-semibold text-gray-900">Notifications</div>
-            <div className="flex items-center gap-2">
-              {notifications.length > 0 && (
-                <button
-                  onClick={() => setNotifications([])}
-                  className="text-[11px] font-medium text-gray-500 hover:text-gray-700"
-                >
-                  Clear
-                </button>
-              )}
-              <button
-                onClick={() => setOpen(false)}
-                className="p-1 rounded hover:bg-gray-100"
-                aria-label="Close notifications"
-              >
-                <X className="w-3.5 h-3.5 text-gray-500" />
-              </button>
-            </div>
-          </div>
-
-          <div className="max-h-[360px] overflow-auto">
-            {notifications.length === 0 && (
-              <div className="px-4 py-6 text-sm text-gray-500">
-                No notifications yet.
-              </div>
-            )}
-
-            {notifications.map(note => {
-              const meta = typeMeta[note.type] || typeMeta.info;
-              return (
-                <div key={note.id} className="px-4 py-3 border-b border-gray-50 hover:bg-gray-50">
-                  <div className="flex items-start gap-2">
-                    <span className={`mt-0.5 inline-flex items-center justify-center w-6 h-6 rounded-lg ${meta.bg} ${meta.text}`}>
-                      {renderIcon(note.type, 'w-3.5 h-3.5')}
-                    </span>
-                    <div className="flex-1">
-                      <div className="text-xs font-semibold text-gray-900">
-                        {note.title}
-                      </div>
-                      <div className="text-xs text-gray-600 mt-0.5">
-                        {note.message}
-                      </div>
-                      <div className="text-[10px] text-gray-400 mt-1">
-                        {new Date(note.timestamp).toLocaleString()}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Toast */}
-      {toast && (
-        <div className="fixed top-4 right-4 z-[9999]">
-          <div className="bg-white border border-gray-200 rounded-xl shadow-lg px-4 py-3 min-w-[240px]">
-            <div className="flex items-start gap-2">
-              <span className="mt-0.5 text-gray-700">
-                {renderIcon(toast.type, 'w-4 h-4')}
-              </span>
-              <div>
-                <div className="text-xs font-semibold text-gray-900">{toast.title}</div>
-                <div className="text-xs text-gray-600 mt-0.5">{toast.message}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 
 function SortableHeader({ label, field, sortConfig, onSort, className = '' }) {

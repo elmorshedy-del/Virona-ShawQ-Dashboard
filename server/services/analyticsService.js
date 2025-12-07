@@ -102,15 +102,12 @@ function getCitiesByCountry(store, countryCode, params) {
     `).all(store, countryCode, startDate, endDate);
 
     return citiesData.map((city, index) => ({
+      name: city.state ? `${city.city}, ${city.state}` : city.city,
       city: city.city || 'Unknown',
       state: city.state || null,
       orders: city.orders || 0,
       revenue: city.revenue || 0,
-      rank: index + 1,
-      medal: (countryCode === 'US' && index === 0) ? '🥇' 
-           : (countryCode === 'US' && index === 1) ? '🥈'
-           : (countryCode === 'US' && index === 2) ? '🥉'
-           : null
+      rank: index + 1
     }));
   } catch (error) {
     console.error(`[Analytics] Error getting cities for ${countryCode}:`, error);
@@ -342,9 +339,11 @@ function getTrends(store, startDate, endDate) {
 // ============================================================================
 // COUNTRY TRENDS (with nested cities)
 // ============================================================================
-export function getCountryTrends(store, params) { 
+export function getCountryTrends(store, params) {
   const db = getDb();
-  const { startDate, endDate } = getDateRange(params);
+  // FIXED: Always use last 7 days, ignore date picker
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000));
 
   try {
     let rawData = [];
@@ -421,7 +420,7 @@ export function getCountryTrends(store, params) {
 
     if (store === 'shawq') {
       for (const countryData of countriesMap.values()) {
-        countryData.cities = getCitiesByCountry(store, countryData.countryCode, params);
+        countryData.cities = getCitiesByCountry(store, countryData.countryCode, { startDate, endDate });
       }
     }
 
@@ -437,63 +436,95 @@ export function getCountryTrends(store, params) {
 // ============================================================================
 // TIME OF DAY (with timezone logic)
 // ============================================================================
-export function getShopifyTimeOfDay(store, params) { 
+export function getShopifyTimeOfDay(store, params) {
   if (store !== 'shawq') {
-    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [] };
+    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [], message: 'Time of day requires Shopify data' };
   }
 
   const db = getDb();
-  const { startDate, endDate } = getDateRange(params);
+  // Use 14 days for better distribution
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
   const region = params.region || 'all';
 
-  try {
-    const timezoneMap = {
-      'us': 'America/Chicago',
-      'europe': 'Europe/London',
-      'all': 'UTC'
-    };
-    const timezone = timezoneMap[region] || 'UTC';
+  const timezoneOffsets = {
+    'us': -6,      // Chicago (CST)
+    'europe': 0,   // London (GMT)
+    'all': 0       // UTC
+  };
+  const offset = timezoneOffsets[region] || 0;
 
+  const timezoneMap = {
+    'us': 'America/Chicago',
+    'europe': 'Europe/London',
+    'all': 'UTC'
+  };
+  const timezone = timezoneMap[region] || 'UTC';
+
+  const hourLabels = {
+    0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
+    6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
+    12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
+    18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
+  };
+
+  try {
     let query = `
-      SELECT 
-        CAST(strftime('%H', datetime(created_at)) AS INTEGER) as hour,
-        COUNT(*) as orders,
-        SUM(subtotal) as revenue
+      SELECT
+        order_created_at,
+        country_code,
+        subtotal as revenue
       FROM shopify_orders
       WHERE store = ? AND date BETWEEN ? AND ?
+      AND order_created_at IS NOT NULL
     `;
 
-    const params_list = [store, startDate, endDate];
+    const queryParams = [store, startDate, endDate];
 
     if (region === 'us') {
       query += ` AND country_code IN ('US', 'CA')`;
     } else if (region === 'europe') {
-      query += ` AND country_code IN ('GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL')`;
+      query += ` AND country_code IN ('GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL', 'FI', 'CZ', 'HU', 'RO')`;
     }
 
-    query += ` GROUP BY hour ORDER BY hour ASC`;
+    const rawData = db.prepare(query).all(...queryParams);
 
-    const data = db.prepare(query).all(...params_list);
+    const hourBuckets = {};
+    for (let h = 0; h < 24; h++) {
+      hourBuckets[h] = { orders: 0, revenue: 0 };
+    }
 
-    const hourLabels = {
-      0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
-      6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
-      12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
-      18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
-    };
+    for (const order of rawData) {
+      if (!order.order_created_at) continue;
 
-    const formattedData = data.map(d => ({
-      hour: d.hour,
-      label: hourLabels[d.hour] || `${d.hour}:00`,
-      orders: d.orders || 0,
-      revenue: d.revenue || 0,
-      aov: d.orders > 0 ? d.revenue / d.orders : 0
-    }));
+      const orderDate = new Date(order.order_created_at);
+      if (isNaN(orderDate.getTime())) continue;
+
+      let hour = orderDate.getUTCHours() + offset;
+      if (hour < 0) hour += 24;
+      if (hour >= 24) hour -= 24;
+
+      hourBuckets[hour].orders += 1;
+      hourBuckets[hour].revenue += order.revenue || 0;
+    }
+
+    const formattedData = [];
+    for (let hour = 0; hour < 24; hour++) {
+      const stats = hourBuckets[hour];
+      formattedData.push({
+        hour,
+        label: hourLabels[hour],
+        orders: stats.orders,
+        revenue: stats.revenue,
+        aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
+      });
+    }
 
     return {
       data: formattedData,
       timezone,
       region,
+      totalOrders: rawData.length,
       sampleTimestamps: []
     };
   } catch (error) {
