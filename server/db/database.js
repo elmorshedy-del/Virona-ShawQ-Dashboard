@@ -178,6 +178,66 @@ export function initDb() {
     )
   `);
 
+  // Meta ad set metrics - hierarchical level under campaigns
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_adset_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'vironax',
+      date TEXT NOT NULL,
+      campaign_id TEXT NOT NULL,
+      campaign_name TEXT NOT NULL,
+      adset_id TEXT NOT NULL,
+      adset_name TEXT NOT NULL,
+      country TEXT DEFAULT 'ALL',
+      age TEXT DEFAULT '',
+      gender TEXT DEFAULT '',
+      publisher_platform TEXT DEFAULT '',
+      platform_position TEXT DEFAULT '',
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      conversion_value REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, date, adset_id, country, age, gender, publisher_platform, platform_position)
+    )
+  `);
+
+  // Meta ad metrics - hierarchical level under ad sets
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_ad_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'vironax',
+      date TEXT NOT NULL,
+      campaign_id TEXT NOT NULL,
+      campaign_name TEXT NOT NULL,
+      adset_id TEXT NOT NULL,
+      adset_name TEXT NOT NULL,
+      ad_id TEXT NOT NULL,
+      ad_name TEXT NOT NULL,
+      country TEXT DEFAULT 'ALL',
+      age TEXT DEFAULT '',
+      gender TEXT DEFAULT '',
+      publisher_platform TEXT DEFAULT '',
+      platform_position TEXT DEFAULT '',
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      conversion_value REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, date, ad_id, country, age, gender, publisher_platform, platform_position)
+    )
+  `);
+
   // Exchange rates cache
   db.exec(`
     CREATE TABLE IF NOT EXISTS exchange_rates (
@@ -193,6 +253,8 @@ export function initDb() {
 
   // Create indexes for performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_store_date ON meta_daily_metrics(store, date)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_adset_store_date ON meta_adset_metrics(store, date)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_ad_store_date ON meta_ad_metrics(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_salla_store_date ON salla_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);

@@ -221,14 +221,15 @@ export function getDashboard(store, params) {
 
   const campaigns = campaignData.map(c => ({
     ...c,
-    cpc: c.clicks > 0 ? c.spend / c.clicks : 0,
-    ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0,
-    cr: c.clicks > 0 ? (c.conversions / c.clicks) * 100 : 0,
-    metaRoas: c.spend > 0 ? c.conversionValue / c.spend : 0,
-    metaAov: c.conversions > 0 ? c.conversionValue / c.conversions : 0,
-    metaCac: c.conversions > 0 ? c.spend / c.conversions : 0,
-    cpm: c.impressions > 0 ? (c.spend / c.impressions) * 1000 : 0,
-    frequency: c.reach > 0 ? c.impressions / c.reach : 0
+    cpc: c.clicks > 0 ? c.spend / c.clicks : null,
+    ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : null,
+    cr: c.clicks > 0 ? (c.conversions / c.clicks) * 100 : null,
+    metaRoas: c.spend > 0 ? c.conversionValue / c.spend : null,
+    metaAov: c.conversions > 0 ? c.conversionValue / c.conversions : null,
+    metaCac: c.conversions > 0 ? c.spend / c.conversions : null,
+    cpm: c.impressions > 0 ? (c.spend / c.impressions) * 1000 : null,
+    frequency: c.reach > 0 ? c.impressions / c.reach : null,
+    conversion_value: c.conversionValue
   }));
 
   const metaTotals = db.prepare(`
@@ -276,10 +277,22 @@ export function getDashboard(store, params) {
 // DYNAMIC COUNTRIES
 // ============================================================================
 function getDynamicCountries(db, store, startDate, endDate) {
+  // Get all Meta metrics by country (upper/mid/lower funnel)
   const metaData = db.prepare(`
-    SELECT country as countryCode, SUM(spend) as spend, SUM(conversions) as conversions,
-           SUM(conversion_value) as conversionValue
-    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL' GROUP BY country
+    SELECT
+      country as countryCode,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversionValue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+    GROUP BY country
   `).all(store, startDate, endDate);
 
   let ecomData = [];
@@ -308,26 +321,39 @@ function getDynamicCountries(db, store, startDate, endDate) {
   const map = new Map();
   let usedMetaFallback = false;
 
+  // First, add e-commerce data
   ecomData.forEach(e => {
     const info = getCountryInfo(e.countryCode);
     map.set(e.countryCode, {
       code: e.countryCode, name: info.name, flag: info.flag,
       spend: 0, revenue: e.revenue || 0, totalOrders: e.orders || 0,
-      impressions: 0, clicks: 0, cities: []
+      impressions: 0, reach: 0, clicks: 0, lpv: 0, atc: 0, checkout: 0,
+      cities: []
     });
   });
 
+  // Then, merge with Meta data
   metaData.forEach(m => {
     if(!m.spend && !m.conversions) return;
     if(!map.has(m.countryCode)) {
       const info = getCountryInfo(m.countryCode);
       map.set(m.countryCode, {
         code: m.countryCode, name: info.name, flag: info.flag,
-        spend: 0, revenue: 0, totalOrders: 0, impressions: 0, clicks: 0, cities: []
+        spend: 0, revenue: 0, totalOrders: 0,
+        impressions: 0, reach: 0, clicks: 0, lpv: 0, atc: 0, checkout: 0,
+        cities: []
       });
     }
     const c = map.get(m.countryCode);
+
+    // Add Meta metrics
     c.spend += m.spend || 0;
+    c.impressions += m.impressions || 0;
+    c.reach += m.reach || 0;
+    c.clicks += m.clicks || 0;
+    c.lpv += m.lpv || 0;
+    c.atc += m.atc || 0;
+    c.checkout += m.checkout || 0;
 
     // For VironaX without Salla data, use Meta conversions
     if (store === 'vironax' && c.totalOrders === 0) {
@@ -348,15 +374,22 @@ function getDynamicCountries(db, store, startDate, endDate) {
     countryData.cities = cities;
   }
 
-  // Calculate AOV, CAC, ROAS for each country and filter
+  // Calculate metrics for each country and filter
   const countries = Array.from(map.values())
     .map(c => ({
       ...c,
-      aov: c.totalOrders > 0 ? c.revenue / c.totalOrders : 0,
-      cac: c.totalOrders > 0 ? c.spend / c.totalOrders : 0,
-      roas: c.spend > 0 ? c.revenue / c.spend : 0
+      // Upper funnel metrics
+      cpm: c.impressions > 0 ? (c.spend / c.impressions) * 1000 : null,
+      frequency: c.reach > 0 ? c.impressions / c.reach : null,
+      // Mid funnel metrics
+      ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : null,
+      cpc: c.clicks > 0 ? c.spend / c.clicks : null,
+      // Lower funnel metrics (using e-commerce data or Meta fallback)
+      aov: c.totalOrders > 0 ? c.revenue / c.totalOrders : null,
+      cac: c.totalOrders > 0 ? c.spend / c.totalOrders : null,
+      roas: c.spend > 0 ? c.revenue / c.spend : null
     }))
-    .filter(c => c.totalOrders > 0)  // Fix 5: Hide 0-order countries
+    .filter(c => c.totalOrders > 0)  // Hide 0-order countries
     .filter(c => c.code && c.code !== 'ALL' && c.code.toLowerCase() !== 'unknown')
     .sort((a, b) => b.totalOrders - a.totalOrders);  // Sort by orders
 
@@ -874,3 +907,154 @@ export function getCampaignsByGender(store, params) { return []; }
 export function getCampaignsByPlacement(store, params) { return []; }
 export function getCampaignsByAgeGender(store, params) { return []; }
 export function getMetaBreakdowns(store, params) { return []; }
+
+// ============================================================================
+// HIERARCHICAL META AD MANAGER DATA
+// ============================================================================
+
+// Helper: Calculate metrics with proper null handling
+function calculateMetrics(row) {
+  return {
+    cpm: row.impressions > 0 ? (row.spend / row.impressions) * 1000 : null,
+    frequency: row.reach > 0 ? row.impressions / row.reach : null,
+    ctr: row.impressions > 0 ? (row.clicks / row.impressions) * 100 : null,
+    cpc: row.clicks > 0 ? row.spend / row.clicks : null,
+    roas: row.spend > 0 ? row.conversion_value / row.spend : null,
+    aov: row.conversions > 0 ? row.conversion_value / row.conversions : null,
+    cac: row.conversions > 0 ? row.spend / row.conversions : null
+  };
+}
+
+// Get hierarchical Meta Ad Manager data with optional breakdown
+export function getMetaAdManagerHierarchy(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const breakdown = params.breakdown || 'none'; // none, country, age, gender, age_gender, placement
+
+  // Build WHERE and GROUP BY clauses based on breakdown
+  let breakdownSelect = '';
+  let breakdownGroup = '';
+  let breakdownWhere = '';
+
+  if (breakdown === 'country') {
+    breakdownSelect = ', country';
+    breakdownGroup = ', country';
+  } else if (breakdown === 'age') {
+    breakdownSelect = ', age';
+    breakdownGroup = ', age';
+    breakdownWhere = "AND age != ''";
+  } else if (breakdown === 'gender') {
+    breakdownSelect = ', gender';
+    breakdownGroup = ', gender';
+    breakdownWhere = "AND gender != ''";
+  } else if (breakdown === 'age_gender') {
+    breakdownSelect = ', age, gender';
+    breakdownGroup = ', age, gender';
+    breakdownWhere = "AND age != '' AND gender != ''";
+  } else if (breakdown === 'placement') {
+    breakdownSelect = ', publisher_platform, platform_position';
+    breakdownGroup = ', publisher_platform, platform_position';
+    breakdownWhere = "AND publisher_platform != ''";
+  }
+
+  // Get campaigns
+  const campaignQuery = `
+    SELECT
+      campaign_id, campaign_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value
+      ${breakdownSelect}
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    GROUP BY campaign_id${breakdownGroup}
+    ORDER BY spend DESC
+  `;
+
+  const campaigns = db.prepare(campaignQuery).all(store, startDate, endDate);
+
+  const campaignsWithMetrics = campaigns.map(c => ({
+    ...c,
+    ...calculateMetrics(c),
+    level: 'campaign'
+  }));
+
+  // Get ad sets
+  const adsetQuery = `
+    SELECT
+      campaign_id, campaign_name, adset_id, adset_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value
+      ${breakdownSelect}
+    FROM meta_adset_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    GROUP BY adset_id${breakdownGroup}
+    ORDER BY spend DESC
+  `;
+
+  const adsets = db.prepare(adsetQuery).all(store, startDate, endDate);
+
+  const adsetsWithMetrics = adsets.map(a => ({
+    ...a,
+    ...calculateMetrics(a),
+    level: 'adset'
+  }));
+
+  // Get ads
+  const adQuery = `
+    SELECT
+      campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value
+      ${breakdownSelect}
+    FROM meta_ad_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    GROUP BY ad_id${breakdownGroup}
+    ORDER BY spend DESC
+  `;
+
+  const ads = db.prepare(adQuery).all(store, startDate, endDate);
+
+  const adsWithMetrics = ads.map(a => ({
+    ...a,
+    ...calculateMetrics(a),
+    level: 'ad'
+  }));
+
+  // Build hierarchy
+  const hierarchy = campaignsWithMetrics.map(campaign => {
+    const campaignAdsets = adsetsWithMetrics
+      .filter(adset => adset.campaign_id === campaign.campaign_id)
+      .map(adset => ({
+        ...adset,
+        ads: adsWithMetrics.filter(ad => ad.adset_id === adset.adset_id)
+      }));
+
+    return {
+      ...campaign,
+      adsets: campaignAdsets
+    };
+  });
+
+  return hierarchy;
+}
