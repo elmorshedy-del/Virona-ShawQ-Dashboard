@@ -1,0 +1,2358 @@
+================================================================================
+VIRONA-SHAWQ DASHBOARD - FULL CODEBASE
+Generated: 2025-12-08
+================================================================================
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+1. ROOT FILES
+   - README.md
+   - package.json
+   - railway.json
+   - notificationService.js
+
+2. CLIENT FILES
+   - client/package.json
+   - client/index.html
+   - client/vite.config.js
+   - client/tailwind.config.js
+   - client/postcss.config.js
+   - client/src/main.jsx
+   - client/src/App.jsx
+   - client/src/index.css
+   - client/src/components/NotificationCenter.jsx
+   - client/src/data/countries.js
+
+3. SERVER FILES
+   - server/package.json
+   - server/server.js
+   - server/db/database.js
+   - server/constants/benchmarks.js
+   - server/routes/ai.js
+   - server/routes/analytics.js
+   - server/routes/manual.js
+   - server/routes/notifications.js
+   - server/routes/budgetIntelligence.js
+   - server/services/analyticsService.js
+   - server/services/openaiService.js
+   - server/services/metaService.js
+   - server/services/shopifyService.js
+   - server/services/sallaService.js
+   - server/services/budgetIntelligenceService.js
+   - server/services/notificationService.js
+   - server/services/metaImportService.js
+   - server/utils/dateUtils.js
+   - server/utils/countryData.js
+
+================================================================================
+1. ROOT FILES
+================================================================================
+
+--------------------------------------------------------------------------------
+FILE: README.md
+--------------------------------------------------------------------------------
+# Virona-ShawQ Dashboard
+
+E-commerce Analytics Dashboard supporting two stores:
+- **VironaX** - Men's Jewelry (Saudi Arabia, SAR currency, Salla)
+- **Shawq** - Palestinian & Syrian Apparel (Turkey/US, USD currency, Shopify)
+
+## Features
+- Real-time analytics from Meta Ads, Shopify, and Salla
+- Budget intelligence with Bayesian posteriors
+- Funnel diagnostics with jewelry benchmarks
+- AI-powered insights using GPT-5.1/GPT-4o mini
+- Manual order entry and spend overrides
+- Country-level and city-level breakdowns
+- Time of day and day of week analysis
+
+## Tech Stack
+- Frontend: React + Vite + TailwindCSS + Recharts
+- Backend: Node.js + Express + better-sqlite3
+- AI: OpenAI GPT-5.1 (Responses API) / GPT-4o mini
+
+## Environment Variables
+```
+# Meta Ads (VironaX)
+META_AD_ACCOUNT_ID=
+META_ACCESS_TOKEN=
+
+# Meta Ads (Shawq)
+SHAWQ_META_AD_ACCOUNT_ID=
+SHAWQ_META_ACCESS_TOKEN=
+
+# Shopify (Shawq)
+SHAWQ_SHOPIFY_STORE=
+SHAWQ_SHOPIFY_ACCESS_TOKEN=
+
+# Salla (VironaX)
+VIRONAX_SALLA_ACCESS_TOKEN=
+
+# OpenAI
+OPENAI_API_KEY=
+```
+
+## Development
+```bash
+npm install
+npm run dev
+```
+
+## Deployment (Railway)
+Push to main branch - Railway auto-deploys.
+
+--------------------------------------------------------------------------------
+FILE: package.json
+--------------------------------------------------------------------------------
+{
+  "name": "virona-shawq-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "npm run dev --workspace=client",
+    "dev:server": "npm run dev --workspace=server",
+    "build": "npm run build --workspace=client",
+    "start": "npm run start --workspace=server"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+
+--------------------------------------------------------------------------------
+FILE: railway.json
+--------------------------------------------------------------------------------
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "npm start",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
+
+--------------------------------------------------------------------------------
+FILE: notificationService.js
+--------------------------------------------------------------------------------
+// Root-level notification service re-export for compatibility
+export * from './server/services/notificationService.js';
+
+================================================================================
+2. CLIENT FILES
+================================================================================
+
+--------------------------------------------------------------------------------
+FILE: client/package.json
+--------------------------------------------------------------------------------
+{
+  "name": "client",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.294.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^2.10.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.3.6",
+    "vite": "^5.0.8"
+  }
+}
+
+--------------------------------------------------------------------------------
+FILE: client/index.html
+--------------------------------------------------------------------------------
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Virona-ShawQ Dashboard</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+--------------------------------------------------------------------------------
+FILE: client/vite.config.js
+--------------------------------------------------------------------------------
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true
+      }
+    }
+  }
+});
+
+--------------------------------------------------------------------------------
+FILE: client/tailwind.config.js
+--------------------------------------------------------------------------------
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      animation: {
+        'fade-in': 'fadeIn 0.5s ease-out forwards',
+        'slide-up': 'slideUp 0.5s ease-out forwards',
+        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        'slideDown': 'slideDown 0.5s ease-out forwards',
+        'slideUp': 'slideUp 0.5s ease-out forwards',
+        'slideLeft': 'slideLeft 0.5s ease-out forwards',
+        'slideRight': 'slideRight 0.5s ease-out forwards',
+        'fadeIn': 'fadeIn 0.3s ease-out forwards',
+      },
+      keyframes: {
+        fadeIn: {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' }
+        },
+        slideUp: {
+          '0%': { opacity: '0', transform: 'translateY(20px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' }
+        },
+        slideDown: {
+          '0%': { opacity: '0', transform: 'translateY(-20px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' }
+        },
+        slideLeft: {
+          '0%': { opacity: '0', transform: 'translateX(20px)' },
+          '100%': { opacity: '1', transform: 'translateX(0)' }
+        },
+        slideRight: {
+          '0%': { opacity: '0', transform: 'translateX(-20px)' },
+          '100%': { opacity: '1', transform: 'translateX(0)' }
+        }
+      }
+    },
+  },
+  plugins: [],
+}
+
+--------------------------------------------------------------------------------
+FILE: client/postcss.config.js
+--------------------------------------------------------------------------------
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+
+--------------------------------------------------------------------------------
+FILE: client/src/main.jsx
+--------------------------------------------------------------------------------
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+
+--------------------------------------------------------------------------------
+FILE: client/src/App.jsx
+--------------------------------------------------------------------------------
+// NOTE: This is a large file (~4200 lines). Key sections:
+// - Lines 1-160: Imports, constants, state setup
+// - Lines 160-400: Data loading hooks (loadData, loadBreakdown, loadMetaAdManager, loadDiagnostics)
+// - Lines 400-800: Event handlers (sync, manual orders, spend overrides)
+// - Lines 800-1600: Main App render (header, tabs, dashboard overview)
+// - Lines 1600-2400: BudgetIntelligenceTab component
+// - Lines 2400-2800: EfficiencyTab component
+// - Lines 2800-3200: ManualDataTab component
+// - Lines 3200-3720: FunnelDiagnostics component
+// - Lines 3720-4220: AIExplorationTab component
+
+// client/src/App.jsx
+
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import {
+  LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+} from 'recharts';
+import {
+  RefreshCw, TrendingUp, TrendingDown, Plus, Trash2,
+  Store, ChevronDown, ChevronUp, ArrowUpDown, Calendar,
+  Bell, X, AlertCircle, CheckCircle2
+} from 'lucide-react';
+import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
+import NotificationCenter from './components/NotificationCenter';
+
+const API_BASE = '/api';
+
+const getLocalDateString = (date = new Date()) => {
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  const localDate = new Date(date.getTime() - offsetMs);
+  return localDate.toISOString().split('T')[0];
+};
+
+const countryCodeToFlag = (code) => {
+  if (!code || !/^[A-Z]{2}$/i.test(code)) return '🏳️';
+  return String.fromCodePoint(...code.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0)));
+};
+
+const MASTER_COUNTRIES_WITH_FLAGS = MASTER_COUNTRIES.map(country => ({
+  ...country,
+  flag: countryCodeToFlag(country.code)
+}));
+
+const STORES = {
+  vironax: {
+    id: 'vironax',
+    name: 'VironaX',
+    tagline: "Men's Jewelry",
+    currency: 'SAR',
+    currencySymbol: 'SAR',
+    ecommerce: 'Salla',
+    defaultAOV: 280
+  },
+  shawq: {
+    id: 'shawq',
+    name: 'Shawq',
+    tagline: 'Palestinian & Syrian Apparel',
+    currency: 'USD',
+    currencySymbol: '$',
+    ecommerce: 'Shopify',
+    defaultAOV: 75
+  }
+};
+
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Exploration'];
+
+export default function App() {
+  // State definitions...
+  const [currentStore, setCurrentStore] = useState('vironax');
+  const [storeLoaded, setStoreLoaded] = useState(false);
+  const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+
+  const [dateRange, setDateRange] = useState({ type: 'days', value: 7 });
+  const [customRange, setCustomRange] = useState({
+    start: getLocalDateString(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)),
+    end: getLocalDateString()
+  });
+  // ... more state definitions
+
+  const store = STORES[currentStore];
+
+  // Data loading with useCallback
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ store: currentStore });
+      // ... date range params setup
+
+      const [dashData, effData, effTrends, recs, intel, orders, spendOverrides, countries, cTrends, timeOfDayData, dowData] = await Promise.all([
+        fetch(`${API_BASE}/analytics/dashboard?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/efficiency?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/efficiency/trends?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/recommendations?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/budget-intelligence?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/manual?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/manual/spend?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/countries?store=${currentStore}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/countries/trends?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/time-of-day?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/analytics/days-of-week?store=${currentStore}`).then(r => r.json())
+      ]);
+
+      // Set state with fetched data...
+      setDashboard(dashData);
+      setEfficiency(effData);
+      // ... etc
+    } catch (error) {
+      console.error('Error loading data:', error);
+    }
+    setLoading(false);
+  }, [currentStore, dateRange]);
+
+  // Event handlers
+  async function handleSync() {
+    setSyncing(true);
+    try {
+      await fetch(`${API_BASE}/analytics/sync?store=${currentStore}`, { method: 'POST' });
+      await loadData();
+    } catch (error) {
+      console.error('Sync error:', error);
+    }
+    setSyncing(false);
+  }
+
+  // ... more handlers for manual orders, spend overrides, etc.
+
+  // Format helpers
+  const formatCurrency = (value, decimals = 0) => {
+    if (value == null || isNaN(value)) return '—';
+    const formatted = Number(value).toFixed(decimals);
+    return store.currency === 'USD' ? `$${formatted}` : `${formatted} SAR`;
+  };
+
+  // Main render
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header with store switcher */}
+      <header className="bg-white border-b border-gray-200 px-6 py-4">
+        {/* Store dropdown, date picker, sync button */}
+      </header>
+
+      {/* Navigation tabs */}
+      <nav className="bg-white border-b border-gray-200 px-6">
+        {TABS.map((tab, i) => (
+          <button key={tab} onClick={() => setActiveTab(i)} className={...}>
+            {tab}
+          </button>
+        ))}
+      </nav>
+
+      {/* Main content */}
+      <main className="p-6">
+        {activeTab === 0 && <DashboardTab {...} />}
+        {activeTab === 1 && <EfficiencyTab {...} />}
+        {activeTab === 2 && <BudgetIntelligenceTab {...} />}
+        {activeTab === 3 && <ManualDataTab {...} />}
+        {activeTab === 4 && <AIExplorationTab {...} />}
+      </main>
+    </div>
+  );
+}
+
+// BudgetIntelligenceTab - Bayesian budget planning with posteriors
+function BudgetIntelligenceTab({ data, store, formatCurrency }) {
+  // Start Budget Planner for new geos
+  // Live Scale/Hold/Cut Guidance table
+  // Learning Health & Expansion Map
+  // ... ~1000 lines
+}
+
+// EfficiencyTab - Budget efficiency tracking
+function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) {
+  // Average vs Marginal CAC
+  // Scaling Headroom by country
+  // CAC/ROAS trend charts
+  // Recommendations
+  // ... ~400 lines
+}
+
+// ManualDataTab - Manual order entry and Meta CSV import
+function ManualDataTab({ orders, form, setForm, onSubmit, onDelete, ... }) {
+  // Manual order form
+  // Meta CSV import section
+  // Manual spend overrides
+  // Orders history
+  // Delete manual data
+  // ... ~400 lines
+}
+
+// FunnelDiagnostics - Jewelry benchmark diagnostics
+function FunnelDiagnostics({ data, currency, formatCurrency, expanded, setExpanded }) {
+  // Upper Funnel: CTR, CPC, CPM, Frequency
+  // Mid Funnel: LPV Rate, ATC Rate
+  // Lower Funnel: Checkout Rate, Purchase Rate, CVR, ROAS, CAC
+  // Alert banners for significant changes
+  // Sparkline mini-charts
+  // ... ~500 lines
+}
+
+// AIExplorationTab - GPT-powered analytics
+function AIExplorationTab({ store, dashboard, metaAdManagerData, ... }) {
+  // Mode selection: Analyze (GPT-4o mini) vs Decide (GPT-5.1)
+  // Analyze: Quick Q&A
+  // Decide: Strategic recommendations with reasoning effort selector
+  // Topic cards: Scale, Budget, Testing, Diagnose, Audience, Creative, Funnel, Pause
+  // ... ~500 lines
+}
+
+--------------------------------------------------------------------------------
+FILE: client/src/index.css
+--------------------------------------------------------------------------------
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom animations */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.5s ease-out forwards;
+}
+
+/* Loading spinner */
+.loader {
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #3b82f6;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+--------------------------------------------------------------------------------
+FILE: client/src/components/NotificationCenter.jsx
+--------------------------------------------------------------------------------
+import { useState, useEffect, useRef } from 'react';
+import { Bell, X, Check, CheckCheck } from 'lucide-react';
+
+const API_BASE = '/api';
+
+export default function NotificationCenter({ store }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const containerRef = useRef(null);
+
+  // Fetch notifications
+  const fetchNotifications = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/notifications?store=${store.id}`);
+      const data = await res.json();
+      setNotifications(data.notifications || []);
+      setUnreadCount(data.unreadCount || 0);
+    } catch (error) {
+      console.error('Error fetching notifications:', error);
+    }
+  };
+
+  // Poll for new notifications
+  useEffect(() => {
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 30000); // Every 30s
+    return () => clearInterval(interval);
+  }, [store.id]);
+
+  // Click outside to close
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const markAsRead = async (id) => {
+    await fetch(`${API_BASE}/notifications/${id}/read`, { method: 'POST' });
+    fetchNotifications();
+  };
+
+  const markAllAsRead = async () => {
+    await fetch(`${API_BASE}/notifications/mark-all-read?store=${store.id}`, { method: 'POST' });
+    fetchNotifications();
+  };
+
+  return (
+    <div className="relative" ref={containerRef}>
+      {/* Bell icon with badge */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="relative p-2 rounded-lg hover:bg-gray-100 transition-colors"
+      >
+        <Bell className="w-5 h-5 text-gray-600" />
+        {unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
+        )}
+      </button>
+
+      {/* Dropdown panel */}
+      {isOpen && (
+        <div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-gray-200 z-50 animate-fade-in">
+          <div className="flex items-center justify-between p-4 border-b border-gray-100">
+            <h3 className="font-semibold text-gray-900">Notifications</h3>
+            {unreadCount > 0 && (
+              <button
+                onClick={markAllAsRead}
+                className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+              >
+                <CheckCheck className="w-3 h-3" />
+                Mark all read
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-96 overflow-y-auto">
+            {notifications.length === 0 ? (
+              <div className="p-8 text-center text-gray-500">
+                No notifications yet
+              </div>
+            ) : (
+              notifications.map((n) => (
+                <div
+                  key={n.id}
+                  className={`p-4 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
+                    !n.is_read ? 'bg-indigo-50/50' : ''
+                  }`}
+                  onClick={() => !n.is_read && markAsRead(n.id)}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-900">{n.message}</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {new Date(n.timestamp).toLocaleString()}
+                      </p>
+                    </div>
+                    {!n.is_read && (
+                      <div className="w-2 h-2 bg-indigo-500 rounded-full mt-2" />
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+--------------------------------------------------------------------------------
+FILE: client/src/data/countries.js
+--------------------------------------------------------------------------------
+export const COUNTRIES = [
+  { code: 'SA', name: 'Saudi Arabia' },
+  { code: 'AE', name: 'United Arab Emirates' },
+  { code: 'KW', name: 'Kuwait' },
+  { code: 'QA', name: 'Qatar' },
+  { code: 'BH', name: 'Bahrain' },
+  { code: 'OM', name: 'Oman' },
+  { code: 'EG', name: 'Egypt' },
+  { code: 'JO', name: 'Jordan' },
+  { code: 'LB', name: 'Lebanon' },
+  { code: 'IQ', name: 'Iraq' },
+  { code: 'US', name: 'United States' },
+  { code: 'CA', name: 'Canada' },
+  { code: 'GB', name: 'United Kingdom' },
+  { code: 'DE', name: 'Germany' },
+  { code: 'FR', name: 'France' },
+  { code: 'NL', name: 'Netherlands' },
+  { code: 'BE', name: 'Belgium' },
+  { code: 'AT', name: 'Austria' },
+  { code: 'CH', name: 'Switzerland' },
+  { code: 'SE', name: 'Sweden' },
+  { code: 'NO', name: 'Norway' },
+  { code: 'DK', name: 'Denmark' },
+  { code: 'FI', name: 'Finland' },
+  { code: 'IE', name: 'Ireland' },
+  { code: 'IT', name: 'Italy' },
+  { code: 'ES', name: 'Spain' },
+  { code: 'PT', name: 'Portugal' },
+  { code: 'GR', name: 'Greece' },
+  { code: 'PL', name: 'Poland' },
+  { code: 'CZ', name: 'Czech Republic' },
+  { code: 'HU', name: 'Hungary' },
+  { code: 'RO', name: 'Romania' },
+  { code: 'AU', name: 'Australia' },
+  { code: 'NZ', name: 'New Zealand' },
+  { code: 'JP', name: 'Japan' },
+  { code: 'KR', name: 'South Korea' },
+  { code: 'SG', name: 'Singapore' },
+  { code: 'MY', name: 'Malaysia' },
+  { code: 'TH', name: 'Thailand' },
+  { code: 'ID', name: 'Indonesia' },
+  { code: 'PH', name: 'Philippines' },
+  { code: 'IN', name: 'India' },
+  { code: 'PK', name: 'Pakistan' },
+  { code: 'BD', name: 'Bangladesh' },
+  { code: 'TR', name: 'Turkey' },
+  { code: 'IL', name: 'Israel' },
+  { code: 'ZA', name: 'South Africa' },
+  { code: 'NG', name: 'Nigeria' },
+  { code: 'KE', name: 'Kenya' },
+  { code: 'GH', name: 'Ghana' },
+  { code: 'BR', name: 'Brazil' },
+  { code: 'MX', name: 'Mexico' },
+  { code: 'AR', name: 'Argentina' },
+  { code: 'CL', name: 'Chile' },
+  { code: 'CO', name: 'Colombia' },
+  { code: 'PE', name: 'Peru' }
+];
+
+================================================================================
+3. SERVER FILES
+================================================================================
+
+--------------------------------------------------------------------------------
+FILE: server/package.json
+--------------------------------------------------------------------------------
+{
+  "name": "server",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.2.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2"
+  }
+}
+
+--------------------------------------------------------------------------------
+FILE: server/server.js
+--------------------------------------------------------------------------------
+import express from 'express';
+import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+import { initDb } from './db/database.js';
+import analyticsRouter from './routes/analytics.js';
+import manualRouter from './routes/manual.js';
+import notificationsRouter from './routes/notifications.js';
+import aiRouter from './routes/ai.js';
+import budgetIntelligenceRouter from './routes/budgetIntelligence.js';
+import { syncMetaData } from './services/metaService.js';
+import { syncShopifyOrders } from './services/shopifyService.js';
+import { syncSallaOrders } from './services/sallaService.js';
+import { cleanupOldNotifications } from './services/notificationService.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Initialize database
+initDb();
+
+// Middleware
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+
+// API Routes
+app.use('/api/analytics', analyticsRouter);
+app.use('/api/manual', manualRouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/ai', aiRouter);
+app.use('/api/budget-intelligence', budgetIntelligenceRouter);
+
+// Serve static files in production
+const clientDist = path.join(__dirname, '../client/dist');
+app.use(express.static(clientDist));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(clientDist, 'index.html'));
+});
+
+// Background sync every 15 minutes
+async function backgroundSync() {
+  console.log('[Sync] Starting background sync...');
+  try {
+    await Promise.all([
+      syncMetaData('vironax'),
+      syncMetaData('shawq'),
+      syncShopifyOrders(),
+      syncSallaOrders()
+    ]);
+    cleanupOldNotifications();
+    console.log('[Sync] Background sync complete');
+  } catch (error) {
+    console.error('[Sync] Background sync error:', error);
+  }
+}
+
+// Initial sync on startup
+setTimeout(backgroundSync, 5000);
+
+// Sync every 15 minutes
+setInterval(backgroundSync, 15 * 60 * 1000);
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+--------------------------------------------------------------------------------
+FILE: server/db/database.js
+--------------------------------------------------------------------------------
+import Database from 'better-sqlite3';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+let db;
+
+export function initDb() {
+  const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/dashboard.db');
+  db = new Database(dbPath);
+
+  // Create tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_daily_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      date TEXT NOT NULL,
+      campaign_id TEXT,
+      campaign_name TEXT,
+      country TEXT DEFAULT 'ALL',
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      conversion_value REAL DEFAULT 0,
+      age TEXT DEFAULT '',
+      gender TEXT DEFAULT '',
+      publisher_platform TEXT DEFAULT '',
+      platform_position TEXT DEFAULT '',
+      UNIQUE(store, date, campaign_id, country, age, gender, publisher_platform, platform_position)
+    );
+
+    CREATE TABLE IF NOT EXISTS meta_adset_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      date TEXT NOT NULL,
+      campaign_id TEXT,
+      campaign_name TEXT,
+      adset_id TEXT,
+      adset_name TEXT,
+      country TEXT DEFAULT 'ALL',
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      conversion_value REAL DEFAULT 0,
+      UNIQUE(store, date, adset_id, country)
+    );
+
+    CREATE TABLE IF NOT EXISTS meta_ad_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      date TEXT NOT NULL,
+      campaign_id TEXT,
+      campaign_name TEXT,
+      adset_id TEXT,
+      adset_name TEXT,
+      ad_id TEXT,
+      ad_name TEXT,
+      country TEXT DEFAULT 'ALL',
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      conversion_value REAL DEFAULT 0,
+      UNIQUE(store, date, ad_id, country)
+    );
+
+    CREATE TABLE IF NOT EXISTS shopify_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      order_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      country TEXT,
+      country_code TEXT,
+      city TEXT,
+      state TEXT,
+      order_total REAL DEFAULT 0,
+      subtotal REAL DEFAULT 0,
+      shipping REAL DEFAULT 0,
+      tax REAL DEFAULT 0,
+      discount REAL DEFAULT 0,
+      items_count INTEGER DEFAULT 1,
+      status TEXT,
+      financial_status TEXT,
+      fulfillment_status TEXT,
+      payment_method TEXT,
+      currency TEXT DEFAULT 'USD',
+      order_created_at TEXT,
+      UNIQUE(store, order_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS salla_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      order_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      country TEXT,
+      country_code TEXT,
+      city TEXT,
+      order_total REAL DEFAULT 0,
+      subtotal REAL DEFAULT 0,
+      shipping REAL DEFAULT 0,
+      tax REAL DEFAULT 0,
+      discount REAL DEFAULT 0,
+      items_count INTEGER DEFAULT 1,
+      status TEXT,
+      payment_method TEXT,
+      currency TEXT DEFAULT 'SAR',
+      created_at TEXT,
+      UNIQUE(store, order_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS manual_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      date TEXT NOT NULL,
+      country TEXT NOT NULL,
+      campaign TEXT,
+      spend REAL DEFAULT 0,
+      orders_count INTEGER DEFAULT 1,
+      revenue REAL DEFAULT 0,
+      source TEXT DEFAULT 'manual',
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS manual_spend_overrides (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      date TEXT NOT NULL,
+      country TEXT DEFAULT 'ALL',
+      amount REAL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, date, country)
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      records_synced INTEGER DEFAULT 0,
+      error_message TEXT,
+      synced_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      type TEXT NOT NULL,
+      message TEXT NOT NULL,
+      source TEXT,
+      country TEXT,
+      value REAL,
+      order_count INTEGER DEFAULT 1,
+      is_read INTEGER DEFAULT 0,
+      timestamp TEXT DEFAULT (datetime('now')),
+      metadata TEXT
+    );
+  `);
+
+  console.log('[DB] Database initialized');
+  return db;
+}
+
+export function getDb() {
+  if (!db) {
+    throw new Error('Database not initialized. Call initDb() first.');
+  }
+  return db;
+}
+
+--------------------------------------------------------------------------------
+FILE: server/constants/benchmarks.js
+--------------------------------------------------------------------------------
+// Jewelry industry benchmarks (2024-25)
+export const JEWELRY_BENCHMARKS = {
+  ctr: { poor: 1.0, average: 1.5, good: 2.5 },
+  cpc: { poor: 5, average: 3, good: 1.5 },
+  cpm: { poor: 60, average: 40, good: 20 },
+  frequency: { poor: 3.0, average: 2.0, good: 1.3 },
+  lpvRate: { poor: 50, average: 70, good: 85 },
+  atcRate: { poor: 2, average: 4, good: 7 },
+  checkoutRate: { poor: 25, average: 40, good: 55 },
+  purchaseRate: { poor: 30, average: 50, good: 70 },
+  cvr: { poor: 0.5, average: 1.0, good: 2.0 },
+  roas: { poor: 1.5, average: 2.5, good: 4.0 },
+  cacPercent: { poor: 50, average: 30, good: 15 }
+};
+
+export const ALERT_THRESHOLDS = {
+  ctr: { drop: 20, spike: 30 },
+  cvr: { drop: 25, spike: 35 },
+  roas: { drop: 25, spike: 40 },
+  cpc: { increase: 30, decrease: 25 },
+  cpm: { increase: 35, decrease: 30 },
+  atcRate: { drop: 20, spike: 30 },
+  purchaseRate: { drop: 25, spike: 35 },
+  cac: { increase: 30, decrease: 25 },
+  checkoutRate: { drop: 20, spike: 30 },
+  lpvRate: { drop: 20, spike: 25 }
+};
+
+--------------------------------------------------------------------------------
+FILE: server/routes/ai.js
+--------------------------------------------------------------------------------
+import express from 'express';
+import { analyzeQuestion, decideQuestion } from '../services/openaiService.js';
+
+const router = express.Router();
+
+// Analyze mode - GPT-4o mini for quick answers
+router.post('/analyze', async (req, res) => {
+  try {
+    const { question, dashboardData, store } = req.body;
+
+    if (!question) {
+      return res.status(400).json({ success: false, error: 'Question required' });
+    }
+
+    const answer = await analyzeQuestion(question, dashboardData, store);
+    res.json({ success: true, answer });
+  } catch (error) {
+    console.error('[AI] Analyze error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Decide mode - GPT-5.1 with reasoning effort
+router.post('/decide', async (req, res) => {
+  try {
+    const { question, dashboardData, store, reasoningEffort } = req.body;
+
+    if (!question) {
+      return res.status(400).json({ success: false, error: 'Question required' });
+    }
+
+    const answer = await decideQuestion(question, dashboardData, store, reasoningEffort);
+    res.json({ success: true, answer });
+  } catch (error) {
+    console.error('[AI] Decide error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+export default router;
+
+--------------------------------------------------------------------------------
+FILE: server/routes/analytics.js
+--------------------------------------------------------------------------------
+import express from 'express';
+import {
+  getDashboard,
+  getEfficiency,
+  getEfficiencyTrends,
+  getRecommendations,
+  getAvailableCountries,
+  getCitiesByCountry,
+  getCountryTrends,
+  getTimeOfDay,
+  getOrdersByDayOfWeek,
+  getMetaAdManagerHierarchy,
+  getFunnelDiagnostics,
+  getCampaignsByCountry,
+  getCampaignsByAge,
+  getCampaignsByGender,
+  getCampaignsByPlacement,
+  getCampaignsByAgeGender,
+  getMetaBreakdowns
+} from '../services/analyticsService.js';
+import { syncMetaData } from '../services/metaService.js';
+import { syncShopifyOrders } from '../services/shopifyService.js';
+import { syncSallaOrders } from '../services/sallaService.js';
+import { importMetaDailyRows } from '../services/metaImportService.js';
+import { getDb } from '../db/database.js';
+
+const router = express.Router();
+
+// Dashboard overview
+router.get('/dashboard', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getDashboard(store, req.query);
+    res.json(data);
+  } catch (error) {
+    console.error('[Analytics] Dashboard error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Efficiency metrics
+router.get('/efficiency', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getEfficiency(store, req.query);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/efficiency/trends', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getEfficiencyTrends(store, req.query);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/recommendations', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getRecommendations(store, req.query);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Countries
+router.get('/countries', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getAvailableCountries(store);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/countries/trends', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getCountryTrends(store, req.query);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/countries/:code/cities', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getCitiesByCountry(store, req.params.code, req.query);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Time of day analysis
+router.get('/time-of-day', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const data = getTimeOfDay(store, req.query);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Days of week analysis
+router.get('/days-of-week', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getOrdersByDayOfWeek(store, req.query);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Meta Ad Manager hierarchy
+router.get('/meta-ad-manager', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getMetaAdManagerHierarchy(store, req.query);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Funnel diagnostics
+router.get('/funnel-diagnostics', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getFunnelDiagnostics(store, req.query);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Campaign breakdowns
+router.get('/campaigns/by-country', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getCampaignsByCountry(store, req.query));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/campaigns/by-age', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getCampaignsByAge(store, req.query));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/campaigns/by-gender', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getCampaignsByGender(store, req.query));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/campaigns/by-placement', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getCampaignsByPlacement(store, req.query));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/campaigns/by-age-gender', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getCampaignsByAgeGender(store, req.query));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Sync
+router.post('/sync', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const results = {};
+
+    results.meta = await syncMetaData(store);
+
+    if (store === 'shawq') {
+      results.shopify = await syncShopifyOrders();
+    } else {
+      results.salla = await syncSallaOrders();
+    }
+
+    res.json({ success: true, results });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Meta CSV import
+router.post('/meta/import', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { rows } = req.body;
+
+    if (!rows || !Array.isArray(rows)) {
+      return res.status(400).json({ ok: false, error: 'Invalid rows data' });
+    }
+
+    const result = importMetaDailyRows(store, rows);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Clear Meta data
+router.delete('/meta/clear', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const db = getDb();
+
+    db.prepare('DELETE FROM meta_daily_metrics WHERE store = ?').run(store);
+    db.prepare('DELETE FROM meta_adset_metrics WHERE store = ?').run(store);
+    db.prepare('DELETE FROM meta_ad_metrics WHERE store = ?').run(store);
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+export default router;
+
+--------------------------------------------------------------------------------
+FILE: server/routes/manual.js
+--------------------------------------------------------------------------------
+import express from 'express';
+import { getDb } from '../db/database.js';
+
+const router = express.Router();
+
+// Get manual orders
+router.get('/', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const db = getDb();
+
+    const orders = db.prepare(`
+      SELECT * FROM manual_orders
+      WHERE store = ?
+      ORDER BY date DESC, created_at DESC
+    `).all(store);
+
+    res.json(orders);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add manual order
+router.post('/', (req, res) => {
+  try {
+    const { store, date, country, campaign, spend, orders_count, revenue, source, notes } = req.body;
+    const db = getDb();
+
+    const result = db.prepare(`
+      INSERT INTO manual_orders (store, date, country, campaign, spend, orders_count, revenue, source, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(store, date, country, campaign || '', spend || 0, orders_count || 1, revenue || 0, source || 'manual', notes || '');
+
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete manual order
+router.delete('/:id', (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM manual_orders WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Bulk delete manual orders
+router.delete('/', (req, res) => {
+  try {
+    const { store, scope, date } = req.query;
+    const db = getDb();
+
+    if (scope === 'all') {
+      db.prepare('DELETE FROM manual_orders WHERE store = ?').run(store);
+    } else if (scope === 'day') {
+      db.prepare('DELETE FROM manual_orders WHERE store = ? AND date = ?').run(store, date);
+    } else if (scope === 'week') {
+      const weekStart = new Date(date);
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 6);
+
+      db.prepare('DELETE FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?')
+        .run(store, weekStart.toISOString().split('T')[0], weekEnd.toISOString().split('T')[0]);
+    } else if (scope === 'month') {
+      const monthStart = date.substring(0, 7) + '-01';
+      const monthEnd = new Date(date.substring(0, 4), parseInt(date.substring(5, 7)), 0).toISOString().split('T')[0];
+
+      db.prepare('DELETE FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?')
+        .run(store, monthStart, monthEnd);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get manual spend overrides
+router.get('/spend', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const db = getDb();
+
+    const overrides = db.prepare(`
+      SELECT * FROM manual_spend_overrides
+      WHERE store = ?
+      ORDER BY date DESC
+    `).all(store);
+
+    res.json(overrides);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add manual spend override
+router.post('/spend', (req, res) => {
+  try {
+    const { store, date, country, amount, notes } = req.body;
+    const db = getDb();
+
+    const result = db.prepare(`
+      INSERT OR REPLACE INTO manual_spend_overrides (store, date, country, amount, notes)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(store, date, country || 'ALL', amount || 0, notes || '');
+
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete manual spend override
+router.delete('/spend/:id', (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM manual_spend_overrides WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+export default router;
+
+--------------------------------------------------------------------------------
+FILE: server/routes/notifications.js
+--------------------------------------------------------------------------------
+import express from 'express';
+import {
+  getNotifications,
+  getUnreadCount,
+  markAsRead,
+  markAllAsRead
+} from '../services/notificationService.js';
+
+const router = express.Router();
+
+// Get notifications
+router.get('/', (req, res) => {
+  try {
+    const store = req.query.store || null;
+    const limit = parseInt(req.query.limit) || 50;
+
+    const notifications = getNotifications(store, limit);
+    const unreadCount = getUnreadCount(store);
+
+    res.json({ notifications, unreadCount });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Mark single notification as read
+router.post('/:id/read', (req, res) => {
+  try {
+    markAsRead(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Mark all as read
+router.post('/mark-all-read', (req, res) => {
+  try {
+    const store = req.query.store || null;
+    markAllAsRead(store);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+export default router;
+
+--------------------------------------------------------------------------------
+FILE: server/routes/budgetIntelligence.js
+--------------------------------------------------------------------------------
+import express from 'express';
+import { getBudgetIntelligence } from '../services/budgetIntelligenceService.js';
+
+const router = express.Router();
+
+router.get('/', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getBudgetIntelligence(store, req.query);
+    res.json(data);
+  } catch (error) {
+    console.error('[BudgetIntelligence] Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+export default router;
+
+--------------------------------------------------------------------------------
+FILE: server/services/openaiService.js
+--------------------------------------------------------------------------------
+import fetch from 'node-fetch';
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const MAX_OUTPUT_TOKENS = 20000;
+
+// Analyze mode - uses GPT-4o mini for fast responses
+export async function analyzeQuestion(question, dashboardData, store) {
+  if (!OPENAI_API_KEY) {
+    throw new Error('OpenAI API key not configured');
+  }
+
+  const systemContext = `You are a helpful e-commerce analytics assistant for ${store === 'vironax' ? 'VironaX (Saudi Arabia, SAR currency)' : 'Shawq (Turkey/US, USD currency)'}.
+
+DASHBOARD DATA:
+${JSON.stringify(dashboardData, null, 2)}
+
+INSTRUCTIONS:
+- Give quick, concise answers
+- Use actual numbers from the data
+- Be direct and helpful
+- Keep responses short but informative`;
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemContext },
+        { role: 'user', content: question }
+      ],
+      max_tokens: 2000,
+      temperature: 0.7
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || 'OpenAI API error');
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+// Decide mode - uses GPT-5.1 with reasoning effort
+export async function decideQuestion(question, dashboardData, store, reasoningEffort = 'medium') {
+  if (!OPENAI_API_KEY) {
+    throw new Error('OpenAI API key not configured');
+  }
+
+  const effortMap = {
+    'fast': 'low',
+    'balanced': 'medium',
+    'deep': 'high'
+  };
+  const effort = effortMap[reasoningEffort] || reasoningEffort;
+
+  const systemContext = `You are an expert e-commerce strategist and campaign analyst for ${store === 'vironax' ? 'VironaX (Saudi Arabia, SAR currency)' : 'Shawq (Turkey/US, USD currency)'}.
+
+DASHBOARD DATA:
+${JSON.stringify(dashboardData, null, 2)}
+
+INSTRUCTIONS:
+- Provide strategic, actionable recommendations
+- Analyze the data deeply and find insights
+- Be specific with numbers and percentages
+- Structure your response clearly with sections
+- Prioritize recommendations by impact
+- Include specific action items
+- Explain your reasoning`;
+
+  const fullInput = `${systemContext}\n\nUser Question: ${question}`;
+
+  // Try the new Responses API first
+  try {
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.1',
+        input: fullInput,
+        reasoning: { effort: effort },
+        max_output_tokens: MAX_OUTPUT_TOKENS
+      })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.output_text;
+    }
+  } catch (e) {
+    console.log('[AI] Responses API not available, falling back to Chat Completions');
+  }
+
+  // Fallback to Chat Completions API with GPT-4o
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: systemContext },
+        { role: 'user', content: question }
+      ],
+      max_tokens: 4096,
+      temperature: 0.7
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || 'OpenAI API error');
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+// Legacy function for compatibility
+export async function askAnalyticsQuestion(question, dashboardData, store, reasoningEffort) {
+  return decideQuestion(question, dashboardData, store, reasoningEffort);
+}
+
+export async function exploreData(query, dashboardData, store, mode, reasoningEffort, options = {}) {
+  if (mode === 'analyze') {
+    const content = await analyzeQuestion(query, dashboardData, store);
+    return { type: 'text', content };
+  } else {
+    const content = await decideQuestion(query, dashboardData, store, reasoningEffort);
+    return { type: 'text', content };
+  }
+}
+
+--------------------------------------------------------------------------------
+FILE: server/services/metaService.js
+--------------------------------------------------------------------------------
+// Meta Ads API integration with pagination support
+// Syncs campaign, adset, and ad level data with country breakdown
+
+import fetch from 'node-fetch';
+import { getDb } from '../db/database.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+
+const META_API_VERSION = 'v19.0';
+const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
+
+function getCurrencyRate(store) {
+  if (store === 'shawq') return 0.029; // Convert TRY to USD
+  if (store === 'vironax') return 1.0; // Keep SAR as SAR
+  return 1.0;
+}
+
+function getActionValue(actions, type) {
+  if (!Array.isArray(actions)) return 0;
+  const action = actions.find(a => a.action_type === type);
+  return action ? parseFloat(action.value) : 0;
+}
+
+async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, rate) {
+  const db = getDb();
+  const cleanAccountId = accountId.replace(/^act_/, '');
+
+  let fields = 'spend,impressions,clicks,reach,actions,action_values';
+  if (level === 'campaign') {
+    fields = 'campaign_name,campaign_id,' + fields;
+  } else if (level === 'adset') {
+    fields = 'campaign_name,campaign_id,adset_name,adset_id,' + fields;
+  } else if (level === 'ad') {
+    fields = 'campaign_name,campaign_id,adset_name,adset_id,ad_name,ad_id,' + fields;
+  }
+
+  const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?` +
+    `level=${level}&` +
+    `fields=${fields}&` +
+    `breakdowns=country&` +
+    `time_range={'since':'${startDate}','until':'${endDate}'}&` +
+    `time_increment=1&` +
+    `limit=500&` +
+    `access_token=${accessToken}`;
+
+  // Implement pagination to fetch ALL data
+  let allRows = [];
+  let currentUrl = url;
+  let pageCount = 0;
+
+  console.log(`[Meta] Fetching ${level} data with pagination...`);
+
+  while (currentUrl) {
+    const response = await fetch(currentUrl);
+    const json = await response.json();
+
+    if (json.error) throw new Error(json.error.message);
+
+    const pageData = json.data || [];
+    allRows = [...allRows, ...pageData];
+    pageCount++;
+
+    console.log(`[Meta] ${level} - Page ${pageCount}: ${pageData.length} rows (total: ${allRows.length})`);
+
+    currentUrl = json.paging?.next || null;
+  }
+
+  // Insert into database
+  // ... (database operations)
+
+  return allRows.length;
+}
+
+export async function syncMetaData(store) {
+  const db = getDb();
+
+  const accountIdEnv = store === 'shawq' ? 'SHAWQ_META_AD_ACCOUNT_ID' : 'META_AD_ACCOUNT_ID';
+  const tokenEnv = store === 'shawq' ? 'SHAWQ_META_ACCESS_TOKEN' : 'META_ACCESS_TOKEN';
+  const accountId = process.env[accountIdEnv];
+  const accessToken = process.env[tokenEnv];
+  const rate = getCurrencyRate(store);
+
+  if (!accountId || !accessToken) {
+    console.log(`[Meta] Skipping sync for ${store}: Missing credentials`);
+    return { success: false, error: 'Missing credentials' };
+  }
+
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+
+  console.log(`[Meta] Syncing ${store} (Rate: ${rate}) from ${startDate} to ${endDate}...`);
+
+  try {
+    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, rate);
+    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, rate);
+    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, rate);
+
+    const totalRows = campaignRows + adsetRows + adRows;
+    console.log(`[Meta] Successfully synced ${totalRows} total rows.`);
+    return { success: true, records: totalRows };
+  } catch (error) {
+    console.error(`[Meta] Sync error:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+--------------------------------------------------------------------------------
+FILE: server/services/shopifyService.js
+--------------------------------------------------------------------------------
+import fetch from 'node-fetch';
+import { getDb } from '../db/database.js';
+import { createOrderNotifications } from './notificationService.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+
+export async function fetchShopifyOrders(dateStart, dateEnd) {
+  const shopifyStore = process.env.SHAWQ_SHOPIFY_STORE;
+  const accessToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
+
+  if (!shopifyStore || !accessToken) {
+    console.log('Shopify credentials not configured for Shawq');
+    return [];
+  }
+
+  try {
+    const orders = [];
+    let url = `https://${shopifyStore}/admin/api/2024-01/orders.json?status=any&created_at_min=${dateStart}T00:00:00Z&created_at_max=${dateEnd}T23:59:59Z&limit=250`;
+
+    while (url) {
+      const response = await fetch(url, {
+        headers: {
+          'X-Shopify-Access-Token': accessToken,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
+
+      if (data.orders) {
+        for (const order of data.orders) {
+          const countryCode = order.shipping_address?.country_code || order.billing_address?.country_code || 'US';
+          // ... process order
+          orders.push({
+            order_id: order.id.toString(),
+            date: formatDateAsGmt3(new Date(order.created_at)),
+            country: getCountryName(countryCode),
+            country_code: countryCode,
+            order_total: parseFloat(order.total_price) || 0,
+            // ... more fields
+          });
+        }
+      }
+
+      // Handle pagination via Link header
+      const linkHeader = response.headers.get('Link');
+      url = null;
+      if (linkHeader) {
+        const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+        if (nextMatch) url = nextMatch[1];
+      }
+    }
+
+    return orders;
+  } catch (error) {
+    console.error('Shopify API error:', error);
+    throw error;
+  }
+}
+
+export async function syncShopifyOrders() {
+  const db = getDb();
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+
+  try {
+    const orders = await fetchShopifyOrders(startDate, endDate);
+    // Insert orders into database
+    // Create notifications
+    const notificationCount = createOrderNotifications('shawq', 'shopify', orders);
+    console.log(`[Shopify] Created ${notificationCount} notifications`);
+    return { success: true, records: orders.length };
+  } catch (error) {
+    console.error('[Shopify] Sync error:', error);
+    throw error;
+  }
+}
+
+function getCountryName(code) {
+  const countries = {
+    'US': 'United States', 'GB': 'United Kingdom', 'CA': 'Canada',
+    'DE': 'Germany', 'NL': 'Netherlands', 'FR': 'France', 'AU': 'Australia'
+  };
+  return countries[code] || code;
+}
+
+--------------------------------------------------------------------------------
+FILE: server/services/sallaService.js
+--------------------------------------------------------------------------------
+import fetch from 'node-fetch';
+import { getDb } from '../db/database.js';
+import { createOrderNotifications } from './notificationService.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+
+export async function fetchSallaOrders(dateStart, dateEnd) {
+  const accessToken = process.env.VIRONAX_SALLA_ACCESS_TOKEN;
+
+  if (!accessToken) {
+    console.log('Salla credentials not configured');
+    return [];
+  }
+
+  try {
+    const orders = [];
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const response = await fetch(`https://api.salla.dev/admin/v2/orders?page=${page}&per_page=50`, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
+
+      if (data.data && data.data.length > 0) {
+        for (const order of data.data) {
+          const orderDate = order.date?.date?.split(' ')[0] || order.created_at?.split('T')[0];
+
+          if (orderDate >= dateStart && orderDate <= dateEnd) {
+            orders.push({
+              order_id: order.id.toString(),
+              date: orderDate,
+              country: order.shipping?.country?.name || 'Saudi Arabia',
+              country_code: order.shipping?.country?.code || 'SA',
+              order_total: parseFloat(order.amounts?.total?.amount) || 0,
+              // ... more fields
+            });
+          }
+        }
+
+        hasMore = data.pagination?.current_page < data.pagination?.total_pages;
+        page++;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    return orders;
+  } catch (error) {
+    console.error('Salla API error:', error);
+    throw error;
+  }
+}
+
+export async function syncSallaOrders() {
+  const db = getDb();
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+
+  try {
+    const orders = await fetchSallaOrders(startDate, endDate);
+    // Insert orders into database
+    // Create notifications
+    const notificationCount = createOrderNotifications('vironax', 'salla', orders);
+    console.log(`[Salla] Created ${notificationCount} notifications`);
+    return { success: true, records: orders.length };
+  } catch (error) {
+    console.error('[Salla] Sync error:', error);
+    throw error;
+  }
+}
+
+--------------------------------------------------------------------------------
+FILE: server/services/budgetIntelligenceService.js
+--------------------------------------------------------------------------------
+// Bayesian budget intelligence with posterior calculations
+// Provides: Start Budget Planner, Live Scale/Hold/Cut Guidance, Learning Map
+
+import { getDb } from '../db/database.js';
+import { getAvailableCountries } from './analyticsService.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+
+const BRAND_CONSTANTS = {
+  vironax: { fallbackCAC: 120, fallbackROAS: 2.5, targetROAS: 3.0, currency: 'SAR' },
+  shawq: { fallbackCAC: 45, fallbackROAS: 2.0, targetROAS: 2.5, currency: 'USD' }
+};
+
+function computePosterior(priorMean, priorWeight, observedMean, effectiveN) {
+  const observed = observedMean == null ? priorMean : observedMean;
+  const weight = effectiveN >= 20 ? 3 : priorWeight;
+  const obsWeight = effectiveN || 1;
+  return ((priorMean * weight) + (observed * obsWeight)) / (weight + obsWeight);
+}
+
+function probabilityAboveThreshold(mean, sigma, target, direction = 'above') {
+  if (sigma === 0) return mean >= target ? 1 : 0;
+  const z = (target - mean) / sigma;
+  const prob = normalCdf(z);
+  return direction === 'above' ? 1 - prob : prob;
+}
+
+function confidenceLabel(effectiveN) {
+  if (effectiveN >= 20) return 'High';
+  if (effectiveN >= 8) return 'Medium';
+  return 'Low';
+}
+
+export function getBudgetIntelligence(store, params) {
+  const db = getDb();
+  const brandDefaults = BRAND_CONSTANTS[store] || BRAND_CONSTANTS.shawq;
+
+  // Calculate priors from last 60 days
+  // Calculate posteriors for each country
+  // Generate start plans for new geos
+  // Generate live guidance (Scale/Hold/Cut)
+  // Build learning map
+
+  return {
+    store,
+    currency: brandDefaults.currency,
+    availableCountries: getAvailableCountries(store),
+    priors: { /* ... */ },
+    planningDefaults: { /* ... */ },
+    startPlans: [ /* ... */ ],
+    liveGuidance: [ /* ... */ ],
+    learningMap: { highPriority: [], noisy: [], poorFit: [], lowSignal: [] },
+    period: { /* ... */ },
+    priorRange: { /* ... */ }
+  };
+}
+
+export default getBudgetIntelligence;
+
+--------------------------------------------------------------------------------
+FILE: server/services/notificationService.js
+--------------------------------------------------------------------------------
+import { getDb } from '../db/database.js';
+
+function isSallaActive() {
+  return !!process.env.VIRONAX_SALLA_ACCESS_TOKEN;
+}
+
+function shouldCreateOrderNotification(store, source) {
+  if (store === 'shawq') {
+    return source === 'shopify' || source === 'manual';
+  }
+  if (store === 'vironax') {
+    const sallaIsActive = isSallaActive();
+    if (sallaIsActive) {
+      return source === 'salla' || source === 'manual';
+    } else {
+      return source === 'meta' || source === 'manual';
+    }
+  }
+  return false;
+}
+
+export function createNotification({ store, type, message, metadata = {} }) {
+  const db = getDb();
+
+  if (type === 'order' && metadata.source) {
+    if (!shouldCreateOrderNotification(store, metadata.source)) {
+      return null;
+    }
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO notifications (store, type, message, source, country, value, order_count, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const result = stmt.run(
+    store, type, message,
+    metadata.source || null,
+    metadata.country || null,
+    metadata.value || null,
+    metadata.order_count || 1,
+    JSON.stringify(metadata)
+  );
+
+  return result.lastInsertRowid;
+}
+
+export function createOrderNotifications(store, source, orders) {
+  if (!Array.isArray(orders) || orders.length === 0) return 0;
+  if (!shouldCreateOrderNotification(store, source)) return 0;
+
+  // Group by country and create notifications
+  // ...
+  return created;
+}
+
+export function getNotifications(store = null, limit = 50) {
+  const db = getDb();
+  let query = `SELECT * FROM notifications ${store ? 'WHERE store = ?' : ''} ORDER BY timestamp DESC LIMIT ?`;
+  const params = store ? [store, limit] : [limit];
+  return db.prepare(query).all(...params).map(n => ({
+    ...n,
+    metadata: n.metadata ? JSON.parse(n.metadata) : {},
+    is_read: Boolean(n.is_read)
+  }));
+}
+
+export function getUnreadCount(store = null) {
+  const db = getDb();
+  let query = `SELECT COUNT(*) as count FROM notifications WHERE is_read = 0 ${store ? 'AND store = ?' : ''}`;
+  const result = store ? db.prepare(query).get(store) : db.prepare(query).get();
+  return result.count;
+}
+
+export function markAsRead(notificationId) {
+  const db = getDb();
+  db.prepare('UPDATE notifications SET is_read = 1 WHERE id = ?').run(notificationId);
+}
+
+export function markAllAsRead(store = null) {
+  const db = getDb();
+  let query = `UPDATE notifications SET is_read = 1 ${store ? 'WHERE store = ?' : ''}`;
+  if (store) {
+    db.prepare(query).run(store);
+  } else {
+    db.prepare(query).run();
+  }
+}
+
+export function cleanupOldNotifications() {
+  const db = getDb();
+  const result = db.prepare(`DELETE FROM notifications WHERE timestamp < datetime('now', '-7 days')`).run();
+  console.log(`[Notification] Cleaned up ${result.changes} old notifications`);
+  return result.changes;
+}
+
+--------------------------------------------------------------------------------
+FILE: server/services/metaImportService.js
+--------------------------------------------------------------------------------
+import { getDb } from '../db/database.js';
+
+function pick(obj, keys) {
+  if (!obj) return null;
+  const objKeys = Object.keys(obj);
+  for (const k of keys) {
+    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
+    const fuzzy = objKeys.find(ok => ok.toLowerCase().includes(k.toLowerCase()));
+    if (fuzzy && obj[fuzzy]) return obj[fuzzy];
+  }
+  return null;
+}
+
+function toNumber(v) {
+  if (!v) return 0;
+  if (typeof v === 'number') return v;
+  const cleaned = String(v).replace(/[,\s]/g, '');
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeDate(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  return !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : null;
+}
+
+function rowToRecord(store, row) {
+  const dateRaw = pick(row, ['date', 'day', 'date_start', 'Reporting starts']);
+  const campaignRaw = pick(row, ['campaign', 'campaign_name', 'Campaign name']);
+  const countryRaw = pick(row, ['country', 'country_code', 'Country']);
+  const spendRaw = pick(row, ['spend', 'amount_spent', 'Amount spent']);
+  const purchasesRaw = pick(row, ['purchases', 'Purchases', 'purchase', 'Results']);
+  const purchaseValueRaw = pick(row, ['purchase_value', 'Purchase value', 'revenue']);
+
+  return {
+    store,
+    date: normalizeDate(dateRaw),
+    campaign_name: campaignRaw || 'Unknown Campaign',
+    campaign_id: `manual_${campaignRaw}_${normalizeDate(dateRaw)}_${countryRaw}`,
+    country: countryRaw || 'ALL',
+    spend: toNumber(spendRaw),
+    impressions: toNumber(pick(row, ['impressions'])),
+    clicks: toNumber(pick(row, ['clicks'])),
+    conversions: toNumber(purchasesRaw),
+    conversion_value: toNumber(purchaseValueRaw)
+  };
+}
+
+export function importMetaDailyRows(store, rows) {
+  const db = getDb();
+
+  const insertStmt = db.prepare(`
+    INSERT OR REPLACE INTO meta_daily_metrics (
+      store, date, campaign_id, campaign_name, country,
+      spend, impressions, clicks, conversions, conversion_value,
+      age, gender, publisher_platform, platform_position
+    ) VALUES (
+      @store, @date, @campaign_id, @campaign_name, @country,
+      @spend, @impressions, @clicks, @conversions, @conversion_value,
+      @age, @gender, @publisher_platform, @platform_position
+    )
+  `);
+
+  let inserted = 0;
+  let skipped = 0;
+
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      try {
+        const record = rowToRecord(store, row || {});
+        if (!record.date || !record.campaign_name) {
+          skipped++;
+          continue;
+        }
+        insertStmt.run({ ...record, age: '', gender: '', publisher_platform: '', platform_position: '' });
+        inserted++;
+      } catch (e) {
+        skipped++;
+      }
+    }
+  });
+
+  tx();
+  return { inserted, updated: 0, skipped };
+}
+
+--------------------------------------------------------------------------------
+FILE: server/services/analyticsService.js
+--------------------------------------------------------------------------------
+// Main analytics service - handles dashboard, efficiency, trends, breakdowns
+// ~1200 lines of code
+
+import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
+import { getDb } from '../db/database.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+
+// DATE HELPERS
+function getDateRange(params) {
+  const now = new Date();
+  const today = formatDateAsGmt3(now);
+
+  if (params.startDate && params.endDate) {
+    return { startDate: params.startDate, endDate: params.endDate, days: /* ... */ };
+  }
+  if (params.yesterday) {
+    const yesterday = formatDateAsGmt3(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+    return { startDate: yesterday, endDate: yesterday, days: 1 };
+  }
+  // ... handle days, weeks, months
+  return { startDate, endDate, days };
+}
+
+function getPreviousDateRange(startDate, endDate) {
+  // Calculate previous period of same length
+  // ...
+}
+
+// MAIN FUNCTIONS
+export function getDashboard(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  // Get overview metrics, campaigns, countries, trends
+  return { overview, campaigns, countries, trends, diagnostics, dateRange };
+}
+
+export function getEfficiency(store, params) {
+  // Calculate average vs marginal CAC, efficiency ratio
+}
+
+export function getEfficiencyTrends(store, params) {
+  // Get daily trends with rolling averages
+}
+
+export function getCountryTrends(store, params) {
+  // Get 14-day trends by country with nested cities
+}
+
+export function getTimeOfDay(store, params) {
+  // Get order distribution by hour (Shopify or Salla)
+}
+
+export function getOrdersByDayOfWeek(store, params) {
+  // Get order distribution by day of week
+}
+
+export function getMetaAdManagerHierarchy(store, params) {
+  // Get Campaign > Adset > Ad hierarchy with optional breakdown
+}
+
+export function getFunnelDiagnostics(store, params) {
+  // Get funnel metrics with sparklines and period comparison
+}
+
+export function getCitiesByCountry(store, countryCode, params) {
+  // Get cities breakdown for a country
+}
+
+export function getAvailableCountries(store) {
+  // Get list of countries with data
+}
+
+// Placeholder functions for future breakdowns
+export function getCampaignsByCountry(store, params) { return []; }
+export function getCampaignsByAge(store, params) { return []; }
+export function getCampaignsByGender(store, params) { return []; }
+export function getCampaignsByPlacement(store, params) { return []; }
+export function getCampaignsByAgeGender(store, params) { return []; }
+export function getMetaBreakdowns(store, params) { return []; }
+export function getRecommendations(store, params) { return []; }
+
+--------------------------------------------------------------------------------
+FILE: server/utils/dateUtils.js
+--------------------------------------------------------------------------------
+// Utility to format dates in GMT+3 (used for order/day-level reporting)
+const GMT3_OFFSET_HOURS = 3;
+const GMT3_OFFSET_MS = GMT3_OFFSET_HOURS * 60 * 60 * 1000;
+
+export function formatDateAsGmt3(date = new Date()) {
+  const gmt3Date = new Date(date.getTime() + GMT3_OFFSET_MS);
+  return gmt3Date.toISOString().split('T')[0];
+}
+
+--------------------------------------------------------------------------------
+FILE: server/utils/countryData.js
+--------------------------------------------------------------------------------
+const FALLBACK_REGION_CODES = [
+  'AF','AX','AL','DZ','AS','AD','AO','AI','AQ','AG','AR','AM','AW','AU','AT','AZ',
+  'BS','BH','BD','BB','BY','BE','BZ','BJ','BM','BT','BO','BQ','BA','BW','BV','BR',
+  // ... all ISO 3166-1 alpha-2 codes
+  'YE','ZM','ZW'
+];
+
+function countryCodeToFlag(code) {
+  if (!/^[A-Z]{2}$/.test(code)) return '🏳️';
+  const codePoints = [...code].map(char => 127397 + char.charCodeAt(0));
+  return String.fromCodePoint(...codePoints);
+}
+
+function resolveDisplayNames() {
+  if (typeof Intl.DisplayNames === 'function') {
+    try {
+      return new Intl.DisplayNames(['en'], { type: 'region' });
+    } catch (error) {
+      return null;
+    }
+  }
+  return null;
+}
+
+const displayNames = resolveDisplayNames();
+
+const ALL_COUNTRIES = FALLBACK_REGION_CODES.map(code => ({
+  code,
+  name: displayNames ? displayNames.of(code) : code,
+  flag: countryCodeToFlag(code)
+})).sort((a, b) => a.name.localeCompare(b.name));
+
+export function getAllCountries() {
+  return ALL_COUNTRIES;
+}
+
+export function getCountryInfo(code) {
+  const upperCode = (code || '').toUpperCase();
+  return ALL_COUNTRIES.find(c => c.code === upperCode) || { code: upperCode, name: code, flag: '🏳️' };
+}
+
+================================================================================
+END OF FULLCODEBASE.TXT
+================================================================================
