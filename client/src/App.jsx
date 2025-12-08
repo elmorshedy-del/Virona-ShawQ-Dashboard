@@ -912,6 +912,33 @@ function DashboardTab({
   const [expandedCountries, setExpandedCountries] = useState(new Set());
   const [expandedStates, setExpandedStates] = useState(new Set());
 
+  // Hide/show campaign functions
+  const toggleHideCampaign = (campaignId) => {
+    setHiddenCampaigns(prev => {
+      const next = new Set(prev);
+      if (next.has(campaignId)) {
+        next.delete(campaignId);
+      } else {
+        next.add(campaignId);
+      }
+      return next;
+    });
+  };
+
+  const showAllCampaigns = () => {
+    setHiddenCampaigns(new Set());
+  };
+
+  // Campaign selection for diagnostics filtering
+  const handleCampaignSelect = (campaignId) => {
+    if (selectedDiagnosticsCampaign === campaignId) {
+      setSelectedDiagnosticsCampaign(null); // Deselect
+    } else {
+      setSelectedDiagnosticsCampaign(campaignId); // Select
+      setDiagnosticsExpanded(true); // Auto-expand diagnostics
+    }
+  };
+
   const ecomLabel = store.ecommerce;
   
   const kpis = [
