@@ -52,7 +52,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Assistant'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -828,6 +828,23 @@ export default function App() {
             formatCurrency={formatCurrency}
             store={store}
             availableCountries={availableCountries}
+          />
+        )}
+
+        {activeTab === 4 && (
+          <AIAssistantTab
+            store={store}
+            dashboard={dashboard}
+            metaAdManagerData={metaAdManagerData}
+            funnelDiagnostics={funnelDiagnostics}
+            dateRange={dateRange}
+            API_BASE={API_BASE}
+            metaBreakdownData={metaBreakdownData}
+            countryTrends={countryTrends}
+            efficiency={efficiency}
+            efficiencyTrends={efficiencyTrends}
+            budgetIntelligence={budgetIntelligence}
+            recommendations={recommendations}
           />
         )}
       </div>
@@ -3696,6 +3713,184 @@ function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency, expanded, s
         </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function AIAssistantTab({ store, dashboard, metaAdManagerData, funnelDiagnostics, dateRange, API_BASE, metaBreakdownData, countryTrends, efficiency, efficiencyTrends, budgetIntelligence, recommendations }) {
+  const [messages, setMessages] = useState([
+    {
+      role: 'assistant',
+      content: `👋 Hi! I'm your analytics assistant. I can see your ${store.name} data.\n\nAsk me anything! Try:\n• "Why did my CVR drop?"\n• "Which campaign should I scale?"\n• "Compare my campaigns"\n• "What's wrong with my funnel?"`
+    }
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [aiConfigured, setAiConfigured] = useState(true);
+  const [selectedModel, setSelectedModel] = useState('gpt-5.1');
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/ai/status`)
+      .then(res => res.json())
+      .then(data => setAiConfigured(data.configured))
+      .catch(() => setAiConfigured(false));
+  }, [API_BASE]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!input.trim() || loading) return;
+
+    const userMessage = input.trim();
+    setInput('');
+    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+    setLoading(true);
+
+    try {
+      const dashboardData = {
+        summary: dashboard,
+        campaigns: metaAdManagerData,
+        diagnostics: funnelDiagnostics,
+        dateRange,
+        countryBreakdown: metaBreakdownData,
+        countryTrends: countryTrends,
+        efficiency: efficiency,
+        efficiencyTrends: efficiencyTrends,
+        budgetIntelligence: budgetIntelligence,
+        recommendations: recommendations
+      };
+
+      const response = await fetch(`${API_BASE}/ai/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: userMessage,
+          dashboardData,
+          store: store.id,
+          model: selectedModel
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setMessages(prev => [...prev, { role: 'assistant', content: data.answer }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ Error: ${data.error}` }]);
+      }
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `❌ Error: ${error.message}` }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const suggestedQuestions = [
+    "Why did my ROAS drop?",
+    "Which campaign is performing best?",
+    "Should I scale any campaigns?",
+    "What's wrong with my funnel?",
+    "Compare Saudi Arabia vs other countries",
+    "How can I improve my CTR?"
+  ];
+
+  if (!aiConfigured) {
+    return (
+      <div className="bg-white rounded-xl shadow-sm p-8 text-center">
+        <div className="text-6xl mb-4">🤖</div>
+        <h2 className="text-xl font-semibold mb-2">AI Assistant Not Configured</h2>
+        <p className="text-gray-600 mb-4">
+          Add your OpenAI API key to Railway environment variables to enable the AI Assistant.
+        </p>
+        <code className="bg-gray-100 px-3 py-1 rounded text-sm">OPENAI_API_KEY=sk-...</code>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm overflow-hidden flex flex-col" style={{ height: 'calc(100vh - 200px)' }}>
+      <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-purple-50 to-indigo-50">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          🤖 AI Analytics Assistant
+        </h2>
+        <p className="text-sm text-gray-600">
+          Ask questions about your {store.name} data
+        </p>
+        <div className="flex items-center gap-2 mt-2">
+          <span className="text-sm text-gray-500">Model:</span>
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="gpt-5.1">⚡ GPT-5.1 Instant (Fast)</option>
+            <option value="gpt-5.1-thinking">🧠 GPT-5.1 Thinking (Smartest)</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+              msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-800'
+            }`}>
+              <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="bg-gray-100 rounded-2xl px-4 py-3">
+              <div className="flex items-center gap-2 text-gray-500">
+                <div className="animate-spin h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full"></div>
+                Thinking...
+              </div>
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {messages.length === 1 && (
+        <div className="px-6 pb-4">
+          <div className="flex flex-wrap gap-2">
+            {suggestedQuestions.map((q, i) => (
+              <button
+                key={i}
+                onClick={() => setInput(q)}
+                className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-full text-sm text-gray-700 transition-colors"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="p-4 border-t border-gray-100">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask about your campaigns, metrics, or get recommendations..."
+            className="flex-1 px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            disabled={loading}
+          />
+          <button
+            type="submit"
+            disabled={loading || !input.trim()}
+            className="px-6 py-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Send
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

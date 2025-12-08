@@ -12,6 +12,7 @@ import analyticsRoutes from './routes/analytics.js';
 import manualRoutes from './routes/manual.js';
 import notificationsRoutes from './routes/notifications.js';
 import budgetIntelligenceRoutes from './routes/budgetIntelligence.js';
+import aiRoutes from './routes/ai.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -29,6 +30,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/manual', manualRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/budget-intelligence', budgetIntelligenceRoutes);
+app.use('/api/ai', aiRoutes);
 
 // List available stores
 app.get('/api/stores', (req, res) => {
