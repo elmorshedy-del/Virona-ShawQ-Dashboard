@@ -1041,14 +1041,52 @@ export function getMetaAdManagerHierarchy(store, params) {
     level: 'ad'
   }));
 
-  // Build hierarchy
+  // Helper: Create composite key for matching with breakdown
+  const getCompositeKey = (item) => {
+    let key = '';
+    if (breakdown === 'country') {
+      key = item.country || 'ALL';
+    } else if (breakdown === 'age') {
+      key = item.age || '';
+    } else if (breakdown === 'gender') {
+      key = item.gender || '';
+    } else if (breakdown === 'age_gender') {
+      key = `${item.age || ''}-${item.gender || ''}`;
+    } else if (breakdown === 'placement') {
+      key = `${item.publisher_platform || ''}-${item.platform_position || ''}`;
+    }
+    return key;
+  };
+
+  // Build hierarchy with breakdown-aware grouping
+  // CRITICAL FIX: Group by composite key (ID + breakdown fields) to prevent wrong matches
+
+  // Group adsets by campaign_id + breakdown
+  const adsetMap = new Map();
+  adsetsWithMetrics.forEach(adset => {
+    const key = `${adset.campaign_id}-${getCompositeKey(adset)}`;
+    if (!adsetMap.has(key)) adsetMap.set(key, []);
+    adsetMap.get(key).push(adset);
+  });
+
+  // Group ads by adset_id + breakdown
+  const adMap = new Map();
+  adsWithMetrics.forEach(ad => {
+    const key = `${ad.adset_id}-${getCompositeKey(ad)}`;
+    if (!adMap.has(key)) adMap.set(key, []);
+    adMap.get(key).push(ad);
+  });
+
+  // Build hierarchy using grouped data
   const hierarchy = campaignsWithMetrics.map(campaign => {
-    const campaignAdsets = adsetsWithMetrics
-      .filter(adset => adset.campaign_id === campaign.campaign_id)
-      .map(adset => ({
+    const campaignKey = `${campaign.campaign_id}-${getCompositeKey(campaign)}`;
+    const campaignAdsets = (adsetMap.get(campaignKey) || []).map(adset => {
+      const adsetKey = `${adset.adset_id}-${getCompositeKey(adset)}`;
+      return {
         ...adset,
-        ads: adsWithMetrics.filter(ad => ad.adset_id === adset.adset_id)
-      }));
+        ads: adMap.get(adsetKey) || []
+      };
+    });
 
     return {
       ...campaign,
