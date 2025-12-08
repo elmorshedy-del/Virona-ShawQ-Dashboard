@@ -834,17 +834,7 @@ export default function App() {
         {activeTab === 4 && (
           <AIExplorationTab
             store={store}
-            dashboard={dashboard}
-            metaAdManagerData={metaAdManagerData}
-            funnelDiagnostics={funnelDiagnostics}
-            dateRange={dateRange}
             API_BASE={API_BASE}
-            metaBreakdownData={metaBreakdownData}
-            countryTrends={countryTrends}
-            efficiency={efficiency}
-            efficiencyTrends={efficiencyTrends}
-            budgetIntelligence={budgetIntelligence}
-            recommendations={recommendations}
           />
         )}
       </div>
@@ -3717,22 +3707,14 @@ function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency, expanded, s
   );
 }
 
-function AIExplorationTab({
-  store,
-  dashboard,
-  metaAdManagerData,
-  funnelDiagnostics,
-  dateRange,
-  API_BASE,
-  metaBreakdownData,
-  countryTrends,
-  efficiency
-}) {
-  const [mode, setMode] = useState(null);
+function AIExplorationTab({ store, API_BASE }) {
+  const [mode, setMode] = useState(null); // null, 'analyze', 'summarize', 'decide'
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
-  const [reasoningEffort, setReasoningEffort] = useState('balanced');
+  const [streamingText, setStreamingText] = useState('');
+  const [depth, setDepth] = useState('balanced');
+  const [usedModel, setUsedModel] = useState(null);
   const inputRef = useRef(null);
   const resultRef = useRef(null);
 
@@ -3745,62 +3727,53 @@ function AIExplorationTab({
 
   // Scroll to result
   useEffect(() => {
-    if (result) {
+    if (result || streamingText) {
       resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [result]);
+  }, [result, streamingText]);
 
-  // Handle ESC key to go back
+  // ESC to go back
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && mode) {
+      if (e.key === 'Escape' && mode && !loading) {
         handleBack();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [mode]);
+  }, [mode, loading]);
 
   const handleBack = () => {
     setMode(null);
     setQuery('');
     setResult(null);
+    setStreamingText('');
+    setUsedModel(null);
   };
 
+  // Regular submit (Analyze & Summarize)
   const handleSubmit = async (e, customQuery = null) => {
     e?.preventDefault();
-    const questionToAsk = customQuery || query.trim();
-    if (!questionToAsk || loading) return;
+    const q = customQuery || query.trim();
+    if (!q || loading) return;
 
     setLoading(true);
     setResult(null);
+    setStreamingText('');
+    setUsedModel(null);
 
     try {
-      const dashboardData = {
-        summary: dashboard,
-        campaigns: metaAdManagerData,
-        diagnostics: funnelDiagnostics,
-        dateRange,
-        countryBreakdown: metaBreakdownData,
-        countryTrends,
-        efficiency
-      };
-
-      const endpoint = mode === 'analyze' ? '/ai/analyze' : '/ai/decide';
-      const body = mode === 'analyze'
-        ? { question: questionToAsk, dashboardData, store: store.id }
-        : { question: questionToAsk, dashboardData, store: store.id, reasoningEffort };
-
+      const endpoint = mode === 'analyze' ? '/ai/analyze' : '/ai/summarize';
       const response = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ question: q, store: store.id })
       });
 
       const data = await response.json();
-
       if (data.success) {
         setResult({ type: 'success', content: data.answer });
+        setUsedModel(data.model);
       } else {
         setResult({ type: 'error', content: data.error });
       }
@@ -3808,51 +3781,125 @@ function AIExplorationTab({
       setResult({ type: 'error', content: error.message });
     } finally {
       setLoading(false);
+      setQuery('');
+    }
+  };
+
+  // Streaming submit (Decide mode)
+  const handleStreamingSubmit = async (e, customQuery = null) => {
+    e?.preventDefault();
+    const q = customQuery || query.trim();
+    if (!q || loading) return;
+
+    setLoading(true);
+    setResult(null);
+    setStreamingText('');
+    setUsedModel(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/ai/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, store: store.id, depth })
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'delta') {
+                fullText += data.text;
+                setStreamingText(fullText);
+              } else if (data.type === 'done') {
+                setUsedModel(data.model);
+                setResult({ type: 'success', content: fullText });
+                setStreamingText('');
+              } else if (data.type === 'error') {
+                setResult({ type: 'error', content: data.error });
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (error) {
+      setResult({ type: 'error', content: error.message });
+    } finally {
+      setLoading(false);
+      setQuery('');
+    }
+  };
+
+  const handleModeSubmit = (e, customQuery = null) => {
+    if (mode === 'decide') {
+      handleStreamingSubmit(e, customQuery);
+    } else {
+      handleSubmit(e, customQuery);
     }
   };
 
   const handleQuickQuestion = (q) => {
     setQuery(q);
-    handleSubmit(null, q);
+    handleModeSubmit(null, q);
   };
 
+  // Loading tips
   const loadingTips = [
-    "Examining your campaign data...",
-    "Analyzing performance trends...",
-    "Finding optimization opportunities...",
-    "Forming strategic recommendations...",
-    "Calculating potential impact..."
+    "Querying your database...",
+    "Analyzing campaign performance...",
+    "Finding patterns in your data...",
+    "Forming recommendations...",
+    "Calculating impact..."
   ];
   const [tipIndex, setTipIndex] = useState(0);
 
   useEffect(() => {
-    if (loading && mode === 'decide') {
+    if (loading && mode === 'decide' && !streamingText) {
       const interval = setInterval(() => {
         setTipIndex(i => (i + 1) % loadingTips.length);
       }, 2500);
       return () => clearInterval(interval);
     }
-  }, [loading, mode]);
+  }, [loading, mode, streamingText]);
 
-  // Analyze quick questions
+  // Quick questions
   const analyzeQuestions = [
     "How many orders today?",
     "What's my ROAS this week?"
   ];
 
-  // Decide topic cards
+  const summarizeQuestions = [
+    "Give me a weekly performance recap",
+    "What trends do you see in my data?",
+    "Any anomalies I should know about?"
+  ];
+
   const decideTopics = [
     { icon: '📈', label: 'Scale', question: 'Which campaigns should I scale and by how much?' },
     { icon: '💰', label: 'Budget', question: 'How should I reallocate my budget for better results?' },
-    { icon: '🧪', label: 'Testing', question: 'What tests should I run next to improve performance?' },
+    { icon: '🧪', label: 'Testing', question: 'What A/B tests should I run next?' },
     { icon: '📉', label: 'Diagnose', question: 'Why did my metrics drop and how do I fix it?' },
-    { icon: '👥', label: 'Audience', question: 'What new audiences should I target?' },
-    { icon: '🎨', label: 'Creative', question: 'What creative changes would improve my ads?' },
-    { icon: '🔄', label: 'Funnel', question: 'How can I improve my conversion funnel?' },
-    { icon: '🛑', label: 'Pause', question: 'Which campaigns should I pause or kill?' }
+    { icon: '👥', label: 'Audience', question: 'What audiences should I target or exclude?' },
+    { icon: '🎨', label: 'Creative', question: 'Which ad creatives are working and which should I refresh?' },
+    { icon: '🔄', label: 'Funnel', question: 'Where is my funnel leaking and how do I fix it?' },
+    { icon: '🛑', label: 'Pause', question: 'Which campaigns or ads should I pause?' }
   ];
 
+  const displayContent = streamingText || result?.content;
+
+  // =========================================================================
   // MODE SELECTION SCREEN
+  // =========================================================================
   if (!mode) {
     return (
       <div className="min-h-[600px] flex flex-col items-center justify-center p-8 animate-fadeIn">
@@ -3861,96 +3908,224 @@ function AIExplorationTab({
             AI Analytics
           </h1>
           <p className="text-gray-500 text-lg animate-slideDown" style={{ animationDelay: '0.1s' }}>
-            What would you like to do?
+            Ask anything about your {store.name} data
           </p>
         </div>
 
-        <div className="flex gap-6 flex-wrap justify-center">
+        <div className="flex gap-6 flex-wrap justify-center max-w-4xl">
           {/* Analyze Card */}
           <button
             onClick={() => setMode('analyze')}
-            className="group w-72 bg-white rounded-2xl p-8 border-2 border-gray-100 hover:border-blue-300 hover:shadow-xl hover:shadow-blue-100/50 transition-all duration-300 hover:-translate-y-2 text-left animate-slideUp"
+            className="group w-64 bg-white rounded-2xl p-6 border-2 border-gray-100 hover:border-green-300 hover:shadow-xl hover:shadow-green-100/50 transition-all duration-300 hover:-translate-y-2 text-left animate-slideUp"
             style={{ animationDelay: '0.2s' }}
           >
-            <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
-              <span className="text-3xl">📊</span>
+            <div className="w-14 h-14 bg-green-50 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300">
+              <span className="text-2xl">⚡</span>
             </div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">Analyze</h2>
-            <p className="text-gray-500 text-sm mb-4">Quick answers & summaries</p>
-            <div className="space-y-2 mb-6">
-              <p className="text-xs text-gray-400">Examples:</p>
-              <p className="text-sm text-gray-600">"How many orders today?"</p>
-              <p className="text-sm text-gray-600">"What's my ROAS?"</p>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">Analyze</h2>
+            <p className="text-gray-500 text-sm mb-3">Quick metrics & facts</p>
+            <div className="space-y-1 mb-4 text-sm text-gray-600">
+              <p>"How many orders today?"</p>
+              <p>"What's my ROAS?"</p>
             </div>
-            <div className="flex items-center gap-2 text-blue-500 text-sm font-medium">
+            <div className="flex items-center gap-2 text-green-600 text-xs font-medium bg-green-50 px-3 py-1.5 rounded-full w-fit">
               <span>⚡</span>
-              <span>Instant - GPT-4o mini</span>
+              <span>Instant - GPT-5 nano</span>
+            </div>
+          </button>
+
+          {/* Summarize Card */}
+          <button
+            onClick={() => setMode('summarize')}
+            className="group w-64 bg-white rounded-2xl p-6 border-2 border-gray-100 hover:border-blue-300 hover:shadow-xl hover:shadow-blue-100/50 transition-all duration-300 hover:-translate-y-2 text-left animate-slideUp"
+            style={{ animationDelay: '0.3s' }}
+          >
+            <div className="w-14 h-14 bg-blue-50 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300">
+              <span className="text-2xl">📊</span>
+            </div>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">Summarize</h2>
+            <p className="text-gray-500 text-sm mb-3">Trends & patterns</p>
+            <div className="space-y-1 mb-4 text-sm text-gray-600">
+              <p>Weekly recaps</p>
+              <p>Trend analysis</p>
+              <p>Anomaly detection</p>
+            </div>
+            <div className="flex items-center gap-2 text-blue-600 text-xs font-medium bg-blue-50 px-3 py-1.5 rounded-full w-fit">
+              <span>📊</span>
+              <span>~15s - GPT-5 mini</span>
             </div>
           </button>
 
           {/* Decide Card */}
           <button
             onClick={() => setMode('decide')}
-            className="group w-72 bg-white rounded-2xl p-8 border-2 border-gray-100 hover:border-purple-300 hover:shadow-xl hover:shadow-purple-100/50 transition-all duration-300 hover:-translate-y-2 text-left animate-slideUp"
-            style={{ animationDelay: '0.3s' }}
+            className="group w-64 bg-white rounded-2xl p-6 border-2 border-gray-100 hover:border-purple-300 hover:shadow-xl hover:shadow-purple-100/50 transition-all duration-300 hover:-translate-y-2 text-left animate-slideUp"
+            style={{ animationDelay: '0.4s' }}
           >
-            <div className="w-16 h-16 bg-purple-50 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
-              <span className="text-3xl animate-pulse">🧠</span>
+            <div className="w-14 h-14 bg-purple-50 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300">
+              <span className="text-2xl animate-pulse">🧠</span>
             </div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">Decide Next Steps</h2>
-            <p className="text-gray-500 text-sm mb-4">Strategic recommendations</p>
-            <div className="space-y-1 mb-6 text-sm text-gray-600">
-              <p>- Scale campaigns</p>
-              <p>- Budget allocation</p>
-              <p>- What to test next</p>
-              <p>- Why metrics dropped</p>
-              <p className="text-gray-400">+ 4 more...</p>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">Decide</h2>
+            <p className="text-gray-500 text-sm mb-3">Strategic decisions</p>
+            <div className="space-y-1 mb-4 text-sm text-gray-600">
+              <p>Scale / Pause campaigns</p>
+              <p>Budget allocation</p>
+              <p>Test design</p>
             </div>
-            <div className="flex items-center gap-2 text-purple-500 text-sm font-medium">
+            <div className="flex items-center gap-2 text-purple-600 text-xs font-medium bg-purple-50 px-3 py-1.5 rounded-full w-fit">
               <span>🧠</span>
               <span>Deep reasoning - GPT-5.1</span>
             </div>
           </button>
         </div>
+
+        <div className="mt-12 text-center text-sm text-gray-400 animate-fadeIn" style={{ animationDelay: '0.5s' }}>
+          <p>AI queries your database directly for real-time answers</p>
+        </div>
       </div>
     );
   }
 
+  // =========================================================================
   // ANALYZE MODE
+  // =========================================================================
   if (mode === 'analyze') {
     return (
       <div className="min-h-[600px] p-6 animate-fadeIn">
-        {/* Header */}
         <div className="flex items-center justify-between mb-8">
-          <button
-            onClick={handleBack}
-            className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition-colors animate-slideRight"
-          >
+          <button onClick={handleBack} className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition-colors animate-slideRight">
             <span className="text-xl">←</span>
             <span>Back</span>
           </button>
-          <div className="flex items-center gap-2 text-blue-500 bg-blue-50 px-4 py-2 rounded-full animate-slideLeft">
+          <div className="flex items-center gap-2 text-green-600 bg-green-50 px-4 py-2 rounded-full animate-slideLeft">
             <span>⚡</span>
-            <span className="text-sm font-medium">GPT-4o mini</span>
+            <span className="text-sm font-medium">GPT-5 nano</span>
           </div>
         </div>
 
-        {/* Input */}
-        <form onSubmit={handleSubmit} className="mb-8 animate-slideUp">
+        <div className="text-center mb-8 animate-slideDown">
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Quick Analysis</h2>
+          <p className="text-gray-500">Get instant answers from your database</p>
+        </div>
+
+        <form onSubmit={handleModeSubmit} className="mb-8 animate-slideUp max-w-2xl mx-auto">
           <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">✨</span>
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">⚡</span>
             <input
               ref={inputRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSubmit(e);
-                }
-              }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleModeSubmit(e); } }}
               placeholder="Ask a quick question..."
+              className="w-full pl-14 pr-14 py-4 text-lg border-2 border-gray-200 rounded-2xl focus:border-green-400 focus:ring-4 focus:ring-green-100 outline-none transition-all duration-300"
+              disabled={loading}
+            />
+            <button
+              type="submit"
+              disabled={loading || !query.trim()}
+              className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white rounded-xl flex items-center justify-center transition-all duration-300 hover:scale-105 disabled:hover:scale-100"
+            >
+              {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <span>→</span>}
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mt-2 ml-4">Press Enter or click → to send</p>
+        </form>
+
+        {!result && !loading && (
+          <div className="animate-slideUp max-w-2xl mx-auto" style={{ animationDelay: '0.1s' }}>
+            <p className="text-sm text-gray-500 mb-3">Try asking:</p>
+            <div className="flex gap-3 flex-wrap">
+              {analyzeQuestions.map((q, i) => (
+                <button key={i} onClick={() => handleQuickQuestion(q)} className="px-4 py-3 bg-gray-50 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded-xl text-sm text-gray-700 hover:text-green-700 transition-all duration-300 hover:-translate-y-1">
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {loading && !displayContent && (
+          <div className="flex flex-col items-center justify-center py-16 animate-fadeIn">
+            <div className="w-16 h-16 border-4 border-green-100 border-t-green-500 rounded-full animate-spin mb-4" />
+            <p className="text-gray-600">Querying database...</p>
+          </div>
+        )}
+
+        {(displayContent || result) && (
+          <div ref={resultRef} className="animate-slideUp max-w-2xl mx-auto">
+            <div className={`p-6 rounded-2xl ${result?.type === 'error' ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'}`}>
+              {result?.type === 'error' ? (
+                <p className="text-red-600">Error: {result.content}</p>
+              ) : (
+                <div className="prose prose-sm max-w-none">
+                  <div className="whitespace-pre-wrap text-gray-700 leading-relaxed">
+                    {displayContent}
+                    {loading && <span className="inline-block w-2 h-4 bg-green-500 animate-pulse ml-1" />}
+                  </div>
+                </div>
+              )}
+              {usedModel && !loading && (
+                <p className="text-xs text-gray-400 mt-4 pt-4 border-t border-gray-200">Answered by {usedModel}</p>
+              )}
+            </div>
+
+            {!loading && (
+              <form onSubmit={handleModeSubmit} className="mt-6">
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl">💬</span>
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleModeSubmit(e); } }}
+                    placeholder="Ask follow-up question..."
+                    className="w-full pl-12 pr-14 py-3 border-2 border-gray-200 rounded-xl focus:border-green-400 focus:ring-4 focus:ring-green-100 outline-none transition-all duration-300"
+                  />
+                  <button type="submit" disabled={!query.trim()} className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white rounded-lg flex items-center justify-center transition-all duration-300">
+                    <span>→</span>
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // SUMMARIZE MODE
+  // =========================================================================
+  if (mode === 'summarize') {
+    return (
+      <div className="min-h-[600px] p-6 animate-fadeIn">
+        <div className="flex items-center justify-between mb-8">
+          <button onClick={handleBack} className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition-colors animate-slideRight">
+            <span className="text-xl">←</span>
+            <span>Back</span>
+          </button>
+          <div className="flex items-center gap-2 text-blue-600 bg-blue-50 px-4 py-2 rounded-full animate-slideLeft">
+            <span>📊</span>
+            <span className="text-sm font-medium">GPT-5 mini</span>
+          </div>
+        </div>
+
+        <div className="text-center mb-8 animate-slideDown">
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Trends & Patterns</h2>
+          <p className="text-gray-500">Get summaries, trends, and anomaly detection</p>
+        </div>
+
+        <form onSubmit={handleModeSubmit} className="mb-8 animate-slideUp max-w-2xl mx-auto">
+          <div className="relative">
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">📊</span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleModeSubmit(e); } }}
+              placeholder="What would you like summarized?"
               className="w-full pl-14 pr-14 py-4 text-lg border-2 border-gray-200 rounded-2xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all duration-300"
               disabled={loading}
             />
@@ -3959,27 +4134,18 @@ function AIExplorationTab({
               disabled={loading || !query.trim()}
               className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded-xl flex items-center justify-center transition-all duration-300 hover:scale-105 disabled:hover:scale-100"
             >
-              {loading ? (
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <span>⚡</span>
-              )}
+              {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <span>→</span>}
             </button>
           </div>
-          <p className="text-xs text-gray-400 mt-2 ml-4">Press Enter or click ⚡ to send</p>
+          <p className="text-xs text-gray-400 mt-2 ml-4">Press Enter or click → to send</p>
         </form>
 
-        {/* Quick Questions */}
         {!result && !loading && (
-          <div className="animate-slideUp" style={{ animationDelay: '0.1s' }}>
-            <p className="text-sm text-gray-500 mb-3">Try asking:</p>
+          <div className="animate-slideUp max-w-2xl mx-auto" style={{ animationDelay: '0.1s' }}>
+            <p className="text-sm text-gray-500 mb-3">Popular summaries:</p>
             <div className="flex gap-3 flex-wrap">
-              {analyzeQuestions.map((q, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleQuickQuestion(q)}
-                  className="px-4 py-3 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-300 rounded-xl text-sm text-gray-700 hover:text-blue-700 transition-all duration-300 hover:-translate-y-1"
-                >
+              {summarizeQuestions.map((q, i) => (
+                <button key={i} onClick={() => handleQuickQuestion(q)} className="px-4 py-3 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-300 rounded-xl text-sm text-gray-700 hover:text-blue-700 transition-all duration-300 hover:-translate-y-1">
                   {q}
                 </button>
               ))}
@@ -3987,99 +4153,109 @@ function AIExplorationTab({
           </div>
         )}
 
-        {/* Loading */}
-        {loading && (
+        {loading && !displayContent && (
           <div className="flex flex-col items-center justify-center py-16 animate-fadeIn">
             <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-500 rounded-full animate-spin mb-4" />
-            <p className="text-gray-600">Analyzing...</p>
+            <p className="text-gray-600">Analyzing patterns...</p>
           </div>
         )}
 
-        {/* Result */}
-        {result && (
-          <div ref={resultRef} className="animate-slideUp">
-            <div className={`p-6 rounded-2xl ${result.type === 'error' ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'}`}>
-              {result.type === 'error' ? (
-                <p className="text-red-600">Error: {result.content}</p>
+        {(displayContent || result) && (
+          <div ref={resultRef} className="animate-slideUp max-w-3xl mx-auto">
+            <div className={`rounded-2xl overflow-hidden ${result?.type === 'error' ? 'bg-red-50 border border-red-200' : 'bg-white border border-gray-200 shadow-lg'}`}>
+              {result?.type === 'error' ? (
+                <div className="p-6"><p className="text-red-600">Error: {result.content}</p></div>
               ) : (
-                <div className="prose prose-sm max-w-none">
-                  <div className="whitespace-pre-wrap text-gray-700 leading-relaxed">{result.content}</div>
-                </div>
+                <>
+                  <div className="bg-gradient-to-r from-blue-500 to-cyan-500 px-6 py-4">
+                    <h3 className="text-white font-semibold flex items-center gap-2">
+                      <span>📊</span>
+                      Analysis Summary
+                    </h3>
+                  </div>
+                  <div className="p-6">
+                    <div className="prose prose-sm max-w-none">
+                      <div className="whitespace-pre-wrap text-gray-700 leading-relaxed">
+                        {displayContent}
+                        {loading && <span className="inline-block w-2 h-4 bg-blue-500 animate-pulse ml-1" />}
+                      </div>
+                    </div>
+                    {usedModel && !loading && (
+                      <p className="text-xs text-gray-400 mt-4 pt-4 border-t border-gray-200">Analyzed by {usedModel}</p>
+                    )}
+                  </div>
+                </>
               )}
             </div>
 
-            {/* Follow-up */}
-            <form onSubmit={handleSubmit} className="mt-6">
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl">💬</span>
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSubmit(e);
-                    }
-                  }}
-                  placeholder="Ask follow-up question..."
-                  className="w-full pl-12 pr-14 py-3 border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all duration-300"
-                  disabled={loading}
-                />
-                <button
-                  type="submit"
-                  disabled={loading || !query.trim()}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded-lg flex items-center justify-center transition-all duration-300"
-                >
-                  <span>→</span>
-                </button>
-              </div>
-            </form>
+            {!loading && (
+              <form onSubmit={handleModeSubmit} className="mt-6">
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl">💬</span>
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleModeSubmit(e); } }}
+                    placeholder="Ask follow-up question..."
+                    className="w-full pl-12 pr-14 py-3 border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all duration-300"
+                  />
+                  <button type="submit" disabled={!query.trim()} className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded-lg flex items-center justify-center transition-all duration-300">
+                    <span>→</span>
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         )}
       </div>
     );
   }
 
+  // =========================================================================
   // DECIDE MODE
+  // =========================================================================
   if (mode === 'decide') {
     return (
       <div className="min-h-[600px] p-6 animate-fadeIn">
-        {/* Header */}
         <div className="flex items-center justify-between mb-8">
-          <button
-            onClick={handleBack}
-            className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition-colors animate-slideRight"
-          >
+          <button onClick={handleBack} className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition-colors animate-slideRight">
             <span className="text-xl">←</span>
             <span>Back</span>
           </button>
-          <div className="flex items-center gap-2 text-purple-500 bg-purple-50 px-4 py-2 rounded-full animate-slideLeft">
+          <div className="flex items-center gap-2 text-purple-600 bg-purple-50 px-4 py-2 rounded-full animate-slideLeft">
             <span>🧠</span>
             <span className="text-sm font-medium">GPT-5.1</span>
           </div>
         </div>
 
-        {/* Depth Toggle */}
-        <div className="mb-8 animate-slideUp">
-          <p className="text-sm text-gray-600 mb-3">How deep should I analyze?</p>
-          <div className="flex gap-3">
+        <div className="text-center mb-6 animate-slideDown">
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Strategic Decisions</h2>
+          <p className="text-gray-500">Get diagnosis, recommendations, and test designs</p>
+        </div>
+
+        {/* Depth Toggle - 4 options */}
+        <div className="mb-8 animate-slideUp max-w-2xl mx-auto">
+          <p className="text-sm text-gray-600 mb-3 text-center">How deep should I analyze?</p>
+          <div className="flex gap-2">
             {[
-              { id: 'fast', icon: '⚡', label: 'Fast', time: '~10s' },
-              { id: 'balanced', icon: '🧠', label: 'Balanced', time: '~30s' },
-              { id: 'deep', icon: '🔬', label: 'Deep', time: '~1-2m' }
+              { id: 'instant', icon: '⚡', label: 'Instant', time: '~10s' },
+              { id: 'fast', icon: '🏃', label: 'Fast', time: '~15s' },
+              { id: 'balanced', icon: '🧠', label: 'Balanced', time: '~45s' },
+              { id: 'deep', icon: '🔬', label: 'Deep', time: '~2min' }
             ].map((option) => (
               <button
                 key={option.id}
-                onClick={() => setReasoningEffort(option.id)}
-                className={`flex-1 py-4 px-4 rounded-xl border-2 transition-all duration-300 ${
-                  reasoningEffort === option.id
+                onClick={() => setDepth(option.id)}
+                disabled={loading}
+                className={`flex-1 py-3 px-2 rounded-xl border-2 transition-all duration-300 ${
+                  depth === option.id
                     ? 'border-purple-400 bg-purple-50 shadow-lg shadow-purple-100'
                     : 'border-gray-200 hover:border-purple-200 hover:bg-purple-50/50'
-                }`}
+                } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
-                <div className="text-2xl mb-1">{option.icon}</div>
-                <div className={`font-medium ${reasoningEffort === option.id ? 'text-purple-700' : 'text-gray-700'}`}>
+                <div className="text-xl mb-1">{option.icon}</div>
+                <div className={`text-sm font-medium ${depth === option.id ? 'text-purple-700' : 'text-gray-700'}`}>
                   {option.label}
                 </div>
                 <div className="text-xs text-gray-400">{option.time}</div>
@@ -4088,8 +4264,7 @@ function AIExplorationTab({
           </div>
         </div>
 
-        {/* Input */}
-        <form onSubmit={handleSubmit} className="mb-8 animate-slideUp" style={{ animationDelay: '0.1s' }}>
+        <form onSubmit={handleModeSubmit} className="mb-8 animate-slideUp max-w-2xl mx-auto" style={{ animationDelay: '0.1s' }}>
           <div className="relative">
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">🧠</span>
             <input
@@ -4097,12 +4272,7 @@ function AIExplorationTab({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSubmit(e);
-                }
-              }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleModeSubmit(e); } }}
               placeholder="What decision do you need help with?"
               className="w-full pl-14 pr-14 py-4 text-lg border-2 border-gray-200 rounded-2xl focus:border-purple-400 focus:ring-4 focus:ring-purple-100 outline-none transition-all duration-300"
               disabled={loading}
@@ -4112,27 +4282,22 @@ function AIExplorationTab({
               disabled={loading || !query.trim()}
               className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded-xl flex items-center justify-center transition-all duration-300 hover:scale-105 disabled:hover:scale-100"
             >
-              {loading ? (
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <span>▶</span>
-              )}
+              {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <span>▶</span>}
             </button>
           </div>
           <p className="text-xs text-gray-400 mt-2 ml-4">Press Enter or click ▶ to send</p>
         </form>
 
         {/* Topic Cards */}
-        {!result && !loading && (
-          <div className="animate-slideUp" style={{ animationDelay: '0.2s' }}>
-            <p className="text-sm text-gray-500 mb-4">Choose a topic:</p>
+        {!result && !loading && !streamingText && (
+          <div className="animate-slideUp max-w-3xl mx-auto" style={{ animationDelay: '0.2s' }}>
+            <p className="text-sm text-gray-500 mb-4 text-center">Or choose a topic:</p>
             <div className="grid grid-cols-4 gap-3">
               {decideTopics.map((topic, i) => (
                 <button
                   key={i}
                   onClick={() => handleQuickQuestion(topic.question)}
                   className="group p-4 bg-white border-2 border-gray-100 hover:border-purple-300 rounded-xl transition-all duration-300 hover:-translate-y-1 hover:shadow-lg hover:shadow-purple-100/50"
-                  style={{ animationDelay: `${0.05 * i}s` }}
                 >
                   <div className="text-2xl mb-2 group-hover:scale-110 transition-transform duration-300">
                     {topic.icon}
@@ -4147,7 +4312,7 @@ function AIExplorationTab({
         )}
 
         {/* Loading */}
-        {loading && (
+        {loading && !displayContent && (
           <div className="flex flex-col items-center justify-center py-16 animate-fadeIn">
             <div className="relative w-20 h-20 mb-6">
               <div className="absolute inset-0 border-4 border-purple-100 rounded-full" />
@@ -4156,63 +4321,61 @@ function AIExplorationTab({
                 <span className="text-2xl animate-pulse">🧠</span>
               </div>
             </div>
-            <p className="text-gray-600 font-medium mb-2">Analyzing deeply...</p>
+            <p className="text-gray-600 font-medium mb-2">Thinking deeply...</p>
             <p className="text-gray-400 text-sm animate-pulse">{loadingTips[tipIndex]}</p>
           </div>
         )}
 
         {/* Result */}
-        {result && (
-          <div ref={resultRef} className="animate-slideUp">
-            <div className={`rounded-2xl overflow-hidden ${result.type === 'error' ? 'bg-red-50 border border-red-200' : 'bg-white border border-gray-200 shadow-lg'}`}>
-              {result.type === 'error' ? (
-                <div className="p-6">
-                  <p className="text-red-600">Error: {result.content}</p>
-                </div>
+        {(displayContent || result) && (
+          <div ref={resultRef} className="animate-slideUp max-w-3xl mx-auto">
+            <div className={`rounded-2xl overflow-hidden ${result?.type === 'error' ? 'bg-red-50 border border-red-200' : 'bg-white border border-gray-200 shadow-lg'}`}>
+              {result?.type === 'error' ? (
+                <div className="p-6"><p className="text-red-600">Error: {result.content}</p></div>
               ) : (
                 <>
                   <div className="bg-gradient-to-r from-purple-500 to-indigo-500 px-6 py-4">
                     <h3 className="text-white font-semibold flex items-center gap-2">
                       <span>🧠</span>
                       Strategic Recommendations
+                      {loading && <span className="text-purple-200 text-sm ml-2">(thinking...)</span>}
                     </h3>
                   </div>
                   <div className="p-6">
                     <div className="prose prose-sm max-w-none">
-                      <div className="whitespace-pre-wrap text-gray-700 leading-relaxed">{result.content}</div>
+                      <div className="whitespace-pre-wrap text-gray-700 leading-relaxed">
+                        {displayContent}
+                        {loading && <span className="inline-block w-2 h-4 bg-purple-500 animate-pulse ml-1" />}
+                      </div>
                     </div>
+                    {usedModel && !loading && (
+                      <p className="text-xs text-gray-400 mt-4 pt-4 border-t border-gray-200">
+                        Powered by {usedModel} - Depth: {depth}
+                      </p>
+                    )}
                   </div>
                 </>
               )}
             </div>
 
-            {/* Follow-up */}
-            <form onSubmit={handleSubmit} className="mt-6">
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl">💬</span>
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSubmit(e);
-                    }
-                  }}
-                  placeholder="Ask follow-up question..."
-                  className="w-full pl-12 pr-14 py-3 border-2 border-gray-200 rounded-xl focus:border-purple-400 focus:ring-4 focus:ring-purple-100 outline-none transition-all duration-300"
-                  disabled={loading}
-                />
-                <button
-                  type="submit"
-                  disabled={loading || !query.trim()}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded-lg flex items-center justify-center transition-all duration-300"
-                >
-                  <span>→</span>
-                </button>
-              </div>
-            </form>
+            {!loading && (
+              <form onSubmit={handleModeSubmit} className="mt-6">
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl">💬</span>
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleModeSubmit(e); } }}
+                    placeholder="Ask follow-up question..."
+                    className="w-full pl-12 pr-14 py-3 border-2 border-gray-200 rounded-xl focus:border-purple-400 focus:ring-4 focus:ring-purple-100 outline-none transition-all duration-300"
+                  />
+                  <button type="submit" disabled={!query.trim()} className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded-lg flex items-center justify-center transition-all duration-300">
+                    <span>→</span>
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         )}
       </div>
