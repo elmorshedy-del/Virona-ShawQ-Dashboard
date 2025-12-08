@@ -300,6 +300,38 @@ export default function App() {
     loadBreakdown();
   }, [metaBreakdown, currentStore, dateRange, storeLoaded]);
 
+  // Load Meta Ad Manager hierarchy data
+  useEffect(() => {
+    if (!storeLoaded || analyticsMode !== 'meta-ad-manager') return;
+
+    async function loadMetaAdManager() {
+      try {
+        const params = new URLSearchParams({ store: currentStore });
+
+        if (dateRange.type === 'custom') {
+          params.set('startDate', dateRange.start);
+          params.set('endDate', dateRange.end);
+        } else if (dateRange.type === 'yesterday') {
+          params.set('yesterday', '1');
+        } else {
+          params.set(dateRange.type, dateRange.value);
+        }
+
+        if (adManagerBreakdown !== 'none') {
+          params.set('breakdown', adManagerBreakdown);
+        }
+
+        const data = await fetch(`${API_BASE}/analytics/meta-ad-manager?${params}`).then(r => r.json());
+        setMetaAdManagerData(Array.isArray(data) ? data : []);
+      } catch (error) {
+        console.error('Error loading Meta Ad Manager data:', error);
+        setMetaAdManagerData([]);
+      }
+    }
+
+    loadMetaAdManager();
+  }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded]);
+
   async function handleSync() {
     setSyncing(true);
     try {
@@ -750,6 +782,13 @@ function DashboardTab({
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
+
+  // New unified analytics section state
+  const [analyticsMode, setAnalyticsMode] = useState('countries'); // 'countries' | 'meta-ad-manager'
+  const [metaAdManagerData, setMetaAdManagerData] = useState([]);
+  const [adManagerBreakdown, setAdManagerBreakdown] = useState('none'); // 'none', 'country', 'age', 'gender', 'age_gender', 'placement'
+  const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
+  const [expandedAdsets, setExpandedAdsets] = useState(new Set());
   
   const ecomLabel = store.ecommerce;
   
