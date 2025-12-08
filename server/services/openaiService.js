@@ -28,7 +28,7 @@ Be specific with numbers. Give actionable recommendations. Be concise.`;
         { role: 'system', content: systemPrompt },
         { role: 'user', content: question }
       ],
-      max_tokens: 1000,
+      max_completion_tokens: 1000,
       temperature: 0.7
     })
   });
