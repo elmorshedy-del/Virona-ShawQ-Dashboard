@@ -3721,7 +3721,7 @@ function AIExplorationTab({ store, dashboard, metaAdManagerData, funnelDiagnosti
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
-  const [selectedModel, setSelectedModel] = useState('gpt-5.1');
+  const [reasoningEffort, setReasoningEffort] = useState('medium');
   const [aiConfigured, setAiConfigured] = useState(true);
 
   // Metrics/Dimensions/Filters state
@@ -3780,7 +3780,7 @@ function AIExplorationTab({ store, dashboard, metaAdManagerData, funnelDiagnosti
           query: query.trim(),
           dashboardData,
           store: store.id,
-          model: selectedModel,
+          reasoningEffort: reasoningEffort,
           selectedMetrics,
           selectedDimensions,
           visualization,
@@ -3834,12 +3834,14 @@ function AIExplorationTab({ store, dashboard, metaAdManagerData, funnelDiagnosti
         </div>
         <div className="flex items-center gap-3">
           <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+            value={reasoningEffort}
+            onChange={(e) => setReasoningEffort(e.target.value)}
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
           >
-            <option value="gpt-5.1">⚡ GPT-5.1 Instant</option>
-            <option value="gpt-5.1-thinking">🧠 GPT-5.1 Thinking</option>
+            <option value="none">⚡ Instant (Fastest)</option>
+            <option value="low">💡 Quick Think</option>
+            <option value="medium">🧠 Balanced (Recommended)</option>
+            <option value="high">🔬 Deep Analysis (Slowest)</option>
           </select>
           <button
             onClick={() => { setResult(null); setQuery(''); setSelectedMetrics([]); setSelectedDimensions([]); }}

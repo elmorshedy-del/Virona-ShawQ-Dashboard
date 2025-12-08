@@ -5,13 +5,13 @@ const router = express.Router();
 
 router.post('/ask', async (req, res) => {
   try {
-    const { question, dashboardData, store, model } = req.body;
+    const { question, dashboardData, store, reasoningEffort } = req.body;
 
     if (!question) {
       return res.status(400).json({ success: false, error: 'Question is required' });
     }
 
-    const answer = await askAnalyticsQuestion(question, dashboardData, store, model);
+    const answer = await askAnalyticsQuestion(question, dashboardData, store, reasoningEffort);
     res.json({ success: true, answer });
   } catch (error) {
     console.error('[AI] Error:', error);
@@ -25,7 +25,7 @@ router.post('/explore', async (req, res) => {
       query,
       dashboardData,
       store,
-      model,
+      reasoningEffort,
       selectedMetrics,
       selectedDimensions,
       visualization,
@@ -36,7 +36,7 @@ router.post('/explore', async (req, res) => {
       query,
       dashboardData,
       store,
-      model,
+      reasoningEffort,
       { selectedMetrics, selectedDimensions, visualization, dateFilter }
     );
 
