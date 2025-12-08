@@ -690,6 +690,7 @@ export default function App() {
             daysOfWeek={daysOfWeek}
             daysOfWeekPeriod={daysOfWeekPeriod}
             setDaysOfWeekPeriod={setDaysOfWeekPeriod}
+            loading={loading}
             analyticsMode={analyticsMode}
             setAnalyticsMode={setAnalyticsMode}
             metaAdManagerData={metaAdManagerData}
@@ -789,6 +790,7 @@ function DashboardTab({
   daysOfWeek = { data: [], source: '', totalOrders: 0, period: '14d' },
   daysOfWeekPeriod = '14d',
   setDaysOfWeekPeriod = () => {},
+  loading = false,
   analyticsMode = 'countries',
   setAnalyticsMode = () => {},
   metaAdManagerData = [],
