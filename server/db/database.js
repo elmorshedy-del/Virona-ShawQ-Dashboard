@@ -280,6 +280,28 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_spend_store_date ON manual_spend_overrides(store, date)`);
 
+  // ========== MIGRATIONS FOR EXISTING DATABASES ==========
+  // These add columns that may be missing from older databases
+
+  const migrations = [
+    'ALTER TABLE notifications ADD COLUMN is_read INTEGER DEFAULT 0',
+    'ALTER TABLE notifications ADD COLUMN country TEXT',
+    'ALTER TABLE notifications ADD COLUMN value REAL',
+    'ALTER TABLE notifications ADD COLUMN order_count INTEGER',
+    'ALTER TABLE salla_orders ADD COLUMN state TEXT',
+    'ALTER TABLE shopify_orders ADD COLUMN state TEXT',
+  ];
+
+  migrations.forEach(sql => {
+    try {
+      db.exec(sql);
+    } catch (e) {
+      // Column already exists, ignore
+    }
+  });
+
+  console.log('✅ Database migrations complete');
+
   console.log('✅ Database initialized');
   return db;
 }
