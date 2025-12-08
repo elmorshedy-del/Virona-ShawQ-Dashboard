@@ -79,6 +79,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN order_created_at TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE notifications ADD COLUMN is_read INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Salla orders (VironaX only)
   db.exec(`
