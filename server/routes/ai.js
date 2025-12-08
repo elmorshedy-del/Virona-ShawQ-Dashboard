@@ -5,13 +5,13 @@ const router = express.Router();
 
 router.post('/ask', async (req, res) => {
   try {
-    const { question, dashboardData, store } = req.body;
+    const { question, dashboardData, store, model } = req.body;
 
     if (!question) {
       return res.status(400).json({ success: false, error: 'Question is required' });
     }
 
-    const answer = await askAnalyticsQuestion(question, dashboardData, store);
+    const answer = await askAnalyticsQuestion(question, dashboardData, store, model);
     res.json({ success: true, answer });
   } catch (error) {
     console.error('[AI] Error:', error);

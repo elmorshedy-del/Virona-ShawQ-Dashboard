@@ -2,7 +2,7 @@ import fetch from 'node-fetch';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-export async function askAnalyticsQuestion(question, dashboardData, store) {
+export async function askAnalyticsQuestion(question, dashboardData, store, model = 'gpt-5.1') {
   if (!OPENAI_API_KEY) {
     throw new Error('OpenAI API key not configured');
   }
@@ -23,7 +23,7 @@ Be specific with numbers. Give actionable recommendations. Be concise.`;
       'Authorization': `Bearer ${OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: 'gpt-4o',
+      model: model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: question }

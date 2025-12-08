@@ -3727,6 +3727,7 @@ function AIAssistantTab({ store, dashboard, metaAdManagerData, funnelDiagnostics
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [aiConfigured, setAiConfigured] = useState(true);
+  const [selectedModel, setSelectedModel] = useState('gpt-5.1');
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -3769,7 +3770,8 @@ function AIAssistantTab({ store, dashboard, metaAdManagerData, funnelDiagnostics
         body: JSON.stringify({
           question: userMessage,
           dashboardData,
-          store: store.id
+          store: store.id,
+          model: selectedModel
         })
       });
 
@@ -3816,8 +3818,19 @@ function AIAssistantTab({ store, dashboard, metaAdManagerData, funnelDiagnostics
           🤖 AI Analytics Assistant
         </h2>
         <p className="text-sm text-gray-600">
-          Ask questions about your {store.name} data • Powered by GPT-4o
+          Ask questions about your {store.name} data
         </p>
+        <div className="flex items-center gap-2 mt-2">
+          <span className="text-sm text-gray-500">Model:</span>
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="gpt-5.1">⚡ GPT-5.1 Instant (Fast)</option>
+            <option value="gpt-5.1-thinking">🧠 GPT-5.1 Thinking (Smartest)</option>
+          </select>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
