@@ -1282,7 +1282,7 @@ function DashboardTab({
                     <td>{renderMetric(row.frequency, 'percent', 2).replace('%', '')}</td>
                     {/* Mid Funnel */}
                     <td>{renderMetric(row.clicks, 'number')}</td>
-                    <td>{renderMetric(row.ctr, 'percent')}</td>
+                    <td>{renderMetric(row.ctr, 'percent', 2)}</td>
                     <td>{renderMetric(row.cpc, 'currency', 2)}</td>
                     <td>{renderMetric(row.lpv, 'number')}</td>
                     {/* Lower Funnel */}
@@ -1407,7 +1407,7 @@ function DashboardTab({
                           <td>{renderMetric(campaign.cpm, 'currency', 2)}</td>
                           <td>{renderMetric(campaign.frequency, 'percent', 2).replace('%', '')}</td>
                           <td>{renderMetric(campaign.clicks, 'number')}</td>
-                          <td>{renderMetric(campaign.ctr, 'percent')}</td>
+                          <td>{renderMetric(campaign.ctr, 'percent', 2)}</td>
                           <td>{renderMetric(campaign.cpc, 'currency', 2)}</td>
                           <td>{renderMetric(campaign.lpv, 'number')}</td>
                           <td>{renderMetric(campaign.atc, 'number')}</td>
@@ -1444,7 +1444,7 @@ function DashboardTab({
                                 <td>{renderMetric(adset.cpm, 'currency', 2)}</td>
                                 <td>{renderMetric(adset.frequency, 'percent', 2).replace('%', '')}</td>
                                 <td>{renderMetric(adset.clicks, 'number')}</td>
-                                <td>{renderMetric(adset.ctr, 'percent')}</td>
+                                <td>{renderMetric(adset.ctr, 'percent', 2)}</td>
                                 <td>{renderMetric(adset.cpc, 'currency', 2)}</td>
                                 <td>{renderMetric(adset.lpv, 'number')}</td>
                                 <td>{renderMetric(adset.atc, 'number')}</td>
@@ -1469,7 +1469,7 @@ function DashboardTab({
                                   <td className="text-sm">{renderMetric(ad.cpm, 'currency', 2)}</td>
                                   <td className="text-sm">{renderMetric(ad.frequency, 'percent', 2).replace('%', '')}</td>
                                   <td className="text-sm">{renderMetric(ad.clicks, 'number')}</td>
-                                  <td className="text-sm">{renderMetric(ad.ctr, 'percent')}</td>
+                                  <td className="text-sm">{renderMetric(ad.ctr, 'percent', 2)}</td>
                                   <td className="text-sm">{renderMetric(ad.cpc, 'currency', 2)}</td>
                                   <td className="text-sm">{renderMetric(ad.lpv, 'number')}</td>
                                   <td className="text-sm">{renderMetric(ad.atc, 'number')}</td>
