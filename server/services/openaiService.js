@@ -50,45 +50,26 @@ export async function exploreData(query, dashboardData, store, model, options = 
 
   const { selectedMetrics, selectedDimensions, visualization, dateFilter } = options;
 
-  const systemPrompt = `You are an AI analytics assistant that analyzes e-commerce data and returns structured results.
-
-STORE: ${store === 'vironax' ? 'VironaX (Saudi Arabia, SAR currency)' : 'Shawq (Turkey/US, USD currency)'}
+  const systemPrompt = `You are an AI analytics assistant for a ${store === 'vironax' ? 'VironaX (Saudi Arabia, SAR)' : 'Shawq (Turkey/US, USD)'} e-commerce store.
 
 DASHBOARD DATA:
 ${JSON.stringify(dashboardData, null, 2)}
 
 USER SELECTIONS:
-- Metrics: ${selectedMetrics?.join(', ') || 'none'}
-- Dimensions: ${selectedDimensions?.join(', ') || 'none'}
-- Visualization: ${visualization || 'auto'}
+- Metrics: ${selectedMetrics?.join(', ') || 'none selected'}
+- Dimensions: ${selectedDimensions?.join(', ') || 'none selected'}
+- Visualization preference: ${visualization || 'auto'}
 - Date Filter: ${dateFilter || '7d'}
 
-YOUR RESPONSE MUST BE VALID JSON with this structure:
-{
-  "type": "metric" | "chart" | "text",
-  "description": "Brief description of what we're showing",
-  "generatedQuery": "FROM data\\n  SHOW metric\\n  DURING period\\n  VISUALIZE type",
+INSTRUCTIONS:
+- Answer questions naturally and conversationally, like ChatGPT
+- Use the actual data provided above
+- Be specific with numbers and insights
+- Give actionable recommendations
+- If asked for charts/visualizations, describe what the data shows
+- Keep responses helpful and concise
 
-  // For type: "metric"
-  "value": "31",
-  "label": "Orders",
-  "change": 12.5,
-
-  // For type: "chart"
-  "data": [{"name": "Mon", "value": 10}, {"name": "Tue", "value": 15}],
-  "chartType": "bar" | "line" | "pie",
-
-  // For type: "text"
-  "content": "Your detailed analysis here..."
-}
-
-RULES:
-1. For single number questions (how many, what is), use type: "metric"
-2. For trends, comparisons, breakdowns, use type: "chart" with actual data
-3. For complex analysis, use type: "text"
-4. Always include generatedQuery in Shopify-style format
-5. Use actual numbers from the dashboard data provided
-6. ONLY return valid JSON, no other text`;
+You can respond in any format - text, lists, analysis, recommendations. Just be helpful.`;
 
   const userQuery = query || `Show me ${selectedMetrics?.join(' and ') || 'orders'}${selectedDimensions?.length ? ' by ' + selectedDimensions.join(', ') : ''}`;
 
@@ -105,8 +86,7 @@ RULES:
         { role: 'user', content: userQuery }
       ],
       max_completion_tokens: MAX_COMPLETION_TOKENS,
-      temperature: 0.3,
-      response_format: { type: "json_object" }
+      temperature: 0.7
     })
   });
 
@@ -118,9 +98,5 @@ RULES:
   const data = await response.json();
   const content = data.choices[0].message.content;
 
-  try {
-    return JSON.parse(content);
-  } catch (e) {
-    return { type: 'text', content, generatedQuery: 'FROM data\n  SHOW response\n  VISUALIZE text' };
-  }
+  return { type: 'text', content };
 }
