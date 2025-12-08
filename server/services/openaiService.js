@@ -12,9 +12,15 @@ const client = new OpenAI({
 // Model Configuration
 // ============================================================================
 const MODELS = {
-  NANO: 'gpt-5-nano',       // Fast clerk - metrics, tags, structured outputs
-  MINI: 'gpt-5-mini',       // Daily analyst - summaries, trends, anomalies
-  STRATEGIST: 'gpt-5.1'     // Strategy lead - diagnosis, decisions, test design
+  NANO: 'gpt-5-nano',
+  MINI: 'gpt-5-mini', 
+  STRATEGIST: 'gpt-5.1'
+};
+
+const FALLBACK_MODELS = {
+  NANO: 'gpt-4o-mini',
+  MINI: 'gpt-4o',
+  STRATEGIST: 'gpt-4o'
 };
 
 // Token limits (bumped +40% for full AI panel)
@@ -36,95 +42,234 @@ const DEPTH_TO_EFFORT = {
 };
 
 // ============================================================================
-// Database Query Helper - AI can query your data directly
+// Database Query Helper - Execute SQL and return results
 // ============================================================================
 function queryDatabase(sql, params = []) {
   const db = getDb();
   try {
+    // Only allow SELECT queries for safety
+    if (!sql.trim().toUpperCase().startsWith('SELECT')) {
+      return { success: false, error: 'Only SELECT queries allowed', data: [] };
+    }
     const results = db.prepare(sql).all(...params);
     return { success: true, data: results, rowCount: results.length };
   } catch (error) {
-    return { success: false, error: error.message };
+    console.error('[DB Query Error]', error.message);
+    return { success: false, error: error.message, data: [] };
   }
 }
 
 // ============================================================================
-// Get Database Schema - So AI knows what tables/columns exist
+// Pre-fetch relevant data based on question type
 // ============================================================================
-function getDatabaseSchema() {
-  return `
-DATABASE SCHEMA:
+function getRelevantData(store, question) {
+  const db = getDb();
+  const data = {};
+  const q = question.toLowerCase();
+  
+  // Get date range (last 7 days default, last 30 for trends)
+  const today = new Date().toISOString().split('T')[0];
+  const last7Days = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const last30Days = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  
+  try {
+    // Always get overview metrics
+    data.overview = db.prepare(`
+      SELECT 
+        SUM(spend) as totalSpend,
+        SUM(conversion_value) as totalRevenue,
+        SUM(conversions) as totalOrders,
+        SUM(impressions) as totalImpressions,
+        SUM(clicks) as totalClicks,
+        ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
+        ROUND(SUM(spend) / NULLIF(SUM(conversions), 0), 2) as cpa
+      FROM meta_daily_metrics 
+      WHERE store = ? AND date >= ?
+    `).get(store, last7Days);
 
-1. meta_daily_metrics (Campaign-level Meta Ads data with breakdowns)
-   - store, date, campaign_id, campaign_name
-   - country, age, gender, publisher_platform, platform_position
-   - spend, impressions, clicks, reach
-   - landing_page_views, add_to_cart, checkouts_initiated
-   - conversions, conversion_value
+    // Get today's data
+    data.today = db.prepare(`
+      SELECT 
+        SUM(spend) as spend,
+        SUM(conversion_value) as revenue,
+        SUM(conversions) as orders
+      FROM meta_daily_metrics 
+      WHERE store = ? AND date = ?
+    `).get(store, today);
 
-2. meta_adset_metrics (Ad Set-level data)
-   - store, date, campaign_id, campaign_name, adset_id, adset_name
-   - country, spend, impressions, clicks, reach
-   - landing_page_views, add_to_cart, checkouts_initiated
-   - conversions, conversion_value
+    // Get yesterday's data for comparison
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    data.yesterday = db.prepare(`
+      SELECT 
+        SUM(spend) as spend,
+        SUM(conversion_value) as revenue,
+        SUM(conversions) as orders
+      FROM meta_daily_metrics 
+      WHERE store = ? AND date = ?
+    `).get(store, yesterday);
 
-3. meta_ad_metrics (Ad-level data)
-   - store, date, campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name
-   - country, spend, impressions, clicks, reach
-   - landing_page_views, add_to_cart, checkouts_initiated
-   - conversions, conversion_value
+    // If asking about campaigns
+    if (q.includes('campaign') || q.includes('scale') || q.includes('pause') || q.includes('budget')) {
+      data.campaigns = db.prepare(`
+        SELECT 
+          campaign_name,
+          campaign_id,
+          SUM(spend) as spend,
+          SUM(conversion_value) as revenue,
+          SUM(conversions) as orders,
+          SUM(impressions) as impressions,
+          SUM(clicks) as clicks,
+          ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
+          ROUND(SUM(spend) / NULLIF(SUM(conversions), 0), 2) as cpa,
+          ROUND(SUM(clicks) * 100.0 / NULLIF(SUM(impressions), 0), 2) as ctr
+        FROM meta_daily_metrics 
+        WHERE store = ? AND date >= ? AND campaign_name IS NOT NULL
+        GROUP BY campaign_id, campaign_name
+        ORDER BY spend DESC
+        LIMIT 20
+      `).all(store, last7Days);
+    }
 
-4. salla_orders (VironaX orders - Saudi Arabia)
-   - store, order_id, date, country, country_code, city
-   - order_total, subtotal, shipping, tax, discount, items_count
-   - status, payment_method, currency (SAR), created_at
+    // If asking about ad sets
+    if (q.includes('adset') || q.includes('ad set')) {
+      data.adsets = db.prepare(`
+        SELECT 
+          campaign_name,
+          adset_name,
+          adset_id,
+          SUM(spend) as spend,
+          SUM(conversion_value) as revenue,
+          SUM(conversions) as orders,
+          ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
+          ROUND(SUM(spend) / NULLIF(SUM(conversions), 0), 2) as cpa
+        FROM meta_adset_metrics 
+        WHERE store = ? AND date >= ?
+        GROUP BY adset_id, adset_name, campaign_name
+        ORDER BY spend DESC
+        LIMIT 20
+      `).all(store, last7Days);
+    }
 
-5. shopify_orders (Shawq orders - Turkey/US)
-   - store, order_id, date, country, country_code, city, state
-   - order_total, subtotal, shipping, tax, discount, items_count
-   - status, financial_status, fulfillment_status, payment_method
-   - currency (USD), order_created_at
+    // If asking about ads/creatives
+    if (q.includes('ad') || q.includes('creative') || q.includes('which ad')) {
+      data.ads = db.prepare(`
+        SELECT 
+          campaign_name,
+          adset_name,
+          ad_name,
+          ad_id,
+          SUM(spend) as spend,
+          SUM(conversion_value) as revenue,
+          SUM(conversions) as orders,
+          SUM(clicks) as clicks,
+          SUM(impressions) as impressions,
+          ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
+          ROUND(SUM(clicks) * 100.0 / NULLIF(SUM(impressions), 0), 2) as ctr
+        FROM meta_ad_metrics 
+        WHERE store = ? AND date >= ?
+        GROUP BY ad_id, ad_name, adset_name, campaign_name
+        ORDER BY spend DESC
+        LIMIT 30
+      `).all(store, last7Days);
+    }
 
-6. manual_orders (Manually entered orders)
-   - store, date, country, campaign, spend, orders_count, revenue, source, notes
+    // If asking about countries
+    if (q.includes('country') || q.includes('countr') || q.includes('saudi') || q.includes('uae') || q.includes('geo')) {
+      data.countries = db.prepare(`
+        SELECT 
+          country,
+          SUM(spend) as spend,
+          SUM(conversion_value) as revenue,
+          SUM(conversions) as orders,
+          ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
+          ROUND(SUM(spend) / NULLIF(SUM(conversions), 0), 2) as cpa
+        FROM meta_daily_metrics 
+        WHERE store = ? AND date >= ? AND country != 'ALL' AND country IS NOT NULL
+        GROUP BY country
+        ORDER BY spend DESC
+      `).all(store, last7Days);
+    }
 
-7. manual_spend_overrides (Spend overrides)
-   - store, date, country, amount, notes
+    // If asking about trends
+    if (q.includes('trend') || q.includes('daily') || q.includes('week') || q.includes('over time')) {
+      data.dailyTrends = db.prepare(`
+        SELECT 
+          date,
+          SUM(spend) as spend,
+          SUM(conversion_value) as revenue,
+          SUM(conversions) as orders,
+          ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas
+        FROM meta_daily_metrics 
+        WHERE store = ? AND date >= ?
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 14
+      `).all(store, last30Days);
+    }
 
-USEFUL QUERIES:
-- ROAS = conversion_value / spend
-- CPA = spend / conversions
-- CTR = clicks / impressions
-- AOV = conversion_value / conversions
-- Country code examples: SA (Saudi), AE (UAE), KW (Kuwait), US, TR (Turkey)
-- For time-of-day: strftime('%H', created_at) from order tables
-- For day-of-week: strftime('%w', date) where 0=Sunday
-`;
+    // If asking about orders (from e-commerce platform)
+    if (q.includes('order') || q.includes('sale') || q.includes('revenue')) {
+      const orderTable = store === 'vironax' ? 'salla_orders' : 'shopify_orders';
+      data.recentOrders = db.prepare(`
+        SELECT 
+          date,
+          COUNT(*) as order_count,
+          SUM(order_total) as revenue,
+          country_code
+        FROM ${orderTable}
+        WHERE store = ? AND date >= ?
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 7
+      `).all(store, last7Days);
+    }
+
+    // If asking about funnel
+    if (q.includes('funnel') || q.includes('conversion') || q.includes('drop')) {
+      data.funnel = db.prepare(`
+        SELECT 
+          SUM(impressions) as impressions,
+          SUM(clicks) as clicks,
+          SUM(landing_page_views) as landing_page_views,
+          SUM(add_to_cart) as add_to_cart,
+          SUM(checkouts_initiated) as checkouts,
+          SUM(conversions) as purchases
+        FROM meta_daily_metrics 
+        WHERE store = ? AND date >= ?
+      `).get(store, last7Days);
+    }
+
+  } catch (error) {
+    console.error('[Data Fetch Error]', error.message);
+  }
+
+  return data;
 }
 
 // ============================================================================
-// Build System Prompt with Database Context
+// Build System Prompt with actual data
 // ============================================================================
-function buildSystemPrompt(store, mode) {
-  const storeContext = store === 'vironax'
+function buildSystemPrompt(store, mode, data) {
+  const storeContext = store === 'vironax' 
     ? 'VironaX (Saudi Arabia, SAR currency, Salla e-commerce, mens jewelry)'
     : 'Shawq (Turkey/US, USD currency, Shopify, Palestinian & Syrian apparel)';
 
-  const schema = getDatabaseSchema();
+  const currency = store === 'vironax' ? 'SAR' : 'USD';
+
+  let dataContext = `\n\nACTUAL DATA FROM DATABASE:\n`;
+  dataContext += JSON.stringify(data, null, 2);
 
   const basePrompt = `You are an AI analytics assistant for ${storeContext}.
 
-${schema}
+Currency: ${currency}
 
 IMPORTANT RULES:
-1. Always use store = '${store}' in WHERE clauses
-2. For date ranges, use date >= date('now', '-N days') format
-3. Calculate metrics: ROAS = conversion_value/spend, CPA = spend/conversions, CTR = clicks/impressions
-4. Format currency nicely (2 decimals, commas for thousands)
-5. Be specific with numbers - never invent data
-6. If data is missing or query fails, say so honestly
-
-You can execute SQL queries using the queryDatabase function. Always query the database to get real data - do not make up numbers.`;
+1. Use ONLY the actual data provided below - never make up numbers
+2. Format currency with 2 decimals and commas (e.g., 1,234.56 ${currency})
+3. Calculate metrics: ROAS = revenue/spend, CPA = spend/orders, CTR = clicks/impressions * 100
+4. If data is missing for something asked, say "I don't have data for that"
+5. Be specific with numbers from the data
+${dataContext}`;
 
   if (mode === 'analyze') {
     return basePrompt + `
@@ -132,111 +277,112 @@ You can execute SQL queries using the queryDatabase function. Always query the d
 MODE: Quick Analysis (GPT-5 nano)
 - Give very concise, direct answers
 - Just the facts and numbers
-- No lengthy explanations
-- Format: "X is Y" style responses`;
+- Maximum 2-3 sentences
+- Format: "Your [metric] is [value]" style`;
   }
 
   if (mode === 'summarize') {
     return basePrompt + `
 
 MODE: Trends & Patterns (GPT-5 mini)
-- Summarize trends and patterns
-- Compare periods, countries, campaigns
-- Flag anomalies and notable changes
+- Summarize the data clearly
+- Compare metrics (today vs yesterday, this week vs last)
+- Flag anything unusual (big changes, anomalies)
 - Use bullet points for clarity
-- Include specific numbers`;
+- Be thorough but organized`;
   }
 
   // Decide mode
   return basePrompt + `
 
 MODE: Strategic Decisions (GPT-5.1)
-- Provide actionable recommendations
-- Diagnose problems with root causes
-- Propose specific tests with hypotheses
-- Prioritize by expected impact
-- Include specific numbers and targets
-- Be decisive - give clear recommendations`;
+- Provide actionable recommendations based on the data
+- Diagnose problems with specific root causes
+- Propose specific actions with expected outcomes
+- Prioritize by impact
+- Be decisive - give clear recommendations, not just options
+- Include specific numbers and targets`;
 }
 
 // ============================================================================
-// Execute AI Query with Database Access
+// Call GPT-5 via Responses API
 // ============================================================================
-async function executeWithDatabaseAccess(prompt, store, mode, depth = 'balanced') {
-  const systemPrompt = buildSystemPrompt(store, mode);
-
-  // First, let AI analyze what queries it needs
-  const analysisMessages = [
+async function callResponsesAPI(model, systemPrompt, userMessage, maxTokens, reasoningEffort = null) {
+  const input = [
     { role: 'system', content: systemPrompt },
-    { role: 'user', content: prompt }
+    { role: 'user', content: userMessage }
   ];
 
-  // Determine model and settings based on mode
-  let model, maxTokens, reasoningEffort;
-
-  if (mode === 'analyze') {
-    model = MODELS.NANO;
-    maxTokens = TOKEN_LIMITS.nano;
-    reasoningEffort = null;
-  } else if (mode === 'summarize') {
-    model = MODELS.MINI;
-    maxTokens = TOKEN_LIMITS.mini;
-    reasoningEffort = null;
-  } else {
-    model = MODELS.STRATEGIST;
-    maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
-    reasoningEffort = DEPTH_TO_EFFORT[depth] || 'medium';
-  }
-
-  // Build the request
-  const request = {
-    model,
-    input: analysisMessages,
+  const requestBody = {
+    model: model,
+    input: input,
     max_output_tokens: maxTokens
   };
 
   // Add reasoning effort for GPT-5.1
-  if (reasoningEffort) {
-    request.reasoning = { effort: reasoningEffort };
+  if (reasoningEffort && model.includes('5.1')) {
+    requestBody.reasoning = { effort: reasoningEffort };
   }
 
-  return { request, model, maxTokens, reasoningEffort };
+  console.log(`[AI] Calling ${model} via Responses API...`);
+
+  const response = await client.responses.create(requestBody);
+  return response.output_text;
+}
+
+// ============================================================================
+// Call GPT-4 via Chat Completions API (fallback)
+// ============================================================================
+async function callChatCompletionsAPI(model, systemPrompt, userMessage, maxTokens) {
+  console.log(`[AI] Calling ${model} via Chat Completions API (fallback)...`);
+
+  const response = await client.chat.completions.create({
+    model: model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage }
+    ],
+    max_tokens: maxTokens,
+    temperature: 0.7
+  });
+
+  return response.choices[0].message.content;
 }
 
 // ============================================================================
 // ANALYZE - GPT-5 nano (Quick metrics)
 // ============================================================================
 export async function analyzeQuestion(question, store) {
+  console.log(`\n[AI Analyze] Question: "${question}" | Store: ${store}`);
+
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OpenAI API key not configured');
   }
 
-  const { request, model } = await executeWithDatabaseAccess(question, store, 'analyze');
+  // Get relevant data from database
+  const data = getRelevantData(store, question);
+  console.log(`[AI Analyze] Fetched data keys:`, Object.keys(data));
 
-  console.log(`[AI Analyze] Model: ${model} | Store: ${store}`);
+  // Build prompt with actual data
+  const systemPrompt = buildSystemPrompt(store, 'analyze', data);
 
+  // Try GPT-5 nano first
   try {
-    const response = await client.responses.create(request);
-    return {
-      text: response.output_text,
-      model: model
-    };
+    const text = await callResponsesAPI(MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano);
+    console.log(`[AI Analyze] Success with ${MODELS.NANO}`);
+    return { text, model: MODELS.NANO };
   } catch (error) {
-    console.error(`[AI Analyze] Error with ${model}:`, error.message);
+    console.error(`[AI Analyze] ${MODELS.NANO} failed:`, error.message);
+  }
 
-    // Fallback to GPT-4o-mini
-    console.log('[AI Analyze] Falling back to gpt-4o-mini');
-    const fallbackResponse = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: request.input,
-      max_tokens: TOKEN_LIMITS.nano,
-      temperature: 0.3
-    });
-
-    return {
-      text: fallbackResponse.choices[0].message.content,
-      model: 'gpt-4o-mini (fallback)'
-    };
+  // Fallback to GPT-4o-mini
+  try {
+    const text = await callChatCompletionsAPI(FALLBACK_MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano);
+    console.log(`[AI Analyze] Success with ${FALLBACK_MODELS.NANO} (fallback)`);
+    return { text, model: `${FALLBACK_MODELS.NANO} (fallback)` };
+  } catch (error) {
+    console.error(`[AI Analyze] Fallback failed:`, error.message);
+    throw new Error(`AI request failed: ${error.message}`);
   }
 }
 
@@ -244,36 +390,36 @@ export async function analyzeQuestion(question, store) {
 // SUMMARIZE - GPT-5 mini (Trends & patterns)
 // ============================================================================
 export async function summarizeData(question, store) {
+  console.log(`\n[AI Summarize] Question: "${question}" | Store: ${store}`);
+
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OpenAI API key not configured');
   }
 
-  const { request, model } = await executeWithDatabaseAccess(question, store, 'summarize');
+  // Get relevant data from database
+  const data = getRelevantData(store, question);
+  console.log(`[AI Summarize] Fetched data keys:`, Object.keys(data));
 
-  console.log(`[AI Summarize] Model: ${model} | Store: ${store}`);
+  // Build prompt with actual data
+  const systemPrompt = buildSystemPrompt(store, 'summarize', data);
 
+  // Try GPT-5 mini first
   try {
-    const response = await client.responses.create(request);
-    return {
-      text: response.output_text,
-      model: model
-    };
+    const text = await callResponsesAPI(MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini);
+    console.log(`[AI Summarize] Success with ${MODELS.MINI}`);
+    return { text, model: MODELS.MINI };
   } catch (error) {
-    console.error(`[AI Summarize] Error with ${model}:`, error.message);
+    console.error(`[AI Summarize] ${MODELS.MINI} failed:`, error.message);
+  }
 
-    // Fallback to GPT-4o
-    console.log('[AI Summarize] Falling back to gpt-4o');
-    const fallbackResponse = await client.chat.completions.create({
-      model: 'gpt-4o',
-      messages: request.input,
-      max_tokens: TOKEN_LIMITS.mini,
-      temperature: 0.5
-    });
-
-    return {
-      text: fallbackResponse.choices[0].message.content,
-      model: 'gpt-4o (fallback)'
-    };
+  // Fallback to GPT-4o
+  try {
+    const text = await callChatCompletionsAPI(FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini);
+    console.log(`[AI Summarize] Success with ${FALLBACK_MODELS.MINI} (fallback)`);
+    return { text, model: `${FALLBACK_MODELS.MINI} (fallback)` };
+  } catch (error) {
+    console.error(`[AI Summarize] Fallback failed:`, error.message);
+    throw new Error(`AI request failed: ${error.message}`);
   }
 }
 
@@ -281,55 +427,78 @@ export async function summarizeData(question, store) {
 // DECIDE - GPT-5.1 with reasoning (Non-streaming)
 // ============================================================================
 export async function decideQuestion(question, store, depth = 'balanced') {
+  console.log(`\n[AI Decide] Question: "${question}" | Store: ${store} | Depth: ${depth}`);
+
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OpenAI API key not configured');
   }
 
-  const { request, model, reasoningEffort } = await executeWithDatabaseAccess(question, store, 'decide', depth);
+  const reasoningEffort = DEPTH_TO_EFFORT[depth] || 'medium';
+  const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
-  console.log(`[AI Decide] Model: ${model} | Store: ${store} | Effort: ${reasoningEffort}`);
+  // Get relevant data from database
+  const data = getRelevantData(store, question);
+  console.log(`[AI Decide] Fetched data keys:`, Object.keys(data));
 
+  // Build prompt with actual data
+  const systemPrompt = buildSystemPrompt(store, 'decide', data);
+
+  // Try GPT-5.1 first
   try {
-    const response = await client.responses.create(request);
-    return {
-      text: response.output_text,
-      model: model,
-      reasoning: reasoningEffort
-    };
+    const text = await callResponsesAPI(MODELS.STRATEGIST, systemPrompt, question, maxTokens, reasoningEffort);
+    console.log(`[AI Decide] Success with ${MODELS.STRATEGIST} (effort: ${reasoningEffort})`);
+    return { text, model: MODELS.STRATEGIST, reasoning: reasoningEffort };
   } catch (error) {
-    console.error(`[AI Decide] Error with ${model}:`, error.message);
+    console.error(`[AI Decide] ${MODELS.STRATEGIST} failed:`, error.message);
+  }
 
-    // Fallback to GPT-4o
-    console.log('[AI Decide] Falling back to gpt-4o');
-    const fallbackResponse = await client.chat.completions.create({
-      model: 'gpt-4o',
-      messages: request.input,
-      max_tokens: TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced,
-      temperature: 0.7
-    });
-
-    return {
-      text: fallbackResponse.choices[0].message.content,
-      model: 'gpt-4o (fallback)',
-      reasoning: null
-    };
+  // Fallback to GPT-4o
+  try {
+    const text = await callChatCompletionsAPI(FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens);
+    console.log(`[AI Decide] Success with ${FALLBACK_MODELS.STRATEGIST} (fallback)`);
+    return { text, model: `${FALLBACK_MODELS.STRATEGIST} (fallback)`, reasoning: null };
+  } catch (error) {
+    console.error(`[AI Decide] Fallback failed:`, error.message);
+    throw new Error(`AI request failed: ${error.message}`);
   }
 }
 
 // ============================================================================
-// DECIDE STREAMING - GPT-5.1 with streaming (Best UX)
+// DECIDE STREAMING - GPT-5.1 with streaming
 // ============================================================================
 export async function decideQuestionStream(question, store, depth = 'balanced', onText) {
+  console.log(`\n[AI Decide Stream] Question: "${question}" | Store: ${store} | Depth: ${depth}`);
+
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OpenAI API key not configured');
   }
 
-  const { request, model, reasoningEffort } = await executeWithDatabaseAccess(question, store, 'decide', depth);
+  const reasoningEffort = DEPTH_TO_EFFORT[depth] || 'medium';
+  const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
-  console.log(`[AI Decide Stream] Model: ${model} | Store: ${store} | Effort: ${reasoningEffort}`);
+  // Get relevant data from database
+  const data = getRelevantData(store, question);
+  console.log(`[AI Decide Stream] Fetched data keys:`, Object.keys(data));
 
+  // Build prompt with actual data
+  const systemPrompt = buildSystemPrompt(store, 'decide', data);
+
+  const input = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: question }
+  ];
+
+  const requestBody = {
+    model: MODELS.STRATEGIST,
+    input: input,
+    max_output_tokens: maxTokens,
+    reasoning: { effort: reasoningEffort }
+  };
+
+  // Try GPT-5.1 streaming first
   try {
-    const stream = await client.responses.stream(request);
+    console.log(`[AI Decide Stream] Calling ${MODELS.STRATEGIST} with streaming...`);
+    const stream = await client.responses.stream(requestBody);
 
     for await (const event of stream) {
       if (event.type === 'response.output_text.delta') {
@@ -338,36 +507,27 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
     }
 
     const final = await stream.finalResponse();
-    return {
-      text: final.output_text,
-      model: model,
-      reasoning: reasoningEffort
-    };
+    console.log(`[AI Decide Stream] Success with ${MODELS.STRATEGIST}`);
+    return { text: final.output_text, model: MODELS.STRATEGIST, reasoning: reasoningEffort };
   } catch (error) {
-    console.error(`[AI Decide Stream] Error with ${model}:`, error.message);
+    console.error(`[AI Decide Stream] ${MODELS.STRATEGIST} streaming failed:`, error.message);
+  }
 
-    // Fallback to non-streaming GPT-4o
-    console.log('[AI Decide Stream] Falling back to gpt-4o (non-streaming)');
-    const fallbackResponse = await client.chat.completions.create({
-      model: 'gpt-4o',
-      messages: request.input,
-      max_tokens: TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced,
-      temperature: 0.7
-    });
-
-    const text = fallbackResponse.choices[0].message.content;
+  // Fallback to non-streaming GPT-4o
+  try {
+    console.log(`[AI Decide Stream] Falling back to ${FALLBACK_MODELS.STRATEGIST} (non-streaming)...`);
+    const text = await callChatCompletionsAPI(FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens);
     onText?.(text); // Send all at once
-
-    return {
-      text: text,
-      model: 'gpt-4o (fallback)',
-      reasoning: null
-    };
+    console.log(`[AI Decide Stream] Success with ${FALLBACK_MODELS.STRATEGIST} (fallback)`);
+    return { text, model: `${FALLBACK_MODELS.STRATEGIST} (fallback)`, reasoning: null };
+  } catch (error) {
+    console.error(`[AI Decide Stream] Fallback failed:`, error.message);
+    throw new Error(`AI request failed: ${error.message}`);
   }
 }
 
 // ============================================================================
-// Direct Database Query (for AI to use)
+// Direct Query (for testing)
 // ============================================================================
 export function runQuery(sql, params = []) {
   return queryDatabase(sql, params);
