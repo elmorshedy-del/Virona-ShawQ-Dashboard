@@ -3717,50 +3717,63 @@ function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency, expanded, s
   );
 }
 
-function AIExplorationTab({ store, dashboard, metaAdManagerData, funnelDiagnostics, dateRange, API_BASE, metaBreakdownData, countryTrends, efficiency }) {
+function AIExplorationTab({
+  store,
+  dashboard,
+  metaAdManagerData,
+  funnelDiagnostics,
+  dateRange,
+  API_BASE,
+  metaBreakdownData,
+  countryTrends,
+  efficiency
+}) {
+  const [mode, setMode] = useState(null);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
-  const [reasoningEffort, setReasoningEffort] = useState('medium');
-  const [aiConfigured, setAiConfigured] = useState(true);
+  const [reasoningEffort, setReasoningEffort] = useState('balanced');
+  const inputRef = useRef(null);
+  const resultRef = useRef(null);
 
-  // Metrics/Dimensions/Filters state
-  const [selectedMetrics, setSelectedMetrics] = useState([]);
-  const [selectedDimensions, setSelectedDimensions] = useState([]);
-  const [visualization, setVisualization] = useState('auto');
-  const [dateFilter, setDateFilter] = useState('7d');
-
-  const availableMetrics = [
-    { id: 'orders', label: 'Orders', icon: '📦' },
-    { id: 'revenue', label: 'Revenue', icon: '💰' },
-    { id: 'spend', label: 'Ad Spend', icon: '💸' },
-    { id: 'roas', label: 'ROAS', icon: '📈' },
-    { id: 'ctr', label: 'CTR', icon: '👆' },
-    { id: 'cvr', label: 'CVR', icon: '🎯' },
-    { id: 'cpc', label: 'CPC', icon: '💵' },
-    { id: 'impressions', label: 'Impressions', icon: '👁️' },
-    { id: 'clicks', label: 'Clicks', icon: '🖱️' },
-  ];
-
-  const availableDimensions = [
-    { id: 'day', label: 'Day' },
-    { id: 'campaign', label: 'Campaign' },
-    { id: 'country', label: 'Country' },
-    { id: 'hour', label: 'Hour of Day' },
-  ];
-
+  // Focus input when mode changes
   useEffect(() => {
-    fetch(`${API_BASE}/ai/status`)
-      .then(res => res.json())
-      .then(data => setAiConfigured(data.configured))
-      .catch(() => setAiConfigured(false));
-  }, [API_BASE]);
+    if (mode && inputRef.current) {
+      setTimeout(() => inputRef.current?.focus(), 300);
+    }
+  }, [mode]);
 
-  const handleExplore = async (e) => {
+  // Scroll to result
+  useEffect(() => {
+    if (result) {
+      resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [result]);
+
+  // Handle ESC key to go back
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && mode) {
+        handleBack();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mode]);
+
+  const handleBack = () => {
+    setMode(null);
+    setQuery('');
+    setResult(null);
+  };
+
+  const handleSubmit = async (e, customQuery = null) => {
     e?.preventDefault();
-    if (!query.trim() && selectedMetrics.length === 0) return;
+    const questionToAsk = customQuery || query.trim();
+    if (!questionToAsk || loading) return;
 
     setLoading(true);
+    setResult(null);
 
     try {
       const dashboardData = {
@@ -3773,411 +3786,438 @@ function AIExplorationTab({ store, dashboard, metaAdManagerData, funnelDiagnosti
         efficiency
       };
 
-      const response = await fetch(`${API_BASE}/ai/explore`, {
+      const endpoint = mode === 'analyze' ? '/ai/analyze' : '/ai/decide';
+      const body = mode === 'analyze'
+        ? { question: questionToAsk, dashboardData, store: store.id }
+        : { question: questionToAsk, dashboardData, store: store.id, reasoningEffort };
+
+      const response = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: query.trim(),
-          dashboardData,
-          store: store.id,
-          reasoningEffort: reasoningEffort,
-          selectedMetrics,
-          selectedDimensions,
-          visualization,
-          dateFilter
-        })
+        body: JSON.stringify(body)
       });
 
       const data = await response.json();
 
       if (data.success) {
-        setResult(data.result);
+        setResult({ type: 'success', content: data.answer });
       } else {
-        setResult({ type: 'error', message: data.error });
+        setResult({ type: 'error', content: data.error });
       }
     } catch (error) {
-      setResult({ type: 'error', message: error.message });
+      setResult({ type: 'error', content: error.message });
     } finally {
       setLoading(false);
     }
   };
 
-  const suggestedQueries = [
+  const handleQuickQuestion = (q) => {
+    setQuery(q);
+    handleSubmit(null, q);
+  };
+
+  const loadingTips = [
+    "Examining your campaign data...",
+    "Analyzing performance trends...",
+    "Finding optimization opportunities...",
+    "Forming strategic recommendations...",
+    "Calculating potential impact..."
+  ];
+  const [tipIndex, setTipIndex] = useState(0);
+
+  useEffect(() => {
+    if (loading && mode === 'decide') {
+      const interval = setInterval(() => {
+        setTipIndex(i => (i + 1) % loadingTips.length);
+      }, 2500);
+      return () => clearInterval(interval);
+    }
+  }, [loading, mode]);
+
+  // Analyze quick questions
+  const analyzeQuestions = [
     "How many orders today?",
-    "Show revenue by country",
-    "Compare campaign performance",
-    "What's my best performing campaign?",
-    "Show me the sales trend this week",
-    "Why did ROAS drop?"
+    "What's my ROAS this week?"
   ];
 
-  if (!aiConfigured) {
+  // Decide topic cards
+  const decideTopics = [
+    { icon: '📈', label: 'Scale', question: 'Which campaigns should I scale and by how much?' },
+    { icon: '💰', label: 'Budget', question: 'How should I reallocate my budget for better results?' },
+    { icon: '🧪', label: 'Testing', question: 'What tests should I run next to improve performance?' },
+    { icon: '📉', label: 'Diagnose', question: 'Why did my metrics drop and how do I fix it?' },
+    { icon: '👥', label: 'Audience', question: 'What new audiences should I target?' },
+    { icon: '🎨', label: 'Creative', question: 'What creative changes would improve my ads?' },
+    { icon: '🔄', label: 'Funnel', question: 'How can I improve my conversion funnel?' },
+    { icon: '🛑', label: 'Pause', question: 'Which campaigns should I pause or kill?' }
+  ];
+
+  // MODE SELECTION SCREEN
+  if (!mode) {
     return (
-      <div className="bg-white rounded-xl shadow-sm p-8 text-center">
-        <div className="text-6xl mb-4">✨</div>
-        <h2 className="text-xl font-semibold mb-2">AI Exploration Not Configured</h2>
-        <p className="text-gray-600 mb-4">
-          Add your OpenAI API key to enable AI-powered data exploration.
-        </p>
-        <code className="bg-gray-100 px-3 py-1 rounded text-sm">OPENAI_API_KEY=sk-...</code>
+      <div className="min-h-[600px] flex flex-col items-center justify-center p-8 animate-fadeIn">
+        <div className="text-center mb-12">
+          <h1 className="text-3xl font-bold text-gray-900 mb-3 animate-slideDown">
+            AI Analytics
+          </h1>
+          <p className="text-gray-500 text-lg animate-slideDown" style={{ animationDelay: '0.1s' }}>
+            What would you like to do?
+          </p>
+        </div>
+
+        <div className="flex gap-6 flex-wrap justify-center">
+          {/* Analyze Card */}
+          <button
+            onClick={() => setMode('analyze')}
+            className="group w-72 bg-white rounded-2xl p-8 border-2 border-gray-100 hover:border-blue-300 hover:shadow-xl hover:shadow-blue-100/50 transition-all duration-300 hover:-translate-y-2 text-left animate-slideUp"
+            style={{ animationDelay: '0.2s' }}
+          >
+            <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
+              <span className="text-3xl">📊</span>
+            </div>
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Analyze</h2>
+            <p className="text-gray-500 text-sm mb-4">Quick answers & summaries</p>
+            <div className="space-y-2 mb-6">
+              <p className="text-xs text-gray-400">Examples:</p>
+              <p className="text-sm text-gray-600">"How many orders today?"</p>
+              <p className="text-sm text-gray-600">"What's my ROAS?"</p>
+            </div>
+            <div className="flex items-center gap-2 text-blue-500 text-sm font-medium">
+              <span>⚡</span>
+              <span>Instant - GPT-4o mini</span>
+            </div>
+          </button>
+
+          {/* Decide Card */}
+          <button
+            onClick={() => setMode('decide')}
+            className="group w-72 bg-white rounded-2xl p-8 border-2 border-gray-100 hover:border-purple-300 hover:shadow-xl hover:shadow-purple-100/50 transition-all duration-300 hover:-translate-y-2 text-left animate-slideUp"
+            style={{ animationDelay: '0.3s' }}
+          >
+            <div className="w-16 h-16 bg-purple-50 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
+              <span className="text-3xl animate-pulse">🧠</span>
+            </div>
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Decide Next Steps</h2>
+            <p className="text-gray-500 text-sm mb-4">Strategic recommendations</p>
+            <div className="space-y-1 mb-6 text-sm text-gray-600">
+              <p>- Scale campaigns</p>
+              <p>- Budget allocation</p>
+              <p>- What to test next</p>
+              <p>- Why metrics dropped</p>
+              <p className="text-gray-400">+ 4 more...</p>
+            </div>
+            <div className="flex items-center gap-2 text-purple-500 text-sm font-medium">
+              <span>🧠</span>
+              <span>Deep reasoning - GPT-5.1</span>
+            </div>
+          </button>
+        </div>
       </div>
     );
   }
 
-  return (
-    <div className="h-full flex flex-col" style={{ height: 'calc(100vh - 200px)' }}>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">AI Exploration</h1>
-          <p className="text-sm text-gray-500 mt-1">Ask questions about your {store.name} data</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <select
-            value={reasoningEffort}
-            onChange={(e) => setReasoningEffort(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          >
-            <option value="none">⚡ Instant (Fastest)</option>
-            <option value="low">💡 Quick Think</option>
-            <option value="medium">🧠 Balanced (Recommended)</option>
-            <option value="high">🔬 Deep Analysis (Slowest)</option>
-          </select>
+  // ANALYZE MODE
+  if (mode === 'analyze') {
+    return (
+      <div className="min-h-[600px] p-6 animate-fadeIn">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
           <button
-            onClick={() => { setResult(null); setQuery(''); setSelectedMetrics([]); setSelectedDimensions([]); }}
-            className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800"
+            onClick={handleBack}
+            className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition-colors animate-slideRight"
           >
-            New exploration
+            <span className="text-xl">←</span>
+            <span>Back</span>
           </button>
+          <div className="flex items-center gap-2 text-blue-500 bg-blue-50 px-4 py-2 rounded-full animate-slideLeft">
+            <span>⚡</span>
+            <span className="text-sm font-medium">GPT-4o mini</span>
+          </div>
         </div>
-      </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex gap-6 min-h-0">
-        {/* Left Panel - Query & Results */}
-        <div className="flex-1 flex flex-col min-h-0">
-          {/* Query Input */}
-          <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
-            <form onSubmit={handleExplore}>
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">✨</span>
+        {/* Input */}
+        <form onSubmit={handleSubmit} className="mb-8 animate-slideUp">
+          <div className="relative">
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">✨</span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e);
+                }
+              }}
+              placeholder="Ask a quick question..."
+              className="w-full pl-14 pr-14 py-4 text-lg border-2 border-gray-200 rounded-2xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all duration-300"
+              disabled={loading}
+            />
+            <button
+              type="submit"
+              disabled={loading || !query.trim()}
+              className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded-xl flex items-center justify-center transition-all duration-300 hover:scale-105 disabled:hover:scale-100"
+            >
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <span>⚡</span>
+              )}
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mt-2 ml-4">Press Enter or click ⚡ to send</p>
+        </form>
+
+        {/* Quick Questions */}
+        {!result && !loading && (
+          <div className="animate-slideUp" style={{ animationDelay: '0.1s' }}>
+            <p className="text-sm text-gray-500 mb-3">Try asking:</p>
+            <div className="flex gap-3 flex-wrap">
+              {analyzeQuestions.map((q, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleQuickQuestion(q)}
+                  className="px-4 py-3 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-300 rounded-xl text-sm text-gray-700 hover:text-blue-700 transition-all duration-300 hover:-translate-y-1"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Loading */}
+        {loading && (
+          <div className="flex flex-col items-center justify-center py-16 animate-fadeIn">
+            <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-500 rounded-full animate-spin mb-4" />
+            <p className="text-gray-600">Analyzing...</p>
+          </div>
+        )}
+
+        {/* Result */}
+        {result && (
+          <div ref={resultRef} className="animate-slideUp">
+            <div className={`p-6 rounded-2xl ${result.type === 'error' ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'}`}>
+              {result.type === 'error' ? (
+                <p className="text-red-600">Error: {result.content}</p>
+              ) : (
+                <div className="prose prose-sm max-w-none">
+                  <div className="whitespace-pre-wrap text-gray-700 leading-relaxed">{result.content}</div>
+                </div>
+              )}
+            </div>
+
+            {/* Follow-up */}
+            <form onSubmit={handleSubmit} className="mt-6">
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl">💬</span>
                 <input
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="What do you want to explore?"
-                  className="flex-1 text-lg border-none outline-none placeholder-gray-400"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSubmit(e);
+                    }
+                  }}
+                  placeholder="Ask follow-up question..."
+                  className="w-full pl-12 pr-14 py-3 border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all duration-300"
+                  disabled={loading}
                 />
                 <button
                   type="submit"
-                  disabled={loading}
-                  className="p-2 hover:bg-gray-100 rounded-lg"
+                  disabled={loading || !query.trim()}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white rounded-lg flex items-center justify-center transition-all duration-300"
                 >
-                  {loading ? (
-                    <div className="w-5 h-5 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
-                  ) : (
-                    <span className="text-xl">▶</span>
-                  )}
+                  <span>→</span>
                 </button>
               </div>
             </form>
           </div>
-
-          {/* Suggested Queries (when no result) */}
-          {!result && !loading && (
-            <div className="bg-white rounded-xl border border-gray-200 p-8 flex-1 flex flex-col items-center justify-center">
-              <div className="w-16 h-16 bg-blue-50 rounded-xl flex items-center justify-center mb-4">
-                <span className="text-3xl">📊</span>
-              </div>
-              <h3 className="text-lg font-medium text-gray-900 mb-2">Start by asking a question</h3>
-              <p className="text-sm text-gray-500 mb-6">Or select metrics from the right panel</p>
-              <div className="flex flex-wrap gap-2 justify-center max-w-lg">
-                {suggestedQueries.map((q, i) => (
-                  <button
-                    key={i}
-                    onClick={() => { setQuery(q); }}
-                    className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-full text-sm text-gray-700"
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Loading State */}
-          {loading && (
-            <div className="bg-white rounded-xl border border-gray-200 p-8 flex-1 flex flex-col items-center justify-center">
-              <div className="w-12 h-12 border-4 border-gray-200 border-t-blue-500 rounded-full animate-spin mb-4" />
-              <p className="text-gray-600">Analyzing your data...</p>
-            </div>
-          )}
-
-          {/* Results */}
-          {result && !loading && (
-            <div className="bg-white rounded-xl border border-gray-200 flex-1 overflow-auto">
-              {/* Generated Query Display */}
-              {result.generatedQuery && (
-                <div className="border-b border-gray-100 p-4">
-                  <div className="flex items-start gap-3">
-                    <span className="w-2 h-2 bg-green-500 rounded-full mt-2 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      {result.description && (
-                        <p className="text-sm text-gray-600 mb-2">{result.description}</p>
-                      )}
-                      <pre className="text-sm font-mono bg-gray-50 p-3 rounded-lg overflow-x-auto">
-                        {result.generatedQuery.split('\n').map((line, i) => (
-                          <div key={i}>
-                            <span className="text-gray-400 mr-3">{i + 1}</span>
-                            <span className={
-                              line.includes('FROM') ? 'text-purple-600 font-semibold' :
-                              line.includes('SHOW') ? 'text-blue-600 font-semibold' :
-                              line.includes('DURING') ? 'text-green-600 font-semibold' :
-                              line.includes('VISUALIZE') ? 'text-orange-600 font-semibold' :
-                              'text-gray-700'
-                            }>{line}</span>
-                          </div>
-                        ))}
-                      </pre>
-                    </div>
-                  </div>
-
-                  {/* Refine Query */}
-                  <div className="mt-3 ml-5">
-                    <input
-                      type="text"
-                      placeholder="Refine query..."
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && e.target.value) {
-                          setQuery(e.target.value);
-                          e.target.value = '';
-                          handleExplore();
-                        }
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Metric Display (Big Number) */}
-              {result.type === 'metric' && (
-                <div className="p-12 text-center">
-                  <div className="text-7xl font-bold text-gray-900 mb-2">
-                    {result.value}
-                  </div>
-                  <div className="text-xl text-gray-500">{result.label}</div>
-                  {result.change !== undefined && result.change !== null && (
-                    <div className={`mt-4 text-lg ${result.change >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {result.change >= 0 ? '↑' : '↓'} {Math.abs(result.change)}% vs previous period
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Chart Display */}
-              {result.type === 'chart' && result.data && (
-                <div className="p-6">
-                  {/* Chart Type Selector */}
-                  <div className="flex gap-2 mb-4">
-                    {['bar', 'line', 'pie'].map(type => (
-                      <button
-                        key={type}
-                        onClick={() => setResult({ ...result, chartType: type })}
-                        className={`px-3 py-1.5 rounded-lg text-sm ${
-                          (result.chartType || 'bar') === type
-                            ? 'bg-gray-900 text-white'
-                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                        }`}
-                      >
-                        {type === 'bar' ? '📊' : type === 'line' ? '📈' : '🥧'} {type.charAt(0).toUpperCase() + type.slice(1)}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Chart */}
-                  <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      {(result.chartType || 'bar') === 'bar' ? (
-                        <BarChart data={result.data}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                          <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                          <YAxis tick={{ fontSize: 12 }} />
-                          <Tooltip />
-                          <Bar dataKey="value" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      ) : (result.chartType || 'bar') === 'line' ? (
-                        <LineChart data={result.data}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                          <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                          <YAxis tick={{ fontSize: 12 }} />
-                          <Tooltip />
-                          <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={2} dot={{ fill: '#6366f1' }} />
-                        </LineChart>
-                      ) : (
-                        <PieChart>
-                          <Pie
-                            data={result.data}
-                            dataKey="value"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            outerRadius={80}
-                            fill="#6366f1"
-                            label
-                          >
-                            {result.data.map((entry, index) => (
-                              <Cell key={index} fill={['#6366f1', '#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe'][index % 5]} />
-                            ))}
-                          </Pie>
-                          <Tooltip />
-                        </PieChart>
-                      )}
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              )}
-
-              {/* Text Response */}
-              {result.type === 'text' && (
-                <div className="p-6">
-                  <div className="prose prose-sm max-w-none">
-                    <div className="whitespace-pre-wrap text-gray-700">{result.content}</div>
-                  </div>
-                </div>
-              )}
-
-              {/* Error */}
-              {result.type === 'error' && (
-                <div className="p-6">
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                    <p className="text-red-700">❌ {result.message}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Right Sidebar - Metrics/Dimensions/Filters */}
-        <div className="w-72 space-y-4 overflow-y-auto flex-shrink-0">
-          {/* Metrics */}
-          <div className="bg-white rounded-xl border border-gray-200">
-            <div className="flex items-center justify-between p-4 border-b border-gray-100">
-              <span className="font-medium text-gray-900">Metrics</span>
-              <span className="text-xs text-gray-400">{selectedMetrics.length} selected</span>
-            </div>
-            <div className="p-2 max-h-64 overflow-y-auto">
-              {availableMetrics.map(metric => (
-                <label
-                  key={metric.id}
-                  className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedMetrics.includes(metric.id)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedMetrics([...selectedMetrics, metric.id]);
-                      } else {
-                        setSelectedMetrics(selectedMetrics.filter(m => m !== metric.id));
-                      }
-                    }}
-                    className="w-4 h-4 rounded border-gray-300 text-indigo-600"
-                  />
-                  <span className="text-sm">{metric.icon}</span>
-                  <span className="text-sm text-gray-700">{metric.label}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Dimensions */}
-          <div className="bg-white rounded-xl border border-gray-200">
-            <div className="flex items-center justify-between p-4 border-b border-gray-100">
-              <span className="font-medium text-gray-900">Dimensions</span>
-              <span className="text-xs text-gray-400">{selectedDimensions.length} selected</span>
-            </div>
-            <div className="p-2">
-              {availableDimensions.map(dim => (
-                <label
-                  key={dim.id}
-                  className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedDimensions.includes(dim.id)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedDimensions([...selectedDimensions, dim.id]);
-                      } else {
-                        setSelectedDimensions(selectedDimensions.filter(d => d !== dim.id));
-                      }
-                    }}
-                    className="w-4 h-4 rounded border-gray-300 text-indigo-600"
-                  />
-                  <span className="text-sm text-gray-700">{dim.label}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Visualization */}
-          <div className="bg-white rounded-xl border border-gray-200">
-            <div className="flex items-center justify-between p-4 border-b border-gray-100">
-              <span className="font-medium text-gray-900">Visualization</span>
-            </div>
-            <div className="p-4">
-              <select
-                value={visualization}
-                onChange={(e) => setVisualization(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-              >
-                <option value="auto">Auto</option>
-                <option value="metric">Display metric</option>
-                <option value="bar">Bar chart</option>
-                <option value="line">Line chart</option>
-                <option value="pie">Pie chart</option>
-                <option value="table">Table</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Filters */}
-          <div className="bg-white rounded-xl border border-gray-200">
-            <div className="flex items-center justify-between p-4 border-b border-gray-100">
-              <span className="font-medium text-gray-900">Filters</span>
-            </div>
-            <div className="p-4">
-              <div className="text-sm text-gray-500 mb-2">Date range</div>
-              <div className="flex flex-wrap gap-2">
-                {['Today', '7D', '14D', '30D'].map(period => (
-                  <button
-                    key={period}
-                    onClick={() => setDateFilter(period.toLowerCase())}
-                    className={`px-3 py-1.5 rounded-lg text-sm ${
-                      dateFilter === period.toLowerCase()
-                        ? 'bg-gray-900 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                  >
-                    {period}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Run Button */}
-          <button
-            onClick={handleExplore}
-            disabled={loading || (selectedMetrics.length === 0 && !query.trim())}
-            className="w-full py-3 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            <span>▶</span> Run
-          </button>
-        </div>
+        )}
       </div>
-    </div>
-  );
+    );
+  }
+
+  // DECIDE MODE
+  if (mode === 'decide') {
+    return (
+      <div className="min-h-[600px] p-6 animate-fadeIn">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <button
+            onClick={handleBack}
+            className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition-colors animate-slideRight"
+          >
+            <span className="text-xl">←</span>
+            <span>Back</span>
+          </button>
+          <div className="flex items-center gap-2 text-purple-500 bg-purple-50 px-4 py-2 rounded-full animate-slideLeft">
+            <span>🧠</span>
+            <span className="text-sm font-medium">GPT-5.1</span>
+          </div>
+        </div>
+
+        {/* Depth Toggle */}
+        <div className="mb-8 animate-slideUp">
+          <p className="text-sm text-gray-600 mb-3">How deep should I analyze?</p>
+          <div className="flex gap-3">
+            {[
+              { id: 'fast', icon: '⚡', label: 'Fast', time: '~10s' },
+              { id: 'balanced', icon: '🧠', label: 'Balanced', time: '~30s' },
+              { id: 'deep', icon: '🔬', label: 'Deep', time: '~1-2m' }
+            ].map((option) => (
+              <button
+                key={option.id}
+                onClick={() => setReasoningEffort(option.id)}
+                className={`flex-1 py-4 px-4 rounded-xl border-2 transition-all duration-300 ${
+                  reasoningEffort === option.id
+                    ? 'border-purple-400 bg-purple-50 shadow-lg shadow-purple-100'
+                    : 'border-gray-200 hover:border-purple-200 hover:bg-purple-50/50'
+                }`}
+              >
+                <div className="text-2xl mb-1">{option.icon}</div>
+                <div className={`font-medium ${reasoningEffort === option.id ? 'text-purple-700' : 'text-gray-700'}`}>
+                  {option.label}
+                </div>
+                <div className="text-xs text-gray-400">{option.time}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Input */}
+        <form onSubmit={handleSubmit} className="mb-8 animate-slideUp" style={{ animationDelay: '0.1s' }}>
+          <div className="relative">
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">🧠</span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e);
+                }
+              }}
+              placeholder="What decision do you need help with?"
+              className="w-full pl-14 pr-14 py-4 text-lg border-2 border-gray-200 rounded-2xl focus:border-purple-400 focus:ring-4 focus:ring-purple-100 outline-none transition-all duration-300"
+              disabled={loading}
+            />
+            <button
+              type="submit"
+              disabled={loading || !query.trim()}
+              className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded-xl flex items-center justify-center transition-all duration-300 hover:scale-105 disabled:hover:scale-100"
+            >
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <span>▶</span>
+              )}
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mt-2 ml-4">Press Enter or click ▶ to send</p>
+        </form>
+
+        {/* Topic Cards */}
+        {!result && !loading && (
+          <div className="animate-slideUp" style={{ animationDelay: '0.2s' }}>
+            <p className="text-sm text-gray-500 mb-4">Choose a topic:</p>
+            <div className="grid grid-cols-4 gap-3">
+              {decideTopics.map((topic, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleQuickQuestion(topic.question)}
+                  className="group p-4 bg-white border-2 border-gray-100 hover:border-purple-300 rounded-xl transition-all duration-300 hover:-translate-y-1 hover:shadow-lg hover:shadow-purple-100/50"
+                  style={{ animationDelay: `${0.05 * i}s` }}
+                >
+                  <div className="text-2xl mb-2 group-hover:scale-110 transition-transform duration-300">
+                    {topic.icon}
+                  </div>
+                  <div className="text-sm font-medium text-gray-700 group-hover:text-purple-700">
+                    {topic.label}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Loading */}
+        {loading && (
+          <div className="flex flex-col items-center justify-center py-16 animate-fadeIn">
+            <div className="relative w-20 h-20 mb-6">
+              <div className="absolute inset-0 border-4 border-purple-100 rounded-full" />
+              <div className="absolute inset-0 border-4 border-purple-500 border-t-transparent rounded-full animate-spin" />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-2xl animate-pulse">🧠</span>
+              </div>
+            </div>
+            <p className="text-gray-600 font-medium mb-2">Analyzing deeply...</p>
+            <p className="text-gray-400 text-sm animate-pulse">{loadingTips[tipIndex]}</p>
+          </div>
+        )}
+
+        {/* Result */}
+        {result && (
+          <div ref={resultRef} className="animate-slideUp">
+            <div className={`rounded-2xl overflow-hidden ${result.type === 'error' ? 'bg-red-50 border border-red-200' : 'bg-white border border-gray-200 shadow-lg'}`}>
+              {result.type === 'error' ? (
+                <div className="p-6">
+                  <p className="text-red-600">Error: {result.content}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="bg-gradient-to-r from-purple-500 to-indigo-500 px-6 py-4">
+                    <h3 className="text-white font-semibold flex items-center gap-2">
+                      <span>🧠</span>
+                      Strategic Recommendations
+                    </h3>
+                  </div>
+                  <div className="p-6">
+                    <div className="prose prose-sm max-w-none">
+                      <div className="whitespace-pre-wrap text-gray-700 leading-relaxed">{result.content}</div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Follow-up */}
+            <form onSubmit={handleSubmit} className="mt-6">
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl">💬</span>
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSubmit(e);
+                    }
+                  }}
+                  placeholder="Ask follow-up question..."
+                  className="w-full pl-12 pr-14 py-3 border-2 border-gray-200 rounded-xl focus:border-purple-400 focus:ring-4 focus:ring-purple-100 outline-none transition-all duration-300"
+                  disabled={loading}
+                />
+                <button
+                  type="submit"
+                  disabled={loading || !query.trim()}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-300 text-white rounded-lg flex items-center justify-center transition-all duration-300"
+                >
+                  <span>→</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return null;
 }
