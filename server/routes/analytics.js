@@ -15,7 +15,8 @@ import {
   getShopifyTimeOfDay,
   getTimeOfDay,
   getOrdersByDayOfWeek,
-  getCitiesByCountry
+  getCitiesByCountry,
+  getMetaAdManagerHierarchy
 } from '../services/analyticsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData } from '../services/metaService.js';
@@ -160,6 +161,16 @@ router.get('/cities/:countryCode', (req, res) => {
     const store = req.query.store || 'vironax';
     const { countryCode } = req.params;
     res.json(getCitiesByCountry(store, countryCode, req.query));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Meta Ad Manager hierarchy endpoint
+router.get('/meta-ad-manager', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getMetaAdManagerHierarchy(store, req.query));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
