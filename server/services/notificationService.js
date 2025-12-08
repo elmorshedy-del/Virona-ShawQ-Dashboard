@@ -175,7 +175,7 @@ export function getNotifications(store = null, limit = 50) {
   return notifications.map(n => ({
     ...n,
     metadata: n.metadata ? JSON.parse(n.metadata) : {},
-    is_read: Boolean(n.is_read)
+    is_read: Boolean(n.read)
   }));
 }
 
@@ -185,7 +185,7 @@ export function getUnreadCount(store = null) {
   
   let query = `
     SELECT COUNT(*) as count FROM notifications 
-    WHERE is_read = 0 ${store ? 'AND store = ?' : ''}
+    WHERE read = 0 ${store ? 'AND store = ?' : ''}
   `;
   
   const result = store 
@@ -198,7 +198,7 @@ export function getUnreadCount(store = null) {
 // Mark notification as read
 export function markAsRead(notificationId) {
   const db = getDb();
-  const stmt = db.prepare('UPDATE notifications SET is_read = 1 WHERE id = ?');
+  const stmt = db.prepare('UPDATE notifications SET read = 1 WHERE id = ?');
   stmt.run(notificationId);
 }
 
@@ -206,7 +206,7 @@ export function markAsRead(notificationId) {
 export function markAllAsRead(store = null) {
   const db = getDb();
   
-  let query = `UPDATE notifications SET is_read = 1 ${store ? 'WHERE store = ?' : ''}`;
+  let query = `UPDATE notifications SET read = 1 ${store ? 'WHERE store = ?' : ''}`;
   const stmt = db.prepare(query);
   
   if (store) {
