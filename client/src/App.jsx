@@ -101,6 +101,12 @@ export default function App() {
 
   // Funnel diagnostics state
   const [funnelDiagnostics, setFunnelDiagnostics] = useState(null);
+  const [diagnosticsExpanded, setDiagnosticsExpanded] = useState(true);
+  const [selectedDiagnosticsCampaign, setSelectedDiagnosticsCampaign] = useState(null);
+
+  // Hide/show campaigns state
+  const [hiddenCampaigns, setHiddenCampaigns] = useState(new Set());
+  const [showHiddenDropdown, setShowHiddenDropdown] = useState(false);
 
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
@@ -371,6 +377,11 @@ export default function App() {
           params.set('endDate', endDate);
         }
 
+        // Add campaign filter if selected
+        if (selectedDiagnosticsCampaign) {
+          params.append('campaignId', selectedDiagnosticsCampaign);
+        }
+
         const res = await fetch(`${API_BASE}/analytics/funnel-diagnostics?${params}`);
         const json = await res.json();
         if (json.success) {
@@ -382,7 +393,7 @@ export default function App() {
     };
 
     fetchDiagnostics();
-  }, [currentStore, dateRange, storeLoaded]);
+  }, [currentStore, dateRange, storeLoaded, selectedDiagnosticsCampaign]);
 
   async function handleSync() {
     setSyncing(true);
@@ -487,6 +498,33 @@ export default function App() {
     if (v >= 1000000) return (v / 1000000).toFixed(2) + 'M';
     if (v >= 1000) return (v / 1000).toFixed(1) + 'K';
     return Math.round(v).toString();
+  };
+
+  // Hide/show campaign functions
+  const toggleHideCampaign = (campaignId) => {
+    setHiddenCampaigns(prev => {
+      const next = new Set(prev);
+      if (next.has(campaignId)) {
+        next.delete(campaignId);
+      } else {
+        next.add(campaignId);
+      }
+      return next;
+    });
+  };
+
+  const showAllCampaigns = () => {
+    setHiddenCampaigns(new Set());
+  };
+
+  // Campaign selection for diagnostics
+  const handleCampaignSelect = (campaignId) => {
+    if (selectedDiagnosticsCampaign === campaignId) {
+      setSelectedDiagnosticsCampaign(null); // Deselect
+    } else {
+      setSelectedDiagnosticsCampaign(campaignId); // Select
+      setDiagnosticsExpanded(true); // Auto-expand diagnostics
+    }
   };
 
   const getDateRangeLabel = () => {
@@ -1216,15 +1254,6 @@ function DashboardTab({
         </div>
       )}
 
-      {/* FUNNEL DIAGNOSTICS */}
-      {funnelDiagnostics && (
-        <FunnelDiagnostics
-          data={funnelDiagnostics}
-          currency={store.currencySymbol === '$' ? 'USD' : 'SAR'}
-          formatCurrency={formatCurrency}
-        />
-      )}
-
       {/* UNIFIED ANALYTICS SECTION — COUNTRIES (TRUE) & META AD MANAGER */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         {/* Header with Mode Toggle */}
@@ -1395,11 +1424,63 @@ function DashboardTab({
               </select>
             </div>
 
+            {/* Hidden Campaigns Header */}
+            <div className="px-6 py-3 flex items-center justify-between border-b border-gray-100">
+              <span className="text-sm text-gray-600">
+                Showing {metaAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id)).length} of {metaAdManagerData.length} campaigns
+                {selectedDiagnosticsCampaign && (
+                  <span className="ml-2 text-purple-600 font-medium">
+                    (1 selected for diagnostics)
+                  </span>
+                )}
+              </span>
+              <div className="flex items-center gap-2">
+                {hiddenCampaigns.size > 0 && (
+                  <>
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowHiddenDropdown(!showHiddenDropdown)}
+                        className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg flex items-center gap-1"
+                      >
+                        Hidden: {hiddenCampaigns.size} ▼
+                      </button>
+                      {showHiddenDropdown && (
+                        <div className="absolute right-0 mt-1 bg-white border rounded-lg shadow-lg z-10 min-w-[200px]">
+                          {Array.from(hiddenCampaigns).map(id => {
+                            const campaign = metaAdManagerData.find(c => c.campaign_id === id);
+                            return (
+                              <button
+                                key={id}
+                                onClick={() => {
+                                  toggleHideCampaign(id);
+                                  setShowHiddenDropdown(false);
+                                }}
+                                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <span>👁️</span> {campaign?.campaign_name || id}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={showAllCampaigns}
+                      className="px-3 py-1.5 text-xs bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg"
+                    >
+                      Show All
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
             <div className="overflow-x-auto">
               <table>
                 <thead>
                   {/* Funnel Stage Headers */}
                   <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                    <th className="w-8"></th>
                     <th className="text-left px-4 py-2">Name</th>
                     {adManagerBreakdown !== 'none' && <th>Breakdown</th>}
                     <th className="text-center border-l border-gray-100">Spend</th>
@@ -1415,6 +1496,7 @@ function DashboardTab({
                   </tr>
                   {/* Column Headers */}
                   <tr className="bg-gray-50 text-xs text-gray-500">
+                    <th className="w-8"></th>
                     <th className="text-left px-4 py-2">Name</th>
                     {adManagerBreakdown !== 'none' && <th>Dimension</th>}
                     <th>Spend</th>
@@ -1439,20 +1521,46 @@ function DashboardTab({
                   </tr>
                 </thead>
                 <tbody>
-                  {metaAdManagerData.map((campaign) => {
+                  {metaAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id)).map((campaign) => {
                     const campaignExpanded = expandedCampaigns.has(campaign.campaign_id);
+                    const isSelected = selectedDiagnosticsCampaign === campaign.campaign_id;
                     return (
                       <Fragment key={campaign.campaign_id}>
                         {/* Campaign Row */}
-                        <tr className="bg-gray-100 hover:bg-gray-200 cursor-pointer" onClick={() => {
-                          const newSet = new Set(expandedCampaigns);
-                          if (campaignExpanded) newSet.delete(campaign.campaign_id);
-                          else newSet.add(campaign.campaign_id);
-                          setExpandedCampaigns(newSet);
-                        }}>
+                        <tr
+                          className={`cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-purple-50 border-l-4 border-purple-500'
+                              : 'bg-gray-100 hover:bg-gray-200'
+                          }`}
+                          onClick={() => handleCampaignSelect(campaign.campaign_id)}
+                        >
+                          <td className="px-2 py-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleHideCampaign(campaign.campaign_id);
+                              }}
+                              className="p-1 hover:bg-gray-200 rounded text-gray-400 hover:text-gray-600"
+                              title="Hide campaign"
+                            >
+                              👁️
+                            </button>
+                          </td>
                           <td className="px-4 py-2 font-semibold">
                             <div className="flex items-center gap-2">
-                              <ChevronDown className={`w-4 h-4 transform transition-transform ${campaignExpanded ? 'rotate-180' : ''}`} />
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const newSet = new Set(expandedCampaigns);
+                                  if (campaignExpanded) newSet.delete(campaign.campaign_id);
+                                  else newSet.add(campaign.campaign_id);
+                                  setExpandedCampaigns(newSet);
+                                }}
+                                className="p-0.5 hover:bg-gray-200 rounded"
+                              >
+                                <ChevronDown className={`w-4 h-4 transform transition-transform ${campaignExpanded ? 'rotate-180' : ''}`} />
+                              </button>
                               <span>📊 {campaign.campaign_name}</span>
                             </div>
                           </td>
@@ -1487,7 +1595,8 @@ function DashboardTab({
                                 else newSet.add(adset.adset_id);
                                 setExpandedAdsets(newSet);
                               }}>
-                                <td className="px-4 py-2 pl-12 font-medium">
+                                <td></td>
+                                <td className="px-4 py-2 pl-8 font-medium">
                                   <div className="flex items-center gap-2">
                                     <ChevronDown className={`w-3 h-3 transform transition-transform ${adsetExpanded ? 'rotate-180' : ''}`} />
                                     <span>📁 {adset.adset_name}</span>
@@ -1515,7 +1624,8 @@ function DashboardTab({
                               {/* Ads (if ad set expanded) */}
                               {adsetExpanded && adset.ads && adset.ads.map((ad) => (
                                 <tr key={ad.ad_id} className="hover:bg-gray-50">
-                                  <td className="px-4 py-2 pl-20 text-sm text-gray-700">
+                                  <td></td>
+                                  <td className="px-4 py-2 pl-16 text-sm text-gray-700">
                                     📄 {ad.ad_name}
                                   </td>
                                   {adManagerBreakdown !== 'none' && <td>{ad.country || ad.age || ad.gender || ad.publisher_platform || '—'}</td>}
@@ -1543,10 +1653,10 @@ function DashboardTab({
                       </Fragment>
                     );
                   })}
-                  {metaAdManagerData.length === 0 && (
+                  {metaAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id)).length === 0 && (
                     <tr>
-                      <td colSpan="20" className="px-4 py-8 text-center text-gray-500">
-                        {loading ? 'Loading Meta Ad Manager data...' : 'No data available. Try syncing Meta data first.'}
+                      <td colSpan="21" className="px-4 py-8 text-center text-gray-500">
+                        {loading ? 'Loading Meta Ad Manager data...' : metaAdManagerData.length > 0 ? 'All campaigns are hidden. Click "Show All" to see them.' : 'No data available. Try syncing Meta data first.'}
                       </td>
                     </tr>
                   )}
@@ -1557,7 +1667,19 @@ function DashboardTab({
         )}
       </div>
 
-      {/* Funnel Diagnostics */}
+      {/* FUNNEL DIAGNOSTICS - Campaign-level diagnostics */}
+      {funnelDiagnostics && (
+        <FunnelDiagnostics
+          data={funnelDiagnostics}
+          currency={store.currencySymbol === '$' ? 'USD' : 'SAR'}
+          formatCurrency={formatCurrency}
+          expanded={diagnosticsExpanded}
+          setExpanded={setDiagnosticsExpanded}
+          onClearSelection={() => setSelectedDiagnosticsCampaign(null)}
+        />
+      )}
+
+      {/* Legacy Funnel Diagnostics */}
       {diagnostics && diagnostics.length > 0 && (
         <div
           className={`rounded-xl p-6 ${
@@ -3150,17 +3272,12 @@ const ALERT_RECOMMENDATIONS = {
   lpvRate_spike: "Landing page view rate improved! Good traffic quality and page performance."
 };
 
-function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency }) {
+function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency, expanded, setExpanded, onClearSelection }) {
   if (!data || !data.current) {
-    return (
-      <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-        <h2 className="text-lg font-semibold mb-4">Funnel Diagnostics</h2>
-        <p className="text-gray-500">Insufficient data for diagnostics. Need at least 7 days of data.</p>
-      </div>
-    );
+    return null;
   }
 
-  const { current, previous, changes, sparklineData } = data;
+  const { current, previous, changes, sparklineData, campaignName } = data;
 
   // Determine tier for a metric
   const getTier = (value, benchmark, lowerIsBetter = false) => {
@@ -3315,42 +3432,81 @@ function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency }) {
   const cacPercent = current.aov > 0 ? (current.cac / current.aov) * 100 : 0;
 
   return (
-    <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">Funnel Diagnostics</h2>
-        <span className="text-xs text-gray-400">Benchmarks: Jewelry Industry 2024-25</span>
+    <div className="bg-white rounded-xl shadow-sm mb-6 overflow-hidden">
+      {/* Collapsible Header */}
+      <div
+        className="px-6 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 border-b border-gray-100"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <span>🔍</span> Funnel Diagnostics
+          </h2>
+          {campaignName ? (
+            <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-medium">
+              {campaignName}
+            </span>
+          ) : (
+            <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-sm">
+              All Campaigns
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {campaignName && onClearSelection && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onClearSelection();
+              }}
+              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg"
+            >
+              ✕ Clear Selection
+            </button>
+          )}
+          <span className="text-gray-400 text-sm">
+            {expanded ? '▲ Collapse' : '▼ Expand'}
+          </span>
+        </div>
       </div>
 
-      {/* Alert Banners */}
-      {alerts.length > 0 && (
-        <div className="mb-6 space-y-2">
-          {alerts.map((alert, i) => (
-            <div
-              key={i}
-              className={`p-3 rounded-lg border ${
-                alert.type === 'drop'
-                  ? 'bg-red-50 border-red-200'
-                  : 'bg-green-50 border-green-200'
-              }`}
-            >
-              <div className="flex items-start gap-2">
-                <span className="text-lg">{alert.type === 'drop' ? '!' : '+'}</span>
-                <div>
-                  <div className={`font-semibold ${alert.type === 'drop' ? 'text-red-700' : 'text-green-700'}`}>
-                    {alert.type === 'drop' ? 'ALERT' : 'WIN'}: {alert.metric.toUpperCase()} {alert.type === 'drop' ? 'dropped' : 'improved'} {alert.change.toFixed(0)}%
-                  </div>
-                  <div className="text-sm text-gray-600 mt-1">
-                    {alert.recommendation}
+      {/* Collapsible Content */}
+      {expanded && (
+        <div className="p-6">
+          {/* Benchmark Label */}
+          <div className="flex justify-end mb-4">
+            <span className="text-xs text-gray-400">Benchmarks: Jewelry Industry 2024-25</span>
+          </div>
+
+          {/* Alert Banners */}
+          {alerts.length > 0 && (
+            <div className="mb-6 space-y-2">
+              {alerts.map((alert, i) => (
+                <div
+                  key={i}
+                  className={`p-3 rounded-lg border ${
+                    alert.type === 'drop'
+                      ? 'bg-red-50 border-red-200'
+                      : 'bg-green-50 border-green-200'
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <span className="text-lg">{alert.type === 'drop' ? '🔴' : '🟢'}</span>
+                    <div>
+                      <div className={`font-semibold ${alert.type === 'drop' ? 'text-red-700' : 'text-green-700'}`}>
+                        {alert.type === 'drop' ? 'ALERT' : 'WIN'}: {alert.metric.toUpperCase()} {alert.type === 'drop' ? 'dropped' : 'improved'} {alert.change.toFixed(0)}%
+                      </div>
+                      <div className="text-sm text-gray-600 mt-1">
+                        → {alert.recommendation}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
+          )}
 
-      {/* Upper Funnel */}
+          {/* Upper Funnel */}
       <div className="mb-6">
         <h3 className="text-sm font-semibold text-blue-600 uppercase tracking-wide mb-3 flex items-center gap-2">
           <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
@@ -3481,20 +3637,22 @@ function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency }) {
             recommendation={DIAGNOSTIC_RECOMMENDATIONS.roas.poor}
           />
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
-          <MetricCard
-            name="CAC"
-            metricKey="cac"
-            value={current.cac}
-            benchmark={JEWELRY_BENCHMARKS.cacPercent}
-            benchmarkText={`>50% AOV Poor | 30-50% Avg | 15-30% Good | <15% Excellent (${cacPercent.toFixed(0)}% of AOV)`}
-            format="currency"
-            change={changes.cac}
-            lowerIsBetter={true}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.cac.poor}
-          />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+            <MetricCard
+              name="CAC"
+              metricKey="cac"
+              value={current.cac}
+              benchmark={JEWELRY_BENCHMARKS.cacPercent}
+              benchmarkText={`>50% AOV Poor | 30-50% Avg | 15-30% Good | <15% Excellent (${cacPercent.toFixed(0)}% of AOV)`}
+              format="currency"
+              change={changes.cac}
+              lowerIsBetter={true}
+              recommendation={DIAGNOSTIC_RECOMMENDATIONS.cac.poor}
+            />
+          </div>
         </div>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

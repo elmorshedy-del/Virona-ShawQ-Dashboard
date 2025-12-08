@@ -180,8 +180,8 @@ router.get('/meta-ad-manager', (req, res) => {
 // Funnel diagnostics endpoint
 router.get('/funnel-diagnostics', (req, res) => {
   try {
-    const { store, startDate, endDate } = req.query;
-    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate });
+    const { store, startDate, endDate, campaignId } = req.query;
+    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate, campaignId });
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Analytics] Funnel diagnostics error:', error);

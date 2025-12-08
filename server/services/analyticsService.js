@@ -1103,6 +1103,7 @@ export function getMetaAdManagerHierarchy(store, params) {
 export function getFunnelDiagnostics(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
+  const campaignId = params.campaignId || null; // Optional campaign filter
 
   // Calculate previous period for comparison
   const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
@@ -1110,6 +1111,15 @@ export function getFunnelDiagnostics(store, params) {
   const prevStartDate = new Date(prevEndDate.getTime() - ((daysDiff - 1) * 1000 * 60 * 60 * 24));
   const prevStartStr = formatDateAsGmt3(prevStartDate);
   const prevEndStr = formatDateAsGmt3(prevEndDate);
+
+  // Build WHERE clause with optional campaign filter
+  const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
+  const queryParams = campaignId
+    ? [store, startDate, endDate, campaignId]
+    : [store, startDate, endDate];
+  const prevQueryParams = campaignId
+    ? [store, prevStartStr, prevEndStr, campaignId]
+    : [store, prevStartStr, prevEndStr];
 
   // Get current period metrics
   const currentQuery = `
@@ -1124,11 +1134,11 @@ export function getFunnelDiagnostics(store, params) {
       SUM(conversions) as purchases,
       SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}
   `;
 
-  const current = db.prepare(currentQuery).get(store, startDate, endDate);
-  const previous = db.prepare(currentQuery).get(store, prevStartStr, prevEndStr);
+  const current = db.prepare(currentQuery).get(...queryParams);
+  const previous = db.prepare(currentQuery).get(...prevQueryParams);
 
   // Get daily data for sparklines (last 7 days of current period)
   const dailyQuery = `
@@ -1144,13 +1154,22 @@ export function getFunnelDiagnostics(store, params) {
       SUM(conversions) as purchases,
       SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}
     GROUP BY date
     ORDER BY date DESC
     LIMIT 7
   `;
 
-  const dailyData = db.prepare(dailyQuery).all(store, startDate, endDate).reverse();
+  const dailyData = db.prepare(dailyQuery).all(...queryParams).reverse();
+
+  // Get campaign name if specific campaign selected
+  let campaignName = null;
+  if (campaignId) {
+    const campaignInfo = db.prepare(
+      'SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1'
+    ).get(campaignId);
+    campaignName = campaignInfo?.campaign_name || null;
+  }
 
   // Calculate metrics
   const calcMetrics = (d) => {
@@ -1208,6 +1227,8 @@ export function getFunnelDiagnostics(store, params) {
     previous: previousMetrics,
     changes,
     sparklineData,
+    campaignId,
+    campaignName,
     period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
   };
 }
