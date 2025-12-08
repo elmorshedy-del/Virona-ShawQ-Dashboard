@@ -809,6 +809,7 @@ function DashboardTab({
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
+  const [expandedStates, setExpandedStates] = useState(new Set());
 
   const ecomLabel = store.ecommerce;
   
