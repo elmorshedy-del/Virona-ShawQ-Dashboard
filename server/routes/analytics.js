@@ -16,7 +16,8 @@ import {
   getTimeOfDay,
   getOrdersByDayOfWeek,
   getCitiesByCountry,
-  getMetaAdManagerHierarchy
+  getMetaAdManagerHierarchy,
+  getFunnelDiagnostics
 } from '../services/analyticsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData } from '../services/metaService.js';
@@ -173,6 +174,18 @@ router.get('/meta-ad-manager', (req, res) => {
     res.json(getMetaAdManagerHierarchy(store, req.query));
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Funnel diagnostics endpoint
+router.get('/funnel-diagnostics', (req, res) => {
+  try {
+    const { store, startDate, endDate } = req.query;
+    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Analytics] Funnel diagnostics error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

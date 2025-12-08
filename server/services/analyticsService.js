@@ -1096,3 +1096,118 @@ export function getMetaAdManagerHierarchy(store, params) {
 
   return hierarchy;
 }
+
+// ============================================================================
+// FUNNEL DIAGNOSTICS
+// ============================================================================
+export function getFunnelDiagnostics(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+
+  // Calculate previous period for comparison
+  const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
+  const prevEndDate = new Date(new Date(startDate).getTime() - (1000 * 60 * 60 * 24));
+  const prevStartDate = new Date(prevEndDate.getTime() - ((daysDiff - 1) * 1000 * 60 * 60 * 24));
+  const prevStartStr = formatDateAsGmt3(prevStartDate);
+  const prevEndStr = formatDateAsGmt3(prevEndDate);
+
+  // Get current period metrics
+  const currentQuery = `
+    SELECT
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?
+  `;
+
+  const current = db.prepare(currentQuery).get(store, startDate, endDate);
+  const previous = db.prepare(currentQuery).get(store, prevStartStr, prevEndStr);
+
+  // Get daily data for sparklines (last 7 days of current period)
+  const dailyQuery = `
+    SELECT
+      date,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?
+    GROUP BY date
+    ORDER BY date DESC
+    LIMIT 7
+  `;
+
+  const dailyData = db.prepare(dailyQuery).all(store, startDate, endDate).reverse();
+
+  // Calculate metrics
+  const calcMetrics = (d) => {
+    if (!d || !d.impressions) return null;
+    return {
+      ctr: d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0,
+      cpc: d.clicks > 0 ? d.spend / d.clicks : 0,
+      cpm: d.impressions > 0 ? (d.spend / d.impressions) * 1000 : 0,
+      frequency: d.reach > 0 ? d.impressions / d.reach : 0,
+      lpvRate: d.clicks > 0 ? (d.lpv / d.clicks) * 100 : 0,
+      atcRate: d.lpv > 0 ? (d.atc / d.lpv) * 100 : 0,
+      checkoutRate: d.atc > 0 ? (d.checkout / d.atc) * 100 : 0,
+      purchaseRate: d.checkout > 0 ? (d.purchases / d.checkout) * 100 : 0,
+      cvr: d.clicks > 0 ? (d.purchases / d.clicks) * 100 : 0,
+      roas: d.spend > 0 ? d.revenue / d.spend : 0,
+      cac: d.purchases > 0 ? d.spend / d.purchases : 0,
+      aov: d.purchases > 0 ? d.revenue / d.purchases : 0,
+      // Raw values for display
+      spend: d.spend || 0,
+      impressions: d.impressions || 0,
+      clicks: d.clicks || 0,
+      purchases: d.purchases || 0,
+      revenue: d.revenue || 0
+    };
+  };
+
+  const currentMetrics = calcMetrics(current);
+  const previousMetrics = calcMetrics(previous);
+
+  // Calculate daily metrics for sparklines
+  const sparklineData = dailyData.map(d => calcMetrics(d)).filter(Boolean);
+
+  // Calculate % changes
+  const calcChange = (curr, prev) => {
+    if (!prev || prev === 0) return null;
+    return ((curr - prev) / prev) * 100;
+  };
+
+  const changes = currentMetrics && previousMetrics ? {
+    ctr: calcChange(currentMetrics.ctr, previousMetrics.ctr),
+    cpc: calcChange(currentMetrics.cpc, previousMetrics.cpc),
+    cpm: calcChange(currentMetrics.cpm, previousMetrics.cpm),
+    frequency: calcChange(currentMetrics.frequency, previousMetrics.frequency),
+    lpvRate: calcChange(currentMetrics.lpvRate, previousMetrics.lpvRate),
+    atcRate: calcChange(currentMetrics.atcRate, previousMetrics.atcRate),
+    checkoutRate: calcChange(currentMetrics.checkoutRate, previousMetrics.checkoutRate),
+    purchaseRate: calcChange(currentMetrics.purchaseRate, previousMetrics.purchaseRate),
+    cvr: calcChange(currentMetrics.cvr, previousMetrics.cvr),
+    roas: calcChange(currentMetrics.roas, previousMetrics.roas),
+    cac: calcChange(currentMetrics.cac, previousMetrics.cac),
+  } : {};
+
+  return {
+    current: currentMetrics,
+    previous: previousMetrics,
+    changes,
+    sparklineData,
+    period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
+  };
+}

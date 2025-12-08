@@ -99,6 +99,9 @@ export default function App() {
   const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
   const [expandedAdsets, setExpandedAdsets] = useState(new Set());
 
+  // Funnel diagnostics state
+  const [funnelDiagnostics, setFunnelDiagnostics] = useState(null);
+
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
     date: getLocalDateString(),
@@ -338,6 +341,48 @@ export default function App() {
 
     loadMetaAdManager();
   }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded]);
+
+  // Load funnel diagnostics data
+  useEffect(() => {
+    if (!storeLoaded || !currentStore) return;
+
+    const fetchDiagnostics = async () => {
+      try {
+        const params = new URLSearchParams({
+          store: currentStore
+        });
+
+        if (dateRange.type === 'custom') {
+          params.set('startDate', dateRange.start);
+          params.set('endDate', dateRange.end);
+        } else if (dateRange.type === 'yesterday') {
+          // For yesterday, calculate the date
+          const yesterday = getLocalDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
+          params.set('startDate', yesterday);
+          params.set('endDate', yesterday);
+        } else {
+          // Calculate date range based on type (days, weeks, months)
+          const days = dateRange.type === 'months' ? dateRange.value * 30 :
+                       dateRange.type === 'weeks' ? dateRange.value * 7 :
+                       dateRange.value;
+          const endDate = getLocalDateString();
+          const startDate = getLocalDateString(new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000));
+          params.set('startDate', startDate);
+          params.set('endDate', endDate);
+        }
+
+        const res = await fetch(`${API_BASE}/analytics/funnel-diagnostics?${params}`);
+        const json = await res.json();
+        if (json.success) {
+          setFunnelDiagnostics(json.data);
+        }
+      } catch (error) {
+        console.error('Error fetching funnel diagnostics:', error);
+      }
+    };
+
+    fetchDiagnostics();
+  }, [currentStore, dateRange, storeLoaded]);
 
   async function handleSync() {
     setSyncing(true);
@@ -700,6 +745,7 @@ export default function App() {
             setExpandedCampaigns={setExpandedCampaigns}
             expandedAdsets={expandedAdsets}
             setExpandedAdsets={setExpandedAdsets}
+            funnelDiagnostics={funnelDiagnostics}
           />
           )}
         
@@ -800,6 +846,7 @@ function DashboardTab({
   setExpandedCampaigns = () => {},
   expandedAdsets = new Set(),
   setExpandedAdsets = () => {},
+  funnelDiagnostics = null,
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
@@ -1167,6 +1214,15 @@ function DashboardTab({
             );
           })}
         </div>
+      )}
+
+      {/* FUNNEL DIAGNOSTICS */}
+      {funnelDiagnostics && (
+        <FunnelDiagnostics
+          data={funnelDiagnostics}
+          currency={store.currencySymbol === '$' ? 'USD' : 'SAR'}
+          formatCurrency={formatCurrency}
+        />
       )}
 
       {/* UNIFIED ANALYTICS SECTION — COUNTRIES (TRUE) & META AD MANAGER */}
@@ -2986,6 +3042,457 @@ function ManualDataTab({
           >
             Delete
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// FUNNEL DIAGNOSTICS COMPONENT
+// ============================================================================
+
+// Benchmark constants (inline for frontend)
+const JEWELRY_BENCHMARKS = {
+  ctr: { poor: 1.0, average: 1.5, good: 2.5 },
+  cpc: { poor: 5, average: 3, good: 1.5 },
+  cpm: { poor: 60, average: 40, good: 20 },
+  frequency: { poor: 3.0, average: 2.0, good: 1.3 },
+  lpvRate: { poor: 50, average: 70, good: 85 },
+  atcRate: { poor: 2, average: 4, good: 7 },
+  checkoutRate: { poor: 25, average: 40, good: 55 },
+  purchaseRate: { poor: 30, average: 50, good: 70 },
+  cvr: { poor: 0.5, average: 1.0, good: 2.0 },
+  roas: { poor: 1.5, average: 2.5, good: 4.0 },
+  cacPercent: { poor: 50, average: 30, good: 15 },
+};
+
+const ALERT_THRESHOLDS = {
+  ctr: { drop: 20, spike: 30 },
+  cvr: { drop: 25, spike: 35 },
+  roas: { drop: 25, spike: 40 },
+  cpc: { increase: 30, decrease: 25 },
+  cpm: { increase: 35, decrease: 30 },
+  atcRate: { drop: 20, spike: 30 },
+  purchaseRate: { drop: 25, spike: 35 },
+  cac: { increase: 30, decrease: 25 },
+  checkoutRate: { drop: 20, spike: 30 },
+  lpvRate: { drop: 20, spike: 25 },
+};
+
+const DIAGNOSTIC_RECOMMENDATIONS = {
+  ctr: {
+    poor: "Creative fatigue or wrong audience. Test new ad creatives with different hooks, try video content, or refine audience targeting. Check if ad frequency is too high.",
+    average: "Creative is performing at industry average. A/B test new headlines, images, or CTAs to push into good territory."
+  },
+  cpc: {
+    poor: "Paying too much per click. Review audience targeting - may be too narrow or competitive. Try broader audiences or lookalikes. Check if bidding strategy is optimal.",
+    average: "CPC is acceptable but has room for improvement. Test different placements or times of day."
+  },
+  cpm: {
+    poor: "High competition for your audience. Try different audience segments, adjust geographic targeting, or test different ad placements (Reels, Stories often cheaper).",
+    average: "CPM is within normal range. Monitor for seasonal spikes."
+  },
+  frequency: {
+    poor: "Ad fatigue detected - same people seeing your ad too many times. Refresh creatives immediately, expand audience size, or exclude recent converters.",
+    average: "Approaching fatigue zone. Plan new creatives within 1-2 weeks."
+  },
+  lpvRate: {
+    poor: "People click but don't reach landing page. Check: 1) Page load speed (should be <3s), 2) Mobile responsiveness, 3) Broken redirects, 4) Accidental clicks from ad placement.",
+    average: "Some drop-off between click and landing page. Optimize page speed and ensure mobile experience is smooth."
+  },
+  atcRate: {
+    poor: "Visitors view products but don't add to cart. Review: 1) Product images quality and angles, 2) Price perception vs competitors, 3) Missing trust signals (reviews, guarantees), 4) Unclear product details or sizing, 5) No urgency or scarcity messaging.",
+    average: "ATC is at jewelry industry average. Test adding social proof, urgency timers, or better product photography."
+  },
+  checkoutRate: {
+    poor: "Customers add to cart but don't start checkout. Check: 1) Surprise shipping costs, 2) Required account creation, 3) Cart page UX issues, 4) Missing payment options, 5) No guest checkout. Consider cart abandonment emails.",
+    average: "Checkout initiation is acceptable. Test showing shipping costs earlier or adding trust badges to cart."
+  },
+  purchaseRate: {
+    poor: "Customers start checkout but don't complete. Simplify checkout: 1) Reduce form fields, 2) Add progress indicator, 3) Show security badges, 4) Offer multiple payment methods, 5) Fix mobile checkout issues, 6) Add live chat support.",
+    average: "Purchase completion is average. Consider adding buy-now-pay-later options or express checkout."
+  },
+  cvr: {
+    poor: "Overall conversion is below jewelry benchmarks. Identify the biggest funnel drop-off (LPV->ATC->Checkout->Purchase) and fix that first. Consider if traffic quality is the issue.",
+    average: "Conversion rate is normal for jewelry (high-consideration purchase). Focus on retargeting warm audiences and email flows."
+  },
+  roas: {
+    poor: "Campaign is not profitable. Options: 1) Pause and optimize before spending more, 2) Reduce budget significantly, 3) Focus only on best-performing audiences/countries, 4) Check if product margins can support paid ads at current CAC.",
+    average: "Campaign is marginally profitable. Optimize creatives and targeting to improve margins before scaling."
+  },
+  cac: {
+    poor: "Customer acquisition cost is too high relative to order value. Either increase AOV (bundles, upsells) or reduce ad costs. May need to focus on higher-margin products only.",
+    average: "CAC is acceptable but watch margins closely. Look for opportunities to increase AOV."
+  }
+};
+
+const ALERT_RECOMMENDATIONS = {
+  ctr_drop: "CTR dropped significantly. Check: 1) Creative fatigue, 2) Audience saturation, 3) Competitor activity. Refresh creatives or test new audiences.",
+  ctr_spike: "CTR improved significantly! Identify what changed and apply learnings to other campaigns. Consider increasing budget.",
+  cvr_drop: "Conversion rate dropped significantly. Check: 1) Website issues, 2) Landing page changes, 3) Inventory problems. Review recent changes.",
+  cvr_spike: "Conversion rate improved significantly! Analyze what drove the improvement. Good time to scale.",
+  roas_drop: "ROAS dropped significantly. Pause or reduce budget until fixed. Check CPM/CPC increases and CVR drops.",
+  roas_spike: "ROAS improved significantly! Consider increasing budget 20-30% and testing similar audiences.",
+  cpc_increase: "CPC increased significantly. Test broader audiences or new placements to reduce competition.",
+  cpc_decrease: "CPC decreased! Good efficiency improvement. Monitor conversion rates.",
+  cpm_increase: "CPM increased significantly. Try new placements or adjust audience targeting.",
+  cpm_decrease: "CPM decreased! Good time to scale impressions if performance holds.",
+  atcRate_drop: "Add-to-cart rate dropped. Check product page changes, pricing, and stock availability.",
+  atcRate_spike: "Add-to-cart rate improved! Apply successful elements to other products.",
+  purchaseRate_drop: "Purchase completion dropped. Check checkout flow immediately for payment or form issues.",
+  purchaseRate_spike: "Purchase completion improved! Checkout optimizations working.",
+  cac_increase: "CAC increased. Review ad costs and conversion rates. Pause scaling until efficient.",
+  cac_decrease: "CAC improved! Good indicator to scale if sustained.",
+  checkoutRate_drop: "Checkout rate dropped. Check cart page UX and shipping cost visibility.",
+  checkoutRate_spike: "Checkout rate improved! Cart experience is working well.",
+  lpvRate_drop: "Landing page view rate dropped. Check page speed and ad targeting quality.",
+  lpvRate_spike: "Landing page view rate improved! Good traffic quality and page performance."
+};
+
+function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency }) {
+  if (!data || !data.current) {
+    return (
+      <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Funnel Diagnostics</h2>
+        <p className="text-gray-500">Insufficient data for diagnostics. Need at least 7 days of data.</p>
+      </div>
+    );
+  }
+
+  const { current, previous, changes, sparklineData } = data;
+
+  // Determine tier for a metric
+  const getTier = (value, benchmark, lowerIsBetter = false) => {
+    if (value == null || isNaN(value)) return 'unknown';
+    if (lowerIsBetter) {
+      if (value <= benchmark.good) return 'excellent';
+      if (value <= benchmark.average) return 'good';
+      if (value <= benchmark.poor) return 'average';
+      return 'poor';
+    } else {
+      if (value >= benchmark.good) return 'excellent';
+      if (value >= benchmark.average) return 'good';
+      if (value >= benchmark.poor) return 'average';
+      return 'poor';
+    }
+  };
+
+  // Generate alerts based on changes
+  const generateAlerts = () => {
+    const alerts = [];
+
+    const checkAlert = (metric, change, thresholds, lowerIsBetter = false) => {
+      if (change == null) return;
+
+      if (lowerIsBetter) {
+        // For metrics where lower is better (CPC, CPM, CAC)
+        if (change > thresholds.increase) {
+          alerts.push({ type: 'drop', metric, change, recommendation: ALERT_RECOMMENDATIONS[`${metric}_increase`] });
+        } else if (change < -thresholds.decrease) {
+          alerts.push({ type: 'spike', metric, change: Math.abs(change), recommendation: ALERT_RECOMMENDATIONS[`${metric}_decrease`] });
+        }
+      } else {
+        // For metrics where higher is better
+        if (change < -thresholds.drop) {
+          alerts.push({ type: 'drop', metric, change: Math.abs(change), recommendation: ALERT_RECOMMENDATIONS[`${metric}_drop`] });
+        } else if (change > thresholds.spike) {
+          alerts.push({ type: 'spike', metric, change, recommendation: ALERT_RECOMMENDATIONS[`${metric}_spike`] });
+        }
+      }
+    };
+
+    checkAlert('ctr', changes.ctr, ALERT_THRESHOLDS.ctr);
+    checkAlert('cvr', changes.cvr, ALERT_THRESHOLDS.cvr);
+    checkAlert('roas', changes.roas, ALERT_THRESHOLDS.roas);
+    checkAlert('cpc', changes.cpc, ALERT_THRESHOLDS.cpc, true);
+    checkAlert('cpm', changes.cpm, ALERT_THRESHOLDS.cpm, true);
+    checkAlert('atcRate', changes.atcRate, ALERT_THRESHOLDS.atcRate);
+    checkAlert('purchaseRate', changes.purchaseRate, ALERT_THRESHOLDS.purchaseRate);
+    checkAlert('cac', changes.cac, ALERT_THRESHOLDS.cac, true);
+    checkAlert('checkoutRate', changes.checkoutRate, ALERT_THRESHOLDS.checkoutRate);
+    checkAlert('lpvRate', changes.lpvRate, ALERT_THRESHOLDS.lpvRate);
+
+    return alerts;
+  };
+
+  const alerts = generateAlerts();
+
+  const tierConfig = {
+    excellent: { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', label: 'Excellent' },
+    good: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', label: 'Good' },
+    average: { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', label: 'Average' },
+    poor: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', label: 'Poor' },
+    unknown: { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-500', label: 'No Data' }
+  };
+
+  // Mini sparkline component
+  const Sparkline = ({ data: sparkData, metricKey, inverted = false }) => {
+    if (!sparkData || sparkData.length < 2) return null;
+    const values = sparkData.map(d => d?.[metricKey] || 0).filter(v => !isNaN(v));
+    if (values.length < 2) return null;
+
+    const max = Math.max(...values);
+    const min = Math.min(...values);
+    const range = max - min || 1;
+
+    const points = values.map((v, i) => {
+      const x = (i / (values.length - 1)) * 60;
+      const y = 20 - ((v - min) / range) * 16;
+      return `${x},${y}`;
+    }).join(' ');
+
+    const trend = values[values.length - 1] - values[0];
+    const color = inverted
+      ? (trend > 0 ? '#ef4444' : '#22c55e')
+      : (trend > 0 ? '#22c55e' : '#ef4444');
+
+    return (
+      <svg width="60" height="24" className="inline-block ml-2">
+        <polyline
+          fill="none"
+          stroke={color}
+          strokeWidth="2"
+          points={points}
+        />
+      </svg>
+    );
+  };
+
+  const formatValue = (value, format) => {
+    if (value == null || isNaN(value)) return '-';
+    if (format === 'percent') return `${value.toFixed(2)}%`;
+    if (format === 'currency') return `${value.toFixed(2)} ${currency}`;
+    if (format === 'roas') return `${value.toFixed(2)}x`;
+    if (format === 'number') return value.toFixed(2);
+    return value;
+  };
+
+  const formatChange = (change) => {
+    if (change == null || isNaN(change)) return '';
+    const sign = change >= 0 ? '+' : '';
+    return `${sign}${change.toFixed(1)}%`;
+  };
+
+  // Metric card component
+  const MetricCard = ({ name, metricKey, value, benchmark, benchmarkText, format, change, lowerIsBetter = false, recommendation }) => {
+    const tier = getTier(value, benchmark, lowerIsBetter);
+    const config = tierConfig[tier];
+    const changeColor = lowerIsBetter
+      ? (change > 0 ? 'text-red-500' : 'text-green-500')
+      : (change > 0 ? 'text-green-500' : 'text-red-500');
+
+    return (
+      <div className={`p-4 rounded-lg border ${config.bg} ${config.border}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="font-semibold text-gray-800 text-sm">{name}</span>
+          <div className="flex items-center">
+            <span className={`text-lg font-bold ${config.text}`}>{formatValue(value, format)}</span>
+            <Sparkline data={sparklineData} metricKey={metricKey} inverted={lowerIsBetter} />
+          </div>
+        </div>
+        {change != null && !isNaN(change) && (
+          <div className={`text-xs ${changeColor} mb-2`}>
+            {formatChange(change)} vs previous period
+          </div>
+        )}
+        <div className="text-xs text-gray-500 mb-1">
+          Benchmark: {benchmarkText}
+        </div>
+        <div className={`text-xs font-medium ${config.text}`}>
+          Status: {config.label}
+        </div>
+        {tier === 'poor' && recommendation && (
+          <div className="mt-3 p-2 bg-white bg-opacity-70 rounded text-xs text-gray-600">
+            <span className="font-semibold">Tip:</span> {recommendation}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Calculate CAC as % of AOV
+  const cacPercent = current.aov > 0 ? (current.cac / current.aov) * 100 : 0;
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold">Funnel Diagnostics</h2>
+        <span className="text-xs text-gray-400">Benchmarks: Jewelry Industry 2024-25</span>
+      </div>
+
+      {/* Alert Banners */}
+      {alerts.length > 0 && (
+        <div className="mb-6 space-y-2">
+          {alerts.map((alert, i) => (
+            <div
+              key={i}
+              className={`p-3 rounded-lg border ${
+                alert.type === 'drop'
+                  ? 'bg-red-50 border-red-200'
+                  : 'bg-green-50 border-green-200'
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <span className="text-lg">{alert.type === 'drop' ? '!' : '+'}</span>
+                <div>
+                  <div className={`font-semibold ${alert.type === 'drop' ? 'text-red-700' : 'text-green-700'}`}>
+                    {alert.type === 'drop' ? 'ALERT' : 'WIN'}: {alert.metric.toUpperCase()} {alert.type === 'drop' ? 'dropped' : 'improved'} {alert.change.toFixed(0)}%
+                  </div>
+                  <div className="text-sm text-gray-600 mt-1">
+                    {alert.recommendation}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Upper Funnel */}
+      <div className="mb-6">
+        <h3 className="text-sm font-semibold text-blue-600 uppercase tracking-wide mb-3 flex items-center gap-2">
+          <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+          Upper Funnel (Awareness)
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard
+            name="CTR"
+            metricKey="ctr"
+            value={current.ctr}
+            benchmark={JEWELRY_BENCHMARKS.ctr}
+            benchmarkText={`<1% Poor | 1-1.5% Avg | 1.5-2.5% Good | >2.5% Excellent`}
+            format="percent"
+            change={changes.ctr}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.ctr.poor}
+          />
+          <MetricCard
+            name="CPC"
+            metricKey="cpc"
+            value={current.cpc}
+            benchmark={JEWELRY_BENCHMARKS.cpc}
+            benchmarkText={`>5 ${currency} Poor | 3-5 Avg | 1.5-3 Good | <1.5 Excellent`}
+            format="currency"
+            change={changes.cpc}
+            lowerIsBetter={true}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.cpc.poor}
+          />
+          <MetricCard
+            name="CPM"
+            metricKey="cpm"
+            value={current.cpm}
+            benchmark={JEWELRY_BENCHMARKS.cpm}
+            benchmarkText={`>60 ${currency} Poor | 40-60 Avg | 20-40 Good | <20 Excellent`}
+            format="currency"
+            change={changes.cpm}
+            lowerIsBetter={true}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.cpm.poor}
+          />
+          <MetricCard
+            name="Frequency"
+            metricKey="frequency"
+            value={current.frequency}
+            benchmark={JEWELRY_BENCHMARKS.frequency}
+            benchmarkText=">3 Poor | 2-3 Avg | 1.3-2 Good | 1-1.3 Excellent"
+            format="number"
+            change={changes.frequency}
+            lowerIsBetter={true}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.frequency.poor}
+          />
+        </div>
+      </div>
+
+      {/* Mid Funnel */}
+      <div className="mb-6">
+        <h3 className="text-sm font-semibold text-purple-600 uppercase tracking-wide mb-3 flex items-center gap-2">
+          <span className="w-2 h-2 bg-purple-500 rounded-full"></span>
+          Mid Funnel (Consideration)
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard
+            name="LPV Rate"
+            metricKey="lpvRate"
+            value={current.lpvRate}
+            benchmark={JEWELRY_BENCHMARKS.lpvRate}
+            benchmarkText="<50% Poor | 50-70% Avg | 70-85% Good | >85% Excellent"
+            format="percent"
+            change={changes.lpvRate}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.lpvRate.poor}
+          />
+          <MetricCard
+            name="ATC Rate"
+            metricKey="atcRate"
+            value={current.atcRate}
+            benchmark={JEWELRY_BENCHMARKS.atcRate}
+            benchmarkText="<2% Poor | 2-4% Avg | 4-7% Good | >7% Excellent"
+            format="percent"
+            change={changes.atcRate}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.atcRate.poor}
+          />
+        </div>
+      </div>
+
+      {/* Lower Funnel */}
+      <div>
+        <h3 className="text-sm font-semibold text-green-600 uppercase tracking-wide mb-3 flex items-center gap-2">
+          <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+          Lower Funnel (Conversion)
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard
+            name="Checkout Rate"
+            metricKey="checkoutRate"
+            value={current.checkoutRate}
+            benchmark={JEWELRY_BENCHMARKS.checkoutRate}
+            benchmarkText="<25% Poor | 25-40% Avg | 40-55% Good | >55% Excellent"
+            format="percent"
+            change={changes.checkoutRate}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.checkoutRate.poor}
+          />
+          <MetricCard
+            name="Purchase Rate"
+            metricKey="purchaseRate"
+            value={current.purchaseRate}
+            benchmark={JEWELRY_BENCHMARKS.purchaseRate}
+            benchmarkText="<30% Poor | 30-50% Avg | 50-70% Good | >70% Excellent"
+            format="percent"
+            change={changes.purchaseRate}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.purchaseRate.poor}
+          />
+          <MetricCard
+            name="CVR"
+            metricKey="cvr"
+            value={current.cvr}
+            benchmark={JEWELRY_BENCHMARKS.cvr}
+            benchmarkText="<0.5% Poor | 0.5-1% Avg | 1-2% Good | >2% Excellent"
+            format="percent"
+            change={changes.cvr}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.cvr.poor}
+          />
+          <MetricCard
+            name="ROAS"
+            metricKey="roas"
+            value={current.roas}
+            benchmark={JEWELRY_BENCHMARKS.roas}
+            benchmarkText="<1.5x Poor | 1.5-2.5x Avg | 2.5-4x Good | >4x Excellent"
+            format="roas"
+            change={changes.roas}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.roas.poor}
+          />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+          <MetricCard
+            name="CAC"
+            metricKey="cac"
+            value={current.cac}
+            benchmark={JEWELRY_BENCHMARKS.cacPercent}
+            benchmarkText={`>50% AOV Poor | 30-50% Avg | 15-30% Good | <15% Excellent (${cacPercent.toFixed(0)}% of AOV)`}
+            format="currency"
+            change={changes.cac}
+            lowerIsBetter={true}
+            recommendation={DIAGNOSTIC_RECOMMENDATIONS.cac.poor}
+          />
         </div>
       </div>
     </div>
