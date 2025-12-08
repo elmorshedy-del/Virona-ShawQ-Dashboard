@@ -43,11 +43,32 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
     `limit=500&` +
     `access_token=${accessToken}`;
 
-  const response = await fetch(url);
-  const json = await response.json();
+  // CRITICAL: Implement pagination to fetch ALL data (not just first 500 rows)
+  let allRows = [];
+  let currentUrl = url;
+  let pageCount = 0;
 
-  if (json.error) throw new Error(json.error.message);
-  const rows = json.data || [];
+  console.log(`[Meta] Fetching ${level} data with pagination...`);
+
+  while (currentUrl) {
+    const response = await fetch(currentUrl);
+    const json = await response.json();
+
+    if (json.error) throw new Error(json.error.message);
+
+    const pageData = json.data || [];
+    allRows = [...allRows, ...pageData];
+    pageCount++;
+
+    console.log(`[Meta] ${level} - Page ${pageCount}: ${pageData.length} rows (total: ${allRows.length})`);
+
+    // Check for next page
+    currentUrl = json.paging?.next || null;
+  }
+
+  console.log(`[Meta] ${level} - Completed: ${allRows.length} total rows from ${pageCount} pages`);
+
+  const rows = allRows;
 
   // Prepare insert statement based on level
   let insertStmt;
