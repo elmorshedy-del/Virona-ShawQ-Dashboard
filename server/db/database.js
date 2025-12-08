@@ -68,6 +68,9 @@ export function initDb() {
     db.exec(`ALTER TABLE salla_orders ADD COLUMN city TEXT`);
   } catch (e) { /* column exists */ }
   try {
+    db.exec(`ALTER TABLE salla_orders ADD COLUMN state TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN city TEXT`);
   } catch (e) { /* column exists */ }
   try {
