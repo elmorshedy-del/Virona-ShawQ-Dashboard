@@ -280,6 +280,34 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_spend_store_date ON manual_spend_overrides(store, date)`);
 
+  // AI Conversations tables for chat history
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_conversations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      title TEXT DEFAULT 'New Chat',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      mode TEXT,
+      depth TEXT,
+      model TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (conversation_id) REFERENCES ai_conversations(id) ON DELETE CASCADE
+    )
+  `);
+
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_conversations_store ON ai_conversations(store)`);
+
   console.log('✅ Database initialized');
   return db;
 }
