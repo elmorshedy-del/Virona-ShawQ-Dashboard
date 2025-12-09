@@ -1,18 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Sparkles, AlertCircle, TrendingUp, Calendar, DollarSign, Target } from 'lucide-react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { Send, Loader2, Sparkles, Calendar, Brain } from 'lucide-react';
 
-export default function AIAnalytics({ selectedStore, startDate, endDate }) {
+export default function AIAnalytics({ store, selectedStore, startDate, endDate }) {
+  // Support both 'store' and 'selectedStore' props for backward compatibility
+  const activeStore = store?.id || selectedStore || 'vironax';
+
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeMode, setActiveMode] = useState('analyze');
+  const [activeMode, setActiveMode] = useState('ask');
+  const [insightMode, setInsightMode] = useState('balanced'); // 'instant', 'fast', 'balanced', 'max'
   const messagesEndRef = useRef(null);
-
-  // Right panel filters
-  const [showActiveCampaignsOnly, setShowActiveCampaignsOnly] = useState(true);
-  const [selectedDimension, setSelectedDimension] = useState('campaign');
-  const [dayRange, setDayRange] = useState(14);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -21,6 +19,62 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Mode configurations with pillars
+  const modes = {
+    ask: {
+      icon: '💬',
+      label: 'Ask',
+      description: 'Instant lookup and fast facts',
+      pillars: [
+        { icon: '🌍', label: 'Top country' },
+        { icon: '💰', label: 'Revenue' },
+        { icon: '🛒', label: 'Orders' },
+        { icon: '📣', label: 'Impressions' },
+        { icon: '🧺', label: 'ATC' },
+        { icon: '🎯', label: 'ROAS' },
+        { icon: '🧾', label: 'AOV' }
+      ]
+    },
+    analyze: {
+      icon: '📊',
+      label: 'Analyze',
+      description: 'Performance insights + charts & comparisons',
+      pillars: [
+        { icon: '📈', label: 'Snapshot' },
+        { icon: '🔁', label: 'Period comparison' },
+        { icon: '🌍', label: 'Country leaderboard' },
+        { icon: '🎯', label: 'Funnel health' },
+        { icon: '📣', label: 'Spend vs results' },
+        { icon: '🚨', label: 'Anomaly check' },
+        { icon: '🧠', label: 'Top drivers' },
+        { icon: '🧪', label: 'Creative performance' }
+      ]
+    },
+    deepdive: {
+      icon: '🧠',
+      label: 'Deep Dive',
+      description: 'Action plan + optimization',
+      pillars: [
+        { icon: '🚀', label: 'Scale plan' },
+        { icon: '✂️', label: 'Cut plan' },
+        { icon: '💸', label: 'Budget reallocation' },
+        { icon: '🧱', label: 'Campaign structure' },
+        { icon: '🎬', label: 'Creative roadmap' },
+        { icon: '🧭', label: 'Audience strategy' },
+        { icon: '🧪', label: 'Test plan' },
+        { icon: '🛡️', label: 'Risk & efficiency' }
+      ]
+    }
+  };
+
+  // Insight mode options for Deep Dive
+  const insightModes = [
+    { id: 'instant', label: '✨ Instant', description: 'Quick response' },
+    { id: 'fast', label: '⚡ Fast', description: 'Light analysis' },
+    { id: 'balanced', label: '⏳ Balanced', description: 'Standard depth' },
+    { id: 'max', label: '🧬 Max Insight', description: 'Deep reasoning' }
+  ];
 
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
@@ -36,37 +90,57 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/ai/analyze', {
+      // Map frontend modes to backend endpoints
+      // 'ask' -> /analyze (quick facts), 'analyze' -> /summarize (insights), 'deepdive' -> /decide (strategic)
+      const endpointMap = {
+        'ask': '/api/ai/analyze',
+        'analyze': '/api/ai/summarize',
+        'deepdive': '/api/ai/decide'
+      };
+      const endpoint = endpointMap[activeMode] || '/api/ai/analyze';
+
+      // Build request body matching backend expected format:
+      // Backend expects: { question, store, conversationId, depth }
+      const requestBody = {
+        question: input,
+        store: activeStore
+      };
+
+      // Add depth parameter for deepdive mode based on insightMode
+      if (activeMode === 'deepdive') {
+        const depthMap = {
+          'instant': 'instant',
+          'fast': 'fast',
+          'balanced': 'balanced',
+          'max': 'deep'
+        };
+        requestBody.depth = depthMap[insightMode] || 'balanced';
+      }
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          message: input,
-          mode: activeMode,
-          context: {
-            store: selectedStore,
-            startDate,
-            endDate,
-            showActiveCampaignsOnly,
-            dimension: selectedDimension,
-            dayRange
-          },
-          conversationHistory: messages.slice(-5)
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
 
       const assistantMessage = {
         role: 'assistant',
-        content: data.response || data.message || 'No response received',
+        content: data.answer || data.response || data.message || 'No response received',
         timestamp: new Date().toISOString(),
-        metadata: data.metadata
+        metadata: {
+          mode: activeMode,
+          model: data.model,
+          reasoning: data.reasoning
+        }
       };
 
       setMessages(prev => [...prev, assistantMessage]);
@@ -91,6 +165,39 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
     }
   };
 
+  // Quick action handler - populates input with a prompt
+  const handleQuickAction = (pillar) => {
+    const prompts = {
+      // Ask mode
+      'Top country': 'What is the top performing country by revenue?',
+      'Revenue': 'What is the total revenue for this period?',
+      'Orders': 'How many orders did we get?',
+      'Impressions': 'What are the total impressions?',
+      'ATC': 'What is the add to cart count?',
+      'ROAS': 'What is our current ROAS?',
+      'AOV': 'What is our average order value?',
+      // Analyze mode
+      'Snapshot': 'Give me a performance snapshot of all key metrics',
+      'Period comparison': 'Compare this period to the previous period',
+      'Country leaderboard': 'Rank all countries by performance',
+      'Funnel health': 'Analyze our funnel conversion rates',
+      'Spend vs results': 'How is our spend performing against results?',
+      'Anomaly check': 'Are there any anomalies or unusual patterns?',
+      'Top drivers': 'What are the top drivers of our performance?',
+      'Creative performance': 'How are our creatives performing?',
+      // Deep Dive mode
+      'Scale plan': 'Create a scaling plan for our best campaigns',
+      'Cut plan': 'What should we cut or pause?',
+      'Budget reallocation': 'How should we reallocate our budget?',
+      'Campaign structure': 'Analyze and suggest campaign structure improvements',
+      'Creative roadmap': 'Create a creative roadmap for the next month',
+      'Audience strategy': 'What audience strategy should we pursue?',
+      'Test plan': 'Create a testing plan for optimization',
+      'Risk & efficiency': 'Identify risks and efficiency opportunities'
+    };
+    setInput(prompts[pillar] || `Tell me about ${pillar}`);
+  };
+
   const renderMessage = (message, index) => {
     const isUser = message.role === 'user';
     const isError = message.isError;
@@ -101,7 +208,7 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
         className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}
       >
         <div
-          className={`max-w-[80%] rounded-lg p-4 ${
+          className={`max-w-[85%] rounded-lg p-4 ${
             isUser
               ? 'bg-blue-600 text-white'
               : isError
@@ -115,11 +222,11 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
             )}
             <div className="flex-1">
               <div className="whitespace-pre-wrap break-words">{message.content}</div>
-              {message.metadata && (
-                <div className="mt-3 pt-3 border-t border-gray-300 text-sm opacity-75">
-                  <div>Mode: {message.metadata.mode}</div>
-                  {message.metadata.tokensUsed && (
-                    <div>Tokens: {message.metadata.tokensUsed}</div>
+              {message.metadata && message.metadata.model && (
+                <div className="mt-3 pt-3 border-t border-gray-300 text-xs opacity-60">
+                  <span>{message.metadata.model}</span>
+                  {message.metadata.reasoning && (
+                    <span className="ml-2">• {message.metadata.reasoning}</span>
                   )}
                 </div>
               )}
@@ -130,57 +237,115 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
     );
   };
 
+  const currentMode = modes[activeMode];
+
   return (
     <div className="flex h-[calc(100vh-200px)] gap-4">
+      {/* Left Sidebar - Mode Selection */}
+      <div className="w-72 bg-white rounded-lg shadow-lg p-4 overflow-y-auto">
+        <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
+          <Sparkles className="w-5 h-5 text-blue-500" />
+          VironaX AI
+        </h3>
+
+        {/* Mode Cards */}
+        <div className="space-y-3">
+          {Object.entries(modes).map(([modeKey, mode]) => (
+            <div key={modeKey}>
+              <button
+                onClick={() => setActiveMode(modeKey)}
+                className={`w-full text-left p-3 rounded-lg transition-all ${
+                  activeMode === modeKey
+                    ? 'bg-blue-50 border-2 border-blue-500'
+                    : 'bg-gray-50 border-2 border-transparent hover:bg-gray-100'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-lg">{mode.icon}</span>
+                  <span className="font-medium">{mode.label}</span>
+                </div>
+                <p className="text-xs text-gray-500 italic">{mode.description}</p>
+              </button>
+
+              {/* Pillars - shown when mode is active */}
+              {activeMode === modeKey && (
+                <div className="mt-2 ml-2 pl-3 border-l-2 border-gray-200">
+                  <div className="flex flex-wrap gap-1.5">
+                    {mode.pillars.map((pillar, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => handleQuickAction(pillar.label)}
+                        className="text-xs text-gray-400 italic hover:text-blue-500 hover:bg-blue-50 px-1.5 py-0.5 rounded transition-colors"
+                      >
+                        {pillar.icon} {pillar.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Deep Dive Insight Toggle - only shown when Deep Dive is selected */}
+        {activeMode === 'deepdive' && (
+          <div className="mt-6 pt-4 border-t border-gray-200">
+            <p className="text-xs text-gray-500 mb-2 font-medium">Insight Depth</p>
+            <div className="grid grid-cols-2 gap-1.5">
+              {insightModes.map((mode) => (
+                <button
+                  key={mode.id}
+                  onClick={() => setInsightMode(mode.id)}
+                  className={`px-2 py-1.5 text-xs rounded-lg transition-all ${
+                    insightMode === mode.id
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-2 italic text-center">
+              {insightModes.find(m => m.id === insightMode)?.description}
+            </p>
+          </div>
+        )}
+
+        {/* Store Info */}
+        <div className="mt-6 pt-4 border-t border-gray-200">
+          <div className="text-xs text-gray-500">
+            <div className="flex items-center gap-2 mb-1">
+              <Calendar className="w-3 h-3" />
+              <span>Active Store</span>
+            </div>
+            <div className="ml-5 font-medium text-gray-700">
+              {activeStore === 'all' ? 'All Stores' : (activeStore || '').toUpperCase()}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col bg-white rounded-lg shadow-lg">
         {/* Header */}
         <div className="p-4 border-b border-gray-200">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xl font-semibold flex items-center gap-2">
-              <Sparkles className="w-6 h-6 text-blue-500" />
-              AI Analytics Assistant
-            </h2>
-            <div className="text-sm text-gray-500">
-              {selectedStore === 'all' ? 'All Stores' : (selectedStore || '').toUpperCase()}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">{currentMode.icon}</span>
+              <div>
+                <h2 className="text-lg font-semibold">{currentMode.label}</h2>
+                <p className="text-xs text-gray-500 italic">{currentMode.description}</p>
+              </div>
             </div>
-          </div>
-          
-          {/* Mode Selection */}
-          <div className="flex gap-2">
-            <button
-              onClick={() => setActiveMode('analyze')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeMode === 'analyze'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              <TrendingUp className="w-4 h-4 inline mr-1" />
-              Analyze
-            </button>
-            <button
-              onClick={() => setActiveMode('decide')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeMode === 'decide'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              <Target className="w-4 h-4 inline mr-1" />
-              Decide
-            </button>
-            <button
-              onClick={() => setActiveMode('research')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeMode === 'research'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              <Sparkles className="w-4 h-4 inline mr-1" />
-              Deep Research
-            </button>
+            {activeMode === 'deepdive' && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg">
+                <Brain className="w-4 h-4 text-purple-500" />
+                <span className="text-xs text-purple-700 font-medium">
+                  {insightModes.find(m => m.id === insightMode)?.label}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -188,10 +353,23 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 ? (
             <div className="flex items-center justify-center h-full text-gray-500">
-              <div className="text-center">
-                <Sparkles className="w-12 h-12 mx-auto mb-4 text-gray-400" />
-                <p className="text-lg font-medium mb-2">AI Analytics Assistant</p>
-                <p className="text-sm">Ask me anything about your campaign performance, trends, or get recommendations.</p>
+              <div className="text-center max-w-md">
+                <span className="text-5xl mb-4 block">{currentMode.icon}</span>
+                <p className="text-lg font-medium mb-2">{currentMode.label}</p>
+                <p className="text-sm text-gray-400 italic mb-6">{currentMode.description}</p>
+
+                {/* Quick Action Buttons */}
+                <div className="flex flex-wrap justify-center gap-2">
+                  {currentMode.pillars.slice(0, 4).map((pillar, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleQuickAction(pillar.label)}
+                      className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-blue-50 hover:text-blue-600 rounded-full transition-colors"
+                    >
+                      {pillar.icon} {pillar.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           ) : (
@@ -209,7 +387,7 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyPress}
-              placeholder="Ask about campaign performance, trends, or get recommendations..."
+              placeholder={`Ask about ${currentMode.label.toLowerCase()}...`}
               className="flex-1 p-3 border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
               rows={2}
               disabled={isLoading}
@@ -225,91 +403,6 @@ export default function AIAnalytics({ selectedStore, startDate, endDate }) {
                 <Send className="w-5 h-5" />
               )}
             </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Right Sidebar - Filters */}
-      <div className="w-80 bg-white rounded-lg shadow-lg p-4 space-y-4">
-        <h3 className="font-semibold text-lg mb-4">Context Filters</h3>
-        
-        {/* Active Campaigns Only */}
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showActiveCampaignsOnly}
-              onChange={(e) => setShowActiveCampaignsOnly(e.target.checked)}
-              className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
-            />
-            <span className="text-sm font-medium">Active Campaigns Only</span>
-          </label>
-          <p className="text-xs text-gray-500 ml-6">
-            Show only campaigns with activity in the last {dayRange} days
-          </p>
-        </div>
-
-        {/* Day Range */}
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-700">
-            Activity Window
-          </label>
-          <select
-            value={dayRange}
-            onChange={(e) => setDayRange(Number(e.target.value))}
-            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          >
-            <option value={7}>Last 7 days</option>
-            <option value={14}>Last 14 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={60}>Last 60 days</option>
-            <option value={90}>Last 90 days</option>
-          </select>
-        </div>
-
-        {/* Dimension Selection */}
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-700">
-            Analysis Dimension
-          </label>
-          <select
-            value={selectedDimension}
-            onChange={(e) => setSelectedDimension(e.target.value)}
-            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          >
-            <option value="campaign">Campaign Level</option>
-            <option value="adset">Ad Set Level</option>
-            <option value="ad">Ad Level</option>
-          </select>
-        </div>
-
-        {/* Info Panel */}
-        <div className="mt-6 p-3 bg-blue-50 rounded-lg border border-blue-200">
-          <div className="flex items-start gap-2">
-            <AlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-            <div className="text-xs text-blue-900">
-              <p className="font-medium mb-1">Active Mode: {activeMode.charAt(0).toUpperCase() + activeMode.slice(1)}</p>
-              <p className="text-blue-700">
-                {activeMode === 'analyze' && 'Quick insights from your data'}
-                {activeMode === 'decide' && 'Get recommendations and next steps'}
-                {activeMode === 'research' && 'Deep analysis with multiple queries'}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Date Range Display */}
-        <div className="pt-4 border-t border-gray-200">
-          <div className="text-xs text-gray-500 space-y-1">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-4 h-4" />
-              <span>Date Range</span>
-            </div>
-            <div className="ml-6">
-              <div>{new Date(startDate).toLocaleDateString()}</div>
-              <div>to</div>
-              <div>{new Date(endDate).toLocaleDateString()}</div>
-            </div>
           </div>
         </div>
       </div>
