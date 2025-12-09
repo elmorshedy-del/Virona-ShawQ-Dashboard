@@ -145,76 +145,59 @@ export default function AIAnalytics({ store }) {
     setStreamingText('');
 
     try {
-      if (mode === 'decide') {
-        // Streaming
-        const res = await fetch('/api/ai/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question, store: store.id, depth, conversationId: convId })
-        });
+      // ALL modes now use streaming
+      const res = await fetch('/api/ai/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          question, 
+          store: store.id, 
+          depth: mode === 'decide' ? depth : 'fast',
+          mode,
+          conversationId: convId 
+        })
+      });
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        let modelUsed = '';
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+      let modelUsed = '';
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.type === 'delta') {
-                  fullText += data.text;
-                  setStreamingText(fullText);
-                } else if (data.type === 'done') {
-                  modelUsed = data.model;
-                } else if (data.type === 'error') {
-                  fullText = `Error: ${data.error}`;
-                }
-              } catch (err) {}
-            }
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'delta') {
+                fullText += data.text;
+                setStreamingText(fullText);
+              } else if (data.type === 'done') {
+                modelUsed = data.model;
+              } else if (data.type === 'error') {
+                fullText = `Error: ${data.error}`;
+              }
+            } catch (err) {}
           }
         }
-
-        const assistantMessage = {
-          role: 'assistant',
-          content: fullText,
-          model: modelUsed,
-          mode,
-          depth
-        };
-
-        setMessages(prev => [...prev, assistantMessage]);
-        saveMessage(convId, 'assistant', fullText, mode, depth, modelUsed);
-        setStreamingText('');
-      } else {
-        // Non-streaming
-        const endpoint = mode === 'analyze' ? '/api/ai/analyze' : '/api/ai/summarize';
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question, store: store.id, conversationId: convId })
-        });
-
-        const data = await res.json();
-        const content = data.success ? data.answer : `Error: ${data.error}`;
-        
-        const assistantMessage = {
-          role: 'assistant',
-          content,
-          model: data.model,
-          mode
-        };
-
-        setMessages(prev => [...prev, assistantMessage]);
-        saveMessage(convId, 'assistant', content, mode, null, data.model);
       }
+
+      const assistantMessage = {
+        role: 'assistant',
+        content: fullText,
+        model: modelUsed,
+        mode,
+        depth: mode === 'decide' ? depth : null
+      };
+
+      setMessages(prev => [...prev, assistantMessage]);
+      saveMessage(convId, 'assistant', fullText, mode, mode === 'decide' ? depth : null, modelUsed);
+      setStreamingText('');
       
       loadConversations();
     } catch (error) {
