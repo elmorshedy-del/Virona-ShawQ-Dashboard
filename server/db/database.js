@@ -79,10 +79,6 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN order_created_at TEXT`);
   } catch (e) { /* column exists */ }
-  try {
-    db.exec(`ALTER TABLE notifications ADD COLUMN is_read INTEGER DEFAULT 0`);
-  } catch (e) { /* column exists */ }
-
   // Salla orders (VironaX only)
   db.exec(`
     CREATE TABLE IF NOT EXISTS salla_orders (
@@ -266,10 +262,27 @@ export function initDb() {
       message TEXT,
       metadata TEXT,
       source TEXT,
+      country TEXT,
+      value REAL,
+      order_count INTEGER DEFAULT 1,
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-      read INTEGER DEFAULT 0
+      is_read INTEGER DEFAULT 0
     )
   `);
+
+  // Add missing columns to notifications table if they don't exist
+  try {
+    db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE notifications ADD COLUMN value REAL`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE notifications ADD COLUMN order_count INTEGER DEFAULT 1`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE notifications ADD COLUMN is_read INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // ============================================================================
   // META OBJECTS TABLE - Stores campaign/adset/ad metadata with status info
