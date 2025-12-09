@@ -1,646 +1,1234 @@
-import { useState, useRef, useEffect } from 'react';
-import { 
-  Brain, Zap, TrendingUp, Lightbulb, Send, Loader2, Sparkles, 
-  Plus, MessageSquare, Trash2, ChevronLeft, ChevronRight, Upload, X
-} from 'lucide-react';
+import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
+import { getDb } from '../db/database.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
-const MODES = [
-  { id: 'analyze', label: 'Analyze', icon: Zap, color: 'from-blue-500 to-cyan-500' },
-  { id: 'summarize', label: 'Summarize', icon: TrendingUp, color: 'from-purple-500 to-pink-500' },
-  { id: 'decide', label: 'Decide', icon: Lightbulb, color: 'from-orange-500 to-red-500' }
-];
-
-const DEPTHS = [
-  { id: 'instant', label: 'Instant', emoji: '⚡' },
-  { id: 'fast', label: 'Fast', emoji: '🚀' },
-  { id: 'balanced', label: 'Balanced', emoji: '⚖️' },
-  { id: 'deep', label: 'Deep', emoji: '🧠' }
-];
-
-export default function AIAnalytics({ store }) {
-  // Sidebar state
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [conversations, setConversations] = useState([]);
-  const [currentConversationId, setCurrentConversationId] = useState(null);
+// ============================================================================
+// DATE HELPERS
+// ============================================================================
+function getDateRange(params) {
+  const now = new Date();
+  const today = formatDateAsGmt3(now);
   
-  // Chat state
-  const [messages, setMessages] = useState([]);
-  const [mode, setMode] = useState('decide');
-  const [depth, setDepth] = useState('balanced');
-  const [question, setQuestion] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [streamingText, setStreamingText] = useState('');
+  if (params.startDate && params.endDate) {
+    const start = new Date(params.startDate);
+    const end = new Date(params.endDate);
+    const days = Math.ceil((end - start) / (24 * 60 * 60 * 1000)) + 1;
+    return { startDate: params.startDate, endDate: params.endDate, days };
+  }
   
-  // Import modal
-  const [showImportModal, setShowImportModal] = useState(false);
+  if (params.yesterday) {
+    const yesterday = formatDateAsGmt3(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+    return { startDate: yesterday, endDate: yesterday, days: 1 };
+  }
   
-  const messagesEndRef = useRef(null);
+  let days = 7;
+  if (params.days) days = parseInt(params.days);
+  else if (params.weeks) days = parseInt(params.weeks) * 7;
+  else if (params.months) days = parseInt(params.months) * 30;
+  
+  const endDate = today;
+  const startMs = now.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
+  const startDate = formatDateAsGmt3(new Date(startMs));
+  
+  return { startDate, endDate, days };
+}
 
-  // Load conversations on mount
-  useEffect(() => {
-    loadConversations();
-  }, [store.id]);
+// FIXED: Compare same-length previous period
+function getPreviousDateRange(startDate, endDate) {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const durationMs = end.getTime() - start.getTime();
+  const durationDays = Math.ceil(durationMs / (24 * 60 * 60 * 1000)) + 1;
+  
+  // Go back exactly one period
+  const prevEnd = new Date(start.getTime() - 24 * 60 * 60 * 1000);
+  const prevStart = new Date(prevEnd.getTime() - (durationDays - 1) * 24 * 60 * 60 * 1000);
+  
+  return {
+    startDate: formatDateAsGmt3(prevStart),
+    endDate: formatDateAsGmt3(prevEnd)
+  };
+}
 
-  // Auto-scroll
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingText]);
+// ============================================================================
+// SALLA DETECTION
+// ============================================================================
+function isSallaActive() {
+  return !!process.env.VIRONAX_SALLA_ACCESS_TOKEN;
+}
 
-  const loadConversations = async () => {
-    try {
-      const res = await fetch(`/api/ai/conversations?store=${store.id}`);
-      const data = await res.json();
-      if (data.success) {
-        setConversations(data.conversations);
+// ============================================================================
+// CITIES BY COUNTRY
+// ============================================================================
+export function getCitiesByCountry(store, countryCode, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+
+  try {
+    let citiesData = [];
+    let source = '';
+
+    if (store === 'shawq') {
+      // Shopify cities for Shawq
+      citiesData = db.prepare(`
+        SELECT
+          city,
+          state,
+          COUNT(*) as orders,
+          SUM(subtotal) as revenue
+        FROM shopify_orders
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        AND city IS NOT NULL AND city != ''
+        GROUP BY city, state
+        ORDER BY orders DESC
+      `).all(store, countryCode, startDate, endDate);
+      source = 'Shopify';
+    } else if (store === 'vironax') {
+      // Try Salla cities for VironaX
+      citiesData = db.prepare(`
+        SELECT
+          city,
+          state,
+          COUNT(*) as orders,
+          SUM(subtotal) as revenue
+        FROM salla_orders
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        AND city IS NOT NULL AND city != ''
+        GROUP BY city, state
+        ORDER BY orders DESC
+      `).all(store, countryCode, startDate, endDate);
+      source = 'Salla';
+
+      // If no Salla data, return "Requires Salla connection" message
+      if (!citiesData || citiesData.length === 0) {
+        return [{
+          name: 'Requires Salla connection',
+          city: 'Requires Salla connection',
+          state: null,
+          orders: 0,
+          revenue: 0,
+          rank: 1,
+          source: 'none',
+          message: 'Requires Salla connection',
+          requiresSalla: true
+        }];
       }
-    } catch (e) {
-      console.error('Failed to load conversations:', e);
     }
-  };
 
-  const loadConversation = async (id) => {
-    try {
-      const res = await fetch(`/api/ai/conversations/${id}`);
-      const data = await res.json();
-      if (data.success) {
-        setCurrentConversationId(id);
-        setMessages(data.messages);
-      }
-    } catch (e) {
-      console.error('Failed to load conversation:', e);
+    if (!citiesData || citiesData.length === 0) {
+      return [];
     }
+
+    return citiesData.map((city, index) => ({
+      name: city.state ? `${city.city}, ${city.state}` : city.city,
+      city: city.city || 'Unknown',
+      state: city.state || null,
+      orders: city.orders || 0,
+      revenue: city.revenue || 0,
+      aov: city.orders > 0 ? (city.revenue || 0) / city.orders : 0,
+      rank: index + 1,
+      source
+    }));
+  } catch (error) {
+    console.error(`[Analytics] Error getting cities for ${countryCode}:`, error);
+    return [];
+  }
+}
+
+// ============================================================================
+// GET TOTALS FOR RANGE
+// ============================================================================
+function getTotalsForRange(db, store, startDate, endDate) {
+  const metaTotals = db.prepare(`
+    SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?
+  `).get(store, startDate, endDate) || {};
+
+  let totalSpend = metaTotals.spend || 0;
+  let totalRevenue = metaTotals.revenue || 0;
+  let totalOrders = metaTotals.orders || 0;
+
+  if (store === 'shawq') {
+    const ecomData = db.prepare(`
+      SELECT COUNT(*) as orders, SUM(subtotal) as revenue
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?
+    `).get(store, startDate, endDate) || {};
+    totalOrders = ecomData.orders || 0;
+    totalRevenue = ecomData.revenue || 0;
+  }
+
+  const manualData = db.prepare(`
+    SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
+    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?
+  `).get(store, startDate, endDate) || {};
+
+  totalSpend += manualData.spend || 0;
+  totalRevenue += manualData.revenue || 0;
+  totalOrders += manualData.orders || 0;
+
+  const override = db.prepare(`
+    SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
+  `).get(store, startDate, endDate);
+  if (override?.amount) totalSpend = override.amount;
+
+  return {
+    spend: totalSpend,
+    revenue: totalRevenue,
+    orders: totalOrders,
+    aov: totalOrders > 0 ? totalRevenue / totalOrders : 0,
+    cac: totalOrders > 0 ? totalSpend / totalOrders : 0,
+    roas: totalSpend > 0 ? totalRevenue / totalSpend : 0
+  };
+}
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+export function getDashboard(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const prevRange = getPreviousDateRange(startDate, endDate);
+
+  const current = getTotalsForRange(db, store, startDate, endDate);
+  const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate);
+
+  const calcChange = (curr, prev) => prev > 0 ? ((curr - prev) / prev) * 100 : 0;
+
+  const overview = {
+    ...current,
+    revenueChange: calcChange(current.revenue, previous.revenue),
+    spendChange: calcChange(current.spend, previous.spend),
+    ordersChange: calcChange(current.orders, previous.orders),
+    aovChange: calcChange(current.aov, previous.aov),
+    cacChange: calcChange(current.cac, previous.cac),
+    roasChange: calcChange(current.roas, previous.roas),
+    manualOrders: 0,
+    sallaOrders: 0,
+    shopifyOrders: 0
   };
 
-  const createNewConversation = async () => {
-    setCurrentConversationId(null);
-    setMessages([]);
-  };
+  const campaignData = db.prepare(`
+    SELECT 
+      campaign_id as campaignId, campaign_name as campaignName,
+      SUM(spend) as spend, SUM(impressions) as impressions, SUM(reach) as reach,
+      SUM(clicks) as clicks, SUM(conversions) as conversions, SUM(conversion_value) as conversionValue,
+      SUM(landing_page_views) as lpv, SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?
+    GROUP BY campaign_name
+    ORDER BY spend DESC
+  `).all(store, startDate, endDate);
 
-  const deleteConversation = async (id, e) => {
-    e.stopPropagation();
-    if (!confirm('Delete this conversation?')) return;
-    
-    try {
-      await fetch(`/api/ai/conversations/${id}`, { method: 'DELETE' });
-      if (currentConversationId === id) {
-        setCurrentConversationId(null);
-        setMessages([]);
-      }
-      loadConversations();
-    } catch (e) {
-      console.error('Failed to delete conversation:', e);
+  const campaigns = campaignData.map(c => ({
+    ...c,
+    cpc: c.clicks > 0 ? c.spend / c.clicks : null,
+    ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : null,
+    cr: c.clicks > 0 ? (c.conversions / c.clicks) * 100 : null,
+    metaRoas: c.spend > 0 ? c.conversionValue / c.spend : null,
+    metaAov: c.conversions > 0 ? c.conversionValue / c.conversions : null,
+    metaCac: c.conversions > 0 ? c.spend / c.conversions : null,
+    cpm: c.impressions > 0 ? (c.spend / c.impressions) * 1000 : null,
+    frequency: c.reach > 0 ? c.impressions / c.reach : null,
+    conversion_value: c.conversionValue
+  }));
+
+  const metaTotals = db.prepare(`
+    SELECT
+      SUM(impressions) as impressions_total, SUM(reach) as reach_total,
+      SUM(clicks) as clicks_total, SUM(landing_page_views) as lpv_total,
+      SUM(add_to_cart) as atc_total, SUM(checkouts_initiated) as checkout_total,
+      COUNT(DISTINCT campaign_name) as campaign_count
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?
+  `).get(store, startDate, endDate) || {};
+
+  const metaCampaignCount = metaTotals.campaign_count || 0;
+  const metaImpressionsTotal = metaTotals.impressions_total || 0;
+  const metaClicksTotal = metaTotals.clicks_total || 0;
+
+  const { countries, dataSource: countriesDataSource } = getDynamicCountries(db, store, startDate, endDate);
+
+  return {
+    overview,
+    campaigns,
+    countries,
+    countriesDataSource,
+    trends: getTrends(store, startDate, endDate),
+    diagnostics: [],
+    dateRange: { startDate, endDate },
+
+    metaCampaignCount,
+    metaSpendTotal: current.spend,
+    metaRevenueTotal: current.revenue,
+    metaRoasTotal: current.roas,
+    metaImpressionsTotal,
+    metaReachTotal: metaTotals.reach_total || 0,
+    metaClicksTotal,
+    metaCtrTotal: (metaImpressionsTotal > 0 ? metaClicksTotal / metaImpressionsTotal : 0),
+    metaLpvTotal: metaTotals.lpv_total || 0,
+    metaAtcTotal: metaTotals.atc_total || 0,
+    metaCheckoutTotal: metaTotals.checkout_total || 0,
+    metaConversionsTotal: current.orders,
+    metaCacTotal: current.cac
+  };
+}
+
+// ============================================================================
+// DYNAMIC COUNTRIES
+// ============================================================================
+function getDynamicCountries(db, store, startDate, endDate) {
+  // Get all Meta metrics by country (upper/mid/lower funnel)
+  const metaData = db.prepare(`
+    SELECT
+      country as countryCode,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversionValue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+    GROUP BY country
+  `).all(store, startDate, endDate);
+
+  let ecomData = [];
+  let dataSource = 'Meta'; // Default to Meta
+
+  if (store === 'shawq') {
+    ecomData = db.prepare(`
+      SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+    `).all(store, startDate, endDate);
+    dataSource = 'Shopify';
+  } else if (store === 'vironax') {
+    // Check if Salla token exists (not database - avoids demo data issues)
+    if (isSallaActive()) {
+      ecomData = db.prepare(`
+        SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
+        FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+      `).all(store, startDate, endDate);
+      dataSource = 'Salla';
+    } else {
+      // Salla NOT connected - Meta conversions will be used via fallback below
+      dataSource = 'Meta';
     }
-  };
+  }
 
-  const saveMessage = async (convId, role, content, msgMode, msgDepth, model) => {
-    if (!convId) return;
-    
-    try {
-      await fetch(`/api/ai/conversations/${convId}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role, content, mode: msgMode, depth: msgDepth, model })
+  const map = new Map();
+  let usedMetaFallback = false;
+
+  // First, add e-commerce data
+  ecomData.forEach(e => {
+    const info = getCountryInfo(e.countryCode);
+    map.set(e.countryCode, {
+      code: e.countryCode, name: info.name, flag: info.flag,
+      spend: 0, revenue: e.revenue || 0, totalOrders: e.orders || 0,
+      impressions: 0, reach: 0, clicks: 0, lpv: 0, atc: 0, checkout: 0,
+      cities: []
+    });
+  });
+
+  // Then, merge with Meta data
+  metaData.forEach(m => {
+    if(!m.spend && !m.conversions) return;
+    if(!map.has(m.countryCode)) {
+      const info = getCountryInfo(m.countryCode);
+      map.set(m.countryCode, {
+        code: m.countryCode, name: info.name, flag: info.flag,
+        spend: 0, revenue: 0, totalOrders: 0,
+        impressions: 0, reach: 0, clicks: 0, lpv: 0, atc: 0, checkout: 0,
+        cities: []
       });
-    } catch (e) {
-      console.error('Failed to save message:', e);
     }
-  };
+    const c = map.get(m.countryCode);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!question.trim() || loading) return;
+    // Add Meta metrics
+    c.spend += m.spend || 0;
+    c.impressions += m.impressions || 0;
+    c.reach += m.reach || 0;
+    c.clicks += m.clicks || 0;
+    c.lpv += m.lpv || 0;
+    c.atc += m.atc || 0;
+    c.checkout += m.checkout || 0;
 
-    // Create conversation if none exists
-    let convId = currentConversationId;
-    if (!convId) {
-      try {
-        const res = await fetch('/api/ai/conversations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ store: store.id })
-        });
-        const data = await res.json();
-        if (data.success) {
-          convId = data.conversationId;
-          setCurrentConversationId(convId);
-        }
-      } catch (e) {
-        console.error('Failed to create conversation:', e);
-        return;
-      }
+    // For VironaX without Salla data, use Meta conversions
+    if (store === 'vironax' && c.totalOrders === 0) {
+      c.revenue = m.conversionValue || 0;
+      c.totalOrders = m.conversions || 0;
+      usedMetaFallback = true;
     }
+  });
 
-    const userMessage = {
-      role: 'user',
-      content: question,
-      mode,
-      depth: mode === 'decide' ? depth : null
-    };
+  // If VironaX used Meta fallback, set dataSource to Meta
+  if (store === 'vironax' && usedMetaFallback && ecomData.length === 0) {
+    dataSource = 'Meta';
+  }
 
-    setMessages(prev => [...prev, userMessage]);
-    saveMessage(convId, 'user', question, mode, mode === 'decide' ? depth : null, null);
-    
-    setQuestion('');
-    setLoading(true);
-    setStreamingText('');
+  // Add cities data for each country
+  for (const [countryCode, countryData] of map.entries()) {
+    const cities = getCitiesByCountry(store, countryCode, { startDate, endDate });
+    countryData.cities = cities;
+  }
 
-    try {
-      if (mode === 'decide') {
-        // Streaming
-        const res = await fetch('/api/ai/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question, store: store.id, depth, conversationId: convId })
-        });
+  // Calculate metrics for each country and filter
+  const countries = Array.from(map.values())
+    .map(c => ({
+      ...c,
+      // Upper funnel metrics
+      cpm: c.impressions > 0 ? (c.spend / c.impressions) * 1000 : null,
+      frequency: c.reach > 0 ? c.impressions / c.reach : null,
+      // Mid funnel metrics
+      ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : null,
+      cpc: c.clicks > 0 ? c.spend / c.clicks : null,
+      // Lower funnel metrics (using e-commerce data or Meta fallback)
+      aov: c.totalOrders > 0 ? c.revenue / c.totalOrders : null,
+      cac: c.totalOrders > 0 ? c.spend / c.totalOrders : null,
+      roas: c.spend > 0 ? c.revenue / c.spend : null
+    }))
+    .filter(c => c.totalOrders > 0)  // Hide 0-order countries
+    .filter(c => c.code && c.code !== 'ALL' && c.code.toLowerCase() !== 'unknown')
+    .sort((a, b) => b.totalOrders - a.totalOrders);  // Sort by orders
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        let modelUsed = '';
+  return { countries, dataSource };
+}
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+// ============================================================================
+// TRENDS
+// ============================================================================
+function getTrends(store, startDate, endDate) {
+  const db = getDb();
+  const allDates = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    allDates.push(formatDateAsGmt3(d));
+  }
 
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
+  let salesData = [];
+  if (store === 'shawq') {
+    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+  } else {
+    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+  }
+  
+  const spendData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.type === 'delta') {
-                  fullText += data.text;
-                  setStreamingText(fullText);
-                } else if (data.type === 'done') {
-                  modelUsed = data.model;
-                } else if (data.type === 'error') {
-                  fullText = `Error: ${data.error}`;
-                }
-              } catch (err) {}
-            }
-          }
-        }
+  const map = new Map();
+  allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
+  
+  salesData.forEach(r => { if(map.has(r.date)) { map.get(r.date).orders = r.orders; map.get(r.date).revenue = r.revenue; }});
+  spendData.forEach(r => { if(map.has(r.date)) { map.get(r.date).spend = r.spend; }});
 
-        const assistantMessage = {
-          role: 'assistant',
-          content: fullText,
-          model: modelUsed,
-          mode,
-          depth
-        };
+  return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
+    ...d, 
+    aov: d.orders > 0 ? d.revenue / d.orders : 0,
+    cac: d.orders > 0 ? d.spend / d.orders : 0,
+    roas: d.spend > 0 ? d.revenue / d.spend : 0
+  }));
+}
 
-        setMessages(prev => [...prev, assistantMessage]);
-        saveMessage(convId, 'assistant', fullText, mode, depth, modelUsed);
-        setStreamingText('');
+// ============================================================================
+// COUNTRY TRENDS (with nested cities)
+// ============================================================================
+export function getCountryTrends(store, params) {
+  const db = getDb();
+  // Fix 6: Changed from 7 days to 14 days
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+
+  try {
+    let rawData = [];
+    let dataSource = 'Meta';
+
+    if (store === 'shawq') {
+      rawData = db.prepare(`
+        SELECT
+          date,
+          country_code as countryCode,
+          COUNT(*) as orders,
+          SUM(subtotal) as revenue
+        FROM shopify_orders
+        WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
+        GROUP BY date, country_code
+        ORDER BY date ASC, country_code ASC
+      `).all(store, startDate, endDate);
+      dataSource = 'Shopify';
+
+    } else if (store === 'vironax') {
+      // Check if Salla token exists (not database - avoids demo data issues)
+      if (isSallaActive()) {
+        // Salla connected - try to get Salla data
+        rawData = db.prepare(`
+          SELECT
+            date,
+            country_code as countryCode,
+            COUNT(*) as orders,
+            SUM(total_price) as revenue
+          FROM salla_orders
+          WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
+          GROUP BY date, country_code
+          ORDER BY date ASC, country_code ASC
+        `).all(store, startDate, endDate);
+        dataSource = 'Salla';
       } else {
-        // Non-streaming
-        const endpoint = mode === 'analyze' ? '/api/ai/analyze' : '/api/ai/summarize';
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question, store: store.id, conversationId: convId })
-        });
-
-        const data = await res.json();
-        const content = data.success ? data.answer : `Error: ${data.error}`;
-        
-        const assistantMessage = {
-          role: 'assistant',
-          content,
-          model: data.model,
-          mode
-        };
-
-        setMessages(prev => [...prev, assistantMessage]);
-        saveMessage(convId, 'assistant', content, mode, null, data.model);
+        // Salla NOT connected - use Meta conversions (Meta sends intraday data)
+        rawData = db.prepare(`
+          SELECT
+            date,
+            country as countryCode,
+            SUM(conversions) as orders,
+            SUM(conversion_value) as revenue
+          FROM meta_daily_metrics
+          WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+          GROUP BY date, country
+          ORDER BY date ASC, country ASC
+        `).all(store, startDate, endDate);
+        dataSource = 'Meta';
       }
-      
-      loadConversations();
-    } catch (error) {
-      const errorMsg = `Error: ${error.message}`;
-      setMessages(prev => [...prev, { role: 'assistant', content: errorMsg }]);
-    } finally {
-      setLoading(false);
+    } else {
+      return { data: [], dataSource: 'none' };
     }
-  };
 
-  return (
-    <div className="relative flex h-[700px] rounded-2xl overflow-hidden shadow-xl bg-white">
-      {/* Sidebar */}
-      <div 
-        className={`${sidebarOpen ? 'w-72' : 'w-0'} transition-all duration-300 bg-gray-900 flex flex-col overflow-hidden flex-shrink-0`}
-      >
-        {/* Sidebar Header */}
-        <div className="p-4 border-b border-white/10">
-          <button
-            onClick={createNewConversation}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/10 hover:bg-white/20 rounded-xl text-white font-medium transition-colors"
-          >
-            <Plus className="w-5 h-5" />
-            New Chat
-          </button>
-        </div>
+    const countriesMap = new Map();
 
-        {/* Conversations List */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {conversations.map((conv) => (
-            <div
-              key={conv.id}
-              onClick={() => loadConversation(conv.id)}
-              className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
-                currentConversationId === conv.id
-                  ? 'bg-white/20 text-white'
-                  : 'text-gray-300 hover:bg-white/10'
-              }`}
-            >
-              <MessageSquare className="w-4 h-4 flex-shrink-0" />
-              <span className="flex-1 truncate text-sm">{conv.title}</span>
-              <button
-                onClick={(e) => deleteConversation(conv.id, e)}
-                className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-500/20 rounded transition-all"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-red-400" />
-              </button>
-            </div>
-          ))}
-          
-          {conversations.length === 0 && (
-            <div className="text-center py-8 text-gray-500 text-sm">
-              No conversations yet
-            </div>
-          )}
-        </div>
-
-        {/* Import Button */}
-        <div className="p-4 border-t border-white/10">
-          <button
-            onClick={() => setShowImportModal(true)}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors text-sm"
-          >
-            <Upload className="w-4 h-4" />
-            Import Historical Data
-          </button>
-        </div>
-      </div>
-
-      {/* Sidebar Toggle */}
-      <button
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        className={`absolute top-4 z-10 p-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-white transition-all ${
-          sidebarOpen ? 'left-[276px]' : 'left-2'
-        }`}
-      >
-        {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-      </button>
-
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col min-w-0 bg-gradient-to-br from-slate-50 to-slate-100">
-        {/* Header */}
-        <div className="px-6 py-4 bg-white/80 backdrop-blur-sm border-b border-gray-200 flex-shrink-0">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-gradient-to-r from-violet-500 to-purple-500 rounded-xl">
-                <Brain className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <h2 className="font-bold text-gray-900">AI Analytics</h2>
-                <p className="text-xs text-gray-500">GPT-5.1 • {messages.length} messages</p>
-              </div>
-            </div>
-
-            {/* Mode & Depth */}
-            <div className="flex items-center gap-3">
-              <div className="flex bg-gray-100 rounded-lg p-1">
-                {MODES.map((m) => {
-                  const Icon = m.icon;
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => setMode(m.id)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                        mode === m.id
-                          ? 'bg-white shadow-sm text-gray-900'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4" />
-                      {m.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {mode === 'decide' && (
-                <div className="flex bg-gray-100 rounded-lg p-1">
-                  {DEPTHS.map((d) => (
-                    <button
-                      key={d.id}
-                      onClick={() => setDepth(d.id)}
-                      className={`px-2.5 py-1.5 rounded-md text-sm transition-all ${
-                        depth === d.id
-                          ? 'bg-white shadow-sm'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
-                      title={d.label}
-                    >
-                      {d.emoji}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {messages.length === 0 && !loading ? (
-            <div className="h-full flex flex-col items-center justify-center text-gray-400">
-              <div className="p-4 bg-gradient-to-r from-violet-500/20 to-purple-500/20 rounded-2xl mb-4">
-                <Sparkles className="w-12 h-12 text-violet-500" />
-              </div>
-              <p className="text-lg font-medium text-gray-600">How can I help you today?</p>
-              <p className="text-sm mt-1">Ask me anything about your store data</p>
-              
-              {/* Quick suggestions */}
-              <div className="flex flex-wrap gap-2 mt-6 max-w-lg justify-center">
-                {[
-                  "How are we doing today?",
-                  "Which campaigns should I scale?",
-                  "Compare today vs yesterday",
-                  "Best performing ads?"
-                ].map((q, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setQuestion(q)}
-                    className="px-3 py-1.5 bg-white hover:bg-gray-50 border border-gray-200 rounded-full text-sm text-gray-600 transition-all hover:shadow-sm"
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <>
-              {messages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                      msg.role === 'user'
-                        ? 'bg-gradient-to-r from-violet-500 to-purple-500 text-white rounded-tr-sm'
-                        : 'bg-white border border-gray-100 shadow-sm rounded-tl-sm'
-                    }`}
-                  >
-                    {msg.role === 'assistant' && msg.model && (
-                      <div className="text-xs text-gray-400 mb-2 flex items-center gap-2">
-                        <Sparkles className="w-3 h-3" />
-                        {msg.model}
-                        {msg.depth && <span className="text-violet-500">• {msg.depth}</span>}
-                      </div>
-                    )}
-                    <div className={msg.role === 'user' ? '' : 'prose prose-sm max-w-none text-gray-700'}>
-                      {msg.role === 'assistant' ? formatMessage(msg.content) : msg.content}
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              {/* Streaming */}
-              {streamingText && (
-                <div className="flex justify-start">
-                  <div className="max-w-[80%] rounded-2xl rounded-tl-sm px-4 py-3 bg-white border border-gray-100 shadow-sm">
-                    <div className="text-xs text-gray-400 mb-2 flex items-center gap-2">
-                      <Sparkles className="w-3 h-3 animate-pulse" />
-                      Thinking...
-                    </div>
-                    <div className="prose prose-sm max-w-none text-gray-700">
-                      {formatMessage(streamingText)}
-                      <span className="inline-block w-2 h-4 bg-violet-500 animate-pulse ml-1" />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Loading */}
-              {loading && !streamingText && (
-                <div className="flex justify-start">
-                  <div className="rounded-2xl rounded-tl-sm px-4 py-3 bg-white border border-gray-100">
-                    <div className="flex items-center gap-2 text-gray-500">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Thinking...
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div ref={messagesEndRef} />
-            </>
-          )}
-        </div>
-
-        {/* Input */}
-        <div className="p-4 bg-white/80 backdrop-blur-sm border-t border-gray-200 flex-shrink-0">
-          <form onSubmit={handleSubmit} className="flex gap-3">
-            <input
-              type="text"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Ask about your data..."
-              className="flex-1 px-4 py-3 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/50 text-gray-800"
-              disabled={loading}
-            />
-            <button
-              type="submit"
-              disabled={loading || !question.trim()}
-              className={`px-5 py-3 rounded-xl font-medium transition-all flex items-center gap-2 ${
-                loading || !question.trim()
-                  ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-violet-500 to-purple-500 text-white hover:shadow-lg'
-              }`}
-            >
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-            </button>
-          </form>
-        </div>
-      </div>
-
-      {/* Import Modal */}
-      {showImportModal && (
-        <ImportModal 
-          store={store} 
-          onClose={() => setShowImportModal(false)} 
-        />
-      )}
-    </div>
-  );
-}
-
-// Import Modal Component
-function ImportModal({ store, onClose }) {
-  const [csvText, setCsvText] = useState('');
-  const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState(null);
-
-  const handleImport = async () => {
-    if (!csvText.trim()) return;
-
-    setImporting(true);
-    setResult(null);
-
-    try {
-      // Parse CSV
-      const lines = csvText.trim().split('\n');
-      const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/\s+/g, '_'));
-      
-      const data = lines.slice(1).map(line => {
-        const values = line.split(',');
-        const row = {};
-        headers.forEach((h, i) => {
-          row[h] = values[i]?.trim();
+    for (const row of rawData) {
+      if (!countriesMap.has(row.countryCode)) {
+        const countryInfo = getCountryInfo(row.countryCode);
+        countriesMap.set(row.countryCode, {
+          countryCode: row.countryCode,
+          country: countryInfo?.name || row.countryCode,
+          flag: countryInfo?.flag || '🏳️',
+          totalOrders: 0,
+          totalRevenue: 0,
+          trends: []
         });
-        return row;
-      });
+      }
 
-      // Send to server
-      const res = await fetch('/api/ai/import-historical', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store: store.id, data })
+      const countryData = countriesMap.get(row.countryCode);
+      countryData.trends.push({
+        date: row.date,
+        orders: row.orders || 0,
+        revenue: row.revenue || 0
       });
-
-      const result = await res.json();
-      setResult(result);
-    } catch (e) {
-      setResult({ success: false, error: e.message });
-    } finally {
-      setImporting(false);
+      countryData.totalOrders += row.orders || 0;
+      countryData.totalRevenue += row.revenue || 0;
     }
-  };
 
-  return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h3 className="text-lg font-bold text-gray-900">Import Historical Data</h3>
-          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+    if (store === 'shawq') {
+      for (const countryData of countriesMap.values()) {
+        countryData.cities = getCitiesByCountry(store, countryData.countryCode, { startDate, endDate });
+      }
+    }
 
-        <div className="p-6 space-y-4">
-          <p className="text-sm text-gray-600">
-            Paste CSV data with columns: <code className="bg-gray-100 px-1 rounded">date, campaign_name, spend, conversions, conversion_value</code>
-          </p>
-          
-          <p className="text-xs text-gray-500">
-            Optional columns: campaign_id, country, impressions, clicks
-          </p>
+    // Fix 6: Filter out countries with 0 total orders and unknown countries
+    const result = Array.from(countriesMap.values())
+      .filter(c => c.totalOrders > 0)
+      .filter(c => c.countryCode && c.countryCode.toLowerCase() !== 'unknown')
+      .sort((a, b) => b.totalOrders - a.totalOrders);
 
-          <textarea
-            value={csvText}
-            onChange={(e) => setCsvText(e.target.value)}
-            placeholder={`date,campaign_name,spend,conversions,conversion_value
-2023-01-15,White Friday,500,10,2500
-2023-01-16,White Friday,450,8,2000
-2023-01-17,GCC Campaign,300,5,1200`}
-            className="w-full h-64 px-4 py-3 border border-gray-200 rounded-xl font-mono text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50"
-          />
-
-          {result && (
-            <div className={`p-4 rounded-lg ${result.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
-              {result.success 
-                ? `✓ Imported ${result.imported} records (${result.skipped} skipped)`
-                : `✕ Error: ${result.error}`
-              }
-            </div>
-          )}
-
-          <div className="flex gap-3">
-            <button
-              onClick={onClose}
-              className="flex-1 px-4 py-2.5 border border-gray-200 rounded-lg font-medium hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleImport}
-              disabled={importing || !csvText.trim()}
-              className={`flex-1 px-4 py-2.5 rounded-lg font-medium transition-all ${
-                importing || !csvText.trim()
-                  ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-violet-500 to-purple-500 text-white hover:shadow-lg'
-              }`}
-            >
-              {importing ? 'Importing...' : 'Import Data'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+    return { data: result, dataSource };
+  } catch (error) {
+    console.error(`[Analytics] Error getting country trends:`, error);
+    return { data: [], dataSource: 'error' };
+  }
 }
 
-// Format assistant messages
-function formatMessage(text) {
-  if (!text) return null;
+// ============================================================================
+// TIME OF DAY (with timezone logic)
+// ============================================================================
+export function getShopifyTimeOfDay(store, params) {
+  if (store !== 'shawq') {
+    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [], message: 'Time of day requires Shopify data' };
+  }
+
+  const db = getDb();
+  // Use 14 days for better distribution
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  const region = params.region || 'all';
+
+  const timezoneOffsets = {
+    'us': -6,      // Chicago (CST)
+    'europe': 0,   // London (GMT)
+    'all': 0       // UTC
+  };
+  const offset = timezoneOffsets[region] || 0;
+
+  const timezoneMap = {
+    'us': 'America/Chicago',
+    'europe': 'Europe/London',
+    'all': 'UTC'
+  };
+  const timezone = timezoneMap[region] || 'UTC';
+
+  const hourLabels = {
+    0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
+    6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
+    12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
+    18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
+  };
+
+  try {
+    let query = `
+      SELECT
+        order_created_at,
+        country_code,
+        subtotal as revenue
+      FROM shopify_orders
+      WHERE store = ? AND date BETWEEN ? AND ?
+      AND order_created_at IS NOT NULL
+    `;
+
+    const queryParams = [store, startDate, endDate];
+
+    if (region === 'us') {
+      query += ` AND country_code IN ('US', 'CA')`;
+    } else if (region === 'europe') {
+      query += ` AND country_code IN ('GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL', 'FI', 'CZ', 'HU', 'RO')`;
+    }
+
+    const rawData = db.prepare(query).all(...queryParams);
+
+    const hourBuckets = {};
+    for (let h = 0; h < 24; h++) {
+      hourBuckets[h] = { orders: 0, revenue: 0 };
+    }
+
+    for (const order of rawData) {
+      if (!order.order_created_at) continue;
+
+      const orderDate = new Date(order.order_created_at);
+      if (isNaN(orderDate.getTime())) continue;
+
+      let hour = orderDate.getUTCHours() + offset;
+      if (hour < 0) hour += 24;
+      if (hour >= 24) hour -= 24;
+
+      hourBuckets[hour].orders += 1;
+      hourBuckets[hour].revenue += order.revenue || 0;
+    }
+
+    const formattedData = [];
+    for (let hour = 0; hour < 24; hour++) {
+      const stats = hourBuckets[hour];
+      formattedData.push({
+        hour,
+        label: hourLabels[hour],
+        orders: stats.orders,
+        revenue: stats.revenue,
+        aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
+      });
+    }
+
+    return {
+      data: formattedData,
+      timezone,
+      region,
+      totalOrders: rawData.length,
+      sampleTimestamps: [],
+      source: 'Shopify'
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting time of day:', error);
+    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [], source: 'error' };
+  }
+}
+
+// ============================================================================
+// TIME OF DAY FOR SALLA (VironaX)
+// ============================================================================
+export function getSallaTimeOfDay(store, params) {
+  const db = getDb();
+  // Use 14 days for better distribution
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+
+  // Riyadh timezone is GMT+3
+  const timezone = 'Asia/Riyadh';
+  const offset = 3;
+
+  const hourLabels = {
+    0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
+    6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
+    12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
+    18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
+  };
+
+  try {
+    // Check if salla_orders table has created_at with time info
+    const rawData = db.prepare(`
+      SELECT
+        created_at,
+        country_code,
+        subtotal as revenue
+      FROM salla_orders
+      WHERE store = ? AND date BETWEEN ? AND ?
+      AND created_at IS NOT NULL
+    `).all(store, startDate, endDate);
+
+    if (!rawData || rawData.length === 0) {
+      return { data: [], timezone, totalOrders: 0, sampleTimestamps: [], source: 'Salla', message: 'No Salla order data with timestamps' };
+    }
+
+    const hourBuckets = {};
+    for (let h = 0; h < 24; h++) {
+      hourBuckets[h] = { orders: 0, revenue: 0 };
+    }
+
+    for (const order of rawData) {
+      if (!order.created_at) continue;
+
+      const orderDate = new Date(order.created_at);
+      if (isNaN(orderDate.getTime())) continue;
+
+      // Convert UTC to Riyadh time (GMT+3)
+      let hour = orderDate.getUTCHours() + offset;
+      if (hour >= 24) hour -= 24;
+      if (hour < 0) hour += 24;
+
+      hourBuckets[hour].orders += 1;
+      hourBuckets[hour].revenue += order.revenue || 0;
+    }
+
+    const formattedData = [];
+    for (let hour = 0; hour < 24; hour++) {
+      const stats = hourBuckets[hour];
+      formattedData.push({
+        hour,
+        label: hourLabels[hour],
+        orders: stats.orders,
+        revenue: stats.revenue,
+        aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
+      });
+    }
+
+    return {
+      data: formattedData,
+      timezone,
+      totalOrders: rawData.length,
+      sampleTimestamps: [],
+      source: 'Salla'
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting Salla time of day:', error);
+    return { data: [], timezone: 'Asia/Riyadh', sampleTimestamps: [], source: 'error' };
+  }
+}
+
+// ============================================================================
+// COMBINED TIME OF DAY (supports both stores)
+// ============================================================================
+export function getTimeOfDay(store, params) {
+  if (store === 'shawq') {
+    return getShopifyTimeOfDay(store, params);
+  }
+
+  if (store === 'vironax') {
+    // Try Salla first
+    const sallaResult = getSallaTimeOfDay(store, params);
+    if (sallaResult.data && sallaResult.data.length > 0) {
+      const hasOrders = sallaResult.data.some(d => d.orders > 0);
+      if (hasOrders) {
+        return sallaResult;
+      }
+    }
+
+    // If no Salla data, return "Requires Salla connection" message
+    return {
+      data: [],
+      timezone: 'Asia/Riyadh',
+      totalOrders: 0,
+      sampleTimestamps: [],
+      source: 'none',
+      message: 'Requires Salla connection',
+      requiresSalla: true
+    };
+  }
+
+  return { data: [], timezone: 'UTC', totalOrders: 0, sampleTimestamps: [], source: 'none', message: 'Unknown store' };
+}
+
+// ============================================================================
+// ORDERS BY DAY OF WEEK (Fix 8)
+// ============================================================================
+export function getOrdersByDayOfWeek(store, params) {
+  const db = getDb();
+  const period = params.period || '14d';
+
+  // Calculate date range based on period
+  const endDate = formatDateAsGmt3(new Date());
+  let startDate;
+  if (period === '14d') {
+    startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  } else if (period === '30d') {
+    startDate = formatDateAsGmt3(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000));
+  } else { // 'all'
+    startDate = formatDateAsGmt3(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
+  }
+
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  try {
+    let orders = [];
+    let source = '';
+
+    if (store === 'shawq') {
+      orders = db.prepare(`SELECT date FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+      source = 'Shopify';
+    } else if (store === 'vironax') {
+      // Check if Salla token exists (not database - avoids demo data issues)
+      if (isSallaActive()) {
+        orders = db.prepare(`SELECT date FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+        source = 'Salla';
+      } else {
+        // Salla NOT connected - use Meta conversions
+        orders = db.prepare(`SELECT date FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND conversions > 0`).all(store, startDate, endDate);
+        source = 'Meta';
+      }
+    }
+
+    // Count by day of week
+    const dayCounts = [0, 0, 0, 0, 0, 0, 0];
+    for (const row of orders) {
+      const dayIndex = new Date(row.date).getDay();
+      dayCounts[dayIndex]++;
+    }
+
+    const total = dayCounts.reduce((sum, c) => sum + c, 0);
+
+    // Build result array
+    const result = dayNames.map((day, idx) => ({
+      day,
+      dayIndex: idx,
+      orders: dayCounts[idx],
+      percentage: total > 0 ? ((dayCounts[idx] / total) * 100).toFixed(1) : '0.0'
+    }));
+
+    // Sort by orders descending, add rank
+    result.sort((a, b) => b.orders - a.orders);
+    result.forEach((item, idx) => item.rank = idx + 1);
+
+    return { data: result, source, totalOrders: total, period };
+  } catch (error) {
+    console.error('[Analytics] Days of week error:', error);
+    return { data: [], source: 'error', totalOrders: 0, period };
+  }
+}
+
+// ============================================================================
+// BUDGET EFFICIENCY
+// ============================================================================
+export function getEfficiency(store, params) {
+  const { startDate, endDate } = getDateRange(params);
+  const db = getDb();
+  const prevRange = getPreviousDateRange(startDate, endDate);
+
+  const current = getTotalsForRange(db, store, startDate, endDate);
+  const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate);
+
+  const spendChange = previous.spend > 0 ? ((current.spend - previous.spend) / previous.spend) * 100 : 0;
+  const roasChange = previous.roas > 0 ? ((current.roas - previous.roas) / previous.roas) * 100 : 0;
+  const efficiencyRatio = spendChange !== 0 && roasChange !== 0 
+    ? (1 + roasChange/100) / (1 + spendChange/100) 
+    : 1;
+
+  const incrementalSpend = current.spend - previous.spend;
+  const incrementalOrders = current.orders - previous.orders;
+  const marginalCac = incrementalOrders > 0 ? incrementalSpend / incrementalOrders : current.cac;
+
+  let status = 'green';
+  if (efficiencyRatio < 0.85 || marginalCac > current.cac * 1.3) {
+    status = 'yellow';
+  }
+  if (efficiencyRatio < 0.7 || marginalCac > current.cac * 1.5) {
+    status = 'red';
+  }
+
+  return {
+    status,
+    current,
+    previous,
+    spendChange,
+    roasChange,
+    efficiencyRatio,
+    averageCac: current.cac,
+    marginalCac,
+    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0
+  };
+}
+
+export function getEfficiencyTrends(store, params) {
+  const { startDate, endDate } = getDateRange(params);
+  const trends = getTrends(store, startDate, endDate);
+  const windowSize = 3;
   
-  return text.split('\n').map((line, i) => {
-    if (line.startsWith('## ')) {
-      return <h3 key={i} className="text-lg font-bold text-gray-900 mt-3 mb-2">{line.slice(3)}</h3>;
-    }
-    if (line.startsWith('### ')) {
-      return <h4 key={i} className="text-md font-semibold text-gray-800 mt-2 mb-1">{line.slice(4)}</h4>;
-    }
-    if (line.startsWith('- ') || line.startsWith('* ')) {
-      return (
-        <div key={i} className="flex gap-2 ml-2 my-0.5">
-          <span className="text-violet-500">•</span>
-          <span>{formatBold(line.slice(2))}</span>
-        </div>
-      );
-    }
-    if (line.match(/^\d+\.\s/)) {
-      const match = line.match(/^(\d+)\.\s(.*)$/);
-      if (match) {
-        return (
-          <div key={i} className="flex gap-2 ml-2 my-0.5">
-            <span className="text-violet-600 font-medium min-w-[1.5rem]">{match[1]}.</span>
-            <span>{formatBold(match[2])}</span>
-          </div>
-        );
-      }
-    }
-    if (line.startsWith('---')) {
-      return <hr key={i} className="my-3 border-gray-200" />;
-    }
-    if (line.trim() === '') {
-      return <div key={i} className="h-1.5" />;
-    }
-    return <p key={i} className="my-0.5">{formatBold(line)}</p>;
+  return trends.map((day, i) => {
+    const start = Math.max(0, i - windowSize + 1);
+    const window = trends.slice(start, i + 1);
+    
+    const rollingSpend = window.reduce((s, d) => s + d.spend, 0);
+    const rollingOrders = window.reduce((s, d) => s + d.orders, 0);
+    const rollingRevenue = window.reduce((s, d) => s + d.revenue, 0);
+    
+    return {
+      date: day.date,
+      spend: day.spend,
+      orders: day.orders,
+      revenue: day.revenue,
+      cac: day.cac,
+      roas: day.roas,
+      rollingCac: rollingOrders > 0 ? rollingSpend / rollingOrders : 0,
+      rollingRoas: rollingSpend > 0 ? rollingRevenue / rollingSpend : 0
+    };
   });
 }
 
-function formatBold(text) {
-  if (!text || !text.includes('**')) return text;
-  
-  const parts = [];
-  let remaining = text;
-  let key = 0;
+export function getRecommendations(store, params) {
+  return [];
+}
 
-  while (remaining.includes('**')) {
-    const start = remaining.indexOf('**');
-    const end = remaining.indexOf('**', start + 2);
-    if (end === -1) break;
-    
-    if (start > 0) parts.push(<span key={key++}>{remaining.slice(0, start)}</span>);
-    parts.push(<strong key={key++} className="font-semibold">{remaining.slice(start + 2, end)}</strong>);
-    remaining = remaining.slice(end + 2);
+export function getAvailableCountries(store) {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT DISTINCT country as code FROM meta_daily_metrics WHERE store = ? AND country != 'ALL' AND (spend > 0 OR conversions > 0)
+    UNION SELECT DISTINCT country_code as code FROM shopify_orders WHERE store = ?
+    UNION SELECT DISTINCT country_code as code FROM salla_orders WHERE store = ?
+  `).all(store, store, store);
+  return rows.map(r => getCountryInfo(r.code)).filter(c => c && c.name);
+}
+
+export function getCampaignsByCountry(store, params) { return []; }
+export function getCampaignsByAge(store, params) { return []; }
+export function getCampaignsByGender(store, params) { return []; }
+export function getCampaignsByPlacement(store, params) { return []; }
+export function getCampaignsByAgeGender(store, params) { return []; }
+export function getMetaBreakdowns(store, params) { return []; }
+
+// ============================================================================
+// HIERARCHICAL META AD MANAGER DATA
+// ============================================================================
+
+// Helper: Calculate metrics with proper null handling
+function calculateMetrics(row) {
+  return {
+    cpm: row.impressions > 0 ? (row.spend / row.impressions) * 1000 : null,
+    frequency: row.reach > 0 ? row.impressions / row.reach : null,
+    ctr: row.impressions > 0 ? (row.clicks / row.impressions) * 100 : null,
+    cpc: row.clicks > 0 ? row.spend / row.clicks : null,
+    roas: row.spend > 0 ? row.conversion_value / row.spend : null,
+    aov: row.conversions > 0 ? row.conversion_value / row.conversions : null,
+    cac: row.conversions > 0 ? row.spend / row.conversions : null
+  };
+}
+
+// Get hierarchical Meta Ad Manager data with optional breakdown
+export function getMetaAdManagerHierarchy(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const breakdown = params.breakdown || 'none'; // none, country, age, gender, age_gender, placement
+
+  // Build WHERE and GROUP BY clauses based on breakdown
+  let breakdownSelect = '';
+  let breakdownGroup = '';
+  let breakdownWhere = '';
+
+  if (breakdown === 'country') {
+    breakdownSelect = ', country';
+    breakdownGroup = ', country';
+  } else if (breakdown === 'age') {
+    breakdownSelect = ', age';
+    breakdownGroup = ', age';
+    breakdownWhere = "AND age != ''";
+  } else if (breakdown === 'gender') {
+    breakdownSelect = ', gender';
+    breakdownGroup = ', gender';
+    breakdownWhere = "AND gender != ''";
+  } else if (breakdown === 'age_gender') {
+    breakdownSelect = ', age, gender';
+    breakdownGroup = ', age, gender';
+    breakdownWhere = "AND age != '' AND gender != ''";
+  } else if (breakdown === 'placement') {
+    breakdownSelect = ', publisher_platform, platform_position';
+    breakdownGroup = ', publisher_platform, platform_position';
+    breakdownWhere = "AND publisher_platform != ''";
   }
-  
-  if (remaining) parts.push(<span key={key++}>{remaining}</span>);
-  return parts.length > 0 ? parts : text;
+
+  // Get campaigns
+  const campaignQuery = `
+    SELECT
+      campaign_id, campaign_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value
+      ${breakdownSelect}
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    GROUP BY campaign_id${breakdownGroup}
+    ORDER BY spend DESC
+  `;
+
+  const campaigns = db.prepare(campaignQuery).all(store, startDate, endDate);
+
+  const campaignsWithMetrics = campaigns.map(c => ({
+    ...c,
+    ...calculateMetrics(c),
+    level: 'campaign'
+  }));
+
+  // Get ad sets
+  const adsetQuery = `
+    SELECT
+      campaign_id, campaign_name, adset_id, adset_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value
+      ${breakdownSelect}
+    FROM meta_adset_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    GROUP BY adset_id${breakdownGroup}
+    ORDER BY spend DESC
+  `;
+
+  const adsets = db.prepare(adsetQuery).all(store, startDate, endDate);
+
+  const adsetsWithMetrics = adsets.map(a => ({
+    ...a,
+    ...calculateMetrics(a),
+    level: 'adset'
+  }));
+
+  // Get ads
+  const adQuery = `
+    SELECT
+      campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value
+      ${breakdownSelect}
+    FROM meta_ad_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    GROUP BY ad_id${breakdownGroup}
+    ORDER BY spend DESC
+  `;
+
+  const ads = db.prepare(adQuery).all(store, startDate, endDate);
+
+  const adsWithMetrics = ads.map(a => ({
+    ...a,
+    ...calculateMetrics(a),
+    level: 'ad'
+  }));
+
+  // Helper: Create composite key for matching with breakdown
+  const getCompositeKey = (item) => {
+    let key = '';
+    if (breakdown === 'country') {
+      key = item.country || 'ALL';
+    } else if (breakdown === 'age') {
+      key = item.age || '';
+    } else if (breakdown === 'gender') {
+      key = item.gender || '';
+    } else if (breakdown === 'age_gender') {
+      key = `${item.age || ''}-${item.gender || ''}`;
+    } else if (breakdown === 'placement') {
+      key = `${item.publisher_platform || ''}-${item.platform_position || ''}`;
+    }
+    return key;
+  };
+
+  // Build hierarchy with breakdown-aware grouping
+  // CRITICAL FIX: Group by composite key (ID + breakdown fields) to prevent wrong matches
+
+  // Group adsets by campaign_id + breakdown
+  const adsetMap = new Map();
+  adsetsWithMetrics.forEach(adset => {
+    const key = `${adset.campaign_id}-${getCompositeKey(adset)}`;
+    if (!adsetMap.has(key)) adsetMap.set(key, []);
+    adsetMap.get(key).push(adset);
+  });
+
+  // Group ads by adset_id + breakdown
+  const adMap = new Map();
+  adsWithMetrics.forEach(ad => {
+    const key = `${ad.adset_id}-${getCompositeKey(ad)}`;
+    if (!adMap.has(key)) adMap.set(key, []);
+    adMap.get(key).push(ad);
+  });
+
+  // Build hierarchy using grouped data
+  const hierarchy = campaignsWithMetrics.map(campaign => {
+    const campaignKey = `${campaign.campaign_id}-${getCompositeKey(campaign)}`;
+    const campaignAdsets = (adsetMap.get(campaignKey) || []).map(adset => {
+      const adsetKey = `${adset.adset_id}-${getCompositeKey(adset)}`;
+      return {
+        ...adset,
+        ads: adMap.get(adsetKey) || []
+      };
+    });
+
+    return {
+      ...campaign,
+      adsets: campaignAdsets
+    };
+  });
+
+  return hierarchy;
+}
+
+// ============================================================================
+// FUNNEL DIAGNOSTICS
+// ============================================================================
+export function getFunnelDiagnostics(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const campaignId = params.campaignId || null; // Optional campaign filter
+
+  // Calculate previous period for comparison
+  const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
+  const prevEndDate = new Date(new Date(startDate).getTime() - (1000 * 60 * 60 * 24));
+  const prevStartDate = new Date(prevEndDate.getTime() - ((daysDiff - 1) * 1000 * 60 * 60 * 24));
+  const prevStartStr = formatDateAsGmt3(prevStartDate);
+  const prevEndStr = formatDateAsGmt3(prevEndDate);
+
+  // Build WHERE clause with optional campaign filter
+  const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
+  const queryParams = campaignId
+    ? [store, startDate, endDate, campaignId]
+    : [store, startDate, endDate];
+  const prevQueryParams = campaignId
+    ? [store, prevStartStr, prevEndStr, campaignId]
+    : [store, prevStartStr, prevEndStr];
+
+  // Get current period metrics
+  const currentQuery = `
+    SELECT
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}
+  `;
+
+  const current = db.prepare(currentQuery).get(...queryParams);
+  const previous = db.prepare(currentQuery).get(...prevQueryParams);
+
+  // Get daily data for sparklines (last 7 days of current period)
+  const dailyQuery = `
+    SELECT
+      date,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}
+    GROUP BY date
+    ORDER BY date DESC
+    LIMIT 7
+  `;
+
+  const dailyData = db.prepare(dailyQuery).all(...queryParams).reverse();
+
+  // Get campaign name if specific campaign selected
+  let campaignName = null;
+  if (campaignId) {
+    const campaignInfo = db.prepare(
+      'SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1'
+    ).get(campaignId);
+    campaignName = campaignInfo?.campaign_name || null;
+  }
+
+  // Calculate metrics
+  const calcMetrics = (d) => {
+    if (!d || !d.impressions) return null;
+    return {
+      ctr: d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0,
+      cpc: d.clicks > 0 ? d.spend / d.clicks : 0,
+      cpm: d.impressions > 0 ? (d.spend / d.impressions) * 1000 : 0,
+      frequency: d.reach > 0 ? d.impressions / d.reach : 0,
+      lpvRate: d.clicks > 0 ? (d.lpv / d.clicks) * 100 : 0,
+      atcRate: d.lpv > 0 ? (d.atc / d.lpv) * 100 : 0,
+      checkoutRate: d.atc > 0 ? (d.checkout / d.atc) * 100 : 0,
+      purchaseRate: d.checkout > 0 ? (d.purchases / d.checkout) * 100 : 0,
+      cvr: d.clicks > 0 ? (d.purchases / d.clicks) * 100 : 0,
+      roas: d.spend > 0 ? d.revenue / d.spend : 0,
+      cac: d.purchases > 0 ? d.spend / d.purchases : 0,
+      aov: d.purchases > 0 ? d.revenue / d.purchases : 0,
+      // Raw values for display
+      spend: d.spend || 0,
+      impressions: d.impressions || 0,
+      clicks: d.clicks || 0,
+      purchases: d.purchases || 0,
+      revenue: d.revenue || 0
+    };
+  };
+
+  const currentMetrics = calcMetrics(current);
+  const previousMetrics = calcMetrics(previous);
+
+  // Calculate daily metrics for sparklines
+  const sparklineData = dailyData.map(d => calcMetrics(d)).filter(Boolean);
+
+  // Calculate % changes
+  const calcChange = (curr, prev) => {
+    if (!prev || prev === 0) return null;
+    return ((curr - prev) / prev) * 100;
+  };
+
+  const changes = currentMetrics && previousMetrics ? {
+    ctr: calcChange(currentMetrics.ctr, previousMetrics.ctr),
+    cpc: calcChange(currentMetrics.cpc, previousMetrics.cpc),
+    cpm: calcChange(currentMetrics.cpm, previousMetrics.cpm),
+    frequency: calcChange(currentMetrics.frequency, previousMetrics.frequency),
+    lpvRate: calcChange(currentMetrics.lpvRate, previousMetrics.lpvRate),
+    atcRate: calcChange(currentMetrics.atcRate, previousMetrics.atcRate),
+    checkoutRate: calcChange(currentMetrics.checkoutRate, previousMetrics.checkoutRate),
+    purchaseRate: calcChange(currentMetrics.purchaseRate, previousMetrics.purchaseRate),
+    cvr: calcChange(currentMetrics.cvr, previousMetrics.cvr),
+    roas: calcChange(currentMetrics.roas, previousMetrics.roas),
+    cac: calcChange(currentMetrics.cac, previousMetrics.cac),
+  } : {};
+
+  return {
+    current: currentMetrics,
+    previous: previousMetrics,
+    changes,
+    sparklineData,
+    campaignId,
+    campaignName,
+    period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
+  };
 }
