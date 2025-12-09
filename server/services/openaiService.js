@@ -423,22 +423,6 @@ Generate a ${reportType.toUpperCase()} report with actionable insights.`;
 }
 
 // ============================================================================
-// CLEANUP - Delete demo Salla data
-// ============================================================================
-
-export function deleteDemoSallaData() {
-  const db = getDb();
-  try {
-    const result = db.prepare(`DELETE FROM salla_orders WHERE store = 'vironax'`).run();
-    console.log(`[Cleanup] Deleted ${result.changes} demo Salla orders`);
-    return { success: true, deleted: result.changes };
-  } catch (error) {
-    console.error('[Cleanup] Failed to delete demo data:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-// ============================================================================
 // DEBUG - Run raw SQL query
 // ============================================================================
 
