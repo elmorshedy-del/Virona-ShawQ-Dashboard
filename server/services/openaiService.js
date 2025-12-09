@@ -37,80 +37,152 @@ const DEPTH_TO_EFFORT = {
 // OPTIMIZED DATA FETCHING - Parallel queries, smart store detection
 // ============================================================================
 
-function getStoreData(db, storeName, today, yesterday, last7Days) {
+function getStoreData(db, storeName, today, yesterday, periodStart) {
+  // Keep original for backwards compatibility
+  return getStoreDataFull(db, storeName, today, yesterday, periodStart);
+}
+
+function getStoreDataFull(db, storeName, today, yesterday, periodStart) {
   const storeData = {};
   
   try {
-    // Run all queries for this store
-    storeData.overview = db.prepare(`
+    // LIFETIME totals (all data ever)
+    storeData.lifetime = db.prepare(`
       SELECT 
         SUM(spend) as totalSpend,
         SUM(conversion_value) as totalRevenue,
         SUM(conversions) as totalOrders,
         ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
-        ROUND(SUM(spend) / NULLIF(SUM(conversions), 0), 2) as cpa
+        ROUND(SUM(spend) / NULLIF(SUM(conversions), 0), 2) as cpa,
+        MIN(date) as firstDate,
+        MAX(date) as lastDate,
+        COUNT(DISTINCT date) as daysWithData
+      FROM meta_daily_metrics 
+      WHERE LOWER(store) = ?
+    `).get(storeName);
+
+    // Last 30 days summary
+    const last30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    storeData.last30Days = db.prepare(`
+      SELECT 
+        SUM(spend) as spend,
+        SUM(conversion_value) as revenue,
+        SUM(conversions) as orders,
+        ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas
       FROM meta_daily_metrics 
       WHERE LOWER(store) = ? AND date >= ?
-    `).get(storeName, last7Days);
+    `).get(storeName, last30);
 
+    // Last 7 days summary
+    const last7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    storeData.last7Days = db.prepare(`
+      SELECT 
+        SUM(spend) as spend,
+        SUM(conversion_value) as revenue,
+        SUM(conversions) as orders,
+        ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas
+      FROM meta_daily_metrics 
+      WHERE LOWER(store) = ? AND date >= ?
+    `).get(storeName, last7);
+
+    // Today
     storeData.today = db.prepare(`
       SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
       FROM meta_daily_metrics WHERE LOWER(store) = ? AND date = ?
     `).get(storeName, today);
 
+    // Yesterday
     storeData.yesterday = db.prepare(`
       SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
       FROM meta_daily_metrics WHERE LOWER(store) = ? AND date = ?
     `).get(storeName, yesterday);
 
-    // Campaigns (limit to top 10 for speed)
-    storeData.campaigns = db.prepare(`
+    // Monthly trends (last 6 months)
+    storeData.monthlyTrends = db.prepare(`
+      SELECT 
+        strftime('%Y-%m', date) as month,
+        SUM(spend) as spend,
+        SUM(conversion_value) as revenue,
+        SUM(conversions) as orders,
+        ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas
+      FROM meta_daily_metrics 
+      WHERE LOWER(store) = ? AND date >= date('now', '-6 months')
+      GROUP BY strftime('%Y-%m', date)
+      ORDER BY month DESC
+    `).all(storeName);
+
+    // Top campaigns (lifetime performance)
+    storeData.topCampaigns = db.prepare(`
       SELECT 
         campaign_name,
-        SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders,
+        SUM(spend) as spend, 
+        SUM(conversion_value) as revenue, 
+        SUM(conversions) as orders,
+        ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
+        MIN(date) as firstSeen,
+        MAX(date) as lastSeen
+      FROM meta_daily_metrics 
+      WHERE LOWER(store) = ? AND campaign_name IS NOT NULL
+      GROUP BY campaign_name
+      ORDER BY revenue DESC LIMIT 10
+    `).all(storeName);
+
+    // Recent campaign performance (last 7 days)
+    storeData.recentCampaigns = db.prepare(`
+      SELECT 
+        campaign_name,
+        SUM(spend) as spend, 
+        SUM(conversion_value) as revenue, 
+        SUM(conversions) as orders,
         ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas
       FROM meta_daily_metrics 
       WHERE LOWER(store) = ? AND date >= ? AND campaign_name IS NOT NULL
       GROUP BY campaign_name
       ORDER BY spend DESC LIMIT 10
-    `).all(storeName, last7Days);
+    `).all(storeName, last7);
 
-    // Campaigns by day (last 7 days only, top campaigns)
-    storeData.campaignsByDay = db.prepare(`
-      SELECT date, campaign_name, SUM(conversions) as orders, SUM(conversion_value) as revenue
+    // Best performing days
+    storeData.bestDays = db.prepare(`
+      SELECT date, SUM(conversion_value) as revenue, SUM(conversions) as orders, SUM(spend) as spend
       FROM meta_daily_metrics 
-      WHERE LOWER(store) = ? AND date >= ? AND campaign_name IS NOT NULL
-      GROUP BY date, campaign_name
-      ORDER BY date DESC
-    `).all(storeName, last7Days);
+      WHERE LOWER(store) = ?
+      GROUP BY date
+      ORDER BY revenue DESC LIMIT 5
+    `).all(storeName);
 
-    // E-commerce orders
-    const orderTable = storeName === 'vironax' ? 'salla_orders' : 'shopify_orders';
-    try {
-      storeData.ordersOverview = db.prepare(`
-        SELECT COUNT(*) as totalOrders, SUM(order_total) as totalRevenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
-      `).get(storeName, last7Days);
+    // Worst performing days (with spend > 0)
+    storeData.worstDays = db.prepare(`
+      SELECT date, SUM(conversion_value) as revenue, SUM(conversions) as orders, SUM(spend) as spend,
+        ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas
+      FROM meta_daily_metrics 
+      WHERE LOWER(store) = ? AND spend > 0
+      GROUP BY date
+      ORDER BY roas ASC LIMIT 5
+    `).all(storeName);
 
-      storeData.ordersToday = db.prepare(`
-        SELECT COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?
-      `).get(storeName, today);
+    // E-commerce orders - SKIP Salla for VironaX (has demo data, not connected yet)
+    if (storeName === 'shawq') {
+      try {
+        storeData.ordersOverview = db.prepare(`
+          SELECT COUNT(*) as totalOrders, SUM(order_total) as totalRevenue
+          FROM shopify_orders WHERE LOWER(store) = ? AND date >= ?
+        `).get(storeName, periodStart);
 
-      storeData.ordersYesterday = db.prepare(`
-        SELECT COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?
-      `).get(storeName, yesterday);
+        storeData.ordersToday = db.prepare(`
+          SELECT COUNT(*) as orders, SUM(order_total) as revenue
+          FROM shopify_orders WHERE LOWER(store) = ? AND date = ?
+        `).get(storeName, today);
 
-      storeData.ordersByCountry = db.prepare(`
-        SELECT country_code, COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
-        GROUP BY country_code ORDER BY orders DESC LIMIT 10
-      `).all(storeName, last7Days);
-    } catch (e) {}
+        storeData.ordersByCountry = db.prepare(`
+          SELECT country_code, COUNT(*) as orders, SUM(order_total) as revenue
+          FROM shopify_orders WHERE LOWER(store) = ? AND date >= ?
+          GROUP BY country_code ORDER BY orders DESC LIMIT 10
+        `).all(storeName, periodStart);
+      } catch (e) {}
+    }
 
   } catch (error) {
-    console.error(`[getStoreData] Error for ${storeName}:`, error.message);
+    console.error(`[getStoreDataFull] Error for ${storeName}:`, error.message);
   }
 
   return storeData;
@@ -121,8 +193,37 @@ function getRelevantData(store, question) {
   const q = question.toLowerCase();
 
   const today = new Date().toISOString().split('T')[0];
-  const last7Days = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  
+  // Default to ALL available data for full business context
+  // Only narrow down if user specifically asks for shorter period
+  let daysBack = 365; // Full year by default
+  
+  if (q.includes('today only') || q.includes('just today')) {
+    daysBack = 1;
+  } else if (q.includes('yesterday only') || q.includes('just yesterday')) {
+    daysBack = 2;
+  } else if (q.includes('this week') || q.includes('past week') || q.includes('last 7')) {
+    daysBack = 7;
+  } else if (q.includes('2 week') || q.includes('two week') || q.includes('last 14')) {
+    daysBack = 14;
+  } else if (q.includes('this month') || q.includes('past month') || q.includes('last 30')) {
+    daysBack = 30;
+  }
+  // Otherwise keep 365 days for full context
+  
+  const periodStart = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  
+  // Also get the earliest date in the database for context
+  let earliestDate = periodStart;
+  try {
+    const earliest = db.prepare(`
+      SELECT MIN(date) as earliest FROM meta_daily_metrics WHERE LOWER(store) = ?
+    `).get(store.toLowerCase());
+    if (earliest?.earliest) {
+      earliestDate = earliest.earliest;
+    }
+  } catch (e) {}
 
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const todayDate = new Date();
@@ -133,8 +234,10 @@ function getRelevantData(store, question) {
       todayDayName: dayNames[todayDate.getDay()],
       yesterday,
       yesterdayDayName: dayNames[new Date(Date.now() - 24 * 60 * 60 * 1000).getDay()],
-      periodStart: last7Days,
-      periodEnd: today
+      periodStart,
+      periodEnd: today,
+      periodDays: daysBack,
+      dataAvailableFrom: earliestDate
     },
     currentStore: store.toLowerCase()
   };
@@ -145,13 +248,13 @@ function getRelevantData(store, question) {
   const mentionsShawq = q.includes('shawq');
   const mentionsBoth = q.includes('both') || q.includes('compare') || q.includes('stores');
 
-  // Always fetch current store
-  data[currentStore] = getStoreData(db, currentStore, today, yesterday, last7Days);
+  // Always fetch current store with FULL data
+  data[currentStore] = getStoreDataFull(db, currentStore, today, yesterday, periodStart);
 
   // Only fetch other store if mentioned
   if (mentionsBoth || (currentStore === 'vironax' && mentionsShawq) || (currentStore === 'shawq' && mentionsVironax)) {
     const otherStore = currentStore === 'vironax' ? 'shawq' : 'vironax';
-    data[otherStore] = getStoreData(db, otherStore, today, yesterday, last7Days);
+    data[otherStore] = getStoreDataFull(db, otherStore, today, yesterday, periodStart);
   }
 
   // Clean up empty data
@@ -206,34 +309,56 @@ ${history.map(m => `${m.role === 'user' ? 'User' : 'You'}: ${m.content}`).join('
 ---`;
   }
 
-  const basePrompt = `You are an expert e-commerce analyst with memory of our conversation.
+  const periodDays = data.dateContext?.periodDays || 365;
+  const periodLabel = periodDays === 1 ? 'today' : 
+                      periodDays === 7 ? 'last 7 days' : 
+                      periodDays === 14 ? 'last 2 weeks' :
+                      periodDays === 30 ? 'last 30 days' :
+                      periodDays === 90 ? 'last 90 days' :
+                      periodDays === 365 ? 'full history (up to 1 year)' :
+                      `last ${periodDays} days`;
+
+  const basePrompt = `You are an expert e-commerce analyst with FULL access to this business's historical data.
 ${storeInfo}
 
 TODAY: ${data.dateContext?.today} (${data.dateContext?.todayDayName})
 YESTERDAY: ${data.dateContext?.yesterday} (${data.dateContext?.yesterdayDayName})
+DATA AVAILABLE FROM: ${data.dateContext?.dataAvailableFrom || 'unknown'}
 ${conversationContext}
 
-CURRENT DATA:
+BUSINESS DATA (${periodLabel}):
 ${JSON.stringify(data, null, 2)}
 
+YOU HAVE ACCESS TO:
+- Lifetime totals and averages
+- Monthly trends (last 6 months)
+- Last 30 days vs last 7 days comparison
+- Top performing campaigns (all-time)
+- Recent campaign performance
+- Best and worst performing days
+- Today vs yesterday
+
 RULES:
-- Use ONLY this data, never invent numbers
-- VironaX = SAR, Shawq = USD
+- Use this data to understand the FULL business context
+- Compare recent performance to historical trends
+- Identify patterns, seasonality, and anomalies
+- VironaX = SAR currency, Shawq = USD currency
 - ROAS = revenue/spend
-- Be specific with real figures
-- Remember context from our conversation above`;
+- Be specific with real figures from the data
+- When asked general questions like "how's my store", give a holistic view using all available data`;
 
   if (mode === 'analyze') {
-    return basePrompt + '\n\nMODE: Quick answer in 2-3 sentences max.';
+    return basePrompt + '\n\nMODE: Quick answer in 2-3 sentences, but informed by full context.';
   }
   if (mode === 'summarize') {
-    return basePrompt + '\n\nMODE: Summarize trends, compare periods, flag anomalies.';
+    return basePrompt + '\n\nMODE: Summarize trends across the full data range, compare periods, flag anomalies.';
   }
   return basePrompt + `\n\nMODE: Strategic Decisions
-- Give detailed, actionable recommendations
-- Analyze each campaign with specific numbers
-- Include budget recommendations
-- Prioritize by impact`;
+- Use historical context to inform recommendations
+- Compare current performance to past trends
+- Identify what's working vs what worked before
+- Give detailed, actionable recommendations with specific numbers
+- Prioritize by impact based on historical performance`;
 }
 
 // ============================================================================
@@ -370,6 +495,35 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
   return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta);
+}
+
+// Streaming versions for Analyze and Summarize
+export async function analyzeQuestionStream(question, store, onDelta, history = []) {
+  const data = getRelevantData(store, question);
+  const systemPrompt = buildSystemPrompt(store, 'analyze', data, history);
+  return await streamWithFallback(MODELS.NANO, FALLBACK_MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano, null, onDelta);
+}
+
+export async function summarizeDataStream(question, store, onDelta, history = []) {
+  const data = getRelevantData(store, question);
+  const systemPrompt = buildSystemPrompt(store, 'summarize', data, history);
+  return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta);
+}
+
+// ============================================================================
+// CLEANUP - Delete demo Salla data
+// ============================================================================
+
+export function deleteDemoSallaData() {
+  const db = getDb();
+  try {
+    const result = db.prepare(`DELETE FROM salla_orders WHERE store = 'vironax'`).run();
+    console.log(`[Cleanup] Deleted ${result.changes} demo Salla orders`);
+    return { success: true, deleted: result.changes };
+  } catch (error) {
+    console.error('[Cleanup] Failed to delete demo data:', error.message);
+    return { success: false, error: error.message };
+  }
 }
 
 // ============================================================================
