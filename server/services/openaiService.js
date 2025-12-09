@@ -832,22 +832,19 @@ RULES:
 // ============================================================================
 
 async function callResponsesAPI(model, systemPrompt, userMessage, maxTokens, reasoningEffort = null) {
-  const requestBody = {
+  console.log(`[OpenAI] Calling ${model} (max_tokens: ${maxTokens})`);
+
+  const response = await client.chat.completions.create({
     model,
-    input: [
+    messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage }
     ],
-    max_output_tokens: maxTokens
-  };
+    max_tokens: maxTokens,
+    temperature: 0.7
+  });
 
-  if (reasoningEffort && model.includes('5.1')) {
-    requestBody.reasoning = { effort: reasoningEffort };
-  }
-
-  console.log(`[OpenAI] Calling ${model} (max_tokens: ${maxTokens})`);
-  const response = await client.responses.create(requestBody);
-  return response.output_text;
+  return response.choices[0].message.content;
 }
 
 async function callChatCompletionsAPI(model, systemPrompt, userMessage, maxTokens) {
@@ -881,33 +878,27 @@ async function callWithFallback(primary, fallback, systemPrompt, userMessage, ma
 
 async function streamWithFallback(primary, fallback, systemPrompt, userMessage, maxTokens, reasoningEffort, onDelta) {
   try {
-    const requestBody = {
+    console.log(`[OpenAI] Streaming ${primary}`);
+    const stream = await client.chat.completions.create({
       model: primary,
-      input: [
+      messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage }
       ],
-      max_output_tokens: maxTokens,
+      max_tokens: maxTokens,
+      temperature: 0.7,
       stream: true
-    };
+    });
 
-    if (reasoningEffort && primary.includes('5.1')) {
-      requestBody.reasoning = { effort: reasoningEffort };
-    }
-
-    console.log(`[OpenAI] Streaming ${primary}`);
-    const stream = await client.responses.create(requestBody);
-
-    for await (const event of stream) {
-      if (event.type === 'response.output_text.delta') {
-        onDelta(event.delta);
-      }
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) onDelta(delta);
     }
 
     return { model: primary, reasoning: reasoningEffort };
   } catch (error) {
     console.log(`[OpenAI] Stream ${primary} failed: ${error.message}, trying ${fallback}`);
-    
+
     const response = await client.chat.completions.create({
       model: fallback,
       messages: [
