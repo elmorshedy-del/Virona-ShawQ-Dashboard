@@ -40,38 +40,44 @@ const DEPTH_TO_EFFORT = {
 
 function getStoreData(db, storeName, today, yesterday, last7Days) {
   const storeData = {};
-  
+
   try {
-    // Run all queries for this store
+    // Run all queries for this store - DEFAULT: ACTIVE only
+    // We use ACTIVE or UNKNOWN to maintain backwards compatibility with pre-status data
     storeData.overview = db.prepare(`
-      SELECT 
+      SELECT
         SUM(spend) as totalSpend,
         SUM(conversion_value) as totalRevenue,
         SUM(conversions) as totalOrders,
         ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
         ROUND(SUM(spend) / NULLIF(SUM(conversions), 0), 2) as cpa
-      FROM meta_daily_metrics 
+      FROM meta_daily_metrics
       WHERE LOWER(store) = ? AND date >= ?
+      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
     `).get(storeName, last7Days);
 
     storeData.today = db.prepare(`
       SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
       FROM meta_daily_metrics WHERE LOWER(store) = ? AND date = ?
+      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
     `).get(storeName, today);
 
     storeData.yesterday = db.prepare(`
       SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
       FROM meta_daily_metrics WHERE LOWER(store) = ? AND date = ?
+      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
     `).get(storeName, yesterday);
 
-    // Campaigns (limit to top 10 for speed)
+    // Campaigns with status info (limit to top 10 for speed)
     storeData.campaigns = db.prepare(`
-      SELECT 
+      SELECT
         campaign_name,
+        MAX(effective_status) as status,
         SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders,
         ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas
-      FROM meta_daily_metrics 
+      FROM meta_daily_metrics
       WHERE LOWER(store) = ? AND date >= ? AND campaign_name IS NOT NULL
+      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
       GROUP BY campaign_name
       ORDER BY spend DESC LIMIT 10
     `).all(storeName, last7Days);
@@ -79,8 +85,9 @@ function getStoreData(db, storeName, today, yesterday, last7Days) {
     // Campaigns by day (last 7 days only, top campaigns)
     storeData.campaignsByDay = db.prepare(`
       SELECT date, campaign_name, SUM(conversions) as orders, SUM(conversion_value) as revenue
-      FROM meta_daily_metrics 
+      FROM meta_daily_metrics
       WHERE LOWER(store) = ? AND date >= ? AND campaign_name IS NOT NULL
+      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
       GROUP BY date, campaign_name
       ORDER BY date DESC
     `).all(storeName, last7Days);
@@ -110,11 +117,117 @@ function getStoreData(db, storeName, today, yesterday, last7Days) {
       `).all(storeName, last7Days);
     } catch (e) {}
 
+    // Add account structure summary
+    try {
+      storeData.accountStructure = getAccountStructure(db, storeName);
+    } catch (e) {
+      console.error('[getStoreData] Account structure error:', e.message);
+    }
+
   } catch (error) {
     console.error(`[getStoreData] Error for ${storeName}:`, error.message);
   }
 
   return storeData;
+}
+
+// ============================================================================
+// ACCOUNT STRUCTURE - Summary of active/inactive objects
+// ============================================================================
+function getAccountStructure(db, storeName) {
+  try {
+    // Get summary of meta objects by status
+    const summary = db.prepare(`
+      SELECT
+        effective_status,
+        object_type,
+        COUNT(*) as count
+      FROM meta_objects
+      WHERE LOWER(store) = ?
+      GROUP BY effective_status, object_type
+    `).all(storeName);
+
+    // Parse into structured format
+    const structure = {
+      campaigns: { active: 0, paused: 0, archived: 0, other: 0 },
+      adsets: { active: 0, paused: 0, archived: 0, other: 0 },
+      ads: { active: 0, paused: 0, archived: 0, other: 0 }
+    };
+
+    for (const row of summary) {
+      const type = row.object_type === 'campaign' ? 'campaigns'
+        : row.object_type === 'adset' ? 'adsets'
+        : row.object_type === 'ad' ? 'ads' : null;
+
+      if (!type) continue;
+
+      const status = (row.effective_status || '').toUpperCase();
+      if (status === 'ACTIVE') structure[type].active = row.count;
+      else if (status === 'PAUSED') structure[type].paused = row.count;
+      else if (status === 'ARCHIVED') structure[type].archived = row.count;
+      else structure[type].other += row.count;
+    }
+
+    return structure;
+  } catch (error) {
+    return null;
+  }
+}
+
+// ============================================================================
+// REACTIVATION CANDIDATES - Inactive objects with good historical performance
+// ============================================================================
+function getReactivationCandidates(db, storeName) {
+  const last90Days = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+  try {
+    // Get inactive campaigns with good historical performance (ROAS > 1.0)
+    const inactiveCampaigns = db.prepare(`
+      SELECT
+        campaign_id, campaign_name,
+        MAX(effective_status) as status,
+        ROUND(SUM(spend), 2) as total_spend,
+        SUM(conversions) as total_conversions,
+        ROUND(SUM(conversion_value), 2) as total_revenue,
+        ROUND(AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END), 2) as avg_roas,
+        MAX(date) as last_active_date
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ?
+      AND (effective_status = 'PAUSED' OR effective_status = 'ARCHIVED')
+      GROUP BY campaign_id
+      HAVING total_conversions > 0 AND avg_roas > 1.0
+      ORDER BY avg_roas DESC
+      LIMIT 5
+    `).all(storeName, last90Days);
+
+    // Get inactive adsets with good historical performance
+    const inactiveAdsets = db.prepare(`
+      SELECT
+        campaign_name, adset_id, adset_name,
+        MAX(adset_effective_status) as status,
+        ROUND(SUM(spend), 2) as total_spend,
+        SUM(conversions) as total_conversions,
+        ROUND(SUM(conversion_value), 2) as total_revenue,
+        ROUND(AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END), 2) as avg_roas,
+        MAX(date) as last_active_date
+      FROM meta_adset_metrics
+      WHERE LOWER(store) = ? AND date >= ?
+      AND (adset_effective_status = 'PAUSED' OR adset_effective_status = 'ARCHIVED')
+      GROUP BY adset_id
+      HAVING total_conversions > 0 AND avg_roas > 1.0
+      ORDER BY avg_roas DESC
+      LIMIT 5
+    `).all(storeName, last90Days);
+
+    return {
+      campaigns: inactiveCampaigns || [],
+      adsets: inactiveAdsets || [],
+      note: 'These are paused/archived objects that performed well historically and may be candidates for reactivation'
+    };
+  } catch (error) {
+    console.error('[getReactivationCandidates] Error:', error.message);
+    return { campaigns: [], adsets: [], note: 'Error fetching reactivation candidates' };
+  }
 }
 
 function getRelevantData(store, question) {
@@ -146,8 +259,18 @@ function getRelevantData(store, question) {
   const mentionsShawq = q.includes('shawq');
   const mentionsBoth = q.includes('both') || q.includes('compare') || q.includes('stores');
 
+  // Detect if question is about reactivation or inactive items
+  const mentionsReactivation = q.includes('reactivat') || q.includes('inactive') ||
+    q.includes('paused') || q.includes('archived') || q.includes('turn back on') ||
+    q.includes('winners') || q.includes('old campaigns');
+
   // Always fetch current store
   data[currentStore] = getStoreData(db, currentStore, today, yesterday, last7Days);
+
+  // Include reactivation candidates if mentioned
+  if (mentionsReactivation) {
+    data.reactivationCandidates = getReactivationCandidates(db, currentStore);
+  }
 
   // Only fetch other store if mentioned
   if (mentionsBoth || (currentStore === 'vironax' && mentionsShawq) || (currentStore === 'shawq' && mentionsVironax)) {
@@ -186,7 +309,9 @@ function removeEmpty(obj) {
 
 function buildSystemPrompt(store, mode, data) {
   const hasOtherStore = data.vironax && data.shawq;
-  
+  const hasReactivationData = data.reactivationCandidates &&
+    (data.reactivationCandidates.campaigns?.length > 0 || data.reactivationCandidates.adsets?.length > 0);
+
   let storeInfo = '';
   if (hasOtherStore) {
     storeInfo = `You have data for BOTH stores:
@@ -194,16 +319,40 @@ function buildSystemPrompt(store, mode, data) {
 - Shawq (Turkey/US, USD, apparel, Shopify)`;
   } else {
     const s = store.toLowerCase();
-    storeInfo = s === 'vironax' 
+    storeInfo = s === 'vironax'
       ? 'Store: VironaX (Saudi Arabia, SAR currency, mens jewelry, Salla)'
       : 'Store: Shawq (Turkey/US, USD currency, apparel, Shopify)';
   }
 
+  // Account structure context
+  let structureInfo = '';
+  const storeData = data[store.toLowerCase()];
+  if (storeData?.accountStructure) {
+    const s = storeData.accountStructure;
+    structureInfo = `
+ACCOUNT STRUCTURE:
+- Campaigns: ${s.campaigns.active} active, ${s.campaigns.paused} paused, ${s.campaigns.archived} archived
+- Ad Sets: ${s.adsets.active} active, ${s.adsets.paused} paused, ${s.adsets.archived} archived
+- Ads: ${s.ads.active} active, ${s.ads.paused} paused, ${s.ads.archived} archived`;
+  }
+
+  // Reactivation context
+  let reactivationInfo = '';
+  if (hasReactivationData) {
+    reactivationInfo = `
+REACTIVATION CANDIDATES:
+The data includes inactive (paused/archived) campaigns and ad sets that performed well historically.
+When asked about reactivation opportunities, analyze these candidates and recommend which ones
+to consider reactivating based on their historical ROAS, conversion volume, and recency.`;
+  }
+
   const basePrompt = `You are an expert e-commerce analyst.
 ${storeInfo}
+${structureInfo}
 
 TODAY: ${data.dateContext?.today} (${data.dateContext?.todayDayName})
 YESTERDAY: ${data.dateContext?.yesterday} (${data.dateContext?.yesterdayDayName})
+${reactivationInfo}
 
 DATA:
 ${JSON.stringify(data, null, 2)}
@@ -212,7 +361,9 @@ RULES:
 - Use ONLY this data, never invent numbers
 - VironaX = SAR, Shawq = USD
 - ROAS = revenue/spend
-- Be specific with real figures`;
+- Be specific with real figures
+- The data shown is for ACTIVE campaigns by default
+- If asked about inactive/paused items, refer to reactivationCandidates data if available`;
 
   if (mode === 'analyze') {
     return basePrompt + '\n\nMODE: Quick answer in 2-3 sentences max.';
@@ -224,7 +375,8 @@ RULES:
 - Give detailed, actionable recommendations
 - Analyze each campaign with specific numbers
 - Include budget recommendations
-- Prioritize by impact`;
+- Prioritize by impact
+- If reactivation candidates exist, evaluate them and recommend which to turn back on`;
 }
 
 // ============================================================================
@@ -349,7 +501,7 @@ export async function decideQuestion(question, store, depth = 'balanced') {
   const systemPrompt = buildSystemPrompt(store, 'decide', data);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
-  
+
   const result = await callWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort);
   return { ...result, reasoning: effort };
 }
@@ -393,8 +545,19 @@ export async function dailySummary(reportType = 'am') {
     shawq: getStoreData(db, 'shawq', today, yesterday, last7Days)
   };
 
+  // Include reactivation candidates in daily reports
+  data.vironaxReactivation = getReactivationCandidates(db, 'vironax');
+  data.shawqReactivation = getReactivationCandidates(db, 'shawq');
+
   const systemPrompt = `You are a Growth Scientist analyzing both Virona and Shawq stores.
-Generate a ${reportType.toUpperCase()} report with actionable insights.`;
+Generate a ${reportType.toUpperCase()} report with actionable insights.
+
+The data includes:
+1. Current ACTIVE campaign performance
+2. Account structure (active/paused/archived counts)
+3. Reactivation candidates - paused/archived items with good historical performance
+
+If there are promising reactivation candidates, include a "Reactivation Opportunities" section.`;
 
   const userPrompt = `${reportType.toUpperCase()} Report for ${today}\n\nDATA:\n${JSON.stringify(data, null, 2)}`;
 
@@ -414,8 +577,19 @@ export async function dailySummaryStream(reportType = 'am', onDelta) {
     shawq: getStoreData(db, 'shawq', today, yesterday, last7Days)
   };
 
+  // Include reactivation candidates in daily reports
+  data.vironaxReactivation = getReactivationCandidates(db, 'vironax');
+  data.shawqReactivation = getReactivationCandidates(db, 'shawq');
+
   const systemPrompt = `You are a Growth Scientist analyzing both Virona and Shawq stores.
-Generate a ${reportType.toUpperCase()} report with actionable insights.`;
+Generate a ${reportType.toUpperCase()} report with actionable insights.
+
+The data includes:
+1. Current ACTIVE campaign performance
+2. Account structure (active/paused/archived counts)
+3. Reactivation candidates - paused/archived items with good historical performance
+
+If there are promising reactivation candidates, include a "Reactivation Opportunities" section.`;
 
   const userPrompt = `${reportType.toUpperCase()} Report for ${today}\n\nDATA:\n${JSON.stringify(data, null, 2)}`;
 

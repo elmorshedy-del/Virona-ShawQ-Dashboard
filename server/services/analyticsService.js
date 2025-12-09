@@ -8,28 +8,28 @@ import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 function getDateRange(params) {
   const now = new Date();
   const today = formatDateAsGmt3(now);
-  
+
   if (params.startDate && params.endDate) {
     const start = new Date(params.startDate);
     const end = new Date(params.endDate);
     const days = Math.ceil((end - start) / (24 * 60 * 60 * 1000)) + 1;
     return { startDate: params.startDate, endDate: params.endDate, days };
   }
-  
+
   if (params.yesterday) {
     const yesterday = formatDateAsGmt3(new Date(now.getTime() - 24 * 60 * 60 * 1000));
     return { startDate: yesterday, endDate: yesterday, days: 1 };
   }
-  
+
   let days = 7;
   if (params.days) days = parseInt(params.days);
   else if (params.weeks) days = parseInt(params.weeks) * 7;
   else if (params.months) days = parseInt(params.months) * 30;
-  
+
   const endDate = today;
   const startMs = now.getTime() - (days - 1) * 24 * 60 * 60 * 1000;
   const startDate = formatDateAsGmt3(new Date(startMs));
-  
+
   return { startDate, endDate, days };
 }
 
@@ -39,15 +39,36 @@ function getPreviousDateRange(startDate, endDate) {
   const end = new Date(endDate);
   const durationMs = end.getTime() - start.getTime();
   const durationDays = Math.ceil(durationMs / (24 * 60 * 60 * 1000)) + 1;
-  
+
   // Go back exactly one period
   const prevEnd = new Date(start.getTime() - 24 * 60 * 60 * 1000);
   const prevStart = new Date(prevEnd.getTime() - (durationDays - 1) * 24 * 60 * 60 * 1000);
-  
+
   return {
     startDate: formatDateAsGmt3(prevStart),
     endDate: formatDateAsGmt3(prevEnd)
   };
+}
+
+// ============================================================================
+// STATUS FILTERING HELPERS
+// ============================================================================
+
+// Check if includeInactive is requested
+function shouldIncludeInactive(params) {
+  return params.includeInactive === 'true' || params.includeInactive === true;
+}
+
+// Build status filter clause for SQL queries
+// Default: only ACTIVE effective_status
+// With includeInactive: include all statuses
+function buildStatusFilter(params, columnPrefix = '') {
+  if (shouldIncludeInactive(params)) {
+    return ''; // No filter - include all
+  }
+  // Default: only ACTIVE (or UNKNOWN for backwards compatibility with data synced before status tracking)
+  const col = columnPrefix ? `${columnPrefix}.effective_status` : 'effective_status';
+  return ` AND (${col} = 'ACTIVE' OR ${col} = 'UNKNOWN' OR ${col} IS NULL)`;
 }
 
 // ============================================================================
@@ -138,10 +159,12 @@ export function getCitiesByCountry(store, countryCode, params) {
 // ============================================================================
 // GET TOTALS FOR RANGE
 // ============================================================================
-function getTotalsForRange(db, store, startDate, endDate) {
+function getTotalsForRange(db, store, startDate, endDate, params = {}) {
+  const statusFilter = buildStatusFilter(params);
+
   const metaTotals = db.prepare(`
     SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
-    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
   `).get(store, startDate, endDate) || {};
 
   let totalSpend = metaTotals.spend || 0;
@@ -188,9 +211,11 @@ export function getDashboard(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
   const prevRange = getPreviousDateRange(startDate, endDate);
+  const statusFilter = buildStatusFilter(params);
+  const includeInactive = shouldIncludeInactive(params);
 
-  const current = getTotalsForRange(db, store, startDate, endDate);
-  const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate);
+  const current = getTotalsForRange(db, store, startDate, endDate, params);
+  const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
 
   const calcChange = (curr, prev) => prev > 0 ? ((curr - prev) / prev) * 100 : 0;
 
@@ -208,19 +233,23 @@ export function getDashboard(store, params) {
   };
 
   const campaignData = db.prepare(`
-    SELECT 
+    SELECT
       campaign_id as campaignId, campaign_name as campaignName,
+      MAX(status) as status, MAX(effective_status) as effective_status,
       SUM(spend) as spend, SUM(impressions) as impressions, SUM(reach) as reach,
       SUM(clicks) as clicks, SUM(conversions) as conversions, SUM(conversion_value) as conversionValue,
       SUM(landing_page_views) as lpv, SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
     GROUP BY campaign_name
     ORDER BY spend DESC
   `).all(store, startDate, endDate);
 
   const campaigns = campaignData.map(c => ({
     ...c,
+    status: c.status || 'UNKNOWN',
+    effective_status: c.effective_status || 'UNKNOWN',
+    isActive: c.effective_status === 'ACTIVE',
     cpc: c.clicks > 0 ? c.spend / c.clicks : null,
     ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : null,
     cr: c.clicks > 0 ? (c.conversions / c.clicks) * 100 : null,
@@ -239,23 +268,24 @@ export function getDashboard(store, params) {
       SUM(add_to_cart) as atc_total, SUM(checkouts_initiated) as checkout_total,
       COUNT(DISTINCT campaign_name) as campaign_count
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
   `).get(store, startDate, endDate) || {};
 
   const metaCampaignCount = metaTotals.campaign_count || 0;
   const metaImpressionsTotal = metaTotals.impressions_total || 0;
   const metaClicksTotal = metaTotals.clicks_total || 0;
 
-  const { countries, dataSource: countriesDataSource } = getDynamicCountries(db, store, startDate, endDate);
+  const { countries, dataSource: countriesDataSource } = getDynamicCountries(db, store, startDate, endDate, params);
 
   return {
     overview,
     campaigns,
     countries,
     countriesDataSource,
-    trends: getTrends(store, startDate, endDate),
+    trends: getTrends(store, startDate, endDate, params),
     diagnostics: [],
     dateRange: { startDate, endDate },
+    includeInactive,
 
     metaCampaignCount,
     metaSpendTotal: current.spend,
@@ -276,7 +306,9 @@ export function getDashboard(store, params) {
 // ============================================================================
 // DYNAMIC COUNTRIES
 // ============================================================================
-function getDynamicCountries(db, store, startDate, endDate) {
+function getDynamicCountries(db, store, startDate, endDate, params = {}) {
+  const statusFilter = buildStatusFilter(params);
+
   // Get all Meta metrics by country (upper/mid/lower funnel)
   const metaData = db.prepare(`
     SELECT
@@ -291,7 +323,7 @@ function getDynamicCountries(db, store, startDate, endDate) {
       SUM(conversions) as conversions,
       SUM(conversion_value) as conversionValue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}
     GROUP BY country
   `).all(store, startDate, endDate);
 
@@ -399,8 +431,9 @@ function getDynamicCountries(db, store, startDate, endDate) {
 // ============================================================================
 // TRENDS
 // ============================================================================
-function getTrends(store, startDate, endDate) {
+function getTrends(store, startDate, endDate, params = {}) {
   const db = getDb();
+  const statusFilter = buildStatusFilter(params);
   const allDates = [];
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -412,19 +445,19 @@ function getTrends(store, startDate, endDate) {
   if (store === 'shawq') {
     salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
   } else {
-    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+    salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter} GROUP BY date`).all(store, startDate, endDate);
   }
-  
-  const spendData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+
+  const spendData = db.prepare(`SELECT date, SUM(spend) as spend FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter} GROUP BY date`).all(store, startDate, endDate);
 
   const map = new Map();
   allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
-  
+
   salesData.forEach(r => { if(map.has(r.date)) { map.get(r.date).orders = r.orders; map.get(r.date).revenue = r.revenue; }});
   spendData.forEach(r => { if(map.has(r.date)) { map.get(r.date).spend = r.spend; }});
 
   return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
-    ...d, 
+    ...d,
     aov: d.orders > 0 ? d.revenue / d.orders : 0,
     cac: d.orders > 0 ? d.spend / d.orders : 0,
     roas: d.spend > 0 ? d.revenue / d.spend : 0
@@ -439,6 +472,7 @@ export function getCountryTrends(store, params) {
   // Fix 6: Changed from 7 days to 14 days
   const endDate = formatDateAsGmt3(new Date());
   const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  const statusFilter = buildStatusFilter(params);
 
   try {
     let rawData = [];
@@ -483,7 +517,7 @@ export function getCountryTrends(store, params) {
             SUM(conversions) as orders,
             SUM(conversion_value) as revenue
           FROM meta_daily_metrics
-          WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+          WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}
           GROUP BY date, country
           ORDER BY date ASC, country ASC
         `).all(store, startDate, endDate);
@@ -758,6 +792,7 @@ export function getTimeOfDay(store, params) {
 export function getOrdersByDayOfWeek(store, params) {
   const db = getDb();
   const period = params.period || '14d';
+  const statusFilter = buildStatusFilter(params);
 
   // Calculate date range based on period
   const endDate = formatDateAsGmt3(new Date());
@@ -786,7 +821,7 @@ export function getOrdersByDayOfWeek(store, params) {
         source = 'Salla';
       } else {
         // Salla NOT connected - use Meta conversions
-        orders = db.prepare(`SELECT date FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND conversions > 0`).all(store, startDate, endDate);
+        orders = db.prepare(`SELECT date FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ? AND conversions > 0${statusFilter}`).all(store, startDate, endDate);
         source = 'Meta';
       }
     }
@@ -827,13 +862,13 @@ export function getEfficiency(store, params) {
   const db = getDb();
   const prevRange = getPreviousDateRange(startDate, endDate);
 
-  const current = getTotalsForRange(db, store, startDate, endDate);
-  const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate);
+  const current = getTotalsForRange(db, store, startDate, endDate, params);
+  const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
 
   const spendChange = previous.spend > 0 ? ((current.spend - previous.spend) / previous.spend) * 100 : 0;
   const roasChange = previous.roas > 0 ? ((current.roas - previous.roas) / previous.roas) * 100 : 0;
-  const efficiencyRatio = spendChange !== 0 && roasChange !== 0 
-    ? (1 + roasChange/100) / (1 + spendChange/100) 
+  const efficiencyRatio = spendChange !== 0 && roasChange !== 0
+    ? (1 + roasChange/100) / (1 + spendChange/100)
     : 1;
 
   const incrementalSpend = current.spend - previous.spend;
@@ -863,24 +898,24 @@ export function getEfficiency(store, params) {
 
 export function getEfficiencyTrends(store, params) {
   const { startDate, endDate } = getDateRange(params);
-  const trends = getTrends(store, startDate, endDate);
+  const trends = getTrends(store, startDate, endDate, params);
   const windowSize = 3;
-  
+
   return trends.map((day, i) => {
     const start = Math.max(0, i - windowSize + 1);
     const window = trends.slice(start, i + 1);
-    
-    const rollingSpend = window.reduce((s, d) => s + d.spend, 0);
-    const rollingOrders = window.reduce((s, d) => s + d.orders, 0);
-    const rollingRevenue = window.reduce((s, d) => s + d.revenue, 0);
-    
+
+    const rollingSpend = window.reduce((s, d) => s + (d.spend || 0), 0);
+    const rollingOrders = window.reduce((s, d) => s + (d.orders || 0), 0);
+    const rollingRevenue = window.reduce((s, d) => s + (d.revenue || 0), 0);
+
     return {
       date: day.date,
-      spend: day.spend,
-      orders: day.orders,
-      revenue: day.revenue,
-      cac: day.cac,
-      roas: day.roas,
+      spend: day.spend || 0,
+      orders: day.orders || 0,
+      revenue: day.revenue || 0,
+      cac: day.cac || 0,
+      roas: day.roas || 0,
       rollingCac: rollingOrders > 0 ? rollingSpend / rollingOrders : 0,
       rollingRoas: rollingSpend > 0 ? rollingRevenue / rollingSpend : 0
     };
@@ -912,16 +947,23 @@ export function getMetaBreakdowns(store, params) { return []; }
 // HIERARCHICAL META AD MANAGER DATA
 // ============================================================================
 
-// Helper: Calculate metrics with proper null handling
+// Helper: Calculate metrics with proper null handling and defensive guards
 function calculateMetrics(row) {
+  const spend = row.spend || 0;
+  const impressions = row.impressions || 0;
+  const reach = row.reach || 0;
+  const clicks = row.clicks || 0;
+  const conversions = row.conversions || 0;
+  const conversion_value = row.conversion_value || 0;
+
   return {
-    cpm: row.impressions > 0 ? (row.spend / row.impressions) * 1000 : null,
-    frequency: row.reach > 0 ? row.impressions / row.reach : null,
-    ctr: row.impressions > 0 ? (row.clicks / row.impressions) * 100 : null,
-    cpc: row.clicks > 0 ? row.spend / row.clicks : null,
-    roas: row.spend > 0 ? row.conversion_value / row.spend : null,
-    aov: row.conversions > 0 ? row.conversion_value / row.conversions : null,
-    cac: row.conversions > 0 ? row.spend / row.conversions : null
+    cpm: impressions > 0 ? (spend / impressions) * 1000 : null,
+    frequency: reach > 0 ? impressions / reach : null,
+    ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
+    cpc: clicks > 0 ? spend / clicks : null,
+    roas: spend > 0 ? conversion_value / spend : null,
+    aov: conversions > 0 ? conversion_value / conversions : null,
+    cac: conversions > 0 ? spend / conversions : null
   };
 }
 
@@ -930,6 +972,8 @@ export function getMetaAdManagerHierarchy(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
   const breakdown = params.breakdown || 'none'; // none, country, age, gender, age_gender, placement
+  const statusFilter = buildStatusFilter(params);
+  const includeInactive = shouldIncludeInactive(params);
 
   // Build WHERE and GROUP BY clauses based on breakdown
   let breakdownSelect = '';
@@ -957,10 +1001,11 @@ export function getMetaAdManagerHierarchy(store, params) {
     breakdownWhere = "AND publisher_platform != ''";
   }
 
-  // Get campaigns
+  // Get campaigns with status info
   const campaignQuery = `
     SELECT
       campaign_id, campaign_name,
+      MAX(status) as status, MAX(effective_status) as effective_status,
       SUM(spend) as spend,
       SUM(impressions) as impressions,
       SUM(reach) as reach,
@@ -972,7 +1017,7 @@ export function getMetaAdManagerHierarchy(store, params) {
       SUM(conversion_value) as conversion_value
       ${breakdownSelect}
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${statusFilter}
     GROUP BY campaign_id${breakdownGroup}
     ORDER BY spend DESC
   `;
@@ -981,14 +1026,19 @@ export function getMetaAdManagerHierarchy(store, params) {
 
   const campaignsWithMetrics = campaigns.map(c => ({
     ...c,
+    status: c.status || 'UNKNOWN',
+    effective_status: c.effective_status || 'UNKNOWN',
+    isActive: c.effective_status === 'ACTIVE',
     ...calculateMetrics(c),
     level: 'campaign'
   }));
 
-  // Get ad sets
+  // Get ad sets with status info
   const adsetQuery = `
     SELECT
       campaign_id, campaign_name, adset_id, adset_name,
+      MAX(status) as status, MAX(effective_status) as effective_status,
+      MAX(adset_status) as adset_status, MAX(adset_effective_status) as adset_effective_status,
       SUM(spend) as spend,
       SUM(impressions) as impressions,
       SUM(reach) as reach,
@@ -1000,7 +1050,7 @@ export function getMetaAdManagerHierarchy(store, params) {
       SUM(conversion_value) as conversion_value
       ${breakdownSelect}
     FROM meta_adset_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${statusFilter}
     GROUP BY adset_id${breakdownGroup}
     ORDER BY spend DESC
   `;
@@ -1009,14 +1059,21 @@ export function getMetaAdManagerHierarchy(store, params) {
 
   const adsetsWithMetrics = adsets.map(a => ({
     ...a,
+    status: a.status || 'UNKNOWN',
+    effective_status: a.effective_status || 'UNKNOWN',
+    adset_status: a.adset_status || 'UNKNOWN',
+    adset_effective_status: a.adset_effective_status || 'UNKNOWN',
+    isActive: a.adset_effective_status === 'ACTIVE' || a.effective_status === 'ACTIVE',
     ...calculateMetrics(a),
     level: 'adset'
   }));
 
-  // Get ads
+  // Get ads with status info
   const adQuery = `
     SELECT
       campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name,
+      MAX(status) as status, MAX(effective_status) as effective_status,
+      MAX(ad_status) as ad_status, MAX(ad_effective_status) as ad_effective_status,
       SUM(spend) as spend,
       SUM(impressions) as impressions,
       SUM(reach) as reach,
@@ -1028,7 +1085,7 @@ export function getMetaAdManagerHierarchy(store, params) {
       SUM(conversion_value) as conversion_value
       ${breakdownSelect}
     FROM meta_ad_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${statusFilter}
     GROUP BY ad_id${breakdownGroup}
     ORDER BY spend DESC
   `;
@@ -1037,6 +1094,11 @@ export function getMetaAdManagerHierarchy(store, params) {
 
   const adsWithMetrics = ads.map(a => ({
     ...a,
+    status: a.status || 'UNKNOWN',
+    effective_status: a.effective_status || 'UNKNOWN',
+    ad_status: a.ad_status || 'UNKNOWN',
+    ad_effective_status: a.ad_effective_status || 'UNKNOWN',
+    isActive: a.ad_effective_status === 'ACTIVE' || a.effective_status === 'ACTIVE',
     ...calculateMetrics(a),
     level: 'ad'
   }));
@@ -1094,7 +1156,205 @@ export function getMetaAdManagerHierarchy(store, params) {
     };
   });
 
-  return hierarchy;
+  return {
+    data: hierarchy,
+    includeInactive,
+    dateRange: { startDate, endDate }
+  };
+}
+
+// ============================================================================
+// REACTIVATION CANDIDATES - For AI to recommend reactivating old winners
+// ============================================================================
+export function getReactivationCandidates(store, params = {}) {
+  const db = getDb();
+
+  // Get historical performance of INACTIVE campaigns/adsets/ads
+  // that performed well when they were active
+
+  // Look back further for historical analysis (90 days)
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000));
+
+  try {
+    // Get inactive campaigns with good historical performance
+    const inactiveCampaigns = db.prepare(`
+      SELECT
+        campaign_id, campaign_name,
+        MAX(effective_status) as effective_status,
+        SUM(spend) as total_spend,
+        SUM(conversions) as total_conversions,
+        SUM(conversion_value) as total_revenue,
+        AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END) as avg_roas,
+        AVG(CASE WHEN conversions > 0 THEN spend / conversions ELSE 0 END) as avg_cac,
+        MIN(date) as first_date,
+        MAX(date) as last_date,
+        COUNT(DISTINCT date) as active_days
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?
+      AND (effective_status = 'PAUSED' OR effective_status = 'ARCHIVED' OR effective_status = 'DELETED')
+      GROUP BY campaign_id
+      HAVING total_conversions > 0 AND avg_roas > 1.0
+      ORDER BY avg_roas DESC
+      LIMIT 20
+    `).all(store, startDate, endDate);
+
+    // Get inactive adsets with good historical performance
+    const inactiveAdsets = db.prepare(`
+      SELECT
+        campaign_id, campaign_name, adset_id, adset_name,
+        MAX(adset_effective_status) as adset_effective_status,
+        SUM(spend) as total_spend,
+        SUM(conversions) as total_conversions,
+        SUM(conversion_value) as total_revenue,
+        AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END) as avg_roas,
+        AVG(CASE WHEN conversions > 0 THEN spend / conversions ELSE 0 END) as avg_cac,
+        MIN(date) as first_date,
+        MAX(date) as last_date,
+        COUNT(DISTINCT date) as active_days
+      FROM meta_adset_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?
+      AND (adset_effective_status = 'PAUSED' OR adset_effective_status = 'ARCHIVED')
+      GROUP BY adset_id
+      HAVING total_conversions > 0 AND avg_roas > 1.0
+      ORDER BY avg_roas DESC
+      LIMIT 20
+    `).all(store, startDate, endDate);
+
+    // Get inactive ads with good historical performance
+    const inactiveAds = db.prepare(`
+      SELECT
+        campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name,
+        MAX(ad_effective_status) as ad_effective_status,
+        SUM(spend) as total_spend,
+        SUM(conversions) as total_conversions,
+        SUM(conversion_value) as total_revenue,
+        AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END) as avg_roas,
+        AVG(CASE WHEN conversions > 0 THEN spend / conversions ELSE 0 END) as avg_cac,
+        MIN(date) as first_date,
+        MAX(date) as last_date,
+        COUNT(DISTINCT date) as active_days
+      FROM meta_ad_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?
+      AND (ad_effective_status = 'PAUSED' OR ad_effective_status = 'ARCHIVED')
+      GROUP BY ad_id
+      HAVING total_conversions > 0 AND avg_roas > 1.0
+      ORDER BY avg_roas DESC
+      LIMIT 20
+    `).all(store, startDate, endDate);
+
+    // Calculate reactivation scores
+    const scoreCampaign = (c) => {
+      const roasScore = Math.min((c.avg_roas || 0) / 2, 5); // Max 5 points for ROAS
+      const volumeScore = Math.min((c.total_conversions || 0) / 10, 3); // Max 3 points for volume
+      const recencyScore = c.last_date ? Math.max(0, 2 - (Date.now() - new Date(c.last_date).getTime()) / (30 * 24 * 60 * 60 * 1000)) : 0; // Max 2 points for recency
+      return roasScore + volumeScore + recencyScore;
+    };
+
+    return {
+      campaigns: inactiveCampaigns.map(c => ({
+        ...c,
+        avg_roas: c.avg_roas || 0,
+        avg_cac: c.avg_cac || 0,
+        total_spend: c.total_spend || 0,
+        total_conversions: c.total_conversions || 0,
+        total_revenue: c.total_revenue || 0,
+        reactivation_score: scoreCampaign(c),
+        reason: `${(c.avg_roas || 0).toFixed(2)}x ROAS with ${c.total_conversions || 0} conversions`
+      })).sort((a, b) => b.reactivation_score - a.reactivation_score),
+
+      adsets: inactiveAdsets.map(a => ({
+        ...a,
+        avg_roas: a.avg_roas || 0,
+        avg_cac: a.avg_cac || 0,
+        total_spend: a.total_spend || 0,
+        total_conversions: a.total_conversions || 0,
+        total_revenue: a.total_revenue || 0,
+        reactivation_score: scoreCampaign(a),
+        reason: `${(a.avg_roas || 0).toFixed(2)}x ROAS with ${a.total_conversions || 0} conversions`
+      })).sort((a, b) => b.reactivation_score - a.reactivation_score),
+
+      ads: inactiveAds.map(ad => ({
+        ...ad,
+        avg_roas: ad.avg_roas || 0,
+        avg_cac: ad.avg_cac || 0,
+        total_spend: ad.total_spend || 0,
+        total_conversions: ad.total_conversions || 0,
+        total_revenue: ad.total_revenue || 0,
+        reactivation_score: scoreCampaign(ad),
+        reason: `${(ad.avg_roas || 0).toFixed(2)}x ROAS with ${ad.total_conversions || 0} conversions`
+      })).sort((a, b) => b.reactivation_score - a.reactivation_score),
+
+      dateRange: { startDate, endDate }
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting reactivation candidates:', error);
+    return { campaigns: [], adsets: [], ads: [], dateRange: { startDate, endDate } };
+  }
+}
+
+// ============================================================================
+// GET ALL OBJECTS WITH STATUS - For AI to understand full account structure
+// ============================================================================
+export function getAllMetaObjects(store, params = {}) {
+  const db = getDb();
+
+  try {
+    const objects = db.prepare(`
+      SELECT
+        object_type,
+        object_id,
+        object_name,
+        parent_id,
+        parent_name,
+        grandparent_id,
+        grandparent_name,
+        status,
+        effective_status,
+        created_time,
+        start_time,
+        stop_time,
+        daily_budget,
+        lifetime_budget,
+        objective,
+        optimization_goal,
+        bid_strategy,
+        last_synced_at
+      FROM meta_objects
+      WHERE store = ?
+      ORDER BY object_type, object_name
+    `).all(store);
+
+    // Group by type
+    const campaigns = objects.filter(o => o.object_type === 'campaign');
+    const adsets = objects.filter(o => o.object_type === 'adset');
+    const ads = objects.filter(o => o.object_type === 'ad');
+
+    // Count active/inactive
+    const activeCount = objects.filter(o => o.effective_status === 'ACTIVE').length;
+    const pausedCount = objects.filter(o => o.effective_status === 'PAUSED').length;
+    const archivedCount = objects.filter(o => o.effective_status === 'ARCHIVED').length;
+    const otherCount = objects.length - activeCount - pausedCount - archivedCount;
+
+    return {
+      campaigns,
+      adsets,
+      ads,
+      summary: {
+        total: objects.length,
+        active: activeCount,
+        paused: pausedCount,
+        archived: archivedCount,
+        other: otherCount,
+        byCampaigns: campaigns.length,
+        byAdsets: adsets.length,
+        byAds: ads.length
+      }
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting meta objects:', error);
+    return { campaigns: [], adsets: [], ads: [], summary: {} };
+  }
 }
 
 // ============================================================================
@@ -1104,6 +1364,7 @@ export function getFunnelDiagnostics(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
   const campaignId = params.campaignId || null; // Optional campaign filter
+  const statusFilter = buildStatusFilter(params);
 
   // Calculate previous period for comparison
   const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
@@ -1134,7 +1395,7 @@ export function getFunnelDiagnostics(store, params) {
       SUM(conversions) as purchases,
       SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}${statusFilter}
   `;
 
   const current = db.prepare(currentQuery).get(...queryParams);
@@ -1154,7 +1415,7 @@ export function getFunnelDiagnostics(store, params) {
       SUM(conversions) as purchases,
       SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}${statusFilter}
     GROUP BY date
     ORDER BY date DESC
     LIMIT 7
@@ -1171,28 +1432,40 @@ export function getFunnelDiagnostics(store, params) {
     campaignName = campaignInfo?.campaign_name || null;
   }
 
-  // Calculate metrics
+  // Calculate metrics with defensive guards
   const calcMetrics = (d) => {
-    if (!d || !d.impressions) return null;
+    if (!d) return null;
+    const spend = d.spend || 0;
+    const impressions = d.impressions || 0;
+    const reach = d.reach || 0;
+    const clicks = d.clicks || 0;
+    const lpv = d.lpv || 0;
+    const atc = d.atc || 0;
+    const checkout = d.checkout || 0;
+    const purchases = d.purchases || 0;
+    const revenue = d.revenue || 0;
+
+    if (impressions === 0) return null;
+
     return {
-      ctr: d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0,
-      cpc: d.clicks > 0 ? d.spend / d.clicks : 0,
-      cpm: d.impressions > 0 ? (d.spend / d.impressions) * 1000 : 0,
-      frequency: d.reach > 0 ? d.impressions / d.reach : 0,
-      lpvRate: d.clicks > 0 ? (d.lpv / d.clicks) * 100 : 0,
-      atcRate: d.lpv > 0 ? (d.atc / d.lpv) * 100 : 0,
-      checkoutRate: d.atc > 0 ? (d.checkout / d.atc) * 100 : 0,
-      purchaseRate: d.checkout > 0 ? (d.purchases / d.checkout) * 100 : 0,
-      cvr: d.clicks > 0 ? (d.purchases / d.clicks) * 100 : 0,
-      roas: d.spend > 0 ? d.revenue / d.spend : 0,
-      cac: d.purchases > 0 ? d.spend / d.purchases : 0,
-      aov: d.purchases > 0 ? d.revenue / d.purchases : 0,
+      ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+      cpc: clicks > 0 ? spend / clicks : 0,
+      cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
+      frequency: reach > 0 ? impressions / reach : 0,
+      lpvRate: clicks > 0 ? (lpv / clicks) * 100 : 0,
+      atcRate: lpv > 0 ? (atc / lpv) * 100 : 0,
+      checkoutRate: atc > 0 ? (checkout / atc) * 100 : 0,
+      purchaseRate: checkout > 0 ? (purchases / checkout) * 100 : 0,
+      cvr: clicks > 0 ? (purchases / clicks) * 100 : 0,
+      roas: spend > 0 ? revenue / spend : 0,
+      cac: purchases > 0 ? spend / purchases : 0,
+      aov: purchases > 0 ? revenue / purchases : 0,
       // Raw values for display
-      spend: d.spend || 0,
-      impressions: d.impressions || 0,
-      clicks: d.clicks || 0,
-      purchases: d.purchases || 0,
-      revenue: d.revenue || 0
+      spend,
+      impressions,
+      clicks,
+      purchases,
+      revenue
     };
   };
 

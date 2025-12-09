@@ -17,14 +17,17 @@ import {
   getOrdersByDayOfWeek,
   getCitiesByCountry,
   getMetaAdManagerHierarchy,
-  getFunnelDiagnostics
+  getFunnelDiagnostics,
+  getReactivationCandidates,
+  getAllMetaObjects
 } from '../services/analyticsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
-import { syncMetaData } from '../services/metaService.js';
+import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
 
 const router = express.Router();
 
 // 1. Dashboard Data
+// Supports ?includeInactive=true to show inactive campaigns/adsets/ads
 router.get('/dashboard', (req, res) => {
   try {
     const store = req.query.store || 'vironax';
@@ -52,7 +55,7 @@ router.delete('/meta/clear', (req, res) => {
   try {
     const store = req.query.store;
     if (!store) return res.status(400).json({ error: 'Store required' });
-    
+
     const db = getDb();
     const info = db.prepare('DELETE FROM meta_daily_metrics WHERE store = ?').run(store);
     res.json({ success: true, deleted: info.changes });
@@ -84,53 +87,53 @@ router.post('/meta/import', async (req, res) => {
 
 // 5. Breakdown Routes
 router.get('/campaigns/by-country', (req, res) => {
-  try { res.json(getCampaignsByCountry(req.query.store, req.query)); } 
+  try { res.json(getCampaignsByCountry(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/campaigns/by-age', (req, res) => {
-  try { res.json(getCampaignsByAge(req.query.store, req.query)); } 
+  try { res.json(getCampaignsByAge(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/campaigns/by-gender', (req, res) => {
-  try { res.json(getCampaignsByGender(req.query.store, req.query)); } 
+  try { res.json(getCampaignsByGender(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/campaigns/by-placement', (req, res) => {
-  try { res.json(getCampaignsByPlacement(req.query.store, req.query)); } 
+  try { res.json(getCampaignsByPlacement(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/campaigns/by-age-gender', (req, res) => {
-  try { res.json(getCampaignsByAgeGender(req.query.store, req.query)); } 
+  try { res.json(getCampaignsByAgeGender(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 6. Other Analytics Routes
 router.get('/efficiency', (req, res) => {
-  try { res.json(getEfficiency(req.query.store, req.query)); } 
+  try { res.json(getEfficiency(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/efficiency/trends', (req, res) => {
-  try { res.json(getEfficiencyTrends(req.query.store, req.query)); } 
+  try { res.json(getEfficiencyTrends(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/recommendations', (req, res) => {
-  try { res.json(getRecommendations(req.query.store, req.query)); } 
+  try { res.json(getRecommendations(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/countries', (req, res) => {
-  try { res.json(getAvailableCountries(req.query.store)); } 
+  try { res.json(getAvailableCountries(req.query.store)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/countries/trends', (req, res) => {
-  try { res.json(getCountryTrends(req.query.store, req.query)); } 
+  try { res.json(getCountryTrends(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -150,7 +153,7 @@ router.get('/days-of-week', (req, res) => {
   try {
     const store = req.query.store || 'vironax';
     const period = req.query.period || '14d';
-    res.json(getOrdersByDayOfWeek(store, { period }));
+    res.json(getOrdersByDayOfWeek(store, { period, ...req.query }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -168,6 +171,7 @@ router.get('/cities/:countryCode', (req, res) => {
 });
 
 // Meta Ad Manager hierarchy endpoint
+// Supports ?includeInactive=true to show inactive campaigns/adsets/ads
 router.get('/meta-ad-manager', (req, res) => {
   try {
     const store = req.query.store || 'vironax';
@@ -178,13 +182,76 @@ router.get('/meta-ad-manager', (req, res) => {
 });
 
 // Funnel diagnostics endpoint
+// Supports ?includeInactive=true
 router.get('/funnel-diagnostics', (req, res) => {
   try {
-    const { store, startDate, endDate, campaignId } = req.query;
-    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate, campaignId });
+    const { store, startDate, endDate, campaignId, includeInactive } = req.query;
+    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate, campaignId, includeInactive });
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Analytics] Funnel diagnostics error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// NEW: REACTIVATION CANDIDATES ENDPOINT
+// Returns inactive campaigns/adsets/ads with good historical performance
+// for AI to recommend reactivation
+// ============================================================================
+router.get('/reactivation-candidates', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getReactivationCandidates(store, req.query);
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Analytics] Reactivation candidates error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// NEW: META OBJECTS ENDPOINT
+// Returns all campaigns/adsets/ads with their status info
+// Used by AI for full account visibility
+// ============================================================================
+router.get('/meta-objects', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getAllMetaObjects(store, req.query);
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Analytics] Meta objects error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// NEW: BACKFILL STATUS ENDPOINT
+// Returns the status of historical data backfill
+// ============================================================================
+router.get('/meta/backfill-status', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const status = getBackfillStatus(store);
+    res.json({ success: true, data: status });
+  } catch (error) {
+    console.error('[Analytics] Backfill status error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// NEW: TRIGGER BACKFILL ENDPOINT
+// Manually trigger historical data backfill
+// ============================================================================
+router.post('/meta/backfill', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const result = await triggerBackfill(store);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('[Analytics] Backfill trigger error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

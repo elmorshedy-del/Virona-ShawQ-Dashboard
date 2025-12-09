@@ -8,7 +8,7 @@ let db = null;
 
 export function initDb() {
   const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/dashboard.db');
-  
+
   // Ensure data directory exists
   const dataDir = path.dirname(dbPath);
   import('fs').then(fs => {
@@ -271,6 +271,89 @@ export function initDb() {
     )
   `);
 
+  // ============================================================================
+  // META OBJECTS TABLE - Stores campaign/adset/ad metadata with status info
+  // This table tracks ALL objects (active AND inactive) for AI reactivation analysis
+  // ============================================================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_objects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      object_type TEXT NOT NULL,
+      object_id TEXT NOT NULL,
+      object_name TEXT NOT NULL,
+      parent_id TEXT,
+      parent_name TEXT,
+      grandparent_id TEXT,
+      grandparent_name TEXT,
+      status TEXT DEFAULT 'UNKNOWN',
+      effective_status TEXT DEFAULT 'UNKNOWN',
+      created_time TEXT,
+      start_time TEXT,
+      stop_time TEXT,
+      daily_budget REAL,
+      lifetime_budget REAL,
+      objective TEXT,
+      optimization_goal TEXT,
+      bid_strategy TEXT,
+      last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, object_type, object_id)
+    )
+  `);
+
+  // Meta backfill metadata - tracks historical sync progress per store
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_backfill_metadata (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      earliest_successful_date TEXT,
+      latest_successful_date TEXT,
+      last_backfill_attempt TEXT,
+      backfill_status TEXT DEFAULT 'pending',
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store)
+    )
+  `);
+
+  // Add status columns to meta_daily_metrics if they don't exist
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN effective_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+
+  // Add status columns to meta_adset_metrics if they don't exist
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN effective_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN adset_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN adset_effective_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+
+  // Add status columns to meta_ad_metrics if they don't exist
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN effective_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN ad_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN ad_effective_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+
   // Create indexes for performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_store_date ON meta_daily_metrics(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_adset_store_date ON meta_adset_metrics(store, date)`);
@@ -279,6 +362,13 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_spend_store_date ON manual_spend_overrides(store, date)`);
+
+  // New indexes for status filtering
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_objects_store_type ON meta_objects(store, object_type)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_objects_effective_status ON meta_objects(store, effective_status)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_daily_effective_status ON meta_daily_metrics(store, effective_status)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_adset_effective_status ON meta_adset_metrics(store, effective_status)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_ad_effective_status ON meta_ad_metrics(store, effective_status)`);
 
   // AI Conversations tables for chat history
   db.exec(`

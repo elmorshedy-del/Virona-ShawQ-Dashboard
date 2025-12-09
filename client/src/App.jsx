@@ -109,6 +109,9 @@ export default function App() {
   const [hiddenCampaigns, setHiddenCampaigns] = useState(new Set());
   const [showHiddenDropdown, setShowHiddenDropdown] = useState(false);
 
+  // Include inactive campaigns/adsets/ads toggle (default: ACTIVE only)
+  const [includeInactive, setIncludeInactive] = useState(false);
+
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
     date: getLocalDateString(),
@@ -183,6 +186,11 @@ export default function App() {
       }
       
       params.set('showArrows', shouldShowArrows);
+
+      // Include inactive campaigns/adsets/ads if toggle is on
+      if (includeInactive) {
+        params.set('includeInactive', 'true');
+      }
 
       const shopifyRegion = selectedShopifyRegion ?? 'us';
       const timeOfDayParams = new URLSearchParams({ store: currentStore, days: 7, region: shopifyRegion });
@@ -273,7 +281,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod]);
+  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -338,8 +346,13 @@ export default function App() {
           params.set('breakdown', adManagerBreakdown);
         }
 
+        // Include inactive if toggle is on
+        if (includeInactive) {
+          params.set('includeInactive', 'true');
+        }
+
         const data = await fetch(`${API_BASE}/analytics/meta-ad-manager?${params}`).then(r => r.json());
-        setMetaAdManagerData(Array.isArray(data) ? data : []);
+        setMetaAdManagerData(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
       } catch (error) {
         console.error('Error loading Meta Ad Manager data:', error);
         setMetaAdManagerData([]);
@@ -347,7 +360,7 @@ export default function App() {
     }
 
     loadMetaAdManager();
-  }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded]);
+  }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded, includeInactive]);
 
   // Load funnel diagnostics data
   useEffect(() => {
@@ -1520,6 +1533,18 @@ function DashboardTab({
                     </button>
                   </>
                 )}
+                {/* Include Inactive Toggle */}
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer ml-2">
+                  <input
+                    type="checkbox"
+                    checked={includeInactive}
+                    onChange={(e) => setIncludeInactive(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-orange-500 focus:ring-orange-400"
+                  />
+                  <span className={includeInactive ? 'text-orange-600 font-medium' : ''}>
+                    Include Inactive
+                  </span>
+                </label>
               </div>
             </div>
 

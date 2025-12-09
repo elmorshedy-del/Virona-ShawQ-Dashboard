@@ -137,7 +137,7 @@ export function createOrderNotifications(store, source, orders) {
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
     
     // Format: Country • Amount • Source (clean format)
-    const message = `${country} • ${currency} ${data.total.toFixed(2)} • ${sourceLabel}`;
+    const message = `${country} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
     
     createNotification({
       store,
