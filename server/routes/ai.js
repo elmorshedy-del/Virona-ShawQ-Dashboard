@@ -10,8 +10,6 @@ import {
   runQuery
 } from '../services/openaiService.js';
 import { getDb } from '../db/database.js';
-import { clearSallaDemoData } from '../services/sallaService.js';
-import { clearShopifyDemoData } from '../services/shopifyService.js';
 
 const router = express.Router();
 
@@ -365,17 +363,16 @@ router.post('/stream', async (req, res) => {
 });
 
 // ============================================================================
-// DELETE DEMO DATA - Clear ALL fake orders from Salla and Shopify
+// DELETE DEMO DATA - Clear fake Salla orders only (Shopify has real data)
 // ============================================================================
 router.delete('/demo-data', (req, res) => {
   try {
     const db = getDb();
     const results = {
-      salla: { deleted: 0 },
-      shopify: { deleted: 0 }
+      salla: { deleted: 0 }
     };
 
-    // Clear Salla demo data
+    // Clear Salla demo data ONLY (VironaX Salla is not connected, so all data is demo)
     try {
       const sallaResult = db.prepare(`DELETE FROM salla_orders WHERE store = 'vironax'`).run();
       results.salla.deleted = sallaResult.changes;
@@ -384,18 +381,11 @@ router.delete('/demo-data', (req, res) => {
       results.salla.error = e.message;
     }
 
-    // Clear Shopify demo data
-    try {
-      const shopifyResult = db.prepare(`DELETE FROM shopify_orders WHERE store = 'shawq'`).run();
-      results.shopify.deleted = shopifyResult.changes;
-      console.log(`[Cleanup] Deleted ${shopifyResult.changes} Shopify demo orders`);
-    } catch (e) {
-      results.shopify.error = e.message;
-    }
+    // NOTE: NOT deleting Shopify orders - Shawq Shopify is connected with real data
 
     res.json({ 
       success: true, 
-      message: 'Demo data cleared',
+      message: 'Salla demo data cleared (Shopify untouched - has real data)',
       results 
     });
   } catch (error) {
