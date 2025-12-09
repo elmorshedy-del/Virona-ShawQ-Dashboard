@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 import NotificationCenter from './components/NotificationCenter';
+import AIAnalytics from './components/AIAnalytics';
 
 const API_BASE = '/api';
 
@@ -52,7 +53,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Exploration'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -832,10 +833,7 @@ export default function App() {
         )}
 
         {activeTab === 4 && (
-          <AIExplorationTab
-            store={store}
-            API_BASE={API_BASE}
-          />
+          <AIAnalytics store={store} />
         )}
       </div>
       
