@@ -1,14 +1,13 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
-import { createOrderNotifications } from './notificationService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 export async function fetchSallaOrders(dateStart, dateEnd) {
   const accessToken = process.env.VIRONAX_SALLA_ACCESS_TOKEN;
 
   if (!accessToken) {
-    console.log('Salla credentials not configured - returning empty array (no demo data)');
-    return [];
+    console.log('Salla credentials not configured - returning empty (no demo data)');
+    return []; // Return empty array instead of demo data
   }
 
   try {
@@ -72,6 +71,12 @@ export async function syncSallaOrders() {
   try {
     const orders = await fetchSallaOrders(startDate, endDate);
 
+    // If no orders (API not configured), skip sync silently
+    if (orders.length === 0) {
+      console.log('Salla: No orders to sync (API not configured or no orders in date range)');
+      return { success: true, records: 0, message: 'Salla not configured' };
+    }
+
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO salla_orders
       (store, order_id, date, country, country_code, city, order_total, subtotal, shipping, tax, discount, items_count, status, payment_method, currency)
@@ -104,8 +109,6 @@ export async function syncSallaOrders() {
       VALUES ('vironax', 'salla', 'success', ?)
     `).run(recordsInserted);
 
-    const notificationCount = createOrderNotifications('vironax', 'salla', orders);
-    console.log(`[Salla] Created ${notificationCount} notifications`);
     return { success: true, records: recordsInserted };
   } catch (error) {
     db.prepare(`
@@ -117,4 +120,15 @@ export async function syncSallaOrders() {
   }
 }
 
-// Demo data removed - only real Salla API data is used
+// Clear any existing demo data from salla_orders table
+export function clearSallaDemoData() {
+  const db = getDb();
+  try {
+    const result = db.prepare(`DELETE FROM salla_orders WHERE store = 'vironax'`).run();
+    console.log(`Cleared ${result.changes} Salla orders from database`);
+    return { success: true, deleted: result.changes };
+  } catch (error) {
+    console.error('Failed to clear Salla data:', error);
+    return { success: false, error: error.message };
+  }
+}
