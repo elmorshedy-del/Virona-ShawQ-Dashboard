@@ -2,9 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 import { initDb, getDb } from './db/database.js';
 import analyticsRouter from './routes/analytics.js';
