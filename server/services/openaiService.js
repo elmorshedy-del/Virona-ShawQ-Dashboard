@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/database.js';
 
+// OpenAI Service - GPT-5 + GPT-4 fallback
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
