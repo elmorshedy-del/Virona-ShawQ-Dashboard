@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import {
-  Brain, Zap, TrendingUp, Lightbulb, Send, Loader2, Sparkles,
+import { 
+  Brain, Zap, TrendingUp, Lightbulb, Send, Loader2, Sparkles, 
   Plus, MessageSquare, Trash2, ChevronLeft, ChevronRight, Upload, X
 } from 'lucide-react';
 
@@ -22,7 +22,7 @@ export default function AIAnalytics({ store }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [conversations, setConversations] = useState([]);
   const [currentConversationId, setCurrentConversationId] = useState(null);
-
+  
   // Chat state
   const [messages, setMessages] = useState([]);
   const [mode, setMode] = useState('decide');
@@ -30,10 +30,10 @@ export default function AIAnalytics({ store }) {
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
-
+  
   // Import modal
   const [showImportModal, setShowImportModal] = useState(false);
-
+  
   const messagesEndRef = useRef(null);
 
   // Load conversations on mount
@@ -79,7 +79,7 @@ export default function AIAnalytics({ store }) {
   const deleteConversation = async (id, e) => {
     e.stopPropagation();
     if (!confirm('Delete this conversation?')) return;
-
+    
     try {
       await fetch(`/api/ai/conversations/${id}`, { method: 'DELETE' });
       if (currentConversationId === id) {
@@ -94,7 +94,7 @@ export default function AIAnalytics({ store }) {
 
   const saveMessage = async (convId, role, content, msgMode, msgDepth, model) => {
     if (!convId) return;
-
+    
     try {
       await fetch(`/api/ai/conversations/${convId}/messages`, {
         method: 'POST',
@@ -139,7 +139,7 @@ export default function AIAnalytics({ store }) {
 
     setMessages(prev => [...prev, userMessage]);
     saveMessage(convId, 'user', question, mode, mode === 'decide' ? depth : null, null);
-
+    
     setQuestion('');
     setLoading(true);
     setStreamingText('');
@@ -204,7 +204,7 @@ export default function AIAnalytics({ store }) {
 
         const data = await res.json();
         const content = data.success ? data.answer : `Error: ${data.error}`;
-
+        
         const assistantMessage = {
           role: 'assistant',
           content,
@@ -215,7 +215,7 @@ export default function AIAnalytics({ store }) {
         setMessages(prev => [...prev, assistantMessage]);
         saveMessage(convId, 'assistant', content, mode, null, data.model);
       }
-
+      
       loadConversations();
     } catch (error) {
       const errorMsg = `Error: ${error.message}`;
@@ -228,7 +228,7 @@ export default function AIAnalytics({ store }) {
   return (
     <div className="relative flex h-[700px] rounded-2xl overflow-hidden shadow-xl bg-white">
       {/* Sidebar */}
-      <div
+      <div 
         className={`${sidebarOpen ? 'w-72' : 'w-0'} transition-all duration-300 bg-gray-900 flex flex-col overflow-hidden flex-shrink-0`}
       >
         {/* Sidebar Header */}
@@ -264,7 +264,7 @@ export default function AIAnalytics({ store }) {
               </button>
             </div>
           ))}
-
+          
           {conversations.length === 0 && (
             <div className="text-center py-8 text-gray-500 text-sm">
               No conversations yet
@@ -362,7 +362,7 @@ export default function AIAnalytics({ store }) {
               </div>
               <p className="text-lg font-medium text-gray-600">How can I help you today?</p>
               <p className="text-sm mt-1">Ask me anything about your store data</p>
-
+              
               {/* Quick suggestions */}
               <div className="flex flex-wrap gap-2 mt-6 max-w-lg justify-center">
                 {[
@@ -470,9 +470,9 @@ export default function AIAnalytics({ store }) {
 
       {/* Import Modal */}
       {showImportModal && (
-        <ImportModal
-          store={store}
-          onClose={() => setShowImportModal(false)}
+        <ImportModal 
+          store={store} 
+          onClose={() => setShowImportModal(false)} 
         />
       )}
     </div>
@@ -495,7 +495,7 @@ function ImportModal({ store, onClose }) {
       // Parse CSV
       const lines = csvText.trim().split('\n');
       const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/\s+/g, '_'));
-
+      
       const data = lines.slice(1).map(line => {
         const values = line.split(',');
         const row = {};
@@ -535,7 +535,7 @@ function ImportModal({ store, onClose }) {
           <p className="text-sm text-gray-600">
             Paste CSV data with columns: <code className="bg-gray-100 px-1 rounded">date, campaign_name, spend, conversions, conversion_value</code>
           </p>
-
+          
           <p className="text-xs text-gray-500">
             Optional columns: campaign_id, country, impressions, clicks
           </p>
@@ -552,7 +552,7 @@ function ImportModal({ store, onClose }) {
 
           {result && (
             <div className={`p-4 rounded-lg ${result.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
-              {result.success
+              {result.success 
                 ? `✓ Imported ${result.imported} records (${result.skipped} skipped)`
                 : `✕ Error: ${result.error}`
               }
@@ -587,7 +587,7 @@ function ImportModal({ store, onClose }) {
 // Format assistant messages
 function formatMessage(text) {
   if (!text) return null;
-
+  
   return text.split('\n').map((line, i) => {
     if (line.startsWith('## ')) {
       return <h3 key={i} className="text-lg font-bold text-gray-900 mt-3 mb-2">{line.slice(3)}</h3>;
@@ -626,7 +626,7 @@ function formatMessage(text) {
 
 function formatBold(text) {
   if (!text || !text.includes('**')) return text;
-
+  
   const parts = [];
   let remaining = text;
   let key = 0;
@@ -635,12 +635,12 @@ function formatBold(text) {
     const start = remaining.indexOf('**');
     const end = remaining.indexOf('**', start + 2);
     if (end === -1) break;
-
+    
     if (start > 0) parts.push(<span key={key++}>{remaining.slice(0, start)}</span>);
     parts.push(<strong key={key++} className="font-semibold">{remaining.slice(start + 2, end)}</strong>);
     remaining = remaining.slice(end + 2);
   }
-
+  
   if (remaining) parts.push(<span key={key++}>{remaining}</span>);
   return parts.length > 0 ? parts : text;
 }
