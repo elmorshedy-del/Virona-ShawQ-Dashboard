@@ -851,19 +851,7 @@ export default function App() {
         )}
 
         {activeTab === 4 && (
-          <AIAnalytics
-            store={store}
-            startDate={
-              dateRange.type === 'custom' ? dateRange.start :
-              dateRange.type === 'yesterday' ? getLocalDateString(new Date(Date.now() - 24 * 60 * 60 * 1000)) :
-              getLocalDateString(new Date(Date.now() - ((dateRange.type === 'months' ? dateRange.value * 30 : dateRange.type === 'weeks' ? dateRange.value * 7 : dateRange.value) - 1) * 24 * 60 * 60 * 1000))
-            }
-            endDate={
-              dateRange.type === 'custom' ? dateRange.end :
-              dateRange.type === 'yesterday' ? getLocalDateString(new Date(Date.now() - 24 * 60 * 60 * 1000)) :
-              getLocalDateString()
-            }
-          />
+          <AIAnalytics store={store} />
         )}
 
         {activeTab === 5 && (
