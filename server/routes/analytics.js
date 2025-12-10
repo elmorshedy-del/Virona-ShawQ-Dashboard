@@ -195,18 +195,20 @@ router.get('/funnel-diagnostics', (req, res) => {
 });
 
 // ============================================================================
-// NEW: REACTIVATION CANDIDATES ENDPOINT
+// REACTIVATION CANDIDATES ENDPOINT
 // Returns inactive campaigns/adsets/ads with good historical performance
 // for AI to recommend reactivation
+// Uses Meta Awareness feature module for consistent scoring and data
 // ============================================================================
 router.get('/reactivation-candidates', (req, res) => {
   try {
     const store = req.query.store || 'vironax';
     const data = getReactivationCandidates(store, req.query);
-    res.json({ success: true, data });
+    // Return data directly for frontend compatibility
+    res.json(data);
   } catch (error) {
     console.error('[Analytics] Reactivation candidates error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ error: error.message, campaigns: [], adsets: [], ads: [], summary: { total: 0 } });
   }
 });
 

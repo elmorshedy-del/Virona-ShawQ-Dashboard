@@ -1,6 +1,15 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/database.js';
 
+// Import Meta Awareness feature module for reactivation data
+import {
+  getAIDataBundle,
+  buildAIPromptSection,
+  isReactivationQuestion,
+  getReactivationCandidates as getFeatureReactivationCandidates,
+  getAccountStructure as getFeatureAccountStructure
+} from '../features/meta-awareness/index.js';
+
 // OpenAI Service - GPT-5 + GPT-4 fallback
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -133,100 +142,73 @@ function getStoreData(db, storeName, today, yesterday, last7Days) {
 
 // ============================================================================
 // ACCOUNT STRUCTURE - Summary of active/inactive objects
+// Uses Meta Awareness feature module for consistent data
 // ============================================================================
 function getAccountStructure(db, storeName) {
   try {
-    // Get summary of meta objects by status
-    const summary = db.prepare(`
-      SELECT
-        effective_status,
-        object_type,
-        COUNT(*) as count
-      FROM meta_objects
-      WHERE LOWER(store) = ?
-      GROUP BY effective_status, object_type
-    `).all(storeName);
-
-    // Parse into structured format
-    const structure = {
-      campaigns: { active: 0, paused: 0, archived: 0, other: 0 },
-      adsets: { active: 0, paused: 0, archived: 0, other: 0 },
-      ads: { active: 0, paused: 0, archived: 0, other: 0 }
-    };
-
-    for (const row of summary) {
-      const type = row.object_type === 'campaign' ? 'campaigns'
-        : row.object_type === 'adset' ? 'adsets'
-        : row.object_type === 'ad' ? 'ads' : null;
-
-      if (!type) continue;
-
-      const status = (row.effective_status || '').toUpperCase();
-      if (status === 'ACTIVE') structure[type].active = row.count;
-      else if (status === 'PAUSED') structure[type].paused = row.count;
-      else if (status === 'ARCHIVED') structure[type].archived = row.count;
-      else structure[type].other += row.count;
-    }
-
-    return structure;
+    // Use the feature module for consistent account structure data
+    return getFeatureAccountStructure(storeName);
   } catch (error) {
+    console.error('[getAccountStructure] Error:', error.message);
     return null;
   }
 }
 
 // ============================================================================
 // REACTIVATION CANDIDATES - Inactive objects with good historical performance
+// Uses Meta Awareness feature module for consistent data and scoring
 // ============================================================================
 function getReactivationCandidates(db, storeName) {
-  const last90Days = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
   try {
-    // Get inactive campaigns with good historical performance (ROAS > 1.0)
-    const inactiveCampaigns = db.prepare(`
-      SELECT
-        campaign_id, campaign_name,
-        MAX(effective_status) as status,
-        ROUND(SUM(spend), 2) as total_spend,
-        SUM(conversions) as total_conversions,
-        ROUND(SUM(conversion_value), 2) as total_revenue,
-        ROUND(AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END), 2) as avg_roas,
-        MAX(date) as last_active_date
-      FROM meta_daily_metrics
-      WHERE LOWER(store) = ? AND date >= ?
-      AND (effective_status = 'PAUSED' OR effective_status = 'ARCHIVED')
-      GROUP BY campaign_id
-      HAVING total_conversions > 0 AND avg_roas > 1.0
-      ORDER BY avg_roas DESC
-      LIMIT 5
-    `).all(storeName, last90Days);
+    // Use the feature module for consistent reactivation candidates
+    const candidates = getFeatureReactivationCandidates(storeName);
 
-    // Get inactive adsets with good historical performance
-    const inactiveAdsets = db.prepare(`
-      SELECT
-        campaign_name, adset_id, adset_name,
-        MAX(adset_effective_status) as status,
-        ROUND(SUM(spend), 2) as total_spend,
-        SUM(conversions) as total_conversions,
-        ROUND(SUM(conversion_value), 2) as total_revenue,
-        ROUND(AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END), 2) as avg_roas,
-        MAX(date) as last_active_date
-      FROM meta_adset_metrics
-      WHERE LOWER(store) = ? AND date >= ?
-      AND (adset_effective_status = 'PAUSED' OR adset_effective_status = 'ARCHIVED')
-      GROUP BY adset_id
-      HAVING total_conversions > 0 AND avg_roas > 1.0
-      ORDER BY avg_roas DESC
-      LIMIT 5
-    `).all(storeName, last90Days);
-
+    // Return simplified version for AI consumption (top 5 each)
     return {
-      campaigns: inactiveCampaigns || [],
-      adsets: inactiveAdsets || [],
-      note: 'These are paused/archived objects that performed well historically and may be candidates for reactivation'
+      campaigns: (candidates.campaigns || []).slice(0, 5).map(c => ({
+        campaign_id: c.campaign_id,
+        campaign_name: c.campaign_name,
+        status: c.effective_status,
+        total_spend: c.total_spend,
+        total_conversions: c.total_conversions,
+        total_revenue: c.total_revenue,
+        avg_roas: c.avg_roas,
+        reactivation_score: c.reactivation_score,
+        reason: c.reason,
+        last_active_date: c.last_date
+      })),
+      adsets: (candidates.adsets || []).slice(0, 5).map(a => ({
+        campaign_name: a.campaign_name,
+        adset_id: a.adset_id,
+        adset_name: a.adset_name,
+        status: a.adset_effective_status,
+        total_spend: a.total_spend,
+        total_conversions: a.total_conversions,
+        total_revenue: a.total_revenue,
+        avg_roas: a.avg_roas,
+        reactivation_score: a.reactivation_score,
+        reason: a.reason,
+        last_active_date: a.last_date
+      })),
+      ads: (candidates.ads || []).slice(0, 5).map(ad => ({
+        campaign_name: ad.campaign_name,
+        adset_name: ad.adset_name,
+        ad_id: ad.ad_id,
+        ad_name: ad.ad_name,
+        status: ad.ad_effective_status,
+        total_spend: ad.total_spend,
+        total_conversions: ad.total_conversions,
+        avg_roas: ad.avg_roas,
+        reactivation_score: ad.reactivation_score,
+        reason: ad.reason,
+        last_active_date: ad.last_date
+      })),
+      summary: candidates.summary,
+      note: candidates.note
     };
   } catch (error) {
     console.error('[getReactivationCandidates] Error:', error.message);
-    return { campaigns: [], adsets: [], note: 'Error fetching reactivation candidates' };
+    return { campaigns: [], adsets: [], ads: [], summary: { total: 0 }, note: 'Error fetching reactivation candidates' };
   }
 }
 
@@ -260,9 +242,8 @@ function getRelevantData(store, question) {
   const mentionsBoth = q.includes('both') || q.includes('compare') || q.includes('stores');
 
   // Detect if question is about reactivation or inactive items
-  const mentionsReactivation = q.includes('reactivat') || q.includes('inactive') ||
-    q.includes('paused') || q.includes('archived') || q.includes('turn back on') ||
-    q.includes('winners') || q.includes('old campaigns');
+  // Uses the feature module for consistent detection
+  const mentionsReactivation = isReactivationQuestion(question);
 
   // Always fetch current store
   data[currentStore] = getStoreData(db, currentStore, today, yesterday, last7Days);
@@ -310,7 +291,10 @@ function removeEmpty(obj) {
 function buildSystemPrompt(store, mode, data) {
   const hasOtherStore = data.vironax && data.shawq;
   const hasReactivationData = data.reactivationCandidates &&
-    (data.reactivationCandidates.campaigns?.length > 0 || data.reactivationCandidates.adsets?.length > 0);
+    ((data.reactivationCandidates.campaigns?.length > 0) ||
+     (data.reactivationCandidates.adsets?.length > 0) ||
+     (data.reactivationCandidates.ads?.length > 0) ||
+     (data.reactivationCandidates.summary?.total > 0));
 
   let storeInfo = '';
   if (hasOtherStore) {
@@ -324,26 +308,46 @@ function buildSystemPrompt(store, mode, data) {
       : 'Store: Shawq (Turkey/US, USD currency, apparel, Shopify)';
   }
 
-  // Account structure context
+  // Account structure context - use feature module for consistent formatting
   let structureInfo = '';
   const storeData = data[store.toLowerCase()];
   if (storeData?.accountStructure) {
     const s = storeData.accountStructure;
+    const totalPaused = (s.campaigns?.paused || 0) + (s.adsets?.paused || 0) + (s.ads?.paused || 0);
+    const totalArchived = (s.campaigns?.archived || 0) + (s.adsets?.archived || 0) + (s.ads?.archived || 0);
     structureInfo = `
 ACCOUNT STRUCTURE:
-- Campaigns: ${s.campaigns.active} active, ${s.campaigns.paused} paused, ${s.campaigns.archived} archived
-- Ad Sets: ${s.adsets.active} active, ${s.adsets.paused} paused, ${s.adsets.archived} archived
-- Ads: ${s.ads.active} active, ${s.ads.paused} paused, ${s.ads.archived} archived`;
+- Campaigns: ${s.campaigns?.active || 0} active, ${s.campaigns?.paused || 0} paused, ${s.campaigns?.archived || 0} archived
+- Ad Sets: ${s.adsets?.active || 0} active, ${s.adsets?.paused || 0} paused, ${s.adsets?.archived || 0} archived
+- Ads: ${s.ads?.active || 0} active, ${s.ads?.paused || 0} paused, ${s.ads?.archived || 0} archived
+- Total inactive objects: ${totalPaused + totalArchived} (${totalPaused} paused, ${totalArchived} archived)`;
   }
 
-  // Reactivation context
+  // Reactivation context - enhanced with scoring information
   let reactivationInfo = '';
   if (hasReactivationData) {
+    const rc = data.reactivationCandidates;
+    const topScore = rc.summary?.topScore || Math.max(
+      ...(rc.campaigns || []).map(c => c.reactivation_score || 0),
+      ...(rc.adsets || []).map(a => a.reactivation_score || 0),
+      ...(rc.ads || []).map(ad => ad.reactivation_score || 0),
+      0
+    );
     reactivationInfo = `
-REACTIVATION CANDIDATES:
-The data includes inactive (paused/archived) campaigns and ad sets that performed well historically.
-When asked about reactivation opportunities, analyze these candidates and recommend which ones
-to consider reactivating based on their historical ROAS, conversion volume, and recency.`;
+REACTIVATION CANDIDATES (${rc.summary?.total || ((rc.campaigns?.length || 0) + (rc.adsets?.length || 0) + (rc.ads?.length || 0))} found):
+The data includes inactive (paused/archived) objects that performed well historically.
+Each candidate has a reactivation_score (0-10) where higher = better candidate.
+- Scores 7+ = Strong candidates (excellent historical ROAS, good volume, recent activity)
+- Scores 4-7 = Moderate candidates (good performance, may need testing)
+- Scores <4 = Weak candidates (consider carefully before reactivating)
+Top reactivation score: ${(topScore || 0).toFixed(1)}
+
+When asked about reactivation opportunities:
+1. Recommend candidates with highest scores first
+2. Explain the 'reason' field which summarizes why each is a candidate
+3. Suggest starting with 1-2 highest scorers for testing
+4. Note that reactivation requires manual action in Meta Ads Manager
+5. Recommend setting conservative budgets initially`;
   }
 
   const basePrompt = `You are an expert e-commerce analyst.

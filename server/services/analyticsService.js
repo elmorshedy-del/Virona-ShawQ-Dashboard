@@ -2,6 +2,13 @@ import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
+// Import Meta Awareness feature module for consistent status filtering
+import {
+  buildStatusFilter as featureBuildStatusFilter,
+  shouldIncludeInactive as featureShouldIncludeInactive,
+  getReactivationCandidates as featureGetReactivationCandidates
+} from '../features/meta-awareness/index.js';
+
 // ============================================================================
 // DATE HELPERS
 // ============================================================================
@@ -52,23 +59,19 @@ function getPreviousDateRange(startDate, endDate) {
 
 // ============================================================================
 // STATUS FILTERING HELPERS
+// Uses Meta Awareness feature module for consistent filtering across the app
 // ============================================================================
 
-// Check if includeInactive is requested
+// Check if includeInactive is requested - delegates to feature module
 function shouldIncludeInactive(params) {
-  return params.includeInactive === 'true' || params.includeInactive === true;
+  return featureShouldIncludeInactive(params);
 }
 
-// Build status filter clause for SQL queries
+// Build status filter clause for SQL queries - delegates to feature module
 // Default: only ACTIVE effective_status
 // With includeInactive: include all statuses
 function buildStatusFilter(params, columnPrefix = '') {
-  if (shouldIncludeInactive(params)) {
-    return ''; // No filter - include all
-  }
-  // Default: only ACTIVE (or UNKNOWN for backwards compatibility with data synced before status tracking)
-  const col = columnPrefix ? `${columnPrefix}.effective_status` : 'effective_status';
-  return ` AND (${col} = 'ACTIVE' OR ${col} = 'UNKNOWN' OR ${col} IS NULL)`;
+  return featureBuildStatusFilter(params, columnPrefix);
 }
 
 // ============================================================================
@@ -1165,131 +1168,22 @@ export function getMetaAdManagerHierarchy(store, params) {
 
 // ============================================================================
 // REACTIVATION CANDIDATES - For AI to recommend reactivating old winners
+// Uses Meta Awareness feature module for consistent scoring and data
 // ============================================================================
 export function getReactivationCandidates(store, params = {}) {
-  const db = getDb();
-
-  // Get historical performance of INACTIVE campaigns/adsets/ads
-  // that performed well when they were active
-
-  // Look back further for historical analysis (90 days)
-  const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000));
-
   try {
-    // Get inactive campaigns with good historical performance
-    const inactiveCampaigns = db.prepare(`
-      SELECT
-        campaign_id, campaign_name,
-        MAX(effective_status) as effective_status,
-        SUM(spend) as total_spend,
-        SUM(conversions) as total_conversions,
-        SUM(conversion_value) as total_revenue,
-        AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END) as avg_roas,
-        AVG(CASE WHEN conversions > 0 THEN spend / conversions ELSE 0 END) as avg_cac,
-        MIN(date) as first_date,
-        MAX(date) as last_date,
-        COUNT(DISTINCT date) as active_days
-      FROM meta_daily_metrics
-      WHERE store = ? AND date BETWEEN ? AND ?
-      AND (effective_status = 'PAUSED' OR effective_status = 'ARCHIVED' OR effective_status = 'DELETED')
-      GROUP BY campaign_id
-      HAVING total_conversions > 0 AND avg_roas > 1.0
-      ORDER BY avg_roas DESC
-      LIMIT 20
-    `).all(store, startDate, endDate);
-
-    // Get inactive adsets with good historical performance
-    const inactiveAdsets = db.prepare(`
-      SELECT
-        campaign_id, campaign_name, adset_id, adset_name,
-        MAX(adset_effective_status) as adset_effective_status,
-        SUM(spend) as total_spend,
-        SUM(conversions) as total_conversions,
-        SUM(conversion_value) as total_revenue,
-        AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END) as avg_roas,
-        AVG(CASE WHEN conversions > 0 THEN spend / conversions ELSE 0 END) as avg_cac,
-        MIN(date) as first_date,
-        MAX(date) as last_date,
-        COUNT(DISTINCT date) as active_days
-      FROM meta_adset_metrics
-      WHERE store = ? AND date BETWEEN ? AND ?
-      AND (adset_effective_status = 'PAUSED' OR adset_effective_status = 'ARCHIVED')
-      GROUP BY adset_id
-      HAVING total_conversions > 0 AND avg_roas > 1.0
-      ORDER BY avg_roas DESC
-      LIMIT 20
-    `).all(store, startDate, endDate);
-
-    // Get inactive ads with good historical performance
-    const inactiveAds = db.prepare(`
-      SELECT
-        campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name,
-        MAX(ad_effective_status) as ad_effective_status,
-        SUM(spend) as total_spend,
-        SUM(conversions) as total_conversions,
-        SUM(conversion_value) as total_revenue,
-        AVG(CASE WHEN spend > 0 THEN conversion_value / spend ELSE 0 END) as avg_roas,
-        AVG(CASE WHEN conversions > 0 THEN spend / conversions ELSE 0 END) as avg_cac,
-        MIN(date) as first_date,
-        MAX(date) as last_date,
-        COUNT(DISTINCT date) as active_days
-      FROM meta_ad_metrics
-      WHERE store = ? AND date BETWEEN ? AND ?
-      AND (ad_effective_status = 'PAUSED' OR ad_effective_status = 'ARCHIVED')
-      GROUP BY ad_id
-      HAVING total_conversions > 0 AND avg_roas > 1.0
-      ORDER BY avg_roas DESC
-      LIMIT 20
-    `).all(store, startDate, endDate);
-
-    // Calculate reactivation scores
-    const scoreCampaign = (c) => {
-      const roasScore = Math.min((c.avg_roas || 0) / 2, 5); // Max 5 points for ROAS
-      const volumeScore = Math.min((c.total_conversions || 0) / 10, 3); // Max 3 points for volume
-      const recencyScore = c.last_date ? Math.max(0, 2 - (Date.now() - new Date(c.last_date).getTime()) / (30 * 24 * 60 * 60 * 1000)) : 0; // Max 2 points for recency
-      return roasScore + volumeScore + recencyScore;
-    };
-
-    return {
-      campaigns: inactiveCampaigns.map(c => ({
-        ...c,
-        avg_roas: c.avg_roas || 0,
-        avg_cac: c.avg_cac || 0,
-        total_spend: c.total_spend || 0,
-        total_conversions: c.total_conversions || 0,
-        total_revenue: c.total_revenue || 0,
-        reactivation_score: scoreCampaign(c),
-        reason: `${(c.avg_roas || 0).toFixed(2)}x ROAS with ${c.total_conversions || 0} conversions`
-      })).sort((a, b) => b.reactivation_score - a.reactivation_score),
-
-      adsets: inactiveAdsets.map(a => ({
-        ...a,
-        avg_roas: a.avg_roas || 0,
-        avg_cac: a.avg_cac || 0,
-        total_spend: a.total_spend || 0,
-        total_conversions: a.total_conversions || 0,
-        total_revenue: a.total_revenue || 0,
-        reactivation_score: scoreCampaign(a),
-        reason: `${(a.avg_roas || 0).toFixed(2)}x ROAS with ${a.total_conversions || 0} conversions`
-      })).sort((a, b) => b.reactivation_score - a.reactivation_score),
-
-      ads: inactiveAds.map(ad => ({
-        ...ad,
-        avg_roas: ad.avg_roas || 0,
-        avg_cac: ad.avg_cac || 0,
-        total_spend: ad.total_spend || 0,
-        total_conversions: ad.total_conversions || 0,
-        total_revenue: ad.total_revenue || 0,
-        reactivation_score: scoreCampaign(ad),
-        reason: `${(ad.avg_roas || 0).toFixed(2)}x ROAS with ${ad.total_conversions || 0} conversions`
-      })).sort((a, b) => b.reactivation_score - a.reactivation_score),
-
-      dateRange: { startDate, endDate }
-    };
+    // Delegate to the feature module for consistent scoring and data structure
+    return featureGetReactivationCandidates(store, params);
   } catch (error) {
     console.error('[Analytics] Error getting reactivation candidates:', error);
-    return { campaigns: [], adsets: [], ads: [], dateRange: { startDate, endDate } };
+    return {
+      campaigns: [],
+      adsets: [],
+      ads: [],
+      summary: { total: 0, campaigns: 0, adsets: 0, ads: 0, topScore: 0 },
+      dateRange: { startDate: '', endDate: '' },
+      note: 'Error fetching reactivation candidates'
+    };
   }
 }
 

@@ -1,5 +1,22 @@
+/**
+ * AI ANALYTICS COMPONENT
+ * ======================
+ * Chat interface for AI-powered analytics with three modes:
+ * Ask (quick facts), Analyze (insights), Deep Dive (strategic)
+ *
+ * INTEGRATED WITH: Meta Awareness feature for reactivation recommendations
+ */
+
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Sparkles, Calendar, Brain } from 'lucide-react';
+import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+
+// Import Meta Awareness feature module
+import {
+  ReactivationPanel,
+  ReactivationBadge,
+  REACTIVATION_PROMPTS,
+  useReactivationCandidates
+} from '../features/meta-awareness';
 
 export default function AIAnalytics({ store, selectedStore, startDate, endDate }) {
   // Support both 'store' and 'selectedStore' props for backward compatibility
@@ -10,7 +27,15 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const [isLoading, setIsLoading] = useState(false);
   const [activeMode, setActiveMode] = useState('ask');
   const [insightMode, setInsightMode] = useState('balanced'); // 'instant', 'fast', 'balanced', 'max'
+  const [showReactivation, setShowReactivation] = useState(true); // Show reactivation panel
   const messagesEndRef = useRef(null);
+
+  // Use reactivation candidates hook
+  const {
+    candidates: reactivationCandidates,
+    hasCandidates: hasReactivationCandidates,
+    summary: reactivationSummary
+  } = useReactivationCandidates(activeStore);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -21,6 +46,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   }, [messages]);
 
   // Mode configurations with pillars
+  // UPDATED: Added reactivation pillars to relevant modes
   const modes = {
     ask: {
       icon: '💬',
@@ -48,7 +74,9 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         { icon: '📣', label: 'Spend vs results' },
         { icon: '🚨', label: 'Anomaly check' },
         { icon: '🧠', label: 'Top drivers' },
-        { icon: '🧪', label: 'Creative performance' }
+        { icon: '🧪', label: 'Creative performance' },
+        // NEW: Reactivation pillar
+        { icon: '🔄', label: 'Reactivation check' }
       ]
     },
     deepdive: {
@@ -63,7 +91,9 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         { icon: '🎬', label: 'Creative roadmap' },
         { icon: '🧭', label: 'Audience strategy' },
         { icon: '🧪', label: 'Test plan' },
-        { icon: '🛡️', label: 'Risk & efficiency' }
+        { icon: '🛡️', label: 'Risk & efficiency' },
+        // NEW: Reactivation pillar
+        { icon: '🔄', label: 'Reactivation plan' }
       ]
     }
   };
@@ -166,6 +196,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   };
 
   // Quick action handler - populates input with a prompt
+  // UPDATED: Added reactivation prompts
   const handleQuickAction = (pillar) => {
     const prompts = {
       // Ask mode
@@ -185,6 +216,8 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       'Anomaly check': 'Are there any anomalies or unusual patterns?',
       'Top drivers': 'What are the top drivers of our performance?',
       'Creative performance': 'How are our creatives performing?',
+      // NEW: Reactivation prompts
+      'Reactivation check': 'Are there any paused or archived campaigns, ad sets, or ads that I should consider reactivating based on their historical performance?',
       // Deep Dive mode
       'Scale plan': 'Create a scaling plan for our best campaigns',
       'Cut plan': 'What should we cut or pause?',
@@ -193,9 +226,20 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       'Creative roadmap': 'Create a creative roadmap for the next month',
       'Audience strategy': 'What audience strategy should we pursue?',
       'Test plan': 'Create a testing plan for optimization',
-      'Risk & efficiency': 'Identify risks and efficiency opportunities'
+      'Risk & efficiency': 'Identify risks and efficiency opportunities',
+      // NEW: Reactivation plan
+      'Reactivation plan': 'Create a detailed reactivation plan for the best historical performers. Include which campaigns, ad sets, or ads to turn back on, with budget suggestions and testing approach.'
     };
     setInput(prompts[pillar] || `Tell me about ${pillar}`);
+  };
+
+  // Handle reactivation prompt click from panel
+  const handleReactivationPromptClick = (promptText) => {
+    setInput(promptText);
+    // Optionally auto-switch to Deep Dive mode for reactivation questions
+    if (activeMode === 'ask') {
+      setActiveMode('deepdive');
+    }
   };
 
   const renderMessage = (message, index) => {
@@ -246,6 +290,10 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-blue-500" />
           VironaX AI
+          {/* Reactivation badge */}
+          {hasReactivationCandidates && (
+            <ReactivationBadge count={reactivationSummary.total} className="ml-auto" />
+          )}
         </h3>
 
         {/* Mode Cards */}
@@ -275,7 +323,9 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                       <button
                         key={idx}
                         onClick={() => handleQuickAction(pillar.label)}
-                        className="text-xs text-gray-400 italic hover:text-blue-500 hover:bg-blue-50 px-1.5 py-0.5 rounded transition-colors"
+                        className={`text-xs text-gray-400 italic hover:text-blue-500 hover:bg-blue-50 px-1.5 py-0.5 rounded transition-colors ${
+                          pillar.label.includes('Reactivation') ? 'text-orange-400 hover:text-orange-600 hover:bg-orange-50' : ''
+                        }`}
                       >
                         {pillar.icon} {pillar.label}
                       </button>
@@ -312,6 +362,18 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
           </div>
         )}
 
+        {/* Reactivation Panel - Shows paused/archived campaigns with good performance */}
+        {hasReactivationCandidates && (
+          <div className="mt-6 pt-4 border-t border-gray-200">
+            <ReactivationPanel
+              store={activeStore}
+              onPromptClick={handleReactivationPromptClick}
+              collapsed={!showReactivation}
+              className="shadow-none border-0 p-0"
+            />
+          </div>
+        )}
+
         {/* Store Info */}
         <div className="mt-6 pt-4 border-t border-gray-200">
           <div className="text-xs text-gray-500">
@@ -338,14 +400,27 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                 <p className="text-xs text-gray-500 italic">{currentMode.description}</p>
               </div>
             </div>
-            {activeMode === 'deepdive' && (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg">
-                <Brain className="w-4 h-4 text-purple-500" />
-                <span className="text-xs text-purple-700 font-medium">
-                  {insightModes.find(m => m.id === insightMode)?.label}
-                </span>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {/* Reactivation indicator in header */}
+              {hasReactivationCandidates && (
+                <button
+                  onClick={() => handleReactivationPromptClick('What are the best reactivation candidates?')}
+                  className="flex items-center gap-1.5 px-2.5 py-1 bg-orange-50 text-orange-700 text-xs font-medium rounded-lg hover:bg-orange-100 transition-colors"
+                  title="Click to ask about reactivation candidates"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>{reactivationSummary.total} to reactivate</span>
+                </button>
+              )}
+              {activeMode === 'deepdive' && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg">
+                  <Brain className="w-4 h-4 text-purple-500" />
+                  <span className="text-xs text-purple-700 font-medium">
+                    {insightModes.find(m => m.id === insightMode)?.label}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -370,6 +445,19 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                     </button>
                   ))}
                 </div>
+
+                {/* Reactivation quick prompt if candidates exist */}
+                {hasReactivationCandidates && (
+                  <div className="mt-6 pt-4 border-t border-gray-200">
+                    <p className="text-xs text-orange-600 font-medium mb-2">🔄 Reactivation Opportunities</p>
+                    <button
+                      onClick={() => handleReactivationPromptClick('What are the best campaigns, ad sets, or ads I should reactivate based on historical performance?')}
+                      className="px-4 py-2 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg transition-colors"
+                    >
+                      Analyze {reactivationSummary.total} reactivation candidates
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           ) : (
