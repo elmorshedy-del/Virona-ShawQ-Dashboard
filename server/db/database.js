@@ -326,6 +326,14 @@ export function initDb() {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN effective_status TEXT DEFAULT 'UNKNOWN'`);
   } catch (e) { /* column exists */ }
 
+  // Add inline_link_clicks and cost_per_inline_link_click columns for Meta Link Clicks metric
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN inline_link_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+
   // Add status columns to meta_adset_metrics if they don't exist
   try {
     db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);
@@ -340,6 +348,14 @@ export function initDb() {
     db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN adset_effective_status TEXT DEFAULT 'UNKNOWN'`);
   } catch (e) { /* column exists */ }
 
+  // Add inline_link_clicks and cost_per_inline_link_click columns for adset metrics
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN inline_link_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+
   // Add status columns to meta_ad_metrics if they don't exist
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);
@@ -352,6 +368,14 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN ad_effective_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+
+  // Add inline_link_clicks and cost_per_inline_link_click columns for ad metrics
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN inline_link_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
   // Create indexes for performance

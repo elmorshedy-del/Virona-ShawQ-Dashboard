@@ -143,7 +143,13 @@ export default function UnifiedAnalytics({
       );
     }
 
-    return sortData(filtered, sortConfig);
+    // Add CVR calculation to each campaign for sorting purposes
+    const withCVR = filtered.map(c => ({
+      ...c,
+      cvr: c.lpv > 0 ? (c.conversions / c.lpv) * 100 : null
+    }));
+
+    return sortData(withCVR, sortConfig);
   }, [metaAdManagerData, hiddenCampaigns, searchQuery, sortData, sortConfig]);
 
   // Total visible campaigns
@@ -313,10 +319,10 @@ export default function UnifiedAnalytics({
     // Check if this is a country breakdown row
     const isCountryBreakdown = row.isCountryBreakdown;
     const orderDate = row.lastOrderDate;
-    // Show green highlight for ANY row with orders (conversions > 0)
-    const hasOrders = row.conversions > 0;
-    // Show flag only for country breakdown rows
-    const showFlag = isCountryBreakdown && hasOrders;
+    // Only show green highlight when orders occurred TODAY (not just any orders > 0)
+    const hasOrdersToday = row.conversions > 0 && orderDate === todayDate;
+    // Show flag only for country breakdown rows with orders today
+    const showFlag = isCountryBreakdown && hasOrdersToday;
 
     return (
       <tr
@@ -388,8 +394,8 @@ export default function UnifiedAnalytics({
         <td className="px-3 py-3 text-right font-semibold text-green-600">
           {renderMetric(row.roas, 'roas', 2)}
         </td>
-        {/* Orders - green when there are orders, with flag for country rows */}
-        <td className={`px-3 py-3 text-right font-medium ${hasOrders ? 'text-green-600' : 'text-gray-700'}`}>
+        {/* Orders - green only when orders occurred TODAY, with flag for country rows */}
+        <td className={`px-3 py-3 text-right font-medium ${hasOrdersToday ? 'text-green-600' : 'text-gray-700'}`}>
           <div className="flex items-center justify-end gap-1">
             {showFlag && <span>{getCountryFlag(row.country)}</span>}
             <span>{row.conversions || 0}</span>
@@ -415,9 +421,9 @@ export default function UnifiedAnalytics({
         </td>
 
         {/* MID FUNNEL GROUP */}
-        {/* Clicks */}
+        {/* Link Clicks */}
         <td className="px-3 py-3 text-right text-gray-600 border-l border-gray-100">
-          {renderMetric(row.clicks, 'number')}
+          {renderMetric(row.inline_link_clicks, 'number')}
         </td>
         {/* CTR */}
         <td className="px-3 py-3 text-right text-gray-600">
@@ -441,8 +447,8 @@ export default function UnifiedAnalytics({
         <td className="px-3 py-3 text-right text-gray-600">
           {renderMetric(row.checkout, 'number')}
         </td>
-        {/* Orders (Purchased) - Explicit purchase-confirmed */}
-        <td className={`px-3 py-3 text-right font-medium ${hasOrders ? 'text-green-600' : 'text-gray-700'}`}>
+        {/* Orders (Purchased) - green only when orders occurred TODAY */}
+        <td className={`px-3 py-3 text-right font-medium ${hasOrdersToday ? 'text-green-600' : 'text-gray-700'}`}>
           {row.conversions || 0}
         </td>
         {/* CVR (Purchases/LPV) */}
@@ -645,7 +651,7 @@ export default function UnifiedAnalytics({
               <SortableHeader label="Freq" field="frequency" sortConfig={sortConfig} onSort={handleSort} />
 
               {/* Mid Funnel */}
-              <SortableHeader label="Clicks" field="clicks" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
+              <SortableHeader label="Link Clicks" field="inline_link_clicks" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
               <SortableHeader label="CTR" field="ctr" sortConfig={sortConfig} onSort={handleSort} />
               <SortableHeader label="CPC" field="cpc" sortConfig={sortConfig} onSort={handleSort} />
               <SortableHeader label="LPV" field="lpv" sortConfig={sortConfig} onSort={handleSort} />
@@ -653,12 +659,8 @@ export default function UnifiedAnalytics({
               {/* Lower Funnel */}
               <SortableHeader label="ATC" field="atc" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
               <SortableHeader label="Checkout" field="checkout" sortConfig={sortConfig} onSort={handleSort} />
-              <th className="px-3 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">
-                Orders
-              </th>
-              <th className="px-3 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">
-                CVR
-              </th>
+              <SortableHeader label="Orders" field="conversions" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="CVR" field="cvr" sortConfig={sortConfig} onSort={handleSort} />
             </tr>
           </thead>
           <tbody>

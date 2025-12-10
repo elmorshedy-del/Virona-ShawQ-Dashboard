@@ -951,19 +951,25 @@ export function getMetaBreakdowns(store, params) { return []; }
 // ============================================================================
 
 // Helper: Calculate metrics with proper null handling and defensive guards
+// Uses inline_link_clicks for Link Clicks and cost_per_inline_link_click for CPC from Meta API
 function calculateMetrics(row) {
   const spend = row.spend || 0;
   const impressions = row.impressions || 0;
   const reach = row.reach || 0;
   const clicks = row.clicks || 0;
+  const inline_link_clicks = row.inline_link_clicks || 0;
   const conversions = row.conversions || 0;
   const conversion_value = row.conversion_value || 0;
+  // Use cost_per_inline_link_click directly from Meta API if available
+  const cost_per_inline_link_click = row.cost_per_inline_link_click || null;
 
   return {
     cpm: impressions > 0 ? (spend / impressions) * 1000 : null,
     frequency: reach > 0 ? impressions / reach : null,
-    ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
-    cpc: clicks > 0 ? spend / clicks : null,
+    // CTR based on inline_link_clicks (Link Clicks)
+    ctr: impressions > 0 ? (inline_link_clicks / impressions) * 100 : null,
+    // Use cost_per_inline_link_click directly from Meta API
+    cpc: cost_per_inline_link_click,
     roas: spend > 0 ? conversion_value / spend : null,
     aov: conversions > 0 ? conversion_value / conversions : null,
     cac: conversions > 0 ? spend / conversions : null
@@ -992,11 +998,13 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(impressions) as impressions,
         SUM(reach) as reach,
         SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as checkout,
         SUM(conversions) as conversions,
-        SUM(conversion_value) as conversion_value
+        SUM(conversion_value) as conversion_value,
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       FROM meta_daily_metrics
       WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
       GROUP BY campaign_id
@@ -1015,11 +1023,13 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(impressions) as impressions,
         SUM(reach) as reach,
         SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as checkout,
         SUM(conversions) as conversions,
-        SUM(conversion_value) as conversion_value
+        SUM(conversion_value) as conversion_value,
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       FROM meta_daily_metrics
       WHERE store = ? AND date BETWEEN ? AND ? AND country IS NOT NULL AND country != '' AND country != 'ALL'${statusFilter}
       GROUP BY campaign_id, country
@@ -1053,11 +1063,13 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(impressions) as impressions,
         SUM(reach) as reach,
         SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as checkout,
         SUM(conversions) as conversions,
-        SUM(conversion_value) as conversion_value
+        SUM(conversion_value) as conversion_value,
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       FROM meta_adset_metrics
       WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
       GROUP BY adset_id
@@ -1074,11 +1086,13 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(impressions) as impressions,
         SUM(reach) as reach,
         SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as checkout,
         SUM(conversions) as conversions,
-        SUM(conversion_value) as conversion_value
+        SUM(conversion_value) as conversion_value,
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       FROM meta_ad_metrics
       WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
       GROUP BY ad_id
@@ -1170,11 +1184,13 @@ export function getMetaAdManagerHierarchy(store, params) {
       SUM(impressions) as impressions,
       SUM(reach) as reach,
       SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
       SUM(landing_page_views) as lpv,
       SUM(add_to_cart) as atc,
       SUM(checkouts_initiated) as checkout,
       SUM(conversions) as conversions,
-      SUM(conversion_value) as conversion_value
+      SUM(conversion_value) as conversion_value,
+      CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       ${breakdownSelect}
     FROM meta_daily_metrics
     WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${statusFilter}
@@ -1203,11 +1219,13 @@ export function getMetaAdManagerHierarchy(store, params) {
       SUM(impressions) as impressions,
       SUM(reach) as reach,
       SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
       SUM(landing_page_views) as lpv,
       SUM(add_to_cart) as atc,
       SUM(checkouts_initiated) as checkout,
       SUM(conversions) as conversions,
-      SUM(conversion_value) as conversion_value
+      SUM(conversion_value) as conversion_value,
+      CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       ${breakdownSelect}
     FROM meta_adset_metrics
     WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${statusFilter}
@@ -1238,11 +1256,13 @@ export function getMetaAdManagerHierarchy(store, params) {
       SUM(impressions) as impressions,
       SUM(reach) as reach,
       SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
       SUM(landing_page_views) as lpv,
       SUM(add_to_cart) as atc,
       SUM(checkouts_initiated) as checkout,
       SUM(conversions) as conversions,
-      SUM(conversion_value) as conversion_value
+      SUM(conversion_value) as conversion_value,
+      CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       ${breakdownSelect}
     FROM meta_ad_metrics
     WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${statusFilter}

@@ -1,6 +1,5 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
-import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 const META_API_VERSION = 'v19.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -284,7 +283,8 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
   const { campaignStatusMap = new Map(), adsetStatusMap = new Map() } = statusMaps;
 
   // Define fields based on level
-  let fields = 'spend,impressions,clicks,reach,actions,action_values';
+  // Include inline_link_clicks and cost_per_inline_link_click for proper Link Clicks and CPC metrics
+  let fields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click';
   if (level === 'campaign') {
     fields = 'campaign_name,campaign_id,' + fields;
   } else if (level === 'adset') {
@@ -338,12 +338,14 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         spend, impressions, clicks, reach,
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
+        inline_link_clicks, cost_per_inline_link_click,
         status, effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @country,
         @spend, @impressions, @clicks, @reach,
         @lpv, @atc, @checkout,
         @conversions, @conversion_value,
+        @inline_link_clicks, @cost_per_inline_link_click,
         @status, @effective_status
       )
     `);
@@ -354,12 +356,14 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         spend, impressions, clicks, reach,
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
+        inline_link_clicks, cost_per_inline_link_click,
         status, effective_status, adset_status, adset_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @country,
         @spend, @impressions, @clicks, @reach,
         @lpv, @atc, @checkout,
         @conversions, @conversion_value,
+        @inline_link_clicks, @cost_per_inline_link_click,
         @status, @effective_status, @adset_status, @adset_effective_status
       )
     `);
@@ -370,12 +374,14 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         spend, impressions, clicks, reach,
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
+        inline_link_clicks, cost_per_inline_link_click,
         status, effective_status, ad_status, ad_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @ad_id, @ad_name, @country,
         @spend, @impressions, @clicks, @reach,
         @lpv, @atc, @checkout,
         @conversions, @conversion_value,
+        @inline_link_clicks, @cost_per_inline_link_click,
         @status, @effective_status, @ad_status, @ad_effective_status
       )
     `);
@@ -408,6 +414,12 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         adsetEffectiveStatus = aInfo.effective_status || 'UNKNOWN';
       }
 
+      // Extract inline_link_clicks - Meta returns this as a single value
+      const inlineLinkClicks = parseInt(row.inline_link_clicks || 0);
+      // cost_per_inline_link_click comes directly from Meta API (already calculated)
+      // Apply currency rate to the cost
+      const costPerInlineLinkClick = parseFloat(row.cost_per_inline_link_click || 0) * rate;
+
       const data = {
         store: store,
         date: row.date_start,
@@ -423,6 +435,8 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         checkout: parseInt(checkout),
         conversions: parseInt(purchases),
         conversion_value: parseFloat(revenue || 0) * rate,
+        inline_link_clicks: inlineLinkClicks,
+        cost_per_inline_link_click: costPerInlineLinkClick,
         status: campaignStatus,
         effective_status: campaignEffectiveStatus
       };
@@ -608,8 +622,10 @@ export async function syncMetaData(store) {
   }
 
   // 2. Date Range (Last 30 Days for regular sync)
-  const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  // Use simple date format without timezone conversion - Meta returns data in ad account timezone
+  // We preserve the original Meta time reference to avoid date misalignment in daily metrics
+  const endDate = formatDate(new Date());
+  const startDate = formatDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 
   console.log(`[Meta] Syncing ${store} (Rate: ${rate}) from ${startDate} to ${endDate}...`);
 
