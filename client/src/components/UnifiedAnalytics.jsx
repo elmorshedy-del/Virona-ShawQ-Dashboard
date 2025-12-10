@@ -313,7 +313,10 @@ export default function UnifiedAnalytics({
     // Check if this is a country breakdown row
     const isCountryBreakdown = row.isCountryBreakdown;
     const orderDate = row.lastOrderDate;
-    const showOrderHighlight = isCountryBreakdown && row.conversions > 0 && isOrderToday(orderDate);
+    // Show green highlight for ANY row with orders (conversions > 0)
+    const hasOrders = row.conversions > 0;
+    // Show flag only for country breakdown rows
+    const showFlag = isCountryBreakdown && hasOrders;
 
     return (
       <tr
@@ -385,10 +388,10 @@ export default function UnifiedAnalytics({
         <td className="px-3 py-3 text-right font-semibold text-green-600">
           {renderMetric(row.roas, 'roas', 2)}
         </td>
-        {/* Orders */}
-        <td className={`px-3 py-3 text-right font-medium ${showOrderHighlight ? 'text-green-600' : 'text-gray-700'}`}>
+        {/* Orders - green when there are orders, with flag for country rows */}
+        <td className={`px-3 py-3 text-right font-medium ${hasOrders ? 'text-green-600' : 'text-gray-700'}`}>
           <div className="flex items-center justify-end gap-1">
-            {showOrderHighlight && <span>{getCountryFlag(row.country)}</span>}
+            {showFlag && <span>{getCountryFlag(row.country)}</span>}
             <span>{row.conversions || 0}</span>
           </div>
         </td>
@@ -439,7 +442,7 @@ export default function UnifiedAnalytics({
           {renderMetric(row.checkout, 'number')}
         </td>
         {/* Orders (Purchased) - Explicit purchase-confirmed */}
-        <td className={`px-3 py-3 text-right font-medium ${showOrderHighlight ? 'text-green-600' : 'text-gray-700'}`}>
+        <td className={`px-3 py-3 text-right font-medium ${hasOrders ? 'text-green-600' : 'text-gray-700'}`}>
           {row.conversions || 0}
         </td>
         {/* CVR (Purchases/LPV) */}
@@ -677,8 +680,8 @@ export default function UnifiedAnalytics({
                     )
                   ))}
 
-                  {/* Ad Sets (if expanded and no country breakdown) */}
-                  {campaignExpanded && adManagerBreakdown !== 'country' && campaign.adsets?.map((adset) => {
+                  {/* Ad Sets (if expanded) - ALWAYS show adsets hierarchy regardless of breakdown */}
+                  {campaignExpanded && campaign.adsets?.map((adset) => {
                     const adsetExpanded = expandedAdsets.has(adset.adset_id);
 
                     return (

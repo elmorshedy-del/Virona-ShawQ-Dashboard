@@ -1043,7 +1043,83 @@ export function getMetaAdManagerHierarchy(store, params) {
       });
     });
 
-    // Build hierarchy with country breakdowns nested under each campaign
+    // ALSO fetch adsets and ads for full hierarchy support
+    const adsetQuery = `
+      SELECT
+        campaign_id, campaign_name, adset_id, adset_name,
+        MAX(status) as status, MAX(effective_status) as effective_status,
+        MAX(adset_status) as adset_status, MAX(adset_effective_status) as adset_effective_status,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_adset_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
+      GROUP BY adset_id
+      ORDER BY spend DESC
+    `;
+    const adsets = db.prepare(adsetQuery).all(store, startDate, endDate);
+
+    const adQuery = `
+      SELECT
+        campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name,
+        MAX(status) as status, MAX(effective_status) as effective_status,
+        MAX(ad_status) as ad_status, MAX(ad_effective_status) as ad_effective_status,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_ad_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
+      GROUP BY ad_id
+      ORDER BY spend DESC
+    `;
+    const ads = db.prepare(adQuery).all(store, startDate, endDate);
+
+    // Group ads by adset_id
+    const adMap = new Map();
+    ads.forEach(ad => {
+      if (!adMap.has(ad.adset_id)) adMap.set(ad.adset_id, []);
+      adMap.get(ad.adset_id).push({
+        ...ad,
+        status: ad.status || 'UNKNOWN',
+        effective_status: ad.effective_status || 'UNKNOWN',
+        ad_status: ad.ad_status || 'UNKNOWN',
+        ad_effective_status: ad.ad_effective_status || 'UNKNOWN',
+        isActive: ad.ad_effective_status === 'ACTIVE' || ad.effective_status === 'ACTIVE',
+        ...calculateMetrics(ad),
+        level: 'ad'
+      });
+    });
+
+    // Group adsets by campaign_id
+    const adsetMap = new Map();
+    adsets.forEach(adset => {
+      if (!adsetMap.has(adset.campaign_id)) adsetMap.set(adset.campaign_id, []);
+      adsetMap.get(adset.campaign_id).push({
+        ...adset,
+        status: adset.status || 'UNKNOWN',
+        effective_status: adset.effective_status || 'UNKNOWN',
+        adset_status: adset.adset_status || 'UNKNOWN',
+        adset_effective_status: adset.adset_effective_status || 'UNKNOWN',
+        isActive: adset.adset_effective_status === 'ACTIVE' || adset.effective_status === 'ACTIVE',
+        ...calculateMetrics(adset),
+        level: 'adset',
+        ads: adMap.get(adset.adset_id) || []
+      });
+    });
+
+    // Build hierarchy with BOTH country breakdowns AND adsets
     const hierarchy = campaignTotals.map(campaign => ({
       ...campaign,
       status: campaign.status || 'UNKNOWN',
@@ -1052,7 +1128,7 @@ export function getMetaAdManagerHierarchy(store, params) {
       ...calculateMetrics(campaign),
       level: 'campaign',
       country_breakdowns: countryMap.get(campaign.campaign_id) || [],
-      adsets: [] // No adsets when showing country breakdown
+      adsets: adsetMap.get(campaign.campaign_id) || []
     }));
 
     return {
