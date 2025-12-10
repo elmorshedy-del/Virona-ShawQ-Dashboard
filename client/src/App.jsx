@@ -13,7 +13,7 @@ import {
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 import NotificationCenter from './components/NotificationCenter';
 import AIAnalytics from './components/AIAnalytics';
-import AIBudget from './components/AIBudget';
+import AIBudget from './components/Aibudget';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 
 const API_BASE = '/api';
