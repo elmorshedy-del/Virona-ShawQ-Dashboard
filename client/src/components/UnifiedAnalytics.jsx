@@ -1,36 +1,45 @@
 /**
- * UNIFIED ANALYTICS COMPONENT
- * ===========================
+ * UNIFIED CAMPAIGN COMPONENT
+ * ==========================
  *
- * Extracted from DashboardTab for better maintainability.
- * Contains the Unified Analytics Section with Countries and Meta Ad Manager modes.
- *
- * Data Flow:
- * - Receives countries data from dashboard (from parent)
- * - Receives metaAdManagerData from parent (fetched in App.jsx)
- * - Manages local state for sorting and UI interactions
- * - Callbacks for diagnostics selection go back to parent
+ * Redesigned with Meta Ads Manager-inspired styling.
+ * Features:
+ * - Clean, minimal Meta-like design
+ * - Campaign hierarchy with country breakdown as nested rows
+ * - Financials first, then funnel stages
+ * - Robust expand/collapse behavior
+ * - Brand-specific data source rules (Shawq: Shopify, Virona: Salla/Meta)
  */
 
-import { Fragment, useState, useCallback } from 'react';
-import { ChevronDown, ChevronUp, ArrowUpDown } from 'lucide-react';
+import { Fragment, useState, useCallback, useMemo } from 'react';
+import { ChevronDown, ChevronRight, Eye, EyeOff, ArrowUpDown, ArrowUp, ArrowDown, Search, X } from 'lucide-react';
 
 /**
- * Sortable Table Header Component
+ * Get today's date in YYYY-MM-DD format for comparison
  */
-function SortableHeader({ label, field, sortConfig, onSort, className = '' }) {
+function getTodayDate() {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - offset).toISOString().split('T')[0];
+}
+
+/**
+ * Sortable Table Header Component - Meta style
+ */
+function SortableHeader({ label, field, sortConfig, onSort, className = '', align = 'center' }) {
   const isActive = sortConfig.field === field;
   const isAsc = isActive && sortConfig.direction === 'asc';
 
   return (
     <th
-      className={`cursor-pointer hover:bg-gray-100 select-none ${className}`}
+      className={`px-3 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none transition-colors ${className}`}
       onClick={() => onSort(field)}
+      style={{ textAlign: align }}
     >
-      <div className="flex items-center gap-1 justify-center">
-        {label}
+      <div className={`flex items-center gap-1 ${align === 'left' ? 'justify-start' : align === 'right' ? 'justify-end' : 'justify-center'}`}>
+        <span>{label}</span>
         {isActive ? (
-          isAsc ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />
+          isAsc ? <ArrowUp className="w-3 h-3 text-blue-600" /> : <ArrowDown className="w-3 h-3 text-blue-600" />
         ) : (
           <ArrowUpDown className="w-3 h-3 opacity-30" />
         )}
@@ -40,36 +49,24 @@ function SortableHeader({ label, field, sortConfig, onSort, className = '' }) {
 }
 
 /**
- * UnifiedAnalytics Component
- *
- * @param {Object} props
- * @param {string} props.analyticsMode - Current mode: 'countries' | 'meta-ad-manager'
- * @param {Function} props.setAnalyticsMode - Mode setter
- * @param {Object} props.dashboard - Dashboard data containing countries and countriesDataSource
- * @param {string} props.countriesDataSource - Fallback data source label
- * @param {Array} props.metaAdManagerData - Meta Ad Manager hierarchy data
- * @param {string} props.adManagerBreakdown - Breakdown type for Meta Ad Manager
- * @param {Function} props.setAdManagerBreakdown - Breakdown setter
- * @param {Set} props.hiddenCampaigns - Set of hidden campaign IDs
- * @param {Function} props.setHiddenCampaigns - Hidden campaigns setter
- * @param {string|null} props.selectedDiagnosticsCampaign - Selected campaign ID for diagnostics
- * @param {Function} props.setSelectedDiagnosticsCampaign - Selection setter
- * @param {boolean} props.showHiddenDropdown - Whether hidden dropdown is shown
- * @param {Function} props.setShowHiddenDropdown - Dropdown visibility setter
- * @param {boolean} props.includeInactive - Whether to include inactive campaigns
- * @param {Function} props.setIncludeInactive - Include inactive setter
- * @param {Set} props.expandedCampaigns - Set of expanded campaign IDs
- * @param {Function} props.setExpandedCampaigns - Expanded campaigns setter
- * @param {Set} props.expandedAdsets - Set of expanded adset IDs
- * @param {Function} props.setExpandedAdsets - Expanded adsets setter
- * @param {boolean} props.loading - Loading state
- * @param {Object} props.store - Store configuration
- * @param {Function} props.formatCurrency - Currency formatting function
- * @param {Function} props.formatNumber - Number formatting function
- * @param {Function} props.setDiagnosticsExpanded - Diagnostics expanded setter
+ * Column group header - Meta style
+ */
+function ColumnGroupHeader({ label, colSpan, bgColor = 'bg-gray-50' }) {
+  return (
+    <th
+      colSpan={colSpan}
+      className={`px-3 py-2 text-xs font-semibold text-gray-600 uppercase tracking-wider text-center border-l border-gray-200 ${bgColor}`}
+    >
+      {label}
+    </th>
+  );
+}
+
+/**
+ * UnifiedAnalytics Component - Meta-styled campaign table
  */
 export default function UnifiedAnalytics({
-  analyticsMode = 'countries',
+  analyticsMode = 'meta-ad-manager',
   setAnalyticsMode = () => {},
   dashboard = {},
   countriesDataSource = '',
@@ -93,33 +90,69 @@ export default function UnifiedAnalytics({
   formatCurrency = () => '0',
   formatNumber = () => '0',
   setDiagnosticsExpanded = () => {},
+  dateRange = {},
 }) {
   // Extract countries from dashboard
   const { countries = [] } = dashboard || {};
+  const todayDate = getTodayDate();
 
   // Local state for sorting
-  const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
+  const [sortConfig, setSortConfig] = useState({ field: 'spend', direction: 'desc' });
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Sorting handler
-  const handleCountrySort = useCallback((field) => {
-    setCountrySortConfig(prev => ({
+  const handleSort = useCallback((field) => {
+    setSortConfig(prev => ({
       field,
       direction: prev.field === field && prev.direction === 'desc' ? 'asc' : 'desc'
     }));
   }, []);
 
-  // Sorted countries
-  const sortedCountries = [...countries].sort((a, b) => {
-    const aVal = a[countrySortConfig.field] || 0;
-    const bVal = b[countrySortConfig.field] || 0;
-    return countrySortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
-  });
+  // Sort data
+  const sortData = useCallback((data, config) => {
+    if (!config.field) return data;
 
-  // Total country spend
-  const totalCountrySpend = countries.reduce((s, x) => s + (x.spend || 0), 0);
+    return [...data].sort((a, b) => {
+      let aVal = a[config.field];
+      let bVal = b[config.field];
+
+      // Handle null/undefined
+      if (aVal == null) aVal = 0;
+      if (bVal == null) bVal = 0;
+
+      // Handle strings
+      if (typeof aVal === 'string') {
+        return config.direction === 'asc'
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal);
+      }
+
+      return config.direction === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+  }, []);
+
+  // Filter and sort campaigns
+  const processedCampaigns = useMemo(() => {
+    let filtered = metaAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id));
+
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(c =>
+        c.campaign_name?.toLowerCase().includes(query)
+      );
+    }
+
+    return sortData(filtered, sortConfig);
+  }, [metaAdManagerData, hiddenCampaigns, searchQuery, sortData, sortConfig]);
+
+  // Total visible campaigns
+  const visibleCount = processedCampaigns.length;
+  const totalCount = metaAdManagerData.length;
 
   // Hide/show campaign functions
-  const toggleHideCampaign = useCallback((campaignId) => {
+  const toggleHideCampaign = useCallback((campaignId, e) => {
+    e?.stopPropagation();
     setHiddenCampaigns(prev => {
       const next = new Set(prev);
       if (next.has(campaignId)) {
@@ -145,190 +178,327 @@ export default function UnifiedAnalytics({
     }
   }, [selectedDiagnosticsCampaign, setSelectedDiagnosticsCampaign, setDiagnosticsExpanded]);
 
-  // Helper: Render percent
+  // Toggle campaign expansion
+  const toggleCampaignExpand = useCallback((campaignId, e) => {
+    e?.stopPropagation();
+    setExpandedCampaigns(prev => {
+      const next = new Set(prev);
+      if (next.has(campaignId)) {
+        next.delete(campaignId);
+        // Also collapse all adsets under this campaign
+        setExpandedAdsets(adsetPrev => {
+          const newAdsets = new Set(adsetPrev);
+          const campaign = metaAdManagerData.find(c => c.campaign_id === campaignId);
+          if (campaign?.adsets) {
+            campaign.adsets.forEach(a => newAdsets.delete(a.adset_id));
+          }
+          return newAdsets;
+        });
+      } else {
+        next.add(campaignId);
+      }
+      return next;
+    });
+  }, [setExpandedCampaigns, setExpandedAdsets, metaAdManagerData]);
+
+  // Toggle adset expansion
+  const toggleAdsetExpand = useCallback((adsetId, e) => {
+    e?.stopPropagation();
+    setExpandedAdsets(prev => {
+      const next = new Set(prev);
+      if (next.has(adsetId)) {
+        next.delete(adsetId);
+      } else {
+        next.add(adsetId);
+      }
+      return next;
+    });
+  }, [setExpandedAdsets]);
+
+  // Helper: Format CPC with real decimal (2 decimal places)
+  const formatCPC = (value) => {
+    if (value == null || !Number.isFinite(value)) return '—';
+    return formatCurrency(value, 2);
+  };
+
+  // Helper: Render percent with specified decimals
   const renderPercent = (value, decimals = 2) => {
     const num = Number(value);
-    return Number.isFinite(num) ? `${num.toFixed(decimals)}%` : '—';
+    if (!Number.isFinite(num)) return '—';
+    return `${num.toFixed(decimals)}%`;
   };
 
   // Helper: Render ROAS
   const renderRoas = (value, decimals = 2) => {
     const num = Number(value);
-    return Number.isFinite(num) ? `${num.toFixed(decimals)}×` : '—';
+    if (!Number.isFinite(num)) return '—';
+    return `${num.toFixed(decimals)}x`;
   };
 
   // Helper: Render metric with null handling
   const renderMetric = (value, formatter = 'number', decimals = 0) => {
-    if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+    if (value == null || !Number.isFinite(Number(value))) return '—';
 
     if (formatter === 'currency') return formatCurrency(value, decimals);
+    if (formatter === 'currency_decimal') return formatCurrency(value, 2);
     if (formatter === 'percent') return renderPercent(value, decimals);
     if (formatter === 'number') return formatNumber(value);
-    if (formatter === 'roas') return renderRoas(value);
+    if (formatter === 'roas') return renderRoas(value, decimals);
+    if (formatter === 'decimal') return Number(value).toFixed(decimals);
 
     return value;
   };
 
+  // Calculate CVR (Purchases / LPV * 100)
+  const calculateCVR = (purchases, lpv) => {
+    if (!lpv || lpv === 0) return null;
+    return (purchases / lpv) * 100;
+  };
+
+  // Check if orders occurred today
+  const isOrderToday = (orderDate) => {
+    return orderDate === todayDate;
+  };
+
+  // Get country flag emoji
+  const getCountryFlag = (countryCode) => {
+    if (!countryCode || countryCode.length !== 2) return '🌍';
+    const codePoints = countryCode
+      .toUpperCase()
+      .split('')
+      .map(char => 127397 + char.charCodeAt(0));
+    return String.fromCodePoint(...codePoints);
+  };
+
+  // Render a single data row (works for campaign, adset, ad, or country breakdown)
+  const renderDataRow = (row, level = 'campaign', parentExpanded = true, rowKey) => {
+    const isExpanded = level === 'campaign'
+      ? expandedCampaigns.has(row.campaign_id)
+      : level === 'adset'
+        ? expandedAdsets.has(row.adset_id)
+        : false;
+
+    const isSelected = level === 'campaign' && selectedDiagnosticsCampaign === row.campaign_id;
+    const hasChildren = level === 'campaign'
+      ? (row.adsets?.length > 0 || (adManagerBreakdown === 'country' && row.country_breakdowns?.length > 0))
+      : level === 'adset'
+        ? row.ads?.length > 0
+        : false;
+
+    // Calculate CVR
+    const cvr = calculateCVR(row.conversions || 0, row.lpv || 0);
+
+    // Indentation based on level
+    const indentClass = level === 'campaign' ? 'pl-4' : level === 'adset' ? 'pl-10' : 'pl-16';
+
+    // Row styling based on level and selection
+    const rowBgClass = level === 'campaign'
+      ? isSelected
+        ? 'bg-blue-50 border-l-4 border-l-blue-500'
+        : 'bg-white hover:bg-gray-50'
+      : level === 'adset'
+        ? 'bg-gray-50 hover:bg-gray-100'
+        : 'bg-white hover:bg-gray-50';
+
+    // Level icon
+    const levelIcon = level === 'campaign' ? '📊' : level === 'adset' ? '📁' : '📄';
+
+    // Name field based on level
+    const displayName = level === 'campaign'
+      ? row.campaign_name
+      : level === 'adset'
+        ? row.adset_name
+        : row.ad_name;
+
+    // Check if this is a country breakdown row
+    const isCountryBreakdown = row.isCountryBreakdown;
+    const orderDate = row.lastOrderDate;
+    const showOrderHighlight = isCountryBreakdown && row.conversions > 0 && isOrderToday(orderDate);
+
+    return (
+      <tr
+        key={rowKey}
+        className={`border-b border-gray-100 text-sm transition-colors cursor-pointer ${rowBgClass}`}
+        onClick={() => level === 'campaign' && handleCampaignSelect(row.campaign_id)}
+      >
+        {/* Expand/Collapse & Hide */}
+        <td className="px-2 py-3 w-12">
+          <div className="flex items-center gap-1">
+            {level === 'campaign' && (
+              <button
+                onClick={(e) => toggleHideCampaign(row.campaign_id, e)}
+                className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
+                title="Hide campaign"
+              >
+                <EyeOff className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </td>
+
+        {/* Name with expand toggle */}
+        <td className={`py-3 ${indentClass}`}>
+          <div className="flex items-center gap-2">
+            {hasChildren ? (
+              <button
+                onClick={(e) => level === 'campaign' ? toggleCampaignExpand(row.campaign_id, e) : toggleAdsetExpand(row.adset_id, e)}
+                className="p-0.5 rounded hover:bg-gray-200"
+              >
+                {isExpanded ? (
+                  <ChevronDown className="w-4 h-4 text-gray-500" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-gray-500" />
+                )}
+              </button>
+            ) : (
+              <span className="w-5" />
+            )}
+            {isCountryBreakdown ? (
+              <span className="text-lg">{getCountryFlag(row.country)}</span>
+            ) : (
+              <span>{levelIcon}</span>
+            )}
+            <span className={`${level === 'campaign' ? 'font-semibold text-gray-900' : level === 'adset' ? 'font-medium text-gray-800' : 'text-gray-700'}`}>
+              {isCountryBreakdown ? row.countryName || row.country : displayName}
+            </span>
+          </div>
+        </td>
+
+        {/* FINANCIALS GROUP */}
+        {/* Revenue */}
+        <td className="px-3 py-3 text-right font-medium text-green-600 border-l border-gray-100">
+          {renderMetric(row.conversion_value, 'currency')}
+        </td>
+        {/* Amount Spent */}
+        <td className="px-3 py-3 text-right text-blue-600 font-medium">
+          {renderMetric(row.spend, 'currency')}
+        </td>
+        {/* AOV */}
+        <td className="px-3 py-3 text-right text-gray-700">
+          {renderMetric(row.aov, 'currency')}
+        </td>
+        {/* CAC */}
+        <td className="px-3 py-3 text-right text-gray-700">
+          {renderMetric(row.cac, 'currency')}
+        </td>
+        {/* ROAS */}
+        <td className="px-3 py-3 text-right font-semibold text-green-600">
+          {renderMetric(row.roas, 'roas', 2)}
+        </td>
+        {/* Orders */}
+        <td className={`px-3 py-3 text-right font-medium ${showOrderHighlight ? 'text-green-600' : 'text-gray-700'}`}>
+          <div className="flex items-center justify-end gap-1">
+            {showOrderHighlight && <span>{getCountryFlag(row.country)}</span>}
+            <span>{row.conversions || 0}</span>
+          </div>
+        </td>
+
+        {/* UPPER FUNNEL GROUP */}
+        {/* Impressions */}
+        <td className="px-3 py-3 text-right text-gray-600 border-l border-gray-100">
+          {renderMetric(row.impressions, 'number')}
+        </td>
+        {/* Reach */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(row.reach, 'number')}
+        </td>
+        {/* CPM */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(row.cpm, 'currency_decimal')}
+        </td>
+        {/* Frequency */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(row.frequency, 'decimal', 2)}
+        </td>
+
+        {/* MID FUNNEL GROUP */}
+        {/* Clicks */}
+        <td className="px-3 py-3 text-right text-gray-600 border-l border-gray-100">
+          {renderMetric(row.clicks, 'number')}
+        </td>
+        {/* CTR */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(row.ctr, 'percent', 2)}
+        </td>
+        {/* CPC - Real decimal value */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {formatCPC(row.cpc)}
+        </td>
+        {/* LPV */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(row.lpv, 'number')}
+        </td>
+
+        {/* LOWER FUNNEL GROUP */}
+        {/* ATC */}
+        <td className="px-3 py-3 text-right text-gray-600 border-l border-gray-100">
+          {renderMetric(row.atc, 'number')}
+        </td>
+        {/* Checkout */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(row.checkout, 'number')}
+        </td>
+        {/* Orders (Purchased) - Explicit purchase-confirmed */}
+        <td className={`px-3 py-3 text-right font-medium ${showOrderHighlight ? 'text-green-600' : 'text-gray-700'}`}>
+          {row.conversions || 0}
+        </td>
+        {/* CVR (Purchases/LPV) */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(cvr, 'percent', 2)}
+        </td>
+      </tr>
+    );
+  };
+
+  // Render country breakdown rows for a campaign
+  const renderCountryBreakdowns = (campaign) => {
+    if (adManagerBreakdown !== 'country' || !campaign.country_breakdowns) return null;
+
+    return campaign.country_breakdowns.map((breakdown, idx) => (
+      renderDataRow(
+        { ...breakdown, isCountryBreakdown: true },
+        'breakdown',
+        true,
+        `${campaign.campaign_id}-country-${breakdown.country || idx}`
+      )
+    ));
+  };
+
   return (
-    <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-      {/* Header with Mode Toggle */}
-      <div className="px-6 pt-6 pb-4 border-b border-gray-100 flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">
-            Unified Analytics Section
-          </h2>
-          {analyticsMode === 'countries' && (
-            <p className="text-sm text-gray-500 mt-1">
-              Aggregated by country with full funnel metrics.{' '}
-              <span className="font-semibold">
-                Lower funnel ({dashboard?.countriesDataSource || countriesDataSource || 'Loading...'})
-              </span>
-            </p>
-          )}
-          {analyticsMode === 'meta-ad-manager' && (
-            <p className="text-sm text-gray-500 mt-1">
+    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+      {/* Header - Meta style */}
+      <div className="px-5 py-4 border-b border-gray-200">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">
+              Unified Campaign
+            </h2>
+            <p className="text-sm text-gray-500 mt-0.5">
               Meta Ad Manager hierarchy with breakdowns. All data from Meta pixel.
             </p>
+          </div>
+
+          {/* Date info - keeping date visible */}
+          {dateRange?.startDate && dateRange?.endDate && (
+            <div className="text-sm text-gray-500">
+              {dateRange.startDate} to {dateRange.endDate}
+            </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500 mr-2">Mode:</span>
-          <button
-            onClick={() => setAnalyticsMode('countries')}
-            className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
-              analyticsMode === 'countries'
-                ? 'bg-gray-900 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Countries (True)
-          </button>
-          <button
-            onClick={() => setAnalyticsMode('meta-ad-manager')}
-            className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
-              analyticsMode === 'meta-ad-manager'
-                ? 'bg-gray-900 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Meta Ad Manager
-          </button>
-        </div>
-      </div>
 
-      {/* MODE 1: Countries (True) */}
-      {analyticsMode === 'countries' && (
-        <div className="overflow-x-auto">
-          <table>
-            <thead>
-              {/* Funnel Stage Headers */}
-              <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
-                <th className="text-left px-4 py-2">Country</th>
-                <th className="text-center border-l border-gray-100">Spend</th>
-                <th colSpan={4} className="text-center border-l border-gray-100 bg-blue-50">
-                  UPPER FUNNEL
-                </th>
-                <th colSpan={4} className="text-center border-l border-gray-100 bg-purple-50">
-                  MID FUNNEL
-                </th>
-                <th colSpan={7} className="text-center border-l border-gray-100 bg-green-50">
-                  LOWER FUNNEL
-                </th>
-              </tr>
-              {/* Column Headers */}
-              <tr className="bg-gray-50 text-xs text-gray-500">
-                <SortableHeader
-                  label="Name"
-                  field="name"
-                  sortConfig={countrySortConfig}
-                  onSort={handleCountrySort}
-                  className="text-left px-4 py-2"
-                />
-                <th>Spend</th>
-                {/* Upper Funnel */}
-                <SortableHeader label="Impr" field="impressions" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <SortableHeader label="Reach" field="reach" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <th>CPM</th>
-                <th>Freq</th>
-                {/* Mid Funnel */}
-                <SortableHeader label="Clicks" field="clicks" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <th>CTR</th>
-                <th>CPC</th>
-                <th>LPV</th>
-                {/* Lower Funnel */}
-                <th>ATC</th>
-                <th>Checkout</th>
-                <SortableHeader label="Orders" field="totalOrders" sortConfig={countrySortConfig} onSort={handleCountrySort} />
-                <th>Revenue</th>
-                <th>AOV</th>
-                <th>CAC</th>
-                <SortableHeader label="ROAS" field="roas" sortConfig={countrySortConfig} onSort={handleCountrySort} className="bg-indigo-50 text-indigo-700" />
-              </tr>
-            </thead>
-            <tbody>
-              {sortedCountries.map((row) => (
-                <tr key={row.code}>
-                  <td className="px-4 py-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xl">{row.flag}</span>
-                      <span className="font-medium">{row.name}</span>
-                    </div>
-                  </td>
-                  <td className="text-indigo-600 font-semibold">{formatCurrency(row.spend || 0)}</td>
-                  {/* Upper Funnel */}
-                  <td>{renderMetric(row.impressions, 'number')}</td>
-                  <td>{renderMetric(row.reach, 'number')}</td>
-                  <td>{renderMetric(row.cpm, 'currency', 2)}</td>
-                  <td>{renderMetric(row.frequency, 'percent', 2).replace('%', '')}</td>
-                  {/* Mid Funnel */}
-                  <td>{renderMetric(row.clicks, 'number')}</td>
-                  <td>{renderMetric(row.ctr, 'percent', 2)}</td>
-                  <td>{renderMetric(row.cpc, 'currency', 2)}</td>
-                  <td>{renderMetric(row.lpv, 'number')}</td>
-                  {/* Lower Funnel */}
-                  <td>{renderMetric(row.atc, 'number')}</td>
-                  <td>{renderMetric(row.checkout, 'number')}</td>
-                  <td>{row.totalOrders || 0}</td>
-                  <td className="text-green-600 font-semibold">{formatCurrency(row.revenue || 0)}</td>
-                  <td>{renderMetric(row.aov, 'currency')}</td>
-                  <td>{renderMetric(row.cac, 'currency')}</td>
-                  <td className="text-green-600 font-semibold">{renderMetric(row.roas, 'roas')}</td>
-                </tr>
-              ))}
-              {/* Total Row */}
-              <tr className="bg-gray-50 font-semibold">
-                <td className="px-4 py-2">TOTAL</td>
-                <td className="text-indigo-600">{formatCurrency(totalCountrySpend)}</td>
-                <td>{renderMetric(countries.reduce((s, r) => s + (r.impressions || 0), 0), 'number')}</td>
-                <td>{renderMetric(countries.reduce((s, r) => s + (r.reach || 0), 0), 'number')}</td>
-                <td colSpan="2" className="text-gray-400 text-xs">—</td>
-                <td>{renderMetric(countries.reduce((s, r) => s + (r.clicks || 0), 0), 'number')}</td>
-                <td colSpan="1" className="text-gray-400 text-xs">—</td>
-                <td colSpan="1" className="text-gray-400 text-xs">—</td>
-                <td>{renderMetric(countries.reduce((s, r) => s + (r.lpv || 0), 0), 'number')}</td>
-                <td>{renderMetric(countries.reduce((s, r) => s + (r.atc || 0), 0), 'number')}</td>
-                <td>{renderMetric(countries.reduce((s, r) => s + (r.checkout || 0), 0), 'number')}</td>
-                <td>{countries.reduce((s, r) => s + (r.totalOrders || 0), 0)}</td>
-                <td className="text-green-600">{formatCurrency(countries.reduce((s, r) => s + (r.revenue || 0), 0))}</td>
-                <td colSpan="3" className="text-gray-400 text-xs">—</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* MODE 2: Meta Ad Manager */}
-      {analyticsMode === 'meta-ad-manager' && (
-        <>
-          {/* Breakdown Dropdown */}
-          <div className="px-6 pt-4 pb-2 flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-500">
+        {/* Controls row */}
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          {/* Left side: Hierarchy label and breakdown selector */}
+          <div className="flex items-center gap-4">
+            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
               Campaign → Ad Set → Ad Hierarchy
-            </div>
+            </span>
+
+            {/* Breakdown dropdown */}
             <select
               value={adManagerBreakdown}
               onChange={(e) => setAdManagerBreakdown(e.target.value)}
-              className="px-3 py-2 border border-gray-200 rounded-lg text-sm"
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="none">No Breakdown</option>
               <option value="country">By Country</option>
@@ -339,258 +509,238 @@ export default function UnifiedAnalytics({
             </select>
           </div>
 
-          {/* Hidden Campaigns Header */}
-          <div className="px-6 py-3 flex items-center justify-between border-b border-gray-100">
+          {/* Right side: Search, count, toggle */}
+          <div className="flex items-center gap-3">
+            {/* Search */}
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search campaigns..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 pr-8 py-1.5 text-sm border border-gray-300 rounded-md w-48 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Campaign count */}
             <span className="text-sm text-gray-600">
-              Showing {metaAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id)).length} of {metaAdManagerData.length} campaigns
+              Showing {visibleCount} of {totalCount} campaigns
               {selectedDiagnosticsCampaign && (
-                <span className="ml-2 text-purple-600 font-medium">
-                  (1 selected for diagnostics)
+                <span className="ml-1 text-blue-600 font-medium">
+                  (1 selected)
                 </span>
               )}
             </span>
-            <div className="flex items-center gap-2">
-              {hiddenCampaigns.size > 0 && (
-                <>
-                  <div className="relative">
-                    <button
-                      onClick={() => setShowHiddenDropdown(!showHiddenDropdown)}
-                      className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg flex items-center gap-1"
-                    >
-                      Hidden: {hiddenCampaigns.size} ▼
-                    </button>
-                    {showHiddenDropdown && (
-                      <div className="absolute right-0 mt-1 bg-white border rounded-lg shadow-lg z-10 min-w-[200px]">
-                        {Array.from(hiddenCampaigns).map(id => {
-                          const campaign = metaAdManagerData.find(c => c.campaign_id === id);
-                          return (
-                            <button
-                              key={id}
-                              onClick={() => {
-                                toggleHideCampaign(id);
-                                setShowHiddenDropdown(false);
-                              }}
-                              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
-                            >
-                              <span>👁️</span> {campaign?.campaign_name || id}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    onClick={showAllCampaigns}
-                    className="px-3 py-1.5 text-xs bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg"
-                  >
-                    Show All
-                  </button>
-                </>
-              )}
-              {/* Include Inactive Toggle */}
-              <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer ml-2">
-                <input
-                  type="checkbox"
-                  checked={includeInactive}
-                  onChange={(e) => setIncludeInactive(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-gray-300 text-orange-500 focus:ring-orange-400"
-                />
-                <span className={includeInactive ? 'text-orange-600 font-medium' : ''}>
-                  Include Inactive
-                </span>
-              </label>
-            </div>
-          </div>
 
-          <div className="overflow-x-auto">
-            <table>
-              <thead>
-                {/* Funnel Stage Headers */}
-                <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="w-8"></th>
-                  <th className="text-left px-4 py-2">Name</th>
-                  {adManagerBreakdown !== 'none' && <th>Breakdown</th>}
-                  <th className="text-center border-l border-gray-100">Spend</th>
-                  <th colSpan={4} className="text-center border-l border-gray-100 bg-blue-50">
-                    UPPER FUNNEL
-                  </th>
-                  <th colSpan={4} className="text-center border-l border-gray-100 bg-purple-50">
-                    MID FUNNEL
-                  </th>
-                  <th colSpan={7} className="text-center border-l border-gray-100 bg-green-50">
-                    LOWER FUNNEL
-                  </th>
-                </tr>
-                {/* Column Headers */}
-                <tr className="bg-gray-50 text-xs text-gray-500">
-                  <th className="w-8"></th>
-                  <th className="text-left px-4 py-2">Name</th>
-                  {adManagerBreakdown !== 'none' && <th>Dimension</th>}
-                  <th>Spend</th>
-                  {/* Upper */}
-                  <th>Impr</th>
-                  <th>Reach</th>
-                  <th>CPM</th>
-                  <th>Freq</th>
-                  {/* Mid */}
-                  <th>Clicks</th>
-                  <th>CTR</th>
-                  <th>CPC</th>
-                  <th>LPV</th>
-                  {/* Lower */}
-                  <th>ATC</th>
-                  <th>Checkout</th>
-                  <th>Orders</th>
-                  <th>Revenue</th>
-                  <th>AOV</th>
-                  <th>CAC</th>
-                  <th className="bg-indigo-50 text-indigo-700">ROAS</th>
-                </tr>
-              </thead>
-              <tbody>
-                {metaAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id)).map((campaign) => {
-                  const campaignExpanded = expandedCampaigns.has(campaign.campaign_id);
-                  const isSelected = selectedDiagnosticsCampaign === campaign.campaign_id;
-                  return (
-                    <Fragment key={campaign.campaign_id}>
-                      {/* Campaign Row */}
-                      <tr
-                        className={`cursor-pointer transition-colors ${
-                          isSelected
-                            ? 'bg-purple-50 border-l-4 border-purple-500'
-                            : 'bg-gray-100 hover:bg-gray-200'
-                        }`}
-                        onClick={() => handleCampaignSelect(campaign.campaign_id)}
+            {/* Hidden campaigns dropdown */}
+            {hiddenCampaigns.size > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => setShowHiddenDropdown(!showHiddenDropdown)}
+                  className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 rounded-md flex items-center gap-1"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  Hidden: {hiddenCampaigns.size}
+                </button>
+                {showHiddenDropdown && (
+                  <div className="absolute right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20 min-w-[220px] py-1">
+                    {Array.from(hiddenCampaigns).map(id => {
+                      const campaign = metaAdManagerData.find(c => c.campaign_id === id);
+                      return (
+                        <button
+                          key={id}
+                          onClick={() => {
+                            toggleHideCampaign(id);
+                            setShowHiddenDropdown(false);
+                          }}
+                          className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-gray-400" />
+                          <span className="truncate">{campaign?.campaign_name || id}</span>
+                        </button>
+                      );
+                    })}
+                    <div className="border-t border-gray-100 mt-1 pt-1">
+                      <button
+                        onClick={() => {
+                          showAllCampaigns();
+                          setShowHiddenDropdown(false);
+                        }}
+                        className="w-full px-3 py-2 text-left text-sm text-blue-600 hover:bg-blue-50 font-medium"
                       >
-                        <td className="px-2 py-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleHideCampaign(campaign.campaign_id);
-                            }}
-                            className="p-1 hover:bg-gray-200 rounded text-gray-400 hover:text-gray-600"
-                            title="Hide campaign"
-                          >
-                            👁️
-                          </button>
-                        </td>
-                        <td className="px-4 py-2 font-semibold">
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const newSet = new Set(expandedCampaigns);
-                                if (campaignExpanded) newSet.delete(campaign.campaign_id);
-                                else newSet.add(campaign.campaign_id);
-                                setExpandedCampaigns(newSet);
-                              }}
-                              className="p-0.5 hover:bg-gray-200 rounded"
-                            >
-                              <ChevronDown className={`w-4 h-4 transform transition-transform ${campaignExpanded ? 'rotate-180' : ''}`} />
-                            </button>
-                            <span>📊 {campaign.campaign_name}</span>
-                          </div>
-                        </td>
-                        {adManagerBreakdown !== 'none' && <td>{campaign.country || campaign.age || campaign.gender || campaign.publisher_platform || '—'}</td>}
-                        <td className="text-indigo-600 font-semibold">{formatCurrency(campaign.spend || 0)}</td>
-                        <td>{renderMetric(campaign.impressions, 'number')}</td>
-                        <td>{renderMetric(campaign.reach, 'number')}</td>
-                        <td>{renderMetric(campaign.cpm, 'currency', 2)}</td>
-                        <td>{renderMetric(campaign.frequency, 'percent', 2).replace('%', '')}</td>
-                        <td>{renderMetric(campaign.clicks, 'number')}</td>
-                        <td>{renderMetric(campaign.ctr, 'percent', 2)}</td>
-                        <td>{renderMetric(campaign.cpc, 'currency', 2)}</td>
-                        <td>{renderMetric(campaign.lpv, 'number')}</td>
-                        <td>{renderMetric(campaign.atc, 'number')}</td>
-                        <td>{renderMetric(campaign.checkout, 'number')}</td>
-                        <td>{campaign.conversions || 0}</td>
-                        <td className="text-green-600 font-semibold">{formatCurrency(campaign.conversion_value || 0)}</td>
-                        <td>{renderMetric(campaign.aov, 'currency')}</td>
-                        <td>{renderMetric(campaign.cac, 'currency')}</td>
-                        <td className="text-green-600 font-semibold">{renderMetric(campaign.roas, 'roas')}</td>
-                      </tr>
-
-                      {/* Ad Sets (if campaign expanded) */}
-                      {campaignExpanded && campaign.adsets && campaign.adsets.map((adset) => {
-                        const adsetExpanded = expandedAdsets.has(adset.adset_id);
-                        return (
-                          <Fragment key={adset.adset_id}>
-                            {/* Ad Set Row */}
-                            <tr className="bg-gray-50 hover:bg-gray-100 cursor-pointer" onClick={() => {
-                              const newSet = new Set(expandedAdsets);
-                              if (adsetExpanded) newSet.delete(adset.adset_id);
-                              else newSet.add(adset.adset_id);
-                              setExpandedAdsets(newSet);
-                            }}>
-                              <td></td>
-                              <td className="px-4 py-2 pl-8 font-medium">
-                                <div className="flex items-center gap-2">
-                                  <ChevronDown className={`w-3 h-3 transform transition-transform ${adsetExpanded ? 'rotate-180' : ''}`} />
-                                  <span>📁 {adset.adset_name}</span>
-                                </div>
-                              </td>
-                              {adManagerBreakdown !== 'none' && <td>{adset.country || adset.age || adset.gender || adset.publisher_platform || '—'}</td>}
-                              <td className="text-indigo-600">{formatCurrency(adset.spend || 0)}</td>
-                              <td>{renderMetric(adset.impressions, 'number')}</td>
-                              <td>{renderMetric(adset.reach, 'number')}</td>
-                              <td>{renderMetric(adset.cpm, 'currency', 2)}</td>
-                              <td>{renderMetric(adset.frequency, 'percent', 2).replace('%', '')}</td>
-                              <td>{renderMetric(adset.clicks, 'number')}</td>
-                              <td>{renderMetric(adset.ctr, 'percent', 2)}</td>
-                              <td>{renderMetric(adset.cpc, 'currency', 2)}</td>
-                              <td>{renderMetric(adset.lpv, 'number')}</td>
-                              <td>{renderMetric(adset.atc, 'number')}</td>
-                              <td>{renderMetric(adset.checkout, 'number')}</td>
-                              <td>{adset.conversions || 0}</td>
-                              <td className="text-green-600">{formatCurrency(adset.conversion_value || 0)}</td>
-                              <td>{renderMetric(adset.aov, 'currency')}</td>
-                              <td>{renderMetric(adset.cac, 'currency')}</td>
-                              <td className="text-green-600">{renderMetric(adset.roas, 'roas')}</td>
-                            </tr>
-
-                            {/* Ads (if ad set expanded) */}
-                            {adsetExpanded && adset.ads && adset.ads.map((ad) => (
-                              <tr key={ad.ad_id} className="hover:bg-gray-50">
-                                <td></td>
-                                <td className="px-4 py-2 pl-16 text-sm text-gray-700">
-                                  📄 {ad.ad_name}
-                                </td>
-                                {adManagerBreakdown !== 'none' && <td>{ad.country || ad.age || ad.gender || ad.publisher_platform || '—'}</td>}
-                                <td className="text-indigo-600 text-sm">{formatCurrency(ad.spend || 0)}</td>
-                                <td className="text-sm">{renderMetric(ad.impressions, 'number')}</td>
-                                <td className="text-sm">{renderMetric(ad.reach, 'number')}</td>
-                                <td className="text-sm">{renderMetric(ad.cpm, 'currency', 2)}</td>
-                                <td className="text-sm">{renderMetric(ad.frequency, 'percent', 2).replace('%', '')}</td>
-                                <td className="text-sm">{renderMetric(ad.clicks, 'number')}</td>
-                                <td className="text-sm">{renderMetric(ad.ctr, 'percent', 2)}</td>
-                                <td className="text-sm">{renderMetric(ad.cpc, 'currency', 2)}</td>
-                                <td className="text-sm">{renderMetric(ad.lpv, 'number')}</td>
-                                <td className="text-sm">{renderMetric(ad.atc, 'number')}</td>
-                                <td className="text-sm">{renderMetric(ad.checkout, 'number')}</td>
-                                <td className="text-sm">{ad.conversions || 0}</td>
-                                <td className="text-green-600 text-sm">{formatCurrency(ad.conversion_value || 0)}</td>
-                                <td className="text-sm">{renderMetric(ad.aov, 'currency')}</td>
-                                <td className="text-sm">{renderMetric(ad.cac, 'currency')}</td>
-                                <td className="text-green-600 text-sm">{renderMetric(ad.roas, 'roas')}</td>
-                              </tr>
-                            ))}
-                          </Fragment>
-                        );
-                      })}
-                    </Fragment>
-                  );
-                })}
-                {metaAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id)).length === 0 && (
-                  <tr>
-                    <td colSpan="21" className="px-4 py-8 text-center text-gray-500">
-                      {loading ? 'Loading Meta Ad Manager data...' : metaAdManagerData.length > 0 ? 'All campaigns are hidden. Click "Show All" to see them.' : 'No data available. Try syncing Meta data first.'}
-                    </td>
-                  </tr>
+                        Show All Campaigns
+                      </button>
+                    </div>
+                  </div>
                 )}
-              </tbody>
-            </table>
+              </div>
+            )}
+
+            {/* Include Inactive toggle */}
+            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeInactive}
+                onChange={(e) => setIncludeInactive(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className={includeInactive ? 'text-blue-600 font-medium' : ''}>
+                Include Inactive
+              </span>
+            </label>
           </div>
-        </>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[1400px]">
+          <thead>
+            {/* Column Group Headers */}
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="w-12"></th>
+              <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase">Name</th>
+              <ColumnGroupHeader label="Financials" colSpan={6} bgColor="bg-emerald-50" />
+              <ColumnGroupHeader label="Upper Funnel" colSpan={4} bgColor="bg-blue-50" />
+              <ColumnGroupHeader label="Mid Funnel" colSpan={4} bgColor="bg-purple-50" />
+              <ColumnGroupHeader label="Lower Funnel" colSpan={4} bgColor="bg-orange-50" />
+            </tr>
+
+            {/* Column Headers */}
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="w-12"></th>
+              <SortableHeader
+                label="Name"
+                field="campaign_name"
+                sortConfig={sortConfig}
+                onSort={handleSort}
+                align="left"
+                className="text-left"
+              />
+
+              {/* Financials */}
+              <SortableHeader label="Revenue" field="conversion_value" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
+              <SortableHeader label="Spent" field="spend" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="AOV" field="aov" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="CAC" field="cac" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="ROAS" field="roas" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Orders" field="conversions" sortConfig={sortConfig} onSort={handleSort} />
+
+              {/* Upper Funnel */}
+              <SortableHeader label="Impr" field="impressions" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
+              <SortableHeader label="Reach" field="reach" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="CPM" field="cpm" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Freq" field="frequency" sortConfig={sortConfig} onSort={handleSort} />
+
+              {/* Mid Funnel */}
+              <SortableHeader label="Clicks" field="clicks" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
+              <SortableHeader label="CTR" field="ctr" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="CPC" field="cpc" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="LPV" field="lpv" sortConfig={sortConfig} onSort={handleSort} />
+
+              {/* Lower Funnel */}
+              <SortableHeader label="ATC" field="atc" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
+              <SortableHeader label="Checkout" field="checkout" sortConfig={sortConfig} onSort={handleSort} />
+              <th className="px-3 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">
+                Orders
+              </th>
+              <th className="px-3 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">
+                CVR
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {processedCampaigns.map((campaign) => {
+              const campaignExpanded = expandedCampaigns.has(campaign.campaign_id);
+
+              return (
+                <Fragment key={campaign.campaign_id}>
+                  {/* Campaign Row */}
+                  {renderDataRow(campaign, 'campaign', true, `campaign-${campaign.campaign_id}`)}
+
+                  {/* Country Breakdowns (if expanded and breakdown is country) */}
+                  {campaignExpanded && adManagerBreakdown === 'country' && campaign.country_breakdowns?.map((breakdown, idx) => (
+                    renderDataRow(
+                      { ...breakdown, isCountryBreakdown: true },
+                      'breakdown',
+                      true,
+                      `${campaign.campaign_id}-country-${breakdown.country || idx}`
+                    )
+                  ))}
+
+                  {/* Ad Sets (if expanded and no country breakdown) */}
+                  {campaignExpanded && adManagerBreakdown !== 'country' && campaign.adsets?.map((adset) => {
+                    const adsetExpanded = expandedAdsets.has(adset.adset_id);
+
+                    return (
+                      <Fragment key={adset.adset_id}>
+                        {renderDataRow(adset, 'adset', true, `adset-${adset.adset_id}`)}
+
+                        {/* Ads (if adset expanded) */}
+                        {adsetExpanded && adset.ads?.map((ad) => (
+                          renderDataRow(ad, 'ad', true, `ad-${ad.ad_id}`)
+                        ))}
+                      </Fragment>
+                    );
+                  })}
+                </Fragment>
+              );
+            })}
+
+            {/* Empty state */}
+            {processedCampaigns.length === 0 && (
+              <tr>
+                <td colSpan="20" className="px-4 py-12 text-center text-gray-500">
+                  {loading ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                      <span>Loading campaign data...</span>
+                    </div>
+                  ) : searchQuery ? (
+                    <div>
+                      <p className="font-medium">No campaigns match "{searchQuery}"</p>
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="mt-2 text-blue-600 hover:text-blue-700 text-sm font-medium"
+                      >
+                        Clear search
+                      </button>
+                    </div>
+                  ) : metaAdManagerData.length > 0 ? (
+                    <div>
+                      <p className="font-medium">All campaigns are hidden</p>
+                      <button
+                        onClick={showAllCampaigns}
+                        className="mt-2 text-blue-600 hover:text-blue-700 text-sm font-medium"
+                      >
+                        Show all campaigns
+                      </button>
+                    </div>
+                  ) : (
+                    <p>No campaign data available. Try syncing Meta data first.</p>
+                  )}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Click outside to close dropdown */}
+      {showHiddenDropdown && (
+        <div
+          className="fixed inset-0 z-10"
+          onClick={() => setShowHiddenDropdown(false)}
+        />
       )}
     </div>
   );
