@@ -36,7 +36,7 @@ const ACTION_TYPES = {
 };
 
 // Store configurations
-const STORE_CONFIG = {
+export const STORE_CONFIG = {
   vironax: {
     accessTokenEnv: 'META_ACCESS_TOKEN',
     adAccountEnv: 'META_AD_ACCOUNT_ID',
