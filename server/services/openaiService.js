@@ -462,8 +462,8 @@ function getRelevantData(store, question, startDate = null, endDate = null) {
   const today = new Date().toISOString().split('T')[0];
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-  // Use provided dates or default to 7 days if not provided
-  const periodStart = startDate || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  // Use provided dates or default to 90 days if not provided (gives AI full context)
+  const periodStart = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const periodEnd = endDate || today;
 
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
