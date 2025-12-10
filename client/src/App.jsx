@@ -13,7 +13,6 @@ import {
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 import NotificationCenter from './components/NotificationCenter';
 import AIAnalytics from './components/AIAnalytics';
-import AIBudget from './components/AIBudget';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 
 const API_BASE = '/api';
@@ -55,7 +54,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics', 'AI Budget'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -852,10 +851,6 @@ export default function App() {
 
         {activeTab === 4 && (
           <AIAnalytics store={store} />
-        )}
-
-        {activeTab === 5 && (
-          <AIBudget store={currentStore} />
         )}
       </div>
       
