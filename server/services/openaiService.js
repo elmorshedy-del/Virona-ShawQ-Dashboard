@@ -28,12 +28,12 @@ const FALLBACK_MODELS = {
 };
 
 const TOKEN_LIMITS = {
-  nano: 2000,
-  mini: 4000,
-  instant: 4000,
-  fast: 8000,
-  balanced: 16000,
-  deep: 32000
+  nano: 8000,
+  mini: 16000,
+  instant: 16000,
+  fast: 32000,
+  balanced: 64000,
+  deep: 120000
 };
 
 const DEPTH_TO_EFFORT = {
@@ -44,62 +44,305 @@ const DEPTH_TO_EFFORT = {
 };
 
 // ============================================================================
-// OPTIMIZED DATA FETCHING - Parallel queries, smart store detection
+// OPTIMIZED DATA FETCHING - Full hierarchy with funnel metrics (120k token support)
 // ============================================================================
 
-function getStoreData(db, storeName, today, yesterday, periodStart) {
+// Helper to calculate derived metrics
+function calculateDerivedMetrics(row) {
+  const spend = row.spend || 0;
+  const impressions = row.impressions || 0;
+  const reach = row.reach || 0;
+  const inline_link_clicks = row.inline_link_clicks || 0;
+  const lpv = row.lpv || 0;
+  const atc = row.atc || 0;
+  const checkout = row.checkout || 0;
+  const conversions = row.conversions || 0;
+  const conversion_value = row.conversion_value || 0;
+
+  return {
+    cpm: impressions > 0 ? Math.round((spend / impressions) * 1000 * 100) / 100 : null,
+    ctr: impressions > 0 ? Math.round((inline_link_clicks / impressions) * 100 * 100) / 100 : null,
+    cpc: inline_link_clicks > 0 ? Math.round((spend / inline_link_clicks) * 100) / 100 : null,
+    roas: spend > 0 ? Math.round((conversion_value / spend) * 100) / 100 : null,
+    cpa: conversions > 0 ? Math.round((spend / conversions) * 100) / 100 : null,
+    aov: conversions > 0 ? Math.round((conversion_value / conversions) * 100) / 100 : null,
+    // Funnel conversion rates
+    lpv_rate: inline_link_clicks > 0 ? Math.round((lpv / inline_link_clicks) * 100 * 100) / 100 : null,
+    atc_rate: lpv > 0 ? Math.round((atc / lpv) * 100 * 100) / 100 : null,
+    checkout_rate: atc > 0 ? Math.round((checkout / atc) * 100 * 100) / 100 : null,
+    purchase_rate: checkout > 0 ? Math.round((conversions / checkout) * 100 * 100) / 100 : null,
+    overall_cvr: lpv > 0 ? Math.round((conversions / lpv) * 100 * 100) / 100 : null
+  };
+}
+
+function getStoreData(db, storeName, today, yesterday, periodStart, periodEnd) {
   const storeData = {};
+  const activeFilter = `AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)`;
 
   try {
-    // Run all queries for this store - DEFAULT: ACTIVE only
-    // We use ACTIVE or UNKNOWN to maintain backwards compatibility with pre-status data
-    storeData.overview = db.prepare(`
-      SELECT
-        SUM(spend) as totalSpend,
-        SUM(conversion_value) as totalRevenue,
-        SUM(conversions) as totalOrders,
-        ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas,
-        ROUND(SUM(spend) / NULLIF(SUM(conversions), 0), 2) as cpa
-      FROM meta_daily_metrics
-      WHERE LOWER(store) = ? AND date >= ?
-      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
-    `).get(storeName, periodStart);
+    // Get inception date (earliest data) for full historical context
+    const inceptionResult = db.prepare(`
+      SELECT MIN(date) as inception_date FROM meta_daily_metrics WHERE LOWER(store) = ?
+    `).get(storeName);
+    const inceptionDate = inceptionResult?.inception_date || periodStart;
+    storeData.inceptionDate = inceptionDate;
 
+    // Overview for selected period (ACTIVE only)
+    storeData.periodOverview = db.prepare(`
+      SELECT
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+      ${activeFilter}
+    `).get(storeName, periodStart, periodEnd || today);
+
+    if (storeData.periodOverview) {
+      Object.assign(storeData.periodOverview, calculateDerivedMetrics(storeData.periodOverview));
+    }
+
+    // Lifetime overview (since inception, ACTIVE only)
+    storeData.lifetimeOverview = db.prepare(`
+      SELECT
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ?
+      ${activeFilter}
+    `).get(storeName);
+
+    if (storeData.lifetimeOverview) {
+      Object.assign(storeData.lifetimeOverview, calculateDerivedMetrics(storeData.lifetimeOverview));
+    }
+
+    // Today's metrics
     storeData.today = db.prepare(`
-      SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
+      SELECT
+        SUM(spend) as spend, SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks, SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
       FROM meta_daily_metrics WHERE LOWER(store) = ? AND date = ?
-      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
+      ${activeFilter}
     `).get(storeName, today);
 
+    // Yesterday's metrics
     storeData.yesterday = db.prepare(`
-      SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
+      SELECT
+        SUM(spend) as spend, SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks, SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
       FROM meta_daily_metrics WHERE LOWER(store) = ? AND date = ?
-      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
+      ${activeFilter}
     `).get(storeName, yesterday);
 
-    // Campaigns with status info (limit to top 10 for speed)
-    storeData.campaigns = db.prepare(`
-      SELECT
-        campaign_name,
-        MAX(effective_status) as status,
-        SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders,
-        ROUND(SUM(conversion_value) / NULLIF(SUM(spend), 0), 2) as roas
-      FROM meta_daily_metrics
-      WHERE LOWER(store) = ? AND date >= ? AND campaign_name IS NOT NULL
-      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
-      GROUP BY campaign_name
-      ORDER BY spend DESC LIMIT 10
-    `).all(storeName, periodStart);
+    // ========================================================================
+    // FULL HIERARCHY: Campaigns → Adsets → Ads (ACTIVE only, with full funnel)
+    // ========================================================================
 
-    // Campaigns by day (within selected period, top campaigns)
-    storeData.campaignsByDay = db.prepare(`
-      SELECT date, campaign_name, SUM(conversions) as orders, SUM(conversion_value) as revenue
+    // Get all ACTIVE campaigns with full funnel metrics (lifetime data)
+    const campaigns = db.prepare(`
+      SELECT
+        campaign_id, campaign_name,
+        MAX(effective_status) as status,
+        MIN(date) as first_date,
+        MAX(date) as last_date,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
       FROM meta_daily_metrics
-      WHERE LOWER(store) = ? AND date >= ? AND campaign_name IS NOT NULL
-      AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
-      GROUP BY date, campaign_name
-      ORDER BY date DESC
-    `).all(storeName, periodStart);
+      WHERE LOWER(store) = ? AND campaign_name IS NOT NULL
+      ${activeFilter}
+      GROUP BY campaign_id
+      ORDER BY spend DESC
+    `).all(storeName);
+
+    // Get all ACTIVE adsets with full funnel metrics (lifetime data)
+    const adsets = db.prepare(`
+      SELECT
+        campaign_id, adset_id, adset_name,
+        MAX(adset_effective_status) as adset_status,
+        MIN(date) as first_date,
+        MAX(date) as last_date,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_adset_metrics
+      WHERE LOWER(store) = ? AND adset_name IS NOT NULL
+      AND (adset_effective_status = 'ACTIVE' OR adset_effective_status = 'UNKNOWN' OR adset_effective_status IS NULL)
+      GROUP BY adset_id
+      ORDER BY spend DESC
+    `).all(storeName);
+
+    // Get all ACTIVE ads with full funnel metrics (lifetime data)
+    const ads = db.prepare(`
+      SELECT
+        campaign_id, adset_id, ad_id, ad_name,
+        MAX(ad_effective_status) as ad_status,
+        MIN(date) as first_date,
+        MAX(date) as last_date,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_ad_metrics
+      WHERE LOWER(store) = ? AND ad_name IS NOT NULL
+      AND (ad_effective_status = 'ACTIVE' OR ad_effective_status = 'UNKNOWN' OR ad_effective_status IS NULL)
+      GROUP BY ad_id
+      ORDER BY spend DESC
+    `).all(storeName);
+
+    // Build hierarchy: Group ads under adsets, adsets under campaigns
+    const adsByAdset = new Map();
+    ads.forEach(ad => {
+      if (!adsByAdset.has(ad.adset_id)) adsByAdset.set(ad.adset_id, []);
+      adsByAdset.get(ad.adset_id).push({
+        ad_id: ad.ad_id,
+        ad_name: ad.ad_name,
+        status: ad.ad_status,
+        first_date: ad.first_date,
+        last_date: ad.last_date,
+        spend: ad.spend,
+        impressions: ad.impressions,
+        reach: ad.reach,
+        clicks: ad.clicks,
+        inline_link_clicks: ad.inline_link_clicks,
+        lpv: ad.lpv,
+        atc: ad.atc,
+        checkout: ad.checkout,
+        conversions: ad.conversions,
+        conversion_value: ad.conversion_value,
+        ...calculateDerivedMetrics(ad)
+      });
+    });
+
+    const adsetsByCampaign = new Map();
+    adsets.forEach(adset => {
+      if (!adsetsByCampaign.has(adset.campaign_id)) adsetsByCampaign.set(adset.campaign_id, []);
+      adsetsByCampaign.get(adset.campaign_id).push({
+        adset_id: adset.adset_id,
+        adset_name: adset.adset_name,
+        status: adset.adset_status,
+        first_date: adset.first_date,
+        last_date: adset.last_date,
+        spend: adset.spend,
+        impressions: adset.impressions,
+        reach: adset.reach,
+        clicks: adset.clicks,
+        inline_link_clicks: adset.inline_link_clicks,
+        lpv: adset.lpv,
+        atc: adset.atc,
+        checkout: adset.checkout,
+        conversions: adset.conversions,
+        conversion_value: adset.conversion_value,
+        ...calculateDerivedMetrics(adset),
+        ads: adsByAdset.get(adset.adset_id) || []
+      });
+    });
+
+    // Build full campaign hierarchy
+    storeData.campaigns = campaigns.map(campaign => ({
+      campaign_id: campaign.campaign_id,
+      campaign_name: campaign.campaign_name,
+      status: campaign.status,
+      first_date: campaign.first_date,
+      last_date: campaign.last_date,
+      spend: campaign.spend,
+      impressions: campaign.impressions,
+      reach: campaign.reach,
+      clicks: campaign.clicks,
+      inline_link_clicks: campaign.inline_link_clicks,
+      lpv: campaign.lpv,
+      atc: campaign.atc,
+      checkout: campaign.checkout,
+      conversions: campaign.conversions,
+      conversion_value: campaign.conversion_value,
+      ...calculateDerivedMetrics(campaign),
+      adsets: adsetsByCampaign.get(campaign.campaign_id) || []
+    }));
+
+    // Campaign performance by period (selected date range)
+    storeData.campaignsByPeriod = db.prepare(`
+      SELECT
+        campaign_id, campaign_name,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND date <= ? AND campaign_name IS NOT NULL
+      ${activeFilter}
+      GROUP BY campaign_id
+      ORDER BY spend DESC
+    `).all(storeName, periodStart, periodEnd || today).map(row => ({
+      ...row,
+      ...calculateDerivedMetrics(row)
+    }));
+
+    // Country breakdown for selected period
+    storeData.countryBreakdown = db.prepare(`
+      SELECT
+        country,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+      AND country IS NOT NULL AND country != '' AND country != 'ALL'
+      ${activeFilter}
+      GROUP BY country
+      ORDER BY spend DESC
+      LIMIT 20
+    `).all(storeName, periodStart, periodEnd || today).map(row => ({
+      ...row,
+      ...calculateDerivedMetrics(row)
+    }));
 
     // E-commerce orders
     const orderTable = storeName === 'vironax' ? 'salla_orders' : 'shopify_orders';
@@ -122,7 +365,7 @@ function getStoreData(db, storeName, today, yesterday, periodStart) {
       storeData.ordersByCountry = db.prepare(`
         SELECT country_code, COUNT(*) as orders, SUM(order_total) as revenue
         FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
-        GROUP BY country_code ORDER BY orders DESC LIMIT 10
+        GROUP BY country_code ORDER BY orders DESC LIMIT 15
       `).all(storeName, periodStart);
     } catch (e) {}
 
@@ -248,8 +491,8 @@ function getRelevantData(store, question, startDate = null, endDate = null) {
   // Uses the feature module for consistent detection
   const mentionsReactivation = isReactivationQuestion(question);
 
-  // Always fetch current store
-  data[currentStore] = getStoreData(db, currentStore, today, yesterday, periodStart);
+  // Always fetch current store with full hierarchy and funnel data
+  data[currentStore] = getStoreData(db, currentStore, today, yesterday, periodStart, periodEnd);
 
   // Include reactivation candidates if mentioned
   if (mentionsReactivation) {
@@ -259,7 +502,7 @@ function getRelevantData(store, question, startDate = null, endDate = null) {
   // Only fetch other store if mentioned
   if (mentionsBoth || (currentStore === 'vironax' && mentionsShawq) || (currentStore === 'shawq' && mentionsVironax)) {
     const otherStore = currentStore === 'vironax' ? 'shawq' : 'vironax';
-    data[otherStore] = getStoreData(db, otherStore, today, yesterday, periodStart);
+    data[otherStore] = getStoreData(db, otherStore, today, yesterday, periodStart, periodEnd);
   }
 
   // Clean up empty data
@@ -353,12 +596,32 @@ When asked about reactivation opportunities:
 5. Recommend setting conservative budgets initially`;
   }
 
-  const basePrompt = `You are an expert e-commerce analyst.
+  // Data structure context for the AI
+  const dataStructureInfo = `
+DATA STRUCTURE:
+- periodOverview: Metrics for selected date range (${data.dateContext?.periodStart} to ${data.dateContext?.periodEnd})
+- lifetimeOverview: All-time metrics since inception (${storeData?.inceptionDate || 'unknown'})
+- campaigns: Full hierarchy with ACTIVE campaigns → adsets → ads (lifetime data)
+  Each level includes: spend, impressions, reach, clicks, inline_link_clicks, lpv, atc, checkout, conversions, conversion_value
+  Plus derived metrics: cpm, ctr, cpc, roas, cpa, aov, lpv_rate, atc_rate, checkout_rate, purchase_rate, overall_cvr
+- campaignsByPeriod: Campaign metrics for selected date range only
+- countryBreakdown: Performance by country for selected period
+
+FUNNEL METRICS EXPLAINED:
+- lpv_rate: Landing Page View rate (lpv / clicks)
+- atc_rate: Add to Cart rate (atc / lpv)
+- checkout_rate: Checkout initiated rate (checkout / atc)
+- purchase_rate: Purchase rate (conversions / checkout)
+- overall_cvr: Overall conversion rate (conversions / lpv)`;
+
+  const basePrompt = `You are an expert e-commerce analyst with access to FULL campaign hierarchy and funnel data.
 ${storeInfo}
 ${structureInfo}
+${dataStructureInfo}
 
 TODAY: ${data.dateContext?.today} (${data.dateContext?.todayDayName})
 YESTERDAY: ${data.dateContext?.yesterday} (${data.dateContext?.yesterdayDayName})
+ANALYSIS PERIOD: ${data.dateContext?.periodStart} to ${data.dateContext?.periodEnd}
 ${reactivationInfo}
 
 DATA:
@@ -369,7 +632,9 @@ RULES:
 - VironaX = SAR, Shawq = USD
 - ROAS = revenue/spend
 - Be specific with real figures
-- The data shown is for ACTIVE campaigns by default
+- The data shows ACTIVE campaigns with full hierarchy (campaigns → adsets → ads)
+- You have LIFETIME data (since inception) AND period-specific data
+- Analyze funnel metrics (lpv_rate, atc_rate, checkout_rate, purchase_rate) to identify drop-offs
 - If asked about inactive/paused items, refer to reactivationCandidates data if available`;
 
   if (mode === 'analyze') {
@@ -548,8 +813,8 @@ export async function dailySummary(reportType = 'am') {
   const data = {
     reportType,
     generatedAt: new Date().toISOString(),
-    vironax: getStoreData(db, 'vironax', today, yesterday, last7Days),
-    shawq: getStoreData(db, 'shawq', today, yesterday, last7Days)
+    vironax: getStoreData(db, 'vironax', today, yesterday, last7Days, today),
+    shawq: getStoreData(db, 'shawq', today, yesterday, last7Days, today)
   };
 
   // Include reactivation candidates in daily reports
@@ -560,9 +825,10 @@ export async function dailySummary(reportType = 'am') {
 Generate a ${reportType.toUpperCase()} report with actionable insights.
 
 The data includes:
-1. Current ACTIVE campaign performance
-2. Account structure (active/paused/archived counts)
-3. Reactivation candidates - paused/archived items with good historical performance
+1. Full campaign hierarchy (campaigns → adsets → ads) with funnel metrics
+2. Lifetime and period performance data with inception dates
+3. Account structure (active/paused/archived counts)
+4. Reactivation candidates - paused/archived items with good historical performance
 
 If there are promising reactivation candidates, include a "Reactivation Opportunities" section.`;
 
@@ -580,8 +846,8 @@ export async function dailySummaryStream(reportType = 'am', onDelta) {
   const data = {
     reportType,
     generatedAt: new Date().toISOString(),
-    vironax: getStoreData(db, 'vironax', today, yesterday, last7Days),
-    shawq: getStoreData(db, 'shawq', today, yesterday, last7Days)
+    vironax: getStoreData(db, 'vironax', today, yesterday, last7Days, today),
+    shawq: getStoreData(db, 'shawq', today, yesterday, last7Days, today)
   };
 
   // Include reactivation candidates in daily reports
@@ -592,9 +858,10 @@ export async function dailySummaryStream(reportType = 'am', onDelta) {
 Generate a ${reportType.toUpperCase()} report with actionable insights.
 
 The data includes:
-1. Current ACTIVE campaign performance
-2. Account structure (active/paused/archived counts)
-3. Reactivation candidates - paused/archived items with good historical performance
+1. Full campaign hierarchy (campaigns → adsets → ads) with funnel metrics
+2. Lifetime and period performance data with inception dates
+3. Account structure (active/paused/archived counts)
+4. Reactivation candidates - paused/archived items with good historical performance
 
 If there are promising reactivation candidates, include a "Reactivation Opportunities" section.`;
 
