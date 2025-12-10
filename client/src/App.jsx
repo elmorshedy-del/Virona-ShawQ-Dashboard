@@ -95,7 +95,7 @@ export default function App() {
   const [countriesDataSource, setCountriesDataSource] = useState('');
 
   // Unified analytics section state (must be before useEffect hooks that use them)
-  const [analyticsMode, setAnalyticsMode] = useState('countries'); // 'countries' | 'meta-ad-manager'
+  const [analyticsMode, setAnalyticsMode] = useState('meta-ad-manager'); // 'countries' | 'meta-ad-manager'
   const [metaAdManagerData, setMetaAdManagerData] = useState([]);
   const [adManagerBreakdown, setAdManagerBreakdown] = useState('none'); // 'none', 'country', 'age', 'gender', 'age_gender', 'placement'
   const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
@@ -809,6 +809,7 @@ export default function App() {
             setShowHiddenDropdown={setShowHiddenDropdown}
             includeInactive={includeInactive}
             setIncludeInactive={setIncludeInactive}
+            dateRange={dashboard?.dateRange}
           />
           )}
         
@@ -904,7 +905,7 @@ function DashboardTab({
   daysOfWeekPeriod = '14d',
   setDaysOfWeekPeriod = () => {},
   loading = false,
-  analyticsMode = 'countries',
+  analyticsMode = 'meta-ad-manager',
   setAnalyticsMode = () => {},
   metaAdManagerData = [],
   adManagerBreakdown = 'none',
@@ -924,6 +925,7 @@ function DashboardTab({
   setShowHiddenDropdown = () => {},
   includeInactive = false,
   setIncludeInactive = () => {},
+  dateRange = {},
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
@@ -1296,7 +1298,7 @@ function DashboardTab({
         </div>
       )}
 
-      {/* UNIFIED ANALYTICS SECTION — COUNTRIES (TRUE) & META AD MANAGER */}
+      {/* UNIFIED CAMPAIGN SECTION — Redesigned Meta-style interface */}
       <UnifiedAnalytics
         analyticsMode={analyticsMode}
         setAnalyticsMode={setAnalyticsMode}
@@ -1322,6 +1324,7 @@ function DashboardTab({
         formatCurrency={formatCurrency}
         formatNumber={formatNumber}
         setDiagnosticsExpanded={setDiagnosticsExpanded}
+        dateRange={dateRange}
       />
 
 

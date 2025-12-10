@@ -971,6 +971,7 @@ function calculateMetrics(row) {
 }
 
 // Get hierarchical Meta Ad Manager data with optional breakdown
+// REDESIGNED: Country breakdown now shows as nested rows under each campaign
 export function getMetaAdManagerHierarchy(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
@@ -978,15 +979,95 @@ export function getMetaAdManagerHierarchy(store, params) {
   const statusFilter = buildStatusFilter(params);
   const includeInactive = shouldIncludeInactive(params);
 
-  // Build WHERE and GROUP BY clauses based on breakdown
+  // CRITICAL: For country breakdown, we first get campaign totals, then country breakdowns as nested data
+  // This ensures each campaign appears ONCE with countries as expandable nested rows
+
+  if (breakdown === 'country') {
+    // Get campaign totals (aggregate across all countries)
+    const campaignTotalsQuery = `
+      SELECT
+        campaign_id, campaign_name,
+        MAX(status) as status, MAX(effective_status) as effective_status,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
+      GROUP BY campaign_id
+      ORDER BY spend DESC
+    `;
+
+    const campaignTotals = db.prepare(campaignTotalsQuery).all(store, startDate, endDate);
+
+    // Get country breakdown data for all campaigns
+    const countryBreakdownQuery = `
+      SELECT
+        campaign_id,
+        country,
+        MAX(date) as lastOrderDate,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ? AND country IS NOT NULL AND country != '' AND country != 'ALL'${statusFilter}
+      GROUP BY campaign_id, country
+      ORDER BY spend DESC
+    `;
+
+    const countryBreakdowns = db.prepare(countryBreakdownQuery).all(store, startDate, endDate);
+
+    // Group country breakdowns by campaign_id
+    const countryMap = new Map();
+    countryBreakdowns.forEach(row => {
+      if (!countryMap.has(row.campaign_id)) {
+        countryMap.set(row.campaign_id, []);
+      }
+      const countryInfo = getCountryInfo(row.country);
+      countryMap.get(row.campaign_id).push({
+        ...row,
+        countryName: countryInfo?.name || row.country,
+        countryFlag: countryInfo?.flag || '🌍',
+        ...calculateMetrics(row)
+      });
+    });
+
+    // Build hierarchy with country breakdowns nested under each campaign
+    const hierarchy = campaignTotals.map(campaign => ({
+      ...campaign,
+      status: campaign.status || 'UNKNOWN',
+      effective_status: campaign.effective_status || 'UNKNOWN',
+      isActive: campaign.effective_status === 'ACTIVE',
+      ...calculateMetrics(campaign),
+      level: 'campaign',
+      country_breakdowns: countryMap.get(campaign.campaign_id) || [],
+      adsets: [] // No adsets when showing country breakdown
+    }));
+
+    return {
+      data: hierarchy,
+      includeInactive,
+      dateRange: { startDate, endDate }
+    };
+  }
+
+  // For non-country breakdowns, use original logic
   let breakdownSelect = '';
   let breakdownGroup = '';
   let breakdownWhere = '';
 
-  if (breakdown === 'country') {
-    breakdownSelect = ', country';
-    breakdownGroup = ', country';
-  } else if (breakdown === 'age') {
+  if (breakdown === 'age') {
     breakdownSelect = ', age';
     breakdownGroup = ', age';
     breakdownWhere = "AND age != ''";
@@ -1109,9 +1190,7 @@ export function getMetaAdManagerHierarchy(store, params) {
   // Helper: Create composite key for matching with breakdown
   const getCompositeKey = (item) => {
     let key = '';
-    if (breakdown === 'country') {
-      key = item.country || 'ALL';
-    } else if (breakdown === 'age') {
+    if (breakdown === 'age') {
       key = item.age || '';
     } else if (breakdown === 'gender') {
       key = item.gender || '';
@@ -1124,29 +1203,27 @@ export function getMetaAdManagerHierarchy(store, params) {
   };
 
   // Build hierarchy with breakdown-aware grouping
-  // CRITICAL FIX: Group by composite key (ID + breakdown fields) to prevent wrong matches
-
-  // Group adsets by campaign_id + breakdown
+  // Group adsets by campaign_id
   const adsetMap = new Map();
   adsetsWithMetrics.forEach(adset => {
-    const key = `${adset.campaign_id}-${getCompositeKey(adset)}`;
+    const key = breakdown === 'none' ? adset.campaign_id : `${adset.campaign_id}-${getCompositeKey(adset)}`;
     if (!adsetMap.has(key)) adsetMap.set(key, []);
     adsetMap.get(key).push(adset);
   });
 
-  // Group ads by adset_id + breakdown
+  // Group ads by adset_id
   const adMap = new Map();
   adsWithMetrics.forEach(ad => {
-    const key = `${ad.adset_id}-${getCompositeKey(ad)}`;
+    const key = breakdown === 'none' ? ad.adset_id : `${ad.adset_id}-${getCompositeKey(ad)}`;
     if (!adMap.has(key)) adMap.set(key, []);
     adMap.get(key).push(ad);
   });
 
   // Build hierarchy using grouped data
   const hierarchy = campaignsWithMetrics.map(campaign => {
-    const campaignKey = `${campaign.campaign_id}-${getCompositeKey(campaign)}`;
+    const campaignKey = breakdown === 'none' ? campaign.campaign_id : `${campaign.campaign_id}-${getCompositeKey(campaign)}`;
     const campaignAdsets = (adsetMap.get(campaignKey) || []).map(adset => {
-      const adsetKey = `${adset.adset_id}-${getCompositeKey(adset)}`;
+      const adsetKey = breakdown === 'none' ? adset.adset_id : `${adset.adset_id}-${getCompositeKey(adset)}`;
       return {
         ...adset,
         ads: adMap.get(adsetKey) || []
@@ -1155,7 +1232,8 @@ export function getMetaAdManagerHierarchy(store, params) {
 
     return {
       ...campaign,
-      adsets: campaignAdsets
+      adsets: campaignAdsets,
+      country_breakdowns: [] // Empty for non-country breakdowns
     };
   });
 
