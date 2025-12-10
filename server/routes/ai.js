@@ -168,7 +168,7 @@ function getConversationHistory(conversationId, limit = 10) {
 // ============================================================================
 router.post('/analyze', async (req, res) => {
   try {
-    const { question, store, conversationId } = req.body;
+    const { question, store, conversationId, startDate, endDate } = req.body;
 
     if (!question) {
       return res.status(400).json({ success: false, error: 'Question required' });
@@ -184,24 +184,25 @@ router.post('/analyze', async (req, res) => {
     console.log(`[API] POST /ai/analyze`);
     console.log(`[API] Question: "${question}"`);
     console.log(`[API] Store: ${store}`);
+    console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
     console.log(`[API] Conversation: ${conversationId || 'none'}`);
     console.log(`[API] History: ${history.length} messages`);
     console.log(`========================================`);
 
-    const result = await analyzeQuestion(question, store, history);
-    
+    const result = await analyzeQuestion(question, store, history, startDate, endDate);
+
     console.log(`[API] Response model: ${result.model}`);
     console.log(`[API] Response length: ${result.text?.length || 0} chars`);
 
-    res.json({ 
-      success: true, 
-      answer: result.text, 
-      model: result.model 
+    res.json({
+      success: true,
+      answer: result.text,
+      model: result.model
     });
   } catch (error) {
     console.error(`[API] Analyze error:`, error.message);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: error.message,
       details: 'Check server logs for more info'
     });
@@ -213,7 +214,7 @@ router.post('/analyze', async (req, res) => {
 // ============================================================================
 router.post('/summarize', async (req, res) => {
   try {
-    const { question, store, conversationId } = req.body;
+    const { question, store, conversationId, startDate, endDate } = req.body;
 
     if (!question) {
       return res.status(400).json({ success: false, error: 'Question required' });
@@ -229,24 +230,25 @@ router.post('/summarize', async (req, res) => {
     console.log(`[API] POST /ai/summarize`);
     console.log(`[API] Question: "${question}"`);
     console.log(`[API] Store: ${store}`);
+    console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
     console.log(`[API] Conversation: ${conversationId || 'none'}`);
     console.log(`[API] History: ${history.length} messages`);
     console.log(`========================================`);
 
-    const result = await summarizeData(question, store, history);
-    
+    const result = await summarizeData(question, store, history, startDate, endDate);
+
     console.log(`[API] Response model: ${result.model}`);
     console.log(`[API] Response length: ${result.text?.length || 0} chars`);
 
-    res.json({ 
-      success: true, 
-      answer: result.text, 
-      model: result.model 
+    res.json({
+      success: true,
+      answer: result.text,
+      model: result.model
     });
   } catch (error) {
     console.error(`[API] Summarize error:`, error.message);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: error.message,
       details: 'Check server logs for more info'
     });
@@ -258,7 +260,7 @@ router.post('/summarize', async (req, res) => {
 // ============================================================================
 router.post('/decide', async (req, res) => {
   try {
-    const { question, store, depth, conversationId } = req.body;
+    const { question, store, depth, conversationId, startDate, endDate } = req.body;
 
     if (!question) {
       return res.status(400).json({ success: false, error: 'Question required' });
@@ -275,26 +277,27 @@ router.post('/decide', async (req, res) => {
     console.log(`[API] Question: "${question}"`);
     console.log(`[API] Store: ${store}`);
     console.log(`[API] Depth: ${depth || 'balanced'}`);
+    console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
     console.log(`[API] Conversation: ${conversationId || 'none'}`);
     console.log(`[API] History: ${history.length} messages`);
     console.log(`========================================`);
 
-    const result = await decideQuestion(question, store, depth || 'balanced', history);
-    
+    const result = await decideQuestion(question, store, depth || 'balanced', history, startDate, endDate);
+
     console.log(`[API] Response model: ${result.model}`);
     console.log(`[API] Reasoning effort: ${result.reasoning}`);
     console.log(`[API] Response length: ${result.text?.length || 0} chars`);
 
-    res.json({ 
-      success: true, 
-      answer: result.text, 
+    res.json({
+      success: true,
+      answer: result.text,
       model: result.model,
       reasoning: result.reasoning
     });
   } catch (error) {
     console.error(`[API] Decide error:`, error.message);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: error.message,
       details: 'Check server logs for more info'
     });
@@ -306,7 +309,7 @@ router.post('/decide', async (req, res) => {
 // ============================================================================
 router.post('/stream', async (req, res) => {
   try {
-    const { question, store, depth, mode, conversationId, reportType } = req.body;
+    const { question, store, depth, mode, conversationId, reportType, startDate, endDate } = req.body;
 
     // Daily summary mode doesn't need a question
     if (mode !== 'daily-summary' && !question) {
@@ -332,6 +335,7 @@ router.post('/stream', async (req, res) => {
     console.log(`[API] Question: "${(question || '').substring(0, 100)}..."`);
     console.log(`[API] Store: ${store}`);
     console.log(`[API] Depth: ${depth || 'balanced'}`);
+    console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
     console.log(`[API] Conversation: ${conversationId || 'none'}`);
     console.log(`[API] History: ${history.length} messages`);
     if (activeMode === 'daily-summary') {
@@ -349,21 +353,21 @@ router.post('/stream', async (req, res) => {
       // Daily summary uses GPT-5.1 deep - always for both stores
       result = await dailySummaryStream(reportType || 'am', onDelta);
     } else if (activeMode === 'analyze') {
-      result = await analyzeQuestionStream(question, store, onDelta, history);
+      result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
     } else if (activeMode === 'summarize') {
-      result = await summarizeDataStream(question, store, onDelta, history);
+      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
     } else {
-      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history);
+      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
 
-    res.write(`data: ${JSON.stringify({ 
-      type: 'done', 
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
       model: result.model,
-      reasoning: result.reasoning 
+      reasoning: result.reasoning
     })}\n\n`);
-    
+
     res.end();
   } catch (error) {
     console.error(`[API] Stream error:`, error.message);

@@ -130,10 +130,12 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       const endpoint = endpointMap[activeMode] || '/api/ai/analyze';
 
       // Build request body matching backend expected format:
-      // Backend expects: { question, store, conversationId, depth }
+      // Backend expects: { question, store, conversationId, depth, startDate, endDate }
       const requestBody = {
         question: input,
-        store: activeStore
+        store: activeStore,
+        startDate: startDate || null,
+        endDate: endDate || null
       };
 
       // Add depth parameter for deepdive mode based on insightMode

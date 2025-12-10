@@ -47,7 +47,7 @@ const DEPTH_TO_EFFORT = {
 // OPTIMIZED DATA FETCHING - Parallel queries, smart store detection
 // ============================================================================
 
-function getStoreData(db, storeName, today, yesterday, last7Days) {
+function getStoreData(db, storeName, today, yesterday, periodStart) {
   const storeData = {};
 
   try {
@@ -63,7 +63,7 @@ function getStoreData(db, storeName, today, yesterday, last7Days) {
       FROM meta_daily_metrics
       WHERE LOWER(store) = ? AND date >= ?
       AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
-    `).get(storeName, last7Days);
+    `).get(storeName, periodStart);
 
     storeData.today = db.prepare(`
       SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
@@ -89,9 +89,9 @@ function getStoreData(db, storeName, today, yesterday, last7Days) {
       AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
       GROUP BY campaign_name
       ORDER BY spend DESC LIMIT 10
-    `).all(storeName, last7Days);
+    `).all(storeName, periodStart);
 
-    // Campaigns by day (last 7 days only, top campaigns)
+    // Campaigns by day (within selected period, top campaigns)
     storeData.campaignsByDay = db.prepare(`
       SELECT date, campaign_name, SUM(conversions) as orders, SUM(conversion_value) as revenue
       FROM meta_daily_metrics
@@ -99,7 +99,7 @@ function getStoreData(db, storeName, today, yesterday, last7Days) {
       AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
       GROUP BY date, campaign_name
       ORDER BY date DESC
-    `).all(storeName, last7Days);
+    `).all(storeName, periodStart);
 
     // E-commerce orders
     const orderTable = storeName === 'vironax' ? 'salla_orders' : 'shopify_orders';
@@ -107,7 +107,7 @@ function getStoreData(db, storeName, today, yesterday, last7Days) {
       storeData.ordersOverview = db.prepare(`
         SELECT COUNT(*) as totalOrders, SUM(order_total) as totalRevenue
         FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
-      `).get(storeName, last7Days);
+      `).get(storeName, periodStart);
 
       storeData.ordersToday = db.prepare(`
         SELECT COUNT(*) as orders, SUM(order_total) as revenue
@@ -123,7 +123,7 @@ function getStoreData(db, storeName, today, yesterday, last7Days) {
         SELECT country_code, COUNT(*) as orders, SUM(order_total) as revenue
         FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
         GROUP BY country_code ORDER BY orders DESC LIMIT 10
-      `).all(storeName, last7Days);
+      `).all(storeName, periodStart);
     } catch (e) {}
 
     // Add account structure summary
@@ -212,13 +212,16 @@ function getReactivationCandidates(db, storeName) {
   }
 }
 
-function getRelevantData(store, question) {
+function getRelevantData(store, question, startDate = null, endDate = null) {
   const db = getDb();
   const q = question.toLowerCase();
 
   const today = new Date().toISOString().split('T')[0];
-  const last7Days = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+  // Use provided dates or default to 7 days if not provided
+  const periodStart = startDate || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const periodEnd = endDate || today;
 
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const todayDate = new Date();
@@ -229,8 +232,8 @@ function getRelevantData(store, question) {
       todayDayName: dayNames[todayDate.getDay()],
       yesterday,
       yesterdayDayName: dayNames[new Date(Date.now() - 24 * 60 * 60 * 1000).getDay()],
-      periodStart: last7Days,
-      periodEnd: today
+      periodStart,
+      periodEnd
     },
     currentStore: store.toLowerCase()
   };
@@ -246,7 +249,7 @@ function getRelevantData(store, question) {
   const mentionsReactivation = isReactivationQuestion(question);
 
   // Always fetch current store
-  data[currentStore] = getStoreData(db, currentStore, today, yesterday, last7Days);
+  data[currentStore] = getStoreData(db, currentStore, today, yesterday, periodStart);
 
   // Include reactivation candidates if mentioned
   if (mentionsReactivation) {
@@ -256,7 +259,7 @@ function getRelevantData(store, question) {
   // Only fetch other store if mentioned
   if (mentionsBoth || (currentStore === 'vironax' && mentionsShawq) || (currentStore === 'shawq' && mentionsVironax)) {
     const otherStore = currentStore === 'vironax' ? 'shawq' : 'vironax';
-    data[otherStore] = getStoreData(db, otherStore, today, yesterday, last7Days);
+    data[otherStore] = getStoreData(db, otherStore, today, yesterday, periodStart);
   }
 
   // Clean up empty data
@@ -488,20 +491,20 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
 // EXPORTS - Analyze, Summarize, Decide
 // ============================================================================
 
-export async function analyzeQuestion(question, store) {
-  const data = getRelevantData(store, question);
+export async function analyzeQuestion(question, store, history = [], startDate = null, endDate = null) {
+  const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data);
   return await callWithFallback(MODELS.NANO, FALLBACK_MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano);
 }
 
-export async function summarizeData(question, store) {
-  const data = getRelevantData(store, question);
+export async function summarizeData(question, store, history = [], startDate = null, endDate = null) {
+  const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data);
   return await callWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini);
 }
 
-export async function decideQuestion(question, store, depth = 'balanced') {
-  const data = getRelevantData(store, question);
+export async function decideQuestion(question, store, depth = 'balanced', history = [], startDate = null, endDate = null) {
+  const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'decide', data);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
@@ -510,8 +513,8 @@ export async function decideQuestion(question, store, depth = 'balanced') {
   return { ...result, reasoning: effort };
 }
 
-export async function decideQuestionStream(question, store, depth = 'balanced', onDelta) {
-  const data = getRelevantData(store, question);
+export async function decideQuestionStream(question, store, depth = 'balanced', onDelta, history = [], startDate = null, endDate = null) {
+  const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'decide', data);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
@@ -520,14 +523,14 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
 }
 
 // Streaming versions for Analyze and Summarize
-export async function analyzeQuestionStream(question, store, onDelta) {
-  const data = getRelevantData(store, question);
+export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
+  const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data);
   return await streamWithFallback(MODELS.NANO, FALLBACK_MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano, null, onDelta);
 }
 
-export async function summarizeDataStream(question, store, onDelta) {
-  const data = getRelevantData(store, question);
+export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
+  const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data);
   return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta);
 }
