@@ -86,7 +86,7 @@ export default function NotificationCenter({ currentStore }) {
     try {
       setLoading(true);
       const response = await fetch('/api/notifications');
-      
+
       if (!response.ok) {
         console.error('[Notifications] API error:', response.status);
         return;
@@ -95,38 +95,52 @@ export default function NotificationCenter({ currentStore }) {
       const data = await response.json();
 
       if (data.success) {
-        setNotifications(data.notifications || []);
-        setUnreadCount(data.unreadCount || 0);
-        setLastFetchTime(new Date().toISOString());
+        const incomingNotifications = data.notifications || [];
 
-        // Check for new notifications and play sound
-        if (data.notifications && data.notifications.length > 0) {
-          const latestNotification = data.notifications[0];
-          const latestId = latestNotification.id;
+        setNotifications((prevNotifications) => {
+          const previousTimestamps = new Map(
+            prevNotifications.map((notification) => [notification.id, notification.localTimestamp])
+          );
 
-          // New notification detected!
-          if (lastNotificationIdRef.current && latestId > lastNotificationIdRef.current) {
-            console.log('[Notifications] New notification detected:', latestNotification.message);
-            playSound();
+          const annotatedNotifications = incomingNotifications.map((notification) => ({
+            ...notification,
+            localTimestamp: previousTimestamps.get(notification.id) || new Date().toISOString()
+          }));
 
-            // Show browser notification if permission granted
-            if ('Notification' in window && Notification.permission === 'granted') {
-              const isCrossStore = latestNotification.store !== currentStore;
-              const title = isCrossStore 
-                ? `New Order from ${latestNotification.store.toUpperCase()}! 🎉` 
-                : 'New Order! 🎉';
-              
-              new Notification(title, {
-                body: latestNotification.message,
-                icon: '/favicon.ico',
-                tag: `order-${latestId}`,
-                badge: '/favicon.ico'
-              });
+          // Check for new notifications and play sound
+          if (annotatedNotifications.length > 0) {
+            const latestNotification = annotatedNotifications[0];
+            const latestId = latestNotification.id;
+
+            // New notification detected!
+            if (lastNotificationIdRef.current && latestId > lastNotificationIdRef.current) {
+              console.log('[Notifications] New notification detected:', latestNotification.message);
+              playSound();
+
+              // Show browser notification if permission granted
+              if ('Notification' in window && Notification.permission === 'granted') {
+                const isCrossStore = latestNotification.store !== currentStore;
+                const title = isCrossStore
+                  ? `New Order from ${latestNotification.store.toUpperCase()}! 🎉`
+                  : 'New Order! 🎉';
+
+                new Notification(title, {
+                  body: latestNotification.message,
+                  icon: '/favicon.ico',
+                  tag: `order-${latestId}`,
+                  badge: '/favicon.ico'
+                });
+              }
             }
+
+            lastNotificationIdRef.current = latestId;
           }
 
-          lastNotificationIdRef.current = latestId;
-        }
+          return annotatedNotifications;
+        });
+
+        setUnreadCount(data.unreadCount || 0);
+        setLastFetchTime(new Date().toISOString());
       }
     } catch (error) {
       console.error('[Notifications] Failed to fetch:', error);
@@ -241,9 +255,17 @@ export default function NotificationCenter({ currentStore }) {
   // ============================================================================
   // Get relative time string ("2 min ago", "1 hour ago", etc)
   // ============================================================================
+  const getDisplayTimestamp = (notification) =>
+    notification?.localTimestamp || notification?.timestamp || notification?.createdAt;
+
   const getTimeAgo = (timestamp) => {
+    if (!timestamp) return 'Unknown time';
+
     const now = new Date();
     const then = new Date(timestamp);
+
+    if (Number.isNaN(then.getTime())) return 'Unknown time';
+
     const diffMs = now - then;
     const diffMins = Math.floor(diffMs / 60000);
 
@@ -412,7 +434,7 @@ export default function NotificationCenter({ currentStore }) {
 
                           {/* Time */}
                           <p className="text-xs text-gray-500 mt-1.5">
-                            {getTimeAgo(notification.timestamp)}
+                            {getTimeAgo(getDisplayTimestamp(notification))}
                           </p>
                         </div>
 
