@@ -1,2 +1,8 @@
 [phases.setup]
 nixPkgs = ["python3", "gcc", "gnumake"]
+
+[phases.install.env]
+PYTHON = "python3"
+
+[phases.build.env]
+PYTHON = "python3"
