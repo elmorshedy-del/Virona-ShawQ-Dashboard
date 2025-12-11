@@ -1336,10 +1336,11 @@ function AIBudgetSimulatorTab({ store }) {
      Helper: Campaign dropdown list
      ---------------------------- */
   const campaignOptions = useMemo(() => {
-    if (metaCampaignNames.length) return metaCampaignNames;
     if (intelCampaignRows.length) {
       return Array.from(new Set(intelCampaignRows.map(r => r.campaign_name).filter(Boolean)));
     }
+    if (metaCampaignNames.length) return metaCampaignNames;
+    
     return [];
   }, [metaCampaignNames, intelCampaignRows]);
 
