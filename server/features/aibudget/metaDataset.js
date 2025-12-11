@@ -1,17 +1,30 @@
 import { getDb } from '../../db/database.js';
 
 function getDateCoverage(db, store) {
-  const coverage = db
-    .prepare(
+  const sources = [
+    db.prepare(
       `SELECT MIN(date) as earliest_date, MAX(date) as latest_date
        FROM meta_daily_metrics
        WHERE store = ?`
-    )
-    .get(store);
+    ).get(store),
+    db.prepare(
+      `SELECT MIN(date) as earliest_date, MAX(date) as latest_date
+       FROM meta_adset_metrics
+       WHERE store = ?`
+    ).get(store),
+    db.prepare(
+      `SELECT MIN(date) as earliest_date, MAX(date) as latest_date
+       FROM meta_ad_metrics
+       WHERE store = ?`
+    ).get(store)
+  ];
+
+  const allEarliest = sources.map(s => s?.earliest_date).filter(Boolean);
+  const allLatest = sources.map(s => s?.latest_date).filter(Boolean);
 
   return {
-    availableStart: coverage?.earliest_date || null,
-    availableEnd: coverage?.latest_date || null
+    availableStart: allEarliest.length ? allEarliest.sort()[0] : null,
+    availableEnd: allLatest.length ? allLatest.sort().slice(-1)[0] : null
   };
 }
 
