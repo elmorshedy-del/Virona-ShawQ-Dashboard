@@ -1,6 +1,7 @@
 import { getDb } from '../db/database.js';
 import { getAvailableCountries } from './analyticsService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import { buildStatusFilter } from '../features/meta-awareness/index.js';
 
 const FX_SAR_RATES = {
   SAR: 1,
@@ -114,13 +115,14 @@ export function getBudgetIntelligence(store, params) {
   const db = getDb();
   const { startDate, endDate, days } = getDateRange(params);
   const brandDefaults = BRAND_CONSTANTS[store] || BRAND_CONSTANTS.shawq;
+  const statusFilter = buildStatusFilter(params);
 
   // Priors: use last 60 days ending at selected end date
   const priorRange = getPriorRange(endDate);
   const priorMeta = db.prepare(`
     SELECT SUM(spend) as spend, SUM(conversions) as purchases, SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
   `).get(store, priorRange.startDate, priorRange.endDate) || {};
 
   const priorConversions = priorMeta.purchases || 0;
@@ -130,7 +132,7 @@ export function getBudgetIntelligence(store, params) {
   const metaCacSamples = db.prepare(`
     SELECT spend, conversions
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND conversions > 0 AND spend > 0
+    WHERE store = ? AND date BETWEEN ? AND ? AND conversions > 0 AND spend > 0${statusFilter}
   `).all(store, priorRange.startDate, priorRange.endDate);
 
   const cacValues = metaCacSamples.map(row => row.spend / row.conversions).filter(v => v > 0);
@@ -162,7 +164,7 @@ export function getBudgetIntelligence(store, params) {
       conversions as purchases,
       conversion_value as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}
     ORDER BY date, campaign_id, country
   `).all(store, startDate, endDate);
 
@@ -189,7 +191,7 @@ export function getBudgetIntelligence(store, params) {
       conversions as purchases,
       conversion_value as revenue
     FROM meta_adset_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}
     ORDER BY date, campaign_id, adset_id, country
   `).all(store, startDate, endDate);
 
@@ -197,7 +199,7 @@ export function getBudgetIntelligence(store, params) {
   const metaByCountry = db.prepare(`
     SELECT country, SUM(spend) as spend, SUM(conversions) as conversions, SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}
     GROUP BY country
   `).all(store, startDate, endDate);
 
