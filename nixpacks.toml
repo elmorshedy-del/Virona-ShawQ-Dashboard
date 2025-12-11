@@ -1,0 +1,14 @@
+# Nixpacks configuration for Railway deployment
+# Adds Python and build tools required for better-sqlite3 native compilation
+
+[phases.setup]
+nixPkgs = ["nodejs_18", "npm-8_x", "python3", "gcc", "gnumake"]
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"
