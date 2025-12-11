@@ -82,7 +82,9 @@ export function createOrderNotifications(store, source, orders) {
   if (!Array.isArray(orders) || orders.length === 0) {
     return 0;
   }
-  
+
+  const fallbackCurrency = store === 'shawq' ? 'USD' : 'SAR';
+
   // Check if we should create notifications for this source
   if (!shouldCreateOrderNotification(store, source)) {
     console.log(`[Notification] Skipping ${source} notifications for ${store}`);
@@ -103,7 +105,7 @@ export function createOrderNotifications(store, source, orders) {
   
   // Group orders by country for cleaner notifications
   const ordersByCountry = {};
-  
+
   for (const order of orders) {
     // Shawq/Shopify uses order_created_at and order_total, others use created_at and total_price
     const orderDate = new Date(order.order_created_at || order.created_at || order.date || order.timestamp);
@@ -115,27 +117,33 @@ export function createOrderNotifications(store, source, orders) {
 
     const country = order.country || order.shipping_country || 'Unknown';
     const value = parseFloat(order.order_total || order.total_price || order.revenue || order.value || 0);
-    
+    const currency = order.currency || fallbackCurrency;
+
     if (!ordersByCountry[country]) {
       ordersByCountry[country] = {
         count: 0,
         total: 0,
-        latest: orderDate
+        latest: orderDate,
+        currency
       };
     }
-    
+
     ordersByCountry[country].count += 1;
     ordersByCountry[country].total += value;
     if (orderDate > ordersByCountry[country].latest) {
       ordersByCountry[country].latest = orderDate;
     }
+    // Always prefer a real currency from the order, but keep existing value when absent
+    if (order.currency) {
+      ordersByCountry[country].currency = order.currency;
+    }
   }
-  
+
   // Create notifications for each country
   for (const [country, data] of Object.entries(ordersByCountry)) {
-    const currency = store === 'shawq' ? 'TRY' : 'SAR';
+    const currency = data.currency || fallbackCurrency;
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
-    
+
     // Format: Country • Amount • Source (clean format)
     const message = `${country} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
     
@@ -146,6 +154,7 @@ export function createOrderNotifications(store, source, orders) {
       metadata: {
         source,
         country,
+        currency,
         value: data.total,
         order_count: data.count,
         timestamp: data.latest.toISOString()
