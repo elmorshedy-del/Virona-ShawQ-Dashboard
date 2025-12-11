@@ -40,6 +40,12 @@ SHAWQ_SHOPIFY_ACCESS_TOKEN=shpat_...
 
 4. Deploy
 
+#### Nixpacks download warning (HTTP 504)
+
+If a Railway/Nixpacks build fails to fetch `nixpkgs` with a 504 from GitHub,
+see [docs/nix-troubleshooting.md](docs/nix-troubleshooting.md) for why it
+happens and how to point Nix at the official mirror to unblock the build.
+
 ### Local Development
 
 ```bash
