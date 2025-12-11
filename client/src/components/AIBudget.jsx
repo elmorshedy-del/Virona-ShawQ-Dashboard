@@ -69,6 +69,91 @@ import {
 } from "lucide-react";
 import { useMetaObjects } from "../features/meta-awareness/hooks/useMetaStatus.js";
 
+// Normalize a single row from /api/budget-intelligence into the metric
+// names the simulator expects.
+function normalizeIntelRow(row) {
+  if (!row) return row;
+
+  const out = { ...row };
+
+  // Core identifiers
+  out.campaign_id =
+    row.campaign_id ||
+    row.campaignId ||
+    row.campaign_id_raw ||
+    null;
+
+  out.campaign_name =
+    row.campaign_name ||
+    row.campaignName ||
+    row.campaign ||
+    null;
+
+  // Geo
+  out.geo =
+    row.geo ||
+    row.country ||
+    row.country_code ||
+    null;
+
+  // Date (daily bucket)
+  out.date =
+    row.date ||
+    row.day ||
+    row.date_start ||
+    row.reporting_starts ||
+    null;
+
+  // Spend
+  out.spend =
+    row.spend ||
+    row.totalSpend ||
+    row.total_spend ||
+    row.amount_spent ||
+    null;
+
+  // Revenue / purchase value
+  out.purchase_value =
+    row.purchase_value ||
+    row.revenue ||
+    row.totalRevenue ||
+    row.conversion_value ||
+    null;
+
+  // Conversions / orders
+  out.purchases =
+    row.purchases ||
+    row.orders ||
+    row.total_orders ||
+    row.conversions ||
+    null;
+
+  // Funnel metrics (optional but very useful)
+  out.impressions =
+    row.impressions ||
+    row.impressions_raw ||
+    null;
+
+  out.clicks =
+    row.clicks ||
+    row.link_clicks ||
+    null;
+
+  out.atc =
+    row.atc ||
+    row.add_to_cart ||
+    row.adds_to_cart ||
+    null;
+
+  out.ic =
+    row.ic ||
+    row.checkouts_initiated ||
+    row.initiated_checkouts ||
+    null;
+
+  return out;
+}
+
 /* ============================================================================
    MATH UTILITIES (Elite-lite, deterministic, safe)
    ============================================================================ */
@@ -907,17 +992,18 @@ function AIBudgetSimulatorTab({ store }) {
   ]);
 
   const intelCampaignRows = useMemo(() => {
-    if (!intel?.liveGuidance) return [];
-    return intel.liveGuidance.map(row => ({
-      ...row,
-      campaign_id: row.campaignId,
-      campaign_name: row.campaignName,
-      geo: row.country,
-      structure: row.structure || "CBO",
-      purchase_value: row.revenue,
-      adset_id: null,
-      adset_name: null
-    }));
+    if (!intel || !intel.liveGuidance) return [];
+
+    return intel.liveGuidance.map((row) => {
+      // First clone original row
+      const normalized = normalizeIntelRow(row);
+
+      // Keep original row fields if needed, but ensure normalized names overwrite
+      return {
+        ...row,
+        ...normalized,
+      };
+    });
   }, [intel]);
 
   const intelStartPlanRows = useMemo(() => {
@@ -1795,6 +1881,10 @@ function AIBudgetSimulatorTab({ store }) {
                 <div>Files: {scenarioType === "existing" ? existingFileMode : plannedFileMode} ({scenarioType === "existing" ? existingFilePackets.length : plannedFilePackets.length} file(s))</div>
                 <div>Structure: {activeConfig.structure}</div>
               </div>
+
+              <p className="text-xs text-gray-500">
+                Rows used for math: {Array.isArray(platformCampaignRows) ? platformCampaignRows.length : 0}
+              </p>
 
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <div className="rounded-lg border border-gray-200 bg-white p-2">
