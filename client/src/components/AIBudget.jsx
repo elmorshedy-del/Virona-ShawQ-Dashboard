@@ -67,6 +67,7 @@ import {
   Wand2,
   XCircle
 } from "lucide-react";
+import { useMetaObjects } from "../features/meta-awareness/hooks/useMetaStatus.js";
 
 /* ============================================================================
    MOCK PLATFORM DATA (replace with real platform selectors)
@@ -920,8 +921,19 @@ function ModeExplainRow({ modeKey, active }) {
    MAIN SIMULATOR TAB
    ============================================================================ */
 
-function AIBudgetSimulatorTab() {
+function AIBudgetSimulatorTab({ store }) {
   const [scenarioType, setScenarioType] = useState("existing"); // existing | planned
+
+  // Meta campaigns
+  const { objects: metaObjects } = useMetaObjects(store, { autoFetch: !!store });
+  const metaCampaignNames = useMemo(() => {
+    const payload = metaObjects?.data || metaObjects;
+    const campaigns = payload?.campaigns || [];
+    const names = campaigns
+      .map(c => c.object_name || c.campaign_name || c.name)
+      .filter(Boolean);
+    return Array.from(new Set(names));
+  }, [metaObjects]);
 
   // Existing configuration
   const [existingCampaign, setExistingCampaign] = useState(MockPlatform.campaigns[0].name);
@@ -932,8 +944,8 @@ function AIBudgetSimulatorTab() {
   // Planned configuration
   const [plannedSource, setPlannedSource] = useState("new"); // new | meta_template
   const [plannedTemplateCampaign, setPlannedTemplateCampaign] = useState(MockPlatform.campaigns[0].name);
-  const [plannedGeo, setPlannedGeo] = useState("SA");
-  const [plannedStructure, setPlannedStructure] = useState("CBO");
+  const [plannedGeo, setPlannedGeo] = useState(MockPlatform.campaigns[0].geo);
+  const [plannedStructure, setPlannedStructure] = useState(MockPlatform.campaigns[0].structure);
   const [plannedGeoMaturity, setPlannedGeoMaturity] = useState("thin");
 
   const [expectedAov, setExpectedAov] = useState(150);
@@ -1402,7 +1414,24 @@ function AIBudgetSimulatorTab() {
   /* ----------------------------
      Helper: Campaign dropdown list
      ---------------------------- */
-  const campaignOptions = useMemo(() => MockPlatform.listCampaignNames(), []);
+  const campaignOptions = useMemo(() => {
+    if (metaCampaignNames.length) return metaCampaignNames;
+    return MockPlatform.listCampaignNames();
+  }, [metaCampaignNames]);
+
+  // Seed campaign selections when options change
+  useEffect(() => {
+    const first = campaignOptions[0];
+    if (!first) return;
+
+    if (!campaignOptions.includes(existingCampaign)) {
+      setExistingCampaign(first);
+    }
+
+    if (!campaignOptions.includes(plannedTemplateCampaign)) {
+      setPlannedTemplateCampaign(first);
+    }
+  }, [campaignOptions, existingCampaign, plannedTemplateCampaign]);
 
   /* ----------------------------
      UI: reference campaign multi-select (simple)
@@ -2119,7 +2148,7 @@ function AIBudgetMathFlowTab() {
    ROOT APP
    ============================================================================ */
 
-export default function AIBudgetApp() {
+export default function AIBudgetApp({ store }) {
   const [activeTab, setActiveTab] = useState("sim");
 
   return (
@@ -2150,7 +2179,7 @@ export default function AIBudgetApp() {
           </div>
         </div>
 
-        {activeTab === "sim" ? <AIBudgetSimulatorTab /> : <AIBudgetMathFlowTab />}
+        {activeTab === "sim" ? <AIBudgetSimulatorTab store={store} /> : <AIBudgetMathFlowTab />}
 
         <div className="text-[10px] text-gray-400">
           Demo shell. Replace MockPlatform with your platform store + Meta ingestion.
