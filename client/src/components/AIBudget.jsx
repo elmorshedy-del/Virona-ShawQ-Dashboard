@@ -689,6 +689,37 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
   let status = "🚫 Not Enough";
   let confidence = "Low";
   const missing = [];
+
+  if (!hasSpend) missing.push("Spend");
+  if (!hasRevenue) missing.push("Revenue (purchase_value or purchases + AOV)");
+
+  if (!hasFunnel) missing.push("Funnel metrics (impressions, clicks, ATC, IC)");
+
+  if ((structure === "CBO" || structure === "ASC") && !hasAdsetSpend) {
+    missing.push("Ad set-level spend history (for CBO/ASC allocation realism)");
+  }
+
+  if (hasSpend && hasRevenue) {
+    if (scenarioType === "planned") {
+      status = "🟡 Enough for Partial Model";
+      confidence = !missing.length ? "Medium" : "Low";
+    } else {
+      // existing
+      if (lookbackUsed >= 14 && spendDays >= 10) {
+        status = "✅ Enough for Full Model";
+        confidence = hasFunnel && (structure === "ABO" || hasAdsetSpend) ? "High" : "Medium";
+      } else if (lookbackUsed >= 7 && spendDays >= 5) {
+        status = "🟡 Enough for Partial Model";
+        confidence = "Medium";
+        missing.push(`Add ${Math.max(0, 14 - lookbackUsed)} more lookback days for full curve stability`);
+      } else {
+        status = "🚫 Not Enough";
+        confidence = "Low";
+        missing.push("Need at least 7 days with spend + revenue");
+      }
+    }
+  }
+
   return {
     allTimeDays,
     lookbackUsed,
@@ -2130,32 +2161,3 @@ export default function AIBudgetApp() {
     </div>
   );
 }
-  if (!hasSpend) missing.push("Spend");
-  if (!hasRevenue) missing.push("Revenue (purchase_value or purchases + AOV)");
-
-  if (!hasFunnel) missing.push("Funnel metrics (impressions, clicks, ATC, IC)");
-
-  if ((structure === "CBO" || structure === "ASC") && !hasAdsetSpend) {
-    missing.push("Ad set-level spend history (for CBO/ASC allocation realism)");
-  }
-
-  if (hasSpend && hasRevenue) {
-    if (scenarioType === "planned") {
-      status = "🟡 Enough for Partial Model";
-      confidence = !missing.length ? "Medium" : "Low";
-    } else {
-      // existing
-      if (lookbackUsed >= 14 && spendDays >= 10) {
-        status = "✅ Enough for Full Model";
-        confidence = hasFunnel && (structure === "ABO" || hasAdsetSpend) ? "High" : "Medium";
-      } else if (lookbackUsed >= 7 && spendDays >= 5) {
-        status = "🟡 Enough for Partial Model";
-        confidence = "Medium";
-        missing.push(`Add ${Math.max(0, 14 - lookbackUsed)} more lookback days for full curve stability`);
-      } else {
-        status = "🚫 Not Enough";
-        confidence = "Low";
-        missing.push("Need at least 7 days with spend + revenue");
-      }
-    }
-  }
