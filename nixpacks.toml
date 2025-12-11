@@ -1,5 +1,6 @@
 [phases.setup]
-nixPkgs = ["python3", "gcc", "gnumake"]
+# Include Node.js so npm is available during install and build stages
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake"]
 
 [phases.install.env]
 PYTHON = "python3"
