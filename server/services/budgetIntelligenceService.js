@@ -142,14 +142,15 @@ export function getBudgetIntelligence(store, params) {
   const priorMeanROAS = priorSpend > 0 ? priorRevenue / priorSpend : brandDefaults.fallbackROAS;
 
   // =========================================================================
-  // 🔧 FIX #1: Campaign-level data with daily grain + all funnel metrics
+  // 🔧 FIX #1: Campaign-level query with ALL metrics + daily grain
+  // Frontend expects: camelCase (campaignId, campaignName, country, revenue)
   // =========================================================================
   const campaignRows = db.prepare(`
     SELECT
       date,
-      campaign_id,
-      campaign_name,
-      country as geo,
+      campaign_id as campaignId,
+      campaign_name as campaignName,
+      country,
       spend,
       impressions,
       clicks,
@@ -159,23 +160,24 @@ export function getBudgetIntelligence(store, params) {
       add_to_cart as atc,
       checkouts_initiated as ic,
       conversions as purchases,
-      conversion_value as purchase_value
+      conversion_value as revenue
     FROM meta_daily_metrics
     WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
     ORDER BY date, campaign_id, country
   `).all(store, startDate, endDate);
 
   // =========================================================================
-  // 🔧 FIX #2: Ad set-level data for CBO/ASC support
+  // 🔧 FIX #2: Ad set-level query for CBO/ASC support
+  // Frontend expects: adsetId, adsetName (camelCase)
   // =========================================================================
   const adsetRows = db.prepare(`
     SELECT
       date,
-      campaign_id,
-      campaign_name,
-      adset_id,
-      adset_name,
-      country as geo,
+      campaign_id as campaignId,
+      campaign_name as campaignName,
+      adset_id as adsetId,
+      adset_name as adsetName,
+      country,
       spend,
       impressions,
       clicks,
@@ -185,7 +187,7 @@ export function getBudgetIntelligence(store, params) {
       add_to_cart as atc,
       checkouts_initiated as ic,
       conversions as purchases,
-      conversion_value as purchase_value
+      conversion_value as revenue
     FROM meta_adset_metrics
     WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
     ORDER BY date, campaign_id, adset_id, country
@@ -347,17 +349,17 @@ export function getBudgetIntelligence(store, params) {
   });
 
   // =========================================================================
-  // 🔧 FIX #3: Process both campaign and ad set rows with canonical names
+  // 🔧 FIX #3: Process both campaign and ad set rows with camelCase naming
   // =========================================================================
   const targetCAC = medianBrandCac;
   const minimalSpendSar = 40;
   const minimalSpend = sarToCurrency(minimalSpendSar, brandDefaults.currency);
 
-  // Helper function to process row into guidance format
+  // Helper to process row into guidance format
   const processRowToGuidance = (row) => {
     const effectiveN = Math.max(1, row.purchases || 0);
     const observedCAC = row.purchases > 0 ? safeDivide(row.spend, row.purchases) : null;
-    const observedROAS = safeDivide(row.purchase_value, row.spend) || null;
+    const observedROAS = safeDivide(row.revenue, row.spend) || null;
     const posteriorCAC = computePosterior(priorMeanCAC, 8, observedCAC, effectiveN);
     const posteriorROAS = computePosterior(priorMeanROAS, 8, observedROAS, effectiveN);
 
@@ -381,13 +383,14 @@ export function getBudgetIntelligence(store, params) {
       reason = 'Low probability of meeting targets';
     }
 
+    // Return with camelCase names that frontend expects
     return {
       date: row.date,
-      campaign_id: row.campaign_id,
-      campaign_name: row.campaign_name,
-      adset_id: row.adset_id || null,           // ✅ Added for CBO/ASC
-      adset_name: row.adset_name || null,       // ✅ Added for CBO/ASC
-      geo: row.geo,
+      campaignId: row.campaignId,
+      campaignName: row.campaignName,
+      adsetId: row.adsetId || null,        // ✅ camelCase for frontend
+      adsetName: row.adsetName || null,    // ✅ camelCase for frontend
+      country: row.country,
       spend: row.spend,
       impressions: row.impressions || 0,
       clicks: row.link_clicks || 0,
@@ -396,8 +399,8 @@ export function getBudgetIntelligence(store, params) {
       atc: row.atc || 0,
       ic: row.ic || 0,
       purchases: row.purchases,
-      purchase_value: row.purchase_value,
-      aov: row.purchases > 0 ? row.purchase_value / row.purchases : null,
+      revenue: row.revenue,
+      aov: row.purchases > 0 ? row.revenue / row.purchases : null,
       cac: observedCAC,
       roas: observedROAS,
       posteriorCAC,
@@ -412,7 +415,7 @@ export function getBudgetIntelligence(store, params) {
     };
   };
 
-  // Merge campaign and ad set data into liveGuidance
+  // Merge campaign and ad set rows into single liveGuidance array
   const liveGuidance = [
     ...campaignRows.map(processRowToGuidance),
     ...adsetRows.map(processRowToGuidance)
