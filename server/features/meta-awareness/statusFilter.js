@@ -60,6 +60,7 @@ export function shouldIncludeInactive(params) {
  *
  * @param {Object} params - Request parameters (may contain includeInactive)
  * @param {string} [columnPrefix=''] - Optional table alias prefix (e.g., 'm' for 'm.effective_status')
+ * @param {string} [columnName=DEFAULTS.STATUS_COLUMN] - Status column to filter against
  * @returns {string} - SQL clause starting with ' AND ...' or empty string
  *
  * @example
@@ -74,15 +75,15 @@ export function shouldIncludeInactive(params) {
  * // Include inactive:
  * buildStatusFilter({ includeInactive: true }) // Returns ''
  */
-export function buildStatusFilter(params, columnPrefix = '') {
+export function buildStatusFilter(params, columnPrefix = '', columnName = DEFAULTS.STATUS_COLUMN) {
   if (shouldIncludeInactive(params)) {
     return ''; // No filter - include all statuses
   }
 
   // Build column reference
   const col = columnPrefix
-    ? `${columnPrefix}.${DEFAULTS.STATUS_COLUMN}`
-    : DEFAULTS.STATUS_COLUMN;
+    ? `${columnPrefix}.${columnName}`
+    : columnName;
 
   // Default: only ACTIVE (or UNKNOWN for backwards compatibility)
   return ` AND (${col} = '${META_STATUS.ACTIVE}' OR ${col} = '${META_STATUS.UNKNOWN}' OR ${col} IS NULL)`;

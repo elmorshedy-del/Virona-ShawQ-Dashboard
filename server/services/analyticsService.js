@@ -70,8 +70,8 @@ function shouldIncludeInactive(params) {
 // Build status filter clause for SQL queries - delegates to feature module
 // Default: only ACTIVE effective_status
 // With includeInactive: include all statuses
-function buildStatusFilter(params, columnPrefix = '') {
-  return featureBuildStatusFilter(params, columnPrefix);
+function buildStatusFilter(params, columnPrefix = '', columnName) {
+  return featureBuildStatusFilter(params, columnPrefix, columnName);
 }
 
 // ============================================================================
@@ -983,6 +983,8 @@ export function getMetaAdManagerHierarchy(store, params) {
   const { startDate, endDate } = getDateRange(params);
   const breakdown = params.breakdown || 'none'; // none, country, age, gender, age_gender, placement
   const statusFilter = buildStatusFilter(params);
+  const adsetStatusFilter = buildStatusFilter(params, '', 'adset_effective_status');
+  const adStatusFilter = buildStatusFilter(params, '', 'ad_effective_status');
   const includeInactive = shouldIncludeInactive(params);
 
   // CRITICAL: For country breakdown, we first get campaign totals, then country breakdowns as nested data
@@ -1071,7 +1073,7 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(conversion_value) as conversion_value,
         CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       FROM meta_adset_metrics
-      WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
+      WHERE store = ? AND date BETWEEN ? AND ?${adsetStatusFilter}
       GROUP BY adset_id
       ORDER BY spend DESC
     `;
@@ -1094,7 +1096,7 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(conversion_value) as conversion_value,
         CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       FROM meta_ad_metrics
-      WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
+      WHERE store = ? AND date BETWEEN ? AND ?${adStatusFilter}
       GROUP BY ad_id
       ORDER BY spend DESC
     `;
@@ -1228,7 +1230,7 @@ export function getMetaAdManagerHierarchy(store, params) {
       CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       ${breakdownSelect}
     FROM meta_adset_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${statusFilter}
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${adsetStatusFilter}
     GROUP BY adset_id${breakdownGroup}
     ORDER BY spend DESC
   `;
@@ -1265,7 +1267,7 @@ export function getMetaAdManagerHierarchy(store, params) {
       CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       ${breakdownSelect}
     FROM meta_ad_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${statusFilter}
+    WHERE store = ? AND date BETWEEN ? AND ? ${breakdownWhere}${adStatusFilter}
     GROUP BY ad_id${breakdownGroup}
     ORDER BY spend DESC
   `;
