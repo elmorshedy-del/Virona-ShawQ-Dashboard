@@ -915,8 +915,8 @@ function AIBudgetSimulatorTab({ store }) {
       geo: row.country,
       structure: row.structure || "CBO",
       purchase_value: row.revenue,
-      adset_id: null,
-      adset_name: null
+      adset_id: row.adsetId || null,
+      adset_name: row.adsetName || null
     }));
   }, [intel]);
 
