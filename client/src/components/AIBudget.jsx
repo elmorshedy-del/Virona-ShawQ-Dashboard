@@ -608,8 +608,7 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
 function scopeFilterRows(rows, { campaignName, geo, includeAdsets = true }) {
   let out = rows || [];
   if (campaignName) out = out.filter(r => r.campaign_name === campaignName);
-  // Allow 'ALL' country to match any geo filter, and match exact geo codes
-  if (geo) out = out.filter(r => r.geo === geo || r.geo === 'ALL' || !r.geo);
+  if (geo) out = out.filter(r => r.geo === geo);
   if (!includeAdsets) out = out.filter(r => !r.adset_id);
   return out;
 }
@@ -948,14 +947,7 @@ function AIBudgetSimulatorTab({ store }) {
     }
     // Existing: filter by selected campaign + geo
     if (!activeConfig.planned && activeConfig.campaignName) {
-      // First try to filter by both campaign and geo
-      const filtered = scopeFilterRows(rows, { campaignName: activeConfig.campaignName, geo: activeConfig.geo, includeAdsets: true });
-      // If no rows match with geo filter, fall back to campaign-only filter
-      // This handles cases where data only has country='ALL' or no geo breakdown
-      if (filtered.length === 0) {
-        return scopeFilterRows(rows, { campaignName: activeConfig.campaignName, geo: null, includeAdsets: true });
-      }
-      return filtered;
+      return scopeFilterRows(rows, { campaignName: activeConfig.campaignName, geo: activeConfig.geo, includeAdsets: true });
     }
     // Planned without template: no direct campaign rows
     return [];
@@ -1194,28 +1186,12 @@ function AIBudgetSimulatorTab({ store }) {
      ---------------------------- */
   const estimationRows = useMemo(() => {
     if (scenarioType === "existing") {
-      // Try curveRows first, then platformCampaignRows, then all campaign rows for this campaign
-      if (curveRows.length) return curveRows;
-      const platformFiltered = platformCampaignRows.filter(r => !r.adset_id);
-      if (platformFiltered.length) return platformFiltered;
-      // Fallback: get all rows for the selected campaign from intelCampaignRows
-      const fallbackRows = intelCampaignRows
-        .filter(r => r.campaign_name === activeConfig.campaignName && !r.adset_id);
-      if (fallbackRows.length) return fallbackRows;
-      // Ultimate fallback: use all brand rows
-      return allBrandRows.filter(r => !r.adset_id);
+      return curveRows.length ? curveRows : platformCampaignRows.filter(r => !r.adset_id);
     }
 
     // planned
     if (plannedSource === "meta_template") {
-      if (curveRows.length) return curveRows;
-      const platformFiltered = platformCampaignRows.filter(r => !r.adset_id);
-      if (platformFiltered.length) return platformFiltered;
-      // Fallback for template
-      const fallbackRows = intelCampaignRows
-        .filter(r => r.campaign_name === activeConfig.campaignName && !r.adset_id);
-      if (fallbackRows.length) return fallbackRows;
-      return allBrandRows.filter(r => !r.adset_id);
+      return curveRows.length ? curveRows : platformCampaignRows.filter(r => !r.adset_id);
     }
 
     // Planned new
@@ -1231,9 +1207,7 @@ function AIBudgetSimulatorTab({ store }) {
     platformCampaignRows,
     plannedSource,
     referenceRows,
-    allBrandRows,
-    intelCampaignRows,
-    activeConfig.campaignName
+    allBrandRows
   ]);
 
   /* ----------------------------
@@ -1374,18 +1348,8 @@ function AIBudgetSimulatorTab({ store }) {
     const first = campaignOptions[0];
     if (first && !campaignOptions.includes(existingCampaign)) {
       setExistingCampaign(first);
-      // Find all rows for this campaign and prefer specific geo over 'ALL'
-      const campaignRows = intelCampaignRows.filter(c => c.campaign_name === first);
-      const specificGeoRow = campaignRows.find(c => c.geo && c.geo !== 'ALL');
-      const anyGeoRow = campaignRows[0];
-      const meta = specificGeoRow || anyGeoRow;
-      // Set geo - prefer specific geo, fall back to 'ALL', keep default if neither
-      if (specificGeoRow?.geo) {
-        setExistingGeo(specificGeoRow.geo);
-      } else if (anyGeoRow?.geo && anyGeoRow.geo !== 'ALL') {
-        setExistingGeo(anyGeoRow.geo);
-      }
-      // Keep existing default geo ('SA') if only 'ALL' is available
+      const meta = intelCampaignRows.find(c => c.campaign_name === first);
+      if (meta?.geo) setExistingGeo(meta.geo);
       if (meta?.structure) setExistingStructure(meta.structure);
     }
 
@@ -1489,17 +1453,10 @@ function AIBudgetSimulatorTab({ store }) {
                     onChange={(e) => {
                       const name = e.target.value;
                       setExistingCampaign(name);
-                      // Find all rows for this campaign and prefer specific geo over 'ALL'
-                      const campaignRows = intelCampaignRows.filter(c => c.campaign_name === name);
-                      const specificGeoRow = campaignRows.find(c => c.geo && c.geo !== 'ALL');
-                      const meta = specificGeoRow || campaignRows[0];
+                      const meta = intelCampaignRows.find(c => c.campaign_name === name);
                       if (meta) {
-                        // Only update geo if we have a specific geo (not 'ALL')
-                        if (meta.geo && meta.geo !== 'ALL') {
-                          setExistingGeo(meta.geo);
-                        }
-                        // Keep existing geo if only 'ALL' is available
-                        if (meta.structure) setExistingStructure(meta.structure);
+                        setExistingGeo(meta.geo);
+                        setExistingStructure(meta.structure);
                       }
                     }}
                     className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs"
@@ -1627,16 +1584,10 @@ function AIBudgetSimulatorTab({ store }) {
                       onChange={(e) => {
                         const name = e.target.value;
                         setPlannedTemplateCampaign(name);
-                        // Find all rows for this campaign and prefer specific geo over 'ALL'
-                        const campaignRows = intelCampaignRows.filter(c => c.campaign_name === name);
-                        const specificGeoRow = campaignRows.find(c => c.geo && c.geo !== 'ALL');
-                        const meta = specificGeoRow || campaignRows[0];
+                        const meta = intelCampaignRows.find(c => c.campaign_name === name);
                         if (meta) {
-                          // Only update geo if we have a specific geo (not 'ALL')
-                          if (meta.geo && meta.geo !== 'ALL') {
-                            setPlannedGeo(meta.geo);
-                          }
-                          if (meta.structure) setPlannedStructure(meta.structure);
+                          setPlannedGeo(meta.geo);
+                          setPlannedStructure(meta.structure);
                         }
                       }}
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs"
