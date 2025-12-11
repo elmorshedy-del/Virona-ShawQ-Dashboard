@@ -797,6 +797,10 @@ function AIBudgetSimulatorTab({ store }) {
   const [loadingIntel, setLoadingIntel] = useState(true);
   const [intelError, setIntelError] = useState(null);
 
+  const [aiDataset, setAiDataset] = useState(null);
+  const [loadingDataset, setLoadingDataset] = useState(true);
+  const [datasetError, setDatasetError] = useState(null);
+
   useEffect(() => {
     async function loadIntel() {
       try {
@@ -815,16 +819,79 @@ function AIBudgetSimulatorTab({ store }) {
     loadIntel();
   }, [currentStore]);
 
+  useEffect(() => {
+    async function loadDataset() {
+      try {
+        setLoadingDataset(true);
+        const res = await fetch(`/api/aibudget?store=${currentStore}`);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        setAiDataset(data);
+        setDatasetError(null);
+      } catch (e) {
+        console.error('[AIBudget] Failed to load AI Budget dataset', e);
+        setDatasetError('Failed to load AI Budget dataset');
+      } finally {
+        setLoadingDataset(false);
+      }
+    }
+
+    loadDataset();
+  }, [currentStore]);
+
   // Meta campaigns
   const { objects: metaObjects } = useMetaObjects(store, { autoFetch: !!store });
   const metaCampaignNames = useMemo(() => {
     const payload = metaObjects?.data || metaObjects;
-    const campaigns = payload?.campaigns || [];
+    const campaigns = [
+      ...(payload?.campaigns || []),
+      ...(aiDataset?.hierarchy?.campaigns || [])
+    ];
     const names = campaigns
       .map(c => c.object_name || c.campaign_name || c.name)
       .filter(Boolean);
     return Array.from(new Set(names));
-  }, [metaObjects]);
+  }, [aiDataset, metaObjects]);
+
+  const datasetRows = useMemo(() => {
+    if (!aiDataset?.metrics) return [];
+
+    const mapRow = (r) => ({
+      date: r.date,
+      campaign_id: r.campaign_id,
+      campaign_name: r.campaign_name,
+      adset_id: r.adset_id,
+      adset_name: r.adset_name,
+      ad_id: r.ad_id,
+      ad_name: r.ad_name,
+      geo: r.country || r.geo || 'ALL',
+      spend: Number(r.spend) || 0,
+      purchase_value: Number(r.conversion_value ?? r.purchase_value ?? 0) || 0,
+      purchases: Number(r.conversions ?? r.purchases ?? 0) || 0,
+      impressions: Number(r.impressions ?? 0) || 0,
+      clicks: Number(r.clicks ?? 0) || 0,
+      atc: Number(r.add_to_cart ?? r.atc ?? 0) || 0,
+      ic: Number(r.checkouts_initiated ?? r.ic ?? 0) || 0,
+      status: r.status || r.adset_status || r.ad_status,
+      effective_status: r.effective_status || r.adset_effective_status || r.ad_effective_status
+    });
+
+    const rows = [];
+
+    if (aiDataset.metrics.adsetDaily?.length) {
+      rows.push(...aiDataset.metrics.adsetDaily.map(mapRow));
+    } else {
+      rows.push(...(aiDataset.metrics.campaignDaily || []).map(mapRow));
+    }
+
+    if (!aiDataset.metrics.adsetDaily?.length && aiDataset.metrics.adDaily?.length) {
+      rows.push(...aiDataset.metrics.adDaily.map(mapRow));
+    }
+
+    return rows.filter(r => r.date && r.geo);
+  }, [aiDataset]);
 
   // Existing configuration
   const [existingCampaign, setExistingCampaign] = useState("");
@@ -940,7 +1007,7 @@ function AIBudgetSimulatorTab({ store }) {
      Platform rows for the configuration scope
      ---------------------------- */
   const platformCampaignRows = useMemo(() => {
-    const rows = intelCampaignRows;
+    const rows = datasetRows.length ? datasetRows : intelCampaignRows;
     // For planned with template, we use template campaign rows as anchor.
     if (activeConfig.planned && activeConfig.plannedSource === "meta_template" && activeConfig.campaignName) {
       return scopeFilterRows(rows, { campaignName: activeConfig.campaignName, geo: null, includeAdsets: true });
@@ -951,12 +1018,13 @@ function AIBudgetSimulatorTab({ store }) {
     }
     // Planned without template: no direct campaign rows
     return [];
-  }, [activeConfig, intelCampaignRows]);
+  }, [activeConfig, datasetRows, intelCampaignRows]);
 
   const allBrandRows = useMemo(() => {
     // Used for priors fallback in planned new + thin.
-    return [...intelCampaignRows, ...intelStartPlanRows];
-  }, [intelCampaignRows, intelStartPlanRows]);
+    const base = datasetRows.length ? datasetRows : intelCampaignRows;
+    return [...base, ...intelStartPlanRows];
+  }, [datasetRows, intelCampaignRows, intelStartPlanRows]);
 
   /* ----------------------------
      Parse file packets into flat rows
@@ -1417,10 +1485,13 @@ function AIBudgetSimulatorTab({ store }) {
   if (loadingIntel) {
     return <div>Loading…</div>;
   }
-  if (intelError) {
-    return <div>{intelError}</div>;
+  if (loadingDataset) {
+    return <div>Loading…</div>;
   }
-  if (!intel) {
+  if (intelError || datasetError) {
+    return <div>{intelError || datasetError}</div>;
+  }
+  if (!intel || !datasetRows.length) {
     return <div>No budget intelligence data available.</div>;
   }
 
