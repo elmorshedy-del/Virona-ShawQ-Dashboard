@@ -805,12 +805,29 @@ function AIBudgetSimulatorTab({ store }) {
     async function loadIntel() {
       try {
         setLoadingIntel(true);
+        const fallback = { liveGuidance: [], startPlans: [] };
         const res = await fetch(`/api/budget-intelligence?store=${currentStore}&includeInactive=true`);
-        const data = await res.json();
-        setIntel(data);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const text = await res.text();
+        let data = fallback;
+
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (parseError) {
+            console.error('[AIBudget] Failed to parse budget intelligence JSON', parseError);
+          }
+        }
+
+        setIntel(data || fallback);
         setIntelError(null);
       } catch (e) {
-        setIntelError("Failed to load budget intelligence");
+        console.error('[AIBudget] Failed to load budget intelligence', e);
+        setIntel({ liveGuidance: [], startPlans: [] });
+        setIntelError(null);
       } finally {
         setLoadingIntel(false);
       }
@@ -823,16 +840,29 @@ function AIBudgetSimulatorTab({ store }) {
     async function loadDataset() {
       try {
         setLoadingDataset(true);
+        const fallback = { metrics: [], hierarchy: { campaigns: [], adsets: [] } };
         const res = await fetch(`/api/aibudget?store=${currentStore}`);
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
-        const data = await res.json();
-        setAiDataset(data);
+
+        const text = await res.text();
+        let data = fallback;
+
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (parseError) {
+            console.error('[AIBudget] Failed to parse AI Budget dataset JSON', parseError);
+          }
+        }
+
+        setAiDataset(data || fallback);
         setDatasetError(null);
       } catch (e) {
         console.error('[AIBudget] Failed to load AI Budget dataset', e);
-        setDatasetError('Failed to load AI Budget dataset');
+        setAiDataset({ metrics: [], hierarchy: { campaigns: [], adsets: [] } });
+        setDatasetError(null);
       } finally {
         setLoadingDataset(false);
       }

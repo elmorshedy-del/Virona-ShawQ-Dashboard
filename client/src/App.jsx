@@ -18,6 +18,28 @@ import UnifiedAnalytics from './components/UnifiedAnalytics';
 
 const API_BASE = '/api';
 
+const fetchJson = async (url, fallback = null, options = {}) => {
+  try {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const text = await res.text();
+    if (!text) return fallback;
+
+    try {
+      return JSON.parse(text);
+    } catch (parseError) {
+      console.error('Failed to parse JSON for', url, parseError);
+      return fallback;
+    }
+  } catch (error) {
+    console.error('Error fetching', url, error);
+    return fallback;
+  }
+};
+
 const getLocalDateString = (date = new Date()) => {
   const offsetMs = date.getTimezoneOffset() * 60 * 1000;
   const localDate = new Date(date.getTime() - offsetMs);
@@ -220,29 +242,29 @@ export default function App() {
         timeOfDayData,
         dowData
       ] = await Promise.all([
-        fetch(`${API_BASE}/analytics/dashboard?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/efficiency?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/efficiency/trends?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/recommendations?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/budget-intelligence?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/manual?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/manual/spend?${params}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/countries?store=${currentStore}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/countries/trends?${countryTrendParams}`).then(r => r.json()),
-        fetch(`${API_BASE}/analytics/campaigns/trends?${campaignTrendParams}`).then(r => r.json()),
+        fetchJson(`${API_BASE}/analytics/dashboard?${params}`, {}),
+        fetchJson(`${API_BASE}/analytics/efficiency?${params}`, {}),
+        fetchJson(`${API_BASE}/analytics/efficiency/trends?${params}`, []),
+        fetchJson(`${API_BASE}/analytics/recommendations?${params}`, []),
+        fetchJson(`${API_BASE}/budget-intelligence?${params}`, {}),
+        fetchJson(`${API_BASE}/manual?${params}`, []),
+        fetchJson(`${API_BASE}/manual/spend?${params}`, []),
+        fetchJson(`${API_BASE}/analytics/countries?store=${currentStore}`, MASTER_COUNTRIES_WITH_FLAGS),
+        fetchJson(`${API_BASE}/analytics/countries/trends?${countryTrendParams}`, { data: [], dataSource: '' }),
+        fetchJson(`${API_BASE}/analytics/campaigns/trends?${campaignTrendParams}`, { data: [], dataSource: '' }),
         // Time of day - now fetches for both stores
-        fetch(`${API_BASE}/analytics/time-of-day?${timeOfDayParams}`).then(r => r.json()),
+        fetchJson(`${API_BASE}/analytics/time-of-day?${timeOfDayParams}`, { data: [], timezone: null, sampleTimestamps: [], source: '', message: '' }),
         // Days of week
-        fetch(`${API_BASE}/analytics/days-of-week?store=${currentStore}&period=${daysOfWeekPeriod}`).then(r => r.json())
+        fetchJson(`${API_BASE}/analytics/days-of-week?store=${currentStore}&period=${daysOfWeekPeriod}`, { data: [], source: '', totalOrders: 0, period: daysOfWeekPeriod })
       ]);
 
-      setDashboard(dashData);
-      setEfficiency(effData);
-      setEfficiencyTrends(effTrends);
-      setRecommendations(recs);
-      setBudgetIntelligence(intel);
-      setManualOrders(orders);
-      setManualSpendOverrides(spendOverrides);
+      setDashboard(dashData || {});
+      setEfficiency(effData || {});
+      setEfficiencyTrends(Array.isArray(effTrends) ? effTrends : []);
+      setRecommendations(Array.isArray(recs) ? recs : []);
+      setBudgetIntelligence(intel || {});
+      setManualOrders(Array.isArray(orders) ? orders : []);
+      setManualSpendOverrides(Array.isArray(spendOverrides) ? spendOverrides : []);
 
       const safeCountries = (Array.isArray(countries) && countries.length > 0)
         ? countries.map(country => ({ ...country, flag: country.flag || countryCodeToFlag(country.code) }))
