@@ -10,7 +10,7 @@ import notificationsRouter from './routes/notifications.js';
 import aiRouter from './routes/ai.js';
 import budgetIntelligenceRouter from './routes/budgetIntelligence.js';
 import whatifRouter from './routes/whatif.js';
-import aibudgetRouter from './routes/aibudget.js';
+const aibudgetRouter = require('./routes/aibudget');
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
 import { syncMetaData } from './services/metaService.js';
