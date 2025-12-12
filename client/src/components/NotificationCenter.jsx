@@ -7,11 +7,13 @@ export default function NotificationCenter({ currentStore }) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [isOpen, setIsOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [audioReady, setAudioReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const dropdownRef = useRef(null);
   const pollIntervalRef = useRef(null);
   const lastNotificationIdRef = useRef(null);
+  const audioRef = useRef(null);
 
   // ============================================================================
   // Load sound preference from localStorage on mount
@@ -21,6 +23,27 @@ export default function NotificationCenter({ currentStore }) {
     if (savedPref !== null) {
       setSoundEnabled(JSON.parse(savedPref));
     }
+  }, []);
+
+  // ============================================================================
+  // Prepare optional custom MP3 sound (place file at public/sounds/notification.mp3)
+  // ============================================================================
+  useEffect(() => {
+    const audio = new Audio('/sounds/notification.mp3');
+    audio.preload = 'auto';
+
+    const handleCanPlay = () => setAudioReady(true);
+    const handleError = () => setAudioReady(false);
+
+    audio.addEventListener('canplaythrough', handleCanPlay, { once: true });
+    audio.addEventListener('error', handleError);
+
+    audioRef.current = audio;
+
+    return () => {
+      audio.removeEventListener('canplaythrough', handleCanPlay);
+      audio.removeEventListener('error', handleError);
+    };
   }, []);
 
   // ============================================================================
@@ -37,6 +60,17 @@ export default function NotificationCenter({ currentStore }) {
   // ============================================================================
   const playSound = () => {
     if (!soundEnabled) return;
+
+    // Prefer a provided MP3 file if present
+    if (audioRef.current && audioReady) {
+      try {
+        audioRef.current.currentTime = 0;
+        audioRef.current.play();
+        return;
+      } catch (err) {
+        console.log('MP3 playback failed, falling back to synthesized sound:', err);
+      }
+    }
 
     try {
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
