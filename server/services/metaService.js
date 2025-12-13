@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
+import { createOrderNotifications } from './notificationService.js';
 
 const META_API_VERSION = 'v19.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -650,6 +651,32 @@ export async function syncMetaData(store) {
 
     const totalRows = campaignRows + adsetRows + adRows;
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
+
+    if (store === 'vironax') {
+      const metaOrderRows = db.prepare(`
+        SELECT date, country, SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
+        FROM meta_daily_metrics
+        WHERE store = ? AND date BETWEEN ? AND ?
+        GROUP BY date, country
+        ORDER BY date DESC
+      `).all(store, startDate, endDate);
+
+      const metaOrders = metaOrderRows
+        .filter(row => (row.conversions || 0) > 0 && (row.conversion_value || 0) > 0)
+        .map(row => ({
+          country: row.country || 'ALL',
+          order_count: row.conversions,
+          order_total: row.conversion_value,
+          currency: 'SAR',
+          timestamp: new Date(`${row.date}T23:59:59Z`).toISOString(),
+          source: 'meta'
+        }));
+
+      const notificationCount = createOrderNotifications(store, 'meta', metaOrders);
+      if (notificationCount > 0) {
+        console.log(`[Meta] Created ${notificationCount} notifications for ${store}`);
+      }
+    }
 
     // 6. Trigger historical backfill if not yet done (runs in background)
     const backfillMeta = db.prepare(`SELECT backfill_status FROM meta_backfill_metadata WHERE store = ?`).get(store);

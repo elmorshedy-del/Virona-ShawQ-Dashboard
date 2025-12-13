@@ -1,4 +1,5 @@
 import { getDb } from '../db/database.js';
+import { getCountryInfo } from '../utils/countryData.js';
 
 // Check if Salla is active for VironaX
 function isSallaActive() {
@@ -96,31 +97,85 @@ export function createOrderNotifications(store, source, orders) {
   
   // Get the latest notification timestamp to avoid duplicates
   const lastNotification = db.prepare(`
-    SELECT timestamp FROM notifications 
-    WHERE store = ? AND source = ? 
+    SELECT timestamp, metadata FROM notifications
+    WHERE store = ? AND source = ?
     ORDER BY timestamp DESC LIMIT 1
   `).get(store, source);
-  
-  const lastTimestamp = lastNotification ? new Date(lastNotification.timestamp) : new Date(0);
+
+  let lastTimestamp = new Date(0);
+
+  if (lastNotification) {
+    try {
+      const storedMetadata = lastNotification.metadata ? JSON.parse(lastNotification.metadata) : null;
+      if (storedMetadata?.timestamp) {
+        const eventTime = new Date(storedMetadata.timestamp);
+        if (!isNaN(eventTime.getTime())) {
+          lastTimestamp = eventTime;
+        }
+      }
+    } catch (e) {
+      console.warn('[Notification] Failed to parse metadata timestamp:', e.message);
+    }
+
+    // Fallback to notification row timestamp if metadata is missing/invalid
+    if (isNaN(lastTimestamp.getTime())) {
+      lastTimestamp = new Date(lastNotification.timestamp);
+    }
+  }
+
+  if (isNaN(lastTimestamp.getTime())) {
+    lastTimestamp = new Date(0);
+  }
   
   // Group orders by country for cleaner notifications
   const ordersByCountry = {};
 
+  const normalizeCountry = (order, fallback = 'Unknown') => {
+    const rawCountry = (order.country || order.shipping_country || order.country_code || '').toString().trim();
+    if (!rawCountry) {
+      return { code: fallback, label: fallback };
+    }
+
+    const upper = rawCountry.toUpperCase();
+
+    if (upper === 'ALL' || upper === 'UNKNOWN') {
+      return { code: 'ALL', label: 'All Countries' };
+    }
+
+    if (/^[A-Z]{2}$/.test(upper)) {
+      const info = getCountryInfo(upper);
+      return {
+        code: info.code || upper,
+        label: info.name || upper
+      };
+    }
+
+    return { code: rawCountry, label: rawCountry };
+  };
+
   for (const order of orders) {
     // Shawq/Shopify uses order_created_at and order_total, others use created_at and total_price
     const orderDate = new Date(order.order_created_at || order.created_at || order.date || order.timestamp);
+
+    if (isNaN(orderDate)) {
+      continue;
+    }
 
     // Only notify for orders newer than last notification
     if (orderDate <= lastTimestamp) {
       continue;
     }
 
-    const country = order.country || order.shipping_country || 'Unknown';
+    const country = normalizeCountry(order);
     const value = parseFloat(order.order_total || order.total_price || order.revenue || order.value || 0);
     const currency = order.currency || fallbackCurrency;
 
-    if (!ordersByCountry[country]) {
-      ordersByCountry[country] = {
+    const countryKey = country.code || country.label || 'Unknown';
+
+    if (!ordersByCountry[countryKey]) {
+      ordersByCountry[countryKey] = {
+        code: country.code,
+        label: country.label,
         count: 0,
         total: 0,
         latest: orderDate,
@@ -128,32 +183,34 @@ export function createOrderNotifications(store, source, orders) {
       };
     }
 
-    ordersByCountry[country].count += 1;
-    ordersByCountry[country].total += value;
-    if (orderDate > ordersByCountry[country].latest) {
-      ordersByCountry[country].latest = orderDate;
+    ordersByCountry[countryKey].count += 1;
+    ordersByCountry[countryKey].total += value;
+    if (orderDate > ordersByCountry[countryKey].latest) {
+      ordersByCountry[countryKey].latest = orderDate;
     }
     // Always prefer a real currency from the order, but keep existing value when absent
     if (order.currency) {
-      ordersByCountry[country].currency = order.currency;
+      ordersByCountry[countryKey].currency = order.currency;
     }
   }
 
   // Create notifications for each country
-  for (const [country, data] of Object.entries(ordersByCountry)) {
+  for (const data of Object.values(ordersByCountry)) {
     const currency = data.currency || fallbackCurrency;
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
+    const displayCountry = data.label || data.code || 'Unknown';
 
     // Format: Country • Amount • Source (clean format)
-    const message = `${country} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
-    
+    const message = `${displayCountry} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
+
     createNotification({
       store,
       type: 'order',
       message,
       metadata: {
         source,
-        country,
+        country: displayCountry,
+        country_code: data.code,
         currency,
         value: data.total,
         order_count: data.count,
