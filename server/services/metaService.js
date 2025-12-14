@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 import { createOrderNotifications } from './notificationService.js';
+import { convertTryToUsd, getUsdTryRateValue } from './fxService.js';
 
 const META_API_VERSION = 'v19.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -9,11 +10,20 @@ const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 const BACKFILL_CHUNK_DAYS = 30; // Fetch in 30-day chunks
 const MAX_HISTORICAL_DAYS = 730; // Attempt up to 2 years of history (Meta typically allows 37 months)
 
-// Helper: Get currency conversion rate
-function getCurrencyRate(store) {
-  if (store === 'shawq') return 0.029; // Convert TRY to USD
-  if (store === 'vironax') return 1.0; // Keep SAR as SAR
-  return 1.0;
+// Helper: Get currency conversion context
+function getConversionContext(store) {
+  if (store === 'shawq') {
+    const usdTryRate = getUsdTryRateValue();
+    return {
+      usdTryRate,
+      toUsd: (value) => convertTryToUsd(Number(value) || 0, usdTryRate)
+    };
+  }
+
+  return {
+    usdTryRate: 1.0,
+    toUsd: (value) => Number(value) || 0
+  };
 }
 
 // Helper: Extract metric from Meta's "actions" list
@@ -278,10 +288,11 @@ async function fetchMetaObjects(store, accountId, accessToken) {
 // ============================================================================
 // SYNC INSIGHTS WITH STATUS (campaign, adset, or ad level)
 // ============================================================================
-async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, rate, statusMaps = {}) {
+async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, conversion, statusMaps = {}) {
   const db = getDb();
   const cleanAccountId = accountId.replace(/^act_/, '');
   const { campaignStatusMap = new Map(), adsetStatusMap = new Map() } = statusMaps;
+  const toUsd = conversion?.toUsd || ((value) => Number(value) || 0);
 
   // Define fields based on level
   // Include inline_link_clicks and cost_per_inline_link_click for proper Link Clicks and CPC metrics
@@ -418,8 +429,8 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       // Extract inline_link_clicks - Meta returns this as a single value
       const inlineLinkClicks = parseInt(row.inline_link_clicks || 0);
       // cost_per_inline_link_click comes directly from Meta API (already calculated)
-      // Apply currency rate to the cost
-      const costPerInlineLinkClick = parseFloat(row.cost_per_inline_link_click || 0) * rate;
+      // Apply currency conversion to USD for Shawq
+      const costPerInlineLinkClick = toUsd(row.cost_per_inline_link_click || 0);
 
       const data = {
         store: store,
@@ -427,7 +438,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         campaign_id: row.campaign_id,
         campaign_name: row.campaign_name,
         country: row.country || 'ALL',
-        spend: parseFloat(row.spend || 0) * rate,
+        spend: toUsd(row.spend || 0),
         impressions: parseInt(row.impressions || 0),
         clicks: parseInt(row.clicks || 0),
         reach: parseInt(row.reach || 0),
@@ -435,7 +446,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         atc: parseInt(atc),
         checkout: parseInt(checkout),
         conversions: parseInt(purchases),
-        conversion_value: parseFloat(revenue || 0) * rate,
+        conversion_value: toUsd(revenue || 0),
         inline_link_clicks: inlineLinkClicks,
         cost_per_inline_link_click: costPerInlineLinkClick,
         status: campaignStatus,
@@ -473,7 +484,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 // ============================================================================
 // HISTORICAL BACKFILL - Fetch as much history as Meta allows
 // ============================================================================
-async function performHistoricalBackfill(store, accountId, accessToken, rate, statusMaps) {
+async function performHistoricalBackfill(store, accountId, accessToken, conversion, statusMaps) {
   const db = getDb();
 
   // Get current backfill metadata
@@ -537,9 +548,9 @@ async function performHistoricalBackfill(store, accountId, accessToken, rate, st
 
     try {
       // Fetch all three levels for this chunk
-      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, rate, statusMaps);
-      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, rate, statusMaps);
-      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, rate, statusMaps);
+      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, conversion, statusMaps);
+      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, conversion, statusMaps);
+      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, conversion, statusMaps);
 
       const chunkTotal = campaignRows + adsetRows + adRows;
       totalRecords += chunkTotal;
@@ -615,7 +626,7 @@ export async function syncMetaData(store) {
   const tokenEnv = store === 'shawq' ? 'SHAWQ_META_ACCESS_TOKEN' : 'META_ACCESS_TOKEN';
   const accountId = process.env[accountIdEnv];
   const accessToken = process.env[tokenEnv];
-  const rate = getCurrencyRate(store);
+  const conversion = getConversionContext(store);
 
   if (!accountId || !accessToken) {
     console.log(`[Meta] Skipping sync for ${store}: Missing credentials`);
@@ -628,7 +639,8 @@ export async function syncMetaData(store) {
   const endDate = formatDate(new Date());
   const startDate = formatDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 
-  console.log(`[Meta] Syncing ${store} (Rate: ${rate}) from ${startDate} to ${endDate}...`);
+  const rateLabel = store === 'shawq' ? `USD_TRY ${conversion.usdTryRate}` : 'native currency';
+  console.log(`[Meta] Syncing ${store} (${rateLabel}) from ${startDate} to ${endDate}...`);
 
   try {
     // 3. Safety: Ensure DB columns exist
@@ -645,9 +657,9 @@ export async function syncMetaData(store) {
     };
 
     // 5. Sync all three levels with status info
-    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, rate, statusMaps);
+    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, conversion, statusMaps);
+    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, conversion, statusMaps);
+    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, conversion, statusMaps);
 
     const totalRows = campaignRows + adsetRows + adRows;
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
@@ -682,7 +694,7 @@ export async function syncMetaData(store) {
     const backfillMeta = db.prepare(`SELECT backfill_status FROM meta_backfill_metadata WHERE store = ?`).get(store);
     if (!backfillMeta || backfillMeta.backfill_status !== 'completed') {
       // Run backfill asynchronously (don't await)
-      performHistoricalBackfill(store, accountId, accessToken, rate, statusMaps)
+      performHistoricalBackfill(store, accountId, accessToken, conversion, statusMaps)
         .then(result => console.log(`[Meta] Backfill result for ${store}:`, result))
         .catch(err => console.error(`[Meta] Backfill error for ${store}:`, err.message));
     }

@@ -11,6 +11,7 @@ import aiRouter from './routes/ai.js';
 import budgetIntelligenceRouter from './routes/budgetIntelligence.js';
 import whatifRouter from './routes/whatif.js';
 import aibudgetRouter from './routes/aibudget.js';
+import fxRouter from './routes/fx.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
@@ -18,6 +19,7 @@ import { syncMetaData } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
+import { startUsdTryScheduler } from './services/fxService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,6 +29,9 @@ const PORT = process.env.PORT || 3001;
 
 // Initialize database
 initDb();
+
+// Start FX refresh scheduler (USD_TRY)
+startUsdTryScheduler();
 
 // Run AIBudget schema migration on startup
 runAIBudgetMigration()
@@ -65,6 +70,7 @@ app.use('/api/ai', aiRouter);
 app.use('/api/budget-intelligence', budgetIntelligenceRouter);
 app.use('/api/whatif', whatifRouter);
 app.use('/api/aibudget', aibudgetRouter);
+app.use('/api/fx', fxRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');

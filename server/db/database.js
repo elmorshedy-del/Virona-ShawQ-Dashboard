@@ -287,6 +287,17 @@ export function initDb() {
     )
   `);
 
+  // FX rates cache (USD_TRY and future pairs)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fx_rates (
+      pair TEXT PRIMARY KEY,
+      rate REAL NOT NULL,
+      as_of_date TEXT,
+      fetched_at TEXT,
+      source TEXT
+    )
+  `);
+
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
