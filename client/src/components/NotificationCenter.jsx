@@ -1,7 +1,73 @@
 // client/src/components/NotificationCenter.jsx
 import { useState, useEffect, useRef } from 'react';
 import { Bell, Check, Volume2, VolumeX, Trash2, X } from 'lucide-react';
-import { parseTimestamp, getTimeAgo as calculateTimeAgo } from '../utils/timestampUtils';
+
+function NotificationRow({
+  notification,
+  onMarkAsRead,
+  onDelete,
+  getSourceBadge,
+  formatNotificationMessage,
+  getDisplayTimestamp,
+  getTimeAgo
+}) {
+  const isUnread = notification?.is_read === false;
+  const timestamp = getDisplayTimestamp(notification);
+  const timeAgo = getTimeAgo(timestamp);
+
+  return (
+    <div
+      className={`flex items-start gap-3 p-4 transition-colors ${
+        isUnread ? 'bg-indigo-50/60' : 'hover:bg-gray-50'
+      }`}
+    >
+      <div className="flex-1 min-w-0 space-y-1">
+        <div className="flex items-center gap-2 flex-wrap text-xs text-gray-600">
+          {notification?.source && getSourceBadge(notification.source)}
+          {notification?.store && (
+            <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 font-semibold uppercase text-[11px]">
+              {notification.store}
+            </span>
+          )}
+          {notification?.country && <span className="text-gray-400">• {notification.country}</span>}
+          {notification?.value && (
+            <span className="text-gray-900 font-semibold text-sm">
+              SAR {Number(notification.value).toLocaleString()}
+            </span>
+          )}
+        </div>
+
+        <p className="text-sm text-gray-900 break-words">
+          {formatNotificationMessage(notification)}
+        </p>
+
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span>{timeAgo}</span>
+          {!notification?.is_read && <span className="w-2 h-2 rounded-full bg-indigo-500" aria-hidden="true" />}
+        </div>
+      </div>
+
+      <div className="flex flex-col items-end gap-2 text-gray-400">
+        {!notification?.is_read && (
+          <button
+            onClick={() => onMarkAsRead(notification.id)}
+            className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700"
+          >
+            <Check className="w-4 h-4" />
+            Mark read
+          </button>
+        )}
+        <button
+          onClick={() => onDelete(notification.id)}
+          className="flex items-center gap-1 text-xs hover:text-red-600"
+        >
+          <Trash2 className="w-4 h-4" />
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function NotificationCenter({ currentStore }) {
   const [notifications, setNotifications] = useState([]);
@@ -445,11 +511,12 @@ export default function NotificationCenter({ currentStore }) {
                   <NotificationRow
                     key={notification.id}
                     notification={notification}
-                    currentStore={currentStore}
                     onMarkAsRead={markAsRead}
                     onDelete={deleteNotification}
                     getSourceBadge={getSourceBadge}
                     formatNotificationMessage={formatNotificationMessage}
+                    getDisplayTimestamp={getDisplayTimestamp}
+                    getTimeAgo={getTimeAgo}
                   />
                 ))}
               </div>
