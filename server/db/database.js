@@ -274,19 +274,6 @@ export function initDb() {
     )
   `);
 
-  // Exchange rates cache
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS exchange_rates (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      from_currency TEXT NOT NULL,
-      to_currency TEXT NOT NULL,
-      rate REAL NOT NULL,
-      date TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(from_currency, to_currency, date)
-    )
-  `);
-
   // FX rates cache (USD_TRY and future pairs)
   db.exec(`
     CREATE TABLE IF NOT EXISTS fx_rates (
