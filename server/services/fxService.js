@@ -4,7 +4,7 @@ import { getDb } from '../db/database.js';
 export const FX_PAIR = 'USD_TRY';
 export const DEFAULT_USD_TRY = parseFloat(process.env.DEFAULT_USD_TRY || '42.6');
 
-const FRANKFURTER_URL = 'https://api.frankfurter.dev/v1/latest?base=USD&symbols=TRY';
+const FRANKFURTER_URL = 'https://api.frankfurter.app/latest?base=USD&symbols=TRY';
 const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const STALE_THRESHOLD_MS = 48 * 60 * 60 * 1000; // 48 hours
 
