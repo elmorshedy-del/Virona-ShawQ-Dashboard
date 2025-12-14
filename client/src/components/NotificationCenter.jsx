@@ -9,6 +9,7 @@ export default function NotificationCenter({ currentStore }) {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [loading, setLoading] = useState(false);
   const [lastFetchTime, setLastFetchTime] = useState(null);
+  const [currentTime, setCurrentTime] = useState(() => new Date());
   const dropdownRef = useRef(null);
   const pollIntervalRef = useRef(null);
   const lastNotificationIdRef = useRef(null);
@@ -97,47 +98,36 @@ export default function NotificationCenter({ currentStore }) {
       if (data.success) {
         const incomingNotifications = data.notifications || [];
 
-        setNotifications((prevNotifications) => {
-          const previousTimestamps = new Map(
-            prevNotifications.map((notification) => [notification.id, notification.localTimestamp])
-          );
+        setNotifications(incomingNotifications);
 
-          const annotatedNotifications = incomingNotifications.map((notification) => ({
-            ...notification,
-            localTimestamp: previousTimestamps.get(notification.id) || new Date().toISOString()
-          }));
+        // Check for new notifications and play sound
+        if (incomingNotifications.length > 0) {
+          const latestNotification = incomingNotifications[0];
+          const latestId = latestNotification.id;
 
-          // Check for new notifications and play sound
-          if (annotatedNotifications.length > 0) {
-            const latestNotification = annotatedNotifications[0];
-            const latestId = latestNotification.id;
+          // New notification detected!
+          if (lastNotificationIdRef.current && latestId > lastNotificationIdRef.current) {
+            console.log('[Notifications] New notification detected:', latestNotification.message);
+            playSound();
 
-            // New notification detected!
-            if (lastNotificationIdRef.current && latestId > lastNotificationIdRef.current) {
-              console.log('[Notifications] New notification detected:', latestNotification.message);
-              playSound();
+            // Show browser notification if permission granted
+            if ('Notification' in window && Notification.permission === 'granted') {
+              const isCrossStore = latestNotification.store !== currentStore;
+              const title = isCrossStore
+                ? `New Order from ${latestNotification.store.toUpperCase()}! 🎉`
+                : 'New Order! 🎉';
 
-              // Show browser notification if permission granted
-              if ('Notification' in window && Notification.permission === 'granted') {
-                const isCrossStore = latestNotification.store !== currentStore;
-                const title = isCrossStore
-                  ? `New Order from ${latestNotification.store.toUpperCase()}! 🎉`
-                  : 'New Order! 🎉';
-
-                new Notification(title, {
-                  body: latestNotification.message,
-                  icon: '/favicon.ico',
-                  tag: `order-${latestId}`,
-                  badge: '/favicon.ico'
-                });
-              }
+              new Notification(title, {
+                body: latestNotification.message,
+                icon: '/favicon.ico',
+                tag: `order-${latestId}`,
+                badge: '/favicon.ico'
+              });
             }
-
-            lastNotificationIdRef.current = latestId;
           }
 
-          return annotatedNotifications;
-        });
+          lastNotificationIdRef.current = latestId;
+        }
 
         setUnreadCount(data.unreadCount || 0);
         setLastFetchTime(new Date().toISOString());
@@ -193,6 +183,17 @@ export default function NotificationCenter({ currentStore }) {
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // ============================================================================
+  // Update current time every 30 seconds for accurate relative timestamps
+  // ============================================================================
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 30000);
+
+    return () => clearInterval(intervalId);
   }, []);
 
   // ============================================================================
@@ -255,13 +256,12 @@ export default function NotificationCenter({ currentStore }) {
   // ============================================================================
   // Get relative time string ("2 min ago", "1 hour ago", etc)
   // ============================================================================
-  const getDisplayTimestamp = (notification) =>
-    notification?.localTimestamp || notification?.timestamp || notification?.createdAt;
+  const getDisplayTimestamp = (notification) => notification?.timestamp || notification?.createdAt;
 
-  const getTimeAgo = (timestamp) => {
+  const getTimeAgo = (timestamp, referenceTime = currentTime) => {
     if (!timestamp) return 'Unknown time';
 
-    const now = new Date();
+    const now = referenceTime instanceof Date ? referenceTime : new Date(referenceTime);
     const then = new Date(timestamp);
 
     if (Number.isNaN(then.getTime())) return 'Unknown time';
