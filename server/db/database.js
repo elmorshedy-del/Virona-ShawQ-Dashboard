@@ -282,10 +282,20 @@ export function initDb() {
       to_currency TEXT NOT NULL,
       rate REAL NOT NULL,
       date TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'unknown',
+      fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(from_currency, to_currency, date)
     )
   `);
+
+  try {
+    db.exec("ALTER TABLE exchange_rates ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown'");
+  } catch (e) { /* column exists */ }
+
+  try {
+    db.exec('ALTER TABLE exchange_rates ADD COLUMN fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP');
+  } catch (e) { /* column exists */ }
 
   // Notifications table
   db.exec(`

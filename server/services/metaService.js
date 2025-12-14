@@ -9,13 +9,41 @@ const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 const BACKFILL_CHUNK_DAYS = 30; // Fetch in 30-day chunks
 const MAX_HISTORICAL_DAYS = 730; // Attempt up to 2 years of history (Meta typically allows 37 months)
 
+const FRANKFURTER_API_URL = 'https://api.frankfurter.app';
+const FRANKFURTER_LATEST_PATH = '/latest?from=TRY&to=USD';
+
 // Helper: Get currency conversion rate
 // TRY to USD: As of late 2024, 1 USD ≈ 32-34 TRY, so 1 TRY ≈ 0.030 USD
 // Update this rate periodically or consider using a live exchange rate API
-function getCurrencyRate(store) {
-  if (store === 'shawq') return 0.030; // Convert TRY to USD (1 TRY ≈ 0.030 USD as of late 2024)
-  if (store === 'vironax') return 1.0; // Keep SAR as SAR
-  return 1.0;
+async function getCurrencyRate(store) {
+  if (store !== 'shawq') return 1.0; // Keep SAR as SAR
+
+  const db = getDb();
+  const today = formatDate(new Date());
+
+  const cached = db.prepare(
+    `SELECT rate FROM exchange_rates WHERE from_currency = ? AND to_currency = ? AND date = ?`
+  ).get('TRY', 'USD', today);
+
+  if (cached) {
+    return cached.rate;
+  }
+
+  try {
+    const response = await fetch(`${FRANKFURTER_API_URL}${FRANKFURTER_LATEST_PATH}`);
+    const data = await response.json();
+    const rate = data?.rates?.USD ?? 0.03;
+
+    db.prepare(
+      `INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run('TRY', 'USD', rate, today, 'frankfurter', new Date().toISOString());
+
+    return rate;
+  } catch (err) {
+    console.warn(`[Meta] Frankfurter fetch failed: ${err.message}`);
+    return 0.03;
+  }
 }
 
 // Helper: Extract metric from Meta's "actions" list
@@ -617,7 +645,7 @@ export async function syncMetaData(store) {
   const tokenEnv = store === 'shawq' ? 'SHAWQ_META_ACCESS_TOKEN' : 'META_ACCESS_TOKEN';
   const accountId = process.env[accountIdEnv];
   const accessToken = process.env[tokenEnv];
-  const rate = getCurrencyRate(store);
+  const rate = await getCurrencyRate(store);
 
   if (!accountId || !accessToken) {
     console.log(`[Meta] Skipping sync for ${store}: Missing credentials`);
