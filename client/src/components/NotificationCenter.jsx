@@ -440,76 +440,17 @@ export default function NotificationCenter({ currentStore }) {
               </div>
             ) : (
               <div className="divide-y divide-gray-100">
-                {notifications.map((notification) => {
-                  const isCrossStore = notification.store !== currentStore;
-                  const displayMessage = formatNotificationMessage(notification);
-
-                  return (
-                    <div
-                      key={notification.id}
-                      className={`p-4 hover:bg-gray-50 transition-colors ${
-                        !notification.is_read ? 'bg-indigo-50/50 border-l-4 border-l-indigo-500' : ''
-                      } ${isCrossStore ? 'border-l-4 border-l-purple-500' : ''}`}
-                    >
-                      <div className="flex items-start gap-3">
-                        {/* Icon */}
-                        <div className="text-2xl flex-shrink-0">
-                          {notification.type === 'order' ? '🛍️' : '📊'}
-                        </div>
-
-                        {/* Content */}
-                        <div className="flex-1 min-w-0">
-                          {/* Badges */}
-                          <div className="flex items-center gap-2 mb-2 flex-wrap">
-                            {getSourceBadge(notification.source)}
-                            
-                            <span className="text-xs font-medium text-gray-900 uppercase px-2 py-0.5 bg-gray-100 rounded">
-                              {notification.store}
-                            </span>
-
-                            {isCrossStore && (
-                              <span className="text-xs px-2 py-0.5 bg-purple-100 text-purple-700 rounded font-medium">
-                                📍 From {notification.store}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Message */}
-                          <p className="text-sm text-gray-900 font-medium break-words">
-                            {displayMessage}
-                          </p>
-
-                          {/* Time */}
-                          <p className="text-xs text-gray-500 mt-1.5">
-                            {getTimeAgo(getDisplayTimestamp(notification))}
-                          </p>
-                        </div>
-
-                        {/* Actions */}
-                        <div className="flex items-center gap-1 flex-shrink-0">
-                          {!notification.is_read && (
-                            <>
-                              <button
-                                onClick={() => markAsRead(notification.id)}
-                                className="p-1 text-indigo-500 hover:bg-indigo-50 rounded transition-colors"
-                                title="Mark as read"
-                              >
-                                <Check className="w-4 h-4" />
-                              </button>
-                            </>
-                          )}
-                          <button
-                            onClick={() => deleteNotification(notification.id)}
-                            className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                            title="Delete"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                {notifications.map((notification) => (
+                  <NotificationRow
+                    key={notification.id}
+                    notification={notification}
+                    currentStore={currentStore}
+                    onMarkAsRead={markAsRead}
+                    onDelete={deleteNotification}
+                    getSourceBadge={getSourceBadge}
+                    formatNotificationMessage={formatNotificationMessage}
+                  />
+                ))}
               </div>
             )}
           </div>
