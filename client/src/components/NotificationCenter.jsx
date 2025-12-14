@@ -186,12 +186,13 @@ export default function NotificationCenter({ currentStore }) {
   }, []);
 
   // ============================================================================
-  // Update current time every 30 seconds for accurate relative timestamps
+  // Update current time every 10 seconds for accurate relative timestamps
+  // This ensures notifications show different "time ago" values as time passes
   // ============================================================================
   useEffect(() => {
     const intervalId = setInterval(() => {
       setCurrentTime(new Date());
-    }, 30000);
+    }, 10000);
 
     return () => clearInterval(intervalId);
   }, []);
