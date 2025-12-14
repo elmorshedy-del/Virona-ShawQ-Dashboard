@@ -256,19 +256,60 @@ export default function NotificationCenter({ currentStore }) {
 
   // ============================================================================
   // Get relative time string ("2 min ago", "1 hour ago", etc)
+  // Per-notification timestamp with robust parsing and timezone handling
   // ============================================================================
-  const getDisplayTimestamp = (notification) => notification?.timestamp || notification?.createdAt;
+  const parseTimestamp = (timestamp) => {
+    if (!timestamp) return null;
 
-  const getTimeAgo = (timestamp, referenceTime = currentTime) => {
-    if (!timestamp) return 'Unknown time';
+    // Handle various timestamp formats
+    const dateStr = String(timestamp).trim();
+    if (!dateStr) return null;
 
-    const now = referenceTime instanceof Date ? referenceTime : new Date(referenceTime);
-    const then = new Date(timestamp);
+    try {
+      // Try parsing as ISO string, Unix timestamp, or date string
+      const parsed = new Date(dateStr);
+      
+      // Validate the parsed date
+      if (Number.isNaN(parsed.getTime())) {
+        // Try parsing as Unix timestamp (milliseconds)
+        const asNumber = parseInt(dateStr, 10);
+        if (!Number.isNaN(asNumber) && asNumber > 0) {
+          const fromMs = new Date(asNumber);
+          if (!Number.isNaN(fromMs.getTime())) {
+            return fromMs;
+          }
+        }
+        return null;
+      }
+      
+      return parsed;
+    } catch (e) {
+      console.warn(`[Notifications] Failed to parse timestamp: ${dateStr}`, e);
+      return null;
+    }
+  };
 
-    if (Number.isNaN(then.getTime())) return 'Unknown time';
+  const getDisplayTimestamp = (notification) => {
+    // Try multiple timestamp sources in order of preference
+    return notification?.metadata?.timestamp || 
+           notification?.timestamp || 
+           notification?.createdAt ||
+           notification?.created_at;
+  };
 
-    const diffMs = now - then;
-    const diffMins = Math.floor(diffMs / 60000);
+  const getTimeAgo = (timestamp) => {
+    if (!timestamp) return '—';
+
+    const parsedDate = parseTimestamp(timestamp);
+    if (!parsedDate) return '—';
+
+    // Use current time (updated every 10 seconds)
+    const now = new Date();
+    const diffMs = now - parsedDate;
+    
+    // Clamp to 0 if negative (future timestamp edge case)
+    const safeDiffMs = Math.max(0, diffMs);
+    const diffMins = Math.floor(safeDiffMs / 60000);
 
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins} min ago`;
@@ -279,7 +320,12 @@ export default function NotificationCenter({ currentStore }) {
     const diffDays = Math.floor(diffHours / 24);
     if (diffDays < 7) return `${diffDays}d ago`;
 
-    return then.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    // Fallback to locale date for older notifications
+    try {
+      return parsedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } catch (e) {
+      return '—';
+    }
   };
 
   // ============================================================================
