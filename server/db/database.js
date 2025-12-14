@@ -280,8 +280,8 @@ export function initDb() {
       pair TEXT PRIMARY KEY,
       rate REAL NOT NULL,
       as_of_date TEXT,
-      fetched_at TEXT,
-      source TEXT
+      fetched_at TEXT NOT NULL,
+      source TEXT NOT NULL
     )
   `);
 
