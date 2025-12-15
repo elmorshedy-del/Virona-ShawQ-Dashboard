@@ -99,14 +99,31 @@ function getMetrics(db, store, startDate, endDate) {
 }
 
 export function getAiBudgetMetaDataset(store, { startDate, endDate } = {}) {
+  console.log('=== METADATASET DEBUG START ===');
+  console.log('Querying for store:', store);
+  
   const db = getDb();
   const coverage = getDateCoverage(db, store);
+  console.log('Date coverage:', JSON.stringify(coverage));
 
   const effectiveStart = startDate || coverage.availableStart;
   const effectiveEnd = endDate || coverage.availableEnd;
+  console.log('Effective date range:', effectiveStart, 'to', effectiveEnd);
 
   const hierarchy = getHierarchy(db, store);
+  console.log('Hierarchy - Campaigns:', hierarchy.campaigns?.length || 0);
+  console.log('Hierarchy - Adsets:', hierarchy.adsets?.length || 0);
+  console.log('Hierarchy - Ads:', hierarchy.ads?.length || 0);
+
   const metrics = getMetrics(db, store, effectiveStart, effectiveEnd);
+  console.log('Metrics - CampaignDaily:', metrics.campaignDaily?.length || 0);
+  console.log('Metrics - AdsetDaily:', metrics.adsetDaily?.length || 0);
+  console.log('Metrics - AdDaily:', metrics.adDaily?.length || 0);
+  
+  if (metrics.campaignDaily?.length > 0) {
+    console.log('Sample metric row:', JSON.stringify(metrics.campaignDaily[0]));
+  }
+  console.log('=== METADATASET DEBUG END ===');
 
   return {
     success: true,
