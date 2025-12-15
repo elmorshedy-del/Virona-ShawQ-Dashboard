@@ -345,11 +345,11 @@ class AIBudgetBridge {
   }
 
   /**
-   * Get date N weeks ago
+   * Get date N days ago
    */
-  getDateWeeksAgo(weeks) {
+  getDateDaysAgo(days) {
     const date = new Date();
-    date.setDate(date.getDate() - (weeks * 7));
+    date.setDate(date.getDate() - days);
     return date.toISOString().split('T')[0];
   }
 
