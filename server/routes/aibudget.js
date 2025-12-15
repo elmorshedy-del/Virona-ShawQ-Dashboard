@@ -1,26 +1,39 @@
 import express from 'express';
 import budgetIntelligenceService from '../services/budgetIntelligenceService.js';
-import aiBudgetDataAdapter from '../services/aiBudgetDataAdapter.js';
+import aiBudgetBridge from '../services/aiBudgetBridge.js';
 import weeklyAggregationService from '../services/weeklyAggregationService.js';
-import { getAiBudgetMetaDataset } from '../features/aibudget/metaDataset.js';
 
 const router = express.Router();
 
 /**
  * GET /api/aibudget
  * Base AI Budget dataset (hierarchy + metrics)
+ * Now uses aiBudgetBridge for unified data flow
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
-    const data = getAiBudgetMetaDataset(store, {
-      startDate: req.query.startDate,
-      endDate: req.query.endDate
-    });
+    const store = req.query.store || 'vironax';
+    const { startDate, endDate, days, lookback, includeInactive } = req.query;
+    
+    console.log(`[aibudget] GET / - store: ${store}, lookback: ${lookback}, days: ${days}`);
 
-    res.json(data);
+    let result;
+    
+    // Support lookback periods (e.g., '14d', '30d', '90d', 'alltime')
+    if (lookback) {
+      result = await aiBudgetBridge.fetchByLookback(store, lookback, {
+        includeInactive: includeInactive === 'true'
+      });
+    } else {
+      result = await aiBudgetBridge.fetchAIBudgetData(store, startDate, endDate, {
+        days: days ? parseInt(days) : 30,
+        includeInactive: includeInactive === 'true'
+      });
+    }
+
+    res.json(result);
   } catch (error) {
-    console.error('❌ Error getting AI Budget dataset:', error);
+    console.error('❌ [aibudget] Error getting AI Budget dataset:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI Budget dataset',
