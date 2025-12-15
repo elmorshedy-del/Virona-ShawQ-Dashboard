@@ -1,14 +1,23 @@
 import fetch from 'node-fetch';
 
 /**
- * Meta AI Budget Data Collector
- * Parallel service that fetches Meta data specifically formatted for AIBudget
- * Does NOT interfere with existing metaService.js
- * 
- * Collects ALL required fields:
- * - date, geo, spend, purchase_value, purchases, impressions, clicks
- * - atc, ic, campaign_id, campaign_name, adset_id, adset_name
- * - status, effective_status, frequency, budget
+ * @deprecated This collector is kept as a BACKUP ONLY.
+ *
+ * USE metaAIBudgetBridge.js INSTEAD for all AIBudget data needs.
+ *
+ * This collector fetches directly from Meta API which is redundant
+ * since metaService.js already syncs Meta data to the database.
+ *
+ * The unified data flow is:
+ *   metaService.js (sync) → DB → metaDataset.js → metaAIBudgetBridge.js → consumers
+ *
+ * Only use this collector if:
+ * - Database is unavailable
+ * - Real-time Meta API data is absolutely required
+ * - Testing/debugging Meta API responses
+ *
+ * Meta AI Budget Data Collector (BACKUP)
+ * Parallel service that fetches Meta data directly from API
  */
 
 class MetaAIBudgetCollector {

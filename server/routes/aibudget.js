@@ -2,25 +2,41 @@ import express from 'express';
 import budgetIntelligenceService from '../services/budgetIntelligenceService.js';
 import aiBudgetDataAdapter from '../services/aiBudgetDataAdapter.js';
 import weeklyAggregationService from '../services/weeklyAggregationService.js';
-import { getAiBudgetMetaDataset } from '../features/aibudget/metaDataset.js';
+import metaAIBudgetBridge from '../services/metaAIBudgetBridge.js';
 
 const router = express.Router();
 
 /**
  * GET /api/aibudget
- * Base AI Budget dataset (hierarchy + metrics)
+ * Base AI Budget dataset with full hierarchy and standardized metrics
+ * Query params: store (default: shawq), startDate, endDate
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const store = req.query.store || 'shawq';
-    const data = getAiBudgetMetaDataset(store, {
-      startDate: req.query.startDate,
-      endDate: req.query.endDate
+    const { startDate, endDate } = req.query;
+
+    // Use unified bridge for standardized data with hierarchy
+    const data = await metaAIBudgetBridge.getStandardizedData(store, {
+      startDate,
+      endDate
     });
 
-    res.json(data);
+    res.json({
+      success: true,
+      store,
+      dateRange: data.dateRange,
+      hierarchy: data.hierarchy,
+      rows: data.rows,
+      summary: {
+        totalRows: data.rows.length,
+        campaignRows: data.rows.filter(r => r.level === 'campaign').length,
+        adsetRows: data.rows.filter(r => r.level === 'adset').length,
+        adRows: data.rows.filter(r => r.level === 'ad').length
+      }
+    });
   } catch (error) {
-    console.error('❌ Error getting AI Budget dataset:', error);
+    console.error('Error getting AI Budget dataset:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI Budget dataset',
@@ -32,34 +48,34 @@ router.get('/', (req, res) => {
 /**
  * GET /api/aibudget/recommendations
  * Get AI-powered budget recommendations
- * Query params: startDate, endDate, lookback
+ * Query params: store, startDate, endDate, lookback
  */
 router.get('/recommendations', async (req, res) => {
   try {
-    const { startDate, endDate, lookback } = req.query;
+    const { startDate, endDate, lookback, store = 'shawq' } = req.query;
 
     let data;
 
     // Use lookback if provided, otherwise use date range
     if (lookback) {
-      const weeklyData = await weeklyAggregationService.getWeeklySummary(lookback);
+      const weeklyData = await weeklyAggregationService.getWeeklySummary(store, lookback);
       data = weeklyData.rawData;
     } else if (startDate && endDate) {
-      data = await aiBudgetDataAdapter.getWeeklyAggregatedData(startDate, endDate);
+      data = await aiBudgetDataAdapter.getWeeklyAggregatedData(store, { startDate, endDate });
     } else {
       // Default to 4 weeks
-      const weeklyData = await weeklyAggregationService.getWeeklySummary('4weeks');
+      const weeklyData = await weeklyAggregationService.getWeeklySummary(store, '4weeks');
       data = weeklyData.rawData;
     }
 
     // Pass normalized data to budget intelligence service
-    // The service will use its existing math/logic
     const recommendations = await budgetIntelligenceService.getAIRecommendations(data, startDate, endDate);
 
     res.json({
       success: true,
       data: recommendations,
       meta: {
+        store,
         recordCount: data.length,
         dateRange: { startDate, endDate },
         lookback: lookback || 'custom'
@@ -67,7 +83,7 @@ router.get('/recommendations', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error getting AI budget recommendations:', error);
+    console.error('Error getting AI budget recommendations:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI budget recommendations',
@@ -79,21 +95,22 @@ router.get('/recommendations', async (req, res) => {
 /**
  * GET /api/aibudget/weekly-summary
  * Get weekly aggregated summary
- * Query params: lookback (1week, 2weeks, 4weeks, alltime)
+ * Query params: store (default: shawq), lookback (1week, 2weeks, 4weeks, alltime)
  */
 router.get('/weekly-summary', async (req, res) => {
   try {
-    const { lookback = '4weeks' } = req.query;
-    
-    const summary = await weeklyAggregationService.getWeeklySummary(lookback);
+    const { lookback = '4weeks', store = 'shawq' } = req.query;
+
+    const summary = await weeklyAggregationService.getWeeklySummary(store, lookback);
 
     res.json({
       success: true,
+      store,
       data: summary
     });
 
   } catch (error) {
-    console.error('❌ Error getting weekly summary:', error);
+    console.error('Error getting weekly summary:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get weekly summary',
@@ -113,7 +130,7 @@ router.get('/campaign/:id', async (req, res) => {
     const { weeksBack = 4 } = req.query;
 
     const data = await aiBudgetDataAdapter.getCampaignTimeSeries(
-      parseInt(id), 
+      id,
       parseInt(weeksBack)
     );
 
@@ -128,7 +145,7 @@ router.get('/campaign/:id', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error getting campaign data:', error);
+    console.error('Error getting campaign data:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get campaign data',
@@ -140,23 +157,63 @@ router.get('/campaign/:id', async (req, res) => {
 /**
  * GET /api/aibudget/data
  * Get raw AIBudget data with standard schema
- * Query params: startDate, endDate
+ * Query params: store (default: shawq), startDate, endDate
  */
 router.get('/data', async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, store = 'shawq' } = req.query;
 
-    if (!startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        error: 'startDate and endDate are required'
-      });
-    }
-
-    const data = await aiBudgetDataAdapter.getAIBudgetData(startDate, endDate);
+    const data = await aiBudgetDataAdapter.getAIBudgetData(store, { startDate, endDate });
 
     res.json({
       success: true,
+      store,
+      data: data,
+      meta: {
+        recordCount: data.length,
+        dateRange: { startDate, endDate },
+        levels: {
+          campaign: data.filter(r => r.level === 'campaign').length,
+          adset: data.filter(r => r.level === 'adset').length,
+          ad: data.filter(r => r.level === 'ad').length
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting AIBudget data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get AIBudget data',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/aibudget/data/:level
+ * Get AIBudget data filtered by level
+ * Params: level (campaign, adset, ad)
+ * Query params: store (default: shawq), startDate, endDate
+ */
+router.get('/data/:level', async (req, res) => {
+  try {
+    const { level } = req.params;
+    const { startDate, endDate, store = 'shawq' } = req.query;
+
+    if (!['campaign', 'adset', 'ad'].includes(level)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid level. Must be campaign, adset, or ad'
+      });
+    }
+
+    const data = await aiBudgetDataAdapter.getDataByLevel(store, level, { startDate, endDate });
+
+    res.json({
+      success: true,
+      store,
+      level,
       data: data,
       meta: {
         recordCount: data.length,
@@ -165,10 +222,40 @@ router.get('/data', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error getting AIBudget data:', error);
+    console.error(`Error getting ${req.params.level} data:`, error);
     res.status(500).json({
       success: false,
-      error: 'Failed to get AIBudget data',
+      error: `Failed to get ${req.params.level} data`,
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/aibudget/totals
+ * Get aggregated totals
+ * Query params: store (default: shawq), startDate, endDate
+ */
+router.get('/totals', async (req, res) => {
+  try {
+    const { startDate, endDate, store = 'shawq' } = req.query;
+
+    const totals = await aiBudgetDataAdapter.getAggregatedTotals(store, { startDate, endDate });
+
+    res.json({
+      success: true,
+      store,
+      data: totals,
+      meta: {
+        dateRange: { startDate, endDate }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting totals:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get totals',
       message: error.message
     });
   }
