@@ -232,105 +232,93 @@ class AIBudgetBridge {
   }
 
   /**
-   * Standardize Meta field names to AI Budget schema
-   * 
-   * Converts:
+   * Standardize metrics for AI Budget consumption
+   * Converts Meta Ads field names to AI Budget schema:
    * - conversions → purchases
    * - conversion_value → purchase_value
    * - add_to_cart → atc
    * - checkouts_initiated → ic
-   * - country → geo
    */
-  standardizeMetaData(rawData, store) {
-    const rows = [];
+  standardizeMetrics(obj, type) {
+    const spend = this.toNumber(obj.spend);
+    const conversions = this.toNumber(obj.conversions);
+    const revenue = this.toNumber(obj.revenue);
+    const impressions = this.toNumber(obj.impressions);
+    const reach = this.toNumber(obj.reach);
+    const clicks = this.toNumber(obj.clicks);
+    const inline_link_clicks = this.toNumber(obj.inline_link_clicks);
+    const lpv = this.toNumber(obj.lpv);
+    const atc = this.toNumber(obj.atc);
+    const checkout = this.toNumber(obj.checkout);
 
-    // Process campaign-level metrics
-    if (rawData.metrics?.campaignDaily) {
-      rawData.metrics.campaignDaily.forEach(metric => {
-        rows.push(this.standardizeRow(metric, 'campaign', store, rawData.hierarchy));
-      });
-    }
+    // Calculate derived metrics (use 0 if denominator is 0, for AI Budget calculations)
+    const cac = conversions > 0 ? spend / conversions : 0;
+    const roas = spend > 0 ? revenue / spend : 0;
+    const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+    const cpc = clicks > 0 ? spend / clicks : 0;
+    const cvr = inline_link_clicks > 0 ? (conversions / inline_link_clicks) * 100 : 0;
+    const cpm = impressions > 0 ? (spend / impressions) * 1000 : 0;
+    const lpv_rate = inline_link_clicks > 0 ? (lpv / inline_link_clicks) * 100 : 0;
+    const atc_rate = lpv > 0 ? (atc / lpv) * 100 : 0;
+    const checkout_rate = atc > 0 ? (checkout / atc) * 100 : 0;
+    const purchase_rate = checkout > 0 ? (conversions / checkout) * 100 : 0;
+    const aov = conversions > 0 ? revenue / conversions : 0;
 
-    // Process adset-level metrics
-    if (rawData.metrics?.adsetDaily) {
-      rawData.metrics.adsetDaily.forEach(metric => {
-        rows.push(this.standardizeRow(metric, 'adset', store, rawData.hierarchy));
-      });
-    }
-
-    // Process ad-level metrics (if needed)
-    if (rawData.metrics?.adDaily) {
-      rawData.metrics.adDaily.forEach(metric => {
-        rows.push(this.standardizeRow(metric, 'ad', store, rawData.hierarchy));
-      });
-    }
-
-    return rows;
-  }
-
-  /**
-   * Standardize a single metric row
-   */
-  standardizeRow(row, level, store, hierarchy) {
-    // Find hierarchy info
-    const campaignInfo = this.findCampaign(row.campaign_id, hierarchy);
-    const adsetInfo = this.findAdset(row.adset_id, hierarchy);
-
-    return {
-      // Date & Geo
-      date: row.date,
-      geo: row.country || row.geo || 'unknown',
+    const standard = {
+      // IDs and Names
+      id: obj[`${type}_id`],
+      name: obj[`${type}_name`],
+      status: obj.status,
+      first_date: obj.first_date,
+      last_date: obj.last_date,
       
-      // Core Metrics (STANDARDIZED FIELD NAMES)
-      spend: this.toNumber(row.spend),
-      purchases: this.toNumber(row.conversions), // ← KEY MAPPING
-      purchase_value: this.toNumber(row.conversion_value), // ← KEY MAPPING
+      // RAW METRICS (Meta field names)
+      spend,
+      conversions,
+      revenue,
+      impressions,
+      reach,
+      clicks,
+      inline_link_clicks,
+      lpv,
+      atc,
+      checkout,
       
-      // Funnel Metrics (STANDARDIZED FIELD NAMES)
-      impressions: this.toNumber(row.impressions),
-      clicks: this.toNumber(row.clicks),
-      atc: this.toNumber(row.add_to_cart), // ← KEY MAPPING
-      ic: this.toNumber(row.checkouts_initiated), // ← KEY MAPPING
+      // STANDARDIZED METRICS (AI Budget field names)
+      purchases: conversions,           // ← KEY MAPPING
+      purchase_value: revenue,          // ← KEY MAPPING
+      ic: checkout,                     // ← KEY MAPPING (initiate_checkout)
       
-      // Campaign Hierarchy
-      campaign_id: row.campaign_id,
-      campaign_name: campaignInfo?.campaign_name || 'Unknown Campaign',
-      adset_id: row.adset_id || null,
-      adset_name: adsetInfo?.adset_name || null,
-      ad_id: row.ad_id || null,
-      
-      // Status
-      status: row.status || campaignInfo?.status || 'UNKNOWN',
-      effective_status: row.effective_status || row.status,
-      
-      // Additional Metrics
-      frequency: this.toNumber(row.frequency),
-      reach: this.toNumber(row.reach),
-      budget: this.toNumber(row.budget_remaining || campaignInfo?.budget),
-      
-      // Platform
-      brand: 'meta',
-      store: store,
-      
-      // Level identifier
-      level: level
+      // DERIVED METRICS
+      cac,
+      roas,
+      ctr,
+      cpc,
+      cvr,
+      cpm,
+      aov,
+      lpv_rate,
+      atc_rate,
+      checkout_rate,
+      purchase_rate
     };
-  }
 
-  /**
-   * Find campaign info from hierarchy
-   */
-  findCampaign(campaignId, hierarchy) {
-    if (!hierarchy?.campaigns) return null;
-    return hierarchy.campaigns.find(c => c.campaign_id === campaignId);
-  }
+    // Add type-specific fields
+    if (type === 'campaign') {
+      standard.campaign_id = obj.campaign_id;
+      standard.campaign_name = obj.campaign_name;
+    } else if (type === 'adset') {
+      standard.campaign_id = obj.campaign_id;
+      standard.adset_id = obj.adset_id;
+      standard.adset_name = obj.adset_name;
+    } else if (type === 'ad') {
+      standard.campaign_id = obj.campaign_id;
+      standard.adset_id = obj.adset_id;
+      standard.ad_id = obj.ad_id;
+      standard.ad_name = obj.ad_name;
+    }
 
-  /**
-   * Find adset info from hierarchy
-   */
-  findAdset(adsetId, hierarchy) {
-    if (!adsetId || !hierarchy?.adsets) return null;
-    return hierarchy.adsets.find(a => a.adset_id === adsetId);
+    return standard;
   }
 
   /**
