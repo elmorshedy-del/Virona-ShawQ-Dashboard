@@ -9,41 +9,60 @@ const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 const BACKFILL_CHUNK_DAYS = 30; // Fetch in 30-day chunks
 const MAX_HISTORICAL_DAYS = 730; // Attempt up to 2 years of history (Meta typically allows 37 months)
 
-const FRANKFURTER_API_URL = 'https://api.frankfurter.app';
-const FRANKFURTER_LATEST_PATH = '/latest?from=TRY&to=USD';
+// Fallback rate: 1 USD = 42.5 TRY (so TRY to USD = 1/42.5)
+const FALLBACK_TRY_TO_USD = 1 / 42.5;
 
-// Helper: Get currency conversion rate
-// TRY to USD: As of late 2024, 1 USD ≈ 32-34 TRY, so 1 TRY ≈ 0.030 USD
-// Update this rate periodically or consider using a live exchange rate API
-async function getCurrencyRate(store) {
-  if (store !== 'shawq') return 1.0; // Keep SAR as SAR
+// Cache for exchange rate (refresh every hour)
+let cachedTryToUsd = null;
+let cacheTimestamp = 0;
+const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
 
-  const db = getDb();
-  const today = formatDate(new Date());
+// Helper: Fetch actual TRY→USD exchange rate
+async function fetchTryToUsdRate() {
+  // Return cached rate if still valid
+  if (cachedTryToUsd && (Date.now() - cacheTimestamp) < CACHE_DURATION_MS) {
+    return cachedTryToUsd;
+  }
 
-  const cached = db.prepare(
-    `SELECT rate FROM exchange_rates WHERE from_currency = ? AND to_currency = ? AND date = ?`
-  ).get('TRY', 'USD', today);
-
-  if (cached) {
-    return cached.rate;
+  const apiKey = process.env.EXCHANGE_RATE_API_KEY;
+  if (!apiKey) {
+    console.warn('[Meta] EXCHANGE_RATE_API_KEY not found in environment. Using fallback exchange rate.');
+    return FALLBACK_TRY_TO_USD;
   }
 
   try {
-    const response = await fetch(`${FRANKFURTER_API_URL}${FRANKFURTER_LATEST_PATH}`);
-    const data = await response.json();
-    const rate = data?.rates?.USD ?? 0.03;
-
-    db.prepare(
-      `INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run('TRY', 'USD', rate, today, 'frankfurter', new Date().toISOString());
-
-    return rate;
+    const url = `https://v6.exchangerate-api.com/v6/${apiKey}/latest/TRY`;
+    const response = await fetch(url);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.result === 'success' && data.rates?.USD) {
+        cachedTryToUsd = data.rates.USD;
+        cacheTimestamp = Date.now();
+        console.log(`[Meta] Fetched TRY→USD rate: ${cachedTryToUsd}`);
+        return cachedTryToUsd;
+      } else {
+        console.warn(`[Meta] Failed to fetch exchange rate from API: ${data['error-type'] || 'Unknown error'}`);
+      }
+    } else {
+      console.warn(`[Meta] Exchange rate API request failed with status: ${response.status}`);
+    }
   } catch (err) {
-    console.warn(`[Meta] Frankfurter fetch failed: ${err.message}`);
-    return 0.03;
+    console.warn(`[Meta] Failed to fetch exchange rate: ${err.message}`);
   }
+
+  // Fallback to hardcoded rate
+  console.log(`[Meta] Using fallback TRY→USD rate: ${FALLBACK_TRY_TO_USD}`);
+  return FALLBACK_TRY_TO_USD;
+}
+
+// Helper: Get currency conversion rate
+async function getCurrencyRate(store) {
+  if (store === 'shawq') {
+    // Shawq Meta reports in TRY, convert to USD
+    return await fetchTryToUsdRate();
+  }
+  if (store === 'vironax') return 1.0; // Keep SAR as SAR
+  return 1.0;
 }
 
 // Helper: Extract metric from Meta's "actions" list

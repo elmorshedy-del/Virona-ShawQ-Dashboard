@@ -244,6 +244,18 @@ export default function NotificationCenter({ currentStore }) {
   }, [currentStore]); // Re-setup when store changes
 
   // ============================================================================
+  // Dynamic timestamp updates - refresh every 30 seconds to update "X min ago"
+  // ============================================================================
+  const [, setTimeTick] = useState(0);
+  useEffect(() => {
+    const tickInterval = setInterval(() => {
+      setTimeTick(t => t + 1);
+    }, 30000); // Update every 30 seconds
+
+    return () => clearInterval(tickInterval);
+  }, []);
+
+  // ============================================================================
   // Close dropdown when clicking outside
   // ============================================================================
   useEffect(() => {

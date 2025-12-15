@@ -133,7 +133,7 @@ export function createOrderNotifications(store, source, orders) {
   
   // Create notifications for each country
   for (const [country, data] of Object.entries(ordersByCountry)) {
-    const currency = store === 'shawq' ? 'TRY' : 'SAR';
+    const currency = store === 'shawq' ? 'USD' : 'SAR';
     const orderText = data.count === 1 ? 'order' : 'orders';
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
     

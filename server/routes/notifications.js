@@ -13,7 +13,7 @@ const router = express.Router();
 router.get('/', (req, res) => {
   try {
     const { store, limit } = req.query;
-    const notifications = getNotifications(store || null, parseInt(limit) || 50);
+    const notifications = getNotifications(store || null, parseInt(limit) || 10);
     const unreadCount = getUnreadCount(store || null);
     
     res.json({

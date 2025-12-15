@@ -225,7 +225,7 @@ export function createOrderNotifications(store, source, orders) {
 }
 
 // Get recent notifications
-export function getNotifications(store = null, limit = 50) {
+export function getNotifications(store = null, limit = DEFAULT_NOTIFICATION_LIMIT) {
   const db = getDb();
   
   let query = `
