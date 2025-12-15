@@ -1,48 +1,135 @@
 import { getDb } from '../db/database.js';
-import metaAIBudgetCollector from './metaAIBudgetCollector.js';
+import { getAiBudgetMetaDataset } from '../features/aibudget/metaDataset.js';
 
 /**
  * AIBudget Data Adapter
- * Fetches data from BOTH database AND Meta API (live)
- * Normalizes everything into standard AIBudget schema
+ * Fetches data from metaDataset (meta_daily_metrics)
+ * Standardizes field names and normalizes into AIBudget schema
  */
 
 class AIBudgetDataAdapter {
   
   /**
-   * Get all AIBudget data - combines DB + live Meta data
-   * @param {string} startDate - YYYY-MM-DD
-   * @param {string} endDate - YYYY-MM-DD
-   * @param {boolean} includeLiveMeta - Fetch fresh Meta data (default: true)
+   * Get all AIBudget data - fetches from metaDataset and standardizes
+   * @param {string} store - 'vironax' or 'shawq'
+   * @param {object} options - { startDate, endDate, days }
    * @returns {Array} Normalized data array
    */
-  async getAIBudgetData(startDate, endDate, includeLiveMeta = true) {
+  async getAIBudgetData(store, options = {}) {
     try {
-      // Fetch from database (existing data)
-      const dbData = await this.getDataFromDatabase(startDate, endDate);
+      // Fetch from metaDataset (meta_daily_metrics)
+      const rawData = await getAiBudgetMetaDataset(store, options);
       
-      // Fetch fresh Meta data if requested
-      let metaData = [];
-      if (includeLiveMeta) {
-        try {
-          metaData = await metaAIBudgetCollector.fetchAIBudgetData(startDate, endDate);
-          console.log(`✅ Fetched ${metaData.length} records from Meta API`);
-        } catch (error) {
-          console.warn('⚠️  Could not fetch live Meta data, using DB only:', error.message);
-        }
+      if (!rawData || !rawData.metrics) {
+        console.warn('⚠️  No data returned from metaDataset for store:', store);
+        return [];
       }
 
-      // Merge data (Meta takes priority for latest data)
-      const mergedData = this.mergeData(dbData, metaData);
+      // Standardize field names from Meta to AIBudget schema
+      const standardizedData = this.standardizeMetaData(rawData);
       
-      console.log(`📊 Total AIBudget records: ${mergedData.length}`);
+      console.log(`📊 Total AIBudget records: ${standardizedData.length}`);
       
-      return this.normalizeRows(mergedData);
+      return this.normalizeRows(standardizedData);
 
     } catch (error) {
       console.error('❌ Error fetching AIBudget data:', error);
       throw error;
     }
+  }
+
+  /**
+   * Standardize Meta field names to AIBudget schema
+   * Converts: conversions → purchases, conversion_value → purchase_value, etc.
+   */
+  standardizeMetaData(rawData) {
+    const standardized = [];
+    const { hierarchy = {}, metrics = {} } = rawData;
+    
+    // Process campaign-level metrics
+    if (metrics.campaignDaily && Array.isArray(metrics.campaignDaily)) {
+      for (const row of metrics.campaignDaily) {
+        standardized.push({
+          campaign_id: row.campaign_id,
+          campaign_name: row.campaign_name || 'Unknown',
+          adset_id: null,
+          adset_name: null,
+          date: row.date || row.date_start,
+          geo: row.country || 'Unknown',
+          spend: parseFloat(row.spend) || 0,
+          purchases: parseInt(row.conversions) || 0,
+          purchase_value: parseFloat(row.conversion_value) || 0,
+          atc: parseInt(row.add_to_cart) || 0,
+          ic: parseInt(row.checkouts_initiated) || 0,
+          impressions: parseInt(row.impressions) || 0,
+          clicks: parseInt(row.clicks) || 0,
+          frequency: parseFloat(row.frequency) || 0,
+          reach: parseInt(row.reach) || 0,
+          ctr: parseFloat(row.ctr) || 0,
+          cpc: parseFloat(row.cpc) || 0,
+          cpm: parseFloat(row.cpm) || 0,
+          level: 'campaign'
+        });
+      }
+    }
+    
+    // Process adset-level metrics
+    if (metrics.adsetDaily && Array.isArray(metrics.adsetDaily)) {
+      for (const row of metrics.adsetDaily) {
+        standardized.push({
+          campaign_id: row.campaign_id,
+          campaign_name: row.campaign_name || 'Unknown',
+          adset_id: row.adset_id,
+          adset_name: row.adset_name || 'Unknown',
+          date: row.date || row.date_start,
+          geo: row.country || 'Unknown',
+          spend: parseFloat(row.spend) || 0,
+          purchases: parseInt(row.conversions) || 0,
+          purchase_value: parseFloat(row.conversion_value) || 0,
+          atc: parseInt(row.add_to_cart) || 0,
+          ic: parseInt(row.checkouts_initiated) || 0,
+          impressions: parseInt(row.impressions) || 0,
+          clicks: parseInt(row.clicks) || 0,
+          frequency: parseFloat(row.frequency) || 0,
+          reach: parseInt(row.reach) || 0,
+          ctr: parseFloat(row.ctr) || 0,
+          cpc: parseFloat(row.cpc) || 0,
+          cpm: parseFloat(row.cpm) || 0,
+          level: 'adset'
+        });
+      }
+    }
+    
+    // Process ad-level metrics
+    if (metrics.adDaily && Array.isArray(metrics.adDaily)) {
+      for (const row of metrics.adDaily) {
+        standardized.push({
+          campaign_id: row.campaign_id,
+          campaign_name: row.campaign_name || 'Unknown',
+          adset_id: row.adset_id,
+          adset_name: row.adset_name || 'Unknown',
+          ad_id: row.ad_id,
+          ad_name: row.ad_name || 'Unknown',
+          date: row.date || row.date_start,
+          geo: row.country || 'Unknown',
+          spend: parseFloat(row.spend) || 0,
+          purchases: parseInt(row.conversions) || 0,
+          purchase_value: parseFloat(row.conversion_value) || 0,
+          atc: parseInt(row.add_to_cart) || 0,
+          ic: parseInt(row.checkouts_initiated) || 0,
+          impressions: parseInt(row.impressions) || 0,
+          clicks: parseInt(row.clicks) || 0,
+          frequency: parseFloat(row.frequency) || 0,
+          reach: parseInt(row.reach) || 0,
+          ctr: parseFloat(row.ctr) || 0,
+          cpc: parseFloat(row.cpc) || 0,
+          cpm: parseFloat(row.cpm) || 0,
+          level: 'ad'
+        });
+      }
+    }
+    
+    return standardized;
   }
 
   /**
