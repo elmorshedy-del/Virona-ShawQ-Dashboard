@@ -202,10 +202,10 @@ class AIBudgetDataAdapter {
   }
 
   /**
-   * Get weekly aggregated data - includes live Meta data
+   * Get weekly aggregated data
    */
-  async getWeeklyAggregatedData(startDate, endDate, includeLiveMeta = true) {
-    const rawData = await this.getAIBudgetData(startDate, endDate, includeLiveMeta);
+  async getWeeklyAggregatedData(store, options = {}) {
+    const rawData = await this.getAIBudgetData(store, options);
     
     // Group by week
     const weeklyMap = new Map();
