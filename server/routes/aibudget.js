@@ -45,42 +45,46 @@ router.get('/', async (req, res) => {
 /**
  * GET /api/aibudget/recommendations
  * Get AI-powered budget recommendations
- * Query params: startDate, endDate, lookback
+ * Query params: store, startDate, endDate, lookback
+ * Now uses aiBudgetBridge for unified data flow
  */
 router.get('/recommendations', async (req, res) => {
   try {
-    const { startDate, endDate, lookback } = req.query;
+    const { store = 'vironax', startDate, endDate, lookback } = req.query;
 
-    let data;
+    console.log(`[aibudget] GET /recommendations - store: ${store}, lookback: ${lookback}`);
+
+    let result;
 
     // Use lookback if provided, otherwise use date range
     if (lookback) {
-      const weeklyData = await weeklyAggregationService.getWeeklySummary(lookback);
-      data = weeklyData.rawData;
+      result = await aiBudgetBridge.fetchByLookback(store, lookback);
     } else if (startDate && endDate) {
-      data = await aiBudgetDataAdapter.getWeeklyAggregatedData(startDate, endDate);
+      result = await aiBudgetBridge.fetchAIBudgetData(store, startDate, endDate);
     } else {
-      // Default to 4 weeks
-      const weeklyData = await weeklyAggregationService.getWeeklySummary('4weeks');
-      data = weeklyData.rawData;
+      // Default to 30 days
+      result = await aiBudgetBridge.fetchByLookback(store, '30d');
     }
 
-    // Pass normalized data to budget intelligence service
-    // The service will use its existing math/logic
-    const recommendations = await budgetIntelligenceService.getAIRecommendations(data, startDate, endDate);
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to fetch data');
+    }
+
+    // Pass data to budget intelligence service for recommendations
+    const recommendations = await budgetIntelligenceService.getAIRecommendations(result.data, startDate, endDate);
 
     res.json({
       success: true,
       data: recommendations,
+      totals: result.totals,
       meta: {
-        recordCount: data.length,
-        dateRange: { startDate, endDate },
+        ...result.meta,
         lookback: lookback || 'custom'
       }
     });
 
   } catch (error) {
-    console.error('❌ Error getting AI budget recommendations:', error);
+    console.error('❌ [aibudget] Error getting AI budget recommendations:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI budget recommendations',
