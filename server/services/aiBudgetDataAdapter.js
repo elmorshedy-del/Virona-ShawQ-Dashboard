@@ -18,7 +18,24 @@ class AIBudgetDataAdapter {
   async getAIBudgetData(store, options = {}) {
     try {
       // Fetch from metaDataset (meta_daily_metrics)
+      console.log('=== AI BUDGET DEBUG START ===');
+      console.log('Store:', store);
+      console.log('Options:', JSON.stringify(options));
+      
       const rawData = await getAiBudgetMetaDataset(store, options);
+      
+      console.log('Raw data received:', rawData ? 'YES' : 'NO/NULL');
+      console.log('Has hierarchy:', rawData?.hierarchy ? 'YES' : 'NO');
+      console.log('Has metrics:', rawData?.metrics ? 'YES' : 'NO');
+      console.log('Campaigns in hierarchy:', rawData?.hierarchy?.campaigns?.length || 0);
+      console.log('CampaignDaily rows:', rawData?.metrics?.campaignDaily?.length || 0);
+      console.log('AdsetDaily rows:', rawData?.metrics?.adsetDaily?.length || 0);
+      console.log('AdDaily rows:', rawData?.metrics?.adDaily?.length || 0);
+      
+      if (rawData?.metrics?.campaignDaily?.length > 0) {
+        console.log('Sample row:', JSON.stringify(rawData.metrics.campaignDaily[0]));
+      }
+      console.log('=== AI BUDGET DEBUG END ===');
       
       if (!rawData || !rawData.metrics) {
         console.warn('⚠️  No data returned from metaDataset for store:', store);
