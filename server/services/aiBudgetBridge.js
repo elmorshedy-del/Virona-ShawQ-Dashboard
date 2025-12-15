@@ -204,31 +204,45 @@ class AIBudgetBridge {
   }
 
   /**
-   * Fetch by lookback period (e.g., 'alltime', '4weeks')
+   * Fetch by lookback period (e.g., 'alltime', '4weeks', '14d', '30d', '90d')
    */
-  async fetchByLookback(store, lookback = 'alltime') {
+  async fetchByLookback(store, lookback = 'alltime', options = {}) {
     const endDate = this.getTodayDate();
     let startDate;
+    let days;
 
     switch (lookback) {
       case '1week':
-        startDate = this.getDateWeeksAgo(1);
+      case '7d':
+        days = 7;
+        startDate = this.getDateDaysAgo(7);
         break;
       case '2weeks':
-        startDate = this.getDateWeeksAgo(2);
+      case '14d':
+        days = 14;
+        startDate = this.getDateDaysAgo(14);
         break;
       case '4weeks':
-        startDate = this.getDateWeeksAgo(4);
+      case '30d':
+        days = 30;
+        startDate = this.getDateDaysAgo(30);
+        break;
+      case '90d':
+        days = 90;
+        startDate = this.getDateDaysAgo(90);
         break;
       case 'alltime':
-        // Get data from 1 year ago
-        startDate = this.getDateWeeksAgo(52);
+      case 'full':
+        // Get data from 1 year ago (or inception if less)
+        days = 365;
+        startDate = this.getDateDaysAgo(365);
         break;
       default:
-        startDate = this.getDateWeeksAgo(4);
+        days = 30;
+        startDate = this.getDateDaysAgo(30);
     }
 
-    return this.fetchAIBudgetData(store, startDate, endDate);
+    return this.fetchAIBudgetData(store, startDate, endDate, { ...options, days });
   }
 
   /**
