@@ -10,6 +10,9 @@ const router = express.Router();
  * GET /api/aibudget
  * Base AI Budget dataset with full hierarchy and standardized metrics
  * Query params: store (default: shawq), startDate, endDate
+ *
+ * Returns metrics in format expected by frontend:
+ * { metrics: { campaignDaily: [...], adsetDaily: [...], adDaily: [...] } }
  */
 router.get('/', async (req, res) => {
   try {
@@ -22,17 +25,27 @@ router.get('/', async (req, res) => {
       endDate
     });
 
+    // Split rows by level for frontend compatibility
+    const campaignDaily = data.rows.filter(r => r.level === 'campaign');
+    const adsetDaily = data.rows.filter(r => r.level === 'adset');
+    const adDaily = data.rows.filter(r => r.level === 'ad');
+
     res.json({
       success: true,
       store,
       dateRange: data.dateRange,
       hierarchy: data.hierarchy,
-      rows: data.rows,
+      // Frontend expects metrics.campaignDaily, metrics.adsetDaily, metrics.adDaily
+      metrics: {
+        campaignDaily,
+        adsetDaily,
+        adDaily
+      },
       summary: {
         totalRows: data.rows.length,
-        campaignRows: data.rows.filter(r => r.level === 'campaign').length,
-        adsetRows: data.rows.filter(r => r.level === 'adset').length,
-        adRows: data.rows.filter(r => r.level === 'ad').length
+        campaignRows: campaignDaily.length,
+        adsetRows: adsetDaily.length,
+        adRows: adDaily.length
       }
     });
   } catch (error) {
