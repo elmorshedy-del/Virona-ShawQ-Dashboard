@@ -3,9 +3,20 @@ import { getDb } from '../db/database.js';
 import { createOrderNotifications } from './notificationService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
+function getShopifyCredentials() {
+  return {
+    shopifyStore: process.env.SHAWQ_SHOPIFY_STORE,
+    accessToken: process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN
+  };
+}
+
+export function isShopifyConfigured() {
+  const { shopifyStore, accessToken } = getShopifyCredentials();
+  return Boolean(shopifyStore && accessToken);
+}
+
 export async function fetchShopifyOrders(dateStart, dateEnd) {
-  const shopifyStore = process.env.SHAWQ_SHOPIFY_STORE;
-  const accessToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
+  const { shopifyStore, accessToken } = getShopifyCredentials();
 
   if (!shopifyStore || !accessToken) {
     console.log('Shopify credentials not configured for Shawq - returning empty array (no demo data)');
@@ -97,6 +108,19 @@ export async function syncShopifyOrders() {
     new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
   );
 
+  if (!isShopifyConfigured()) {
+    db.prepare(`
+      INSERT INTO sync_log (store, source, status, error_message)
+      VALUES ('shawq', 'shopify', 'error', 'Missing Shopify credentials for Shawq')
+    `).run();
+
+    return {
+      success: false,
+      records: 0,
+      message: 'Missing Shopify credentials for Shawq'
+    };
+  }
+
   try {
     const orders = await fetchShopifyOrders(startDate, endDate);
 
@@ -150,6 +174,44 @@ export async function syncShopifyOrders() {
 
     throw error;
   }
+}
+
+export function getShopifyConnectionStatus() {
+  const db = getDb();
+  const { shopifyStore, accessToken } = getShopifyCredentials();
+  const configured = Boolean(shopifyStore && accessToken);
+
+  const lastSync = db
+    .prepare(
+      `SELECT status, records_synced, error_message, created_at
+       FROM sync_log
+       WHERE store = 'shawq' AND source = 'shopify'
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get();
+
+  const latestOrder = db
+    .prepare(
+      `SELECT order_id, order_created_at, date, created_at
+       FROM shopify_orders
+       WHERE store = 'shawq'
+       ORDER BY (order_created_at IS NULL), order_created_at DESC, created_at DESC
+       LIMIT 1`
+    )
+    .get();
+
+  const totalOrders = db
+    .prepare(`SELECT COUNT(*) as count FROM shopify_orders WHERE store = 'shawq'`)
+    .get()?.count || 0;
+
+  return {
+    configured,
+    storeDomain: shopifyStore || null,
+    lastSync: lastSync || null,
+    latestOrder: latestOrder || null,
+    totalOrders
+  };
 }
 
 function getCountryName(code) {
