@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import {
   RefreshCw, TrendingUp, TrendingDown, Plus, Trash2,
-  ChevronDown, ChevronUp, ArrowUpDown, Calendar,
+  Store, ChevronDown, ChevronUp, ArrowUpDown, Calendar,
   Bell, X, AlertCircle, CheckCircle2
 } from 'lucide-react';
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
@@ -56,27 +56,10 @@ const MASTER_COUNTRIES_WITH_FLAGS = MASTER_COUNTRIES.map(country => ({
   flag: countryCodeToFlag(country.code)
 }));
 
-const VironaMark = ({ className }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 96 96"
-    role="img"
-    aria-hidden="true"
-    className={className}
-  >
-    <path
-      fill="currentColor"
-      fillRule="evenodd"
-      clipRule="evenodd"
-      d="M48 4 92 48 48 92 4 48 48 4Zm0 18 26 26-26 26L22 48 48 22Zm0 14 12 12-12 12-12-12 12-12Z"
-    />
-  </svg>
-);
-
 const STORES = {
   vironax: {
     id: 'vironax',
-    name: 'Virona',
+    name: 'VironaX',
     tagline: "Men's Jewelry",
     currency: 'SAR',
     currencySymbol: 'SAR',
@@ -170,24 +153,6 @@ export default function App() {
   }, [metaAdManagerData]);
 
   const store = STORES[currentStore];
-
-  const renderStoreAvatar = (storeId) => {
-    if (storeId === 'vironax') {
-      return (
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50">
-          <VironaMark className="h-5 w-5 text-indigo-700" />
-        </span>
-      );
-    }
-
-    const initial = storeId?.[0] ? storeId[0].toUpperCase() : '?';
-    return (
-      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-600 font-semibold">
-        {initial}
-      </span>
-    );
-  };
-
   const [orderForm, setOrderForm] = useState({
     date: getLocalDateString(),
     country: 'SA',
@@ -684,13 +649,10 @@ export default function App() {
               <div className="relative">
                 <button
                   onClick={() => setStoreDropdownOpen(!storeDropdownOpen)}
-                  className="flex items-center gap-3 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                 >
-                  {renderStoreAvatar(currentStore)}
-                  <div className="text-left">
-                    <div className="font-bold text-gray-900 leading-tight">{store.name}</div>
-                    <div className="text-xs text-gray-500 leading-tight">{store.tagline}</div>
-                  </div>
+                  <Store className="w-4 h-4 text-gray-600" />
+                  <span className="font-bold text-gray-900">{store.name}</span>
                   <ChevronDown
                     className={`w-4 h-4 text-gray-500 transition-transform ${
                       storeDropdownOpen ? 'rotate-180' : ''
@@ -712,14 +674,9 @@ export default function App() {
                           currentStore === s.id ? 'bg-indigo-50' : ''
                         }`}
                       >
-                        <div className="flex items-center gap-3">
-                          {renderStoreAvatar(s.id)}
-                          <div>
-                            <div className="font-semibold text-gray-900">{s.name}</div>
-                            <div className="text-sm text-gray-500">
-                              {s.tagline} • {s.ecommerce}
-                            </div>
-                          </div>
+                        <div className="font-semibold text-gray-900">{s.name}</div>
+                        <div className="text-sm text-gray-500">
+                          {s.tagline} • {s.ecommerce}
                         </div>
                       </button>
                     ))}
@@ -2321,7 +2278,7 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
               className="mt-2 w-full px-4 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-700"
               disabled
             >
-              <option value="vironax">Virona</option>
+              <option value="vironax">VironaX</option>
               <option value="shawq">Shawq</option>
             </select>
             <p className="text-[11px] text-gray-500 mt-1">Use the store switcher above to change brand.</p>
