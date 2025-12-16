@@ -106,50 +106,16 @@ export default function NotificationCenter({ currentStore }) {
   };
 
   // ============================================================================
-  // Play notification sound using Web Audio API (cha-ching cash register sound)
+  // Play notification sound from user-provided MP3
   // ============================================================================
   const playSound = () => {
     if (!soundEnabled) return;
 
-    try {
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-
-      // Create a pleasant two-tone "cha-ching" coin sound
-      const playTone = (frequency, startTime, duration, volume = 0.3) => {
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(frequency, startTime);
-
-        // Bell-like envelope: quick attack, gradual decay
-        gainNode.gain.setValueAtTime(0, startTime);
-        gainNode.gain.linearRampToValueAtTime(volume, startTime + 0.01);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
-
-        oscillator.start(startTime);
-        oscillator.stop(startTime + duration);
-      };
-
-      const now = audioContext.currentTime;
-
-      // First chime (lower note) - the "cha"
-      playTone(880, now, 0.15, 0.25);        // A5
-      playTone(1760, now, 0.15, 0.15);       // A6 overtone
-
-      // Second chime (higher note) - the "ching"
-      playTone(1318.5, now + 0.1, 0.25, 0.3);  // E6
-      playTone(2637, now + 0.1, 0.25, 0.15);   // E7 overtone
-
-      // Add a subtle metallic shimmer
-      playTone(1975.5, now + 0.12, 0.2, 0.1);  // B6
-
-    } catch (err) {
-      console.log('Web Audio API sound failed:', err);
-    }
+    const audio = new Audio('/notification.mp3'); // place your MP3 in client/public/notification.mp3
+    audio.volume = 0.7;
+    audio.play().catch((err) => {
+      console.log('Notification sound failed:', err);
+    });
   };
 
   // ============================================================================
