@@ -139,6 +139,8 @@ export default function App() {
   const [includeInactive, setIncludeInactive] = useState(false);
 
   const diagnosticsCampaignOptions = useMemo(() => {
+    if (!Array.isArray(metaAdManagerData)) return [];
+
     const unique = new Map();
 
     metaAdManagerData.forEach((campaign) => {
