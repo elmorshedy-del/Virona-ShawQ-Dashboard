@@ -255,8 +255,8 @@ export default function UnifiedAnalytics({
     return value;
   };
 
-  // Calculate CVR (Purchases / Clicks * 100)
-  // CVR = Conversion Rate from clicks to purchases
+  // Calculate CVR (Conversion Rate from Clicks to Purchases)
+  // Formula: (Purchases / Clicks) * 100
   const calculateCVR = (purchases, clicks) => {
     if (!clicks || clicks === 0) return null;
     return (purchases / clicks) * 100;
