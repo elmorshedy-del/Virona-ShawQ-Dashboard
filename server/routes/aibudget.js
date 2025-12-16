@@ -2,42 +2,71 @@ import express from 'express';
 import budgetIntelligenceService from '../services/budgetIntelligenceService.js';
 import aiBudgetBridge from '../services/aiBudgetBridge.js';
 import weeklyAggregationService from '../services/weeklyAggregationService.js';
+import { getAiBudgetMetaDataset } from '../features/aibudget/metaDataset.js';
 
 const router = express.Router();
 
 /**
  * GET /api/aibudget
  * Base AI Budget dataset (hierarchy + metrics)
- * Now uses aiBudgetBridge for unified data flow
+ * Returns granular daily data for the frontend Data Sufficiency Advisor and Sanity Check
+ * Format: { metrics: { campaignDaily, adsetDaily, adDaily }, hierarchy: { campaigns, adsets, ads } }
  */
 router.get('/', async (req, res) => {
   try {
     const store = req.query.store || 'vironax';
     const { startDate, endDate, days, lookback, includeInactive } = req.query;
-    
+
     console.log(`[aibudget] GET / - store: ${store}, lookback: ${lookback}, days: ${days}`);
 
-    let result;
-    
-    // Support lookback periods (e.g., '14d', '30d', '90d', 'alltime')
+    // Calculate date range based on lookback or provided dates
+    let effectiveStartDate = startDate;
+    let effectiveEndDate = endDate;
+
     if (lookback) {
-      result = await aiBudgetBridge.fetchByLookback(store, lookback, {
-        includeInactive: includeInactive === 'true'
-      });
-    } else {
-      result = await aiBudgetBridge.fetchAIBudgetData(store, startDate, endDate, {
-        days: days ? parseInt(days) : 30,
-        includeInactive: includeInactive === 'true'
-      });
+      effectiveEndDate = new Date().toISOString().split('T')[0];
+      const daysBack = {
+        '7d': 7, '1week': 7,
+        '14d': 14, '2weeks': 14,
+        '30d': 30, '4weeks': 30,
+        '90d': 90, '12weeks': 84,
+        'alltime': 365, 'full': 365
+      }[lookback] || 30;
+
+      const start = new Date();
+      start.setDate(start.getDate() - daysBack);
+      effectiveStartDate = start.toISOString().split('T')[0];
+    } else if (!startDate && days) {
+      effectiveEndDate = new Date().toISOString().split('T')[0];
+      const d = parseInt(days) || 30;
+      const start = new Date();
+      start.setDate(start.getDate() - d);
+      effectiveStartDate = start.toISOString().split('T')[0];
     }
 
-    res.json(result);
+    // Get granular daily data from metaDataset (the format frontend expects)
+    const result = getAiBudgetMetaDataset(store, {
+      startDate: effectiveStartDate,
+      endDate: effectiveEndDate
+    });
+
+    // Return in the format frontend expects:
+    // { metrics: { campaignDaily, adsetDaily, adDaily }, hierarchy: { campaigns, adsets, ads } }
+    res.json({
+      success: result.success,
+      store: result.store,
+      dateRange: result.dateRange,
+      metrics: result.metrics,
+      hierarchy: result.hierarchy
+    });
   } catch (error) {
     console.error('❌ [aibudget] Error getting AI Budget dataset:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI Budget dataset',
-      message: error.message
+      message: error.message,
+      metrics: { campaignDaily: [], adsetDaily: [], adDaily: [] },
+      hierarchy: { campaigns: [], adsets: [], ads: [] }
     });
   }
 });
