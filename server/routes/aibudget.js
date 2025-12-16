@@ -44,10 +44,14 @@ router.get('/', async (req, res) => {
       effectiveStartDate = start.toISOString().split('T')[0];
     }
 
+    // Parse includeInactive flag (string 'true' or boolean true)
+    const shouldIncludeInactive = includeInactive === 'true' || includeInactive === true;
+
     // Get granular daily data from metaDataset (the format frontend expects)
     const result = getAiBudgetMetaDataset(store, {
       startDate: effectiveStartDate,
-      endDate: effectiveEndDate
+      endDate: effectiveEndDate,
+      includeInactive: shouldIncludeInactive
     });
 
     // Return in the format frontend expects:
@@ -55,6 +59,7 @@ router.get('/', async (req, res) => {
     res.json({
       success: result.success,
       store: result.store,
+      includeInactive: result.includeInactive,
       dateRange: result.dateRange,
       metrics: result.metrics,
       hierarchy: result.hierarchy
