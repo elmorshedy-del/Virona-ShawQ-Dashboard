@@ -146,7 +146,7 @@ export default function UnifiedAnalytics({
     // Add CVR calculation to each campaign for sorting purposes
     const withCVR = filtered.map(c => ({
       ...c,
-      cvr: c.lpv > 0 ? (c.conversions / c.lpv) * 100 : null
+      cvr: c.inline_link_clicks > 0 ? (c.conversions / c.inline_link_clicks) * 100 : null
     }));
 
     return sortData(withCVR, sortConfig);
