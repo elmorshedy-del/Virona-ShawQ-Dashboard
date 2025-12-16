@@ -850,6 +850,7 @@ export default function App() {
             setMetaBreakdown={setMetaBreakdown}
             metaBreakdownData={metaBreakdownData}
             store={store}
+            diagnosticsCampaignOptions={diagnosticsCampaignOptions}
             countryTrends={countryTrends}
             countryTrendsDataSource={countryTrendsDataSource}
             campaignTrends={campaignTrends}
@@ -1007,6 +1008,7 @@ function DashboardTab({
   includeInactive = false,
   setIncludeInactive = () => {},
   dateRange = {},
+  diagnosticsCampaignOptions = [],
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
