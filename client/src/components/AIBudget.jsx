@@ -541,7 +541,23 @@ function applyLookback(rows, key) {
 function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
   const allTimeDays = new Set((allRows || []).map(r => r.date)).size;
   const lookbackUsed = lookbackRows?.length || 0;
-  const spendDays = (lookbackRows || []).filter(r => !r.adset_id && r.spend > 0).length;
+
+  // Count UNIQUE dates with campaign-level spend (not rows, since data has country breakdowns)
+  const spendDays = new Set(
+    (lookbackRows || [])
+      .filter(r => !r.adset_id && r.spend > 0)
+      .map(r => r.date)
+  ).size;
+
+  // Count UNIQUE dates with revenue data
+  const revenueDays = new Set(
+    (lookbackRows || [])
+      .filter(r => !r.adset_id && (r._normRevenue > 0 || r.purchase_value > 0 || r.purchases > 0))
+      .map(r => r.date)
+  ).size;
+
+  // Count unique lookback days (not rows) for threshold checks
+  const lookbackDays = new Set((lookbackRows || []).map(r => r.date)).size;
 
   const hasSpend = (lookbackRows || []).some(r => Number.isFinite(r.spend) && r.spend > 0);
   const hasRevenue = (lookbackRows || []).some(r => Number.isFinite(r._normRevenue) && r._normRevenue > 0);
@@ -573,18 +589,18 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
       status = "🟡 Enough for Partial Model";
       confidence = !missing.length ? "Medium" : "Low";
     } else {
-      // existing
-      if (lookbackUsed >= 14 && spendDays >= 10) {
+      // existing - use lookbackDays (unique dates) for threshold checks
+      if (lookbackDays >= 14 && spendDays >= 10) {
         status = "✅ Enough for Full Model";
         confidence = hasFunnel && (structure === "ABO" || hasAdsetSpend) ? "High" : "Medium";
-      } else if (lookbackUsed >= 7 && spendDays >= 5) {
+      } else if (lookbackDays >= 7 && spendDays >= 5) {
         status = "🟡 Enough for Partial Model";
         confidence = "Medium";
-        missing.push(`Add ${Math.max(0, 14 - lookbackUsed)} more lookback days for full curve stability`);
+        missing.push(`Add ${Math.max(0, 14 - lookbackDays)} more lookback days for full curve stability`);
       } else {
         status = "🚫 Not Enough";
         confidence = "Low";
-        missing.push("Need at least 7 days with spend + revenue");
+        missing.push(`Need at least 7 days with spend + revenue (currently ${spendDays} spend days, ${revenueDays} revenue days)`);
       }
     }
   }
@@ -592,7 +608,9 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
   return {
     allTimeDays,
     lookbackUsed,
+    lookbackDays,
     spendDays,
+    revenueDays,
     hasFunnel,
     hasAdsetSpend,
     status,
@@ -1445,18 +1463,91 @@ function AIBudgetSimulatorTab({ store }) {
       return Array.from(new Set(intelCampaignRows.map(r => r.campaign_name).filter(Boolean)));
     }
     if (metaCampaignNames.length) return metaCampaignNames;
-    
+
     return [];
   }, [metaCampaignNames, intelCampaignRows]);
+
+  /* ----------------------------
+     Helper: Campaign metadata with dominant geo (by spend)
+     Aggregates rows by campaign name to find the geo with highest spend
+     ---------------------------- */
+  const campaignMetadata = useMemo(() => {
+    const metadata = new Map();
+
+    // First pass: aggregate spend by campaign + geo
+    intelCampaignRows.forEach(row => {
+      if (!row.campaign_name) return;
+
+      if (!metadata.has(row.campaign_name)) {
+        metadata.set(row.campaign_name, {
+          campaignName: row.campaign_name,
+          structure: row.structure || 'CBO',
+          geoSpend: new Map(),
+          geos: []
+        });
+      }
+
+      const campaign = metadata.get(row.campaign_name);
+      const geo = row.geo || row.country || 'ALL';
+      const spend = Number(row.spend) || 0;
+
+      if (!campaign.geoSpend.has(geo)) {
+        campaign.geoSpend.set(geo, 0);
+        campaign.geos.push(geo);
+      }
+      campaign.geoSpend.set(geo, campaign.geoSpend.get(geo) + spend);
+    });
+
+    // Second pass: find dominant geo for each campaign
+    const result = new Map();
+    metadata.forEach((campaign, name) => {
+      let dominantGeo = campaign.geos[0] || 'ALL';
+      let maxSpend = 0;
+
+      campaign.geoSpend.forEach((spend, geo) => {
+        if (spend > maxSpend) {
+          maxSpend = spend;
+          dominantGeo = geo;
+        }
+      });
+
+      result.set(name, {
+        campaignName: name,
+        structure: campaign.structure,
+        dominantGeo,
+        geos: campaign.geos,
+        geoSpend: Object.fromEntries(campaign.geoSpend)
+      });
+    });
+
+    return result;
+  }, [intelCampaignRows]);
+
+  // Helper to get campaign's dominant geo
+  const getCampaignDominantGeo = (campaignName) => {
+    const meta = campaignMetadata.get(campaignName);
+    return meta?.dominantGeo || 'SA';
+  };
+
+  // Helper to get campaign's structure
+  const getCampaignStructure = (campaignName) => {
+    const meta = campaignMetadata.get(campaignName);
+    return meta?.structure || 'CBO';
+  };
+
+  // Helper to get all geos for a campaign
+  const getCampaignGeos = (campaignName) => {
+    const meta = campaignMetadata.get(campaignName);
+    return meta?.geos || [];
+  };
 
   // Seed campaign selections when options change
   useEffect(() => {
     const first = campaignOptions[0];
     if (first && !campaignOptions.includes(existingCampaign)) {
       setExistingCampaign(first);
-      const meta = intelCampaignRows.find(c => c.campaign_name === first);
-      if (meta?.geo) setExistingGeo(meta.geo);
-      if (meta?.structure) setExistingStructure(meta.structure);
+      setExistingGeo(getCampaignDominantGeo(first));
+      setExistingStructure(getCampaignStructure(first));
     }
 
     if (first && !campaignOptions.includes(plannedTemplateCampaign)) {
@@ -1470,11 +1561,9 @@ function AIBudgetSimulatorTab({ store }) {
     campaignOptions,
     existingCampaign,
     plannedTemplateCampaign,
-    intelCampaignRows,
+    campaignMetadata,
     intelStartPlanRows,
-    plannedGeo,
-    existingGeo,
-    existingStructure
+    plannedGeo
   ]);
 
   /* ----------------------------
@@ -1562,11 +1651,9 @@ function AIBudgetSimulatorTab({ store }) {
                     onChange={(e) => {
                       const name = e.target.value;
                       setExistingCampaign(name);
-                      const meta = intelCampaignRows.find(c => c.campaign_name === name);
-                      if (meta) {
-                        setExistingGeo(meta.geo);
-                        setExistingStructure(meta.structure);
-                      }
+                      // Auto-select dominant geo and structure based on campaign data
+                      setExistingGeo(getCampaignDominantGeo(name));
+                      setExistingStructure(getCampaignStructure(name));
                     }}
                     className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs"
                   >
@@ -1581,13 +1668,31 @@ function AIBudgetSimulatorTab({ store }) {
 
                 <div>
                   <div className="text-xs font-bold text-gray-900">Geo</div>
-                  <input
-                    value={existingGeo}
-                    onChange={(e) => setExistingGeo(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs"
-                  />
+                  {/* Show dropdown if campaign has multiple geos, otherwise show input */}
+                  {getCampaignGeos(existingCampaign).length > 1 ? (
+                    <select
+                      value={existingGeo}
+                      onChange={(e) => setExistingGeo(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs"
+                    >
+                      {getCampaignGeos(existingCampaign).map(geo => (
+                        <option key={geo} value={geo}>
+                          {geo} {geo === getCampaignDominantGeo(existingCampaign) ? '(primary)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={existingGeo}
+                      onChange={(e) => setExistingGeo(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs"
+                    />
+                  )}
                   <div className="text-[10px] text-gray-500 mt-1">
-                    In real backend, this is derived from campaign delivery.
+                    {getCampaignGeos(existingCampaign).length > 1
+                      ? `Campaign runs in ${getCampaignGeos(existingCampaign).length} geos. Primary geo selected by spend.`
+                      : 'Geo derived from campaign delivery.'
+                    }
                   </div>
                 </div>
               </div>
@@ -1693,11 +1798,9 @@ function AIBudgetSimulatorTab({ store }) {
                       onChange={(e) => {
                         const name = e.target.value;
                         setPlannedTemplateCampaign(name);
-                        const meta = intelCampaignRows.find(c => c.campaign_name === name);
-                        if (meta) {
-                          setPlannedGeo(meta.geo);
-                          setPlannedStructure(meta.structure);
-                        }
+                        // Auto-select dominant geo and structure based on template campaign
+                        setPlannedGeo(getCampaignDominantGeo(name));
+                        setPlannedStructure(getCampaignStructure(name));
                       }}
                       className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs"
                     >
@@ -2059,8 +2162,10 @@ function AIBudgetSimulatorTab({ store }) {
               </div>
 
               <div className="mt-3 space-y-2">
-                <MiniMetric label="Lookback Days Used" value={dataHealth.lookbackUsed} />
-                <MiniMetric label="Spend Days (lookback)" value={dataHealth.spendDays} />
+                <MiniMetric label="Lookback Days (unique)" value={dataHealth.lookbackDays} />
+                <MiniMetric label="Spend Days" value={dataHealth.spendDays} />
+                <MiniMetric label="Revenue Days" value={dataHealth.revenueDays} />
+                <MiniMetric label="Data Rows" value={dataHealth.lookbackUsed} />
                 <MiniMetric label="Revenue Source (latest)" value={latestRow?._revSource || "n/a"} />
                 <MiniMetric label="Funnel Complete?" value={dataHealth.hasFunnel ? "Yes" : "No"} />
                 <MiniMetric label="Ad Set History (CBO/ASC)?" value={(activeConfig.structure !== "ABO" && dataHealth.hasAdsetSpend) ? "Yes" : (activeConfig.structure === "ABO" ? "n/a" : "No")} />
