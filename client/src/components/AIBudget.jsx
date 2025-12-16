@@ -902,6 +902,8 @@ function AIBudgetSimulatorTab({ store }) {
       purchases: Number(r.conversions ?? r.purchases ?? 0) || 0,
       impressions: Number(r.impressions ?? 0) || 0,
       clicks: Number(r.clicks ?? 0) || 0,
+      reach: Number(r.reach ?? 0) || 0,
+      lpv: Number(r.landing_page_views ?? r.lpv ?? 0) || 0,
       atc: Number(r.add_to_cart ?? r.atc ?? 0) || 0,
       ic: Number(r.checkouts_initiated ?? r.ic ?? 0) || 0,
       status: r.status || r.adset_status || r.ad_status,
@@ -910,13 +912,18 @@ function AIBudgetSimulatorTab({ store }) {
 
     const rows = [];
 
-    if (aiDataset.metrics.adsetDaily?.length) {
-      rows.push(...aiDataset.metrics.adsetDaily.map(mapRow));
-    } else {
-      rows.push(...(aiDataset.metrics.campaignDaily || []).map(mapRow));
+    // Include campaign-level data (needed for spendDays calculation in Data Sufficiency)
+    if (aiDataset.metrics.campaignDaily?.length) {
+      rows.push(...aiDataset.metrics.campaignDaily.map(mapRow));
     }
 
-    if (!aiDataset.metrics.adsetDaily?.length && aiDataset.metrics.adDaily?.length) {
+    // Include adset-level data (needed for CBO/ASC allocation in Data Sufficiency)
+    if (aiDataset.metrics.adsetDaily?.length) {
+      rows.push(...aiDataset.metrics.adsetDaily.map(mapRow));
+    }
+
+    // Include ad-level data if available
+    if (aiDataset.metrics.adDaily?.length) {
       rows.push(...aiDataset.metrics.adDaily.map(mapRow));
     }
 
