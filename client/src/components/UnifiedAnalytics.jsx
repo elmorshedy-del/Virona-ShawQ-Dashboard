@@ -256,11 +256,11 @@ export default function UnifiedAnalytics({
     return value;
   };
 
-  // Calculate CVR (Conversion Rate from Clicks to Purchases)
-  // Formula: (Purchases / Clicks) * 100
-  const calculateCVR = (purchases, clicks) => {
-    if (!clicks || clicks === 0) return null;
-    return (purchases / clicks) * 100;
+  // Calculate CVR (Conversion Rate from Landing Page Views to Purchases)
+  // Formula: (Purchases / LPV) * 100
+  const calculateCVR = (purchases, lpv) => {
+    if (!lpv || lpv === 0) return null;
+    return (purchases / lpv) * 100;
   };
 
   // Check if orders occurred today
