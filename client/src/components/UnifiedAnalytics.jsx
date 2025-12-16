@@ -144,6 +144,7 @@ export default function UnifiedAnalytics({
     }
 
     // Add CVR calculation to each campaign for sorting purposes
+    // CVR = (Conversions / Clicks) * 100
     const withCVR = filtered.map(c => ({
       ...c,
       cvr: c.inline_link_clicks > 0 ? (c.conversions / c.inline_link_clicks) * 100 : null
