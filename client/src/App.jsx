@@ -180,6 +180,18 @@ export default function App() {
       );
     }
 
+    if (storeId === 'shawq') {
+      return (
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-50">
+          <img
+            src="/shawq-logo.svg"
+            alt="Shawq logo"
+            className="h-5 w-5"
+          />
+        </span>
+      );
+    }
+
     const initial = storeId?.[0] ? storeId[0].toUpperCase() : '?';
     return (
       <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-600 font-semibold">
