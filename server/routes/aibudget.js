@@ -9,7 +9,7 @@ const router = express.Router();
 /**
  * GET /api/aibudget
  * Base AI Budget dataset with full hierarchy and standardized metrics
- * Query params: store (default: shawq), startDate, endDate
+ * Query params: store (default: shawq), startDate, endDate, lookback, days
  *
  * Returns metrics in format expected by frontend:
  * { metrics: { campaignDaily: [...], adsetDaily: [...], adDaily: [...] } }
@@ -18,6 +18,8 @@ router.get('/', async (req, res) => {
   try {
     const store = req.query.store || 'shawq';
     const { startDate, endDate } = req.query;
+
+    console.log(`[aibudget] GET / - store: ${store}, startDate: ${startDate}, endDate: ${endDate}`);
 
     // Use unified bridge for standardized data with hierarchy
     const data = await metaAIBudgetBridge.getStandardizedData(store, {
@@ -66,6 +68,8 @@ router.get('/', async (req, res) => {
 router.get('/recommendations', async (req, res) => {
   try {
     const { startDate, endDate, lookback, store = 'shawq' } = req.query;
+
+    console.log(`[aibudget] GET /recommendations - store: ${store}, lookback: ${lookback}`);
 
     let data;
 
