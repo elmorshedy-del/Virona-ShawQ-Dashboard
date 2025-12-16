@@ -138,7 +138,7 @@ export default function App() {
   // Include inactive campaigns/adsets/ads toggle (default: ACTIVE only)
   const [includeInactive, setIncludeInactive] = useState(false);
 
-  const campaignOptions = useMemo(() => {
+  const diagnosticsCampaignOptions = useMemo(() => {
     const unique = new Map();
 
     metaAdManagerData.forEach((campaign) => {
@@ -481,14 +481,14 @@ export default function App() {
   useEffect(() => {
     if (!selectedDiagnosticsCampaign) return;
 
-    const hasCampaign = campaignOptions.some(
+    const hasCampaign = diagnosticsCampaignOptions.some(
       (option) => option.value === selectedDiagnosticsCampaign
     );
 
     if (!hasCampaign) {
       setSelectedDiagnosticsCampaign(null);
     }
-  }, [campaignOptions, selectedDiagnosticsCampaign]);
+  }, [diagnosticsCampaignOptions, selectedDiagnosticsCampaign]);
 
   async function handleAddOrder(e) {
     e.preventDefault();
@@ -1424,7 +1424,7 @@ function DashboardTab({
                 className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
               >
                 <option value="">All campaigns</option>
-                {campaignOptions.map((option) => (
+                {diagnosticsCampaignOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
