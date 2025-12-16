@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import { markSallaSyncFailure, markSallaSyncSuccess } from './notificationService.js';
 
 export async function fetchSallaOrders(dateStart, dateEnd) {
   const accessToken = process.env.VIRONAX_SALLA_ACCESS_TOKEN;
@@ -74,6 +75,7 @@ export async function syncSallaOrders() {
     // If no orders (API not configured), skip sync silently
     if (orders.length === 0) {
       console.log('Salla: No orders to sync (API not configured or no orders in date range)');
+      markSallaSyncSuccess();
       return { success: true, records: 0, message: 'Salla not configured' };
     }
 
@@ -109,6 +111,7 @@ export async function syncSallaOrders() {
       VALUES ('vironax', 'salla', 'success', ?)
     `).run(recordsInserted);
 
+    markSallaSyncSuccess();
     return { success: true, records: recordsInserted };
   } catch (error) {
     db.prepare(`
@@ -116,6 +119,7 @@ export async function syncSallaOrders() {
       VALUES ('vironax', 'salla', 'error', ?)
     `).run(error.message);
 
+    markSallaSyncFailure();
     throw error;
   }
 }

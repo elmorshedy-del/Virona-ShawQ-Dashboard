@@ -6,6 +6,24 @@ function isSallaActive() {
   return !!process.env.VIRONAX_SALLA_ACCESS_TOKEN;
 }
 
+// Track the latest Salla sync health so we only fall back to Meta when Salla fails
+let sallaSyncState = {
+  status: 'unknown', // 'success' | 'failure' | 'unknown'
+  updatedAt: null
+};
+
+export function markSallaSyncSuccess() {
+  sallaSyncState = { status: 'success', updatedAt: new Date() };
+}
+
+export function markSallaSyncFailure() {
+  sallaSyncState = { status: 'failure', updatedAt: new Date() };
+}
+
+function isSallaHealthy() {
+  return sallaSyncState.status !== 'failure';
+}
+
 // Determine if we should create a notification for this order
 function shouldCreateOrderNotification(store, source) {
   // For Shawq: Only Shopify and Manual orders
@@ -16,14 +34,20 @@ function shouldCreateOrderNotification(store, source) {
   // For VironaX: Smart source selection
   if (store === 'vironax') {
     const sallaIsActive = isSallaActive();
-    
+    const sallaHealthy = isSallaHealthy();
+
     if (sallaIsActive) {
-      // Salla is active → only Salla and Manual create notifications
-      return source === 'salla' || source === 'manual';
-    } else {
-      // Salla not active → Meta and Manual create notifications (fallback)
-      return source === 'meta' || source === 'manual';
+      // When Salla is healthy, treat it as the source of truth and suppress Meta noise
+      if (sallaHealthy) {
+        return source === 'salla' || source === 'manual';
+      }
+
+      // Salla is active but failing → temporarily allow Meta as fallback
+      return source === 'salla' || source === 'meta' || source === 'manual';
     }
+
+    // Salla not active → Meta and Manual create notifications (fallback)
+    return source === 'meta' || source === 'manual';
   }
   
   return false;
@@ -58,11 +82,22 @@ export function createNotification({ store, type, message, metadata = {} }) {
     }
   }
   
+  // Normalize timestamp so UI always receives a consistent value
+  const rawTimestamp = metadata.timestamp || metadata.created_at || metadata.createdAt;
+  const parsedTimestamp = rawTimestamp ? new Date(rawTimestamp) : new Date();
+  const normalizedTimestamp = isNaN(parsedTimestamp) ? new Date() : parsedTimestamp;
+
+  // Ensure metadata always carries the timestamp we use for display
+  const metadataWithTimestamp = {
+    ...metadata,
+    timestamp: normalizedTimestamp.toISOString()
+  };
+
   const stmt = db.prepare(`
-    INSERT INTO notifications (store, type, message, source, country, value, order_count, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO notifications (store, type, message, source, country, value, order_count, timestamp, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  
+
   const result = stmt.run(
     store,
     type,
@@ -71,7 +106,8 @@ export function createNotification({ store, type, message, metadata = {} }) {
     metadata.country || null,
     metadata.value || null,
     metadata.order_count || 1,
-    JSON.stringify(metadata)
+    metadataWithTimestamp.timestamp,
+    JSON.stringify(metadataWithTimestamp)
   );
   
   console.log(`[Notification] Created: ${message}`);
