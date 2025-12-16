@@ -1,39 +1,96 @@
 import express from 'express';
 import budgetIntelligenceService from '../services/budgetIntelligenceService.js';
-import aiBudgetBridge from '../services/aiBudgetBridge.js';
+import aiBudgetDataAdapter from '../services/aiBudgetDataAdapter.js';
 import weeklyAggregationService from '../services/weeklyAggregationService.js';
+import metaAIBudgetBridge from '../services/metaAIBudgetBridge.js';
 
 const router = express.Router();
 
 /**
  * GET /api/aibudget
- * Base AI Budget dataset (hierarchy + metrics)
- * Now uses aiBudgetBridge for unified data flow
+ * Base AI Budget dataset with full hierarchy and standardized metrics
+ * Query params: store (default: shawq), startDate, endDate, lookback, days
+ *
+ * Returns metrics in format expected by frontend:
+ * { metrics: { campaignDaily: [...], adsetDaily: [...], adDaily: [...] } }
  */
 router.get('/', async (req, res) => {
   try {
-    const store = req.query.store || 'vironax';
-    const { startDate, endDate, days, lookback, includeInactive } = req.query;
-    
-    console.log(`[aibudget] GET / - store: ${store}, lookback: ${lookback}, days: ${days}`);
+    const store = req.query.store || 'shawq';
+    const { startDate, endDate } = req.query;
 
-    let result;
-    
-    // Support lookback periods (e.g., '14d', '30d', '90d', 'alltime')
-    if (lookback) {
-      result = await aiBudgetBridge.fetchByLookback(store, lookback, {
-        includeInactive: includeInactive === 'true'
-      });
-    } else {
-      result = await aiBudgetBridge.fetchAIBudgetData(store, startDate, endDate, {
-        days: days ? parseInt(days) : 30,
-        includeInactive: includeInactive === 'true'
-      });
-    }
+    console.log(`[aibudget] GET / - store: ${store}, startDate: ${startDate}, endDate: ${endDate}`);
 
-    res.json(result);
+    // Use unified bridge for standardized data with hierarchy
+    const data = await metaAIBudgetBridge.getStandardizedData(store, {
+      startDate,
+      endDate
+    });
+
+    // Split rows by level for frontend compatibility
+    const campaignDaily = data.rows.filter(r => r.level === 'campaign');
+    const adsetDaily = data.rows.filter(r => r.level === 'adset');
+    const adDaily = data.rows.filter(r => r.level === 'ad');
+
+    // Convert hierarchy to arrays (frontend expects arrays, not objects)
+    const hierarchyCampaigns = data.hierarchy?.campaigns
+      ? Object.values(data.hierarchy.campaigns).map(c => ({
+          object_id: c.id,
+          object_name: c.name,
+          campaign_id: c.id,
+          campaign_name: c.name,
+          status: c.status,
+          effective_status: c.effective_status,
+          daily_budget: c.daily_budget,
+          lifetime_budget: c.lifetime_budget,
+          objective: c.objective,
+          bid_strategy: c.bid_strategy
+        }))
+      : [];
+
+    const hierarchyAdsets = data.hierarchy?.campaigns
+      ? Object.values(data.hierarchy.campaigns).flatMap(c =>
+          Object.values(c.adsets || {}).map(as => ({
+            object_id: as.id,
+            object_name: as.name,
+            adset_id: as.id,
+            adset_name: as.name,
+            campaign_id: c.id,
+            campaign_name: c.name,
+            status: as.status,
+            effective_status: as.effective_status,
+            daily_budget: as.daily_budget,
+            lifetime_budget: as.lifetime_budget,
+            optimization_goal: as.optimization_goal,
+            bid_strategy: as.bid_strategy
+          }))
+        )
+      : [];
+
+    res.json({
+      success: true,
+      store,
+      dateRange: data.dateRange,
+      // Frontend expects hierarchy.campaigns and hierarchy.adsets as arrays
+      hierarchy: {
+        campaigns: hierarchyCampaigns,
+        adsets: hierarchyAdsets
+      },
+      // Frontend expects metrics.campaignDaily, metrics.adsetDaily, metrics.adDaily
+      metrics: {
+        campaignDaily,
+        adsetDaily,
+        adDaily
+      },
+      summary: {
+        totalRows: data.rows.length,
+        campaignRows: campaignDaily.length,
+        adsetRows: adsetDaily.length,
+        adRows: adDaily.length
+      }
+    });
   } catch (error) {
-    console.error('❌ [aibudget] Error getting AI Budget dataset:', error);
+    console.error('Error getting AI Budget dataset:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI Budget dataset',
@@ -46,45 +103,43 @@ router.get('/', async (req, res) => {
  * GET /api/aibudget/recommendations
  * Get AI-powered budget recommendations
  * Query params: store, startDate, endDate, lookback
- * Now uses aiBudgetBridge for unified data flow
  */
 router.get('/recommendations', async (req, res) => {
   try {
-    const { store = 'vironax', startDate, endDate, lookback } = req.query;
+    const { startDate, endDate, lookback, store = 'shawq' } = req.query;
 
     console.log(`[aibudget] GET /recommendations - store: ${store}, lookback: ${lookback}`);
 
-    let result;
+    let data;
 
     // Use lookback if provided, otherwise use date range
     if (lookback) {
-      result = await aiBudgetBridge.fetchByLookback(store, lookback);
+      const weeklyData = await weeklyAggregationService.getWeeklySummary(store, lookback);
+      data = weeklyData.rawData;
     } else if (startDate && endDate) {
-      result = await aiBudgetBridge.fetchAIBudgetData(store, startDate, endDate);
+      data = await aiBudgetDataAdapter.getWeeklyAggregatedData(store, { startDate, endDate });
     } else {
-      // Default to 30 days
-      result = await aiBudgetBridge.fetchByLookback(store, '30d');
+      // Default to 4 weeks
+      const weeklyData = await weeklyAggregationService.getWeeklySummary(store, '4weeks');
+      data = weeklyData.rawData;
     }
 
-    if (!result.success) {
-      throw new Error(result.error || 'Failed to fetch data');
-    }
-
-    // Pass data to budget intelligence service for recommendations
-    const recommendations = await budgetIntelligenceService.getAIRecommendations(result.data, startDate, endDate);
+    // Pass normalized data to budget intelligence service
+    const recommendations = await budgetIntelligenceService.getAIRecommendations(data, startDate, endDate);
 
     res.json({
       success: true,
       data: recommendations,
-      totals: result.totals,
       meta: {
-        ...result.meta,
+        store,
+        recordCount: data.length,
+        dateRange: { startDate, endDate },
         lookback: lookback || 'custom'
       }
     });
 
   } catch (error) {
-    console.error('❌ [aibudget] Error getting AI budget recommendations:', error);
+    console.error('Error getting AI budget recommendations:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI budget recommendations',
@@ -96,21 +151,22 @@ router.get('/recommendations', async (req, res) => {
 /**
  * GET /api/aibudget/weekly-summary
  * Get weekly aggregated summary
- * Query params: lookback (1week, 2weeks, 4weeks, alltime)
+ * Query params: store (default: shawq), lookback (1week, 2weeks, 4weeks, alltime)
  */
 router.get('/weekly-summary', async (req, res) => {
   try {
-    const { lookback = '4weeks' } = req.query;
-    
-    const summary = await weeklyAggregationService.getWeeklySummary(lookback);
+    const { lookback = '4weeks', store = 'shawq' } = req.query;
+
+    const summary = await weeklyAggregationService.getWeeklySummary(store, lookback);
 
     res.json({
       success: true,
+      store,
       data: summary
     });
 
   } catch (error) {
-    console.error('❌ Error getting weekly summary:', error);
+    console.error('Error getting weekly summary:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get weekly summary',
@@ -130,7 +186,7 @@ router.get('/campaign/:id', async (req, res) => {
     const { weeksBack = 4 } = req.query;
 
     const data = await aiBudgetDataAdapter.getCampaignTimeSeries(
-      parseInt(id), 
+      id,
       parseInt(weeksBack)
     );
 
@@ -145,7 +201,7 @@ router.get('/campaign/:id', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error getting campaign data:', error);
+    console.error('Error getting campaign data:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get campaign data',
@@ -157,23 +213,63 @@ router.get('/campaign/:id', async (req, res) => {
 /**
  * GET /api/aibudget/data
  * Get raw AIBudget data with standard schema
- * Query params: startDate, endDate
+ * Query params: store (default: shawq), startDate, endDate
  */
 router.get('/data', async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, store = 'shawq' } = req.query;
 
-    if (!startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        error: 'startDate and endDate are required'
-      });
-    }
-
-    const data = await aiBudgetDataAdapter.getAIBudgetData(startDate, endDate);
+    const data = await aiBudgetDataAdapter.getAIBudgetData(store, { startDate, endDate });
 
     res.json({
       success: true,
+      store,
+      data: data,
+      meta: {
+        recordCount: data.length,
+        dateRange: { startDate, endDate },
+        levels: {
+          campaign: data.filter(r => r.level === 'campaign').length,
+          adset: data.filter(r => r.level === 'adset').length,
+          ad: data.filter(r => r.level === 'ad').length
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting AIBudget data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get AIBudget data',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/aibudget/data/:level
+ * Get AIBudget data filtered by level
+ * Params: level (campaign, adset, ad)
+ * Query params: store (default: shawq), startDate, endDate
+ */
+router.get('/data/:level', async (req, res) => {
+  try {
+    const { level } = req.params;
+    const { startDate, endDate, store = 'shawq' } = req.query;
+
+    if (!['campaign', 'adset', 'ad'].includes(level)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid level. Must be campaign, adset, or ad'
+      });
+    }
+
+    const data = await aiBudgetDataAdapter.getDataByLevel(store, level, { startDate, endDate });
+
+    res.json({
+      success: true,
+      store,
+      level,
       data: data,
       meta: {
         recordCount: data.length,
@@ -182,10 +278,40 @@ router.get('/data', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error getting AIBudget data:', error);
+    console.error(`Error getting ${req.params.level} data:`, error);
     res.status(500).json({
       success: false,
-      error: 'Failed to get AIBudget data',
+      error: `Failed to get ${req.params.level} data`,
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/aibudget/totals
+ * Get aggregated totals
+ * Query params: store (default: shawq), startDate, endDate
+ */
+router.get('/totals', async (req, res) => {
+  try {
+    const { startDate, endDate, store = 'shawq' } = req.query;
+
+    const totals = await aiBudgetDataAdapter.getAggregatedTotals(store, { startDate, endDate });
+
+    res.json({
+      success: true,
+      store,
+      data: totals,
+      meta: {
+        dateRange: { startDate, endDate }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting totals:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get totals',
       message: error.message
     });
   }
