@@ -24,6 +24,7 @@ import {
 } from '../services/analyticsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
+import { getShopifyConnectionStatus } from '../services/shopifyService.js';
 
 const router = express.Router();
 
@@ -146,6 +147,15 @@ router.get('/campaigns/trends', (req, res) => {
 router.get('/shopify/time-of-day', (req, res) => {
   try { res.json(getShopifyTimeOfDay(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Shopify connection/health status (Shawq)
+router.get('/shopify/status', (req, res) => {
+  try {
+    res.json(getShopifyConnectionStatus());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Combined time of day endpoint (supports both stores)
