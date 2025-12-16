@@ -138,6 +138,18 @@ export default function App() {
   // Include inactive campaigns/adsets/ads toggle (default: ACTIVE only)
   const [includeInactive, setIncludeInactive] = useState(false);
 
+  const campaignOptions = useMemo(() => {
+    const unique = new Map();
+
+    metaAdManagerData.forEach((campaign) => {
+      if (campaign?.campaign_id && campaign?.campaign_name) {
+        unique.set(campaign.campaign_id, campaign.campaign_name);
+      }
+    });
+
+    return Array.from(unique, ([value, label]) => ({ value, label }));
+  }, [metaAdManagerData]);
+
   const store = STORES[currentStore];
   const [orderForm, setOrderForm] = useState({
     date: getLocalDateString(),
@@ -465,6 +477,18 @@ export default function App() {
     }
     setSyncing(false);
   }
+
+  useEffect(() => {
+    if (!selectedDiagnosticsCampaign) return;
+
+    const hasCampaign = campaignOptions.some(
+      (option) => option.value === selectedDiagnosticsCampaign
+    );
+
+    if (!hasCampaign) {
+      setSelectedDiagnosticsCampaign(null);
+    }
+  }, [campaignOptions, selectedDiagnosticsCampaign]);
 
   async function handleAddOrder(e) {
     e.preventDefault();
@@ -1387,14 +1411,45 @@ function DashboardTab({
 
       {/* FUNNEL DIAGNOSTICS - Campaign-level diagnostics */}
       {funnelDiagnostics && (
-        <FunnelDiagnostics
-          data={funnelDiagnostics}
-          currency={store.currencySymbol === '$' ? 'USD' : 'SAR'}
-          formatCurrency={formatCurrency}
-          expanded={diagnosticsExpanded}
-          setExpanded={setDiagnosticsExpanded}
-          onClearSelection={() => setSelectedDiagnosticsCampaign(null)}
-        />
+        <>
+          <div className="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3">
+            <div>
+              <div className="text-sm font-semibold text-gray-800">Funnel analysis scope</div>
+              <div className="text-xs text-gray-500">View all campaigns or focus on a specific one.</div>
+            </div>
+            <div className="flex items-center gap-2 min-w-[240px]">
+              <select
+                value={selectedDiagnosticsCampaign || ''}
+                onChange={(e) => setSelectedDiagnosticsCampaign(e.target.value || null)}
+                className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+              >
+                <option value="">All campaigns</option>
+                {campaignOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              {selectedDiagnosticsCampaign && (
+                <button
+                  onClick={() => setSelectedDiagnosticsCampaign(null)}
+                  className="px-3 py-2 text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          <FunnelDiagnostics
+            data={funnelDiagnostics}
+            currency={store.currencySymbol === '$' ? 'USD' : 'SAR'}
+            formatCurrency={formatCurrency}
+            expanded={diagnosticsExpanded}
+            setExpanded={setDiagnosticsExpanded}
+            onClearSelection={() => setSelectedDiagnosticsCampaign(null)}
+          />
+        </>
       )}
 
       {/* Legacy Funnel Diagnostics */}
