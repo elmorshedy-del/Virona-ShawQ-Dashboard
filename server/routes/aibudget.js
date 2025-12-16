@@ -32,11 +32,50 @@ router.get('/', async (req, res) => {
     const adsetDaily = data.rows.filter(r => r.level === 'adset');
     const adDaily = data.rows.filter(r => r.level === 'ad');
 
+    // Convert hierarchy to arrays (frontend expects arrays, not objects)
+    const hierarchyCampaigns = data.hierarchy?.campaigns
+      ? Object.values(data.hierarchy.campaigns).map(c => ({
+          object_id: c.id,
+          object_name: c.name,
+          campaign_id: c.id,
+          campaign_name: c.name,
+          status: c.status,
+          effective_status: c.effective_status,
+          daily_budget: c.daily_budget,
+          lifetime_budget: c.lifetime_budget,
+          objective: c.objective,
+          bid_strategy: c.bid_strategy
+        }))
+      : [];
+
+    const hierarchyAdsets = data.hierarchy?.campaigns
+      ? Object.values(data.hierarchy.campaigns).flatMap(c =>
+          Object.values(c.adsets || {}).map(as => ({
+            object_id: as.id,
+            object_name: as.name,
+            adset_id: as.id,
+            adset_name: as.name,
+            campaign_id: c.id,
+            campaign_name: c.name,
+            status: as.status,
+            effective_status: as.effective_status,
+            daily_budget: as.daily_budget,
+            lifetime_budget: as.lifetime_budget,
+            optimization_goal: as.optimization_goal,
+            bid_strategy: as.bid_strategy
+          }))
+        )
+      : [];
+
     res.json({
       success: true,
       store,
       dateRange: data.dateRange,
-      hierarchy: data.hierarchy,
+      // Frontend expects hierarchy.campaigns and hierarchy.adsets as arrays
+      hierarchy: {
+        campaigns: hierarchyCampaigns,
+        adsets: hierarchyAdsets
+      },
       // Frontend expects metrics.campaignDaily, metrics.adsetDaily, metrics.adDaily
       metrics: {
         campaignDaily,
