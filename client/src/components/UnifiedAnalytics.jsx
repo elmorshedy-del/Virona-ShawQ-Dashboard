@@ -292,8 +292,8 @@ export default function UnifiedAnalytics({
         ? row.ads?.length > 0
         : false;
 
-    // Calculate CVR
-    const cvr = calculateCVR(row.conversions || 0, row.lpv || 0);
+    // Calculate CVR (Conversions / Clicks)
+    const cvr = calculateCVR(row.conversions || 0, row.inline_link_clicks || 0);
 
     // Indentation based on level
     const indentClass = level === 'campaign' ? 'pl-4' : level === 'adset' ? 'pl-10' : 'pl-16';
