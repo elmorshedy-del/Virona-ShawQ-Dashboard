@@ -1,111 +1,75 @@
 import express from 'express';
+import aiBudgetService from '../services/aiBudgetService.js';
 import budgetIntelligenceService from '../services/budgetIntelligenceService.js';
-import aiBudgetBridge from '../services/aiBudgetBridge.js';
-import weeklyAggregationService from '../services/weeklyAggregationService.js';
-import { getAiBudgetMetaDataset } from '../features/aibudget/metaDataset.js';
 
 const router = express.Router();
 
 /**
  * GET /api/aibudget
  * Base AI Budget dataset (hierarchy + metrics)
- * Returns granular daily data for the frontend Data Sufficiency Advisor and Sanity Check
- * Format: { metrics: { campaignDaily, adsetDaily, adDaily }, hierarchy: { campaigns, adsets, ads } }
+ * Query: store, startDate, endDate, lookback, includeInactive
  */
 router.get('/', async (req, res) => {
   try {
-    const store = req.query.store || 'vironax';
-    const { startDate, endDate, days, lookback, includeInactive } = req.query;
+    const { 
+      store = 'vironax', 
+      startDate, 
+      endDate, 
+      lookback, 
+      includeInactive 
+    } = req.query;
 
-    console.log(`[aibudget] GET / - store: ${store}, lookback: ${lookback}, days: ${days}`);
+    const options = {
+      startDate,
+      endDate,
+      lookback,
+      includeInactive: includeInactive === 'true' || includeInactive === true
+    };
 
-    // Calculate date range based on lookback or provided dates
-    let effectiveStartDate = startDate;
-    let effectiveEndDate = endDate;
+    const result = await aiBudgetService.getData(store, options);
 
-    if (lookback) {
-      effectiveEndDate = new Date().toISOString().split('T')[0];
-      const daysBack = {
-        '7d': 7, '1week': 7,
-        '14d': 14, '2weeks': 14,
-        '30d': 30, '4weeks': 30,
-        '90d': 90, '12weeks': 84,
-        'alltime': 365, 'full': 365
-      }[lookback] || 30;
-
-      const start = new Date();
-      start.setDate(start.getDate() - daysBack);
-      effectiveStartDate = start.toISOString().split('T')[0];
-    } else if (!startDate && days) {
-      effectiveEndDate = new Date().toISOString().split('T')[0];
-      const d = parseInt(days) || 30;
-      const start = new Date();
-      start.setDate(start.getDate() - d);
-      effectiveStartDate = start.toISOString().split('T')[0];
-    }
-
-    // Parse includeInactive flag (string 'true' or boolean true)
-    const shouldIncludeInactive = includeInactive === 'true' || includeInactive === true;
-
-    // Get granular daily data from metaDataset (the format frontend expects)
-    const result = getAiBudgetMetaDataset(store, {
-      startDate: effectiveStartDate,
-      endDate: effectiveEndDate,
-      includeInactive: shouldIncludeInactive
-    });
-
-    // Return in the format frontend expects:
-    // { metrics: { campaignDaily, adsetDaily, adDaily }, hierarchy: { campaigns, adsets, ads } }
-    res.json({
-      success: result.success,
-      store: result.store,
-      includeInactive: result.includeInactive,
-      dateRange: result.dateRange,
-      metrics: result.metrics,
-      hierarchy: result.hierarchy
-    });
+    res.json(result);
   } catch (error) {
-    console.error('❌ [aibudget] Error getting AI Budget dataset:', error);
+    console.error('[aibudget] GET / error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI Budget dataset',
       message: error.message,
-      metrics: { campaignDaily: [], adsetDaily: [], adDaily: [] },
-      hierarchy: { campaigns: [], adsets: [], ads: [] }
+      hierarchy: { campaigns: [], adsets: [], ads: [] },
+      metrics: { campaignDaily: [], adsetDaily: [], adDaily: [] }
     });
   }
 });
 
 /**
  * GET /api/aibudget/recommendations
- * Get AI-powered budget recommendations
- * Query params: store, startDate, endDate, lookback
- * Now uses aiBudgetBridge for unified data flow
+ * AI-powered budget recommendations
+ * Query: store, startDate, endDate, lookback
  */
 router.get('/recommendations', async (req, res) => {
   try {
-    const { store = 'vironax', startDate, endDate, lookback } = req.query;
+    const { 
+      store = 'vironax', 
+      startDate, 
+      endDate, 
+      lookback 
+    } = req.query;
 
-    console.log(`[aibudget] GET /recommendations - store: ${store}, lookback: ${lookback}`);
-
-    let result;
-
-    // Use lookback if provided, otherwise use date range
-    if (lookback) {
-      result = await aiBudgetBridge.fetchByLookback(store, lookback);
-    } else if (startDate && endDate) {
-      result = await aiBudgetBridge.fetchAIBudgetData(store, startDate, endDate);
-    } else {
-      // Default to 30 days
-      result = await aiBudgetBridge.fetchByLookback(store, '30d');
-    }
+    const options = { startDate, endDate, lookback };
+    
+    // Get aggregated data
+    const result = await aiBudgetService.getAggregatedData(store, options);
 
     if (!result.success) {
       throw new Error(result.error || 'Failed to fetch data');
     }
 
-    // Pass data to budget intelligence service for recommendations
-    const recommendations = await budgetIntelligenceService.getAIRecommendations(result.data, startDate, endDate);
+    // Generate AI recommendations
+    const recommendations = await budgetIntelligenceService.getAIRecommendations(
+      result.data, 
+      options.startDate, 
+      options.endDate
+    );
 
     res.json({
       success: true,
@@ -118,7 +82,7 @@ router.get('/recommendations', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ [aibudget] Error getting AI budget recommendations:', error);
+    console.error('[aibudget] GET /recommendations error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get AI budget recommendations',
@@ -128,58 +92,46 @@ router.get('/recommendations', async (req, res) => {
 });
 
 /**
- * GET /api/aibudget/weekly-summary
- * Get weekly aggregated summary
- * Query params: lookback (1week, 2weeks, 4weeks, alltime)
- */
-router.get('/weekly-summary', async (req, res) => {
-  try {
-    const { lookback = '4weeks' } = req.query;
-    
-    const summary = await weeklyAggregationService.getWeeklySummary(lookback);
-
-    res.json({
-      success: true,
-      data: summary
-    });
-
-  } catch (error) {
-    console.error('❌ Error getting weekly summary:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get weekly summary',
-      message: error.message
-    });
-  }
-});
-
-/**
  * GET /api/aibudget/campaign/:id
  * Get specific campaign data
- * Query params: weeksBack (default: 4)
+ * Query: weeksBack (default: 4)
  */
 router.get('/campaign/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { weeksBack = 4 } = req.query;
+    const { weeksBack = 4, store = 'vironax' } = req.query;
 
-    const data = await aiBudgetDataAdapter.getCampaignTimeSeries(
-      parseInt(id), 
-      parseInt(weeksBack)
+    const days = parseInt(weeksBack) * 7;
+    const options = { lookback: `${days}d` };
+
+    const result = await aiBudgetService.getData(store, options);
+
+    if (!result.success) {
+      throw new Error('Campaign not found');
+    }
+
+    // Filter for specific campaign
+    const campaignMetrics = result.metrics.campaignDaily.filter(
+      m => m.campaign_id === id
+    );
+
+    const campaignInfo = result.hierarchy.campaigns.find(
+      c => c.object_id === id
     );
 
     res.json({
       success: true,
-      data: data,
+      campaign: campaignInfo,
+      metrics: campaignMetrics,
       meta: {
         campaignId: id,
-        weeksBack: weeksBack,
-        recordCount: data.length
+        weeksBack,
+        recordCount: campaignMetrics.length
       }
     });
 
   } catch (error) {
-    console.error('❌ Error getting campaign data:', error);
+    console.error('[aibudget] GET /campaign/:id error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get campaign data',
@@ -189,37 +141,21 @@ router.get('/campaign/:id', async (req, res) => {
 });
 
 /**
- * GET /api/aibudget/data
- * Get raw AIBudget data with standard schema
- * Query params: startDate, endDate
+ * POST /api/aibudget/cache/clear
+ * Clear service cache
  */
-router.get('/data', async (req, res) => {
+router.post('/cache/clear', async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
-
-    if (!startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        error: 'startDate and endDate are required'
-      });
-    }
-
-    const data = await aiBudgetDataAdapter.getAIBudgetData(startDate, endDate);
-
+    aiBudgetService.clearCache();
     res.json({
       success: true,
-      data: data,
-      meta: {
-        recordCount: data.length,
-        dateRange: { startDate, endDate }
-      }
+      message: 'Cache cleared'
     });
-
   } catch (error) {
-    console.error('❌ Error getting AIBudget data:', error);
+    console.error('[aibudget] POST /cache/clear error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to get AIBudget data',
+      error: 'Failed to clear cache',
       message: error.message
     });
   }
