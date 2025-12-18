@@ -142,8 +142,8 @@ export default function App() {
   // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
   const [countryTrendsDataSource, setCountryTrendsDataSource] = useState('');
-  const [newYorkTrend, setNewYorkTrend] = useState(null);
-  const [newYorkTrendDataSource, setNewYorkTrendDataSource] = useState('');
+  const [nyTrendData, setNyTrendData] = useState(null);
+  const [nyTrendDataSource, setNyTrendDataSource] = useState('');
   const [campaignTrends, setCampaignTrends] = useState([]);
   const [campaignTrendsDataSource, setCampaignTrendsDataSource] = useState('');
   const [countriesDataSource, setCountriesDataSource] = useState('');
@@ -382,11 +382,11 @@ export default function App() {
 
       // Handle New York trend - returns { data: {...} or null, dataSource: ... }
       if (nyTrend && typeof nyTrend === 'object' && nyTrend.data) {
-        setNewYorkTrend(nyTrend.data);
-        setNewYorkTrendDataSource(nyTrend.dataSource || '');
+        setNyTrendData(nyTrend.data);
+        setNyTrendDataSource(nyTrend.dataSource || '');
       } else {
-        setNewYorkTrend(null);
-        setNewYorkTrendDataSource('');
+        setNyTrendData(null);
+        setNyTrendDataSource('');
       }
 
       if (campaignTrendData && typeof campaignTrendData === 'object' && Array.isArray(campaignTrendData.data)) {
@@ -1143,7 +1143,7 @@ function DashboardTab({
 
   // Sort country trends by total orders (descending), with New York first if available
   const orderedCountryTrends = [
-    ...(newYorkTrend ? [newYorkTrend] : []),
+    ...(nyTrendData ? [nyTrendData] : []),
     ...countryTrends
   ].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
   const orderedCampaignTrends = [...campaignTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
