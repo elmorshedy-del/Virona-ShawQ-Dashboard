@@ -1128,31 +1128,8 @@ function DashboardTab({
     return campaignSortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
   });
 
-  // For Shawq, filter country trends to only show New York (city-level data from US country trends)
+  // Sort country trends by total orders (descending)
   const orderedCountryTrends = [...countryTrends]
-    .filter(country => {
-      if (store.name.toLowerCase() !== 'shawq') return true; // Show all countries for non-Shawq stores
-      // For Shawq, only show US data with New York city data
-      return country.countryCode === 'US' && country.cities && 
-             country.cities.some(city => city.city && city.city.toLowerCase().includes('new york'));
-    })
-    .map(country => {
-      if (store.name.toLowerCase() === 'shawq' && country.countryCode === 'US') {
-        // Filter trends to only include New York data
-        const nyCity = country.cities?.find(city => city.city && city.city.toLowerCase().includes('new york'));
-        if (nyCity) {
-          return {
-            ...country,
-            country: 'New York',
-            countryCode: 'US-NY',
-            flag: '🗽',
-            // Keep all trend data but mark it as New York specific
-            trends: country.trends || []
-          };
-        }
-      }
-      return country;
-    })
     .sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
   const orderedCampaignTrends = [...campaignTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
 
