@@ -840,7 +840,8 @@ function AIBudgetSimulatorTab({ store }) {
           }
         }
 
-        setIntel(data || fallback);
+        const intelPayload = data?.data ?? data ?? fallback;
+        setIntel(intelPayload || fallback);
         setIntelError(null);
       } catch (e) {
         console.error('[AIBudget] Failed to load budget intelligence', e);
