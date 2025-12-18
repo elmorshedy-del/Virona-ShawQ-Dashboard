@@ -840,8 +840,18 @@ function AIBudgetSimulatorTab({ store }) {
           }
         }
 
-        const intelPayload = data?.data ?? data ?? fallback;
-        setIntel(intelPayload || fallback);
+        const wrappedPayload =
+          data && typeof data === "object" && "data" in data && data.data != null
+            ? data.data
+            : data;
+
+        const intelPayload =
+          wrappedPayload && typeof wrappedPayload === "object" &&
+          ("liveGuidance" in wrappedPayload || "startPlans" in wrappedPayload)
+            ? wrappedPayload
+            : fallback;
+
+        setIntel(intelPayload);
         setIntelError(null);
       } catch (e) {
         console.error('[AIBudget] Failed to load budget intelligence', e);
