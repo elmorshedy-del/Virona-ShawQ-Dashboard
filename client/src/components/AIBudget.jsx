@@ -69,6 +69,8 @@ import {
 } from "lucide-react";
 import { useMetaObjects } from "../features/meta-awareness/hooks/useMetaStatus.js";
 
+console.log("AIBudget component loaded");
+
 /* ============================================================================
    MATH UTILITIES (Elite-lite, deterministic, safe)
    ============================================================================ */
