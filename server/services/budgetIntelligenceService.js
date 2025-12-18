@@ -440,7 +440,7 @@ export function getBudgetIntelligence(store, params) {
       revenue: 0
     };
 
-    existing.countries.add(row.country);
+    if (row.country) existing.countries.add(row.country);
     existing.spend += row.spend || 0;
     existing.impressions += row.impressions || 0;
     existing.link_clicks += row.link_clicks || 0;
