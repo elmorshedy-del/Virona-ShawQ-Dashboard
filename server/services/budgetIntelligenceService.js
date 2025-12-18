@@ -421,11 +421,62 @@ export function getBudgetIntelligence(store, params) {
     };
   };
 
-  // Merge campaign and ad set rows into single liveGuidance array
-  const liveGuidance = [
-    ...campaignRows.map(processRowToGuidance),
-    ...adsetRows.map(processRowToGuidance)
-  ];
+  // Merge campaign and ad set rows into aggregated liveGuidance per campaign
+  const aggregates = new Map();
+  const campaignLevelSeen = new Set();
+
+  const addAggregateRow = (row) => {
+    const key = row.campaignId || row.campaignName;
+    if (!key) return;
+
+    const existing = aggregates.get(key) || {
+      campaignId: row.campaignId || key,
+      campaignName: row.campaignName || 'Unnamed Campaign',
+      countries: new Set(),
+      spend: 0,
+      impressions: 0,
+      link_clicks: 0,
+      reach: 0,
+      lpv: 0,
+      atc: 0,
+      ic: 0,
+      purchases: 0,
+      revenue: 0
+    };
+
+    if (row.country) existing.countries.add(row.country);
+    const metricsToSum = ['spend', 'impressions', 'link_clicks', 'reach', 'lpv', 'atc', 'ic', 'purchases', 'revenue'];
+    metricsToSum.forEach(metric => {
+      existing[metric] += row[metric] || 0;
+    });
+
+    aggregates.set(key, existing);
+  };
+
+  campaignRows.forEach(row => {
+    campaignLevelSeen.add(row.campaignId);
+    addAggregateRow(row);
+  });
+
+  // Only use ad set rows for campaigns that lack campaign-level rows to avoid double counting
+  adsetRows.forEach(row => {
+    if (campaignLevelSeen.has(row.campaignId)) return;
+    addAggregateRow(row);
+  });
+
+  const liveGuidance = Array.from(aggregates.values()).map(row => {
+    const countryList = row.countries && row.countries.size > 0
+      ? Array.from(row.countries).filter(Boolean).join(', ')
+      : '—';
+
+    return processRowToGuidance({
+      ...row,
+      country: countryList,
+      date: null,
+      adsetId: null,
+      adsetName: null
+    });
+  });
 
   // Learning map scoring
   const learningMap = {
