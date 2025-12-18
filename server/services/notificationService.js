@@ -1,6 +1,8 @@
 import { getDb } from '../db/database.js';
 import { getCountryInfo } from '../utils/countryData.js';
 
+const DEFAULT_NOTIFICATION_LIMIT = 50;
+
 // Check if Salla is active for VironaX
 function isSallaActive() {
   return !!process.env.VIRONAX_SALLA_ACCESS_TOKEN;
