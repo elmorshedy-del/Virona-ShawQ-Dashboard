@@ -264,6 +264,11 @@ export default function App() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ store: currentStore });
+      const budgetParams = new URLSearchParams({
+        store: currentStore,
+        startDate: '2000-01-01',
+        endDate: getLocalDateString()
+      });
       const countryTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
       const campaignTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
       
@@ -292,6 +297,7 @@ export default function App() {
       // Include inactive campaigns/adsets/ads if toggle is on
       if (includeInactive) {
         params.set('includeInactive', 'true');
+        budgetParams.set('includeInactive', 'true');
         countryTrendParams.set('includeInactive', 'true');
         campaignTrendParams.set('includeInactive', 'true');
       }
@@ -317,7 +323,7 @@ export default function App() {
         fetchJson(`${API_BASE}/analytics/efficiency?${params}`, {}),
         fetchJson(`${API_BASE}/analytics/efficiency/trends?${params}`, []),
         fetchJson(`${API_BASE}/analytics/recommendations?${params}`, []),
-        fetchJson(`${API_BASE}/budget-intelligence?${params}`, {}),
+        fetchJson(`${API_BASE}/budget-intelligence?${budgetParams}`, {}),
         fetchJson(`${API_BASE}/manual?${params}`, []),
         fetchJson(`${API_BASE}/manual/spend?${params}`, []),
         fetchJson(`${API_BASE}/analytics/countries?store=${currentStore}`, MASTER_COUNTRIES_WITH_FLAGS),
