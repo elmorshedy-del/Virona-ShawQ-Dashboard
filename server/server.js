@@ -25,6 +25,7 @@ const clientPublic = path.join(__dirname, '../client/public');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '60000', 10);
 
 // Initialize database
 initDb();
@@ -108,6 +109,17 @@ async function whatifSync() {
   }
 }
 
+// Rapid Shopify sync to minimize notification lag
+async function shopifyRealtimeSync() {
+  console.log('[Shopify] Starting rapid Shopify sync...');
+  try {
+    await syncShopifyOrders();
+    console.log('[Shopify] Rapid Shopify sync complete');
+  } catch (error) {
+    console.error('[Shopify] Rapid Shopify sync error:', error);
+  }
+}
+
 // Initial sync on startup
 setTimeout(backgroundSync, 5000);
 
@@ -116,6 +128,9 @@ setTimeout(whatifSync, 2 * 60 * 1000);
 
 // Sync every 15 minutes
 setInterval(backgroundSync, 15 * 60 * 1000);
+
+// Rapid Shopify sync every minute (configurable via SHOPIFY_SYNC_INTERVAL_MS)
+setInterval(shopifyRealtimeSync, SHOPIFY_SYNC_INTERVAL);
 
 // What-If sync every 24 hours
 setInterval(whatifSync, 24 * 60 * 60 * 1000);
