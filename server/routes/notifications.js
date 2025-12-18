@@ -70,6 +70,22 @@ router.post('/read-all', (req, res) => {
   }
 });
 
+// DELETE /api/notifications/:id - Delete single notification
+router.delete('/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = deleteNotification(parseInt(id));
+    
+    res.json({ 
+      success: true,
+      deleted 
+    });
+  } catch (error) {
+    console.error('[Notifications API] Delete error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // DELETE /api/notifications/cleanup - Clean up old notifications
 router.delete('/cleanup', (req, res) => {
   try {
