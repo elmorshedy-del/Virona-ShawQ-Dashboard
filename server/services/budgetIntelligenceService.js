@@ -467,8 +467,8 @@ export function getBudgetIntelligence(store, params) {
 
   const liveGuidance = Array.from(aggregates.values()).map(row => {
     const countryList = row.countries && row.countries.size > 0
-      ? Array.from(row.countries).join(', ')
-      : row.country || '—';
+      ? Array.from(row.countries).filter(Boolean).join(', ')
+      : '—';
 
     return processRowToGuidance({
       ...row,
