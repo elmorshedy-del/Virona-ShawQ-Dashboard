@@ -316,6 +316,29 @@ export default function NotificationCenter({ currentStore }) {
   }, [currentTime]);
 
   // ============================================================================
+  // Count notifications by type
+  // ============================================================================
+  const getNotificationCounts = useCallback(() => {
+    const counts = {
+      shopify: 0,
+      salla: 0,
+      meta: 0,
+      manual: 0
+    };
+
+    notifications.forEach(notification => {
+      const source = notification.source || notification.metadata?.source;
+      if (counts.hasOwnProperty(source)) {
+        counts[source]++;
+      }
+    });
+
+    return counts;
+  }, [notifications]);
+
+  const notificationCounts = getNotificationCounts();
+
+  // ============================================================================
   // Get source badge (Shopify, Meta, Salla, Manual)
   // ============================================================================
   const getSourceBadge = (source) => {
@@ -327,10 +350,16 @@ export default function NotificationCenter({ currentStore }) {
     };
 
     const badge = badges[source] || { label: source || 'Unknown', color: 'bg-gray-100 text-gray-700' };
+    const count = notificationCounts[source] || 0;
 
     return (
-      <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge.color}`}>
+      <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge.color} inline-flex items-center gap-1`}>
         {badge.label}
+        {count > 0 && (
+          <span className="ml-1 px-1.5 py-0.5 bg-white/50 rounded-full text-[10px] font-bold">
+            {count}
+          </span>
+        )}
       </span>
     );
   };
