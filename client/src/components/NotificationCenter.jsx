@@ -38,7 +38,7 @@ function NotificationRow({
           
           {/* Message */}
           <p className={`text-sm ${!notification.is_read ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
-            🛒 {formatNotificationMessage(notification)}
+            {formatNotificationMessage(notification)}
           </p>
           
           {/* Meta row: source badge + time */}
