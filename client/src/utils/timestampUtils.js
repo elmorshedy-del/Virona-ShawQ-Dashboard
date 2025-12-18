@@ -29,8 +29,12 @@ export const parseTimestamp = (timestamp) => {
     }
 
     // SQLite datetime format (2024-01-15 10:30:00)
+    // These timestamps are stored in UTC but lack timezone info.
+    // Normalize to ISO UTC so the client doesn't interpret them as local time
+    // and accidentally shift the "time ago" calculation.
     if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}/.test(trimmed)) {
-      const date = new Date(trimmed);
+      const normalized = `${trimmed.replace(' ', 'T')}Z`;
+      const date = new Date(normalized);
       return isValidDate(date) ? date : null;
     }
 
