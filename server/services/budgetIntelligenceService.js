@@ -441,15 +441,10 @@ export function getBudgetIntelligence(store, params) {
     };
 
     if (row.country) existing.countries.add(row.country);
-    existing.spend += row.spend || 0;
-    existing.impressions += row.impressions || 0;
-    existing.link_clicks += row.link_clicks || 0;
-    existing.reach += row.reach || 0;
-    existing.lpv += row.lpv || 0;
-    existing.atc += row.atc || 0;
-    existing.ic += row.ic || 0;
-    existing.purchases += row.purchases || 0;
-    existing.revenue += row.revenue || 0;
+    const metricsToSum = ['spend', 'impressions', 'link_clicks', 'reach', 'lpv', 'atc', 'ic', 'purchases', 'revenue'];
+    metricsToSum.forEach(metric => {
+      existing[metric] += row[metric] || 0;
+    });
 
     aggregates.set(key, existing);
   };
