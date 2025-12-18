@@ -333,7 +333,7 @@ export default function App() {
       setEfficiency(effData || {});
       setEfficiencyTrends(Array.isArray(effTrends) ? effTrends : []);
       setRecommendations(Array.isArray(recs) ? recs : []);
-      const intelPayload = intel?.data ?? intel?.payload ?? null;
+      const intelPayload = intel && intel.data ? intel.data : null;
       setBudgetIntelligence(intelPayload);
       setManualOrders(Array.isArray(orders) ? orders : []);
       setManualSpendOverrides(Array.isArray(spendOverrides) ? spendOverrides : []);
@@ -952,7 +952,7 @@ export default function App() {
             setIncludeInactive={setIncludeInactive}
             dateRange={dashboard?.dateRange}
           />
-          )}
+        )}
         
         {activeTab === 1 && efficiency && (
           <EfficiencyTab
@@ -2178,7 +2178,7 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
 }
 
 function BudgetIntelligenceTab({ data, formatCurrency, store }) {
-  const intel = data?.data ?? data ?? null;
+  const intel = data ?? null;
 
   if (!intel) {
     return (
