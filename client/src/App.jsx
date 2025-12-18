@@ -16,6 +16,16 @@ import AIAnalytics from './components/AIAnalytics';
 import AIBudget from './components/AIBudget';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 
+// Fixed "Connected" badge component
+const ConnectedBadge = () => (
+  <div 
+    className="fixed bottom-2 right-2 text-gray-500 pointer-events-none z-50"
+    style={{ fontSize: '10px', opacity: 0.6 }}
+  >
+    Connected
+  </div>
+);
+
 const API_BASE = '/api';
 
 const fetchJson = async (url, fallback = null, options = {}) => {
