@@ -239,6 +239,23 @@ export function buildAIPromptSection(store, options = {}) {
 }
 
 /**
+ * Backward-compatible helper for services that expect an async export.
+ * Wraps getAIDataBundle to align with existing async call sites.
+ *
+ * @param {string} store - Store name
+ * @param {Object} [options={}] - Options forwarded to getAIDataBundle
+ * @returns {Promise<Object>} - Complete AI data bundle
+ */
+export async function getMetaAwarenessDataForAI(store, options = {}) {
+  try {
+    return getAIDataBundle(store, options);
+  } catch (error) {
+    console.error('[AIDataProvider] Error building AI data bundle:', error.message);
+    throw error;
+  }
+}
+
+/**
  * Detect if user question is about reactivation/inactive objects
  * @param {string} question - User's question
  * @returns {boolean} - Whether the question relates to reactivation
@@ -278,6 +295,7 @@ export default {
   formatAccountStructureForAI,
   formatReactivationForAI,
   getAIDataBundle,
+  getMetaAwarenessDataForAI,
   buildAIPromptSection,
   isReactivationQuestion
 };
