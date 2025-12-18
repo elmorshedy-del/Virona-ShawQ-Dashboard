@@ -936,6 +936,7 @@ export default function App() {
             setMetaBreakdown={setMetaBreakdown}
             metaBreakdownData={metaBreakdownData}
             store={store}
+            nyTrendData={nyTrendData}
             diagnosticsCampaignOptions={diagnosticsCampaignOptions}
             countryTrends={countryTrends}
             countryTrendsDataSource={countryTrendsDataSource}
@@ -1061,6 +1062,7 @@ function DashboardTab({
   setMetaBreakdown = () => {},
   metaBreakdownData = [],
   store = {},
+  nyTrendData = null,
   countryTrends = [],
   countryTrendsDataSource = '',
   campaignTrends = [],
