@@ -575,6 +575,88 @@ export function getCountryTrends(store, params) {
 }
 
 // ============================================================================
+// NEW YORK CITY TRENDS (Shopify only - Shawq store)
+// ============================================================================
+export function getNewYorkTrends(store, params) {
+  const db = getDb();
+  const endDate = formatDateAsGmt3(new Date());
+  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+
+  try {
+    // Only return data for Shawq store (Shopify)
+    if (store !== 'shawq') {
+      return { data: null, dataSource: 'none' };
+    }
+
+    // Query Shopify orders for New York city data
+    const rawData = db.prepare(`
+      SELECT
+        date,
+        COUNT(*) as orders,
+        SUM(subtotal) as revenue
+      FROM shopify_orders
+      WHERE store = ?
+        AND date BETWEEN ? AND ?
+        AND country_code = 'US'
+        AND city IS NOT NULL
+        AND (LOWER(city) LIKE '%new york%' OR city = 'NYC' OR city = 'Brooklyn' OR city = 'Queens' OR city = 'Bronx' OR city = 'Manhattan' OR city = 'Staten Island')
+      GROUP BY date
+      ORDER BY date ASC
+    `).all(store, startDate, endDate);
+
+    const trends = rawData.map(row => ({
+      date: row.date,
+      orders: row.orders || 0,
+      revenue: row.revenue || 0
+    }));
+
+    const totalOrders = trends.reduce((sum, t) => sum + t.orders, 0);
+    const totalRevenue = trends.reduce((sum, t) => sum + t.revenue, 0);
+
+    // Get breakdown by borough/area
+    const boroughs = db.prepare(`
+      SELECT
+        city,
+        COUNT(*) as orders,
+        SUM(subtotal) as revenue
+      FROM shopify_orders
+      WHERE store = ?
+        AND date BETWEEN ? AND ?
+        AND country_code = 'US'
+        AND city IS NOT NULL
+        AND (LOWER(city) LIKE '%new york%' OR city = 'NYC' OR city = 'Brooklyn' OR city = 'Queens' OR city = 'Bronx' OR city = 'Manhattan' OR city = 'Staten Island')
+      GROUP BY city
+      ORDER BY orders DESC
+    `).all(store, startDate, endDate);
+
+    const boroughsData = boroughs.map((b, idx) => ({
+      city: b.city,
+      state: 'NY',
+      orders: b.orders || 0,
+      revenue: b.revenue || 0,
+      aov: b.orders ? (b.revenue / b.orders).toFixed(2) : 0,
+      rank: idx + 1
+    }));
+
+    return {
+      data: {
+        countryCode: 'US-NY',
+        country: 'New York',
+        flag: '🗽',
+        totalOrders,
+        totalRevenue,
+        trends,
+        cities: boroughsData
+      },
+      dataSource: 'Shopify'
+    };
+  } catch (error) {
+    console.error(`[Analytics] Error getting New York trends:`, error);
+    return { data: null, dataSource: 'error' };
+  }
+}
+
+// ============================================================================
   // CAMPAIGN TRENDS
   // ===========================================================================
 export function getCampaignTrends(store, params = {}) {

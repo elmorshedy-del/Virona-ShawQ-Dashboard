@@ -11,6 +11,7 @@ import {
   getCampaignsByGender,
   getCampaignsByPlacement,
   getCountryTrends,
+  getNewYorkTrends,
   getCampaignTrends,
   getCampaignsByAgeGender,
   getShopifyTimeOfDay,
@@ -136,6 +137,11 @@ router.get('/countries', (req, res) => {
 
 router.get('/countries/trends', (req, res) => {
   try { res.json(getCountryTrends(req.query.store, req.query)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get('/newyork/trends', (req, res) => {
+  try { res.json(getNewYorkTrends(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 

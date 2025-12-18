@@ -142,6 +142,8 @@ export default function App() {
   // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
   const [countryTrendsDataSource, setCountryTrendsDataSource] = useState('');
+  const [newYorkTrend, setNewYorkTrend] = useState(null);
+  const [newYorkTrendDataSource, setNewYorkTrendDataSource] = useState('');
   const [campaignTrends, setCampaignTrends] = useState([]);
   const [campaignTrendsDataSource, setCampaignTrendsDataSource] = useState('');
   const [countriesDataSource, setCountriesDataSource] = useState('');
@@ -315,6 +317,7 @@ export default function App() {
         spendOverrides,
         countries,
         cTrends,
+        nyTrend,
         campaignTrendData,
         timeOfDayData,
         dowData
@@ -328,6 +331,7 @@ export default function App() {
         fetchJson(`${API_BASE}/manual/spend?${params}`, []),
         fetchJson(`${API_BASE}/analytics/countries?store=${currentStore}`, MASTER_COUNTRIES_WITH_FLAGS),
         fetchJson(`${API_BASE}/analytics/countries/trends?${countryTrendParams}`, { data: [], dataSource: '' }),
+        fetchJson(`${API_BASE}/analytics/newyork/trends?${countryTrendParams}`, { data: null, dataSource: '' }),
         fetchJson(`${API_BASE}/analytics/campaigns/trends?${campaignTrendParams}`, { data: [], dataSource: '' }),
         // Time of day - now fetches for both stores
         fetchJson(`${API_BASE}/analytics/time-of-day?${timeOfDayParams}`, { data: [], timezone: null, sampleTimestamps: [], source: '', message: '' }),
@@ -374,6 +378,15 @@ export default function App() {
       } else {
         setCountryTrends([]);
         setCountryTrendsDataSource('');
+      }
+
+      // Handle New York trend - returns { data: {...} or null, dataSource: ... }
+      if (nyTrend && typeof nyTrend === 'object' && nyTrend.data) {
+        setNewYorkTrend(nyTrend.data);
+        setNewYorkTrendDataSource(nyTrend.dataSource || '');
+      } else {
+        setNewYorkTrend(null);
+        setNewYorkTrendDataSource('');
       }
 
       if (campaignTrendData && typeof campaignTrendData === 'object' && Array.isArray(campaignTrendData.data)) {
@@ -1128,9 +1141,11 @@ function DashboardTab({
     return campaignSortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
   });
 
-  // Sort country trends by total orders (descending)
-  const orderedCountryTrends = [...countryTrends]
-    .sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
+  // Sort country trends by total orders (descending), with New York first if available
+  const orderedCountryTrends = [
+    ...(newYorkTrend ? [newYorkTrend] : []),
+    ...countryTrends
+  ].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
   const orderedCampaignTrends = [...campaignTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
 
   const parseLocalDate = useCallback((dateString) => {
