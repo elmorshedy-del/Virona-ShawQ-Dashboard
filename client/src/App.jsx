@@ -333,7 +333,8 @@ export default function App() {
       setEfficiency(effData || {});
       setEfficiencyTrends(Array.isArray(effTrends) ? effTrends : []);
       setRecommendations(Array.isArray(recs) ? recs : []);
-      setBudgetIntelligence(intel || {});
+      const intelPayload = intel && intel.data ? intel.data : null;
+      setBudgetIntelligence(intelPayload);
       setManualOrders(Array.isArray(orders) ? orders : []);
       setManualSpendOverrides(Array.isArray(spendOverrides) ? spendOverrides : []);
 
@@ -951,7 +952,7 @@ export default function App() {
             setIncludeInactive={setIncludeInactive}
             dateRange={dashboard?.dateRange}
           />
-          )}
+        )}
         
         {activeTab === 1 && efficiency && (
           <EfficiencyTab
@@ -2177,6 +2178,16 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
 }
 
 function BudgetIntelligenceTab({ data, formatCurrency, store }) {
+  const intel = data ?? null;
+
+  if (!intel) {
+    return (
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <p className="text-sm text-gray-600">Budget intelligence data is not available for this window.</p>
+      </div>
+    );
+  }
+
   const [selectedCountry, setSelectedCountry] = useState('');
   const [objective, setObjective] = useState('purchases');
   const [brandSelection, setBrandSelection] = useState(store.id);
@@ -2187,25 +2198,25 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
   }, []);
 
   const countriesWithData = useMemo(
-    () => new Set((data?.availableCountries || []).map(c => c.code)),
-    [data]
+    () => new Set((intel?.availableCountries || []).map(c => c.code)),
+    [intel]
   );
 
   const masterCountries = useMemo(() => {
     return MASTER_COUNTRIES.map(country => {
-      const dataCountry = data?.availableCountries?.find(c => c.code === country.code);
+      const dataCountry = intel?.availableCountries?.find(c => c.code === country.code);
       return {
         ...country,
         flag: dataCountry?.flag || countryCodeToFlag(country.code)
       };
     });
-  }, [countryCodeToFlag, data]);
+  }, [countryCodeToFlag, intel]);
 
   const countryOptions = useMemo(() => {
-    const apiCountries = Array.isArray(data?.availableCountries) ? data.availableCountries : [];
+    const apiCountries = Array.isArray(intel?.availableCountries) ? intel.availableCountries : [];
     if (apiCountries.length > 0) return apiCountries;
     return masterCountries;
-  }, [data?.availableCountries, masterCountries]);
+  }, [intel?.availableCountries, masterCountries]);
 
   useEffect(() => {
     if (!selectedCountry) {
@@ -2216,8 +2227,8 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
     setBrandSelection(store.id);
   }, [store.id, selectedCountry, countryOptions]);
 
-  const planningDefaults = data?.planningDefaults || {};
-  const priors = data?.priors || {};
+  const planningDefaults = intel?.planningDefaults || {};
+  const priors = intel?.priors || {};
 
   const hasSelectedCountryData = countriesWithData.has(selectedCountry);
 
@@ -2276,12 +2287,12 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
   };
 
   const startPlan = useMemo(() => {
-    if (!data) return null;
-    const fromServer = data.startPlans?.find(p => p.country === selectedCountry);
+    if (!intel) return null;
+    const fromServer = intel.startPlans?.find(p => p.country === selectedCountry);
     if (fromServer) return fromServer;
     if (selectedCountry) return buildPlanFromPriors(selectedCountry);
-    return data.startPlans?.[0] || null;
-  }, [data, selectedCountry]);
+    return intel.startPlans?.[0] || null;
+  }, [intel, selectedCountry]);
 
   const formatMetric = (value, decimals = 2) =>
     value === null || value === undefined || Number.isNaN(value)
@@ -2293,8 +2304,8 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
       ? '—'
       : formatCurrency(value, decimals);
 
-  const guidance = data?.liveGuidance || [];
-  const learningMap = data?.learningMap || {};
+  const guidance = intel?.liveGuidance || [];
+  const learningMap = intel?.learningMap || {};
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -2305,7 +2316,7 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
             <p className="text-sm text-gray-600">Disciplined starting budgets grounded in brand priors and nearby performance.</p>
           </div>
           <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
-            Prior window: {data?.priorRange?.startDate || '—'} to {data?.priorRange?.endDate || '—'}
+            Prior window: {intel?.priorRange?.startDate || '—'} to {intel?.priorRange?.endDate || '—'}
           </div>
         </div>
 
