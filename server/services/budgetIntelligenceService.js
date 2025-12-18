@@ -144,55 +144,59 @@ export function getBudgetIntelligence(store, params) {
   const priorMeanROAS = priorSpend > 0 ? priorRevenue / priorSpend : brandDefaults.fallbackROAS;
 
   // =========================================================================
-  // 🔧 FIX #1: Campaign-level query with ALL metrics + daily grain
+  // 🔧 FIX #1: Campaign-level query AGGREGATED by campaign + country
   // Frontend expects: camelCase (campaignId, campaignName, country, revenue)
   // =========================================================================
   const campaignRows = db.prepare(`
     SELECT
-      date,
       campaign_id as campaignId,
       campaign_name as campaignName,
       country,
-      spend,
-      impressions,
-      clicks,
-      inline_link_clicks as link_clicks,
-      reach,
-      landing_page_views as lpv,
-      add_to_cart as atc,
-      checkouts_initiated as ic,
-      conversions as purchases,
-      conversion_value as revenue
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as link_clicks,
+      SUM(reach) as reach,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as ic,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue,
+      MIN(date) as startDate,
+      MAX(date) as endDate
     FROM meta_daily_metrics
     WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
-    ORDER BY date, campaign_id, country
+    GROUP BY campaign_id, campaign_name, country
+    ORDER BY SUM(spend) DESC
   `).all(store, startDate, endDate);
 
   // =========================================================================
-  // 🔧 FIX #2: Ad set-level query for CBO/ASC support
+  // 🔧 FIX #2: Ad set-level query AGGREGATED by adset + country
   // Frontend expects: adsetId, adsetName (camelCase)
   // =========================================================================
   const adsetRows = db.prepare(`
     SELECT
-      date,
       campaign_id as campaignId,
       campaign_name as campaignName,
       adset_id as adsetId,
       adset_name as adsetName,
       country,
-      spend,
-      impressions,
-      clicks,
-      inline_link_clicks as link_clicks,
-      reach,
-      landing_page_views as lpv,
-      add_to_cart as atc,
-      checkouts_initiated as ic,
-      conversions as purchases,
-      conversion_value as revenue
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as link_clicks,
+      SUM(reach) as reach,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as ic,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue,
+      MIN(date) as startDate,
+      MAX(date) as endDate
     FROM meta_adset_metrics
     WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
-    ORDER BY date, campaign_id, adset_id, country
+    GROUP BY campaign_id, campaign_name, adset_id, adset_name, country
+    ORDER BY SUM(spend) DESC
   `).all(store, startDate, endDate);
 
   // Country-level aggregates for observed signal
