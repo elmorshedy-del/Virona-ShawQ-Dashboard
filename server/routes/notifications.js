@@ -4,6 +4,7 @@ import {
   getUnreadCount,
   markAsRead,
   markAllAsRead,
+  deleteNotification,
   cleanupOldNotifications
 } from '../services/notificationService.js';
 
