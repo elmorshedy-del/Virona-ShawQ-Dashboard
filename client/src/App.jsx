@@ -333,7 +333,9 @@ export default function App() {
       setEfficiency(effData || {});
       setEfficiencyTrends(Array.isArray(effTrends) ? effTrends : []);
       setRecommendations(Array.isArray(recs) ? recs : []);
-      setBudgetIntelligence(intel || {});
+
+      const normalizedIntel = intel?.data || intel || {};
+      setBudgetIntelligence(normalizedIntel);
       setManualOrders(Array.isArray(orders) ? orders : []);
       setManualSpendOverrides(Array.isArray(spendOverrides) ? spendOverrides : []);
 
