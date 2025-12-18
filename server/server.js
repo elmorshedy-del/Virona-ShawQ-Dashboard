@@ -21,6 +21,7 @@ import { cleanupOldNotifications } from './services/notificationService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const clientPublic = path.join(__dirname, '../client/public');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -56,6 +57,11 @@ try {
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// Favicon fallback
+app.get('/favicon.ico', (req, res) => {
+  res.type('image/svg+xml').sendFile(path.join(clientPublic, 'virona-logo.svg'));
+});
 
 // API Routes
 app.use('/api/analytics', analyticsRouter);
