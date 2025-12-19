@@ -16,6 +16,7 @@ const client = new OpenAI({
 });
 
 const MODELS = {
+  ASK: 'gpt-4o',           // Fast, direct answers - no fallback needed
   NANO: 'gpt-5-nano',
   MINI: 'gpt-5-mini',
   STRATEGIST: 'gpt-5.1'
@@ -531,10 +532,442 @@ function removeEmpty(obj) {
 }
 
 // ============================================================================
+// PILLAR FORMAT DETECTION
+// ============================================================================
+
+function getAnalyzeFormat(question) {
+  const q = question.toLowerCase();
+  
+  if (q.includes('snapshot') || q.includes('overview') || q.includes('all key metrics')) {
+    return `Respond using this EXACT format:
+
+📊 **Key Metrics**
+• Revenue: [amount with currency]
+• ROAS: [X.Xx]
+• Spend: [amount]
+• Orders: [number]
+• AOV: [amount]
+
+📈 **Trend**
+• vs Yesterday/Last Period: [↑↓ % for key metrics]
+
+🏆 **Top Performer**
+• [Best campaign or country with numbers]
+
+💡 **Quick Take**
+• [One-line actionable insight]`;
+  }
+  
+  if (q.includes('compare') || q.includes('period') || q.includes('previous')) {
+    return `Respond using this EXACT format:
+
+📅 **This Period vs Last Period**
+• Revenue: [this] vs [last] ([↑↓ %])
+• ROAS: [this] vs [last] ([↑↓ %])
+• Spend: [this] vs [last] ([↑↓ %])
+• Orders: [this] vs [last] ([↑↓ %])
+
+↑↓ **Key Changes**
+• Improved: [what went up with %]
+• Dropped: [what went down with %]
+
+🔍 **Why**
+• [Main drivers of change]
+
+💡 **Implication**
+• [What this means for the business]`;
+  }
+  
+  if (q.includes('country') || q.includes('countries') || q.includes('geo') || q.includes('leaderboard')) {
+    return `Respond using this EXACT format:
+
+🥇🥈🥉 **Top Countries**
+1. [Country]: [Revenue] | ROAS: [X.Xx]
+2. [Country]: [Revenue] | ROAS: [X.Xx]
+3. [Country]: [Revenue] | ROAS: [X.Xx]
+
+📉 **Underperformers**
+• [Countries with poor ROAS or high spend, low returns]
+
+💰 **Opportunity**
+• Scale: [where to increase]
+• Cut: [where to decrease]
+
+💡 **Action**
+• [Specific geo recommendation]`;
+  }
+  
+  if (q.includes('funnel') || q.includes('conversion')) {
+    return `Respond using this EXACT format:
+
+🎯 **Funnel Breakdown**
+👀 Impressions → Clicks: [CTR %]
+🖱️ Clicks → LPV: [Landing rate %]
+🛒 LPV → ATC: [Add to cart rate %]
+💳 ATC → Checkout: [Checkout rate %]
+✅ Checkout → Purchase: [Purchase rate %]
+
+🚨 **Biggest Leak**
+• [Stage with biggest drop-off] - losing [X%] here
+
+🔍 **Why**
+• [Possible reasons for the leak]
+
+💡 **Fix**
+• [Specific recommendation to improve]`;
+  }
+  
+  if (q.includes('spend') || q.includes('results') || q.includes('efficiency')) {
+    return `Respond using this EXACT format:
+
+💸 **Spend Overview**
+• Total Spend: [amount]
+• Revenue Generated: [amount]
+• ROAS: [X.Xx]
+• CPA: [amount per conversion]
+
+⚖️ **Efficiency Verdict**
+• [Efficient/Needs Work/Critical] - [brief explanation]
+
+📊 **By Campaign**
+• Best: [campaign] - [ROAS]
+• Worst: [campaign] - [ROAS]
+
+💡 **Optimize**
+• [Specific recommendation to improve efficiency]`;
+  }
+  
+  if (q.includes('anomal') || q.includes('unusual') || q.includes('weird') || q.includes('spike')) {
+    return `Respond using this EXACT format:
+
+🔍 **Anomaly Scan**
+
+[If anomalies found:]
+⚠️ **Anomalies Detected**
+• [Metric]: [unusual value] (normally [expected range])
+• [Metric]: [unusual value] (normally [expected range])
+
+🔍 **Investigation**
+• [Possible causes for each anomaly]
+
+💡 **Action**
+• [What to do about it]
+
+[If no anomalies:]
+✅ **All Clear**
+• All metrics within normal ranges
+• [Brief summary of current state]`;
+  }
+  
+  if (q.includes('driver') || q.includes('working') || q.includes('top performer')) {
+    return `Respond using this EXACT format:
+
+🏆 **Top 3 Drivers**
+1. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+2. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+3. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+
+📉 **Bottom 3 (Dragging Down)**
+1. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+2. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+3. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+
+💡 **Focus**
+• Double down on: [top performer]
+• Fix or cut: [worst performer]`;
+  }
+  
+  if (q.includes('creative') || q.includes('ad ') || q.includes('ads')) {
+    return `Respond using this EXACT format:
+
+🏆 **Top Performing Ads**
+1. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
+2. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
+3. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
+
+😴 **Fatigued/Declining**
+• [Ads losing performance with trend]
+
+🎨 **What's Working**
+• [Creative patterns/themes performing well]
+
+💡 **Creative Direction**
+• [Recommendation for new creatives]`;
+  }
+  
+  if (q.includes('reactivat') || q.includes('paused') || q.includes('archived') || q.includes('inactive')) {
+    return `Respond using this EXACT format:
+
+🔍 **Inactive Items Found**
+• Campaigns: [X paused/archived]
+• Ad Sets: [Y paused/archived]
+• Ads: [Z paused/archived]
+
+🏆 **Best Reactivation Candidates**
+1. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
+2. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
+3. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
+
+💡 **Recommendation**
+• Turn back on: [top candidates]
+• Test budget: [suggested amount]
+• Watch for: [success criteria]`;
+  }
+  
+  // Default format
+  return `Respond with a structured analysis using bullet points. Include specific numbers from the data. End with a clear recommendation.`;
+}
+
+function getDeepDiveFormat(question) {
+  const q = question.toLowerCase();
+  
+  if (q.includes('scale') || q.includes('grow') || q.includes('increase') || q.includes('expand')) {
+    return `Respond using this EXACT format:
+
+📈 **Executive Summary**
+[2-3 sentences on scaling opportunity]
+
+🏆 **Scale Candidates**
+1. [Campaign/Adset]: Current spend [X], ROAS [Y], Headroom [Z%]
+2. [Campaign/Adset]: Current spend [X], ROAS [Y], Headroom [Z%]
+
+💰 **Budget Recommendation**
+• Add [amount] total, distributed as:
+  - [Campaign 1]: +[amount]
+  - [Campaign 2]: +[amount]
+• Phase: Start with [X%] increase, then [Y%] after [Z] days
+
+⚠️ **Watch Metrics**
+• [Metrics to monitor while scaling]
+• Red flag if: [warning signs]
+
+⚡ **Next Steps**
+1. [First action]
+2. [Second action]
+3. [Third action]`;
+  }
+  
+  if (q.includes('cut') || q.includes('pause') || q.includes('stop') || q.includes('kill')) {
+    return `Respond using this EXACT format:
+
+📉 **Executive Summary**
+[2-3 sentences on what's dragging performance]
+
+🚫 **Cut List**
+1. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
+2. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
+3. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
+
+💰 **Savings**
+• Total budget freed: [amount]
+• Expected ROAS improvement: [X%]
+
+🔄 **Reallocate To**
+• [Where to move the freed budget]
+
+⚡ **Next Steps**
+1. [First action]
+2. [Second action]
+3. [Third action]`;
+  }
+  
+  if (q.includes('budget') || q.includes('allocat') || q.includes('realloc')) {
+    return `Respond using this EXACT format:
+
+📊 **Current Allocation**
+• [Campaign/Country 1]: [amount] ([%]) - ROAS [X]
+• [Campaign/Country 2]: [amount] ([%]) - ROAS [X]
+• [Campaign/Country 3]: [amount] ([%]) - ROAS [X]
+
+⚖️ **Efficiency Analysis**
+• Most efficient: [where ROAS is highest]
+• Least efficient: [where ROAS is lowest]
+
+🔄 **Recommended Shifts**
+• Move [amount] from [A] to [B]
+• Move [amount] from [C] to [D]
+
+💰 **New Allocation**
+• [Campaign/Country 1]: [new amount] ([%])
+• [Campaign/Country 2]: [new amount] ([%])
+
+📈 **Expected Impact**
+• Projected ROAS improvement: [X%]
+• Projected revenue increase: [amount]
+
+⚡ **Next Steps**
+1. [First action]
+2. [Second action]`;
+  }
+  
+  if (q.includes('structure') || q.includes('reorganize') || q.includes('campaign structure')) {
+    return `Respond using this EXACT format:
+
+🏗️ **Current Structure**
+• [How campaigns are currently organized]
+• Total: [X] campaigns, [Y] ad sets, [Z] ads
+
+⚠️ **Issues Found**
+• [Issue 1: overlap, fragmentation, etc.]
+• [Issue 2]
+
+🎯 **Recommended Structure**
+• [Proposed organization]
+• [Naming convention suggestion]
+
+📋 **Migration Plan**
+1. [Step 1]
+2. [Step 2]
+3. [Step 3]
+
+⚡ **Next Steps**
+1. [Priority action]
+2. [Second action]`;
+  }
+  
+  if (q.includes('creative') || q.includes('roadmap') || q.includes('ad strategy')) {
+    return `Respond using this EXACT format:
+
+🏆 **Top Performers**
+• [Ad/Creative 1]: Why it works - [insight]
+• [Ad/Creative 2]: Why it works - [insight]
+
+😴 **Fatigued Creatives**
+• [Ads that need refreshing]
+
+🎨 **Creative Gaps**
+• Missing: [types of creatives not being tested]
+
+📋 **Production List**
+1. [HIGH PRIORITY] [Creative concept 1]
+2. [MEDIUM] [Creative concept 2]
+3. [MEDIUM] [Creative concept 3]
+
+🧪 **Test Ideas**
+• [Variation ideas to try]
+
+⚡ **Next Steps**
+1. [First creative to produce]
+2. [Tests to launch]`;
+  }
+  
+  if (q.includes('audience') || q.includes('targeting') || q.includes('lookalike')) {
+    return `Respond using this EXACT format:
+
+👥 **Current Audiences**
+• [List of audiences being targeted]
+
+🏆 **Best Performers**
+1. [Audience]: ROAS [X], Conv rate [Y%]
+2. [Audience]: ROAS [X], Conv rate [Y%]
+
+📉 **Underperformers**
+• [Audiences to cut or refine]
+
+🆕 **Expansion Ideas**
+• [New audiences to test]
+
+🎯 **Lookalike Strategy**
+• [LAL recommendations based on best converters]
+
+⚡ **Next Steps**
+1. [First audience action]
+2. [Second action]`;
+  }
+  
+  if (q.includes('test') || q.includes('experiment') || q.includes('try')) {
+    return `Respond using this EXACT format:
+
+📊 **Current State**
+• [What we know from the data]
+
+❓ **Knowledge Gaps**
+• [What we need to learn]
+
+🧪 **Test Queue**
+1. [HIGH PRIORITY] [Test A]
+   - Hypothesis: [what we expect]
+   - Success metric: [how to measure]
+   - Budget: [amount]
+
+2. [MEDIUM] [Test B]
+   - Hypothesis: [what we expect]
+   - Success metric: [how to measure]
+   - Budget: [amount]
+
+⚡ **Next Steps**
+1. Launch [first test]
+2. Run for [duration]
+3. Evaluate and iterate`;
+  }
+  
+  if (q.includes('risk') || q.includes('efficiency') || q.includes('health')) {
+    return `Respond using this EXACT format:
+
+✅ **What's Healthy**
+• [Strong areas in the account]
+
+⚠️ **Risk Areas**
+• [Concentration risk, fatigue, dependency issues]
+
+📉 **Inefficiencies**
+• [Wasted spend, overlap, etc.]
+
+🛡️ **Mitigation Plan**
+• [How to reduce each risk]
+
+📊 **Quick Efficiency Wins**
+1. [Win 1 with expected savings]
+2. [Win 2 with expected savings]
+
+⚡ **Next Steps**
+1. [Priority fix]
+2. [Second fix]`;
+  }
+  
+  if (q.includes('reactivat') || q.includes('turn back on') || q.includes('paused') || q.includes('reviv')) {
+    return `Respond using this EXACT format:
+
+🔍 **Candidates Found**
+• [X] campaigns, [Y] ad sets, [Z] ads eligible
+
+🏆 **Priority Reactivations** (by score)
+1. [Name] - Score: [X/10]
+   - Historical: ROAS [X], Revenue [Y]
+   - Why paused: [reason if known]
+   - Test budget: [amount]
+
+2. [Name] - Score: [X/10]
+   - Historical: ROAS [X], Revenue [Y]
+   - Test budget: [amount]
+
+📋 **Reactivation Schedule**
+• Week 1: Reactivate [top 1-2]
+• Week 2: Evaluate and add [next batch]
+
+👀 **Success Criteria**
+• Day 1-3: [what to watch]
+• Day 4-7: [decision point]
+
+⚡ **Next Steps**
+1. [First reactivation action]
+2. [Monitoring setup]
+3. [Evaluation checkpoint]`;
+  }
+  
+  // Default strategic format
+  return `Respond with:
+📈 **Executive Summary** (2-3 sentences)
+📊 **Analysis** (key findings with numbers)
+🎯 **Recommendations** (numbered, prioritized)
+⚡ **Next Steps** (1-2-3 actions)`;
+}
+
+// ============================================================================
 // PROMPT BUILDING
 // ============================================================================
 
-function buildSystemPrompt(store, mode, data) {
+function buildSystemPrompt(store, mode, data, question = '') {
   const hasOtherStore = data.vironax && data.shawq;
   const hasReactivationData = data.reactivationCandidates &&
     ((data.reactivationCandidates.campaigns?.length > 0) ||
@@ -614,7 +1047,10 @@ FUNNEL METRICS EXPLAINED:
 - purchase_rate: Purchase rate (conversions / checkout)
 - overall_cvr: Overall conversion rate (conversions / lpv)`;
 
-  const basePrompt = `You are an expert e-commerce analyst with access to FULL campaign hierarchy and funnel data.
+  // Currency symbol for formatting
+  const currencySymbol = store.toLowerCase() === 'vironax' ? 'SAR' : '$';
+
+  const basePrompt = `You are an expert e-commerce growth analyst and trusted advisor with access to FULL campaign hierarchy and funnel data.
 ${storeInfo}
 ${structureInfo}
 ${dataStructureInfo}
@@ -627,28 +1063,53 @@ ${reactivationInfo}
 DATA:
 ${JSON.stringify(data, null, 2)}
 
-RULES:
+FORMATTING RULES:
 - Use ONLY this data, never invent numbers
-- VironaX = SAR, Shawq = USD
-- ROAS = revenue/spend
-- Be specific with real figures
+- VironaX = SAR, Shawq = USD (always include currency: "${currencySymbol}1,234" format)
+- Format large numbers with commas (1,234,567)
+- Round percentages to 1 decimal (12.5%)
+- Round currency to whole numbers unless under 10
+- ROAS = revenue/spend (show as "2.5x" format)
+- Be specific with real figures from the data
 - The data shows ACTIVE campaigns with full hierarchy (campaigns → adsets → ads)
 - You have LIFETIME data (since inception) AND period-specific data
 - Analyze funnel metrics (lpv_rate, atc_rate, checkout_rate, purchase_rate) to identify drop-offs
-- If asked about inactive/paused items, refer to reactivationCandidates data if available`;
+- If asked about inactive/paused items, refer to reactivationCandidates data if available
 
+RESPONSE STYLE:
+- Be direct and confident - you're a trusted growth advisor
+- Lead with the key insight or answer first
+- Use clear structure with line breaks between sections
+- Use bullet points (•) for lists, not dashes
+- If comparing, show the delta/change (↑ or ↓ with %)
+- End with a clear takeaway or recommended action when relevant`;
+
+  // Mode-specific instructions
   if (mode === 'analyze') {
-    return basePrompt + '\n\nMODE: Quick answer in 2-3 sentences max.';
+    return basePrompt + `
+
+MODE: ASK (Quick Facts)
+Answer in 2-3 sentences maximum. Be punchy and direct.
+• Lead with the exact number or fact requested
+• Add brief context if helpful (comparison to yesterday, benchmark, etc.)
+• No fluff, no caveats - just the answer
+
+Example format:
+"Total revenue is ${currencySymbol}45,230 for this period. That's ↑23% vs last period, driven mainly by Saudi Arabia."`;
   }
+  
   if (mode === 'summarize') {
-    return basePrompt + '\n\nMODE: Summarize trends, compare periods, flag anomalies.';
+    return basePrompt + `
+
+MODE: ANALYZE (Insights & Trends)
+${getAnalyzeFormat(question)}`;
   }
-  return basePrompt + `\n\nMODE: Strategic Decisions
-- Give detailed, actionable recommendations
-- Analyze each campaign with specific numbers
-- Include budget recommendations
-- Prioritize by impact
-- If reactivation candidates exist, evaluate them and recommend which to turn back on`;
+  
+  // Deep Dive / Strategic mode
+  return basePrompt + `
+
+MODE: DEEP DIVE (Strategic Analysis)
+${getDeepDiveFormat(question)}`;
 }
 
 // ============================================================================
@@ -674,8 +1135,8 @@ async function callResponsesAPI(model, systemPrompt, userMessage, maxTokens, rea
   return response.output_text;
 }
 
-async function callChatCompletionsAPI(model, systemPrompt, userMessage, maxTokens) {
-  console.log(`[OpenAI] Fallback to ${model} (max_tokens: ${maxTokens})`);
+async function callChatCompletionsAPI(model, systemPrompt, userMessage, maxTokens, temperature = 0.7) {
+  console.log(`[OpenAI] Fallback to ${model} (max_tokens: ${maxTokens}, temp: ${temperature})`);
   const response = await client.chat.completions.create({
     model,
     messages: [
@@ -683,18 +1144,18 @@ async function callChatCompletionsAPI(model, systemPrompt, userMessage, maxToken
       { role: 'user', content: userMessage }
     ],
     max_tokens: maxTokens,
-    temperature: 0.7
+    temperature
   });
   return response.choices[0].message.content;
 }
 
-async function callWithFallback(primary, fallback, systemPrompt, userMessage, maxTokens, reasoningEffort = null) {
+async function callWithFallback(primary, fallback, systemPrompt, userMessage, maxTokens, reasoningEffort = null, temperature = 0.7) {
   try {
     const text = await callResponsesAPI(primary, systemPrompt, userMessage, maxTokens, reasoningEffort);
     return { text, model: primary };
   } catch (error) {
     console.log(`[OpenAI] ${primary} failed: ${error.message}, trying ${fallback}`);
-    const text = await callChatCompletionsAPI(fallback, systemPrompt, userMessage, maxTokens);
+    const text = await callChatCompletionsAPI(fallback, systemPrompt, userMessage, maxTokens, temperature);
     return { text, model: fallback };
   }
 }
@@ -703,7 +1164,7 @@ async function callWithFallback(primary, fallback, systemPrompt, userMessage, ma
 // STREAMING - For real-time responses
 // ============================================================================
 
-async function streamWithFallback(primary, fallback, systemPrompt, userMessage, maxTokens, reasoningEffort, onDelta) {
+async function streamWithFallback(primary, fallback, systemPrompt, userMessage, maxTokens, reasoningEffort, onDelta, temperature = 0.7) {
   try {
     const requestBody = {
       model: primary,
@@ -739,7 +1200,7 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
         { role: 'user', content: userMessage }
       ],
       max_tokens: maxTokens,
-      temperature: 0.7,
+      temperature,
       stream: true
     });
 
@@ -756,48 +1217,80 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
 // EXPORTS - Analyze, Summarize, Decide
 // ============================================================================
 
+// Temperature settings per mode:
+// - analyze (quick facts): 0.3 for consistent, factual answers
+// - summarize (trends): 0.5 for balanced analysis  
+// - decide (strategic): 0.7 for creative recommendations
+const MODE_TEMPERATURES = {
+  analyze: 0.3,
+  summarize: 0.5,
+  decide: 0.7
+};
+
 export async function analyzeQuestion(question, store, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'analyze', data);
-  return await callWithFallback(MODELS.NANO, FALLBACK_MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano);
+  const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
+  
+  // Use GPT-4o directly for Ask mode - faster and more reliable
+  const text = await callChatCompletionsAPI(MODELS.ASK, systemPrompt, question, TOKEN_LIMITS.nano, MODE_TEMPERATURES.analyze);
+  return { text, model: MODELS.ASK };
 }
 
 export async function summarizeData(question, store, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'summarize', data);
-  return await callWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini);
+  const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
+  return await callWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, MODE_TEMPERATURES.summarize);
 }
 
 export async function decideQuestion(question, store, depth = 'balanced', history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'decide', data);
+  const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
-  const result = await callWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort);
+  const result = await callWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, MODE_TEMPERATURES.decide);
   return { ...result, reasoning: effort };
 }
 
 export async function decideQuestionStream(question, store, depth = 'balanced', onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'decide', data);
+  const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
-  return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta);
+  return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta, MODE_TEMPERATURES.decide);
 }
 
 // Streaming versions for Analyze and Summarize
 export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'analyze', data);
-  return await streamWithFallback(MODELS.NANO, FALLBACK_MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano, null, onDelta);
+  const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
+  
+  // Use GPT-4o directly for Ask mode - faster streaming
+  console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
+  const response = await client.chat.completions.create({
+    model: MODELS.ASK,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: question }
+    ],
+    max_tokens: TOKEN_LIMITS.nano,
+    temperature: MODE_TEMPERATURES.analyze,
+    stream: true
+  });
+
+  for await (const chunk of response) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) onDelta(delta);
+  }
+
+  return { model: MODELS.ASK, reasoning: null };
 }
 
 export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'summarize', data);
-  return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta);
+  const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
+  return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
 }
 
 // ============================================================================
