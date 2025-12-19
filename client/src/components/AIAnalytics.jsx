@@ -9,6 +9,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 // Import Meta Awareness feature module
 import {
@@ -267,7 +268,32 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
               <Sparkles className={`w-5 h-5 mt-0.5 flex-shrink-0 ${isError ? 'text-red-500' : 'text-blue-500'}`} />
             )}
             <div className="flex-1">
-              <div className="whitespace-pre-wrap break-words">{message.content}</div>
+              {isUser ? (
+                <div className="whitespace-pre-wrap break-words">{message.content}</div>
+              ) : (
+                <div className="prose prose-sm max-w-none prose-headings:font-semibold prose-headings:text-gray-900 prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-strong:text-gray-900 prose-strong:font-semibold">
+                  <ReactMarkdown
+                    components={{
+                      h1: ({children}) => <h1 className="text-lg font-bold mt-3 mb-2">{children}</h1>,
+                      h2: ({children}) => <h2 className="text-base font-bold mt-3 mb-2">{children}</h2>,
+                      h3: ({children}) => <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>,
+                      p: ({children}) => <p className="my-1.5 leading-relaxed">{children}</p>,
+                      ul: ({children}) => <ul className="my-1.5 space-y-0.5">{children}</ul>,
+                      ol: ({children}) => <ol className="my-1.5 space-y-0.5 list-decimal list-inside">{children}</ol>,
+                      li: ({children}) => <li className="leading-relaxed">{children}</li>,
+                      strong: ({children}) => <strong className="font-semibold text-gray-900">{children}</strong>,
+                      em: ({children}) => <em className="italic text-gray-700">{children}</em>,
+                      code: ({children}) => <code className="bg-gray-200 px-1 py-0.5 rounded text-sm font-mono">{children}</code>,
+                      hr: () => <hr className="my-3 border-gray-300" />,
+                      table: ({children}) => <table className="my-2 text-sm border-collapse">{children}</table>,
+                      th: ({children}) => <th className="border border-gray-300 px-2 py-1 bg-gray-200 font-semibold">{children}</th>,
+                      td: ({children}) => <td className="border border-gray-300 px-2 py-1">{children}</td>,
+                    }}
+                  >
+                    {message.content}
+                  </ReactMarkdown>
+                </div>
+              )}
               {message.metadata && message.metadata.model && (
                 <div className="mt-3 pt-3 border-t border-gray-300 text-xs opacity-60">
                   <span>{message.metadata.model}</span>
