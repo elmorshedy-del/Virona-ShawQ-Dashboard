@@ -737,38 +737,82 @@ Keep it scannable - user should get the picture in 30 seconds.`;
   return basePrompt + `
 
 MODE: DEEP DIVE (Strategic Analysis)
-Provide comprehensive, actionable analysis.
+Provide comprehensive, actionable analysis. Use the format that matches the question type:
 
-Structure your response with these sections (use only what's relevant to the question):
+🚀 **SCALE PLAN** (growth strategy):
+• 📈 Executive Summary: Overall scaling opportunity
+• 🏆 Scale Candidates: Top campaigns/adsets to increase
+• 📊 Current Performance: Their ROAS, spend, headroom
+• 💰 Budget Recommendation: How much to add, phased approach
+• ⚠️ Watch Metrics: What to monitor while scaling
+• ⚡ Next Steps: 1-2-3 implementation plan
 
-📈 **Executive Summary**
-2-3 sentences capturing the overall picture and main recommendation.
+✂️ **CUT PLAN** (pruning underperformers):
+• 📉 Executive Summary: What's dragging performance down
+• 🚫 Cut List: Campaigns/adsets/ads to pause
+• 📊 Their Numbers: Why they should be cut (CPA, ROAS, spend wasted)
+• 💰 Savings: Budget freed up
+• 🔄 Reallocate To: Where to move the budget
+• ⚡ Next Steps: 1-2-3 action plan
 
-📊 **Performance Breakdown**
-Analyze the key metrics with specific numbers:
-• Overall performance vs benchmarks
-• Top/bottom performers with context
-• Funnel analysis if relevant (where are we losing people?)
+💸 **BUDGET REALLOCATION** (optimize spend):
+• 📊 Current Allocation: Where budget is going now
+• ⚖️ Efficiency Analysis: ROAS by campaign/country
+• 🔄 Recommended Shifts: Move X from A to B
+• 💰 New Allocation: Proposed budget split
+• 📈 Expected Impact: Projected improvement
+• ⚡ Next Steps: How to implement
 
-🎯 **Recommendations**
-Numbered list of specific actions, prioritized by impact:
-1. [HIGH IMPACT] Specific action with expected outcome
-2. [MEDIUM] Another action...
+🧱 **CAMPAIGN STRUCTURE** (organization):
+• 🏗️ Current Structure: How campaigns are organized
+• ⚠️ Issues Found: Overlap, fragmentation, naming
+• 🎯 Recommended Structure: Proposed reorganization
+• 📋 Migration Plan: How to restructure
+• ⚡ Next Steps: Priority actions
 
-⚡ **Next Steps**
-Clear 1-2-3 of what to do first.
+🎬 **CREATIVE ROADMAP** (ad strategy):
+• 🏆 Top Performers: Best creatives and why they work
+• 😴 Fatigued Creatives: Ads losing steam
+• 🎨 Creative Gaps: What's missing from the mix
+• 📋 Production List: New creatives to make
+• 🧪 Test Ideas: Variations to try
+• ⚡ Next Steps: Creative priorities
 
-OPTIONAL SECTIONS (include only when relevant to the question):
+🧭 **AUDIENCE STRATEGY** (targeting):
+• 👥 Current Audiences: What's being targeted
+• 🏆 Best Performers: Highest converting audiences
+• 📉 Underperformers: Audiences to cut/refine
+• 🆕 Expansion Ideas: New audiences to test
+• 🎯 Lookalike Strategy: LAL recommendations
+• ⚡ Next Steps: Audience actions
 
-💰 **Budget Guidance** - Only if question involves spend, scaling, or budget allocation
+🧪 **TEST PLAN** (experimentation):
+• 📊 Current State: What we know from data
+• ❓ Knowledge Gaps: What we need to learn
+• 🧪 Test Queue: Prioritized experiments
+  1. [HIGH PRIORITY] Test A - Hypothesis, success metric
+  2. [MEDIUM] Test B - Hypothesis, success metric
+• 💰 Test Budgets: Recommended spend per test
+• ⚡ Next Steps: First test to launch
 
-🔄 **Reactivation Opportunities** - Only if asking about paused/inactive items or reactivation${hasReactivationData ? ', and there are candidates available' : ''}
+🛡️ **RISK & EFFICIENCY** (health check):
+• ✅ What's Healthy: Strong areas
+• ⚠️ Risk Areas: Concentration, fatigue, dependency
+• 📉 Inefficiencies: Wasted spend, overlap
+• 🛡️ Mitigation Plan: How to reduce risk
+• 📊 Efficiency Gains: Quick wins
+• ⚡ Next Steps: Priority fixes
 
-🎬 **Creative Insights** - Only if question is about ads/creatives performance
+🔄 **REACTIVATION PLAN** (reviving paused items):
+• 🔍 Candidates Found: X campaigns, Y adsets, Z ads
+• 🏆 Priority Reactivations: Best candidates ranked by score
+• 📊 Historical Performance: Past ROAS, revenue, why paused
+• 💰 Test Budget: Conservative starting budget each
+• 📋 Reactivation Schedule: Phased approach
+• 👀 Success Criteria: What to watch in first 3-5 days
+• ⚡ Next Steps: 1-2-3 to reactivate
 
-🌍 **Geo Analysis** - Only if question is about countries/regions
-
-Remember: Be specific, be actionable, use real numbers from the data. Skip sections that don't apply.`;
+Remember: Be specific, be actionable, use real numbers from the data.`;
 }
 
 // ============================================================================
