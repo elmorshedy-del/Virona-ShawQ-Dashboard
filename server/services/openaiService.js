@@ -16,6 +16,7 @@ const client = new OpenAI({
 });
 
 const MODELS = {
+  ASK: 'gpt-4o',           // Fast, direct answers - no fallback needed
   NANO: 'gpt-5-nano',
   MINI: 'gpt-5-mini',
   STRATEGIST: 'gpt-5.1'
@@ -769,7 +770,10 @@ const MODE_TEMPERATURES = {
 export async function analyzeQuestion(question, store, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data);
-  return await callWithFallback(MODELS.NANO, FALLBACK_MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano, null, MODE_TEMPERATURES.analyze);
+  
+  // Use GPT-4o directly for Ask mode - faster and more reliable
+  const text = await callChatCompletionsAPI(MODELS.ASK, systemPrompt, question, TOKEN_LIMITS.nano, MODE_TEMPERATURES.analyze);
+  return { text, model: MODELS.ASK };
 }
 
 export async function summarizeData(question, store, history = [], startDate = null, endDate = null) {
@@ -801,7 +805,26 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
 export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data);
-  return await streamWithFallback(MODELS.NANO, FALLBACK_MODELS.NANO, systemPrompt, question, TOKEN_LIMITS.nano, null, onDelta, MODE_TEMPERATURES.analyze);
+  
+  // Use GPT-4o directly for Ask mode - faster streaming
+  console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
+  const response = await client.chat.completions.create({
+    model: MODELS.ASK,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: question }
+    ],
+    max_tokens: TOKEN_LIMITS.nano,
+    temperature: MODE_TEMPERATURES.analyze,
+    stream: true
+  });
+
+  for await (const chunk of response) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) onDelta(delta);
+  }
+
+  return { model: MODELS.ASK, reasoning: null };
 }
 
 export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
