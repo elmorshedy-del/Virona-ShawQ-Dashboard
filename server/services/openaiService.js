@@ -670,23 +670,67 @@ Example format:
     return basePrompt + `
 
 MODE: ANALYZE (Insights & Trends)
-Provide a structured analysis in 4-8 bullet points.
+Provide a structured analysis. Use the format that matches the question type:
 
-Format your response like this:
-📊 **Overview**
-• Key headline metric and its trend
+📈 **SNAPSHOT** (overall performance):
+• 📊 Key Metrics: Revenue, ROAS, Spend, Orders, AOV
+• 📈 Trend: vs yesterday/last period
+• 🏆 Top Performer: Best campaign or country
+• 💡 Quick Take: One-line insight
 
-🔍 **Key Findings**
-• 2-3 most important insights with specific numbers
-• Compare to benchmarks or previous periods where relevant
+🔁 **PERIOD COMPARISON** (comparing timeframes):
+• 📅 This Period vs Last Period
+• ↑↓ Key Changes: What improved, what dropped (with %)
+• 🔍 Why: Main drivers of change
+• 💡 Implication: What this means
 
-⚠️ **Watch Out** (if any concerns)
-• Flag any anomalies, drops, or concerning patterns
+🌍 **COUNTRY LEADERBOARD** (geo performance):
+• 🥇🥈🥉 Top 3 Countries: Revenue + ROAS each
+• 📉 Underperformers: Countries to watch
+• 💰 Opportunity: Where to scale/cut
+• 💡 Action: Geo recommendation
 
-💡 **Quick Win**
-• One actionable suggestion based on the data
+🎯 **FUNNEL HEALTH** (conversion analysis):
+• 👀 Impressions → Clicks: CTR %
+• 🖱️ Clicks → LPV: Landing rate %
+• 🛒 LPV → ATC: Add to cart rate %
+• 💳 ATC → Purchase: Checkout rate %
+• 🚨 Leak: Biggest drop-off point
+• 💡 Fix: How to improve it
 
-Keep it scannable - the user should get the picture in 30 seconds.`;
+📣 **SPEND VS RESULTS** (efficiency):
+• 💸 Total Spend: Amount
+• 💰 Revenue Generated: Amount
+• 📊 ROAS: X.Xx
+• 📉 CPA: Cost per acquisition
+• ⚖️ Verdict: Efficient or needs work
+• 💡 Optimize: Suggestion
+
+🚨 **ANOMALY CHECK** (unusual patterns):
+• ✅ Normal: Metrics within range
+• ⚠️ Anomalies Found: List unusual spikes/drops
+• 🔍 Investigation: Possible causes
+• 💡 Action: What to do about it
+
+🧠 **TOP DRIVERS** (what's moving the needle):
+• 🏆 Top 3 Drivers: Campaigns/adsets driving results
+• 📊 Their Numbers: Spend, ROAS, conversions
+• 📉 Bottom 3: Worst performers dragging down
+• 💡 Focus: Where to double down
+
+🧪 **CREATIVE PERFORMANCE** (ad analysis):
+• 🏆 Top Ads: Best performing creatives
+• 📊 Their Stats: CTR, ROAS, conversions
+• 😴 Fatigued: Ads losing performance
+• 💡 Creative Direction: What's working
+
+🔄 **REACTIVATION CHECK** (paused items):
+• 🔍 Found: X campaigns, Y adsets, Z ads paused
+• 🏆 Best Candidates: Top scorers to reactivate
+• 📊 Historical Performance: Their past ROAS/results
+• 💡 Recommendation: Which to turn back on
+
+Keep it scannable - user should get the picture in 30 seconds.`;
   }
   
   // Deep Dive / Strategic mode
