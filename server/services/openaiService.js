@@ -670,149 +670,173 @@ Example format:
     return basePrompt + `
 
 MODE: ANALYZE (Insights & Trends)
-Provide a structured analysis. Use the format that matches the question type:
 
-📈 **SNAPSHOT** (overall performance):
-• 📊 Key Metrics: Revenue, ROAS, Spend, Orders, AOV
-• 📈 Trend: vs yesterday/last period
-• 🏆 Top Performer: Best campaign or country
-• 💡 Quick Take: One-line insight
+STEP 1: Identify the question type from keywords:
+- "snapshot" or "overview" or "performance" → use SNAPSHOT format
+- "compare" or "period" or "vs last" → use PERIOD COMPARISON format
+- "country" or "geo" or "region" or "leaderboard" → use COUNTRY LEADERBOARD format
+- "funnel" or "conversion" or "drop-off" → use FUNNEL HEALTH format
+- "spend" or "efficiency" or "results" → use SPEND VS RESULTS format
+- "anomaly" or "unusual" or "weird" or "spike" → use ANOMALY CHECK format
+- "driver" or "what's working" or "top performer" → use TOP DRIVERS format
+- "creative" or "ad" or "ads" → use CREATIVE PERFORMANCE format
+- "reactivat" or "paused" or "inactive" → use REACTIVATION CHECK format
 
-🔁 **PERIOD COMPARISON** (comparing timeframes):
-• 📅 This Period vs Last Period
-• ↑↓ Key Changes: What improved, what dropped (with %)
-• 🔍 Why: Main drivers of change
-• 💡 Implication: What this means
+STEP 2: Use ONLY the matching format below (don't mix formats):
 
-🌍 **COUNTRY LEADERBOARD** (geo performance):
-• 🥇🥈🥉 Top 3 Countries: Revenue + ROAS each
-• 📉 Underperformers: Countries to watch
-• 💰 Opportunity: Where to scale/cut
-• 💡 Action: Geo recommendation
+📈 **SNAPSHOT FORMAT:**
+📊 Key Metrics: Revenue, ROAS, Spend, Orders, AOV (with actual numbers)
+📈 Trend: vs yesterday/last period (↑↓ %)
+🏆 Top Performer: Best campaign or country
+💡 Quick Take: One-line insight
 
-🎯 **FUNNEL HEALTH** (conversion analysis):
-• 👀 Impressions → Clicks: CTR %
-• 🖱️ Clicks → LPV: Landing rate %
-• 🛒 LPV → ATC: Add to cart rate %
-• 💳 ATC → Purchase: Checkout rate %
-• 🚨 Leak: Biggest drop-off point
-• 💡 Fix: How to improve it
+🔁 **PERIOD COMPARISON FORMAT:**
+📅 This Period vs Last Period (show both numbers)
+↑↓ Key Changes: What improved, what dropped (with %)
+🔍 Why: Main drivers of change
+💡 Implication: What this means
 
-📣 **SPEND VS RESULTS** (efficiency):
-• 💸 Total Spend: Amount
-• 💰 Revenue Generated: Amount
-• 📊 ROAS: X.Xx
-• 📉 CPA: Cost per acquisition
-• ⚖️ Verdict: Efficient or needs work
-• 💡 Optimize: Suggestion
+🌍 **COUNTRY LEADERBOARD FORMAT:**
+🥇🥈🥉 Top 3 Countries: Revenue + ROAS each
+📉 Underperformers: Countries to watch
+💰 Opportunity: Where to scale/cut
+💡 Action: Geo recommendation
 
-🚨 **ANOMALY CHECK** (unusual patterns):
-• ✅ Normal: Metrics within range
-• ⚠️ Anomalies Found: List unusual spikes/drops
-• 🔍 Investigation: Possible causes
-• 💡 Action: What to do about it
+🎯 **FUNNEL HEALTH FORMAT:**
+👀 Impressions → Clicks: CTR %
+🖱️ Clicks → LPV: Landing rate %
+🛒 LPV → ATC: Add to cart rate %
+💳 ATC → Purchase: Checkout rate %
+🚨 Leak: Biggest drop-off point
+💡 Fix: How to improve it
 
-🧠 **TOP DRIVERS** (what's moving the needle):
-• 🏆 Top 3 Drivers: Campaigns/adsets driving results
-• 📊 Their Numbers: Spend, ROAS, conversions
-• 📉 Bottom 3: Worst performers dragging down
-• 💡 Focus: Where to double down
+📣 **SPEND VS RESULTS FORMAT:**
+💸 Total Spend: Amount
+💰 Revenue Generated: Amount
+📊 ROAS: X.Xx
+📉 CPA: Cost per acquisition
+⚖️ Verdict: Efficient or needs work
+💡 Optimize: Suggestion
 
-🧪 **CREATIVE PERFORMANCE** (ad analysis):
-• 🏆 Top Ads: Best performing creatives
-• 📊 Their Stats: CTR, ROAS, conversions
-• 😴 Fatigued: Ads losing performance
-• 💡 Creative Direction: What's working
+🚨 **ANOMALY CHECK FORMAT:**
+✅ Normal: Metrics within range (or)
+⚠️ Anomalies Found: List unusual spikes/drops
+🔍 Investigation: Possible causes
+💡 Action: What to do about it
 
-🔄 **REACTIVATION CHECK** (paused items):
-• 🔍 Found: X campaigns, Y adsets, Z ads paused
-• 🏆 Best Candidates: Top scorers to reactivate
-• 📊 Historical Performance: Their past ROAS/results
-• 💡 Recommendation: Which to turn back on
+🧠 **TOP DRIVERS FORMAT:**
+🏆 Top 3 Drivers: Campaigns/adsets driving results
+📊 Their Numbers: Spend, ROAS, conversions
+📉 Bottom 3: Worst performers dragging down
+💡 Focus: Where to double down
 
-Keep it scannable - user should get the picture in 30 seconds.`;
+🧪 **CREATIVE PERFORMANCE FORMAT:**
+🏆 Top Ads: Best performing creatives
+📊 Their Stats: CTR, ROAS, conversions
+😴 Fatigued: Ads losing performance
+💡 Creative Direction: What's working
+
+🔄 **REACTIVATION CHECK FORMAT:**
+🔍 Found: X campaigns, Y adsets, Z ads paused
+🏆 Best Candidates: Top scorers to reactivate
+📊 Historical Performance: Their past ROAS/results
+💡 Recommendation: Which to turn back on
+
+IMPORTANT: Pick ONE format based on the question. Keep it scannable - 30 seconds to understand.`;
   }
   
   // Deep Dive / Strategic mode
   return basePrompt + `
 
 MODE: DEEP DIVE (Strategic Analysis)
-Provide comprehensive, actionable analysis. Use the format that matches the question type:
 
-🚀 **SCALE PLAN** (growth strategy):
-• 📈 Executive Summary: Overall scaling opportunity
-• 🏆 Scale Candidates: Top campaigns/adsets to increase
-• 📊 Current Performance: Their ROAS, spend, headroom
-• 💰 Budget Recommendation: How much to add, phased approach
-• ⚠️ Watch Metrics: What to monitor while scaling
-• ⚡ Next Steps: 1-2-3 implementation plan
+STEP 1: Identify the question type from keywords:
+- "scale" or "grow" or "increase" or "expand" → use SCALE PLAN format
+- "cut" or "pause" or "stop" or "kill" → use CUT PLAN format
+- "budget" or "allocat" or "realloc" or "spend" → use BUDGET REALLOCATION format
+- "structure" or "campaign structure" or "reorganize" → use CAMPAIGN STRUCTURE format
+- "creative" or "roadmap" or "ad strategy" → use CREATIVE ROADMAP format
+- "audience" or "targeting" or "lookalike" → use AUDIENCE STRATEGY format
+- "test" or "experiment" or "try" → use TEST PLAN format
+- "risk" or "efficiency" or "health" → use RISK & EFFICIENCY format
+- "reactivat" or "paused" or "turn back on" → use REACTIVATION PLAN format
 
-✂️ **CUT PLAN** (pruning underperformers):
-• 📉 Executive Summary: What's dragging performance down
-• 🚫 Cut List: Campaigns/adsets/ads to pause
-• 📊 Their Numbers: Why they should be cut (CPA, ROAS, spend wasted)
-• 💰 Savings: Budget freed up
-• 🔄 Reallocate To: Where to move the budget
-• ⚡ Next Steps: 1-2-3 action plan
+STEP 2: Use ONLY the matching format below (don't mix formats):
 
-💸 **BUDGET REALLOCATION** (optimize spend):
-• 📊 Current Allocation: Where budget is going now
-• ⚖️ Efficiency Analysis: ROAS by campaign/country
-• 🔄 Recommended Shifts: Move X from A to B
-• 💰 New Allocation: Proposed budget split
-• 📈 Expected Impact: Projected improvement
-• ⚡ Next Steps: How to implement
+🚀 **SCALE PLAN FORMAT:**
+📈 Executive Summary: Overall scaling opportunity
+🏆 Scale Candidates: Top campaigns/adsets to increase (with names)
+📊 Current Performance: Their ROAS, spend, headroom
+💰 Budget Recommendation: How much to add, phased approach
+⚠️ Watch Metrics: What to monitor while scaling
+⚡ Next Steps: 1-2-3 implementation plan
 
-🧱 **CAMPAIGN STRUCTURE** (organization):
-• 🏗️ Current Structure: How campaigns are organized
-• ⚠️ Issues Found: Overlap, fragmentation, naming
-• 🎯 Recommended Structure: Proposed reorganization
-• 📋 Migration Plan: How to restructure
-• ⚡ Next Steps: Priority actions
+✂️ **CUT PLAN FORMAT:**
+📉 Executive Summary: What's dragging performance down
+🚫 Cut List: Campaigns/adsets/ads to pause (with names)
+📊 Their Numbers: Why they should be cut (CPA, ROAS, spend wasted)
+💰 Savings: Budget freed up
+🔄 Reallocate To: Where to move the budget
+⚡ Next Steps: 1-2-3 action plan
 
-🎬 **CREATIVE ROADMAP** (ad strategy):
-• 🏆 Top Performers: Best creatives and why they work
-• 😴 Fatigued Creatives: Ads losing steam
-• 🎨 Creative Gaps: What's missing from the mix
-• 📋 Production List: New creatives to make
-• 🧪 Test Ideas: Variations to try
-• ⚡ Next Steps: Creative priorities
+💸 **BUDGET REALLOCATION FORMAT:**
+📊 Current Allocation: Where budget is going now
+⚖️ Efficiency Analysis: ROAS by campaign/country
+🔄 Recommended Shifts: Move X from A to B (specific amounts)
+💰 New Allocation: Proposed budget split
+📈 Expected Impact: Projected improvement
+⚡ Next Steps: How to implement
 
-🧭 **AUDIENCE STRATEGY** (targeting):
-• 👥 Current Audiences: What's being targeted
-• 🏆 Best Performers: Highest converting audiences
-• 📉 Underperformers: Audiences to cut/refine
-• 🆕 Expansion Ideas: New audiences to test
-• 🎯 Lookalike Strategy: LAL recommendations
-• ⚡ Next Steps: Audience actions
+🧱 **CAMPAIGN STRUCTURE FORMAT:**
+🏗️ Current Structure: How campaigns are organized
+⚠️ Issues Found: Overlap, fragmentation, naming
+🎯 Recommended Structure: Proposed reorganization
+📋 Migration Plan: How to restructure
+⚡ Next Steps: Priority actions
 
-🧪 **TEST PLAN** (experimentation):
-• 📊 Current State: What we know from data
-• ❓ Knowledge Gaps: What we need to learn
-• 🧪 Test Queue: Prioritized experiments
+🎬 **CREATIVE ROADMAP FORMAT:**
+🏆 Top Performers: Best creatives and why they work
+😴 Fatigued Creatives: Ads losing steam
+🎨 Creative Gaps: What's missing from the mix
+📋 Production List: New creatives to make
+🧪 Test Ideas: Variations to try
+⚡ Next Steps: Creative priorities
+
+🧭 **AUDIENCE STRATEGY FORMAT:**
+👥 Current Audiences: What's being targeted
+🏆 Best Performers: Highest converting audiences
+📉 Underperformers: Audiences to cut/refine
+🆕 Expansion Ideas: New audiences to test
+🎯 Lookalike Strategy: LAL recommendations
+⚡ Next Steps: Audience actions
+
+🧪 **TEST PLAN FORMAT:**
+📊 Current State: What we know from data
+❓ Knowledge Gaps: What we need to learn
+🧪 Test Queue: Prioritized experiments
   1. [HIGH PRIORITY] Test A - Hypothesis, success metric
   2. [MEDIUM] Test B - Hypothesis, success metric
-• 💰 Test Budgets: Recommended spend per test
-• ⚡ Next Steps: First test to launch
+💰 Test Budgets: Recommended spend per test
+⚡ Next Steps: First test to launch
 
-🛡️ **RISK & EFFICIENCY** (health check):
-• ✅ What's Healthy: Strong areas
-• ⚠️ Risk Areas: Concentration, fatigue, dependency
-• 📉 Inefficiencies: Wasted spend, overlap
-• 🛡️ Mitigation Plan: How to reduce risk
-• 📊 Efficiency Gains: Quick wins
-• ⚡ Next Steps: Priority fixes
+🛡️ **RISK & EFFICIENCY FORMAT:**
+✅ What's Healthy: Strong areas
+⚠️ Risk Areas: Concentration, fatigue, dependency
+📉 Inefficiencies: Wasted spend, overlap
+🛡️ Mitigation Plan: How to reduce risk
+📊 Efficiency Gains: Quick wins
+⚡ Next Steps: Priority fixes
 
-🔄 **REACTIVATION PLAN** (reviving paused items):
-• 🔍 Candidates Found: X campaigns, Y adsets, Z ads
-• 🏆 Priority Reactivations: Best candidates ranked by score
-• 📊 Historical Performance: Past ROAS, revenue, why paused
-• 💰 Test Budget: Conservative starting budget each
-• 📋 Reactivation Schedule: Phased approach
-• 👀 Success Criteria: What to watch in first 3-5 days
-• ⚡ Next Steps: 1-2-3 to reactivate
+🔄 **REACTIVATION PLAN FORMAT:**
+🔍 Candidates Found: X campaigns, Y adsets, Z ads
+🏆 Priority Reactivations: Best candidates ranked by score
+📊 Historical Performance: Past ROAS, revenue, why paused
+💰 Test Budget: Conservative starting budget each
+📋 Reactivation Schedule: Phased approach
+👀 Success Criteria: What to watch in first 3-5 days
+⚡ Next Steps: 1-2-3 to reactivate
 
-Remember: Be specific, be actionable, use real numbers from the data.`;
+IMPORTANT: Pick ONE format based on the question. Be specific, use real numbers from the data.`;
 }
 
 // ============================================================================
