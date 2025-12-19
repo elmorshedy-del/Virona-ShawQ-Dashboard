@@ -532,10 +532,442 @@ function removeEmpty(obj) {
 }
 
 // ============================================================================
+// PILLAR FORMAT DETECTION
+// ============================================================================
+
+function getAnalyzeFormat(question) {
+  const q = question.toLowerCase();
+  
+  if (q.includes('snapshot') || q.includes('overview') || q.includes('all key metrics')) {
+    return `Respond using this EXACT format:
+
+📊 **Key Metrics**
+• Revenue: [amount with currency]
+• ROAS: [X.Xx]
+• Spend: [amount]
+• Orders: [number]
+• AOV: [amount]
+
+📈 **Trend**
+• vs Yesterday/Last Period: [↑↓ % for key metrics]
+
+🏆 **Top Performer**
+• [Best campaign or country with numbers]
+
+💡 **Quick Take**
+• [One-line actionable insight]`;
+  }
+  
+  if (q.includes('compare') || q.includes('period') || q.includes('previous')) {
+    return `Respond using this EXACT format:
+
+📅 **This Period vs Last Period**
+• Revenue: [this] vs [last] ([↑↓ %])
+• ROAS: [this] vs [last] ([↑↓ %])
+• Spend: [this] vs [last] ([↑↓ %])
+• Orders: [this] vs [last] ([↑↓ %])
+
+↑↓ **Key Changes**
+• Improved: [what went up with %]
+• Dropped: [what went down with %]
+
+🔍 **Why**
+• [Main drivers of change]
+
+💡 **Implication**
+• [What this means for the business]`;
+  }
+  
+  if (q.includes('country') || q.includes('countries') || q.includes('geo') || q.includes('leaderboard')) {
+    return `Respond using this EXACT format:
+
+🥇🥈🥉 **Top Countries**
+1. [Country]: [Revenue] | ROAS: [X.Xx]
+2. [Country]: [Revenue] | ROAS: [X.Xx]
+3. [Country]: [Revenue] | ROAS: [X.Xx]
+
+📉 **Underperformers**
+• [Countries with poor ROAS or high spend, low returns]
+
+💰 **Opportunity**
+• Scale: [where to increase]
+• Cut: [where to decrease]
+
+💡 **Action**
+• [Specific geo recommendation]`;
+  }
+  
+  if (q.includes('funnel') || q.includes('conversion')) {
+    return `Respond using this EXACT format:
+
+🎯 **Funnel Breakdown**
+👀 Impressions → Clicks: [CTR %]
+🖱️ Clicks → LPV: [Landing rate %]
+🛒 LPV → ATC: [Add to cart rate %]
+💳 ATC → Checkout: [Checkout rate %]
+✅ Checkout → Purchase: [Purchase rate %]
+
+🚨 **Biggest Leak**
+• [Stage with biggest drop-off] - losing [X%] here
+
+🔍 **Why**
+• [Possible reasons for the leak]
+
+💡 **Fix**
+• [Specific recommendation to improve]`;
+  }
+  
+  if (q.includes('spend') || q.includes('results') || q.includes('efficiency')) {
+    return `Respond using this EXACT format:
+
+💸 **Spend Overview**
+• Total Spend: [amount]
+• Revenue Generated: [amount]
+• ROAS: [X.Xx]
+• CPA: [amount per conversion]
+
+⚖️ **Efficiency Verdict**
+• [Efficient/Needs Work/Critical] - [brief explanation]
+
+📊 **By Campaign**
+• Best: [campaign] - [ROAS]
+• Worst: [campaign] - [ROAS]
+
+💡 **Optimize**
+• [Specific recommendation to improve efficiency]`;
+  }
+  
+  if (q.includes('anomal') || q.includes('unusual') || q.includes('weird') || q.includes('spike')) {
+    return `Respond using this EXACT format:
+
+🔍 **Anomaly Scan**
+
+[If anomalies found:]
+⚠️ **Anomalies Detected**
+• [Metric]: [unusual value] (normally [expected range])
+• [Metric]: [unusual value] (normally [expected range])
+
+🔍 **Investigation**
+• [Possible causes for each anomaly]
+
+💡 **Action**
+• [What to do about it]
+
+[If no anomalies:]
+✅ **All Clear**
+• All metrics within normal ranges
+• [Brief summary of current state]`;
+  }
+  
+  if (q.includes('driver') || q.includes('working') || q.includes('top performer')) {
+    return `Respond using this EXACT format:
+
+🏆 **Top 3 Drivers**
+1. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+2. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+3. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+
+📉 **Bottom 3 (Dragging Down)**
+1. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+2. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+3. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+
+💡 **Focus**
+• Double down on: [top performer]
+• Fix or cut: [worst performer]`;
+  }
+  
+  if (q.includes('creative') || q.includes('ad ') || q.includes('ads')) {
+    return `Respond using this EXACT format:
+
+🏆 **Top Performing Ads**
+1. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
+2. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
+3. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
+
+😴 **Fatigued/Declining**
+• [Ads losing performance with trend]
+
+🎨 **What's Working**
+• [Creative patterns/themes performing well]
+
+💡 **Creative Direction**
+• [Recommendation for new creatives]`;
+  }
+  
+  if (q.includes('reactivat') || q.includes('paused') || q.includes('archived') || q.includes('inactive')) {
+    return `Respond using this EXACT format:
+
+🔍 **Inactive Items Found**
+• Campaigns: [X paused/archived]
+• Ad Sets: [Y paused/archived]
+• Ads: [Z paused/archived]
+
+🏆 **Best Reactivation Candidates**
+1. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
+2. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
+3. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
+
+💡 **Recommendation**
+• Turn back on: [top candidates]
+• Test budget: [suggested amount]
+• Watch for: [success criteria]`;
+  }
+  
+  // Default format
+  return `Respond with a structured analysis using bullet points. Include specific numbers from the data. End with a clear recommendation.`;
+}
+
+function getDeepDiveFormat(question) {
+  const q = question.toLowerCase();
+  
+  if (q.includes('scale') || q.includes('grow') || q.includes('increase') || q.includes('expand')) {
+    return `Respond using this EXACT format:
+
+📈 **Executive Summary**
+[2-3 sentences on scaling opportunity]
+
+🏆 **Scale Candidates**
+1. [Campaign/Adset]: Current spend [X], ROAS [Y], Headroom [Z%]
+2. [Campaign/Adset]: Current spend [X], ROAS [Y], Headroom [Z%]
+
+💰 **Budget Recommendation**
+• Add [amount] total, distributed as:
+  - [Campaign 1]: +[amount]
+  - [Campaign 2]: +[amount]
+• Phase: Start with [X%] increase, then [Y%] after [Z] days
+
+⚠️ **Watch Metrics**
+• [Metrics to monitor while scaling]
+• Red flag if: [warning signs]
+
+⚡ **Next Steps**
+1. [First action]
+2. [Second action]
+3. [Third action]`;
+  }
+  
+  if (q.includes('cut') || q.includes('pause') || q.includes('stop') || q.includes('kill')) {
+    return `Respond using this EXACT format:
+
+📉 **Executive Summary**
+[2-3 sentences on what's dragging performance]
+
+🚫 **Cut List**
+1. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
+2. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
+3. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
+
+💰 **Savings**
+• Total budget freed: [amount]
+• Expected ROAS improvement: [X%]
+
+🔄 **Reallocate To**
+• [Where to move the freed budget]
+
+⚡ **Next Steps**
+1. [First action]
+2. [Second action]
+3. [Third action]`;
+  }
+  
+  if (q.includes('budget') || q.includes('allocat') || q.includes('realloc')) {
+    return `Respond using this EXACT format:
+
+📊 **Current Allocation**
+• [Campaign/Country 1]: [amount] ([%]) - ROAS [X]
+• [Campaign/Country 2]: [amount] ([%]) - ROAS [X]
+• [Campaign/Country 3]: [amount] ([%]) - ROAS [X]
+
+⚖️ **Efficiency Analysis**
+• Most efficient: [where ROAS is highest]
+• Least efficient: [where ROAS is lowest]
+
+🔄 **Recommended Shifts**
+• Move [amount] from [A] to [B]
+• Move [amount] from [C] to [D]
+
+💰 **New Allocation**
+• [Campaign/Country 1]: [new amount] ([%])
+• [Campaign/Country 2]: [new amount] ([%])
+
+📈 **Expected Impact**
+• Projected ROAS improvement: [X%]
+• Projected revenue increase: [amount]
+
+⚡ **Next Steps**
+1. [First action]
+2. [Second action]`;
+  }
+  
+  if (q.includes('structure') || q.includes('reorganize') || q.includes('campaign structure')) {
+    return `Respond using this EXACT format:
+
+🏗️ **Current Structure**
+• [How campaigns are currently organized]
+• Total: [X] campaigns, [Y] ad sets, [Z] ads
+
+⚠️ **Issues Found**
+• [Issue 1: overlap, fragmentation, etc.]
+• [Issue 2]
+
+🎯 **Recommended Structure**
+• [Proposed organization]
+• [Naming convention suggestion]
+
+📋 **Migration Plan**
+1. [Step 1]
+2. [Step 2]
+3. [Step 3]
+
+⚡ **Next Steps**
+1. [Priority action]
+2. [Second action]`;
+  }
+  
+  if (q.includes('creative') || q.includes('roadmap') || q.includes('ad strategy')) {
+    return `Respond using this EXACT format:
+
+🏆 **Top Performers**
+• [Ad/Creative 1]: Why it works - [insight]
+• [Ad/Creative 2]: Why it works - [insight]
+
+😴 **Fatigued Creatives**
+• [Ads that need refreshing]
+
+🎨 **Creative Gaps**
+• Missing: [types of creatives not being tested]
+
+📋 **Production List**
+1. [HIGH PRIORITY] [Creative concept 1]
+2. [MEDIUM] [Creative concept 2]
+3. [MEDIUM] [Creative concept 3]
+
+🧪 **Test Ideas**
+• [Variation ideas to try]
+
+⚡ **Next Steps**
+1. [First creative to produce]
+2. [Tests to launch]`;
+  }
+  
+  if (q.includes('audience') || q.includes('targeting') || q.includes('lookalike')) {
+    return `Respond using this EXACT format:
+
+👥 **Current Audiences**
+• [List of audiences being targeted]
+
+🏆 **Best Performers**
+1. [Audience]: ROAS [X], Conv rate [Y%]
+2. [Audience]: ROAS [X], Conv rate [Y%]
+
+📉 **Underperformers**
+• [Audiences to cut or refine]
+
+🆕 **Expansion Ideas**
+• [New audiences to test]
+
+🎯 **Lookalike Strategy**
+• [LAL recommendations based on best converters]
+
+⚡ **Next Steps**
+1. [First audience action]
+2. [Second action]`;
+  }
+  
+  if (q.includes('test') || q.includes('experiment') || q.includes('try')) {
+    return `Respond using this EXACT format:
+
+📊 **Current State**
+• [What we know from the data]
+
+❓ **Knowledge Gaps**
+• [What we need to learn]
+
+🧪 **Test Queue**
+1. [HIGH PRIORITY] [Test A]
+   - Hypothesis: [what we expect]
+   - Success metric: [how to measure]
+   - Budget: [amount]
+
+2. [MEDIUM] [Test B]
+   - Hypothesis: [what we expect]
+   - Success metric: [how to measure]
+   - Budget: [amount]
+
+⚡ **Next Steps**
+1. Launch [first test]
+2. Run for [duration]
+3. Evaluate and iterate`;
+  }
+  
+  if (q.includes('risk') || q.includes('efficiency') || q.includes('health')) {
+    return `Respond using this EXACT format:
+
+✅ **What's Healthy**
+• [Strong areas in the account]
+
+⚠️ **Risk Areas**
+• [Concentration risk, fatigue, dependency issues]
+
+📉 **Inefficiencies**
+• [Wasted spend, overlap, etc.]
+
+🛡️ **Mitigation Plan**
+• [How to reduce each risk]
+
+📊 **Quick Efficiency Wins**
+1. [Win 1 with expected savings]
+2. [Win 2 with expected savings]
+
+⚡ **Next Steps**
+1. [Priority fix]
+2. [Second fix]`;
+  }
+  
+  if (q.includes('reactivat') || q.includes('turn back on') || q.includes('paused') || q.includes('reviv')) {
+    return `Respond using this EXACT format:
+
+🔍 **Candidates Found**
+• [X] campaigns, [Y] ad sets, [Z] ads eligible
+
+🏆 **Priority Reactivations** (by score)
+1. [Name] - Score: [X/10]
+   - Historical: ROAS [X], Revenue [Y]
+   - Why paused: [reason if known]
+   - Test budget: [amount]
+
+2. [Name] - Score: [X/10]
+   - Historical: ROAS [X], Revenue [Y]
+   - Test budget: [amount]
+
+📋 **Reactivation Schedule**
+• Week 1: Reactivate [top 1-2]
+• Week 2: Evaluate and add [next batch]
+
+👀 **Success Criteria**
+• Day 1-3: [what to watch]
+• Day 4-7: [decision point]
+
+⚡ **Next Steps**
+1. [First reactivation action]
+2. [Monitoring setup]
+3. [Evaluation checkpoint]`;
+  }
+  
+  // Default strategic format
+  return `Respond with:
+📈 **Executive Summary** (2-3 sentences)
+📊 **Analysis** (key findings with numbers)
+🎯 **Recommendations** (numbered, prioritized)
+⚡ **Next Steps** (1-2-3 actions)`;
+}
+
+// ============================================================================
 // PROMPT BUILDING
 // ============================================================================
 
-function buildSystemPrompt(store, mode, data) {
+function buildSystemPrompt(store, mode, data, question = '') {
   const hasOtherStore = data.vironax && data.shawq;
   const hasReactivationData = data.reactivationCandidates &&
     ((data.reactivationCandidates.campaigns?.length > 0) ||
@@ -670,173 +1102,14 @@ Example format:
     return basePrompt + `
 
 MODE: ANALYZE (Insights & Trends)
-
-STEP 1: Identify the question type from keywords:
-- "snapshot" or "overview" or "performance" → use SNAPSHOT format
-- "compare" or "period" or "vs last" → use PERIOD COMPARISON format
-- "country" or "geo" or "region" or "leaderboard" → use COUNTRY LEADERBOARD format
-- "funnel" or "conversion" or "drop-off" → use FUNNEL HEALTH format
-- "spend" or "efficiency" or "results" → use SPEND VS RESULTS format
-- "anomaly" or "unusual" or "weird" or "spike" → use ANOMALY CHECK format
-- "driver" or "what's working" or "top performer" → use TOP DRIVERS format
-- "creative" or "ad" or "ads" → use CREATIVE PERFORMANCE format
-- "reactivat" or "paused" or "inactive" → use REACTIVATION CHECK format
-
-STEP 2: Use ONLY the matching format below (don't mix formats):
-
-📈 **SNAPSHOT FORMAT:**
-📊 Key Metrics: Revenue, ROAS, Spend, Orders, AOV (with actual numbers)
-📈 Trend: vs yesterday/last period (↑↓ %)
-🏆 Top Performer: Best campaign or country
-💡 Quick Take: One-line insight
-
-🔁 **PERIOD COMPARISON FORMAT:**
-📅 This Period vs Last Period (show both numbers)
-↑↓ Key Changes: What improved, what dropped (with %)
-🔍 Why: Main drivers of change
-💡 Implication: What this means
-
-🌍 **COUNTRY LEADERBOARD FORMAT:**
-🥇🥈🥉 Top 3 Countries: Revenue + ROAS each
-📉 Underperformers: Countries to watch
-💰 Opportunity: Where to scale/cut
-💡 Action: Geo recommendation
-
-🎯 **FUNNEL HEALTH FORMAT:**
-👀 Impressions → Clicks: CTR %
-🖱️ Clicks → LPV: Landing rate %
-🛒 LPV → ATC: Add to cart rate %
-💳 ATC → Purchase: Checkout rate %
-🚨 Leak: Biggest drop-off point
-💡 Fix: How to improve it
-
-📣 **SPEND VS RESULTS FORMAT:**
-💸 Total Spend: Amount
-💰 Revenue Generated: Amount
-📊 ROAS: X.Xx
-📉 CPA: Cost per acquisition
-⚖️ Verdict: Efficient or needs work
-💡 Optimize: Suggestion
-
-🚨 **ANOMALY CHECK FORMAT:**
-✅ Normal: Metrics within range (or)
-⚠️ Anomalies Found: List unusual spikes/drops
-🔍 Investigation: Possible causes
-💡 Action: What to do about it
-
-🧠 **TOP DRIVERS FORMAT:**
-🏆 Top 3 Drivers: Campaigns/adsets driving results
-📊 Their Numbers: Spend, ROAS, conversions
-📉 Bottom 3: Worst performers dragging down
-💡 Focus: Where to double down
-
-🧪 **CREATIVE PERFORMANCE FORMAT:**
-🏆 Top Ads: Best performing creatives
-📊 Their Stats: CTR, ROAS, conversions
-😴 Fatigued: Ads losing performance
-💡 Creative Direction: What's working
-
-🔄 **REACTIVATION CHECK FORMAT:**
-🔍 Found: X campaigns, Y adsets, Z ads paused
-🏆 Best Candidates: Top scorers to reactivate
-📊 Historical Performance: Their past ROAS/results
-💡 Recommendation: Which to turn back on
-
-IMPORTANT: Pick ONE format based on the question. Keep it scannable - 30 seconds to understand.`;
+${getAnalyzeFormat(question)}`;
   }
   
   // Deep Dive / Strategic mode
   return basePrompt + `
 
 MODE: DEEP DIVE (Strategic Analysis)
-
-STEP 1: Identify the question type from keywords:
-- "scale" or "grow" or "increase" or "expand" → use SCALE PLAN format
-- "cut" or "pause" or "stop" or "kill" → use CUT PLAN format
-- "budget" or "allocat" or "realloc" or "spend" → use BUDGET REALLOCATION format
-- "structure" or "campaign structure" or "reorganize" → use CAMPAIGN STRUCTURE format
-- "creative" or "roadmap" or "ad strategy" → use CREATIVE ROADMAP format
-- "audience" or "targeting" or "lookalike" → use AUDIENCE STRATEGY format
-- "test" or "experiment" or "try" → use TEST PLAN format
-- "risk" or "efficiency" or "health" → use RISK & EFFICIENCY format
-- "reactivat" or "paused" or "turn back on" → use REACTIVATION PLAN format
-
-STEP 2: Use ONLY the matching format below (don't mix formats):
-
-🚀 **SCALE PLAN FORMAT:**
-📈 Executive Summary: Overall scaling opportunity
-🏆 Scale Candidates: Top campaigns/adsets to increase (with names)
-📊 Current Performance: Their ROAS, spend, headroom
-💰 Budget Recommendation: How much to add, phased approach
-⚠️ Watch Metrics: What to monitor while scaling
-⚡ Next Steps: 1-2-3 implementation plan
-
-✂️ **CUT PLAN FORMAT:**
-📉 Executive Summary: What's dragging performance down
-🚫 Cut List: Campaigns/adsets/ads to pause (with names)
-📊 Their Numbers: Why they should be cut (CPA, ROAS, spend wasted)
-💰 Savings: Budget freed up
-🔄 Reallocate To: Where to move the budget
-⚡ Next Steps: 1-2-3 action plan
-
-💸 **BUDGET REALLOCATION FORMAT:**
-📊 Current Allocation: Where budget is going now
-⚖️ Efficiency Analysis: ROAS by campaign/country
-🔄 Recommended Shifts: Move X from A to B (specific amounts)
-💰 New Allocation: Proposed budget split
-📈 Expected Impact: Projected improvement
-⚡ Next Steps: How to implement
-
-🧱 **CAMPAIGN STRUCTURE FORMAT:**
-🏗️ Current Structure: How campaigns are organized
-⚠️ Issues Found: Overlap, fragmentation, naming
-🎯 Recommended Structure: Proposed reorganization
-📋 Migration Plan: How to restructure
-⚡ Next Steps: Priority actions
-
-🎬 **CREATIVE ROADMAP FORMAT:**
-🏆 Top Performers: Best creatives and why they work
-😴 Fatigued Creatives: Ads losing steam
-🎨 Creative Gaps: What's missing from the mix
-📋 Production List: New creatives to make
-🧪 Test Ideas: Variations to try
-⚡ Next Steps: Creative priorities
-
-🧭 **AUDIENCE STRATEGY FORMAT:**
-👥 Current Audiences: What's being targeted
-🏆 Best Performers: Highest converting audiences
-📉 Underperformers: Audiences to cut/refine
-🆕 Expansion Ideas: New audiences to test
-🎯 Lookalike Strategy: LAL recommendations
-⚡ Next Steps: Audience actions
-
-🧪 **TEST PLAN FORMAT:**
-📊 Current State: What we know from data
-❓ Knowledge Gaps: What we need to learn
-🧪 Test Queue: Prioritized experiments
-  1. [HIGH PRIORITY] Test A - Hypothesis, success metric
-  2. [MEDIUM] Test B - Hypothesis, success metric
-💰 Test Budgets: Recommended spend per test
-⚡ Next Steps: First test to launch
-
-🛡️ **RISK & EFFICIENCY FORMAT:**
-✅ What's Healthy: Strong areas
-⚠️ Risk Areas: Concentration, fatigue, dependency
-📉 Inefficiencies: Wasted spend, overlap
-🛡️ Mitigation Plan: How to reduce risk
-📊 Efficiency Gains: Quick wins
-⚡ Next Steps: Priority fixes
-
-🔄 **REACTIVATION PLAN FORMAT:**
-🔍 Candidates Found: X campaigns, Y adsets, Z ads
-🏆 Priority Reactivations: Best candidates ranked by score
-📊 Historical Performance: Past ROAS, revenue, why paused
-💰 Test Budget: Conservative starting budget each
-📋 Reactivation Schedule: Phased approach
-👀 Success Criteria: What to watch in first 3-5 days
-⚡ Next Steps: 1-2-3 to reactivate
-
-IMPORTANT: Pick ONE format based on the question. Be specific, use real numbers from the data.`;
+${getDeepDiveFormat(question)}`;
 }
 
 // ============================================================================
@@ -956,7 +1229,7 @@ const MODE_TEMPERATURES = {
 
 export async function analyzeQuestion(question, store, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'analyze', data);
+  const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
   
   // Use GPT-4o directly for Ask mode - faster and more reliable
   const text = await callChatCompletionsAPI(MODELS.ASK, systemPrompt, question, TOKEN_LIMITS.nano, MODE_TEMPERATURES.analyze);
@@ -965,13 +1238,13 @@ export async function analyzeQuestion(question, store, history = [], startDate =
 
 export async function summarizeData(question, store, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'summarize', data);
+  const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
   return await callWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, MODE_TEMPERATURES.summarize);
 }
 
 export async function decideQuestion(question, store, depth = 'balanced', history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'decide', data);
+  const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
@@ -981,7 +1254,7 @@ export async function decideQuestion(question, store, depth = 'balanced', histor
 
 export async function decideQuestionStream(question, store, depth = 'balanced', onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'decide', data);
+  const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
@@ -991,7 +1264,7 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
 // Streaming versions for Analyze and Summarize
 export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'analyze', data);
+  const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
   
   // Use GPT-4o directly for Ask mode - faster streaming
   console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
@@ -1016,7 +1289,7 @@ export async function analyzeQuestionStream(question, store, onDelta, history = 
 
 export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
-  const systemPrompt = buildSystemPrompt(store, 'summarize', data);
+  const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
   return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
 }
 
