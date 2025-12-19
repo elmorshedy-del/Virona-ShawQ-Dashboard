@@ -695,7 +695,7 @@ Keep it scannable - the user should get the picture in 30 seconds.`;
 MODE: DEEP DIVE (Strategic Analysis)
 Provide comprehensive, actionable analysis.
 
-Structure your response with clear sections:
+Structure your response with these sections (use only what's relevant to the question):
 
 📈 **Executive Summary**
 2-3 sentences capturing the overall picture and main recommendation.
@@ -711,26 +711,20 @@ Numbered list of specific actions, prioritized by impact:
 1. [HIGH IMPACT] Specific action with expected outcome
 2. [MEDIUM] Another action...
 
-Include specific numbers:
-• Budget amounts to allocate/shift
-• Target metrics to aim for
-• Timeline for implementation
-
-💰 **Budget Guidance** (if relevant)
-Specific allocation recommendations with rationale.
-
 ⚡ **Next Steps**
 Clear 1-2-3 of what to do first.
 
-${hasReactivationData ? `
-🔄 **Reactivation Opportunities**
-If there are good reactivation candidates, evaluate them:
-• Which to turn back on (prioritized by score)
-• Suggested test budget for each
-• What to watch for in first 3-5 days
-` : ''}
+OPTIONAL SECTIONS (include only when relevant to the question):
 
-Remember: Be specific, be actionable, use real numbers from the data.`;
+💰 **Budget Guidance** - Only if question involves spend, scaling, or budget allocation
+
+🔄 **Reactivation Opportunities** - Only if asking about paused/inactive items or reactivation${hasReactivationData ? ', and there are candidates available' : ''}
+
+🎬 **Creative Insights** - Only if question is about ads/creatives performance
+
+🌍 **Geo Analysis** - Only if question is about countries/regions
+
+Remember: Be specific, be actionable, use real numbers from the data. Skip sections that don't apply.`;
 }
 
 // ============================================================================
