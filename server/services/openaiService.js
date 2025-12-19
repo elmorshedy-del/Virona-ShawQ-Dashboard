@@ -539,428 +539,676 @@ function getAnalyzeFormat(question) {
   const q = question.toLowerCase();
   
   if (q.includes('snapshot') || q.includes('overview') || q.includes('all key metrics')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-📊 **Key Metrics**
-• Revenue: [amount with currency]
-• ROAS: [X.Xx]
-• Spend: [amount]
-• Orders: [number]
-• AOV: [amount]
+📊 KEY METRICS
+• Revenue → [amount]
+• Spend → [amount]  
+• ROAS → [X.Xx]
+• Orders → [number]
+• AOV → [amount]
 
-📈 **Trend**
-• vs Yesterday/Last Period: [↑↓ % for key metrics]
+📈 TREND vs Last Period
+• [Most important change with ↑↓ %]
 
-🏆 **Top Performer**
-• [Best campaign or country with numbers]
+🏆 TOP PERFORMER
+• [Best campaign or country] → [key metric]
 
-💡 **Quick Take**
-• [One-line actionable insight]`;
+💡 QUICK TAKE
+[One actionable sentence]`;
   }
   
   if (q.includes('compare') || q.includes('period') || q.includes('previous')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-📅 **This Period vs Last Period**
-• Revenue: [this] vs [last] ([↑↓ %])
-• ROAS: [this] vs [last] ([↑↓ %])
-• Spend: [this] vs [last] ([↑↓ %])
-• Orders: [this] vs [last] ([↑↓ %])
+📅 PERIOD COMPARISON
 
-↑↓ **Key Changes**
-• Improved: [what went up with %]
-• Dropped: [what went down with %]
+This Period          vs          Last Period
+─────────────────────────────────────────────
+Revenue    [amount]              [amount]    [↑↓%]
+ROAS       [X.Xx]                [X.Xx]      [↑↓%]
+Spend      [amount]              [amount]    [↑↓%]
+Orders     [number]              [number]    [↑↓%]
 
-🔍 **Why**
-• [Main drivers of change]
+📈 IMPROVED
+• [What went up and why]
 
-💡 **Implication**
-• [What this means for the business]`;
+📉 DROPPED  
+• [What went down and why]
+
+💡 WHAT THIS MEANS
+[One sentence implication]`;
   }
   
   if (q.includes('country') || q.includes('countries') || q.includes('geo') || q.includes('leaderboard')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🥇🥈🥉 **Top Countries**
-1. [Country]: [Revenue] | ROAS: [X.Xx]
-2. [Country]: [Revenue] | ROAS: [X.Xx]
-3. [Country]: [Revenue] | ROAS: [X.Xx]
+🌍 COUNTRY LEADERBOARD
 
-📉 **Underperformers**
-• [Countries with poor ROAS or high spend, low returns]
+🥇 [Country]
+   Revenue [amount] | ROAS [X.Xx] | [orders] orders
 
-💰 **Opportunity**
-• Scale: [where to increase]
-• Cut: [where to decrease]
+🥈 [Country]
+   Revenue [amount] | ROAS [X.Xx] | [orders] orders
 
-💡 **Action**
-• [Specific geo recommendation]`;
+🥉 [Country]
+   Revenue [amount] | ROAS [X.Xx] | [orders] orders
+
+📉 UNDERPERFORMERS
+• [Country] → ROAS [X.Xx] (below target)
+
+💡 GEO ACTION
+• Scale → [country]
+• Cut/Reduce → [country]`;
   }
   
   if (q.includes('funnel') || q.includes('conversion')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🎯 **Funnel Breakdown**
-👀 Impressions → Clicks: [CTR %]
-🖱️ Clicks → LPV: [Landing rate %]
-🛒 LPV → ATC: [Add to cart rate %]
-💳 ATC → Checkout: [Checkout rate %]
-✅ Checkout → Purchase: [Purchase rate %]
+🎯 FUNNEL HEALTH
 
-🚨 **Biggest Leak**
-• [Stage with biggest drop-off] - losing [X%] here
+👀 Impressions    [number]
+        ↓ [CTR %]
+🖱️ Clicks         [number]
+        ↓ [landing rate %]
+📄 Landing Views  [number]
+        ↓ [ATC rate %]
+🛒 Add to Cart    [number]
+        ↓ [checkout rate %]
+💳 Checkouts      [number]
+        ↓ [purchase rate %]
+✅ Purchases      [number]
 
-🔍 **Why**
-• [Possible reasons for the leak]
+🚨 BIGGEST LEAK
+[Stage name] → Losing [X%] of visitors here
 
-💡 **Fix**
-• [Specific recommendation to improve]`;
+💡 FIX
+[Specific recommendation]`;
   }
   
   if (q.includes('spend') || q.includes('results') || q.includes('efficiency')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-💸 **Spend Overview**
-• Total Spend: [amount]
-• Revenue Generated: [amount]
-• ROAS: [X.Xx]
-• CPA: [amount per conversion]
+💸 SPEND VS RESULTS
 
-⚖️ **Efficiency Verdict**
-• [Efficient/Needs Work/Critical] - [brief explanation]
+Spent        [amount]
+Revenue      [amount]
+─────────────────────
+ROAS         [X.Xx]
+CPA          [amount]
 
-📊 **By Campaign**
-• Best: [campaign] - [ROAS]
-• Worst: [campaign] - [ROAS]
+⚖️ VERDICT: [EFFICIENT ✅ / NEEDS WORK ⚠️ / CRITICAL 🚨]
+[One sentence explanation]
 
-💡 **Optimize**
-• [Specific recommendation to improve efficiency]`;
+📊 BY CAMPAIGN
+• Best → [name] at [ROAS]
+• Worst → [name] at [ROAS]
+
+💡 OPTIMIZE
+[Specific action to improve]`;
   }
   
   if (q.includes('anomal') || q.includes('unusual') || q.includes('weird') || q.includes('spike')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🔍 **Anomaly Scan**
+🔍 ANOMALY SCAN
 
 [If anomalies found:]
-⚠️ **Anomalies Detected**
-• [Metric]: [unusual value] (normally [expected range])
-• [Metric]: [unusual value] (normally [expected range])
+⚠️ ANOMALIES DETECTED
 
-🔍 **Investigation**
-• [Possible causes for each anomaly]
+1. [Metric] → [unusual value]
+   Normal range: [expected]
+   Possible cause: [reason]
 
-💡 **Action**
-• [What to do about it]
+2. [Metric] → [unusual value]
+   Normal range: [expected]
+   Possible cause: [reason]
+
+💡 ACTION NEEDED
+[What to investigate or fix]
 
 [If no anomalies:]
-✅ **All Clear**
-• All metrics within normal ranges
-• [Brief summary of current state]`;
+✅ ALL CLEAR
+All metrics within normal ranges.
+[Brief current state summary]`;
   }
   
   if (q.includes('driver') || q.includes('working') || q.includes('top performer')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🏆 **Top 3 Drivers**
-1. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
-2. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
-3. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+🏆 TOP DRIVERS (Carrying Performance)
 
-📉 **Bottom 3 (Dragging Down)**
-1. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
-2. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
-3. [Campaign/Adset]: Spend [X] → Revenue [Y] | ROAS [Z]
+1. [Campaign/Adset name]
+   Spend [X] → Revenue [Y] → ROAS [Z]
 
-💡 **Focus**
-• Double down on: [top performer]
-• Fix or cut: [worst performer]`;
+2. [Campaign/Adset name]
+   Spend [X] → Revenue [Y] → ROAS [Z]
+
+3. [Campaign/Adset name]
+   Spend [X] → Revenue [Y] → ROAS [Z]
+
+📉 BOTTOM PERFORMERS (Dragging Down)
+
+1. [Name] → ROAS [X] ← needs attention
+2. [Name] → ROAS [X]
+3. [Name] → ROAS [X]
+
+💡 FOCUS
+• Double down → [top performer]
+• Fix or cut → [worst performer]`;
   }
   
   if (q.includes('creative') || q.includes('ad ') || q.includes('ads')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🏆 **Top Performing Ads**
-1. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
-2. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
-3. [Ad name]: CTR [X%] | ROAS [Y] | [conversions] conv
+🎨 CREATIVE PERFORMANCE
 
-😴 **Fatigued/Declining**
-• [Ads losing performance with trend]
+🏆 TOP ADS
 
-🎨 **What's Working**
-• [Creative patterns/themes performing well]
+1. [Ad name]
+   CTR [X%] | ROAS [Y] | [Z] conversions
 
-💡 **Creative Direction**
-• [Recommendation for new creatives]`;
+2. [Ad name]
+   CTR [X%] | ROAS [Y] | [Z] conversions
+
+3. [Ad name]
+   CTR [X%] | ROAS [Y] | [Z] conversions
+
+😴 FATIGUED (Declining)
+• [Ad name] → [trend description]
+
+🎨 WHAT'S WORKING
+[Creative pattern or theme insight]
+
+💡 NEXT CREATIVE
+[Recommendation for new ads]`;
   }
   
   if (q.includes('reactivat') || q.includes('paused') || q.includes('archived') || q.includes('inactive')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🔍 **Inactive Items Found**
-• Campaigns: [X paused/archived]
-• Ad Sets: [Y paused/archived]
-• Ads: [Z paused/archived]
+🔄 REACTIVATION CHECK
 
-🏆 **Best Reactivation Candidates**
-1. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
-2. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
-3. [Name] - Historical ROAS: [X.Xx] | Revenue: [Y] | Score: [Z/10]
+📊 INACTIVE ITEMS FOUND
+• Campaigns: [X]
+• Ad Sets: [Y]  
+• Ads: [Z]
 
-💡 **Recommendation**
-• Turn back on: [top candidates]
-• Test budget: [suggested amount]
-• Watch for: [success criteria]`;
+🏆 BEST CANDIDATES TO REACTIVATE
+
+1. [Name]
+   Historical ROAS [X.Xx] | Revenue [Y] | Score [Z]/10
+
+2. [Name]
+   Historical ROAS [X.Xx] | Revenue [Y] | Score [Z]/10
+
+3. [Name]
+   Historical ROAS [X.Xx] | Revenue [Y] | Score [Z]/10
+
+💡 RECOMMENDATION
+• Reactivate → [top 1-2 names]
+• Test budget → [amount]
+• Watch for → [success metric]`;
   }
   
   // Default format
-  return `Respond with a structured analysis using bullet points. Include specific numbers from the data. End with a clear recommendation.`;
+  return `Respond with clear sections using emojis as headers. Use bullet points. Include specific numbers. End with a 💡 recommendation.`;
 }
 
 function getDeepDiveFormat(question) {
   const q = question.toLowerCase();
   
   if (q.includes('scale') || q.includes('grow') || q.includes('increase') || q.includes('expand')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-📈 **Executive Summary**
-[2-3 sentences on scaling opportunity]
+🚀 SCALE PLAN
 
-🏆 **Scale Candidates**
-1. [Campaign/Adset]: Current spend [X], ROAS [Y], Headroom [Z%]
-2. [Campaign/Adset]: Current spend [X], ROAS [Y], Headroom [Z%]
+📈 THE OPPORTUNITY
+[2-3 sentences on why and how much to scale]
 
-💰 **Budget Recommendation**
-• Add [amount] total, distributed as:
-  - [Campaign 1]: +[amount]
-  - [Campaign 2]: +[amount]
-• Phase: Start with [X%] increase, then [Y%] after [Z] days
+────────────────────────────────────────
 
-⚠️ **Watch Metrics**
-• [Metrics to monitor while scaling]
-• Red flag if: [warning signs]
+🏆 SCALE THESE
 
-⚡ **Next Steps**
+1. [Campaign/Adset name]
+   Current: [spend] → ROAS [X.Xx]
+   Add: +[amount] (+[%])
+   
+2. [Campaign/Adset name]
+   Current: [spend] → ROAS [X.Xx]
+   Add: +[amount] (+[%])
+
+────────────────────────────────────────
+
+💰 TOTAL BUDGET INCREASE
+Add [amount] over [timeframe]
+
+📅 PHASING
+• Week 1 → +[X%] increase
+• Week 2 → +[Y%] if metrics hold
+• Week 3 → Evaluate and adjust
+
+────────────────────────────────────────
+
+⚠️ WATCH FOR
+• [Metric 1] staying above [threshold]
+• [Metric 2] not exceeding [limit]
+• Red flag → [warning sign]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
 1. [First action]
 2. [Second action]
 3. [Third action]`;
   }
   
   if (q.includes('cut') || q.includes('pause') || q.includes('stop') || q.includes('kill')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-📉 **Executive Summary**
+✂️ CUT PLAN
+
+📉 THE PROBLEM
 [2-3 sentences on what's dragging performance]
 
-🚫 **Cut List**
-1. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
-2. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
-3. [Campaign/Adset/Ad]: Spend [X], ROAS [Y], Why: [reason]
+────────────────────────────────────────
 
-💰 **Savings**
-• Total budget freed: [amount]
-• Expected ROAS improvement: [X%]
+🚫 CUT LIST
 
-🔄 **Reallocate To**
-• [Where to move the freed budget]
+1. [Campaign/Adset/Ad name]
+   Spend [X] → ROAS [Y] → PAUSE
+   Reason: [why it's underperforming]
 
-⚡ **Next Steps**
-1. [First action]
-2. [Second action]
-3. [Third action]`;
+2. [Campaign/Adset/Ad name]
+   Spend [X] → ROAS [Y] → PAUSE
+   Reason: [why]
+
+3. [Campaign/Adset/Ad name]
+   Spend [X] → ROAS [Y] → PAUSE
+   Reason: [why]
+
+────────────────────────────────────────
+
+💰 SAVINGS
+Total freed up → [amount]/day
+
+📈 EXPECTED IMPACT  
+ROAS should improve by ~[X%]
+
+────────────────────────────────────────
+
+🔄 REALLOCATE TO
+• [amount] → [better performing campaign]
+• [amount] → [testing budget]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
+1. [Pause action]
+2. [Reallocation action]
+3. [Monitor action]`;
   }
   
   if (q.includes('budget') || q.includes('allocat') || q.includes('realloc')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-📊 **Current Allocation**
-• [Campaign/Country 1]: [amount] ([%]) - ROAS [X]
-• [Campaign/Country 2]: [amount] ([%]) - ROAS [X]
-• [Campaign/Country 3]: [amount] ([%]) - ROAS [X]
+💸 BUDGET REALLOCATION
 
-⚖️ **Efficiency Analysis**
-• Most efficient: [where ROAS is highest]
-• Least efficient: [where ROAS is lowest]
+📊 CURRENT SPLIT
+┌─────────────────────────────────────┐
+│ [Campaign 1]    [amt] ([%])  ROAS [X] │
+│ [Campaign 2]    [amt] ([%])  ROAS [X] │
+│ [Campaign 3]    [amt] ([%])  ROAS [X] │
+└─────────────────────────────────────┘
 
-🔄 **Recommended Shifts**
-• Move [amount] from [A] to [B]
-• Move [amount] from [C] to [D]
+────────────────────────────────────────
 
-💰 **New Allocation**
-• [Campaign/Country 1]: [new amount] ([%])
-• [Campaign/Country 2]: [new amount] ([%])
+⚖️ EFFICIENCY RANKING
+• Most efficient → [name] at ROAS [X]
+• Least efficient → [name] at ROAS [X]
 
-📈 **Expected Impact**
-• Projected ROAS improvement: [X%]
-• Projected revenue increase: [amount]
+────────────────────────────────────────
 
-⚡ **Next Steps**
-1. [First action]
-2. [Second action]`;
+🔄 RECOMMENDED SHIFTS
+
+FROM                    TO                      AMOUNT
+[Low performer]    →    [High performer]    →   [amount]
+[Low performer]    →    [High performer]    →   [amount]
+
+────────────────────────────────────────
+
+💰 NEW ALLOCATION
+• [Campaign 1] → [new amount] ([%])
+• [Campaign 2] → [new amount] ([%])
+
+📈 EXPECTED RESULT
+• ROAS improvement → +[X%]
+• Additional revenue → [amount]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
+1. [First budget change]
+2. [Second change]`;
   }
   
   if (q.includes('structure') || q.includes('reorganize') || q.includes('campaign structure')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🏗️ **Current Structure**
-• [How campaigns are currently organized]
-• Total: [X] campaigns, [Y] ad sets, [Z] ads
+🧱 CAMPAIGN STRUCTURE REVIEW
 
-⚠️ **Issues Found**
-• [Issue 1: overlap, fragmentation, etc.]
-• [Issue 2]
+🏗️ CURRENT STATE
+• [X] campaigns | [Y] ad sets | [Z] ads
+• Structure: [how it's organized]
 
-🎯 **Recommended Structure**
-• [Proposed organization]
-• [Naming convention suggestion]
+────────────────────────────────────────
 
-📋 **Migration Plan**
-1. [Step 1]
-2. [Step 2]
-3. [Step 3]
+⚠️ ISSUES FOUND
 
-⚡ **Next Steps**
-1. [Priority action]
+1. [Issue - e.g., overlap, fragmentation]
+   Impact: [what it's causing]
+
+2. [Issue]
+   Impact: [what it's causing]
+
+────────────────────────────────────────
+
+🎯 RECOMMENDED STRUCTURE
+
+[Proposed organization - e.g.:]
+• 1 Campaign per objective
+• Ad sets by audience type
+• Naming: [Store]_[Objective]_[Audience]_[Date]
+
+────────────────────────────────────────
+
+📋 MIGRATION PLAN
+
+Week 1:
+• [Step 1]
+• [Step 2]
+
+Week 2:
+• [Step 3]
+• [Step 4]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
+1. [First restructure action]
 2. [Second action]`;
   }
   
   if (q.includes('creative') || q.includes('roadmap') || q.includes('ad strategy')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🏆 **Top Performers**
-• [Ad/Creative 1]: Why it works - [insight]
-• [Ad/Creative 2]: Why it works - [insight]
+🎬 CREATIVE ROADMAP
 
-😴 **Fatigued Creatives**
-• [Ads that need refreshing]
+🏆 WHAT'S WORKING
 
-🎨 **Creative Gaps**
-• Missing: [types of creatives not being tested]
+[Ad name 1]
+→ Why: [insight on why it performs]
 
-📋 **Production List**
-1. [HIGH PRIORITY] [Creative concept 1]
-2. [MEDIUM] [Creative concept 2]
-3. [MEDIUM] [Creative concept 3]
+[Ad name 2]  
+→ Why: [insight]
 
-🧪 **Test Ideas**
-• [Variation ideas to try]
+────────────────────────────────────────
 
-⚡ **Next Steps**
-1. [First creative to produce]
-2. [Tests to launch]`;
+😴 FATIGUED (Replace Soon)
+• [Ad name] → [declining metric]
+• [Ad name] → [declining metric]
+
+────────────────────────────────────────
+
+🎨 GAPS IN CREATIVE MIX
+• Missing: [format/angle not tested]
+• Missing: [format/angle not tested]
+
+────────────────────────────────────────
+
+📋 PRODUCTION LIST
+
+🔴 HIGH PRIORITY
+1. [Creative concept] → [expected impact]
+
+🟡 MEDIUM  
+2. [Creative concept]
+3. [Creative concept]
+
+────────────────────────────────────────
+
+🧪 TEST IDEAS
+• [Variation to try]
+• [Variation to try]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
+1. [First creative to make]
+2. [Launch timeline]`;
   }
   
   if (q.includes('audience') || q.includes('targeting') || q.includes('lookalike')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-👥 **Current Audiences**
-• [List of audiences being targeted]
+🧭 AUDIENCE STRATEGY
 
-🏆 **Best Performers**
-1. [Audience]: ROAS [X], Conv rate [Y%]
-2. [Audience]: ROAS [X], Conv rate [Y%]
+👥 CURRENT TARGETING
+• [List main audiences being used]
 
-📉 **Underperformers**
-• [Audiences to cut or refine]
+────────────────────────────────────────
 
-🆕 **Expansion Ideas**
-• [New audiences to test]
+🏆 TOP PERFORMERS
 
-🎯 **Lookalike Strategy**
-• [LAL recommendations based on best converters]
+1. [Audience name]
+   ROAS [X.Xx] | Conv rate [Y%] | [Z] conversions
 
-⚡ **Next Steps**
+2. [Audience name]
+   ROAS [X.Xx] | Conv rate [Y%] | [Z] conversions
+
+────────────────────────────────────────
+
+📉 CUT OR REFINE
+• [Audience] → ROAS [X] ← too low
+• [Audience] → [issue]
+
+────────────────────────────────────────
+
+🆕 EXPANSION OPPORTUNITIES
+• Test: [new audience idea]
+• Test: [new audience idea]
+
+🎯 LOOKALIKE STRATEGY
+• Create LAL from: [best converter]
+• Suggested %: [1-3%]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
 1. [First audience action]
 2. [Second action]`;
   }
   
   if (q.includes('test') || q.includes('experiment') || q.includes('try')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-📊 **Current State**
-• [What we know from the data]
+🧪 TEST PLAN
 
-❓ **Knowledge Gaps**
-• [What we need to learn]
+📊 WHAT WE KNOW
+• [Key insight from data]
+• [Key insight from data]
 
-🧪 **Test Queue**
-1. [HIGH PRIORITY] [Test A]
-   - Hypothesis: [what we expect]
-   - Success metric: [how to measure]
-   - Budget: [amount]
+❓ WHAT WE NEED TO LEARN
+• [Knowledge gap 1]
+• [Knowledge gap 2]
 
-2. [MEDIUM] [Test B]
-   - Hypothesis: [what we expect]
-   - Success metric: [how to measure]
-   - Budget: [amount]
+────────────────────────────────────────
 
-⚡ **Next Steps**
-1. Launch [first test]
+🧪 TEST QUEUE
+
+🔴 TEST 1 (High Priority)
+[Test name/description]
+• Hypothesis → [what we expect to happen]
+• Success metric → [how we measure]
+• Budget → [amount]
+• Duration → [timeframe]
+
+🟡 TEST 2 (Medium)
+[Test name/description]
+• Hypothesis → [what we expect]
+• Success metric → [measure]
+• Budget → [amount]
+
+🟡 TEST 3 (Medium)
+[Test name/description]
+• Hypothesis → [what we expect]
+• Budget → [amount]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
+1. Launch Test 1 on [date]
 2. Run for [duration]
-3. Evaluate and iterate`;
+3. Review results and iterate`;
   }
   
   if (q.includes('risk') || q.includes('efficiency') || q.includes('health')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-✅ **What's Healthy**
-• [Strong areas in the account]
+🛡️ RISK & EFFICIENCY AUDIT
 
-⚠️ **Risk Areas**
-• [Concentration risk, fatigue, dependency issues]
+✅ HEALTHY AREAS
+• [Strong point 1]
+• [Strong point 2]
 
-📉 **Inefficiencies**
-• [Wasted spend, overlap, etc.]
+────────────────────────────────────────
 
-🛡️ **Mitigation Plan**
-• [How to reduce each risk]
+⚠️ RISK AREAS
 
-📊 **Quick Efficiency Wins**
-1. [Win 1 with expected savings]
-2. [Win 2 with expected savings]
+1. [Risk type - e.g., Concentration]
+   Issue: [description]
+   Severity: [High/Medium/Low]
 
-⚡ **Next Steps**
+2. [Risk type - e.g., Creative fatigue]
+   Issue: [description]
+   Severity: [High/Medium/Low]
+
+────────────────────────────────────────
+
+📉 INEFFICIENCIES
+
+• [Wasted spend area] → [amount] at risk
+• [Overlap/duplication] → [impact]
+
+────────────────────────────────────────
+
+🛡️ MITIGATION PLAN
+
+For [Risk 1]:
+→ [Action to reduce risk]
+
+For [Risk 2]:
+→ [Action to reduce risk]
+
+────────────────────────────────────────
+
+💰 QUICK EFFICIENCY WINS
+
+1. [Action] → Save [amount]
+2. [Action] → Save [amount]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
 1. [Priority fix]
 2. [Second fix]`;
   }
   
   if (q.includes('reactivat') || q.includes('turn back on') || q.includes('paused') || q.includes('reviv')) {
-    return `Respond using this EXACT format:
+    return `Respond using this EXACT format (no markdown, use emojis):
 
-🔍 **Candidates Found**
-• [X] campaigns, [Y] ad sets, [Z] ads eligible
+🔄 REACTIVATION PLAN
 
-🏆 **Priority Reactivations** (by score)
-1. [Name] - Score: [X/10]
-   - Historical: ROAS [X], Revenue [Y]
-   - Why paused: [reason if known]
-   - Test budget: [amount]
+📊 CANDIDATES FOUND
+Campaigns: [X] | Ad Sets: [Y] | Ads: [Z]
 
-2. [Name] - Score: [X/10]
-   - Historical: ROAS [X], Revenue [Y]
-   - Test budget: [amount]
+────────────────────────────────────────
 
-📋 **Reactivation Schedule**
-• Week 1: Reactivate [top 1-2]
-• Week 2: Evaluate and add [next batch]
+🏆 PRIORITY REACTIVATIONS
 
-👀 **Success Criteria**
-• Day 1-3: [what to watch]
-• Day 4-7: [decision point]
+1. [Name] ⭐ Score [X]/10
+   ├─ Historical ROAS → [X.Xx]
+   ├─ Revenue generated → [amount]
+   ├─ Last active → [date]
+   └─ Test budget → [amount]
 
-⚡ **Next Steps**
-1. [First reactivation action]
-2. [Monitoring setup]
-3. [Evaluation checkpoint]`;
+2. [Name] ⭐ Score [X]/10
+   ├─ Historical ROAS → [X.Xx]  
+   ├─ Revenue generated → [amount]
+   └─ Test budget → [amount]
+
+3. [Name] ⭐ Score [X]/10
+   ├─ Historical ROAS → [X.Xx]
+   └─ Test budget → [amount]
+
+────────────────────────────────────────
+
+📅 REACTIVATION SCHEDULE
+
+Week 1 → Turn on [top 1-2 candidates]
+Week 2 → Evaluate performance
+Week 3 → Add next batch if positive
+
+────────────────────────────────────────
+
+👀 SUCCESS CRITERIA
+
+Day 1-3:
+• [What to monitor]
+• Green light if: [threshold]
+
+Day 4-7:
+• Decision point
+• Scale if: [condition]
+• Pause again if: [condition]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
+1. [First reactivation]
+2. [Set up monitoring]
+3. [Review checkpoint]`;
   }
   
   // Default strategic format
-  return `Respond with:
-📈 **Executive Summary** (2-3 sentences)
-📊 **Analysis** (key findings with numbers)
-🎯 **Recommendations** (numbered, prioritized)
-⚡ **Next Steps** (1-2-3 actions)`;
+  return `Respond using this format (no markdown, use emojis):
+
+📈 EXECUTIVE SUMMARY
+[2-3 sentences on the situation and main recommendation]
+
+────────────────────────────────────────
+
+📊 KEY FINDINGS
+• [Finding 1 with numbers]
+• [Finding 2 with numbers]
+• [Finding 3 with numbers]
+
+────────────────────────────────────────
+
+🎯 RECOMMENDATIONS
+
+1. [HIGH IMPACT] [Action]
+   Expected result: [outcome]
+
+2. [MEDIUM] [Action]
+   Expected result: [outcome]
+
+────────────────────────────────────────
+
+⚡ NEXT STEPS
+1. [First action]
+2. [Second action]
+3. [Third action]`;
 }
 
 // ============================================================================
@@ -1082,7 +1330,17 @@ RESPONSE STYLE:
 - Use clear structure with line breaks between sections
 - Use bullet points (•) for lists, not dashes
 - If comparing, show the delta/change (↑ or ↓ with %)
-- End with a clear takeaway or recommended action when relevant`;
+- End with a clear takeaway or recommended action when relevant
+
+FORMATTING (IMPORTANT):
+- Do NOT use markdown like **bold** or *italic* - it won't render
+- Use EMOJIS for visual hierarchy (📊 🎯 💡 ⚡ etc.)
+- Use → for showing flow or relationships
+- Use | to separate data points on same line
+- Keep bullet points SHORT (one line each when possible)
+- Add blank lines between sections for breathing room
+- Numbers should stand out: "ROAS 2.5x" not "ROAS of 2.5x"
+- Use ALL CAPS sparingly for emphasis on key words`;
 
   // Mode-specific instructions
   if (mode === 'analyze') {
