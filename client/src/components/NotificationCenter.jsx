@@ -13,13 +13,17 @@ function NotificationRow({
   onDelete, 
   getSourceBadge, 
   formatNotificationMessage,
-  getTimeAgo 
+  currentTime 
 }) {
   const isCrossStore = notification.store !== currentStore;
   const timestamp = notification?.metadata?.timestamp || 
                     notification?.timestamp || 
                     notification?.createdAt ||
                     notification?.created_at;
+
+  // Calculate time ago directly using currentTime prop
+  // This ensures the display updates whenever currentTime changes
+  const timeAgoDisplay = calculateTimeAgo(timestamp, currentTime);
 
   return (
     <div 
@@ -45,7 +49,7 @@ function NotificationRow({
           <div className="flex items-center gap-2 mt-1.5">
             {getSourceBadge(notification.source || notification.metadata?.source)}
             <span className="text-xs text-gray-500">
-              {getTimeAgo(timestamp)}
+              {timeAgoDisplay}
             </span>
           </div>
         </div>
@@ -209,17 +213,6 @@ export default function NotificationCenter({ currentStore }) {
     };
   }, [currentStore]); // Re-setup when store changes
 
-  // ============================================================================
-  // Dynamic timestamp updates - refresh every 30 seconds to update "X min ago"
-  // ============================================================================
-  const [, setTimeTick] = useState(0);
-  useEffect(() => {
-    const tickInterval = setInterval(() => {
-      setTimeTick(t => t + 1);
-    }, 30000); // Update every 30 seconds
-
-    return () => clearInterval(tickInterval);
-  }, []);
 
   // ============================================================================
   // Close dropdown when clicking outside
@@ -236,13 +229,13 @@ export default function NotificationCenter({ currentStore }) {
   }, []);
 
   // ============================================================================
-  // Update current time every 10 seconds for accurate relative timestamps
+  // Update current time every 30 seconds for accurate relative timestamps
   // This ensures notifications show different "time ago" values as time passes
   // ============================================================================
   useEffect(() => {
     const intervalId = setInterval(() => {
       setCurrentTime(new Date());
-    }, 10000);
+    }, 30000); // Update every 30 seconds for timestamp refresh
 
     return () => clearInterval(intervalId);
   }, []);
@@ -306,14 +299,11 @@ export default function NotificationCenter({ currentStore }) {
 
   // ============================================================================
   // Get relative time string ("2 min ago", "1 hour ago", etc)
-  // Per-notification timestamp using shared utilities with currentTime state
+  // Simple helper for header display - uses currentTime for consistency
   // ============================================================================
-  const getTimeAgo = useCallback((timestamp) => {
-    // Use the shared utility with currentTime as reference
-    // This ensures each notification shows its own relative time
-    // and updates every 10 seconds when currentTime changes
+  const getTimeAgo = (timestamp) => {
     return calculateTimeAgo(timestamp, currentTime);
-  }, [currentTime]);
+  };
 
   // ============================================================================
   // Count notifications by type
@@ -465,7 +455,7 @@ export default function NotificationCenter({ currentStore }) {
                     onDelete={deleteNotification}
                     getSourceBadge={getSourceBadge}
                     formatNotificationMessage={formatNotificationMessage}
-                    getTimeAgo={getTimeAgo}
+                    currentTime={currentTime}
                   />
                 ))}
               </div>
