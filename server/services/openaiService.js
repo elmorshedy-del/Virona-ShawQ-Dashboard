@@ -456,15 +456,171 @@ function getReactivationCandidates(db, storeName) {
   }
 }
 
-function getRelevantData(store, question, startDate = null, endDate = null) {
+// ============================================================================
+// LIGHTWEIGHT DATA FETCHING - For fast "Ask" mode responses
+// ============================================================================
+function getLightweightStoreData(db, storeName, today, yesterday, periodStart, periodEnd) {
+  const storeData = {};
+  const activeFilter = `AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)`;
+
+  try {
+    // Overview for selected period only - NO hierarchy
+    storeData.periodOverview = db.prepare(`
+      SELECT
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+      ${activeFilter}
+    `).get(storeName, periodStart, periodEnd || today);
+
+    if (storeData.periodOverview) {
+      Object.assign(storeData.periodOverview, calculateDerivedMetrics(storeData.periodOverview));
+    }
+
+    // Today's metrics
+    storeData.today = db.prepare(`
+      SELECT
+        SUM(spend) as spend, SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks, SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics WHERE LOWER(store) = ? AND date = ?
+      ${activeFilter}
+    `).get(storeName, today);
+
+    // Yesterday's metrics
+    storeData.yesterday = db.prepare(`
+      SELECT
+        SUM(spend) as spend, SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks, SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc, SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics WHERE LOWER(store) = ? AND date = ?
+      ${activeFilter}
+    `).get(storeName, yesterday);
+
+    // Top 3 countries only
+    storeData.topCountries = db.prepare(`
+      SELECT
+        country,
+        SUM(spend) as spend,
+        SUM(conversion_value) as conversion_value,
+        SUM(conversions) as conversions
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+      AND country IS NOT NULL AND country != '' AND country != 'ALL'
+      ${activeFilter}
+      GROUP BY country
+      ORDER BY conversion_value DESC
+      LIMIT 3
+    `).all(storeName, periodStart, periodEnd || today);
+
+    // E-commerce orders summary
+    const orderTable = storeName === 'vironax' ? 'salla_orders' : 'shopify_orders';
+    try {
+      storeData.ordersOverview = db.prepare(`
+        SELECT COUNT(*) as totalOrders, SUM(order_total) as totalRevenue
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
+      `).get(storeName, periodStart);
+    } catch (e) {}
+
+  } catch (error) {
+    console.error(`[getLightweightStoreData] Error for ${storeName}:`, error.message);
+  }
+
+  return storeData;
+}
+
+// ============================================================================
+// MEDIUM DATA FETCHING - For "Analyze" mode (campaigns only, no adsets/ads)
+// ============================================================================
+function getMediumStoreData(db, storeName, today, yesterday, periodStart, periodEnd) {
+  const storeData = getLightweightStoreData(db, storeName, today, yesterday, periodStart, periodEnd);
+  const activeFilter = `AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)`;
+
+  try {
+    // Add campaign-level data (NO adsets/ads for speed)
+    storeData.campaigns = db.prepare(`
+      SELECT
+        campaign_id, campaign_name,
+        MAX(effective_status) as status,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND date <= ? AND campaign_name IS NOT NULL
+      ${activeFilter}
+      GROUP BY campaign_id
+      ORDER BY spend DESC
+      LIMIT 10
+    `).all(storeName, periodStart, periodEnd || today).map(row => ({
+      ...row,
+      ...calculateDerivedMetrics(row)
+    }));
+
+    // Country breakdown
+    storeData.countryBreakdown = db.prepare(`
+      SELECT
+        country,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+      AND country IS NOT NULL AND country != '' AND country != 'ALL'
+      ${activeFilter}
+      GROUP BY country
+      ORDER BY spend DESC
+      LIMIT 10
+    `).all(storeName, periodStart, periodEnd || today).map(row => ({
+      ...row,
+      ...calculateDerivedMetrics(row)
+    }));
+
+  } catch (error) {
+    console.error(`[getMediumStoreData] Error for ${storeName}:`, error.message);
+  }
+
+  return storeData;
+}
+
+// ============================================================================
+// DATA FETCHING - Optimized based on mode
+// ============================================================================
+function getRelevantData(store, question, startDate = null, endDate = null, mode = 'full') {
   const db = getDb();
   const q = question.toLowerCase();
 
   const today = new Date().toISOString().split('T')[0];
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-  // Use provided dates or default to 90 days if not provided (gives AI full context)
-  const periodStart = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  // Optimize date range based on mode
+  let defaultDays;
+  if (mode === 'light') {
+    defaultDays = 7;  // 7 days for quick facts
+  } else if (mode === 'medium') {
+    defaultDays = 30; // 30 days for analysis
+  } else {
+    defaultDays = 90; // 90 days for deep dive
+  }
+  
+  const periodStart = startDate || new Date(Date.now() - defaultDays * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const periodEnd = endDate || today;
 
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -489,22 +645,42 @@ function getRelevantData(store, question, startDate = null, endDate = null) {
   const mentionsBoth = q.includes('both') || q.includes('compare') || q.includes('stores');
 
   // Detect if question is about reactivation or inactive items
-  // Uses the feature module for consistent detection
   const mentionsReactivation = isReactivationQuestion(question);
 
-  // Always fetch current store with full hierarchy and funnel data
-  data[currentStore] = getStoreData(db, currentStore, today, yesterday, periodStart, periodEnd);
+  // Fetch data based on mode for speed optimization
+  const fetchStart = Date.now();
+  if (mode === 'light') {
+    // Lightweight for Ask mode - just overview metrics
+    data[currentStore] = getLightweightStoreData(db, currentStore, today, yesterday, periodStart, periodEnd);
+  } else if (mode === 'medium') {
+    // Medium for Analyze mode - campaigns only, no hierarchy
+    data[currentStore] = getMediumStoreData(db, currentStore, today, yesterday, periodStart, periodEnd);
+  } else {
+    // Full data for Deep Dive - complete hierarchy
+    data[currentStore] = getStoreData(db, currentStore, today, yesterday, periodStart, periodEnd);
+  }
+  console.log(`[Data] Fetched ${mode} data in ${Date.now() - fetchStart}ms`);
 
-  // Include reactivation candidates if mentioned
-  if (mentionsReactivation) {
+  // Include reactivation candidates if mentioned (only for non-light mode)
+  if (mentionsReactivation && mode !== 'light') {
     data.reactivationCandidates = getReactivationCandidates(db, currentStore);
   }
 
   // Only fetch other store if mentioned
   if (mentionsBoth || (currentStore === 'vironax' && mentionsShawq) || (currentStore === 'shawq' && mentionsVironax)) {
     const otherStore = currentStore === 'vironax' ? 'shawq' : 'vironax';
-    data[otherStore] = getStoreData(db, otherStore, today, yesterday, periodStart, periodEnd);
+    if (mode === 'light') {
+      data[otherStore] = getLightweightStoreData(db, otherStore, today, yesterday, periodStart, periodEnd);
+    } else if (mode === 'medium') {
+      data[otherStore] = getMediumStoreData(db, otherStore, today, yesterday, periodStart, periodEnd);
+    } else {
+      data[otherStore] = getStoreData(db, otherStore, today, yesterday, periodStart, periodEnd);
+    }
   }
+
+  // Log data size for debugging
+  const dataStr = JSON.stringify(data);
+  console.log(`[Data] Total data size: ${(dataStr.length / 1024).toFixed(1)}KB (mode: ${mode})`);
 
   // Clean up empty data
   return removeEmpty(data);
@@ -1235,7 +1411,8 @@ const MODE_TEMPERATURES = {
 };
 
 export async function analyzeQuestion(question, store, history = [], startDate = null, endDate = null) {
-  const data = getRelevantData(store, question, startDate, endDate);
+  // Use LIGHT mode for fast Ask responses - only overview metrics
+  const data = getRelevantData(store, question, startDate, endDate, 'light');
   const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
   
   // Use GPT-4o directly for Ask mode - faster and more reliable
@@ -1244,37 +1421,74 @@ export async function analyzeQuestion(question, store, history = [], startDate =
 }
 
 export async function summarizeData(question, store, history = [], startDate = null, endDate = null) {
-  const data = getRelevantData(store, question, startDate, endDate);
+  // Use MEDIUM mode for Analyze - campaigns only, no full hierarchy
+  const data = getRelevantData(store, question, startDate, endDate, 'medium');
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
-  return await callWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, MODE_TEMPERATURES.summarize);
+  
+  // Use GPT-4o directly for faster Analyze responses (skip gpt-5-mini fallback chain)
+  const text = await callChatCompletionsAPI(MODELS.ASK, systemPrompt, question, TOKEN_LIMITS.mini, MODE_TEMPERATURES.summarize);
+  return { text, model: MODELS.ASK };
 }
 
 export async function decideQuestion(question, store, depth = 'balanced', history = [], startDate = null, endDate = null) {
-  const data = getRelevantData(store, question, startDate, endDate);
+  // Optimize data mode based on depth
+  const dataMode = (depth === 'instant' || depth === 'fast') ? 'medium' : 'full';
+  const data = getRelevantData(store, question, startDate, endDate, dataMode);
   const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
+
+  // Use gpt-4o for instant/fast depth (much faster), gpt-5.1 for balanced/deep
+  if (depth === 'instant' || depth === 'fast') {
+    const text = await callChatCompletionsAPI(MODELS.ASK, systemPrompt, question, maxTokens, MODE_TEMPERATURES.decide);
+    return { text, model: MODELS.ASK, reasoning: effort };
+  }
 
   const result = await callWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, MODE_TEMPERATURES.decide);
   return { ...result, reasoning: effort };
 }
 
 export async function decideQuestionStream(question, store, depth = 'balanced', onDelta, history = [], startDate = null, endDate = null) {
-  const data = getRelevantData(store, question, startDate, endDate);
+  // Use MEDIUM mode for instant/fast, FULL for balanced/deep
+  const dataMode = (depth === 'instant' || depth === 'fast') ? 'medium' : 'full';
+  const data = getRelevantData(store, question, startDate, endDate, dataMode);
   const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
+
+  // Use gpt-4o for instant/fast (much faster), gpt-5.1 only for balanced/deep
+  if (depth === 'instant' || depth === 'fast') {
+    console.log(`[OpenAI] Streaming ${MODELS.ASK} for Deep Dive ${depth} mode (fast path)`);
+    const response = await client.chat.completions.create({
+      model: MODELS.ASK,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: question }
+      ],
+      max_tokens: maxTokens,
+      temperature: MODE_TEMPERATURES.decide,
+      stream: true
+    });
+
+    for await (const chunk of response) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) onDelta(delta);
+    }
+
+    return { model: MODELS.ASK, reasoning: effort };
+  }
 
   return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta, MODE_TEMPERATURES.decide);
 }
 
 // Streaming versions for Analyze and Summarize
 export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
-  const data = getRelevantData(store, question, startDate, endDate);
+  // Use LIGHT mode for fastest Ask responses
+  const data = getRelevantData(store, question, startDate, endDate, 'light');
   const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
   
   // Use GPT-4o directly for Ask mode - faster streaming
-  console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
+  console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode (light data)`);
   const response = await client.chat.completions.create({
     model: MODELS.ASK,
     messages: [
@@ -1295,9 +1509,29 @@ export async function analyzeQuestionStream(question, store, onDelta, history = 
 }
 
 export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
-  const data = getRelevantData(store, question, startDate, endDate);
+  // Use MEDIUM mode for Analyze - faster than full hierarchy
+  const data = getRelevantData(store, question, startDate, endDate, 'medium');
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
-  return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
+  
+  // Use GPT-4o directly for faster Analyze streaming
+  console.log(`[OpenAI] Streaming ${MODELS.ASK} for Analyze mode (medium data)`);
+  const response = await client.chat.completions.create({
+    model: MODELS.ASK,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: question }
+    ],
+    max_tokens: TOKEN_LIMITS.mini,
+    temperature: MODE_TEMPERATURES.summarize,
+    stream: true
+  });
+
+  for await (const chunk of response) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) onDelta(delta);
+  }
+
+  return { model: MODELS.ASK, reasoning: null };
 }
 
 // ============================================================================
