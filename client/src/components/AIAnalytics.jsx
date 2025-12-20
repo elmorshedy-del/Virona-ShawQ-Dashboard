@@ -38,12 +38,15 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     summary: reactivationSummary
   } = useReactivationCandidates(activeStore);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = (instant = false) => {
+    messagesEndRef.current?.scrollIntoView({ behavior: instant ? "instant" : "smooth" });
   };
 
+  // Scroll to bottom when messages change (including during streaming)
   useEffect(() => {
-    scrollToBottom();
+    // Use instant scroll during streaming for smoother UX
+    const isAnyStreaming = messages.some(m => m.isStreaming);
+    scrollToBottom(isAnyStreaming);
   }, [messages]);
 
   // Mode configurations with pillars
@@ -117,29 +120,45 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const currentInput = input;
     setInput('');
     setIsLoading(true);
 
-    try {
-      // Map frontend modes to backend endpoints
-      // 'ask' -> /analyze (quick facts), 'analyze' -> /summarize (insights), 'deepdive' -> /decide (strategic)
-      const endpointMap = {
-        'ask': '/api/ai/analyze',
-        'analyze': '/api/ai/summarize',
-        'deepdive': '/api/ai/decide'
-      };
-      const endpoint = endpointMap[activeMode] || '/api/ai/analyze';
+    // Create placeholder assistant message for streaming
+    const assistantMessageId = Date.now();
+    const assistantMessage = {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      isStreaming: true,
+      metadata: {
+        mode: activeMode,
+        model: null,
+        reasoning: null
+      }
+    };
+    setMessages(prev => [...prev, assistantMessage]);
 
-      // Build request body matching backend expected format:
-      // Backend expects: { question, store, conversationId, depth, startDate, endDate }
+    try {
+      // Map frontend modes to backend stream modes
+      const modeMap = {
+        'ask': 'analyze',
+        'analyze': 'summarize',
+        'deepdive': 'decide'
+      };
+      const streamMode = modeMap[activeMode] || 'analyze';
+
+      // Build request body for streaming endpoint
       const requestBody = {
-        question: input,
+        question: currentInput,
         store: activeStore,
+        mode: streamMode,
         startDate: startDate || null,
         endDate: endDate || null
       };
 
-      // Add depth parameter for deepdive mode based on insightMode
+      // Add depth parameter for deepdive mode
       if (activeMode === 'deepdive') {
         const depthMap = {
           'instant': 'instant',
@@ -150,7 +169,8 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         requestBody.depth = depthMap[insightMode] || 'balanced';
       }
 
-      const response = await fetch(endpoint, {
+      // Use streaming endpoint with SSE
+      const response = await fetch('/api/ai/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -159,33 +179,87 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const data = await response.json();
+      // Read the stream
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = '';
+      let buffer = '';
 
-      const assistantMessage = {
-        role: 'assistant',
-        content: data.answer || data.response || data.message || 'No response received',
-        timestamp: new Date().toISOString(),
-        metadata: {
-          mode: activeMode,
-          model: data.model,
-          reasoning: data.reasoning
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Decode the chunk and add to buffer
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events from buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === 'delta') {
+                // Append new text to the message
+                fullContent += data.text;
+                setMessages(prev => prev.map(msg => 
+                  msg.id === assistantMessageId 
+                    ? { ...msg, content: fullContent }
+                    : msg
+                ));
+              } else if (data.type === 'done') {
+                // Update metadata when complete
+                setMessages(prev => prev.map(msg => 
+                  msg.id === assistantMessageId 
+                    ? { 
+                        ...msg, 
+                        isStreaming: false,
+                        metadata: {
+                          ...msg.metadata,
+                          model: data.model,
+                          reasoning: data.reasoning
+                        }
+                      }
+                    : msg
+                ));
+              } else if (data.type === 'error') {
+                throw new Error(data.error);
+              }
+            } catch (parseError) {
+              // Skip invalid JSON lines
+              if (line.slice(6).trim()) {
+                console.warn('Failed to parse SSE data:', line);
+              }
+            }
+          }
         }
-      };
+      }
 
-      setMessages(prev => [...prev, assistantMessage]);
+      // Mark streaming as complete
+      setMessages(prev => prev.map(msg => 
+        msg.id === assistantMessageId 
+          ? { ...msg, isStreaming: false }
+          : msg
+      ));
+
     } catch (error) {
       console.error('Error sending message:', error);
-      const errorMessage = {
-        role: 'assistant',
-        content: `Error: ${error.message}. Please try again.`,
-        timestamp: new Date().toISOString(),
-        isError: true
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      // Update the streaming message to show error
+      setMessages(prev => prev.map(msg => 
+        msg.id === assistantMessageId 
+          ? { 
+              ...msg, 
+              content: `Error: ${error.message}. Please try again.`,
+              isStreaming: false,
+              isError: true 
+            }
+          : msg
+      ));
     } finally {
       setIsLoading(false);
     }
@@ -248,10 +322,11 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const renderMessage = (message, index) => {
     const isUser = message.role === 'user';
     const isError = message.isError;
+    const isStreaming = message.isStreaming;
 
     return (
       <div
-        key={index}
+        key={message.id || index}
         className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}
       >
         <div
@@ -265,33 +340,48 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         >
           <div className="flex items-start gap-2">
             {!isUser && (
-              <Sparkles className={`w-5 h-5 mt-0.5 flex-shrink-0 ${isError ? 'text-red-500' : 'text-blue-500'}`} />
+              <Sparkles className={`w-5 h-5 mt-0.5 flex-shrink-0 ${isError ? 'text-red-500' : 'text-blue-500'} ${isStreaming ? 'animate-pulse' : ''}`} />
             )}
             <div className="flex-1">
               {isUser ? (
                 <div className="whitespace-pre-wrap break-words">{message.content}</div>
               ) : (
                 <div className="ai-response">
-                  <ReactMarkdown
-                    components={{
-                      p: ({children}) => <p className="my-2 leading-relaxed">{children}</p>,
-                      strong: ({children}) => <strong className="font-bold text-gray-900">{children}</strong>,
-                      em: ({children}) => <em className="italic">{children}</em>,
-                      h1: ({children}) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
-                      h2: ({children}) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
-                      h3: ({children}) => <h3 className="text-base font-bold mt-3 mb-2">{children}</h3>,
-                      ul: ({children}) => <ul className="my-2 ml-4 list-disc">{children}</ul>,
-                      ol: ({children}) => <ol className="my-2 ml-4 list-decimal">{children}</ol>,
-                      li: ({children}) => <li className="my-1">{children}</li>,
-                      hr: () => <hr className="my-4 border-gray-300" />,
-                      code: ({children}) => <code className="bg-gray-200 px-1 py-0.5 rounded text-sm">{children}</code>,
-                    }}
-                  >
-                    {message.content}
-                  </ReactMarkdown>
+                  {message.content ? (
+                    <ReactMarkdown
+                      components={{
+                        p: ({children}) => <p className="my-2 leading-relaxed">{children}</p>,
+                        strong: ({children}) => <strong className="font-bold text-gray-900">{children}</strong>,
+                        em: ({children}) => <em className="italic">{children}</em>,
+                        h1: ({children}) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
+                        h2: ({children}) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
+                        h3: ({children}) => <h3 className="text-base font-bold mt-3 mb-2">{children}</h3>,
+                        ul: ({children}) => <ul className="my-2 ml-4 list-disc">{children}</ul>,
+                        ol: ({children}) => <ol className="my-2 ml-4 list-decimal">{children}</ol>,
+                        li: ({children}) => <li className="my-1">{children}</li>,
+                        hr: () => <hr className="my-4 border-gray-300" />,
+                        code: ({children}) => <code className="bg-gray-200 px-1 py-0.5 rounded text-sm">{children}</code>,
+                      }}
+                    >
+                      {message.content}
+                    </ReactMarkdown>
+                  ) : isStreaming ? (
+                    <span className="inline-flex items-center gap-1 text-gray-500">
+                      <span className="animate-pulse">Thinking</span>
+                      <span className="flex gap-0.5">
+                        <span className="w-1 h-1 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                        <span className="w-1 h-1 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                        <span className="w-1 h-1 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                      </span>
+                    </span>
+                  ) : null}
+                  {/* Streaming cursor */}
+                  {isStreaming && message.content && (
+                    <span className="inline-block w-2 h-4 bg-blue-500 ml-0.5 animate-pulse rounded-sm" style={{ verticalAlign: 'text-bottom' }}></span>
+                  )}
                 </div>
               )}
-              {message.metadata && message.metadata.model && (
+              {message.metadata && message.metadata.model && !isStreaming && (
                 <div className="mt-3 pt-3 border-t border-gray-300 text-xs opacity-60">
                   <span>{message.metadata.model}</span>
                   {message.metadata.reasoning && (
