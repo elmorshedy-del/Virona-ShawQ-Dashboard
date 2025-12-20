@@ -541,20 +541,24 @@ function applyLookback(rows, key) {
    ============================================================================ */
 
 function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
-  const allTimeDays = new Set((allRows || []).map(r => r.date)).size;
-  const lookbackUsed = lookbackRows?.length || 0;
+  // FIX: Use allRows (campaign data without geo filter) for data sufficiency counts
+  // This shows the TRUE data availability for the campaign
+  const dataSource = allRows?.length > 0 ? allRows : lookbackRows;
+  
+  const allTimeDays = new Set((dataSource || []).map(r => r.date).filter(Boolean)).size;
+  const lookbackUsed = dataSource?.length || 0;
 
-  // FIX: Count unique dates with ANY spend, not just campaign-level rows
-  // The !r.adset_id filter was too restrictive - data may only have adset-level rows
+  // Count unique dates with spend (from ALL campaign data, not geo-filtered)
   const spendDays = new Set(
-    (lookbackRows || [])
+    (dataSource || [])
       .filter(r => r.spend > 0)
       .map(r => r.date)
+      .filter(Boolean)
   ).size;
 
-  // FIX: Check for revenue in ANY field format (raw or normalized)
+  // Count unique dates with revenue (from ALL campaign data)
   const revenueDays = new Set(
-    (lookbackRows || [])
+    (dataSource || [])
       .filter(r => {
         const normRev = r._normRevenue || 0;
         const purchaseVal = r.purchase_value || 0;
@@ -563,15 +567,16 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
         return normRev > 0 || purchaseVal > 0 || convVal > 0 || purchases > 0;
       })
       .map(r => r.date)
+      .filter(Boolean)
   ).size;
 
-  // Count unique lookback days (not rows) for threshold checks
-  const lookbackDays = new Set((lookbackRows || []).map(r => r.date)).size;
+  // Count unique days
+  const lookbackDays = new Set((dataSource || []).map(r => r.date).filter(Boolean)).size;
 
-  const hasSpend = (lookbackRows || []).some(r => Number.isFinite(r.spend) && r.spend > 0);
+  const hasSpend = (dataSource || []).some(r => Number.isFinite(r.spend) && r.spend > 0);
   
-  // FIX: Check multiple revenue field names since sources use different conventions
-  const hasRevenue = (lookbackRows || []).some(r => {
+  // Check multiple revenue field names since sources use different conventions
+  const hasRevenue = (dataSource || []).some(r => {
     const normRev = Number(r._normRevenue) || 0;
     const purchaseVal = Number(r.purchase_value) || 0;
     const convVal = Number(r.conversion_value) || 0;
@@ -579,18 +584,23 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
     return normRev > 0 || purchaseVal > 0 || convVal > 0 || purchases > 0;
   });
 
-  const hasFunnel = (lookbackRows || []).some(r =>
+  const hasFunnel = (dataSource || []).some(r =>
     Number.isFinite(r.impressions) && r.impressions > 0 &&
     Number.isFinite(r.clicks) && r.clicks > 0
   );
 
-  const hasAdsetSpend = (lookbackRows || []).some(r => r.adset_id && Number.isFinite(r.spend) && r.spend > 0);
+  const hasAdsetSpend = (dataSource || []).some(r => r.adset_id && Number.isFinite(r.spend) && r.spend > 0);
+
+  // Calculate totals for diagnostics
+  const totalSpend = (dataSource || []).reduce((sum, r) => sum + (Number(r.spend) || 0), 0);
+  const totalPurchases = (dataSource || []).reduce((sum, r) => sum + (Number(r.purchases) || 0), 0);
+  const totalRevenue = (dataSource || []).reduce((sum, r) => sum + (Number(r.purchase_value) || Number(r.conversion_value) || 0), 0);
 
   let status = "🚫 Not Enough";
   let confidence = "Low";
   const missing = [];
 
-  // FIX: More helpful diagnostics when data is missing
+  // Helpful diagnostics when data is missing
   if (!hasSpend) {
     missing.push("Spend data (check if campaign filter matches available data)");
   }
@@ -611,7 +621,7 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
       status = "🟡 Enough for Partial Model";
       confidence = !missing.length ? "Medium" : "Low";
     } else {
-      // existing - use spendDays for threshold checks (more reliable than lookbackDays)
+      // Use spendDays for threshold checks
       if (spendDays >= 14) {
         status = "✅ Enough for Full Model";
         confidence = hasFunnel && (structure === "ABO" || hasAdsetSpend) ? "High" : "Medium";
@@ -626,7 +636,6 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
       }
     }
   } else if (lookbackUsed === 0) {
-    // FIX: Add specific message when no rows at all
     missing.push("No data found for selected campaign/geo combination");
   }
 
@@ -640,6 +649,9 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
     hasAdsetSpend,
     hasSpend,
     hasRevenue,
+    totalSpend,
+    totalPurchases,
+    totalRevenue,
     status,
     confidence,
     missing
@@ -1079,11 +1091,18 @@ function AIBudgetSimulatorTab({ store }) {
     if (!intel?.liveGuidance) return [];
     return intel.liveGuidance.map(row => ({
       ...row,
+      date: row.date || row.startDate || row.endDate, // FIX: Use any available date
       campaign_id: row.campaignId,
       campaign_name: row.campaignName,
       geo: row.country,
       structure: row.structure || "CBO",
-      purchase_value: row.revenue,
+      purchase_value: row.revenue || 0,
+      purchases: row.purchases || 0,        // FIX: Explicitly map purchases
+      spend: row.spend || 0,                // FIX: Ensure spend is mapped
+      impressions: row.impressions || 0,
+      clicks: row.clicks || 0,
+      atc: row.atc || 0,
+      ic: row.ic || 0,
       adset_id: row.adsetId || null,
       adset_name: row.adsetName || null
     }));
@@ -1256,16 +1275,32 @@ function AIBudgetSimulatorTab({ store }) {
 
   /* ----------------------------
      Data health + sufficiency
+     FIX: Use campaign-only filter (without geo) for data sufficiency calculation
+     This shows actual data availability without aggressive geo filtering
      ---------------------------- */
+  const campaignOnlyRows = useMemo(() => {
+    const rows = datasetRows.length ? datasetRows : intelCampaignRows;
+    if (activeConfig.campaignName) {
+      // Filter by campaign only (no geo) to see total available data
+      return scopeFilterRows(rows, { 
+        campaignName: activeConfig.campaignName, 
+        geo: null,  // Don't filter by geo for data health
+        includeAdsets: true 
+      });
+    }
+    return rows;
+  }, [datasetRows, intelCampaignRows, activeConfig.campaignName]);
+
   const dataHealth = useMemo(() => {
-    const allRowsForLabel = scopedRows;
+    // Use campaignOnlyRows for data sufficiency (shows total data availability)
+    // Use lookbackRows for actual model input (respects geo filter)
     return computeDataHealth({
-      allRows: allRowsForLabel,
-      lookbackRows,
+      allRows: campaignOnlyRows,  // Total available for campaign
+      lookbackRows: lookbackRows.length > 0 ? lookbackRows : campaignOnlyRows,  // Fallback to campaign data
       structure: activeConfig.structure,
       scenarioType
     });
-  }, [scopedRows, lookbackRows, activeConfig.structure, scenarioType]);
+  }, [campaignOnlyRows, lookbackRows, activeConfig.structure, scenarioType]);
 
   /* ----------------------------
      Auto-pick execution mode based on strategy + structure + sufficiency
@@ -1396,14 +1431,22 @@ function AIBudgetSimulatorTab({ store }) {
   }, [estimationRows]);
 
   const latestRow = useMemo(() => {
-    // FIX: If curveRows is empty, fall back to lookbackRows or any available data
+    // FIX: Robust fallback chain to find any available data
     let candidates = curveRows.length > 0 ? curveRows : lookbackRows;
     if (candidates.length === 0) {
       candidates = scopedRows;
     }
-    const ordered = [...candidates].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    if (candidates.length === 0) {
+      // Last resort: use campaign-only rows (without geo filter)
+      candidates = campaignOnlyRows;
+    }
+    if (candidates.length === 0) {
+      return null;
+    }
+    // Sort by date and return the latest
+    const ordered = [...candidates].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
     return ordered[ordered.length - 1] || null;
-  }, [curveRows, lookbackRows, scopedRows]);
+  }, [curveRows, lookbackRows, scopedRows, campaignOnlyRows]);
 
   const adjustments = useMemo(() => {
     const currentRates = latestRow ? MathUtils.funnelRates(latestRow) : null;
@@ -1662,6 +1705,8 @@ function AIBudgetSimulatorTab({ store }) {
      ---------------------------- */
   // Debug logging for data flow issues
   if (process.env.NODE_ENV === 'development' || true) {
+    // Get sample row to show actual field values
+    const sampleRow = campaignOnlyRows[0] || lookbackRows[0] || {};
     console.log('[AIBudget Debug]', {
       loadingIntel,
       loadingDataset,
@@ -1669,6 +1714,7 @@ function AIBudgetSimulatorTab({ store }) {
       datasetRowsCount: datasetRows.length,
       intelLiveGuidanceCount: intel?.liveGuidance?.length || 0,
       platformCampaignRowsCount: platformCampaignRows.length,
+      campaignOnlyRowsCount: campaignOnlyRows.length,  // NEW: without geo filter
       scopedRowsCount: scopedRows.length,
       lookbackRowsCount: lookbackRows.length,
       selectedCampaign: existingCampaign,
@@ -1678,8 +1724,18 @@ function AIBudgetSimulatorTab({ store }) {
         spendDays: dataHealth.spendDays,
         revenueDays: dataHealth.revenueDays,
         hasSpend: dataHealth.hasSpend,
-        hasRevenue: dataHealth.hasRevenue
-      }
+        hasRevenue: dataHealth.hasRevenue,
+        lookbackUsed: dataHealth.lookbackUsed
+      },
+      sampleRowFields: {
+        date: sampleRow.date,
+        spend: sampleRow.spend,
+        purchases: sampleRow.purchases,
+        purchase_value: sampleRow.purchase_value,
+        conversion_value: sampleRow.conversion_value,
+        geo: sampleRow.geo
+      },
+      latestRowPurchases: latestRow?.purchases
     });
   }
 
@@ -2105,14 +2161,40 @@ function AIBudgetSimulatorTab({ store }) {
                 <div>Structure: {activeConfig.structure}</div>
               </div>
 
-              <div className="mt-2 grid grid-cols-2 gap-2">
+              <div className="mt-2 grid grid-cols-3 gap-2">
                 <div className="rounded-lg border border-gray-200 bg-white p-2">
-                  <div className="text-[9px] text-gray-500">All-Time Coverage Days</div>
-                  <div className="text-[11px] font-bold text-gray-900">{dataHealth.allTimeDays}</div>
+                  <div className="text-[9px] text-gray-500">Days with Spend</div>
+                  <div className="text-[11px] font-bold text-gray-900">{dataHealth.spendDays}</div>
                 </div>
                 <div className="rounded-lg border border-gray-200 bg-white p-2">
-                  <div className="text-[9px] text-gray-500">Lookback Rows Used</div>
+                  <div className="text-[9px] text-gray-500">Days with Revenue</div>
+                  <div className="text-[11px] font-bold text-gray-900">{dataHealth.revenueDays}</div>
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-white p-2">
+                  <div className="text-[9px] text-gray-500">Data Rows</div>
                   <div className="text-[11px] font-bold text-gray-900">{dataHealth.lookbackUsed}</div>
+                </div>
+              </div>
+
+              {/* Show campaign totals */}
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2">
+                  <div className="text-[9px] text-indigo-600">Total Spend</div>
+                  <div className="text-[11px] font-bold text-indigo-900">
+                    {Math.round(dataHealth.totalSpend || 0).toLocaleString()}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2">
+                  <div className="text-[9px] text-indigo-600">Total Purchases</div>
+                  <div className="text-[11px] font-bold text-indigo-900">
+                    {Math.round(dataHealth.totalPurchases || 0).toLocaleString()}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2">
+                  <div className="text-[9px] text-indigo-600">Total Revenue</div>
+                  <div className="text-[11px] font-bold text-indigo-900">
+                    {Math.round(dataHealth.totalRevenue || 0).toLocaleString()}
+                  </div>
                 </div>
               </div>
 
@@ -2283,13 +2365,36 @@ function AIBudgetSimulatorTab({ store }) {
                 <MiniMetric label="Ad Set History (CBO/ASC)?" value={(activeConfig.structure !== "ABO" && dataHealth.hasAdsetSpend) ? "Yes" : (activeConfig.structure === "ABO" ? "n/a" : "No")} />
               </div>
 
-              <div className="mt-3 rounded-lg border border-gray-200 bg-white p-2">
-                <div className="text-[10px] font-bold text-gray-900">Latest Funnel Snapshot</div>
+              {/* FIX: Show TOTAL aggregates for the campaign, not just latest row */}
+              <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-2">
+                <div className="text-[10px] font-bold text-indigo-900">Campaign Totals (All Data)</div>
                 <div className="grid grid-cols-2 gap-1 mt-1">
+                  <MiniMetric 
+                    label="Total Spend" 
+                    value={Math.round(campaignOnlyRows.reduce((sum, r) => sum + (r.spend || 0), 0)).toLocaleString()} 
+                  />
+                  <MiniMetric 
+                    label="Total Purchases" 
+                    value={Math.round(campaignOnlyRows.reduce((sum, r) => sum + (r.purchases || 0), 0)).toLocaleString()} 
+                  />
+                  <MiniMetric 
+                    label="Total Revenue" 
+                    value={Math.round(campaignOnlyRows.reduce((sum, r) => sum + (r.purchase_value || r.conversion_value || 0), 0)).toLocaleString()} 
+                  />
+                  <MiniMetric 
+                    label="Unique Dates" 
+                    value={new Set(campaignOnlyRows.map(r => r.date).filter(Boolean)).size} 
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-lg border border-gray-200 bg-white p-2">
+                <div className="text-[10px] font-bold text-gray-900">Latest Row Snapshot</div>
+                <div className="grid grid-cols-2 gap-1 mt-1">
+                  <MiniMetric label="Date" value={latestRow?.date ?? "—"} />
+                  <MiniMetric label="Geo" value={latestRow?.geo ?? "—"} />
                   <MiniMetric label="Impressions" value={latestRow?.impressions ?? "—"} />
                   <MiniMetric label="Clicks" value={latestRow?.clicks ?? "—"} />
-                  <MiniMetric label="ATC" value={latestRow?.atc ?? "—"} />
-                  <MiniMetric label="IC" value={latestRow?.ic ?? "—"} />
                   <MiniMetric label="Purchases" value={latestRow?.purchases ?? "—"} />
                   <MiniMetric label="AOV (manual)" value={expectedAov} />
                 </div>
