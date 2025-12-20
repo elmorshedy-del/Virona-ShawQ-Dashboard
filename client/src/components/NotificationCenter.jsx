@@ -45,6 +45,13 @@ function NotificationRow({
             {formatNotificationMessage(notification)}
           </p>
           
+          {/* Campaign source - smaller font */}
+          {notification.metadata?.campaign_name && (
+            <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={notification.metadata.campaign_name}>
+              📣 {notification.metadata.campaign_name}
+            </p>
+          )}
+          
           {/* Meta row: source badge + time */}
           <div className="flex items-center gap-2 mt-1.5">
             {getSourceBadge(notification.source || notification.metadata?.source)}
