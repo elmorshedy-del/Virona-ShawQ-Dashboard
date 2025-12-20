@@ -1065,17 +1065,29 @@ function AIBudgetSimulatorTab({ store }) {
   const [sliderBounds, setSliderBounds] = useState({ min: 500, max: 12000, step: 100 });
 
   // Step 5: FILTER metrics for SELECTED campaign only
+  // First, find the campaign ID from the selected name (for more reliable matching)
+  const selectedCampaignId = useMemo(() => {
+    if (!existingCampaign) return null;
+    const campaign = availableCampaigns.find(c => c.name === existingCampaign);
+    return campaign?.id || null;
+  }, [existingCampaign, availableCampaigns]);
+
   const selectedCampaignMetrics = useMemo(() => {
     if (!existingCampaign) return [];
     
-    // Find campaign by name (case-insensitive)
+    // Try to match by campaign_id first (more reliable), then by name
     const targetName = existingCampaign.toLowerCase().trim();
     
     return allCampaignMetrics.filter(r => {
+      // Match by ID if available
+      if (selectedCampaignId && r.campaign_id === selectedCampaignId) {
+        return true;
+      }
+      // Fallback to name matching
       const rowName = (r.campaign_name || '').toLowerCase().trim();
       return rowName === targetName;
     });
-  }, [allCampaignMetrics, existingCampaign]);
+  }, [allCampaignMetrics, existingCampaign, selectedCampaignId]);
 
   // Step 6: FILTER adset metrics for SELECTED campaign only  
   const selectedAdsetMetrics = useMemo(() => {
@@ -1084,10 +1096,15 @@ function AIBudgetSimulatorTab({ store }) {
     const targetName = existingCampaign.toLowerCase().trim();
     
     return allAdsetMetrics.filter(r => {
+      // Match by ID if available
+      if (selectedCampaignId && r.campaign_id === selectedCampaignId) {
+        return true;
+      }
+      // Fallback to name matching
       const rowName = (r.campaign_name || '').toLowerCase().trim();
       return rowName === targetName;
     });
-  }, [allAdsetMetrics, existingCampaign]);
+  }, [allAdsetMetrics, existingCampaign, selectedCampaignId]);
 
   // Step 7: Compute campaign stats from FILTERED data
   const campaignStats = useMemo(() => {
@@ -1460,6 +1477,12 @@ function AIBudgetSimulatorTab({ store }) {
     return MathUtils.estimateHillParams(estimationRows);
   }, [estimationRows]);
 
+  // Check if we're using fallback params (not enough data)
+  const usingFallbackParams = useMemo(() => {
+    const rowsWithSpend = estimationRows.filter(r => Number.isFinite(r.spend) && r.spend > 0);
+    return rowsWithSpend.length < 5;
+  }, [estimationRows]);
+
   const latestRow = useMemo(() => {
     // CLEAN PIPELINE: Use selectedCampaignMetrics directly
     if (selectedCampaignMetrics.length === 0) return null;
@@ -1641,10 +1664,16 @@ function AIBudgetSimulatorTab({ store }) {
   // Seed campaign selections when options change
   useEffect(() => {
     const first = campaignOptions[0];
-    if (first && !campaignOptions.includes(existingCampaign)) {
+    
+    // Auto-select first campaign if none selected or current selection is invalid
+    if (first && (!existingCampaign || !campaignOptions.includes(existingCampaign))) {
+      console.log('[AIBudget] Auto-selecting first campaign:', first);
       setExistingCampaign(first);
-      setExistingGeo(getCampaignDominantGeo(first));
-      setExistingStructure(getCampaignStructure(first));
+      // Wait for campaignMetadata to be populated before setting geo/structure
+      if (campaignMetadata.size > 0) {
+        setExistingGeo(getCampaignDominantGeo(first));
+        setExistingStructure(getCampaignStructure(first));
+      }
     }
 
     if (first && !campaignOptions.includes(plannedTemplateCampaign)) {
@@ -1705,20 +1734,38 @@ function AIBudgetSimulatorTab({ store }) {
   /* ----------------------------
      Render
      ---------------------------- */
-  // Debug logging - CLEAN PIPELINE
-  console.log('[AIBudget Clean Pipeline]', {
-    availableCampaigns: availableCampaigns.length,
-    selectedCampaign: existingCampaign,
-    allCampaignMetrics: allCampaignMetrics.length,
-    selectedCampaignMetrics: selectedCampaignMetrics.length,
-    selectedAdsetMetrics: selectedAdsetMetrics.length,
-    campaignStats,
-    dataHealth: {
-      spendDays: dataHealth.spendDays,
-      totalPurchases: dataHealth.totalPurchases,
-      totalSpend: dataHealth.totalSpend,
-      status: dataHealth.status
-    }
+  // Debug logging - CLEAN PIPELINE + MATH FLOW
+  console.log('[AIBudget Data Flow]', {
+    // Campaign selection
+    selectedCampaignName: existingCampaign,
+    selectedCampaignId: selectedCampaignId,
+    availableCampaignsCount: availableCampaigns.length,
+    campaignOptionsCount: campaignOptions.length,
+    firstCampaignOption: campaignOptions[0] || 'NONE',
+    
+    // Data counts
+    allCampaignMetricsCount: allCampaignMetrics.length,
+    selectedCampaignMetricsCount: selectedCampaignMetrics.length,
+    
+    // Sample data for debugging matching
+    sampleMetricCampaignId: allCampaignMetrics[0]?.campaign_id || 'N/A',
+    sampleMetricCampaignName: allCampaignMetrics[0]?.campaign_name || 'N/A',
+    sampleHierarchyCampaignId: availableCampaigns[0]?.id || 'N/A',
+    sampleHierarchyCampaignName: availableCampaigns[0]?.name || 'N/A',
+    
+    // Parameter estimation
+    estimationRowsCount: estimationRows.length,
+    rowsWithSpend: estimationRows.filter(r => r.spend > 0).length,
+    rowsWithRevenue: estimationRows.filter(r => r._normRevenue > 0).length,
+    usingFallbackParams,
+    
+    // Computed parameters (Hill curve)
+    params,
+    
+    // Recommendations
+    sliderBounds,
+    maxRoasBudget: recommendations.maxRoas?.spend,
+    kneeBudget: recommendations.knee?.spend
   });
 
   if (loadingIntel) {
@@ -2277,11 +2324,29 @@ function AIBudgetSimulatorTab({ store }) {
                 </div>
               </div>
 
+              {/* Warning if using fallback params */}
+              {usingFallbackParams && (
+                <div className="mt-4 rounded-lg border border-yellow-300 bg-yellow-50 p-3">
+                  <div className="text-[11px] font-bold text-yellow-800">
+                    ⚠️ Using Default Model Parameters
+                  </div>
+                  <div className="text-[10px] text-yellow-700 mt-1">
+                    Not enough campaign data (need 5+ days with spend). Recommendations below are based on 
+                    generic estimates, not your actual campaign performance. Select a campaign with more 
+                    historical data for accurate predictions.
+                  </div>
+                  <div className="text-[9px] text-yellow-600 mt-1">
+                    Data points with spend: {estimationRows.filter(r => r.spend > 0).length} | 
+                    Data points with revenue: {estimationRows.filter(r => r._normRevenue > 0).length}
+                  </div>
+                </div>
+              )}
+
               {/* Recommended budgets */}
               <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
                   <div className="text-[11px] font-extrabold text-indigo-900">
-                    🏆 Recommended (Max ROAS)
+                    🏆 Recommended (Max ROAS){usingFallbackParams && ' (Estimate)'}
                   </div>
                   <div className="text-xs text-indigo-800 mt-0.5">
                     Best efficiency per {currencySymbol === '$' ? 'dollar' : 'riyal'}.
@@ -2303,7 +2368,7 @@ function AIBudgetSimulatorTab({ store }) {
 
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
                   <div className="text-[11px] font-extrabold text-blue-900">
-                    🚀 Recommended (Growth Knee)
+                    🚀 Recommended (Growth Knee){usingFallbackParams && ' (Estimate)'}
                   </div>
                   <div className="text-xs text-blue-800 mt-0.5">
                     Best balance of scale + efficiency.
