@@ -322,31 +322,84 @@ const MathUtils = {
     return best;
   },
 
-  findGrowthKnee(grid) {
-    // Simple robust heuristic:
-    // pick the first point where marginal ROAS drops below 70% of Max ROAS
-    // after passing a minimum spend floor.
+  /**
+   * Find the "Efficiency Budget" - the spend level that gives good ROAS while 
+   * still being meaningful (not just the minimum).
+   * Uses the point where ROAS is ~90% of max ROAS, ensuring reasonable scale.
+   */
+  findEfficiencyBudget(grid, historicalAvgSpend = null) {
     if (!grid.length) return null;
-    const best = MathUtils.findMaxRoas(grid);
-    if (!best) return null;
-    const bestRoas = best.roas;
-    for (let i = 1; i < grid.length; i++) {
-      const prev = grid[i - 1];
-      const cur = grid[i];
-      const dRev = cur.revenue - prev.revenue;
-      const dSpend = cur.spend - prev.spend;
-      const mRoas = MathUtils.safeDivide(dRev, dSpend, 0);
-      if (cur.spend >= best.spend && mRoas > 0 && mRoas <= bestRoas * 0.7) {
-        return cur;
+    
+    // If we have historical average spend, use it as a baseline
+    if (historicalAvgSpend && historicalAvgSpend > 0) {
+      // Find the grid point closest to historical spend
+      let closestToHistorical = grid[0];
+      grid.forEach(g => {
+        if (Math.abs(g.spend - historicalAvgSpend) < Math.abs(closestToHistorical.spend - historicalAvgSpend)) {
+          closestToHistorical = g;
+        }
+      });
+      return closestToHistorical;
+    }
+    
+    // Fallback: Find where ROAS is ~90% of max but with more scale
+    const maxRoasPoint = MathUtils.findMaxRoas(grid);
+    if (!maxRoasPoint) return grid[0];
+    
+    const targetRoas = maxRoasPoint.roas * 0.9;
+    
+    // Find the highest spend that still has ROAS >= 90% of max
+    let result = maxRoasPoint;
+    for (const g of grid) {
+      if (g.roas >= targetRoas && g.spend > result.spend) {
+        result = g;
       }
     }
-    // fallback to ~2x best spend cap if no knee detected
-    const target = best.spend * 2;
-    let closest = grid[grid.length - 1];
-    grid.forEach(g => {
-      if (Math.abs(g.spend - target) < Math.abs(closest.spend - target)) closest = g;
-    });
-    return closest;
+    
+    return result;
+  },
+
+  /**
+   * Find the "Growth Knee" - the optimal point for scaling.
+   * This is where you get the best revenue while maintaining ROAS above a threshold.
+   * Uses a minimum ROAS threshold (default 1.5x) to ensure profitability.
+   */
+  findGrowthKnee(grid, minRoasThreshold = 1.5) {
+    if (!grid.length) return null;
+    
+    // Find the highest spend point where ROAS is still above threshold
+    // This gives "maximum profitable scale"
+    let bestForScale = null;
+    
+    for (const g of grid) {
+      if (g.roas >= minRoasThreshold) {
+        if (!bestForScale || g.revenue > bestForScale.revenue) {
+          bestForScale = g;
+        }
+      }
+    }
+    
+    // If no point meets the threshold, find where ROAS starts dropping significantly
+    if (!bestForScale) {
+      // Use diminishing returns detection: where marginal ROAS drops below 1.0
+      for (let i = 1; i < grid.length; i++) {
+        const prev = grid[i - 1];
+        const cur = grid[i];
+        const dRev = cur.revenue - prev.revenue;
+        const dSpend = cur.spend - prev.spend;
+        const mRoas = MathUtils.safeDivide(dRev, dSpend, 0);
+        
+        if (mRoas < 1.0) {
+          // Marginal ROAS dropped below breakeven - previous point was the knee
+          return prev;
+        }
+      }
+      
+      // Fallback to middle of grid
+      return grid[Math.floor(grid.length / 2)];
+    }
+    
+    return bestForScale;
   }
 };
 
@@ -1573,7 +1626,25 @@ function AIBudgetSimulatorTab({ store }) {
   }, [activeConfig.structure, autoModeKey, dailyBudget, params, adjustments, allocationPlan]);
 
   /* ----------------------------
-     Budget recommendations (Max ROAS + Growth Knee)
+     Calculate historical average daily spend for better recommendations
+     ---------------------------- */
+  const historicalAvgDailySpend = useMemo(() => {
+    if (!dataHealth.totalSpend || !dataHealth.spendDays || dataHealth.spendDays === 0) {
+      return null;
+    }
+    return dataHealth.totalSpend / dataHealth.spendDays;
+  }, [dataHealth.totalSpend, dataHealth.spendDays]);
+
+  const historicalRoas = useMemo(() => {
+    if (!dataHealth.totalSpend || !dataHealth.totalRevenue || dataHealth.totalSpend === 0) {
+      return null;
+    }
+    return dataHealth.totalRevenue / dataHealth.totalSpend;
+  }, [dataHealth.totalSpend, dataHealth.totalRevenue]);
+
+  /* ----------------------------
+     Budget recommendations (Efficiency + Growth)
+     Now uses historical data to make meaningful recommendations
      ---------------------------- */
   const recommendations = useMemo(() => {
     const min = sliderBounds.min;
@@ -1582,11 +1653,21 @@ function AIBudgetSimulatorTab({ store }) {
 
     const grid = MathUtils.scanBudgetGrid({ min, max, step, params, adj: adjustments });
 
-    const maxRoas = MathUtils.findMaxRoas(grid);
-    const knee = MathUtils.findGrowthKnee(grid);
+    // Use historical ROAS as minimum threshold for growth recommendation
+    // Default to 1.5x if no historical data
+    const minRoasForGrowth = historicalRoas ? Math.max(1.0, historicalRoas * 0.7) : 1.5;
 
-    return { grid, maxRoas, knee };
-  }, [sliderBounds, params, adjustments]);
+    // Efficiency: Based on historical average spend (what's been working)
+    const efficiency = MathUtils.findEfficiencyBudget(grid, historicalAvgDailySpend);
+    
+    // Growth: Maximum scale while maintaining acceptable ROAS
+    const growth = MathUtils.findGrowthKnee(grid, minRoasForGrowth);
+
+    // Also compute the theoretical max ROAS point for reference
+    const maxRoas = MathUtils.findMaxRoas(grid);
+
+    return { grid, efficiency, growth, maxRoas, historicalAvgDailySpend, historicalRoas };
+  }, [sliderBounds, params, adjustments, historicalAvgDailySpend, historicalRoas]);
 
   /* ----------------------------
      Campaign metadata - computed from CLEAN PIPELINE (allCampaignMetrics)
@@ -1764,8 +1845,12 @@ function AIBudgetSimulatorTab({ store }) {
     
     // Recommendations
     sliderBounds,
-    maxRoasBudget: recommendations.maxRoas?.spend,
-    kneeBudget: recommendations.knee?.spend
+    historicalAvgDailySpend: recommendations.historicalAvgDailySpend,
+    historicalRoas: recommendations.historicalRoas,
+    efficiencyBudget: recommendations.efficiency?.spend,
+    efficiencyRoas: recommendations.efficiency?.roas,
+    growthBudget: recommendations.growth?.spend,
+    growthRoas: recommendations.growth?.roas
   });
 
   if (loadingIntel) {
@@ -2342,24 +2427,41 @@ function AIBudgetSimulatorTab({ store }) {
                 </div>
               )}
 
+              {/* Historical context */}
+              {recommendations.historicalAvgDailySpend && (
+                <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <div className="text-[10px] text-gray-600">
+                    <span className="font-semibold">Historical Average:</span>{' '}
+                    {currencySymbol === '$' ? '$' : ''}{Math.round(recommendations.historicalAvgDailySpend).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}/day
+                    {recommendations.historicalRoas && (
+                      <span className="ml-3">
+                        <span className="font-semibold">Historical ROAS:</span> {recommendations.historicalRoas.toFixed(2)}x
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Recommended budgets */}
               <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
                   <div className="text-[11px] font-extrabold text-indigo-900">
-                    🏆 Recommended (Max ROAS){usingFallbackParams && ' (Estimate)'}
+                    🎯 Efficiency Budget{usingFallbackParams && ' (Estimate)'}
                   </div>
                   <div className="text-xs text-indigo-800 mt-0.5">
-                    Best efficiency per {currencySymbol === '$' ? 'dollar' : 'riyal'}.
+                    {recommendations.historicalAvgDailySpend 
+                      ? 'Based on your historical average spend.'
+                      : `Best efficiency per ${currencySymbol === '$' ? 'dollar' : 'riyal'}.`}
                   </div>
                   <div className="text-xl font-extrabold text-gray-900 mt-1">
-                    {currencySymbol === '$' ? '$' : ''}{Math.round(recommendations.maxRoas?.spend || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}/day
+                    {currencySymbol === '$' ? '$' : ''}{Math.round(recommendations.efficiency?.spend || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}/day
                   </div>
                   <div className="text-[11px] text-gray-700">
-                    Estimated ROAS: {Number(recommendations.maxRoas?.roas || 0).toFixed(2)}x
+                    Estimated ROAS: {Number(recommendations.efficiency?.roas || 0).toFixed(2)}x
                   </div>
                   <button
                     type="button"
-                    onClick={() => recommendations.maxRoas && setDailyBudget(recommendations.maxRoas.spend)}
+                    onClick={() => recommendations.efficiency && setDailyBudget(recommendations.efficiency.spend)}
                     className="mt-2 text-[11px] font-bold text-indigo-700 underline"
                   >
                     Set slider
@@ -2368,20 +2470,20 @@ function AIBudgetSimulatorTab({ store }) {
 
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
                   <div className="text-[11px] font-extrabold text-blue-900">
-                    🚀 Recommended (Growth Knee){usingFallbackParams && ' (Estimate)'}
+                    🚀 Growth Budget{usingFallbackParams && ' (Estimate)'}
                   </div>
                   <div className="text-xs text-blue-800 mt-0.5">
-                    Best balance of scale + efficiency.
+                    Maximum scale while staying profitable.
                   </div>
                   <div className="text-xl font-extrabold text-gray-900 mt-1">
-                    {currencySymbol === '$' ? '$' : ''}{Math.round(recommendations.knee?.spend || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}/day
+                    {currencySymbol === '$' ? '$' : ''}{Math.round(recommendations.growth?.spend || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}/day
                   </div>
                   <div className="text-[11px] text-gray-700">
-                    Estimated ROAS: {Number(recommendations.knee?.roas || 0).toFixed(2)}x
+                    Estimated ROAS: {Number(recommendations.growth?.roas || 0).toFixed(2)}x
                   </div>
                   <button
                     type="button"
-                    onClick={() => recommendations.knee && setDailyBudget(recommendations.knee.spend)}
+                    onClick={() => recommendations.growth && setDailyBudget(recommendations.growth.spend)}
                     className="mt-2 text-[11px] font-bold text-blue-700 underline"
                   >
                     Set slider
