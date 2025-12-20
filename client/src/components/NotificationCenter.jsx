@@ -16,10 +16,12 @@ function NotificationRow({
   currentTime 
 }) {
   const isCrossStore = notification.store !== currentStore;
-  const timestamp = notification?.metadata?.timestamp || 
-                    notification?.timestamp || 
+  // FIXED: Use notification creation time (when we received it), not order time (when sale happened)
+  // Priority: notification.timestamp (DB row) > created_at > metadata.timestamp (order time, fallback only)
+  const timestamp = notification?.timestamp || 
+                    notification?.created_at ||
                     notification?.createdAt ||
-                    notification?.created_at;
+                    notification?.metadata?.timestamp;
 
   // Calculate time ago directly using currentTime prop
   // This ensures the display updates whenever currentTime changes
