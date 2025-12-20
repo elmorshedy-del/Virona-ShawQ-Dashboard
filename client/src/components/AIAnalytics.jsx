@@ -333,17 +333,17 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}
       >
         <div
-          className={`max-w-[85%] rounded-lg p-4 ${
+          className={`max-w-[85%] p-4 ${
             isUser
-              ? 'bg-blue-600 text-white'
+              ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm shadow-md shadow-blue-600/10'
               : isError
-              ? 'bg-red-50 border border-red-200 text-red-900'
-              : 'bg-gray-100 text-gray-900'
+              ? 'bg-red-50 border border-red-200 text-red-900 rounded-2xl'
+              : 'bg-white border border-gray-100 text-gray-900 rounded-2xl rounded-tl-sm shadow-sm'
           }`}
         >
-          <div className="flex items-start gap-2">
+          <div className="flex items-start gap-3">
             {!isUser && (
-              <Sparkles className={`w-5 h-5 mt-0.5 flex-shrink-0 ${isError ? 'text-red-500' : 'text-blue-500'} ${isStreaming ? 'animate-pulse' : ''}`} />
+              <Sparkles className={`w-4 h-4 mt-0.5 flex-shrink-0 ${isError ? 'text-red-500' : 'text-blue-500'} ${isStreaming ? 'animate-pulse' : ''}`} />
             )}
             <div className="flex-1">
               {isUser ? (
@@ -404,9 +404,9 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   return (
     <div className="flex h-[calc(100vh-200px)] gap-4">
       {/* Left Sidebar - Mode Selection */}
-      <div className="w-72 bg-white rounded-lg shadow-lg p-4 overflow-y-auto">
-        <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
-          <Sparkles className="w-5 h-5 text-blue-500" />
+      <div className="w-72 bg-white rounded-2xl border border-gray-200 shadow-sm p-5 overflow-y-auto">
+        <h3 className="font-semibold text-lg mb-4 flex items-center gap-3">
+          <Sparkles className="w-4 h-4 text-blue-500" />
           {storeDisplayName} AI
           {/* Reactivation badge */}
           {hasReactivationCandidates && (
@@ -420,17 +420,17 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
             <div key={modeKey}>
               <button
                 onClick={() => setActiveMode(modeKey)}
-                className={`w-full text-left p-3 rounded-lg transition-all ${
+                className={`w-full text-left p-3 rounded-2xl transition-all ${
                   activeMode === modeKey
-                    ? 'bg-blue-50 border-2 border-blue-500'
-                    : 'bg-gray-50 border-2 border-transparent hover:bg-gray-100'
+                    ? 'bg-blue-50/80 text-blue-700 ring-1 ring-blue-200 shadow-sm'
+                    : 'bg-transparent text-gray-600 hover:bg-gray-50 transition-colors'
                 }`}
               >
-                <div className="flex items-center gap-2 mb-1">
+                <div className="flex items-center gap-3 mb-1">
                   <span className="text-lg">{mode.icon}</span>
                   <span className="font-medium">{mode.label}</span>
                 </div>
-                <p className="text-xs text-gray-500 italic">{mode.description}</p>
+                <p className="text-xs font-normal text-gray-400">{mode.description}</p>
               </button>
 
               {/* Pillars - shown when mode is active */}
@@ -441,7 +441,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                       <button
                         key={idx}
                         onClick={() => handleQuickAction(pillar.label)}
-                        className={`text-xs text-gray-400 italic hover:text-blue-500 hover:bg-blue-50 px-1.5 py-0.5 rounded transition-colors ${
+                        className={`text-[11px] font-medium text-gray-500 bg-white border border-gray-100 px-2 py-1 rounded-md shadow-sm hover:border-blue-200 hover:text-blue-600 not-italic transition-colors ${
                           pillar.label.includes('Reactivation') ? 'text-orange-400 hover:text-orange-600 hover:bg-orange-50' : ''
                         }`}
                       >
@@ -474,7 +474,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                 </button>
               ))}
             </div>
-            <p className="text-xs text-gray-400 mt-2 italic text-center">
+            <p className="text-xs font-normal text-gray-400 mt-2 text-center">
               {insightModes.find(m => m.id === insightMode)?.description}
             </p>
           </div>
@@ -495,7 +495,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         {/* Store Info */}
         <div className="mt-6 pt-4 border-t border-gray-200">
           <div className="text-xs text-gray-500">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-3 mb-1">
               <Calendar className="w-3 h-3" />
               <span>Active Store</span>
             </div>
@@ -507,18 +507,18 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col bg-white rounded-lg shadow-lg">
+      <div className="flex-1 flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm">
         {/* Header */}
-        <div className="p-4 border-b border-gray-200">
+        <div className="p-4 bg-white/80 backdrop-blur-md sticky top-0 z-10 rounded-t-2xl">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className="text-2xl">{currentMode.icon}</span>
               <div>
                 <h2 className="text-lg font-semibold">{currentMode.label}</h2>
-                <p className="text-xs text-gray-500 italic">{currentMode.description}</p>
+                <p className="text-xs font-normal text-gray-400">{currentMode.description}</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               {/* Reactivation indicator in header */}
               {hasReactivationCandidates && (
                 <button
@@ -531,7 +531,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                 </button>
               )}
               {activeMode === 'deepdive' && (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg">
+                <div className="flex items-center gap-3 px-3 py-1.5 bg-purple-50 rounded-lg">
                   <Brain className="w-4 h-4 text-purple-500" />
                   <span className="text-xs text-purple-700 font-medium">
                     {insightModes.find(m => m.id === insightMode)?.label}
@@ -547,12 +547,14 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
           {messages.length === 0 ? (
             <div className="flex items-center justify-center h-full text-gray-500">
               <div className="text-center max-w-md">
-                <span className="text-5xl mb-4 block">{currentMode.icon}</span>
+                <span className="text-5xl mb-4 mx-auto flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-blue-50 to-indigo-50">
+                  {currentMode.icon}
+                </span>
                 <p className="text-lg font-medium mb-2">{currentMode.label}</p>
-                <p className="text-sm text-gray-400 italic mb-6">{currentMode.description}</p>
+                <p className="text-sm font-normal text-gray-400 mb-6">{currentMode.description}</p>
 
                 {/* Quick Action Buttons */}
-                <div className="flex flex-wrap justify-center gap-2">
+                <div className="flex flex-wrap justify-center gap-3">
                   {currentMode.pillars.slice(0, 4).map((pillar, idx) => (
                     <button
                       key={idx}
@@ -588,20 +590,20 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
 
         {/* Input Area */}
         <div className="p-4 border-t border-gray-200">
-          <div className="flex gap-2">
+          <div className="flex gap-3">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyPress}
               placeholder={`Ask about ${currentMode.label.toLowerCase()}...`}
-              className="flex-1 p-3 border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="flex-1 p-3 bg-gray-50 border-0 rounded-xl resize-none focus:outline-none focus:bg-white focus:ring-2 focus:ring-blue-100 shadow-inner text-gray-900"
               rows={2}
               disabled={isLoading}
             />
             <button
               onClick={sendMessage}
               disabled={isLoading || !input.trim()}
-              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
               {isLoading ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
