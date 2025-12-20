@@ -544,17 +544,24 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
   const allTimeDays = new Set((allRows || []).map(r => r.date)).size;
   const lookbackUsed = lookbackRows?.length || 0;
 
-  // Count UNIQUE dates with campaign-level spend (not rows, since data has country breakdowns)
+  // FIX: Count unique dates with ANY spend, not just campaign-level rows
+  // The !r.adset_id filter was too restrictive - data may only have adset-level rows
   const spendDays = new Set(
     (lookbackRows || [])
-      .filter(r => !r.adset_id && r.spend > 0)
+      .filter(r => r.spend > 0)
       .map(r => r.date)
   ).size;
 
-  // Count UNIQUE dates with revenue data
+  // FIX: Check for revenue in ANY field format (raw or normalized)
   const revenueDays = new Set(
     (lookbackRows || [])
-      .filter(r => !r.adset_id && (r._normRevenue > 0 || r.purchase_value > 0 || r.purchases > 0))
+      .filter(r => {
+        const normRev = r._normRevenue || 0;
+        const purchaseVal = r.purchase_value || 0;
+        const convVal = r.conversion_value || 0;
+        const purchases = r.purchases || 0;
+        return normRev > 0 || purchaseVal > 0 || convVal > 0 || purchases > 0;
+      })
       .map(r => r.date)
   ).size;
 
@@ -562,25 +569,38 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
   const lookbackDays = new Set((lookbackRows || []).map(r => r.date)).size;
 
   const hasSpend = (lookbackRows || []).some(r => Number.isFinite(r.spend) && r.spend > 0);
-  const hasRevenue = (lookbackRows || []).some(r => Number.isFinite(r._normRevenue) && r._normRevenue > 0);
+  
+  // FIX: Check multiple revenue field names since sources use different conventions
+  const hasRevenue = (lookbackRows || []).some(r => {
+    const normRev = Number(r._normRevenue) || 0;
+    const purchaseVal = Number(r.purchase_value) || 0;
+    const convVal = Number(r.conversion_value) || 0;
+    const purchases = Number(r.purchases) || 0;
+    return normRev > 0 || purchaseVal > 0 || convVal > 0 || purchases > 0;
+  });
 
   const hasFunnel = (lookbackRows || []).some(r =>
-    Number.isFinite(r.impressions) &&
-    Number.isFinite(r.clicks) &&
-    Number.isFinite(r.atc) &&
-    Number.isFinite(r.ic)
+    Number.isFinite(r.impressions) && r.impressions > 0 &&
+    Number.isFinite(r.clicks) && r.clicks > 0
   );
 
-  const hasAdsetSpend = (lookbackRows || []).some(r => r.adset_id && Number.isFinite(r.spend));
+  const hasAdsetSpend = (lookbackRows || []).some(r => r.adset_id && Number.isFinite(r.spend) && r.spend > 0);
 
   let status = "🚫 Not Enough";
   let confidence = "Low";
   const missing = [];
 
-  if (!hasSpend) missing.push("Spend");
-  if (!hasRevenue) missing.push("Revenue (purchase_value or purchases + AOV)");
+  // FIX: More helpful diagnostics when data is missing
+  if (!hasSpend) {
+    missing.push("Spend data (check if campaign filter matches available data)");
+  }
+  if (!hasRevenue) {
+    missing.push("Revenue (purchase_value, conversion_value, or purchases)");
+  }
 
-  if (!hasFunnel) missing.push("Funnel metrics (impressions, clicks, ATC, IC)");
+  if (!hasFunnel) {
+    missing.push("Funnel metrics (impressions, clicks - needed for quality adjustments)");
+  }
 
   if ((structure === "CBO" || structure === "ASC") && !hasAdsetSpend) {
     missing.push("Ad set-level spend history (for CBO/ASC allocation realism)");
@@ -591,20 +611,23 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
       status = "🟡 Enough for Partial Model";
       confidence = !missing.length ? "Medium" : "Low";
     } else {
-      // existing - use lookbackDays (unique dates) for threshold checks
-      if (lookbackDays >= 14 && spendDays >= 10) {
+      // existing - use spendDays for threshold checks (more reliable than lookbackDays)
+      if (spendDays >= 14) {
         status = "✅ Enough for Full Model";
         confidence = hasFunnel && (structure === "ABO" || hasAdsetSpend) ? "High" : "Medium";
-      } else if (lookbackDays >= 7 && spendDays >= 5) {
+      } else if (spendDays >= 7) {
         status = "🟡 Enough for Partial Model";
         confidence = "Medium";
-        missing.push(`Add ${Math.max(0, 14 - lookbackDays)} more lookback days for full curve stability`);
+        missing.push(`Add ${Math.max(0, 14 - spendDays)} more days with spend for full curve stability`);
       } else {
         status = "🚫 Not Enough";
         confidence = "Low";
         missing.push(`Need at least 7 days with spend + revenue (currently ${spendDays} spend days, ${revenueDays} revenue days)`);
       }
     }
+  } else if (lookbackUsed === 0) {
+    // FIX: Add specific message when no rows at all
+    missing.push("No data found for selected campaign/geo combination");
   }
 
   return {
@@ -615,6 +638,8 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
     revenueDays,
     hasFunnel,
     hasAdsetSpend,
+    hasSpend,
+    hasRevenue,
     status,
     confidence,
     missing
@@ -627,8 +652,28 @@ function computeDataHealth({ allRows, lookbackRows, structure, scenarioType }) {
 
 function scopeFilterRows(rows, { campaignName, geo, includeAdsets = true }) {
   let out = rows || [];
-  if (campaignName) out = out.filter(r => r.campaign_name === campaignName);
-  if (geo) out = out.filter(r => r.geo === geo);
+  
+  if (campaignName) {
+    // FIX: Use case-insensitive matching and handle slight variations
+    const normalizedTarget = campaignName.toLowerCase().trim();
+    out = out.filter(r => {
+      const rowName = (r.campaign_name || '').toLowerCase().trim();
+      // Match exact or if one contains the other (handles prefix/suffix variations)
+      return rowName === normalizedTarget || 
+             rowName.includes(normalizedTarget) || 
+             normalizedTarget.includes(rowName);
+    });
+  }
+  
+  if (geo) {
+    // FIX: Case-insensitive geo matching
+    const normalizedGeo = geo.toUpperCase().trim();
+    out = out.filter(r => {
+      const rowGeo = (r.geo || r.country || '').toUpperCase().trim();
+      return rowGeo === normalizedGeo || rowGeo === 'ALL' || normalizedGeo === 'ALL';
+    });
+  }
+  
   if (!includeAdsets) out = out.filter(r => !r.adset_id);
   return out;
 }
@@ -1351,9 +1396,14 @@ function AIBudgetSimulatorTab({ store }) {
   }, [estimationRows]);
 
   const latestRow = useMemo(() => {
-    const ordered = [...curveRows].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    // FIX: If curveRows is empty, fall back to lookbackRows or any available data
+    let candidates = curveRows.length > 0 ? curveRows : lookbackRows;
+    if (candidates.length === 0) {
+      candidates = scopedRows;
+    }
+    const ordered = [...candidates].sort((a, b) => String(a.date).localeCompare(String(b.date)));
     return ordered[ordered.length - 1] || null;
-  }, [curveRows]);
+  }, [curveRows, lookbackRows, scopedRows]);
 
   const adjustments = useMemo(() => {
     const currentRates = latestRow ? MathUtils.funnelRates(latestRow) : null;
@@ -1610,17 +1660,62 @@ function AIBudgetSimulatorTab({ store }) {
   /* ----------------------------
      Render
      ---------------------------- */
+  // Debug logging for data flow issues
+  if (process.env.NODE_ENV === 'development' || true) {
+    console.log('[AIBudget Debug]', {
+      loadingIntel,
+      loadingDataset,
+      aiDatasetMetrics: !!aiDataset?.metrics,
+      datasetRowsCount: datasetRows.length,
+      intelLiveGuidanceCount: intel?.liveGuidance?.length || 0,
+      platformCampaignRowsCount: platformCampaignRows.length,
+      scopedRowsCount: scopedRows.length,
+      lookbackRowsCount: lookbackRows.length,
+      selectedCampaign: existingCampaign,
+      selectedGeo: existingGeo,
+      campaignOptionsCount: campaignOptions.length,
+      dataHealth: {
+        spendDays: dataHealth.spendDays,
+        revenueDays: dataHealth.revenueDays,
+        hasSpend: dataHealth.hasSpend,
+        hasRevenue: dataHealth.hasRevenue
+      }
+    });
+  }
+
   if (loadingIntel) {
-    return <div>Loading…</div>;
+    return <div className="p-4">Loading budget intelligence…</div>;
   }
   if (loadingDataset) {
-    return <div>Loading…</div>;
+    return <div className="p-4">Loading AI budget dataset…</div>;
   }
   if (intelError || datasetError) {
-    return <div>{intelError || datasetError}</div>;
+    return (
+      <div className="p-4 text-red-600">
+        <div className="font-bold">Error loading data:</div>
+        <div>{intelError || datasetError}</div>
+      </div>
+    );
   }
-  if (!intel || !datasetRows.length) {
-    return <div>No budget intelligence data available.</div>;
+  
+  // FIX: More informative message when no data, with diagnostic hints
+  if (!intel && datasetRows.length === 0) {
+    return (
+      <div className="p-4 space-y-2">
+        <div className="font-bold text-gray-900">No budget intelligence data available.</div>
+        <div className="text-sm text-gray-600">
+          This could mean:
+          <ul className="list-disc ml-4 mt-1">
+            <li>No Meta campaigns have been synced for this store</li>
+            <li>The database has no metrics data yet</li>
+            <li>The store parameter is incorrect</li>
+          </ul>
+        </div>
+        <div className="text-xs text-gray-400 mt-2">
+          Store: {currentStore} | Dataset rows: {datasetRows.length} | Intel: {intel ? 'loaded' : 'missing'}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -2021,7 +2116,22 @@ function AIBudgetSimulatorTab({ store }) {
                 </div>
               </div>
 
-              {dataHealth.missing?.length ? (
+              {/* FIX: Show specific warning when data flow chain is broken */}
+              {dataHealth.lookbackUsed === 0 && (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-2">
+                  <div className="text-[10px] font-bold text-red-800">⚠️ No Data After Filtering</div>
+                  <div className="mt-1 text-[10px] text-red-700">
+                    Campaign filter returned 0 rows. Check that your selection matches the data.
+                  </div>
+                  <div className="mt-1 text-[9px] text-red-600">
+                    Selected: "{existingCampaign}" / {existingGeo}
+                    <br />
+                    Available campaigns: {campaignOptions.slice(0, 3).join(', ')}{campaignOptions.length > 3 ? '...' : ''}
+                  </div>
+                </div>
+              )}
+              
+              {dataHealth.lookbackUsed > 0 && dataHealth.missing?.length ? (
                 <div className="mt-3 rounded-lg border border-yellow-200 bg-yellow-50 p-2">
                   <div className="text-[10px] font-bold text-yellow-800">What you need to add</div>
                   <ul className="mt-1 text-[10px] text-yellow-800 space-y-0.5">
@@ -2030,13 +2140,13 @@ function AIBudgetSimulatorTab({ store }) {
                     ))}
                   </ul>
                 </div>
-              ) : (
+              ) : dataHealth.lookbackUsed > 0 ? (
                 <div className="mt-3 rounded-lg border border-green-200 bg-green-50 p-2">
                   <div className="text-[10px] font-bold text-green-800">
                     Looks sufficient for this configuration.
                   </div>
                 </div>
-              )}
+              ) : null}
             </div>
           </SectionCard>
         </div>
