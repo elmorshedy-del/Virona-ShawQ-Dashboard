@@ -278,9 +278,9 @@ export default function App() {
         startDate: '2000-01-01',
         endDate: getLocalDateString()
       });
-      const countryTrendParams = new URLSearchParams({ store: currentStore });
-      const campaignTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
       const selectedCountryTrendDays = COUNTRY_TREND_PERIODS[countryTrendsPeriod] || 7;
+      const countryTrendParams = new URLSearchParams({ store: currentStore, days: selectedCountryTrendDays });
+      const campaignTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
       
       // Fix 7: Always show arrows for comparison (Today compares to Yesterday, Yesterday compares to day before)
       const shouldShowArrows = true;
@@ -288,17 +288,13 @@ export default function App() {
       if (dateRange.type === 'custom') {
         params.set('startDate', dateRange.start);
         params.set('endDate', dateRange.end);
-        countryTrendParams.set('startDate', dateRange.start);
-        countryTrendParams.set('endDate', dateRange.end);
         campaignTrendParams.set('startDate', dateRange.start);
         campaignTrendParams.set('endDate', dateRange.end);
       } else if (dateRange.type === 'yesterday') {
         params.set('yesterday', '1');
-        countryTrendParams.set('yesterday', '1');
         campaignTrendParams.set('yesterday', '1');
       } else {
         params.set(dateRange.type, dateRange.value);
-        countryTrendParams.set('days', selectedCountryTrendDays);
         campaignTrendParams.set(dateRange.type, dateRange.value);
       }
       
