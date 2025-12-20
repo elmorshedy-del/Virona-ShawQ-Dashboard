@@ -8,14 +8,12 @@ import { getTimeAgo as calculateTimeAgo } from '../utils/timestampUtils';
 // ============================================================================
 function NotificationRow({ 
   notification, 
-  currentStore, 
   onMarkAsRead, 
   onDelete, 
   getSourceBadge, 
   formatNotificationMessage,
   currentTime 
 }) {
-  const isCrossStore = notification.store !== currentStore;
   const timestamp = notification?.metadata?.timestamp || 
                     notification?.timestamp || 
                     notification?.createdAt ||
@@ -47,13 +45,6 @@ function NotificationRow({
         </div>
 
         <div className="flex-1 min-w-0">
-          {/* Store badge for cross-store */}
-          {isCrossStore && (
-            <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-orange-100 text-orange-700 mb-1">
-              {notification.store?.toUpperCase()}
-            </span>
-          )}
-          
           {/* Message */}
           <p className={`text-sm ${!notification.is_read ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
             {formatNotificationMessage(notification)}
@@ -376,17 +367,10 @@ export default function NotificationCenter({ currentStore }) {
   };
 
   // ============================================================================
-  // Format message for display (add store name for cross-store)
+  // Format message for display (store logo already shows which store)
   // ============================================================================
   const formatNotificationMessage = (notification) => {
-    const isCrossStore = notification.store !== currentStore;
-    
-    if (isCrossStore) {
-      // Format: [STORE] Country • Amount • Source
-      // Example: [VIRONAX] SA • SAR 1,400 • Salla
-      return `[${notification.store.toUpperCase()}] ${notification.message}`;
-    }
-    
+    // No need to add store name - the logo already shows which store
     return notification.message;
   };
 
@@ -471,7 +455,6 @@ export default function NotificationCenter({ currentStore }) {
                   <NotificationRow
                     key={notification.id}
                     notification={notification}
-                    currentStore={currentStore}
                     onMarkAsRead={markAsRead}
                     onDelete={deleteNotification}
                     getSourceBadge={getSourceBadge}
