@@ -948,64 +948,120 @@ function AIBudgetSimulatorTab({ store }) {
     loadDataset();
   }, [currentStore]);
 
-  // Meta campaigns
+  // Meta campaigns - use clean pipeline data
   const { objects: metaObjects } = useMetaObjects(store, { autoFetch: !!store });
-  const metaCampaignNames = useMemo(() => {
-    const payload = metaObjects?.data || metaObjects;
-    const campaigns = [
-      ...(payload?.campaigns || []),
-      ...(aiDataset?.hierarchy?.campaigns || [])
-    ];
-    const names = campaigns
-      .map(c => c.object_name || c.campaign_name || c.name)
-      .filter(Boolean);
-    return Array.from(new Set(names));
-  }, [aiDataset, metaObjects]);
+  
+  // Campaign names come directly from availableCampaigns (clean pipeline)
+  const campaignOptions = useMemo(() => {
+    return availableCampaigns.map(c => c.name).filter(Boolean);
+  }, [availableCampaigns]);
 
-  const datasetRows = useMemo(() => {
-    if (!aiDataset?.metrics) return [];
+  /* ============================================================================
+     CLEAN DATA PIPELINE - Single source of truth from /api/aibudget
+     ============================================================================ */
 
-    const mapRow = (r) => ({
-      date: r.date,
-      campaign_id: r.campaign_id,
-      campaign_name: r.campaign_name,
-      adset_id: r.adset_id,
-      adset_name: r.adset_name,
-      ad_id: r.ad_id,
-      ad_name: r.ad_name,
-      geo: r.country || r.geo || 'ALL',
-      spend: Number(r.spend) || 0,
-      purchase_value: Number(r.conversion_value ?? r.purchase_value ?? 0) || 0,
-      purchases: Number(r.conversions ?? r.purchases ?? 0) || 0,
-      impressions: Number(r.impressions ?? 0) || 0,
-      clicks: Number(r.clicks ?? 0) || 0,
-      reach: Number(r.reach ?? 0) || 0,
-      lpv: Number(r.landing_page_views ?? r.lpv ?? 0) || 0,
-      atc: Number(r.add_to_cart ?? r.atc ?? 0) || 0,
-      ic: Number(r.checkouts_initiated ?? r.ic ?? 0) || 0,
-      status: r.status || r.adset_status || r.ad_status,
-      effective_status: r.effective_status || r.adset_effective_status || r.ad_effective_status
-    });
-
-    const rows = [];
-
-    // Include campaign-level data (needed for spendDays calculation in Data Sufficiency)
-    if (aiDataset.metrics.campaignDaily?.length) {
-      rows.push(...aiDataset.metrics.campaignDaily.map(mapRow));
-    }
-
-    // Include adset-level data (needed for CBO/ASC allocation in Data Sufficiency)
-    if (aiDataset.metrics.adsetDaily?.length) {
-      rows.push(...aiDataset.metrics.adsetDaily.map(mapRow));
-    }
-
-    // Include ad-level data if available
-    if (aiDataset.metrics.adDaily?.length) {
-      rows.push(...aiDataset.metrics.adDaily.map(mapRow));
-    }
-
-    return rows.filter(r => r.date && r.geo);
+  // Step 1: Get list of available campaigns from hierarchy
+  const availableCampaigns = useMemo(() => {
+    if (!aiDataset?.hierarchy?.campaigns) return [];
+    return aiDataset.hierarchy.campaigns.map(c => ({
+      id: c.object_id,
+      name: c.object_name || c.campaign_name || 'Unknown Campaign',
+      status: c.effective_status || c.status
+    }));
   }, [aiDataset]);
+
+  // Step 2: Standard row mapper for consistent field names
+  const mapMetricRow = (r) => ({
+    date: r.date,
+    campaign_id: r.campaign_id,
+    campaign_name: r.campaign_name,
+    adset_id: r.adset_id || null,
+    adset_name: r.adset_name || null,
+    geo: r.country || r.geo || 'ALL',
+    spend: Number(r.spend) || 0,
+    purchase_value: Number(r.conversion_value ?? r.purchase_value ?? 0) || 0,
+    purchases: Number(r.conversions ?? r.purchases ?? 0) || 0,
+    impressions: Number(r.impressions ?? 0) || 0,
+    clicks: Number(r.clicks ?? 0) || 0,
+    reach: Number(r.reach ?? 0) || 0,
+    lpv: Number(r.landing_page_views ?? r.lpv ?? 0) || 0,
+    atc: Number(r.add_to_cart ?? r.atc ?? 0) || 0,
+    ic: Number(r.checkouts_initiated ?? r.ic ?? 0) || 0
+  });
+
+  // Step 3: Get ALL campaign daily metrics (unfiltered) - this is raw data
+  const allCampaignMetrics = useMemo(() => {
+    if (!aiDataset?.metrics?.campaignDaily) return [];
+    return aiDataset.metrics.campaignDaily.map(mapMetricRow);
+  }, [aiDataset]);
+
+  // Step 4: Get ALL adset daily metrics (unfiltered) 
+  const allAdsetMetrics = useMemo(() => {
+    if (!aiDataset?.metrics?.adsetDaily) return [];
+    return aiDataset.metrics.adsetDaily.map(mapMetricRow);
+  }, [aiDataset]);
+
+  // Step 5: FILTER metrics for SELECTED campaign only
+  const selectedCampaignMetrics = useMemo(() => {
+    if (!existingCampaign) return [];
+    
+    // Find campaign by name (case-insensitive)
+    const targetName = existingCampaign.toLowerCase().trim();
+    
+    return allCampaignMetrics.filter(r => {
+      const rowName = (r.campaign_name || '').toLowerCase().trim();
+      return rowName === targetName;
+    });
+  }, [allCampaignMetrics, existingCampaign]);
+
+  // Step 6: FILTER adset metrics for SELECTED campaign only  
+  const selectedAdsetMetrics = useMemo(() => {
+    if (!existingCampaign) return [];
+    
+    const targetName = existingCampaign.toLowerCase().trim();
+    
+    return allAdsetMetrics.filter(r => {
+      const rowName = (r.campaign_name || '').toLowerCase().trim();
+      return rowName === targetName;
+    });
+  }, [allAdsetMetrics, existingCampaign]);
+
+  // Step 7: Compute campaign stats from FILTERED data
+  const campaignStats = useMemo(() => {
+    const metrics = selectedCampaignMetrics;
+    
+    if (metrics.length === 0) {
+      return {
+        totalSpend: 0,
+        totalPurchases: 0,
+        totalRevenue: 0,
+        uniqueDates: 0,
+        uniqueGeos: [],
+        rows: 0
+      };
+    }
+
+    const dates = new Set(metrics.map(r => r.date).filter(Boolean));
+    const geos = [...new Set(metrics.map(r => r.geo).filter(Boolean))];
+    
+    return {
+      totalSpend: metrics.reduce((sum, r) => sum + r.spend, 0),
+      totalPurchases: metrics.reduce((sum, r) => sum + r.purchases, 0),
+      totalRevenue: metrics.reduce((sum, r) => sum + r.purchase_value, 0),
+      uniqueDates: dates.size,
+      uniqueGeos: geos,
+      rows: metrics.length
+    };
+  }, [selectedCampaignMetrics]);
+
+  // Debug: Log the pipeline
+  console.log('[AIBudget Pipeline]', {
+    availableCampaigns: availableCampaigns.length,
+    selectedCampaign: existingCampaign,
+    allCampaignMetrics: allCampaignMetrics.length,
+    selectedCampaignMetrics: selectedCampaignMetrics.length,
+    campaignStats
+  });
 
   // Existing configuration
   const [existingCampaign, setExistingCampaign] = useState("");
@@ -1087,65 +1143,11 @@ function AIBudgetSimulatorTab({ store }) {
     plannedGeoMaturity
   ]);
 
-  const intelCampaignRows = useMemo(() => {
-    if (!intel?.liveGuidance) return [];
-    return intel.liveGuidance.map(row => ({
-      ...row,
-      date: row.date || row.startDate || row.endDate, // FIX: Use any available date
-      campaign_id: row.campaignId,
-      campaign_name: row.campaignName,
-      geo: row.country,
-      structure: row.structure || "CBO",
-      purchase_value: row.revenue || 0,
-      purchases: row.purchases || 0,        // FIX: Explicitly map purchases
-      spend: row.spend || 0,                // FIX: Ensure spend is mapped
-      impressions: row.impressions || 0,
-      clicks: row.clicks || 0,
-      atc: row.atc || 0,
-      ic: row.ic || 0,
-      adset_id: row.adsetId || null,
-      adset_name: row.adsetName || null
-    }));
-  }, [intel]);
-
-  const intelStartPlanRows = useMemo(() => {
+  // Intel data is only used for start plans (new campaign planning), not for existing campaign metrics
+  const intelStartPlans = useMemo(() => {
     if (!intel?.startPlans) return [];
-    return intel.startPlans.map(plan => ({
-      ...plan,
-      campaign_id: plan.country,
-      campaign_name: plan.name || plan.country,
-      geo: plan.country,
-      structure: plan.structure || "CBO",
-      spend: plan.recommendedTotal,
-      purchase_value: plan.recommendedTotal,
-      purchases: plan.expectedPurchases,
-      adset_id: null,
-      adset_name: null
-    }));
+    return intel.startPlans;
   }, [intel]);
-
-  /* ----------------------------
-     Platform rows for the configuration scope
-     ---------------------------- */
-  const platformCampaignRows = useMemo(() => {
-    const rows = datasetRows.length ? datasetRows : intelCampaignRows;
-    // For planned with template, we use template campaign rows as anchor.
-    if (activeConfig.planned && activeConfig.plannedSource === "meta_template" && activeConfig.campaignName) {
-      return scopeFilterRows(rows, { campaignName: activeConfig.campaignName, geo: null, includeAdsets: true });
-    }
-    // Existing: filter by selected campaign + geo
-    if (!activeConfig.planned && activeConfig.campaignName) {
-      return scopeFilterRows(rows, { campaignName: activeConfig.campaignName, geo: activeConfig.geo, includeAdsets: true });
-    }
-    // Planned without template: no direct campaign rows
-    return [];
-  }, [activeConfig, datasetRows, intelCampaignRows]);
-
-  const allBrandRows = useMemo(() => {
-    // Used for priors fallback in planned new + thin.
-    const base = datasetRows.length ? datasetRows : intelCampaignRows;
-    return [...base, ...intelStartPlanRows];
-  }, [datasetRows, intelCampaignRows, intelStartPlanRows]);
 
   /* ----------------------------
      Parse file packets into flat rows
@@ -1165,60 +1167,24 @@ function AIBudgetSimulatorTab({ store }) {
   }, [plannedFilePackets]);
 
   /* ----------------------------
-     Apply file precedence per scope
+     Scoped rows: Apply revenue normalization to selected campaign metrics
      ---------------------------- */
   const scopedRows = useMemo(() => {
     const manualAov = expectedAov;
 
-    // Helper to normalize revenue in any rows
+    // Helper to normalize revenue
     const withNorm = (rows) =>
       (rows || []).map(r => {
         const nr = MathUtils.normalizeRevenueRow(r, manualAov);
         return { ...r, _normRevenue: nr.value, _revSource: nr.source };
       });
 
-    if (scenarioType === "existing") {
-      const base = withNorm(platformCampaignRows);
-
-      if (existingUploadedRows.length) {
-        const up = withNorm(existingUploadedRows);
-
-        if (existingFileMode === "override") {
-          return up;
-        }
-        // complement
-        return DataValidator.mergeComplement(base, up).map(r => {
-          const nr = MathUtils.normalizeRevenueRow(r, manualAov);
-          return { ...r, _normRevenue: nr.value, _revSource: nr.source };
-        });
-      }
-      return base;
-    }
-
-    // planned
-    const base = withNorm(platformCampaignRows);
-
-    if (plannedUploadedRows.length) {
-      const up = withNorm(plannedUploadedRows);
-      if (plannedFileMode === "override") {
-        return up;
-      }
-      return DataValidator.mergeComplement(base, up).map(r => {
-        const nr = MathUtils.normalizeRevenueRow(r, manualAov);
-        return { ...r, _normRevenue: nr.value, _revSource: nr.source };
-      });
-    }
-
-    return base;
-  }, [
-    scenarioType,
-    platformCampaignRows,
-    existingUploadedRows,
-    plannedUploadedRows,
-    existingFileMode,
-    plannedFileMode,
-    expectedAov
-  ]);
+    // Use the clean pipeline: selectedCampaignMetrics + selectedAdsetMetrics
+    const campaignRows = withNorm(selectedCampaignMetrics);
+    const adsetRows = withNorm(selectedAdsetMetrics);
+    
+    return [...campaignRows, ...adsetRows];
+  }, [selectedCampaignMetrics, selectedAdsetMetrics, expectedAov]);
 
   /* ----------------------------
      Lookback rows + Smart resolution label
@@ -1236,23 +1202,32 @@ function AIBudgetSimulatorTab({ store }) {
   }, [scopedRows, lookbackKey]);
 
   /* ----------------------------
-     Determine ad sets for structure realism
+     Determine ad sets for structure realism - use clean pipeline
      ---------------------------- */
   const activeAdsets = useMemo(() => {
-    // For existing: ad sets from selected campaign
+    // For existing: get unique adsets from selectedAdsetMetrics
     if (scenarioType === "existing") {
-      return intelCampaignRows.filter(r => r.campaign_name === existingCampaign && r.adset_id);
+      const adsetMap = new Map();
+      selectedAdsetMetrics.forEach(r => {
+        if (r.adset_id && !adsetMap.has(r.adset_id)) {
+          adsetMap.set(r.adset_id, {
+            id: r.adset_id,
+            name: r.adset_name || r.adset_id,
+            spend: 0
+          });
+        }
+        if (r.adset_id) {
+          adsetMap.get(r.adset_id).spend += r.spend || 0;
+        }
+      });
+      return Array.from(adsetMap.values());
     }
-    // For planned with template: ad sets from template
-    if (plannedSource === "meta_template") {
-      return intelCampaignRows.filter(r => r.campaign_name === plannedTemplateCampaign && r.adset_id);
-    }
-    // Planned new: create placeholder ad sets (editable in future backend)
+    // Planned new: create placeholder ad sets
     return [
       { id: "planned_ad_1", name: "Planned Adset 1" },
       { id: "planned_ad_2", name: "Planned Adset 2" }
     ];
-  }, [scenarioType, existingCampaign, plannedSource, plannedTemplateCampaign, intelCampaignRows]);
+  }, [scenarioType, selectedAdsetMetrics]);
 
   /* ----------------------------
      Compute dynamic slider bounds from recent campaign-level spends
@@ -1274,33 +1249,88 @@ function AIBudgetSimulatorTab({ store }) {
   }, [lookbackRows]);
 
   /* ----------------------------
-     Data health + sufficiency
-     FIX: Use campaign-only filter (without geo) for data sufficiency calculation
-     This shows actual data availability without aggressive geo filtering
+     Data health + sufficiency - CLEAN PIPELINE
+     Uses selectedCampaignMetrics directly (already filtered by campaign)
      ---------------------------- */
-  const campaignOnlyRows = useMemo(() => {
-    const rows = datasetRows.length ? datasetRows : intelCampaignRows;
-    if (activeConfig.campaignName) {
-      // Filter by campaign only (no geo) to see total available data
-      return scopeFilterRows(rows, { 
-        campaignName: activeConfig.campaignName, 
-        geo: null,  // Don't filter by geo for data health
-        includeAdsets: true 
-      });
-    }
-    return rows;
-  }, [datasetRows, intelCampaignRows, activeConfig.campaignName]);
-
   const dataHealth = useMemo(() => {
-    // Use campaignOnlyRows for data sufficiency (shows total data availability)
-    // Use lookbackRows for actual model input (respects geo filter)
-    return computeDataHealth({
-      allRows: campaignOnlyRows,  // Total available for campaign
-      lookbackRows: lookbackRows.length > 0 ? lookbackRows : campaignOnlyRows,  // Fallback to campaign data
-      structure: activeConfig.structure,
-      scenarioType
-    });
-  }, [campaignOnlyRows, lookbackRows, activeConfig.structure, scenarioType]);
+    // Use the clean pipeline data directly
+    const metrics = selectedCampaignMetrics;
+    
+    if (metrics.length === 0) {
+      return {
+        allTimeDays: 0,
+        lookbackUsed: 0,
+        lookbackDays: 0,
+        spendDays: 0,
+        revenueDays: 0,
+        hasFunnel: false,
+        hasAdsetSpend: selectedAdsetMetrics.length > 0,
+        hasSpend: false,
+        hasRevenue: false,
+        totalSpend: 0,
+        totalPurchases: 0,
+        totalRevenue: 0,
+        status: "🚫 Not Enough",
+        confidence: "Low",
+        missing: ["No data found for selected campaign"]
+      };
+    }
+
+    const spendDays = new Set(metrics.filter(r => r.spend > 0).map(r => r.date)).size;
+    const revenueDays = new Set(metrics.filter(r => r.purchases > 0 || r.purchase_value > 0).map(r => r.date)).size;
+    const lookbackDays = new Set(metrics.map(r => r.date)).size;
+    
+    const hasSpend = metrics.some(r => r.spend > 0);
+    const hasRevenue = metrics.some(r => r.purchases > 0 || r.purchase_value > 0);
+    const hasFunnel = metrics.some(r => r.impressions > 0 && r.clicks > 0);
+    const hasAdsetSpend = selectedAdsetMetrics.some(r => r.spend > 0);
+
+    const totalSpend = metrics.reduce((sum, r) => sum + r.spend, 0);
+    const totalPurchases = metrics.reduce((sum, r) => sum + r.purchases, 0);
+    const totalRevenue = metrics.reduce((sum, r) => sum + r.purchase_value, 0);
+
+    let status = "🚫 Not Enough";
+    let confidence = "Low";
+    const missing = [];
+
+    if (!hasSpend) missing.push("Spend data");
+    if (!hasRevenue) missing.push("Revenue/Purchases data");
+    if (!hasFunnel) missing.push("Funnel metrics (impressions, clicks)");
+    if ((activeConfig.structure === "CBO" || activeConfig.structure === "ASC") && !hasAdsetSpend) {
+      missing.push("Ad set-level data for CBO/ASC");
+    }
+
+    if (hasSpend && hasRevenue) {
+      if (spendDays >= 14) {
+        status = "✅ Enough for Full Model";
+        confidence = hasFunnel && hasAdsetSpend ? "High" : "Medium";
+      } else if (spendDays >= 7) {
+        status = "🟡 Enough for Partial Model";
+        confidence = "Medium";
+        missing.push(`Add ${14 - spendDays} more days for full model`);
+      } else {
+        missing.push(`Need 7+ days (currently ${spendDays})`);
+      }
+    }
+
+    return {
+      allTimeDays: lookbackDays,
+      lookbackUsed: metrics.length,
+      lookbackDays,
+      spendDays,
+      revenueDays,
+      hasFunnel,
+      hasAdsetSpend,
+      hasSpend,
+      hasRevenue,
+      totalSpend,
+      totalPurchases,
+      totalRevenue,
+      status,
+      confidence,
+      missing
+    };
+  }, [selectedCampaignMetrics, selectedAdsetMetrics, activeConfig.structure]);
 
   /* ----------------------------
      Auto-pick execution mode based on strategy + structure + sufficiency
@@ -1362,58 +1392,28 @@ function AIBudgetSimulatorTab({ store }) {
      - Primary curve rows are campaign-level (no adset_id).
      - Allocation uses ad set-level rows.
      ---------------------------- */
+  // Curve rows = campaign-level data only (no adset rows) - CLEAN PIPELINE
   const curveRows = useMemo(() => {
-    // For planned new with no template, we can still build priors from allBrandRows later.
-    const base = lookbackRows.filter(r => !r.adset_id);
-    return base;
-  }, [lookbackRows]);
+    return selectedCampaignMetrics;
+  }, [selectedCampaignMetrics]);
 
+  // Allocation rows = adset-level data - CLEAN PIPELINE  
   const allocationRows = useMemo(() => {
-    return lookbackRows.filter(r => r.adset_id);
-  }, [lookbackRows]);
+    return selectedAdsetMetrics;
+  }, [selectedAdsetMetrics]);
 
   /* ----------------------------
-     Build Priors rows from reference campaigns (optional)
-     ---------------------------- */
-  const referenceRows = useMemo(() => {
-    const refs = scenarioType === "existing" ? refCampaignsExisting : refCampaignsPlanned;
-    if (!refs.length) return [];
-    const all = allBrandRows;
-    return all.filter(r => refs.includes(r.campaign_name));
-  }, [scenarioType, refCampaignsExisting, refCampaignsPlanned, allBrandRows]);
-
-  /* ----------------------------
-     Construct effective rows for parameter estimation:
-     - Existing: primarily curveRows, with light prior blending if references exist.
-     - Planned:
-     * meta_template -> curveRows from template
-     * new -> use referenceRows if provided else brand-level pool.
+     Estimation rows for Hill curve parameters - CLEAN PIPELINE
+     Uses selectedCampaignMetrics directly
      ---------------------------- */
   const estimationRows = useMemo(() => {
+    // For existing campaigns: use the selected campaign's metrics
     if (scenarioType === "existing") {
-      return curveRows.length ? curveRows : platformCampaignRows.filter(r => !r.adset_id);
+      return selectedCampaignMetrics;
     }
-
-    // planned
-    if (plannedSource === "meta_template") {
-      return curveRows.length ? curveRows : platformCampaignRows.filter(r => !r.adset_id);
-    }
-
-    // Planned new
-    if (referenceRows.length) {
-      return referenceRows.filter(r => !r.adset_id);
-    }
-
-    // fallback to brand/global pool for demo
-    return allBrandRows.filter(r => !r.adset_id);
-  }, [
-    scenarioType,
-    curveRows,
-    platformCampaignRows,
-    plannedSource,
-    referenceRows,
-    allBrandRows
-  ]);
+    // For planned: use all campaign metrics as priors
+    return allCampaignMetrics;
+  }, [scenarioType, selectedCampaignMetrics, allCampaignMetrics]);
 
   /* ----------------------------
      Precompute funnel historical bench for quality adjustment
@@ -1431,22 +1431,14 @@ function AIBudgetSimulatorTab({ store }) {
   }, [estimationRows]);
 
   const latestRow = useMemo(() => {
-    // FIX: Robust fallback chain to find any available data
-    let candidates = curveRows.length > 0 ? curveRows : lookbackRows;
-    if (candidates.length === 0) {
-      candidates = scopedRows;
-    }
-    if (candidates.length === 0) {
-      // Last resort: use campaign-only rows (without geo filter)
-      candidates = campaignOnlyRows;
-    }
-    if (candidates.length === 0) {
-      return null;
-    }
-    // Sort by date and return the latest
-    const ordered = [...candidates].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
-    return ordered[ordered.length - 1] || null;
-  }, [curveRows, lookbackRows, scopedRows, campaignOnlyRows]);
+    // CLEAN PIPELINE: Use selectedCampaignMetrics directly
+    if (selectedCampaignMetrics.length === 0) return null;
+    
+    const sorted = [...selectedCampaignMetrics].sort((a, b) => 
+      String(a.date || '').localeCompare(String(b.date || ''))
+    );
+    return sorted[sorted.length - 1] || null;
+  }, [selectedCampaignMetrics]);
 
   const adjustments = useMemo(() => {
     const currentRates = latestRow ? MathUtils.funnelRates(latestRow) : null;
@@ -1474,27 +1466,20 @@ function AIBudgetSimulatorTab({ store }) {
   ]);
 
   /* ----------------------------
-     Structure-aware prediction
+     Structure-aware prediction - CLEAN PIPELINE
      ---------------------------- */
   const allocationPlan = useMemo(() => {
     const structure = activeConfig.structure;
     const daily = dailyBudget;
 
-    const adsets = activeAdsets;
-
-    // For allocation inference, use allocationRows + platformCampaignRows adset rows.
-    const lbAdRows =
-      allocationRows.length
-        ? allocationRows
-        : platformCampaignRows.filter(r => r.adset_id);
-
+    // Use selectedAdsetMetrics for allocation inference
     return MathUtils.allocateBudgetThin({
       structure,
       dailyBudget: daily,
-      adsets,
-      lookbackRows: lbAdRows
+      adsets: activeAdsets,
+      lookbackRows: selectedAdsetMetrics
     });
-  }, [activeConfig.structure, dailyBudget, activeAdsets, allocationRows, platformCampaignRows]);
+  }, [activeConfig.structure, dailyBudget, activeAdsets, selectedAdsetMetrics]);
 
   const predicted = useMemo(() => {
     const structure = activeConfig.structure;
@@ -1551,39 +1536,26 @@ function AIBudgetSimulatorTab({ store }) {
   }, [sliderBounds, params, adjustments]);
 
   /* ----------------------------
-     Helper: Campaign dropdown list
-     ---------------------------- */
-  const campaignOptions = useMemo(() => {
-    if (intelCampaignRows.length) {
-      return Array.from(new Set(intelCampaignRows.map(r => r.campaign_name).filter(Boolean)));
-    }
-    if (metaCampaignNames.length) return metaCampaignNames;
-
-    return [];
-  }, [metaCampaignNames, intelCampaignRows]);
-
-  /* ----------------------------
-     Helper: Campaign metadata with dominant geo (by spend)
-     Aggregates rows by campaign name to find the geo with highest spend
+     Campaign metadata - computed from CLEAN PIPELINE (allCampaignMetrics)
      ---------------------------- */
   const campaignMetadata = useMemo(() => {
     const metadata = new Map();
 
-    // First pass: aggregate spend by campaign + geo
-    intelCampaignRows.forEach(row => {
+    // Aggregate spend by campaign + geo from clean data
+    allCampaignMetrics.forEach(row => {
       if (!row.campaign_name) return;
 
       if (!metadata.has(row.campaign_name)) {
         metadata.set(row.campaign_name, {
           campaignName: row.campaign_name,
-          structure: row.structure || 'CBO',
+          structure: 'CBO',
           geoSpend: new Map(),
           geos: []
         });
       }
 
       const campaign = metadata.get(row.campaign_name);
-      const geo = row.geo || row.country || 'ALL';
+      const geo = row.geo || 'ALL';
       const spend = Number(row.spend) || 0;
 
       if (!campaign.geoSpend.has(geo)) {
@@ -1593,7 +1565,7 @@ function AIBudgetSimulatorTab({ store }) {
       campaign.geoSpend.set(geo, campaign.geoSpend.get(geo) + spend);
     });
 
-    // Second pass: find dominant geo for each campaign
+    // Find dominant geo for each campaign
     const result = new Map();
     metadata.forEach((campaign, name) => {
       let dominantGeo = campaign.geos[0] || 'ALL';
@@ -1616,7 +1588,7 @@ function AIBudgetSimulatorTab({ store }) {
     });
 
     return result;
-  }, [intelCampaignRows]);
+  }, [allCampaignMetrics]);
 
   // Helper to get campaign's dominant geo
   const getCampaignDominantGeo = (campaignName) => {
@@ -1703,41 +1675,21 @@ function AIBudgetSimulatorTab({ store }) {
   /* ----------------------------
      Render
      ---------------------------- */
-  // Debug logging for data flow issues
-  if (process.env.NODE_ENV === 'development' || true) {
-    // Get sample row to show actual field values
-    const sampleRow = campaignOnlyRows[0] || lookbackRows[0] || {};
-    console.log('[AIBudget Debug]', {
-      loadingIntel,
-      loadingDataset,
-      aiDatasetMetrics: !!aiDataset?.metrics,
-      datasetRowsCount: datasetRows.length,
-      intelLiveGuidanceCount: intel?.liveGuidance?.length || 0,
-      platformCampaignRowsCount: platformCampaignRows.length,
-      campaignOnlyRowsCount: campaignOnlyRows.length,  // NEW: without geo filter
-      scopedRowsCount: scopedRows.length,
-      lookbackRowsCount: lookbackRows.length,
-      selectedCampaign: existingCampaign,
-      selectedGeo: existingGeo,
-      campaignOptionsCount: campaignOptions.length,
-      dataHealth: {
-        spendDays: dataHealth.spendDays,
-        revenueDays: dataHealth.revenueDays,
-        hasSpend: dataHealth.hasSpend,
-        hasRevenue: dataHealth.hasRevenue,
-        lookbackUsed: dataHealth.lookbackUsed
-      },
-      sampleRowFields: {
-        date: sampleRow.date,
-        spend: sampleRow.spend,
-        purchases: sampleRow.purchases,
-        purchase_value: sampleRow.purchase_value,
-        conversion_value: sampleRow.conversion_value,
-        geo: sampleRow.geo
-      },
-      latestRowPurchases: latestRow?.purchases
-    });
-  }
+  // Debug logging - CLEAN PIPELINE
+  console.log('[AIBudget Clean Pipeline]', {
+    availableCampaigns: availableCampaigns.length,
+    selectedCampaign: existingCampaign,
+    allCampaignMetrics: allCampaignMetrics.length,
+    selectedCampaignMetrics: selectedCampaignMetrics.length,
+    selectedAdsetMetrics: selectedAdsetMetrics.length,
+    campaignStats,
+    dataHealth: {
+      spendDays: dataHealth.spendDays,
+      totalPurchases: dataHealth.totalPurchases,
+      totalSpend: dataHealth.totalSpend,
+      status: dataHealth.status
+    }
+  });
 
   if (loadingIntel) {
     return <div className="p-4">Loading budget intelligence…</div>;
@@ -1754,11 +1706,11 @@ function AIBudgetSimulatorTab({ store }) {
     );
   }
   
-  // FIX: More informative message when no data, with diagnostic hints
-  if (!intel && datasetRows.length === 0) {
+  // Check for data availability using clean pipeline
+  if (availableCampaigns.length === 0 && allCampaignMetrics.length === 0) {
     return (
       <div className="p-4 space-y-2">
-        <div className="font-bold text-gray-900">No budget intelligence data available.</div>
+        <div className="font-bold text-gray-900">No campaign data available.</div>
         <div className="text-sm text-gray-600">
           This could mean:
           <ul className="list-disc ml-4 mt-1">
@@ -1768,7 +1720,7 @@ function AIBudgetSimulatorTab({ store }) {
           </ul>
         </div>
         <div className="text-xs text-gray-400 mt-2">
-          Store: {currentStore} | Dataset rows: {datasetRows.length} | Intel: {intel ? 'loaded' : 'missing'}
+          Store: {currentStore} | Campaigns: {availableCampaigns.length} | Metrics: {allCampaignMetrics.length}
         </div>
       </div>
     );
@@ -2365,25 +2317,25 @@ function AIBudgetSimulatorTab({ store }) {
                 <MiniMetric label="Ad Set History (CBO/ASC)?" value={(activeConfig.structure !== "ABO" && dataHealth.hasAdsetSpend) ? "Yes" : (activeConfig.structure === "ABO" ? "n/a" : "No")} />
               </div>
 
-              {/* FIX: Show TOTAL aggregates for the campaign, not just latest row */}
+              {/* Campaign totals from CLEAN PIPELINE */}
               <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-2">
-                <div className="text-[10px] font-bold text-indigo-900">Campaign Totals (All Data)</div>
+                <div className="text-[10px] font-bold text-indigo-900">Campaign Totals (Selected: {existingCampaign || 'None'})</div>
                 <div className="grid grid-cols-2 gap-1 mt-1">
                   <MiniMetric 
                     label="Total Spend" 
-                    value={Math.round(campaignOnlyRows.reduce((sum, r) => sum + (r.spend || 0), 0)).toLocaleString()} 
+                    value={Math.round(dataHealth.totalSpend || 0).toLocaleString()} 
                   />
                   <MiniMetric 
                     label="Total Purchases" 
-                    value={Math.round(campaignOnlyRows.reduce((sum, r) => sum + (r.purchases || 0), 0)).toLocaleString()} 
+                    value={Math.round(dataHealth.totalPurchases || 0).toLocaleString()} 
                   />
                   <MiniMetric 
                     label="Total Revenue" 
-                    value={Math.round(campaignOnlyRows.reduce((sum, r) => sum + (r.purchase_value || r.conversion_value || 0), 0)).toLocaleString()} 
+                    value={Math.round(dataHealth.totalRevenue || 0).toLocaleString()} 
                   />
                   <MiniMetric 
-                    label="Unique Dates" 
-                    value={new Set(campaignOnlyRows.map(r => r.date).filter(Boolean)).size} 
+                    label="Days with Data" 
+                    value={dataHealth.spendDays || 0} 
                   />
                 </div>
               </div>
