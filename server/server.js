@@ -34,10 +34,11 @@ initDb();
 const db = getDb();
 
 // Campaign Intelligence schema
-runCampaignIntelligenceMigration()
-  .catch(err => {
-    console.error('⚠️  Campaign Intelligence migration warning:', err);
-  });
+try {
+  runCampaignIntelligenceMigration();
+} catch (err) {
+  console.error('⚠️  Campaign Intelligence migration warning:', err);
+}
 
 // Run AIBudget schema migration on startup
 runAIBudgetMigration()
