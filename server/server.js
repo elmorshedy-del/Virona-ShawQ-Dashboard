@@ -11,8 +11,10 @@ import aiRouter from './routes/ai.js';
 import budgetIntelligenceRouter from './routes/budgetIntelligence.js';
 import whatifRouter from './routes/whatif.js';
 import aibudgetRouter from './routes/aibudget.js';
+import intelligenceRouter, { initService as initIntelligenceService } from './routes/intelligenceRoutes.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
+import { runCampaignIntelligenceMigration } from './db/campaignIntelligenceMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
 import { syncMetaData } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
@@ -29,6 +31,13 @@ const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '
 
 // Initialize database
 initDb();
+const db = getDb();
+
+// Campaign Intelligence schema
+runCampaignIntelligenceMigration()
+  .catch(err => {
+    console.error('⚠️  Campaign Intelligence migration warning:', err);
+  });
 
 // Run AIBudget schema migration on startup
 runAIBudgetMigration()
@@ -59,6 +68,9 @@ try {
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
+// Initialize Campaign Intelligence service after DB is ready
+initIntelligenceService(db);
+
 // Favicon fallback
 app.get('/favicon.ico', (req, res) => {
   res.type('image/svg+xml').sendFile(path.join(clientPublic, 'virona-logo.svg'));
@@ -72,6 +84,7 @@ app.use('/api/ai', aiRouter);
 app.use('/api/budget-intelligence', budgetIntelligenceRouter);
 app.use('/api/whatif', whatifRouter);
 app.use('/api/aibudget', aibudgetRouter);
+app.use('/api/intelligence', intelligenceRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
