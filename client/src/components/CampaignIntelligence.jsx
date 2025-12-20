@@ -96,7 +96,7 @@ export default function CampaignIntelligence({ store = 'vironax' }) {
         />
       )}
 
-      {activeTab === 'geo' && <GeoTab geos={geoComparison} />}
+      {activeTab === 'geo' && <GeoTab geos={geoComparison} store={store} />}
 
       {activeTab === 'alerts' && <AlertsTab alerts={alerts} />}
     </div>
@@ -600,7 +600,8 @@ function ConfidenceBar({ confidence, benchmark }) {
   );
 }
 
-function GeoTab({ geos }) {
+function GeoTab({ geos, store }) {
+  const currencySymbol = store === 'shawq' ? '$' : 'SAR';
   const countryMap = useMemo(() => {
     const toFlag = (code) => {
       if (!code || !/^[A-Z]{2}$/i.test(code)) return '🏳️';
@@ -644,10 +645,10 @@ function GeoTab({ geos }) {
                   <span>{meta.flag}</span>
                   <span>{meta.name}</span>
                 </td>
-                <td className="py-3 text-right">{g.total_spend.toLocaleString()} SAR</td>
+                <td className="py-3 text-right">{g.total_spend.toLocaleString()} {currencySymbol}</td>
                 <td className="py-3 text-right text-gray-500">{spendPercent}%</td>
                 <td className="py-3 text-right">{g.total_purchases}</td>
-                <td className="py-3 text-right">{g.cac ? `${g.cac} SAR` : '—'}</td>
+                <td className="py-3 text-right">{g.cac ? `${g.cac} ${currencySymbol}` : '—'}</td>
                 <td className="py-3 text-right">{g.roas}x</td>
                 <td className="py-3 text-right">
                   <span className={`px-2 py-1 text-xs rounded ${

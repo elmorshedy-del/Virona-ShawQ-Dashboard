@@ -82,8 +82,8 @@ export default class CampaignIntelligenceService {
         SUM(m.spend) as total_spend,
         SUM(m.impressions) as total_impressions,
         SUM(m.clicks) as total_clicks,
-        SUM(m.conversions) as total_purchases,
-        SUM(m.conversion_value) as total_revenue,
+        SUM(COALESCE(m.conversions, m.purchases, 0)) as total_purchases,
+        SUM(COALESCE(m.conversion_value, m.purchase_value, 0)) as total_revenue,
         SUM(m.add_to_cart) as total_atc,
         SUM(m.checkouts_initiated) as total_ic,
         MAX(m.country) as primary_geo
@@ -441,8 +441,8 @@ export default class CampaignIntelligenceService {
       SELECT 
         date,
         SUM(spend) as spend,
-        SUM(conversions) as purchases,
-        SUM(conversion_value) as revenue
+        SUM(COALESCE(conversions, purchases, 0)) as purchases,
+        SUM(COALESCE(conversion_value, purchase_value, 0)) as revenue
       FROM meta_daily_metrics
       WHERE campaign_id = ? AND store = ?
       GROUP BY date
@@ -575,8 +575,8 @@ export default class CampaignIntelligenceService {
         MAX(m.country) as primary_geo,
         COUNT(DISTINCT m.date) as days_running,
         SUM(m.spend) as total_spend,
-        SUM(m.conversions) as total_purchases,
-        SUM(m.conversion_value) as total_revenue
+        SUM(COALESCE(m.conversions, m.purchases, 0)) as total_purchases,
+        SUM(COALESCE(m.conversion_value, m.purchase_value, 0)) as total_revenue
       FROM meta_daily_metrics m
       LEFT JOIN meta_objects o ON m.campaign_id = o.object_id AND o.object_type = 'campaign'
       WHERE m.store = ?
@@ -611,8 +611,8 @@ export default class CampaignIntelligenceService {
       SELECT 
         country as geo,
         SUM(spend) as total_spend,
-        SUM(conversions) as total_purchases,
-        SUM(conversion_value) as total_revenue,
+        SUM(COALESCE(conversions, purchases, 0)) as total_purchases,
+        SUM(COALESCE(conversion_value, purchase_value, 0)) as total_revenue,
         COUNT(DISTINCT campaign_id) as campaigns_count
       FROM meta_daily_metrics
       WHERE store = ? AND country IS NOT NULL
@@ -646,9 +646,9 @@ export default class CampaignIntelligenceService {
         SUM(clicks) as clicks,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as ic,
-        SUM(conversions) as purchases,
+        SUM(COALESCE(conversions, purchases, 0)) as purchases,
         SUM(spend) as spend,
-        SUM(conversion_value) as revenue
+        SUM(COALESCE(conversion_value, purchase_value, 0)) as revenue
       FROM meta_daily_metrics
       WHERE campaign_id = ? AND store = ?
     `,
@@ -769,9 +769,9 @@ export default class CampaignIntelligenceService {
         m.adset_id,
         o.adset_name,
         SUM(m.clicks) as clicks,
-        SUM(m.conversions) as purchases,
+        SUM(COALESCE(m.conversions, m.purchases, 0)) as purchases,
         SUM(m.spend) as spend,
-        SUM(m.conversion_value) as revenue
+        SUM(COALESCE(m.conversion_value, m.purchase_value, 0)) as revenue
       FROM meta_adset_metrics m
       LEFT JOIN meta_objects o ON m.adset_id = o.object_id AND o.object_type = 'adset'
       WHERE m.campaign_id = ? AND m.store = ?
