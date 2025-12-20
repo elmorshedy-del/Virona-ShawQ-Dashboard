@@ -866,8 +866,25 @@ function ModeExplainRow({ modeKey, active }) {
    MAIN SIMULATOR TAB
    ============================================================================ */
 
+/* ============================================================================
+   CURRENCY HELPER - Returns correct currency symbol based on store
+   ============================================================================ */
+
+function getCurrencySymbol(store) {
+  // Shawq uses USD ($), Virona uses SAR
+  if (store === 'shawq') return '$';
+  return 'SAR';
+}
+
+function getCurrencyName(store) {
+  if (store === 'shawq') return 'USD';
+  return 'SAR';
+}
+
 function AIBudgetSimulatorTab({ store }) {
   const currentStore = store || "vironax";
+  const currencySymbol = getCurrencySymbol(currentStore);
+  const currencyName = getCurrencyName(currentStore);
   const [scenarioType, setScenarioType] = useState("existing"); // existing | planned
 
   const [intel, setIntel] = useState(null);
@@ -2137,7 +2154,7 @@ function AIBudgetSimulatorTab({ store }) {
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2">
                   <div className="text-[9px] text-indigo-600">Total Spend</div>
                   <div className="text-[11px] font-bold text-indigo-900">
-                    {Math.round(dataHealth.totalSpend || 0).toLocaleString()}
+                    {currencySymbol === '$' ? '$' : ''}{Math.round(dataHealth.totalSpend || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}
                   </div>
                 </div>
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2">
@@ -2149,7 +2166,7 @@ function AIBudgetSimulatorTab({ store }) {
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2">
                   <div className="text-[9px] text-indigo-600">Total Revenue</div>
                   <div className="text-[11px] font-bold text-indigo-900">
-                    {Math.round(dataHealth.totalRevenue || 0).toLocaleString()}
+                    {currencySymbol === '$' ? '$' : ''}{Math.round(dataHealth.totalRevenue || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}
                   </div>
                 </div>
               </div>
@@ -2193,7 +2210,7 @@ function AIBudgetSimulatorTab({ store }) {
       {/* BUDGET SLIDER + INLINE RESULTS */}
       <SectionCard
         title="Budget Simulator"
-        subtitle="Max ROAS = best efficiency per riyal. Growth Knee = best balance of scale + efficiency."
+        subtitle={`Max ROAS = best efficiency per ${currencySymbol === '$' ? 'dollar' : 'riyal'}. Growth Knee = best balance of scale + efficiency.`}
         icon={<BarChart3 size={16} className="text-indigo-600" />}
       >
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -2205,7 +2222,7 @@ function AIBudgetSimulatorTab({ store }) {
                   Daily Budget ({activeConfig.structure})
                 </div>
                 <div className="text-lg font-extrabold text-indigo-600">
-                  {Number(dailyBudget).toLocaleString()} SAR/day
+                  {currencySymbol === '$' ? '$' : ''}{Number(dailyBudget).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}/day
                 </div>
               </div>
 
@@ -2220,8 +2237,8 @@ function AIBudgetSimulatorTab({ store }) {
               />
 
               <div className="flex items-center justify-between text-[10px] text-gray-500 mt-1">
-                <span>{sliderBounds.min.toLocaleString()}</span>
-                <span>{sliderBounds.max.toLocaleString()}</span>
+                <span>{currencySymbol === '$' ? '$' : ''}{sliderBounds.min.toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}</span>
+                <span>{currencySymbol === '$' ? '$' : ''}{sliderBounds.max.toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}</span>
               </div>
 
               {/* Results directly under slider */}
@@ -2229,7 +2246,7 @@ function AIBudgetSimulatorTab({ store }) {
                 <div className="rounded-lg border border-gray-200 bg-white p-3">
                   <div className="text-[9px] text-gray-500">Projected Revenue (Daily)</div>
                   <div className="text-sm font-extrabold text-gray-900">
-                    {Math.round(predicted.meanDailyRevenue || 0).toLocaleString()} SAR
+                    {currencySymbol === '$' ? '$' : ''}{Math.round(predicted.meanDailyRevenue || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}
                   </div>
                   <div className="text-[9px] text-gray-500 mt-0.5">
                     {predicted.note}
@@ -2258,10 +2275,10 @@ function AIBudgetSimulatorTab({ store }) {
                     🏆 Recommended (Max ROAS)
                   </div>
                   <div className="text-xs text-indigo-800 mt-0.5">
-                    Best efficiency per riyal.
+                    Best efficiency per {currencySymbol === '$' ? 'dollar' : 'riyal'}.
                   </div>
                   <div className="text-xl font-extrabold text-gray-900 mt-1">
-                    {Math.round(recommendations.maxRoas?.spend || 0).toLocaleString()} SAR/day
+                    {currencySymbol === '$' ? '$' : ''}{Math.round(recommendations.maxRoas?.spend || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}/day
                   </div>
                   <div className="text-[11px] text-gray-700">
                     Estimated ROAS: {Number(recommendations.maxRoas?.roas || 0).toFixed(2)}x
@@ -2283,7 +2300,7 @@ function AIBudgetSimulatorTab({ store }) {
                     Best balance of scale + efficiency.
                   </div>
                   <div className="text-xl font-extrabold text-gray-900 mt-1">
-                    {Math.round(recommendations.knee?.spend || 0).toLocaleString()} SAR/day
+                    {currencySymbol === '$' ? '$' : ''}{Math.round(recommendations.knee?.spend || 0).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''}/day
                   </div>
                   <div className="text-[11px] text-gray-700">
                     Estimated ROAS: {Number(recommendations.knee?.roas || 0).toFixed(2)}x
@@ -2327,7 +2344,7 @@ function AIBudgetSimulatorTab({ store }) {
                 <div className="grid grid-cols-2 gap-1 mt-1">
                   <MiniMetric 
                     label="Total Spend" 
-                    value={Math.round(dataHealth.totalSpend || 0).toLocaleString()} 
+                    value={`${currencySymbol === '$' ? '$' : ''}${Math.round(dataHealth.totalSpend || 0).toLocaleString()}${currencySymbol !== '$' ? ` ${currencySymbol}` : ''}`} 
                   />
                   <MiniMetric 
                     label="Total Purchases" 
@@ -2335,7 +2352,7 @@ function AIBudgetSimulatorTab({ store }) {
                   />
                   <MiniMetric 
                     label="Total Revenue" 
-                    value={Math.round(dataHealth.totalRevenue || 0).toLocaleString()} 
+                    value={`${currencySymbol === '$' ? '$' : ''}${Math.round(dataHealth.totalRevenue || 0).toLocaleString()}${currencySymbol !== '$' ? ` ${currencySymbol}` : ''}`} 
                   />
                   <MiniMetric 
                     label="Days with Data" 
@@ -2352,7 +2369,7 @@ function AIBudgetSimulatorTab({ store }) {
                   <MiniMetric label="Impressions" value={latestRow?.impressions ?? "—"} />
                   <MiniMetric label="Clicks" value={latestRow?.clicks ?? "—"} />
                   <MiniMetric label="Purchases" value={latestRow?.purchases ?? "—"} />
-                  <MiniMetric label="AOV (manual)" value={expectedAov} />
+                  <MiniMetric label="AOV (manual)" value={`${currencySymbol === '$' ? '$' : ''}${expectedAov}${currencySymbol !== '$' ? ` ${currencySymbol}` : ''}`} />
                 </div>
               </div>
 
@@ -2369,7 +2386,7 @@ function AIBudgetSimulatorTab({ store }) {
                       <div key={a.id} className="rounded-md border border-gray-200 bg-white px-2 py-1">
                         <div className="text-[10px] font-semibold text-gray-900">{a.name}</div>
                         <div className="text-[9px] text-gray-600">
-                          Budget: {Math.round(a.budget).toLocaleString()} • ROAS: {Number(a.predictedRoas || 0).toFixed(2)}x
+                          Budget: {currencySymbol === '$' ? '$' : ''}{Math.round(a.budget).toLocaleString()}{currencySymbol !== '$' ? ` ${currencySymbol}` : ''} • ROAS: {Number(a.predictedRoas || 0).toFixed(2)}x
                         </div>
                       </div>
                     ))}
