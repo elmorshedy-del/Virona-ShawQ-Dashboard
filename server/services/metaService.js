@@ -719,7 +719,9 @@ export async function syncMetaData(store) {
           order_count: row.conversions,
           order_total: row.conversion_value,
           currency: 'SAR',
-          timestamp: new Date(`${row.date}T23:59:59Z`).toISOString(),
+          // Use start of day (00:00:00Z) instead of end of day to avoid future timestamp issues
+          // Meta aggregates data by day, so we use the beginning of that day
+          timestamp: new Date(`${row.date}T00:00:00Z`).toISOString(),
           source: 'meta',
           campaign_name: row.campaign_name || null
         }));
