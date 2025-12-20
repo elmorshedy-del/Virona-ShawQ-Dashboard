@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { COUNTRIES as MASTER_COUNTRIES } from '../data/countries';
 
 const API_BASE = '/api/intelligence';
 
@@ -600,6 +601,19 @@ function ConfidenceBar({ confidence, benchmark }) {
 }
 
 function GeoTab({ geos }) {
+  const countryMap = useMemo(() => {
+    const toFlag = (code) => {
+      if (!code || !/^[A-Z]{2}$/i.test(code)) return '🏳️';
+      return String.fromCodePoint(...code.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0)));
+    };
+
+    const map = new Map();
+    MASTER_COUNTRIES.forEach(c => {
+      map.set(c.code.toUpperCase(), { name: c.name, flag: c.flag || toFlag(c.code) });
+    });
+    return map;
+  }, []);
+
   const total = geos.reduce((sum, g) => sum + g.total_spend, 0);
 
   return (
@@ -619,23 +633,32 @@ function GeoTab({ geos }) {
           </tr>
         </thead>
         <tbody>
-          {geos.map((g) => (
-            <tr key={g.geo} className="border-b border-gray-50">
-              <td className="py-3 font-medium">{g.geo}</td>
-              <td className="py-3 text-right">{g.total_spend.toLocaleString()} SAR</td>
-              <td className="py-3 text-right text-gray-500">{Math.round((g.total_spend / total) * 100)}%</td>
-              <td className="py-3 text-right">{g.total_purchases}</td>
-              <td className="py-3 text-right">{g.cac ? `${g.cac} SAR` : '—'}</td>
-              <td className="py-3 text-right">{g.roas}x</td>
-              <td className="py-3 text-right">
-                <span className={`px-2 py-1 text-xs rounded ${
-                  g.status === 'established' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'
-                }`}>
-                  {g.status}
-                </span>
-              </td>
-            </tr>
-          ))}
+          {geos.map((g) => {
+            const geoCode = (g.geo || '').toUpperCase();
+            const meta = countryMap.get(geoCode) || { name: geoCode || 'Unknown', flag: '🏳️' };
+            const spendPercent = total > 0 ? Math.round((g.total_spend / total) * 100) : 0;
+
+            return (
+              <tr key={g.geo} className="border-b border-gray-50">
+                <td className="py-3 font-medium flex items-center gap-2">
+                  <span>{meta.flag}</span>
+                  <span>{meta.name}</span>
+                </td>
+                <td className="py-3 text-right">{g.total_spend.toLocaleString()} SAR</td>
+                <td className="py-3 text-right text-gray-500">{spendPercent}%</td>
+                <td className="py-3 text-right">{g.total_purchases}</td>
+                <td className="py-3 text-right">{g.cac ? `${g.cac} SAR` : '—'}</td>
+                <td className="py-3 text-right">{g.roas}x</td>
+                <td className="py-3 text-right">
+                  <span className={`px-2 py-1 text-xs rounded ${
+                    g.status === 'established' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'
+                  }`}>
+                    {g.status}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
 
