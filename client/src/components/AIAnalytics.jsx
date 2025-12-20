@@ -22,6 +22,9 @@ import {
 export default function AIAnalytics({ store, selectedStore, startDate, endDate }) {
   // Support both 'store' and 'selectedStore' props for backward compatibility
   const activeStore = store?.id || selectedStore || 'vironax';
+  
+  // Get display name for the AI assistant based on active store
+  const storeDisplayName = store?.name || (activeStore === 'shawq' ? 'Shawq' : 'Virona');
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -404,7 +407,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       <div className="w-72 bg-white rounded-lg shadow-lg p-4 overflow-y-auto">
         <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-blue-500" />
-          VironaX AI
+          {storeDisplayName} AI
           {/* Reactivation badge */}
           {hasReactivationCandidates && (
             <ReactivationBadge count={reactivationSummary.total} className="ml-auto" />
