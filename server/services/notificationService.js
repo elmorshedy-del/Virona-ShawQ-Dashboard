@@ -174,25 +174,30 @@ export function createOrderNotifications(store, source, orders) {
 
     const countryKey = country.code || country.label || 'Unknown';
 
-    if (!ordersByCountry[countryKey]) {
-      ordersByCountry[countryKey] = {
+    // Include campaign_name in the key for Meta orders to track per-campaign
+    const campaignName = order.campaign_name || null;
+    const groupKey = campaignName ? `${countryKey}|${campaignName}` : countryKey;
+
+    if (!ordersByCountry[groupKey]) {
+      ordersByCountry[groupKey] = {
         code: country.code,
         label: country.label,
         count: 0,
         total: 0,
         latest: orderDate,
-        currency
+        currency,
+        campaign_name: campaignName
       };
     }
 
-    ordersByCountry[countryKey].count += 1;
-    ordersByCountry[countryKey].total += value;
-    if (orderDate > ordersByCountry[countryKey].latest) {
-      ordersByCountry[countryKey].latest = orderDate;
+    ordersByCountry[groupKey].count += 1;
+    ordersByCountry[groupKey].total += value;
+    if (orderDate > ordersByCountry[groupKey].latest) {
+      ordersByCountry[groupKey].latest = orderDate;
     }
     // Always prefer a real currency from the order, but keep existing value when absent
     if (order.currency) {
-      ordersByCountry[countryKey].currency = order.currency;
+      ordersByCountry[groupKey].currency = order.currency;
     }
   }
 
@@ -216,7 +221,8 @@ export function createOrderNotifications(store, source, orders) {
         currency,
         value: data.total,
         order_count: data.count,
-        timestamp: data.latest.toISOString()
+        timestamp: data.latest.toISOString(),
+        campaign_name: data.campaign_name || null
       }
     });
     

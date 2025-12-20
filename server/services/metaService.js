@@ -703,11 +703,12 @@ export async function syncMetaData(store) {
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
 
     if (store === 'vironax') {
+      // Include campaign_name to show which campaign drove the conversion
       const metaOrderRows = db.prepare(`
-        SELECT date, country, SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
+        SELECT date, country, campaign_name, SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
         FROM meta_daily_metrics
         WHERE store = ? AND date BETWEEN ? AND ?
-        GROUP BY date, country
+        GROUP BY date, country, campaign_name
         ORDER BY date DESC
       `).all(store, startDate, endDate);
 
@@ -719,7 +720,8 @@ export async function syncMetaData(store) {
           order_total: row.conversion_value,
           currency: 'SAR',
           timestamp: new Date(`${row.date}T23:59:59Z`).toISOString(),
-          source: 'meta'
+          source: 'meta',
+          campaign_name: row.campaign_name || null
         }));
 
       const notificationCount = createOrderNotifications(store, 'meta', metaOrders);
