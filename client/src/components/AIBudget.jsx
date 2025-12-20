@@ -1425,16 +1425,25 @@ function AIBudgetSimulatorTab({ store }) {
 
   /* ----------------------------
      Estimation rows for Hill curve parameters - CLEAN PIPELINE
-     Uses selectedCampaignMetrics directly
+     IMPORTANT: Must use normalized revenue for accurate parameter estimation
      ---------------------------- */
   const estimationRows = useMemo(() => {
-    // For existing campaigns: use the selected campaign's metrics
+    const manualAov = expectedAov;
+    
+    // Helper to normalize revenue (same as scopedRows)
+    const withNorm = (rows) =>
+      (rows || []).map(r => {
+        const nr = MathUtils.normalizeRevenueRow(r, manualAov);
+        return { ...r, _normRevenue: nr.value, _revSource: nr.source };
+      });
+    
+    // For existing campaigns: use the selected campaign's metrics with normalization
     if (scenarioType === "existing") {
-      return selectedCampaignMetrics;
+      return withNorm(selectedCampaignMetrics);
     }
-    // For planned: use all campaign metrics as priors
-    return allCampaignMetrics;
-  }, [scenarioType, selectedCampaignMetrics, allCampaignMetrics]);
+    // For planned: use all campaign metrics as priors with normalization
+    return withNorm(allCampaignMetrics);
+  }, [scenarioType, selectedCampaignMetrics, allCampaignMetrics, expectedAov]);
 
   /* ----------------------------
      Precompute funnel historical bench for quality adjustment
