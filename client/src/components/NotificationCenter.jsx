@@ -25,6 +25,10 @@ function NotificationRow({
   // This ensures the display updates whenever currentTime changes
   const timeAgoDisplay = calculateTimeAgo(timestamp, currentTime);
 
+  // Determine store logo based on notification.store
+  const storeLogo = notification.store === 'shawq' ? '/shawq-logo.svg' : '/virona-logo.svg';
+  const storeLabel = notification.store === 'shawq' ? 'Shawq' : 'Virona';
+
   return (
     <div 
       className={`p-4 hover:bg-gray-50 transition-colors ${
@@ -32,6 +36,16 @@ function NotificationRow({
       }`}
     >
       <div className="flex items-start justify-between gap-3">
+        {/* Store Logo */}
+        <div className="flex-shrink-0 mt-0.5">
+          <img 
+            src={storeLogo} 
+            alt={storeLabel} 
+            className="w-8 h-8 rounded-full object-contain border border-gray-200 bg-white p-0.5"
+            title={storeLabel}
+          />
+        </div>
+
         <div className="flex-1 min-w-0">
           {/* Store badge for cross-store */}
           {isCrossStore && (
