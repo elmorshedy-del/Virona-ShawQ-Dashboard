@@ -1001,6 +1001,52 @@ function AIBudgetSimulatorTab({ store }) {
     return aiDataset.metrics.adsetDaily.map(mapMetricRow);
   }, [aiDataset]);
 
+  // ============================================================================
+  // CONFIGURATION STATE - Must be declared before useMemo hooks that use them
+  // ============================================================================
+  
+  // Existing configuration
+  const [existingCampaign, setExistingCampaign] = useState("");
+  const [existingGeo, setExistingGeo] = useState("SA");
+  const [existingStructure, setExistingStructure] = useState("CBO");
+  const [existingGeoMaturity, setExistingGeoMaturity] = useState("mature"); // mature | thin
+
+  // Planned configuration
+  const [plannedSource, setPlannedSource] = useState("new"); // new | meta_template
+  const [plannedTemplateCampaign, setPlannedTemplateCampaign] = useState("");
+  const [plannedGeo, setPlannedGeo] = useState("SA");
+  const [plannedStructure, setPlannedStructure] = useState("CBO");
+  const [plannedGeoMaturity, setPlannedGeoMaturity] = useState("thin");
+
+  const [expectedAov, setExpectedAov] = useState(150);
+  const [promoFlag, setPromoFlag] = useState(0);
+  const [discountPct, setDiscountPct] = useState(0);
+  const [activeCreatives, setActiveCreatives] = useState(3);
+
+  // Reference campaigns (manual priors control)
+  const [refCampaignsExisting, setRefCampaignsExisting] = useState([]);
+  const [refCampaignsPlanned, setRefCampaignsPlanned] = useState([]);
+
+  // Lookback
+  const [lookbackKey, setLookbackKey] = useState("smart");
+  const [resolvedSmartDays, setResolvedSmartDays] = useState(null);
+
+  // Files per scope (multi-file parsed results)
+  const [existingFilePackets, setExistingFilePackets] = useState([]);
+  const [plannedFilePackets, setPlannedFilePackets] = useState([]);
+  const [existingFileMode, setExistingFileMode] = useState("complement");
+  const [plannedFileMode, setPlannedFileMode] = useState("complement");
+
+  // Strategy + Mode
+  const [strategyKey, setStrategyKey] = useState("structure_aware");
+  const [modeKeyManual, setModeKeyManual] = useState("auto"); // keep for future; UI is auto-only
+  const [autoModeKey, setAutoModeKey] = useState("hybrid");
+  const [autoModeWhy, setAutoModeWhy] = useState([]);
+
+  // Budget
+  const [dailyBudget, setDailyBudget] = useState(3500);
+  const [sliderBounds, setSliderBounds] = useState({ min: 500, max: 12000, step: 100 });
+
   // Step 5: FILTER metrics for SELECTED campaign only
   const selectedCampaignMetrics = useMemo(() => {
     if (!existingCampaign) return [];
@@ -1062,48 +1108,6 @@ function AIBudgetSimulatorTab({ store }) {
     selectedCampaignMetrics: selectedCampaignMetrics.length,
     campaignStats
   });
-
-  // Existing configuration
-  const [existingCampaign, setExistingCampaign] = useState("");
-  const [existingGeo, setExistingGeo] = useState("SA");
-  const [existingStructure, setExistingStructure] = useState("CBO");
-  const [existingGeoMaturity, setExistingGeoMaturity] = useState("mature"); // mature | thin
-
-  // Planned configuration
-  const [plannedSource, setPlannedSource] = useState("new"); // new | meta_template
-  const [plannedTemplateCampaign, setPlannedTemplateCampaign] = useState("");
-  const [plannedGeo, setPlannedGeo] = useState("SA");
-  const [plannedStructure, setPlannedStructure] = useState("CBO");
-  const [plannedGeoMaturity, setPlannedGeoMaturity] = useState("thin");
-
-  const [expectedAov, setExpectedAov] = useState(150);
-  const [promoFlag, setPromoFlag] = useState(0);
-  const [discountPct, setDiscountPct] = useState(0);
-  const [activeCreatives, setActiveCreatives] = useState(3);
-
-  // Reference campaigns (manual priors control)
-  const [refCampaignsExisting, setRefCampaignsExisting] = useState([]);
-  const [refCampaignsPlanned, setRefCampaignsPlanned] = useState([]);
-
-  // Lookback
-  const [lookbackKey, setLookbackKey] = useState("smart");
-  const [resolvedSmartDays, setResolvedSmartDays] = useState(null);
-
-  // Files per scope (multi-file parsed results)
-  const [existingFilePackets, setExistingFilePackets] = useState([]);
-  const [plannedFilePackets, setPlannedFilePackets] = useState([]);
-  const [existingFileMode, setExistingFileMode] = useState("complement");
-  const [plannedFileMode, setPlannedFileMode] = useState("complement");
-
-  // Strategy + Mode
-  const [strategyKey, setStrategyKey] = useState("structure_aware");
-  const [modeKeyManual, setModeKeyManual] = useState("auto"); // keep for future; UI is auto-only
-  const [autoModeKey, setAutoModeKey] = useState("hybrid");
-  const [autoModeWhy, setAutoModeWhy] = useState([]);
-
-  // Budget
-  const [dailyBudget, setDailyBudget] = useState(3500);
-  const [sliderBounds, setSliderBounds] = useState({ min: 500, max: 12000, step: 100 });
 
   /* ----------------------------
      Resolve the active configuration
