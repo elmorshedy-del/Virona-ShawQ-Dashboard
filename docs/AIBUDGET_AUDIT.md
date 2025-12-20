@@ -361,4 +361,40 @@ The AIBudget tab is a **valuable concept** with a **broken implementation**. The
 
 ---
 
-*Audit completed by analyzing: AIBudget.jsx (2357 lines), aibudget.js, aiBudgetService.js, aiBudgetDataAdapter.js, budgetIntelligenceService.js, budgetIntelligence.js, database.js, and related meta-awareness modules.*
+## 8. Fixes Applied (December 20, 2025)
+
+### Fix 1: Data Sufficiency Now Uses Unfiltered Campaign Data
+- Created `campaignOnlyRows` - filters by campaign name but NOT geo
+- `computeDataHealth` now uses `allRows` (unfiltered) for true data availability
+- This prevents aggressive geo filtering from hiding available data
+
+### Fix 2: Fixed `intelCampaignRows` Mapping
+- Added explicit mapping for `purchases`, `spend`, `impressions`, `clicks`, `atc`, `ic`
+- Added fallback for `date` field using `startDate` or `endDate`
+
+### Fix 3: Improved Revenue Detection
+- Now checks `_normRevenue`, `purchase_value`, `conversion_value`, AND `purchases`
+- Filters dates correctly with `.filter(Boolean)` to exclude null dates
+
+### Fix 4: Enhanced `latestRow` Fallback Chain
+- Falls back through: `curveRows` → `lookbackRows` → `scopedRows` → `campaignOnlyRows`
+- Now finds data even when primary sources are empty
+
+### Fix 5: Added Campaign Totals Display
+- Data Sufficiency Advisor now shows: Total Spend, Total Purchases, Total Revenue
+- Sanity Check shows "Campaign Totals (All Data)" section
+- Users can verify their 30+ purchases are recognized
+
+### Fix 6: Better Geo Filtering
+- `scopeFilterRows` now uses case-insensitive matching
+- Includes partial matches for campaign names
+- 'ALL' geo matches any specific geo selection
+
+### Fix 7: Debug Logging
+- Console logs show full data flow: `datasetRowsCount`, `campaignOnlyRowsCount`, `scopedRowsCount`
+- Includes sample row fields to verify field mapping
+- Shows `latestRowPurchases` for quick verification
+
+---
+
+*Audit completed by analyzing: AIBudget.jsx (2400+ lines), aibudget.js, aiBudgetService.js, aiBudgetDataAdapter.js, budgetIntelligenceService.js, budgetIntelligence.js, database.js, and related meta-awareness modules.*
