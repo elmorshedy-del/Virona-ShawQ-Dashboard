@@ -950,11 +950,6 @@ function AIBudgetSimulatorTab({ store }) {
 
   // Meta campaigns - use clean pipeline data
   const { objects: metaObjects } = useMetaObjects(store, { autoFetch: !!store });
-  
-  // Campaign names come directly from availableCampaigns (clean pipeline)
-  const campaignOptions = useMemo(() => {
-    return availableCampaigns.map(c => c.name).filter(Boolean);
-  }, [availableCampaigns]);
 
   /* ============================================================================
      CLEAN DATA PIPELINE - Single source of truth from /api/aibudget
@@ -969,6 +964,11 @@ function AIBudgetSimulatorTab({ store }) {
       status: c.effective_status || c.status
     }));
   }, [aiDataset]);
+  
+  // Campaign names come directly from availableCampaigns (clean pipeline)
+  const campaignOptions = useMemo(() => {
+    return availableCampaigns.map(c => c.name).filter(Boolean);
+  }, [availableCampaigns]);
 
   // Step 2: Standard row mapper for consistent field names
   const mapMetricRow = (r) => ({
@@ -1621,15 +1621,15 @@ function AIBudgetSimulatorTab({ store }) {
       setPlannedTemplateCampaign(first);
     }
 
-    if (intelStartPlanRows.length && (!plannedGeo || plannedGeo === "")) {
-      setPlannedGeo(intelStartPlanRows[0].geo || intelStartPlanRows[0].country || plannedGeo);
+    if (intelStartPlans.length && (!plannedGeo || plannedGeo === "")) {
+      setPlannedGeo(intelStartPlans[0].geo || intelStartPlans[0].country || plannedGeo);
     }
   }, [
     campaignOptions,
     existingCampaign,
     plannedTemplateCampaign,
     campaignMetadata,
-    intelStartPlanRows,
+    intelStartPlans,
     plannedGeo
   ]);
 
