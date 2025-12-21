@@ -658,8 +658,7 @@ export function getNewYorkTrends(store, params) {
   // ===========================================================================
 export function getCampaignTrends(store, params = {}) {
   const db = getDb();
-  const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  const { startDate, endDate } = getDateRange(params);
   const statusFilter = buildStatusFilter(params);
 
   try {
