@@ -985,6 +985,10 @@ export default function App() {
             includeInactive={includeInactive}
             setIncludeInactive={setIncludeInactive}
             dateRange={dashboard?.dateRange}
+            countryTrendsRangeMode={countryTrendsRangeMode}
+            setCountryTrendsRangeMode={setCountryTrendsRangeMode}
+            countryTrendsQuickRange={countryTrendsQuickRange}
+            setCountryTrendsQuickRange={setCountryTrendsQuickRange}
           />
           )}
         
@@ -1111,6 +1115,10 @@ function DashboardTab({
   setIncludeInactive = () => {},
   dateRange = {},
   diagnosticsCampaignOptions = [],
+  countryTrendsRangeMode = 'global',
+  setCountryTrendsRangeMode = () => {},
+  countryTrendsQuickRange = '7d',
+  setCountryTrendsQuickRange = () => {},
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
