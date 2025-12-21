@@ -147,6 +147,8 @@ export default function App() {
   const [campaignTrends, setCampaignTrends] = useState([]);
   const [campaignTrendsDataSource, setCampaignTrendsDataSource] = useState('');
   const [countriesDataSource, setCountriesDataSource] = useState('');
+  const [countryTrendsRangeMode, setCountryTrendsRangeMode] = useState('global'); // 'global' | 'quick'
+  const [countryTrendsQuickRange, setCountryTrendsQuickRange] = useState('7d'); // '7d' | '14d' | '21d' | '30d'
 
   // Unified analytics section state (must be before useEffect hooks that use them)
   const [analyticsMode, setAnalyticsMode] = useState('meta-ad-manager'); // 'countries' | 'meta-ad-manager'
@@ -277,7 +279,19 @@ export default function App() {
       // Fix 7: Always show arrows for comparison (Today compares to Yesterday, Yesterday compares to day before)
       const shouldShowArrows = true;
       
-      if (dateRange.type === 'custom') {
+      const quickRangeDays = {
+        '7d': 7,
+        '14d': 14,
+        '21d': 21,
+        '30d': 30
+      }[countryTrendsQuickRange];
+
+      if (countryTrendsRangeMode === 'quick') {
+        if (!quickRangeDays) {
+          console.warn('Unsupported country trends quick range, defaulting to 7d:', countryTrendsQuickRange);
+        }
+        countryTrendParams.set('days', (quickRangeDays || 7).toString());
+      } else if (dateRange.type === 'custom') {
         params.set('startDate', dateRange.start);
         params.set('endDate', dateRange.end);
         countryTrendParams.set('startDate', dateRange.start);
@@ -419,7 +433,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive]);
+  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -971,6 +985,10 @@ export default function App() {
             includeInactive={includeInactive}
             setIncludeInactive={setIncludeInactive}
             dateRange={dashboard?.dateRange}
+            countryTrendsRangeMode={countryTrendsRangeMode}
+            setCountryTrendsRangeMode={setCountryTrendsRangeMode}
+            countryTrendsQuickRange={countryTrendsQuickRange}
+            setCountryTrendsQuickRange={setCountryTrendsQuickRange}
           />
           )}
         
@@ -1097,6 +1115,10 @@ function DashboardTab({
   setIncludeInactive = () => {},
   dateRange = {},
   diagnosticsCampaignOptions = [],
+  countryTrendsRangeMode = 'global',
+  setCountryTrendsRangeMode = () => {},
+  countryTrendsQuickRange = '7d',
+  setCountryTrendsQuickRange = () => {},
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
@@ -1144,10 +1166,55 @@ function DashboardTab({
   });
 
   // Sort country trends by total orders (descending), with New York first if available
+  const quickRangeDaysMap = {
+    '7d': 7,
+    '14d': 14,
+    '21d': 21,
+    '30d': 30
+  };
+  const countryTrendsQuickRangeDays = quickRangeDaysMap[countryTrendsQuickRange] || 7;
+
+  const filterTrendsByDays = useCallback((trends = [], days = 7) => {
+    if (!Array.isArray(trends) || !trends.length || !days || days <= 0) return trends;
+    const parsedDates = trends
+      .map((point) => ({
+        point,
+        date: parseLocalDate(point.date)
+      }))
+      .filter(entry => entry.date);
+
+    if (!parsedDates.length) {
+      console.warn('Country trends filtering skipped: unable to parse dates for quick range');
+      return trends;
+    }
+
+    const maxDateMs = Math.max(...parsedDates.map(entry => entry.date.getTime()));
+    const cutoff = new Date(maxDateMs - (days - 1) * 24 * 60 * 60 * 1000);
+
+    return parsedDates
+      .filter(entry => entry.date >= cutoff)
+      .map(entry => entry.point);
+  }, [parseLocalDate]);
+
   const orderedCountryTrends = [
     ...(nyTrendData ? [nyTrendData] : []),
     ...countryTrends
-  ].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
+  ]
+    .map((country) => {
+      const filteredTrends = countryTrendsRangeMode === 'quick'
+        ? filterTrendsByDays(country.trends, countryTrendsQuickRangeDays)
+        : country.trends;
+      const totalOrders = Array.isArray(filteredTrends)
+        ? filteredTrends.reduce((sum, point) => sum + (point.orders || 0), 0)
+        : country.totalOrders;
+
+      return {
+        ...country,
+        trends: filteredTrends,
+        totalOrders
+      };
+    })
+    .sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
   const orderedCampaignTrends = [...campaignTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
 
   const parseLocalDate = useCallback((dateString) => {
@@ -1871,6 +1938,38 @@ function DashboardTab({
               <ChevronDown className="w-5 h-5 text-gray-500" />
             </div>
           </button>
+
+          <div className="px-6 pb-4 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-gray-500">Range:</span>
+            <button
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
+                countryTrendsRangeMode === 'global'
+                  ? 'bg-gray-900 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+              onClick={() => setCountryTrendsRangeMode('global')}
+            >
+              Follow dashboard
+            </button>
+            {['7d', '14d', '21d', '30d'].map((rangeKey) => (
+              <button
+                key={rangeKey}
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
+                  countryTrendsRangeMode === 'quick' && countryTrendsQuickRange === rangeKey
+                    ? 'bg-gray-900 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+                onClick={() => {
+                  setCountryTrendsRangeMode('quick');
+                  setCountryTrendsQuickRange(rangeKey);
+                }}
+              >
+                {rangeKey === '7d' ? '1W' :
+                  rangeKey === '14d' ? '2W' :
+                  rangeKey === '21d' ? '3W' : '1M'}
+              </button>
+            ))}
+          </div>
           
           {showCountryTrends && (
             <div className="p-6 pt-0 space-y-6">
