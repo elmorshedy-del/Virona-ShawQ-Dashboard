@@ -90,7 +90,11 @@ export function createOrderNotifications(store, source, orders) {
 
   // Check if we should create notifications for this source
   if (!shouldCreateOrderNotification(store, source)) {
-    console.log(`[Notification] Skipping ${source} notifications for ${store}`);
+    if (store === 'vironax' && source === 'meta' && isSallaActive()) {
+      console.log('[Notification] Skipping VironaX Meta notifications because Salla is active (VIRONAX_SALLA_ACCESS_TOKEN set)');
+    } else {
+      console.log(`[Notification] Skipping ${source} notifications for ${store}`);
+    }
     return 0;
   }
   
@@ -206,9 +210,12 @@ export function createOrderNotifications(store, source, orders) {
     const currency = data.currency || fallbackCurrency;
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
     const displayCountry = data.label || data.code || 'Unknown';
+    const campaignLabel = (store === 'vironax' && source === 'meta' && data.campaign_name)
+      ? `${data.campaign_name} • `
+      : '';
 
     // Format: Country • Amount • Source (clean format)
-    const message = `${displayCountry} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
+    const message = `${campaignLabel}${displayCountry} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
 
     createNotification({
       store,
