@@ -206,9 +206,10 @@ export function createOrderNotifications(store, source, orders) {
     const currency = data.currency || fallbackCurrency;
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
     const displayCountry = data.label || data.code || 'Unknown';
+    const campaignLabel = data.campaign_name ? `${data.campaign_name} • ` : '';
 
     // Format: Country • Amount • Source (clean format)
-    const message = `${displayCountry} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
+    const message = `${campaignLabel}${displayCountry} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
 
     createNotification({
       store,
