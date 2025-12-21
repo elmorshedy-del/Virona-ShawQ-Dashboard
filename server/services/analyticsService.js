@@ -472,9 +472,7 @@ function getTrends(store, startDate, endDate, params = {}) {
 // ============================================================================
 export function getCountryTrends(store, params) {
   const db = getDb();
-  // Fix 6: Changed from 7 days to 14 days
-  const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  const { startDate, endDate } = getDateRange(params);
   const statusFilter = buildStatusFilter(params);
 
   try {
@@ -579,8 +577,7 @@ export function getCountryTrends(store, params) {
 // ============================================================================
 export function getNewYorkTrends(store, params) {
   const db = getDb();
-  const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  const { startDate, endDate } = getDateRange(params);
 
   try {
     // Only return data for Shawq store (Shopify)
