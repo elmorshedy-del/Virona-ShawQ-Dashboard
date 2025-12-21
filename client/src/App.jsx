@@ -1166,10 +1166,55 @@ function DashboardTab({
   });
 
   // Sort country trends by total orders (descending), with New York first if available
+  const quickRangeDaysMap = {
+    '7d': 7,
+    '14d': 14,
+    '21d': 21,
+    '30d': 30
+  };
+  const countryTrendsQuickRangeDays = quickRangeDaysMap[countryTrendsQuickRange] || 7;
+
+  const filterTrendsByDays = useCallback((trends = [], days = 7) => {
+    if (!Array.isArray(trends) || !trends.length || !days || days <= 0) return trends;
+    const parsedDates = trends
+      .map((point) => ({
+        point,
+        date: parseLocalDate(point.date)
+      }))
+      .filter(entry => entry.date);
+
+    if (!parsedDates.length) {
+      console.warn('Country trends filtering skipped: unable to parse dates for quick range');
+      return trends;
+    }
+
+    const maxDateMs = Math.max(...parsedDates.map(entry => entry.date.getTime()));
+    const cutoff = new Date(maxDateMs - (days - 1) * 24 * 60 * 60 * 1000);
+
+    return parsedDates
+      .filter(entry => entry.date >= cutoff)
+      .map(entry => entry.point);
+  }, [parseLocalDate]);
+
   const orderedCountryTrends = [
     ...(nyTrendData ? [nyTrendData] : []),
     ...countryTrends
-  ].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
+  ]
+    .map((country) => {
+      const filteredTrends = countryTrendsRangeMode === 'quick'
+        ? filterTrendsByDays(country.trends, countryTrendsQuickRangeDays)
+        : country.trends;
+      const totalOrders = Array.isArray(filteredTrends)
+        ? filteredTrends.reduce((sum, point) => sum + (point.orders || 0), 0)
+        : country.totalOrders;
+
+      return {
+        ...country,
+        trends: filteredTrends,
+        totalOrders
+      };
+    })
+    .sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
   const orderedCampaignTrends = [...campaignTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
 
   const parseLocalDate = useCallback((dateString) => {
