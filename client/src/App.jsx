@@ -105,6 +105,12 @@ const STORES = {
 };
 
 const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics', 'AI Budget'];
+const COUNTRY_TREND_PERIODS = {
+  '1w': 7,
+  '2w': 14,
+  '3w': 21,
+  '1m': 30
+};
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -142,6 +148,7 @@ export default function App() {
   // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
   const [countryTrendsDataSource, setCountryTrendsDataSource] = useState('');
+  const [countryTrendsPeriod, setCountryTrendsPeriod] = useState('1w');
   const [nyTrendData, setNyTrendData] = useState(null);
   const [nyTrendDataSource, setNyTrendDataSource] = useState('');
   const [campaignTrends, setCampaignTrends] = useState([]);
@@ -271,7 +278,8 @@ export default function App() {
         startDate: '2000-01-01',
         endDate: getLocalDateString()
       });
-      const countryTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
+      const selectedCountryTrendDays = COUNTRY_TREND_PERIODS[countryTrendsPeriod] || 7;
+      const countryTrendParams = new URLSearchParams({ store: currentStore, days: selectedCountryTrendDays });
       const campaignTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
       
       // Fix 7: Always show arrows for comparison (Today compares to Yesterday, Yesterday compares to day before)
@@ -280,17 +288,13 @@ export default function App() {
       if (dateRange.type === 'custom') {
         params.set('startDate', dateRange.start);
         params.set('endDate', dateRange.end);
-        countryTrendParams.set('startDate', dateRange.start);
-        countryTrendParams.set('endDate', dateRange.end);
         campaignTrendParams.set('startDate', dateRange.start);
         campaignTrendParams.set('endDate', dateRange.end);
       } else if (dateRange.type === 'yesterday') {
         params.set('yesterday', '1');
-        countryTrendParams.set('yesterday', '1');
         campaignTrendParams.set('yesterday', '1');
       } else {
         params.set(dateRange.type, dateRange.value);
-        countryTrendParams.set(dateRange.type, dateRange.value);
         campaignTrendParams.set(dateRange.type, dateRange.value);
       }
       
@@ -419,7 +423,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive]);
+  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsPeriod]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -940,6 +944,8 @@ export default function App() {
             diagnosticsCampaignOptions={diagnosticsCampaignOptions}
             countryTrends={countryTrends}
             countryTrendsDataSource={countryTrendsDataSource}
+            countryTrendsPeriod={countryTrendsPeriod}
+            setCountryTrendsPeriod={setCountryTrendsPeriod}
             campaignTrends={campaignTrends}
             campaignTrendsDataSource={campaignTrendsDataSource}
             countriesDataSource={countriesDataSource}
@@ -1065,6 +1071,8 @@ function DashboardTab({
   nyTrendData = null,
   countryTrends = [],
   countryTrendsDataSource = '',
+  countryTrendsPeriod = '1w',
+  setCountryTrendsPeriod = () => {},
   campaignTrends = [],
   campaignTrendsDataSource = '',
   countriesDataSource = '',
@@ -1871,6 +1879,23 @@ function DashboardTab({
               <ChevronDown className="w-5 h-5 text-gray-500" />
             </div>
           </button>
+          
+          <div className="px-6 pb-4 flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-gray-500">Range:</span>
+            {['1w', '2w', '3w', '1m'].map((period) => (
+              <button
+                key={period}
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
+                  countryTrendsPeriod === period
+                    ? 'bg-gray-900 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+                onClick={() => setCountryTrendsPeriod(period)}
+              >
+                {period.toUpperCase()}
+              </button>
+            ))}
+          </div>
           
           {showCountryTrends && (
             <div className="p-6 pt-0 space-y-6">
