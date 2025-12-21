@@ -142,10 +142,14 @@ export default function App() {
   // Country trends
   const [countryTrends, setCountryTrends] = useState([]);
   const [countryTrendsDataSource, setCountryTrendsDataSource] = useState('');
+  const [countryTrendsRangeMode, setCountryTrendsRangeMode] = useState('global'); // 'global' | 'quick'
+  const [countryTrendsQuickRange, setCountryTrendsQuickRange] = useState({ type: 'weeks', value: 2 });
   const [nyTrendData, setNyTrendData] = useState(null);
   const [nyTrendDataSource, setNyTrendDataSource] = useState('');
   const [campaignTrends, setCampaignTrends] = useState([]);
   const [campaignTrendsDataSource, setCampaignTrendsDataSource] = useState('');
+  const [campaignTrendsRangeMode, setCampaignTrendsRangeMode] = useState('global'); // 'global' | 'quick'
+  const [campaignTrendsQuickRange, setCampaignTrendsQuickRange] = useState({ type: 'weeks', value: 2 });
   const [countriesDataSource, setCountriesDataSource] = useState('');
 
   // Unified analytics section state (must be before useEffect hooks that use them)
@@ -271,28 +275,71 @@ export default function App() {
         startDate: '2000-01-01',
         endDate: getLocalDateString()
       });
-      const countryTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
-      const campaignTrendParams = new URLSearchParams({ store: currentStore, days: 7 });
+      const countryTrendParams = new URLSearchParams({ store: currentStore });
+      const campaignTrendParams = new URLSearchParams({ store: currentStore });
+      const applyDashboardRange = (targetParams) => {
+        if (dateRange.type === 'custom') {
+          targetParams.set('startDate', dateRange.start);
+          targetParams.set('endDate', dateRange.end);
+        } else if (dateRange.type === 'yesterday') {
+          targetParams.set('yesterday', '1');
+        } else {
+          targetParams.set(dateRange.type, dateRange.value);
+        }
+      };
+      const applyCampaignTrendsRange = (targetParams) => {
+        if (campaignTrendsRangeMode === 'quick') {
+          const quickRange = campaignTrendsQuickRange || { type: 'weeks', value: 2 };
+          if (quickRange.type === 'custom') {
+            if (quickRange.start && quickRange.end) {
+              targetParams.set('startDate', quickRange.start);
+              targetParams.set('endDate', quickRange.end);
+            }
+            return;
+          }
+          if (quickRange.type === 'yesterday') {
+            targetParams.set('yesterday', '1');
+            return;
+          }
+          if (quickRange.type && quickRange.value) {
+            targetParams.set(quickRange.type, quickRange.value);
+            return;
+          }
+          targetParams.set('weeks', 2);
+          return;
+        }
+        applyDashboardRange(targetParams);
+      };
+      const applyCountryTrendsRange = (targetParams) => {
+        if (countryTrendsRangeMode === 'quick') {
+          const quickRange = countryTrendsQuickRange || { type: 'weeks', value: 2 };
+          if (quickRange.type === 'custom') {
+            if (quickRange.start && quickRange.end) {
+              targetParams.set('startDate', quickRange.start);
+              targetParams.set('endDate', quickRange.end);
+            }
+            return;
+          }
+          if (quickRange.type === 'yesterday') {
+            targetParams.set('yesterday', '1');
+            return;
+          }
+          if (quickRange.type && quickRange.value) {
+            targetParams.set(quickRange.type, quickRange.value);
+            return;
+          }
+          targetParams.set('weeks', 2);
+          return;
+        }
+        applyDashboardRange(targetParams);
+      };
       
       // Fix 7: Always show arrows for comparison (Today compares to Yesterday, Yesterday compares to day before)
       const shouldShowArrows = true;
-      
-      if (dateRange.type === 'custom') {
-        params.set('startDate', dateRange.start);
-        params.set('endDate', dateRange.end);
-        countryTrendParams.set('startDate', dateRange.start);
-        countryTrendParams.set('endDate', dateRange.end);
-        campaignTrendParams.set('startDate', dateRange.start);
-        campaignTrendParams.set('endDate', dateRange.end);
-      } else if (dateRange.type === 'yesterday') {
-        params.set('yesterday', '1');
-        countryTrendParams.set('yesterday', '1');
-        campaignTrendParams.set('yesterday', '1');
-      } else {
-        params.set(dateRange.type, dateRange.value);
-        countryTrendParams.set(dateRange.type, dateRange.value);
-        campaignTrendParams.set(dateRange.type, dateRange.value);
-      }
+
+      applyDashboardRange(params);
+      applyCountryTrendsRange(countryTrendParams);
+      applyCampaignTrendsRange(campaignTrendParams);
       
       params.set('showArrows', shouldShowArrows);
 
@@ -419,7 +466,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive]);
+  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -940,8 +987,16 @@ export default function App() {
             diagnosticsCampaignOptions={diagnosticsCampaignOptions}
             countryTrends={countryTrends}
             countryTrendsDataSource={countryTrendsDataSource}
+            countryTrendsRangeMode={countryTrendsRangeMode}
+            setCountryTrendsRangeMode={setCountryTrendsRangeMode}
+            countryTrendsQuickRange={countryTrendsQuickRange}
+            setCountryTrendsQuickRange={setCountryTrendsQuickRange}
             campaignTrends={campaignTrends}
             campaignTrendsDataSource={campaignTrendsDataSource}
+            campaignTrendsRangeMode={campaignTrendsRangeMode}
+            setCampaignTrendsRangeMode={setCampaignTrendsRangeMode}
+            campaignTrendsQuickRange={campaignTrendsQuickRange}
+            setCampaignTrendsQuickRange={setCampaignTrendsQuickRange}
             countriesDataSource={countriesDataSource}
             timeOfDay={timeOfDay}
             selectedShopifyRegion={selectedShopifyRegion}
@@ -1065,8 +1120,16 @@ function DashboardTab({
   nyTrendData = null,
   countryTrends = [],
   countryTrendsDataSource = '',
+  countryTrendsRangeMode = 'global',
+  setCountryTrendsRangeMode = () => {},
+  countryTrendsQuickRange = { type: 'weeks', value: 2 },
+  setCountryTrendsQuickRange = () => {},
   campaignTrends = [],
   campaignTrendsDataSource = '',
+  campaignTrendsRangeMode = 'global',
+  setCampaignTrendsRangeMode = () => {},
+  campaignTrendsQuickRange = { type: 'weeks', value: 2 },
+  setCampaignTrendsQuickRange = () => {},
   countriesDataSource = '',
   timeOfDay = { data: [], timezone: 'America/Chicago', sampleTimestamps: [], source: '' },
   selectedShopifyRegion = 'us',
@@ -1108,6 +1171,18 @@ function DashboardTab({
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
   const [expandedStates, setExpandedStates] = useState(new Set());
+  const countryTrendQuickOptions = [
+    { label: '1W', type: 'weeks', value: 1 },
+    { label: '2W', type: 'weeks', value: 2 },
+    { label: '3W', type: 'weeks', value: 3 },
+    { label: '1M', type: 'months', value: 1 }
+  ];
+  const campaignTrendQuickOptions = [
+    { label: '1W', type: 'weeks', value: 1 },
+    { label: '2W', type: 'weeks', value: 2 },
+    { label: '3W', type: 'weeks', value: 3 },
+    { label: '1M', type: 'months', value: 1 }
+  ];
 
   // Note: toggleHideCampaign, showAllCampaigns, and handleCampaignSelect
   // are now implemented in the UnifiedAnalytics component
@@ -1149,6 +1224,38 @@ function DashboardTab({
     ...countryTrends
   ].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
   const orderedCampaignTrends = [...campaignTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
+  const getCountryTrendRangeLabel = () => {
+    if (countryTrendsRangeMode === 'quick') {
+      const { type, value } = countryTrendsQuickRange || {};
+      if (type === 'weeks' && value) return `Quick range: Last ${value} week${value === 1 ? '' : 's'}`;
+      if (type === 'months' && value) return `Quick range: Last ${value} month${value === 1 ? '' : 's'}`;
+      if (type === 'yesterday') return 'Quick range: Yesterday';
+      if (countryTrendsQuickRange?.start && countryTrendsQuickRange?.end) {
+        return `Quick range: ${countryTrendsQuickRange.start} to ${countryTrendsQuickRange.end}`;
+      }
+      return 'Quick range';
+    }
+    if (dateRange?.startDate && dateRange?.endDate) {
+      return `Using dashboard range (${dateRange.startDate} to ${dateRange.endDate})`;
+    }
+    return 'Using dashboard date range';
+  };
+  const getCampaignTrendRangeLabel = () => {
+    if (campaignTrendsRangeMode === 'quick') {
+      const { type, value } = campaignTrendsQuickRange || {};
+      if (type === 'weeks' && value) return `Quick range: Last ${value} week${value === 1 ? '' : 's'}`;
+      if (type === 'months' && value) return `Quick range: Last ${value} month${value === 1 ? '' : 's'}`;
+      if (type === 'yesterday') return 'Quick range: Yesterday';
+      if (campaignTrendsQuickRange?.start && campaignTrendsQuickRange?.end) {
+        return `Quick range: ${campaignTrendsQuickRange.start} to ${campaignTrendsQuickRange.end}`;
+      }
+      return 'Quick range';
+    }
+    if (dateRange?.startDate && dateRange?.endDate) {
+      return `Using dashboard range (${dateRange.startDate} to ${dateRange.endDate})`;
+    }
+    return 'Using dashboard date range';
+  };
 
   const parseLocalDate = useCallback((dateString) => {
     if (!dateString) return null;
@@ -1874,6 +1981,58 @@ function DashboardTab({
           
           {showCountryTrends && (
             <div className="p-6 pt-0 space-y-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setCountryTrendsRangeMode('global')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+                      countryTrendsRangeMode === 'global'
+                        ? 'bg-gray-900 text-white border-gray-900'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Follow dashboard range
+                  </button>
+                  <button
+                    onClick={() => setCountryTrendsRangeMode('quick')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+                      countryTrendsRangeMode === 'quick'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Quick ranges
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <span className="px-3 py-1 bg-gray-100 rounded-full font-medium">
+                    {getCountryTrendRangeLabel()}
+                  </span>
+                </div>
+              </div>
+              {countryTrendsRangeMode === 'quick' && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {countryTrendQuickOptions.map((option) => {
+                    const isActive = countryTrendsQuickRange?.type === option.type && countryTrendsQuickRange?.value === option.value;
+                    return (
+                      <button
+                        key={`${option.type}-${option.value}`}
+                        onClick={() => {
+                          setCountryTrendsRangeMode('quick');
+                          setCountryTrendsQuickRange({ type: option.type, value: option.value });
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                          isActive
+                            ? 'bg-indigo-600 text-white border-indigo-600'
+                            : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               {orderedCountryTrends.map((country) => (
                 <div
                   key={country.countryCode}
@@ -1957,6 +2116,58 @@ function DashboardTab({
 
           {showCampaignTrends && (
             <div className="p-6 pt-0 space-y-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setCampaignTrendsRangeMode('global')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+                      campaignTrendsRangeMode === 'global'
+                        ? 'bg-gray-900 text-white border-gray-900'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Follow dashboard range
+                  </button>
+                  <button
+                    onClick={() => setCampaignTrendsRangeMode('quick')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+                      campaignTrendsRangeMode === 'quick'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Quick ranges
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <span className="px-3 py-1 bg-gray-100 rounded-full font-medium">
+                    {getCampaignTrendRangeLabel()}
+                  </span>
+                </div>
+              </div>
+              {campaignTrendsRangeMode === 'quick' && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {campaignTrendQuickOptions.map((option) => {
+                    const isActive = campaignTrendsQuickRange?.type === option.type && campaignTrendsQuickRange?.value === option.value;
+                    return (
+                      <button
+                        key={`${option.type}-${option.value}`}
+                        onClick={() => {
+                          setCampaignTrendsRangeMode('quick');
+                          setCampaignTrendsQuickRange({ type: option.type, value: option.value });
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                          isActive
+                            ? 'bg-indigo-600 text-white border-indigo-600'
+                            : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               {orderedCampaignTrends.map((campaign) => (
                 <div
                   key={campaign.campaignId || campaign.campaignName}
