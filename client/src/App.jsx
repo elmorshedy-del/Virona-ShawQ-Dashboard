@@ -1224,14 +1224,14 @@ function DashboardTab({
     ...countryTrends
   ].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
   const orderedCampaignTrends = [...campaignTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
-  const getCountryTrendRangeLabel = () => {
-    if (countryTrendsRangeMode === 'quick') {
-      const { type, value } = countryTrendsQuickRange || {};
+  const getTrendRangeLabel = (mode, quickRange) => {
+    if (mode === 'quick') {
+      const { type, value } = quickRange || {};
       if (type === 'weeks' && value) return `Quick range: Last ${value} week${value === 1 ? '' : 's'}`;
       if (type === 'months' && value) return `Quick range: Last ${value} month${value === 1 ? '' : 's'}`;
       if (type === 'yesterday') return 'Quick range: Yesterday';
-      if (countryTrendsQuickRange?.start && countryTrendsQuickRange?.end) {
-        return `Quick range: ${countryTrendsQuickRange.start} to ${countryTrendsQuickRange.end}`;
+      if (quickRange?.start && quickRange?.end) {
+        return `Quick range: ${quickRange.start} to ${quickRange.end}`;
       }
       return 'Quick range';
     }
@@ -1240,22 +1240,8 @@ function DashboardTab({
     }
     return 'Using dashboard date range';
   };
-  const getCampaignTrendRangeLabel = () => {
-    if (campaignTrendsRangeMode === 'quick') {
-      const { type, value } = campaignTrendsQuickRange || {};
-      if (type === 'weeks' && value) return `Quick range: Last ${value} week${value === 1 ? '' : 's'}`;
-      if (type === 'months' && value) return `Quick range: Last ${value} month${value === 1 ? '' : 's'}`;
-      if (type === 'yesterday') return 'Quick range: Yesterday';
-      if (campaignTrendsQuickRange?.start && campaignTrendsQuickRange?.end) {
-        return `Quick range: ${campaignTrendsQuickRange.start} to ${campaignTrendsQuickRange.end}`;
-      }
-      return 'Quick range';
-    }
-    if (dateRange?.startDate && dateRange?.endDate) {
-      return `Using dashboard range (${dateRange.startDate} to ${dateRange.endDate})`;
-    }
-    return 'Using dashboard date range';
-  };
+  const getCountryTrendRangeLabel = () => getTrendRangeLabel(countryTrendsRangeMode, countryTrendsQuickRange);
+  const getCampaignTrendRangeLabel = () => getTrendRangeLabel(campaignTrendsRangeMode, campaignTrendsQuickRange);
 
   const parseLocalDate = useCallback((dateString) => {
     if (!dateString) return null;
