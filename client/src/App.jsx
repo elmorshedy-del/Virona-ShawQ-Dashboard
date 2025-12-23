@@ -1249,7 +1249,7 @@ function DashboardTab({
         const roas = spend > 0 ? revenue / spend : null;
 
         return {
-          key: ad.ad_id || ad.id || ad.ad_name || `creative-${idx}`,
+          key: ad.ad_id || ad.id || `creative-${idx}`,
           name: ad.ad_name || ad.name || 'Creative',
           impressions,
           atc,
