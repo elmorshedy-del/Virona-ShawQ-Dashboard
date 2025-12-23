@@ -171,6 +171,9 @@ export default function App() {
   // Include inactive campaigns/adsets/ads toggle (default: ACTIVE only)
   const [includeInactive, setIncludeInactive] = useState(false);
 
+  // Dashboard-level campaign scope
+  const [dashboardCampaign, setDashboardCampaign] = useState(null);
+
   const diagnosticsCampaignOptions = useMemo(() => {
     if (!Array.isArray(metaAdManagerData)) return [];
 
@@ -184,6 +187,26 @@ export default function App() {
 
     return Array.from(unique, ([value, label]) => ({ value, label }));
   }, [metaAdManagerData]);
+
+  const dashboardCampaignOptions = useMemo(() => {
+    if (!Array.isArray(dashboard?.campaigns)) return [];
+
+    const seen = new Set();
+    return dashboard.campaigns
+      .map((campaign) => ({
+        id: (() => {
+          const rawId = campaign.campaignId || campaign.campaign_id;
+          return rawId != null ? String(rawId) : null;
+        })(),
+        name: campaign.campaignName || campaign.campaign_name || 'Unnamed Campaign'
+      }))
+      .filter(({ id, name }) => {
+        const key = id || name;
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  }, [dashboard]);
 
   const store = STORES[currentStore];
 
@@ -265,6 +288,21 @@ export default function App() {
     }));
   }, [currentStore]);
 
+  useEffect(() => {
+    setDashboardCampaign(null);
+  }, [currentStore]);
+
+  useEffect(() => {
+    if (!dashboardCampaign) return;
+    const exists = dashboardCampaignOptions.some((option) => {
+      if (option.id && dashboardCampaign.id) return option.id === dashboardCampaign.id;
+      return option.name === dashboardCampaign.name;
+    });
+    if (!exists) {
+      setDashboardCampaign(null);
+    }
+  }, [dashboardCampaign, dashboardCampaignOptions]);
+
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -342,6 +380,12 @@ export default function App() {
       applyCampaignTrendsRange(campaignTrendParams);
       
       params.set('showArrows', shouldShowArrows);
+      if (dashboardCampaign?.id) {
+        params.set('campaignId', dashboardCampaign.id);
+      }
+      if (dashboardCampaign?.name) {
+        params.set('campaignName', dashboardCampaign.name);
+      }
 
       // Include inactive campaigns/adsets/ads if toggle is on
       if (includeInactive) {
@@ -466,7 +510,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange]);
+  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange, dashboardCampaign]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -967,8 +1011,39 @@ export default function App() {
             )}
           </div>
 
-          <div className="ml-auto text-sm text-gray-500">
-            Showing: <strong>{getDateRangeLabel()}</strong>
+          <div className="ml-auto flex items-center gap-3 text-sm text-gray-500 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-gray-700">Campaign:</span>
+              <select
+                value={dashboardCampaign?.id || dashboardCampaign?.name || ''}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (!value) {
+                    setDashboardCampaign(null);
+                    return;
+                  }
+                  const match = dashboardCampaignOptions.find(
+                    (option) => option.id === value || option.name === value
+                  );
+                  if (match) {
+                    setDashboardCampaign(match);
+                  } else {
+                    setDashboardCampaign({ id: value, name: value });
+                  }
+                }}
+                className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[200px]"
+              >
+                <option value="">All campaigns</option>
+                {dashboardCampaignOptions.map((option) => (
+                  <option key={option.id || option.name} value={option.id || option.name}>
+                    {option.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              Showing: <strong>{getDateRangeLabel()}</strong>
+            </div>
           </div>
         </div>
 
@@ -1026,6 +1101,7 @@ export default function App() {
             includeInactive={includeInactive}
             setIncludeInactive={setIncludeInactive}
             dateRange={dashboard?.dateRange}
+            selectedDashboardCampaign={dashboardCampaign}
           />
           )}
         
@@ -1159,6 +1235,7 @@ function DashboardTab({
   includeInactive = false,
   setIncludeInactive = () => {},
   dateRange = {},
+  selectedDashboardCampaign = null,
   diagnosticsCampaignOptions = [],
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
@@ -1715,6 +1792,14 @@ function DashboardTab({
 
   return (
     <div className="space-y-6 animate-fade-in">
+      <div className="flex items-center justify-between text-sm text-gray-600">
+        <div>
+          {selectedDashboardCampaign
+            ? `Showing ${selectedDashboardCampaign.name}`
+            : 'Showing all campaigns'}
+        </div>
+      </div>
+
       {/* KPI CARDS */}
       <div className="grid grid-cols-6 gap-4">
         {kpis.map((kpi) => (
@@ -1732,7 +1817,12 @@ function DashboardTab({
       {/* Global Orders Trend */}
       {trends && trends.length > 0 && (
         <div className="bg-white rounded-xl p-6 shadow-sm">
-          <h3 className="text-lg font-semibold mb-4">Orders Trend</h3>
+          <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+            <h3 className="text-lg font-semibold">Orders Trend</h3>
+            <span className="inline-flex items-center px-3 py-1 rounded-lg bg-gray-100 text-sm text-gray-700">
+              {selectedDashboardCampaign ? selectedDashboardCampaign.name : 'All campaigns'}
+            </span>
+          </div>
           <div className="h-64">
             <ResponsiveContainer>
               <AreaChart data={trends}>
