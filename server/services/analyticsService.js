@@ -195,10 +195,23 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     totalRevenue = ecomData.revenue || 0;
   }
 
+  const manualCampaignArgs = [];
+  let manualCampaignClause = '';
+  if (campaignValue) {
+    const campaign = db.prepare('SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1').get(campaignValue);
+    if (campaign?.campaign_name) {
+      manualCampaignClause = ' AND campaign = ?';
+      manualCampaignArgs.push(campaign.campaign_name);
+    } else {
+      // If campaign ID is unknown, ensure no manual orders are matched.
+      manualCampaignClause = ' AND 1=0';
+    }
+  }
+
   const manualData = db.prepare(`
     SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
-    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${campaignClause ? ' AND campaign = ?' : ''}
-  `).get(store, startDate, endDate, ...campaignArgs) || {};
+    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
+  `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
 
   totalSpend += manualData.spend || 0;
   totalRevenue += manualData.revenue || 0;
