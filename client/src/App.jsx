@@ -1435,7 +1435,7 @@ function DashboardTab({
             country: ad.country || 'ALL',
             spend: ad.spend || 0,
             impressions: ad.impressions || 0,
-            clicks: ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0,
+            clicks: ad.clicks ?? 0,
             add_to_cart: ad.atc || 0,
             conversions: ad.purchases || 0,
             conversion_value: ad.revenue || 0
