@@ -1243,6 +1243,43 @@ export function getMetaAdManagerHierarchy(store, params) {
     `;
     const ads = db.prepare(adQuery).all(store, startDate, endDate);
 
+    const adCountriesQuery = `
+      SELECT
+        campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name, country,
+        MAX(status) as status, MAX(effective_status) as effective_status,
+        MAX(ad_status) as ad_status, MAX(ad_effective_status) as ad_effective_status,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversion_value,
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+      FROM meta_ad_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
+      GROUP BY ad_id, country
+      ORDER BY spend DESC
+    `;
+    const adCountries = db.prepare(adCountriesQuery).all(store, startDate, endDate);
+
+    const adCountryMap = new Map();
+    adCountries.forEach(countryRow => {
+      const countryCode = countryRow.country || 'ALL';
+      const countryInfo = getCountryInfo(countryCode);
+      if (!adCountryMap.has(countryRow.ad_id)) adCountryMap.set(countryRow.ad_id, []);
+      adCountryMap.get(countryRow.ad_id).push({
+        ...countryRow,
+        country: countryCode,
+        countryName: countryInfo?.name || countryCode,
+        countryFlag: countryInfo?.flag || '🌍',
+        ...calculateMetrics(countryRow)
+      });
+    });
+
     // Group ads by adset_id
     const adMap = new Map();
     ads.forEach(ad => {
@@ -1255,6 +1292,7 @@ export function getMetaAdManagerHierarchy(store, params) {
         ad_effective_status: ad.ad_effective_status || 'UNKNOWN',
         isActive: ad.ad_effective_status === 'ACTIVE' || ad.effective_status === 'ACTIVE',
         ...calculateMetrics(ad),
+        countries: adCountryMap.get(ad.ad_id) || [],
         level: 'ad'
       });
     });
@@ -1415,6 +1453,43 @@ export function getMetaAdManagerHierarchy(store, params) {
 
   const ads = db.prepare(adQuery).all(store, startDate, endDate);
 
+  const adCountriesQuery = `
+    SELECT
+      campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name, country,
+      MAX(status) as status, MAX(effective_status) as effective_status,
+      MAX(ad_status) as ad_status, MAX(ad_effective_status) as ad_effective_status,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value,
+      CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+    FROM meta_ad_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
+    GROUP BY ad_id, country
+    ORDER BY spend DESC
+  `;
+
+  const adCountries = db.prepare(adCountriesQuery).all(store, startDate, endDate);
+  const adCountryMap = new Map();
+  adCountries.forEach(countryRow => {
+    const countryCode = countryRow.country || 'ALL';
+    const countryInfo = getCountryInfo(countryCode);
+    if (!adCountryMap.has(countryRow.ad_id)) adCountryMap.set(countryRow.ad_id, []);
+    adCountryMap.get(countryRow.ad_id).push({
+      ...countryRow,
+      country: countryCode,
+      countryName: countryInfo?.name || countryCode,
+      countryFlag: countryInfo?.flag || '🌍',
+      ...calculateMetrics(countryRow)
+    });
+  });
+
   const adsWithMetrics = ads.map(a => ({
     ...a,
     status: a.status || 'UNKNOWN',
@@ -1423,6 +1498,7 @@ export function getMetaAdManagerHierarchy(store, params) {
     ad_effective_status: a.ad_effective_status || 'UNKNOWN',
     isActive: a.ad_effective_status === 'ACTIVE' || a.effective_status === 'ACTIVE',
     ...calculateMetrics(a),
+    countries: adCountryMap.get(a.ad_id) || [],
     level: 'ad'
   }));
 

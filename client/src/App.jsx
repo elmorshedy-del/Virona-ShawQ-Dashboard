@@ -1173,6 +1173,7 @@ function DashboardTab({
   const [expandedStates, setExpandedStates] = useState(new Set());
   const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
+  const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'by-country'
   const countryTrendQuickOptions = [
     { label: '1W', type: 'weeks', value: 1 },
     { label: '2W', type: 'weeks', value: 2 },
@@ -1235,34 +1236,28 @@ function DashboardTab({
     return creativeCampaignOptions.find(c => c.id === selectedCreativeCampaignId) || creativeCampaignOptions[0];
   }, [creativeCampaignOptions, selectedCreativeCampaignId]);
 
-  const creativeRows = useMemo(() => {
-    if (!selectedCreativeCampaign) return [];
-    const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
-    const rows = ads
-      .map((ad, idx) => {
-        const purchases = ad.conversions ?? ad.purchases ?? 0;
-        const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
-        const impressions = ad.impressions || 0;
-        const atc = ad.atc ?? ad.add_to_cart ?? 0;
-        const spend = ad.spend || 0;
-        const aov = purchases > 0 ? revenue / purchases : null;
-        const roas = spend > 0 ? revenue / spend : null;
+  const normalizeCreativeMetrics = useCallback((ad) => {
+    const purchases = ad.conversions ?? ad.purchases ?? 0;
+    const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
+    const impressions = ad.impressions || 0;
+    const atc = ad.atc ?? ad.add_to_cart ?? 0;
+    const spend = ad.spend || 0;
 
-        return {
-          key: ad.ad_id || ad.id || `creative-${idx}`,
-          name: ad.ad_name || ad.name || 'Creative',
-          impressions,
-          atc,
-          purchases,
-          aov,
-          roas
-        };
-      });
+    return {
+      purchases,
+      revenue,
+      impressions,
+      atc,
+      spend,
+      name: ad.ad_name || ad.name || 'Creative'
+    };
+  }, []);
 
+  const sortCreativeRows = useCallback((rows) => {
     const { field, direction } = creativeSortConfig;
     const dir = direction === 'asc' ? 1 : -1;
 
-    return rows.sort((a, b) => {
+    return [...rows].sort((a, b) => {
       const aVal = a[field];
       const bVal = b[field];
 
@@ -1274,7 +1269,242 @@ function DashboardTab({
       const bNum = Number(bVal) || 0;
       return dir * (aNum - bNum);
     });
-  }, [selectedCreativeCampaign, creativeSortConfig]);
+  }, [creativeSortConfig]);
+
+  const creativeAggregatedRows = useMemo(() => {
+    if (!selectedCreativeCampaign) return [];
+    const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
+    const aggregateMap = new Map();
+
+    ads.forEach((ad, idx) => {
+      const key = ad.ad_id || ad.id || ad.ad_name || `creative-${idx}`;
+      const { name } = normalizeCreativeMetrics(ad);
+      const countryEntries = Array.isArray(ad.countries) && ad.countries.length > 0
+        ? ad.countries
+        : [ad];
+
+      const totals = countryEntries.reduce((acc, entry) => {
+        const metrics = normalizeCreativeMetrics(entry);
+        acc.impressions += metrics.impressions;
+        acc.atc += metrics.atc;
+        acc.purchases += metrics.purchases;
+        acc.revenue += metrics.revenue;
+        acc.spend += metrics.spend;
+        return acc;
+      }, { impressions: 0, atc: 0, purchases: 0, revenue: 0, spend: 0 });
+
+      const existing = aggregateMap.get(key) || {
+        key,
+        name,
+        impressions: 0,
+        atc: 0,
+        purchases: 0,
+        revenue: 0,
+        spend: 0
+      };
+
+      aggregateMap.set(key, {
+        ...existing,
+        name,
+        impressions: existing.impressions + totals.impressions,
+        atc: existing.atc + totals.atc,
+        purchases: existing.purchases + totals.purchases,
+        revenue: existing.revenue + totals.revenue,
+        spend: existing.spend + totals.spend
+      });
+    });
+
+    const rows = Array.from(aggregateMap.values()).map(row => ({
+      ...row,
+      aov: row.purchases > 0 ? row.revenue / row.purchases : null,
+      roas: row.spend > 0 ? row.revenue / row.spend : null
+    }));
+
+    return sortCreativeRows(rows);
+  }, [selectedCreativeCampaign, normalizeCreativeMetrics, sortCreativeRows]);
+
+  const creativeCountrySections = useMemo(() => {
+    if (!selectedCreativeCampaign) return [];
+    const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
+    const countryMap = new Map();
+
+    ads.forEach((ad, idx) => {
+      const countryEntries = Array.isArray(ad.countries) && ad.countries.length > 0
+        ? ad.countries
+        : [ad];
+
+      countryEntries.forEach((entry) => {
+        const countryCode = entry.country || 'ALL';
+        const metrics = normalizeCreativeMetrics(entry);
+        const key = entry.ad_id || ad.ad_id || ad.id || ad.ad_name || `creative-${idx}`;
+        const existingSection = countryMap.get(countryCode) || {
+          country: countryCode,
+          flag: countryCodeToFlag(countryCode),
+          rows: [],
+          totals: { purchases: 0, revenue: 0, spend: 0 }
+        };
+
+        const rowData = {
+          key: `${key}-${countryCode}`,
+          name: metrics.name,
+          impressions: metrics.impressions,
+          atc: metrics.atc,
+          purchases: metrics.purchases,
+          revenue: metrics.revenue,
+          spend: metrics.spend
+        };
+
+        existingSection.rows.push(rowData);
+        existingSection.totals = {
+          purchases: existingSection.totals.purchases + metrics.purchases,
+          revenue: existingSection.totals.revenue + metrics.revenue,
+          spend: existingSection.totals.spend + metrics.spend
+        };
+        countryMap.set(countryCode, existingSection);
+      });
+    });
+
+    const sections = Array.from(countryMap.values()).map(section => {
+      const rowsWithDerived = section.rows.map(row => ({
+        ...row,
+        aov: row.purchases > 0 ? row.revenue / row.purchases : null,
+        roas: row.spend > 0 ? row.revenue / row.spend : null
+      }));
+
+      const totals = {
+        ...section.totals,
+        aov: section.totals.purchases > 0 ? section.totals.revenue / section.totals.purchases : null,
+        roas: section.totals.spend > 0 ? section.totals.revenue / section.totals.spend : null
+      };
+
+      return {
+        ...section,
+        totals,
+        rows: sortCreativeRows(rowsWithDerived)
+      };
+    });
+
+    return sections.sort((a, b) => (b.totals.purchases || 0) - (a.totals.purchases || 0));
+  }, [selectedCreativeCampaign, normalizeCreativeMetrics, sortCreativeRows]);
+
+  const renderCreativeTableHeader = () => (
+    <thead>
+      <tr className="text-xs uppercase text-gray-500 tracking-wide bg-gray-50">
+        <th
+          className="px-4 py-3 text-left cursor-pointer select-none"
+          onClick={() => setCreativeSortConfig(prev => ({
+            field: 'purchases',
+            direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
+          }))}
+        >
+          <div className="flex items-center gap-1">
+            Rank
+            {creativeSortConfig.field === 'purchases'
+              ? (creativeSortConfig.direction === 'asc'
+                ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+              : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+          </div>
+        </th>
+        <th
+          className="px-4 py-3 text-left cursor-pointer select-none"
+          onClick={() => setCreativeSortConfig(prev => ({
+            field: 'name',
+            direction: prev.field === 'name' && prev.direction === 'desc' ? 'asc' : 'desc'
+          }))}
+        >
+          <div className="flex items-center gap-1">
+            Creative
+            {creativeSortConfig.field === 'name'
+              ? (creativeSortConfig.direction === 'asc'
+                ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+              : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+          </div>
+        </th>
+        <th
+          className="px-4 py-3 text-right cursor-pointer select-none"
+          onClick={() => setCreativeSortConfig(prev => ({
+            field: 'impressions',
+            direction: prev.field === 'impressions' && prev.direction === 'desc' ? 'asc' : 'desc'
+          }))}
+        >
+          <div className="flex items-center gap-1 justify-end">
+            Impressions
+            {creativeSortConfig.field === 'impressions'
+              ? (creativeSortConfig.direction === 'asc'
+                ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+              : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+          </div>
+        </th>
+        <th
+          className="px-4 py-3 text-right cursor-pointer select-none"
+          onClick={() => setCreativeSortConfig(prev => ({
+            field: 'atc',
+            direction: prev.field === 'atc' && prev.direction === 'desc' ? 'asc' : 'desc'
+          }))}
+        >
+          <div className="flex items-center gap-1 justify-end">
+            Add to Cart
+            {creativeSortConfig.field === 'atc'
+              ? (creativeSortConfig.direction === 'asc'
+                ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+              : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+          </div>
+        </th>
+        <th
+          className="px-4 py-3 text-right cursor-pointer select-none"
+          onClick={() => setCreativeSortConfig(prev => ({
+            field: 'purchases',
+            direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
+          }))}
+        >
+          <div className="flex items-center gap-1 justify-end">
+            Purchases
+            {creativeSortConfig.field === 'purchases'
+              ? (creativeSortConfig.direction === 'asc'
+                ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+              : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+          </div>
+        </th>
+        <th
+          className="px-4 py-3 text-right cursor-pointer select-none"
+          onClick={() => setCreativeSortConfig(prev => ({
+            field: 'aov',
+            direction: prev.field === 'aov' && prev.direction === 'desc' ? 'asc' : 'desc'
+          }))}
+        >
+          <div className="flex items-center gap-1 justify-end">
+            AOV
+            {creativeSortConfig.field === 'aov'
+              ? (creativeSortConfig.direction === 'asc'
+                ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+              : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+          </div>
+        </th>
+        <th
+          className="px-4 py-3 text-right cursor-pointer select-none"
+          onClick={() => setCreativeSortConfig(prev => ({
+            field: 'roas',
+            direction: prev.field === 'roas' && prev.direction === 'desc' ? 'asc' : 'desc'
+          }))}
+        >
+          <div className="flex items-center gap-1 justify-end">
+            ROAS
+            {creativeSortConfig.field === 'roas'
+              ? (creativeSortConfig.direction === 'asc'
+                ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+              : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+          </div>
+        </th>
+      </tr>
+    </thead>
+  );
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -2024,7 +2254,7 @@ function DashboardTab({
 
       {/* Creative performance by campaign */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden mt-6">
-        <div className="p-6 border-b border-gray-100 flex flex-col gap-3">
+        <div className="p-6 border-b border-gray-100 flex flex-col gap-4">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
               <h2 className="text-lg font-semibold">Creatives Performance</h2>
@@ -2044,24 +2274,48 @@ function DashboardTab({
           </div>
 
           {creativeCampaignOptions.length > 0 ? (
-            <div className="flex items-center gap-2 flex-wrap">
-              {creativeCampaignOptions.map((campaign) => {
-                const isActive = campaign.id === selectedCreativeCampaignId;
-                return (
-                  <button
-                    key={campaign.id}
-                    onClick={() => setSelectedCreativeCampaignId(campaign.id)}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors flex items-center gap-2 ${
-                      isActive
-                        ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                    }`}
-                  >
-                    <span>{getCampaignEmoji(campaign.name)}</span>
-                    <span className="truncate max-w-[140px]" title={campaign.name}>{campaign.name}</span>
-                  </button>
-                );
-              })}
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="flex flex-col gap-2 max-h-56 overflow-y-auto">
+                {creativeCampaignOptions.map((campaign) => {
+                  const isActive = campaign.id === selectedCreativeCampaignId;
+                  return (
+                    <button
+                      key={campaign.id}
+                      onClick={() => setSelectedCreativeCampaignId(campaign.id)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors flex items-center gap-2 text-left ${
+                        isActive
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      <span>{getCampaignEmoji(campaign.name)}</span>
+                      <span className="truncate" title={campaign.name}>{campaign.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCreativeViewMode('aggregate')}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+                    creativeViewMode === 'aggregate'
+                      ? 'bg-gray-900 text-white border-gray-900'
+                      : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  Aggregate creatives
+                </button>
+                <button
+                  onClick={() => setCreativeViewMode('by-country')}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+                    creativeViewMode === 'by-country'
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  Subsections by country
+                </button>
+              </div>
             </div>
           ) : (
             <div className="text-sm text-gray-500">
@@ -2071,146 +2325,80 @@ function DashboardTab({
         </div>
 
         <div className="overflow-x-auto">
-          {creativeRows.length > 0 ? (
-            <table className="min-w-full">
-              <thead>
-                <tr className="text-xs uppercase text-gray-500 tracking-wide bg-gray-50">
-                  <th
-                    className="px-4 py-3 text-left cursor-pointer select-none"
-                    onClick={() => setCreativeSortConfig(prev => ({
-                      field: 'purchases',
-                      direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
-                    }))}
-                  >
-                    <div className="flex items-center gap-1">
-                      Rank
-                      {creativeSortConfig.field === 'purchases'
-                        ? (creativeSortConfig.direction === 'asc'
-                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
-                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
-                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                    </div>
-                  </th>
-                  <th
-                    className="px-4 py-3 text-left cursor-pointer select-none"
-                    onClick={() => setCreativeSortConfig(prev => ({
-                      field: 'name',
-                      direction: prev.field === 'name' && prev.direction === 'desc' ? 'asc' : 'desc'
-                    }))}
-                  >
-                    <div className="flex items-center gap-1">
-                      Creative
-                      {creativeSortConfig.field === 'name'
-                        ? (creativeSortConfig.direction === 'asc'
-                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
-                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
-                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                    </div>
-                  </th>
-                  <th
-                    className="px-4 py-3 text-right cursor-pointer select-none"
-                    onClick={() => setCreativeSortConfig(prev => ({
-                      field: 'impressions',
-                      direction: prev.field === 'impressions' && prev.direction === 'desc' ? 'asc' : 'desc'
-                    }))}
-                  >
-                    <div className="flex items-center gap-1 justify-end">
-                      Impressions
-                      {creativeSortConfig.field === 'impressions'
-                        ? (creativeSortConfig.direction === 'asc'
-                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
-                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
-                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                    </div>
-                  </th>
-                  <th
-                    className="px-4 py-3 text-right cursor-pointer select-none"
-                    onClick={() => setCreativeSortConfig(prev => ({
-                      field: 'atc',
-                      direction: prev.field === 'atc' && prev.direction === 'desc' ? 'asc' : 'desc'
-                    }))}
-                  >
-                    <div className="flex items-center gap-1 justify-end">
-                      Add to Cart
-                      {creativeSortConfig.field === 'atc'
-                        ? (creativeSortConfig.direction === 'asc'
-                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
-                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
-                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                    </div>
-                  </th>
-                  <th
-                    className="px-4 py-3 text-right cursor-pointer select-none"
-                    onClick={() => setCreativeSortConfig(prev => ({
-                      field: 'purchases',
-                      direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
-                    }))}
-                  >
-                    <div className="flex items-center gap-1 justify-end">
-                      Purchases
-                      {creativeSortConfig.field === 'purchases'
-                        ? (creativeSortConfig.direction === 'asc'
-                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
-                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
-                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                    </div>
-                  </th>
-                  <th
-                    className="px-4 py-3 text-right cursor-pointer select-none"
-                    onClick={() => setCreativeSortConfig(prev => ({
-                      field: 'aov',
-                      direction: prev.field === 'aov' && prev.direction === 'desc' ? 'asc' : 'desc'
-                    }))}
-                  >
-                    <div className="flex items-center gap-1 justify-end">
-                      AOV
-                      {creativeSortConfig.field === 'aov'
-                        ? (creativeSortConfig.direction === 'asc'
-                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
-                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
-                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                    </div>
-                  </th>
-                  <th
-                    className="px-4 py-3 text-right cursor-pointer select-none"
-                    onClick={() => setCreativeSortConfig(prev => ({
-                      field: 'roas',
-                      direction: prev.field === 'roas' && prev.direction === 'desc' ? 'asc' : 'desc'
-                    }))}
-                  >
-                    <div className="flex items-center gap-1 justify-end">
-                      ROAS
-                      {creativeSortConfig.field === 'roas'
-                        ? (creativeSortConfig.direction === 'asc'
-                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
-                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
-                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                    </div>
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {creativeRows.map((creative, idx) => (
-                  <tr key={creative.key} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm text-gray-500">{idx + 1}</td>
-                    <td className="px-4 py-3 text-sm font-semibold text-gray-900 max-w-xs truncate" title={creative.name}>
-                      {creative.name}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.impressions)}</td>
-                    <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
-                    <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
-                    <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
-                    <td className="px-4 py-3 text-right text-sm text-green-700 font-semibold">{renderMetric(creative.roas, 'roas', 2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {creativeViewMode === 'aggregate' ? (
+            creativeAggregatedRows.length > 0 ? (
+              <table className="min-w-full">
+                {renderCreativeTableHeader()}
+                <tbody className="divide-y divide-gray-100">
+                  {creativeAggregatedRows.map((creative, idx) => (
+                    <tr key={creative.key} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 text-sm text-gray-500">{idx + 1}</td>
+                      <td className="px-4 py-3 text-sm font-semibold text-gray-900 max-w-xs truncate" title={creative.name}>
+                        {creative.name}
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.impressions)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
+                      <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
+                      <td className="px-4 py-3 text-right text-sm text-green-700 font-semibold">{renderMetric(creative.roas, 'roas', 2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="p-6 text-sm text-gray-500">
+                {creativeCampaignOptions.length === 0
+                  ? 'No campaign creatives to display.'
+                  : 'No creatives found for this campaign.'}
+              </div>
+            )
           ) : (
-            <div className="p-6 text-sm text-gray-500">
-              {creativeCampaignOptions.length === 0
-                ? 'No campaign creatives to display.'
-                : 'No creatives found for this campaign.'}
-            </div>
+            creativeCountrySections.length > 0 ? (
+              <div className="divide-y divide-gray-100">
+                {creativeCountrySections.map((section) => (
+                  <div key={`country-${section.country}`} className="p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl">{section.flag}</span>
+                        <div>
+                          <div className="text-sm font-semibold uppercase text-gray-700">{section.country}</div>
+                          <div className="text-xs text-gray-500">Creatives in this country</div>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                        <span>Purchases: <span className="font-semibold text-gray-900">{renderNumber(section.totals.purchases)}</span></span>
+                        <span>AOV: <span className="font-semibold text-gray-900">{renderMetric(section.totals.aov, 'currency')}</span></span>
+                        <span>ROAS: <span className="font-semibold text-green-700">{renderMetric(section.totals.roas, 'roas', 2)}</span></span>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full">
+                        {renderCreativeTableHeader()}
+                        <tbody className="divide-y divide-gray-100">
+                          {section.rows.map((creative, idx) => (
+                            <tr key={creative.key} className="hover:bg-gray-50">
+                              <td className="px-4 py-3 text-sm text-gray-500">{idx + 1}</td>
+                              <td className="px-4 py-3 text-sm font-semibold text-gray-900 max-w-xs truncate" title={creative.name}>
+                                {creative.name}
+                              </td>
+                              <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.impressions)}</td>
+                              <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
+                              <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
+                              <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
+                              <td className="px-4 py-3 text-right text-sm text-green-700 font-semibold">{renderMetric(creative.roas, 'roas', 2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-6 text-sm text-gray-500">
+                No country-level creatives found for this campaign.
+              </div>
+            )
           )}
         </div>
       </div>
