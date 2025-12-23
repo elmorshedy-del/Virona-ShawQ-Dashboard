@@ -1167,6 +1167,7 @@ function DashboardTab({
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
   const [showCountryTrends, setShowCountryTrends] = useState(false);
   const [showCampaignTrends, setShowCampaignTrends] = useState(false);
+  const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
@@ -1423,6 +1424,91 @@ function DashboardTab({
     const num = Number(value);
     return Number.isFinite(num) ? `${num.toFixed(decimals)}×` : '—';
   };
+
+  const getCampaignEmoji = useCallback((name = '') => {
+    const lower = name.toLowerCase();
+    if (lower.includes('remarket') || lower.includes('retarget')) return '🎯';
+    if (lower.includes('prospect') || lower.includes('cold')) return '🧭';
+    if (lower.includes('brand')) return '✨';
+    if (lower.includes('lookalike')) return '🪞';
+    if (lower.includes('broad')) return '🌐';
+    return '📣';
+  }, []);
+
+  const creativeCampaignOptions = useMemo(() => {
+    if (!Array.isArray(metaAdManagerData)) return [];
+    return metaAdManagerData.map((campaign) => ({
+      id: campaign.campaign_id,
+      name: campaign.campaign_name || 'Untitled Campaign',
+      emoji: getCampaignEmoji(campaign.campaign_name || '')
+    }));
+  }, [metaAdManagerData, getCampaignEmoji]);
+
+  useEffect(() => {
+    if (creativeCampaignOptions.length === 0) {
+      if (selectedCreativeCampaignId !== null) {
+        setSelectedCreativeCampaignId(null);
+      }
+      return;
+    }
+
+    const hasSelected = creativeCampaignOptions.some(
+      (option) => option.id === selectedCreativeCampaignId
+    );
+
+    if (!hasSelected) {
+      setSelectedCreativeCampaignId(creativeCampaignOptions[0].id);
+    }
+  }, [creativeCampaignOptions, selectedCreativeCampaignId]);
+
+  const selectedCreativeCampaign = useMemo(
+    () => creativeCampaignOptions.find((option) => option.id === selectedCreativeCampaignId),
+    [creativeCampaignOptions, selectedCreativeCampaignId]
+  );
+
+  const creativeRows = useMemo(() => {
+    if (!Array.isArray(metaAdManagerData) || !selectedCreativeCampaignId) return [];
+
+    const campaign = metaAdManagerData.find(
+      (c) => c.campaign_id === selectedCreativeCampaignId
+    );
+
+    if (!campaign) return [];
+
+    const ads = (campaign.adsets || []).flatMap((adset) => adset.ads || []);
+
+    const rows = ads.map((ad, index) => {
+      const purchases = Number(ad?.conversions) || 0;
+      const impressions = Number(ad?.impressions) || 0;
+      const atcCount = Number(ad?.atc ?? ad?.add_to_cart ?? ad?.addToCart) || 0;
+      const spend = Number(ad?.spend) || 0;
+      const revenue = Number(ad?.conversion_value ?? ad?.revenue) || 0;
+      const aov = purchases > 0 ? revenue / purchases : null;
+      const roas = spend > 0 ? revenue / spend : null;
+
+      return {
+        id: ad?.ad_id || ad?.id || `${campaign.campaign_id}-ad-${index}`,
+        name: ad?.ad_name || 'Untitled Creative',
+        purchases,
+        impressions,
+        atc: atcCount,
+        aov,
+        roas,
+        revenue
+      };
+    });
+
+    const ranked = rows
+      .sort((a, b) => {
+        if (b.purchases !== a.purchases) return b.purchases - a.purchases;
+        const aRoas = Number.isFinite(a.roas) ? a.roas : -Infinity;
+        const bRoas = Number.isFinite(b.roas) ? b.roas : -Infinity;
+        return bRoas - aRoas;
+      })
+      .map((row, idx) => ({ ...row, rank: idx + 1 }));
+
+    return ranked;
+  }, [metaAdManagerData, selectedCreativeCampaignId]);
 
   // Helper: Render metric with null handling
   const renderMetric = (value, formatter = 'number', decimals = 0) => {
@@ -1936,6 +2022,103 @@ function DashboardTab({
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Creative performance table (ranked) */}
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden mt-6">
+        <div className="p-6 border-b border-gray-100">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="text-lg font-semibold">Creative Performance</h2>
+              <p className="text-sm text-gray-500">
+                Ranked creatives by campaign with impressions, adds to cart, purchases, AOV, and ROAS.
+              </p>
+            </div>
+            {selectedCreativeCampaign && (
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <span className="text-xl">{selectedCreativeCampaign.emoji}</span>
+                <span className="font-semibold max-w-[240px] truncate" title={selectedCreativeCampaign.name}>
+                  {selectedCreativeCampaign.name}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {creativeCampaignOptions.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2 mt-4">
+              {creativeCampaignOptions.map((option) => {
+                const isActive = option.id === selectedCreativeCampaignId;
+                return (
+                  <button
+                    key={option.id}
+                    onClick={() => setSelectedCreativeCampaignId(option.id)}
+                    className={`px-3 py-1.5 rounded-full border text-sm flex items-center gap-2 transition-colors ${
+                      isActive
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                    title={option.name}
+                  >
+                    <span>{option.emoji}</span>
+                    <span className="truncate max-w-[140px]">{option.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500 mt-3">
+              Connect Meta Ads data to see creative performance by campaign.
+            </p>
+          )}
+        </div>
+
+        {creativeRows.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full">
+              <thead>
+                <tr className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wide">
+                  <th className="px-4 py-3 text-left">Rank</th>
+                  <th className="px-4 py-3 text-left">Creative</th>
+                  <th className="px-4 py-3 text-right">Impressions</th>
+                  <th className="px-4 py-3 text-right">Add to Cart</th>
+                  <th className="px-4 py-3 text-right">Purchases</th>
+                  <th className="px-4 py-3 text-right">AOV</th>
+                  <th className="px-4 py-3 text-right">ROAS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {creativeRows.map((row) => (
+                  <tr key={row.id} className="border-b border-gray-100 text-sm">
+                    <td className="px-4 py-3 text-gray-500">{row.rank}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col">
+                        <span className="font-medium text-gray-900 truncate" title={row.name}>
+                          {row.name}
+                        </span>
+                        {row.revenue > 0 && (
+                          <span className="text-[11px] text-gray-500">
+                            Revenue: {renderCurrency(row.revenue)}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-700">{renderNumber(row.impressions)}</td>
+                    <td className="px-4 py-3 text-right text-gray-700">{renderNumber(row.atc)}</td>
+                    <td className="px-4 py-3 text-right text-gray-900 font-semibold">{renderNumber(row.purchases)}</td>
+                    <td className="px-4 py-3 text-right text-gray-700">{renderCurrency(row.aov, 2)}</td>
+                    <td className="px-4 py-3 text-right text-green-600 font-semibold">{renderRoas(row.roas)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="p-6 text-sm text-gray-500">
+            {creativeCampaignOptions.length > 0
+              ? 'No creatives found for this campaign yet.'
+              : 'No creative data available.'}
+          </div>
+        )}
       </div>
 
       {/* Country order trends (collapsible) */}
