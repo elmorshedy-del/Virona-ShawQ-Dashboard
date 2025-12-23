@@ -1171,6 +1171,8 @@ function DashboardTab({
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
   const [expandedStates, setExpandedStates] = useState(new Set());
+  const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
+  const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const countryTrendQuickOptions = [
     { label: '1W', type: 'weeks', value: 1 },
     { label: '2W', type: 'weeks', value: 2 },
@@ -1191,6 +1193,88 @@ function DashboardTab({
     { key: 'cac', label: 'CAC', value: overview.cac, change: overview.cacChange, format: 'currency', color: '#ef4444' },
     { key: 'roas', label: 'ROAS', value: overview.roas, change: overview.roasChange, format: 'roas', color: '#10b981' },
   ];
+
+  const getCampaignEmoji = (name = '') => {
+    const n = name.toLowerCase();
+    if (n.includes('remarket') || n.includes('retarget')) return '🎯';
+    if (n.includes('prospect') || n.includes('cold')) return '🚀';
+    if (n.includes('brand')) return '🌟';
+    if (n.includes('sale') || n.includes('discount')) return '🏷️';
+    if (n.includes('test')) return '🧪';
+    if (n.includes('video')) return '🎥';
+    return '📣';
+  };
+
+  const creativeCampaignOptions = useMemo(() => {
+    if (!Array.isArray(metaAdManagerData)) return [];
+    return metaAdManagerData
+      .map(campaign => {
+        const id = campaign.campaign_id || campaign.campaignId;
+        const name = campaign.campaign_name || campaign.campaignName;
+        const ads = (campaign.adsets || []).flatMap(adset => adset?.ads || []);
+        return { id, name, ads };
+      })
+      .filter(c => c.id && c.name && Array.isArray(c.ads) && c.ads.length > 0);
+  }, [metaAdManagerData]);
+
+  useEffect(() => {
+    if (creativeCampaignOptions.length === 0) {
+      if (selectedCreativeCampaignId !== null) {
+        setSelectedCreativeCampaignId(null);
+      }
+      return;
+    }
+    const exists = creativeCampaignOptions.some(c => c.id === selectedCreativeCampaignId);
+    if (!exists) {
+      setSelectedCreativeCampaignId(creativeCampaignOptions[0].id);
+    }
+  }, [creativeCampaignOptions, selectedCreativeCampaignId]);
+
+  const selectedCreativeCampaign = useMemo(() => {
+    if (creativeCampaignOptions.length === 0) return null;
+    return creativeCampaignOptions.find(c => c.id === selectedCreativeCampaignId) || creativeCampaignOptions[0];
+  }, [creativeCampaignOptions, selectedCreativeCampaignId]);
+
+  const creativeRows = useMemo(() => {
+    if (!selectedCreativeCampaign) return [];
+    const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
+    const rows = ads
+      .map((ad, idx) => {
+        const purchases = ad.conversions ?? ad.purchases ?? 0;
+        const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
+        const impressions = ad.impressions || 0;
+        const atc = ad.atc ?? ad.add_to_cart ?? 0;
+        const spend = ad.spend || 0;
+        const aov = purchases > 0 ? revenue / purchases : null;
+        const roas = spend > 0 ? revenue / spend : null;
+
+        return {
+          key: ad.ad_id || ad.id || `creative-${idx}`,
+          name: ad.ad_name || ad.name || 'Creative',
+          impressions,
+          atc,
+          purchases,
+          aov,
+          roas
+        };
+      });
+
+    const { field, direction } = creativeSortConfig;
+    const dir = direction === 'asc' ? 1 : -1;
+
+    return rows.sort((a, b) => {
+      const aVal = a[field];
+      const bVal = b[field];
+
+      if (typeof aVal === 'string' || typeof bVal === 'string') {
+        return dir * (String(aVal || '').localeCompare(String(bVal || '')));
+      }
+
+      const aNum = Number(aVal) || 0;
+      const bNum = Number(bVal) || 0;
+      return dir * (aNum - bNum);
+    });
+  }, [selectedCreativeCampaign, creativeSortConfig]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -1935,6 +2019,199 @@ function DashboardTab({
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Creative performance by campaign */}
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden mt-6">
+        <div className="p-6 border-b border-gray-100 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="text-lg font-semibold">Creatives Performance</h2>
+              <p className="text-sm text-gray-500">
+                Ranked by purchases with AOV and ROAS for each creative.
+              </p>
+            </div>
+            {selectedCreativeCampaign && (
+              <div className="text-sm text-gray-500 flex items-center gap-2">
+                <span>Campaign:</span>
+                <span className="inline-flex items-center px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 font-semibold">
+                  <span className="mr-1">{getCampaignEmoji(selectedCreativeCampaign.name)}</span>
+                  {selectedCreativeCampaign.name}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {creativeCampaignOptions.length > 0 ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              {creativeCampaignOptions.map((campaign) => {
+                const isActive = campaign.id === selectedCreativeCampaignId;
+                return (
+                  <button
+                    key={campaign.id}
+                    onClick={() => setSelectedCreativeCampaignId(campaign.id)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors flex items-center gap-2 ${
+                      isActive
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <span>{getCampaignEmoji(campaign.name)}</span>
+                    <span className="truncate max-w-[140px]" title={campaign.name}>{campaign.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-sm text-gray-500">
+              No creatives available. Switch to Meta Ad Manager view to load campaign data.
+            </div>
+          )}
+        </div>
+
+        <div className="overflow-x-auto">
+          {creativeRows.length > 0 ? (
+            <table className="min-w-full">
+              <thead>
+                <tr className="text-xs uppercase text-gray-500 tracking-wide bg-gray-50">
+                  <th
+                    className="px-4 py-3 text-left cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'purchases',
+                      direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1">
+                      Rank
+                      {creativeSortConfig.field === 'purchases'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-left cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'name',
+                      direction: prev.field === 'name' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1">
+                      Creative
+                      {creativeSortConfig.field === 'name'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'impressions',
+                      direction: prev.field === 'impressions' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Impressions
+                      {creativeSortConfig.field === 'impressions'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'atc',
+                      direction: prev.field === 'atc' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Add to Cart
+                      {creativeSortConfig.field === 'atc'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'purchases',
+                      direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Purchases
+                      {creativeSortConfig.field === 'purchases'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'aov',
+                      direction: prev.field === 'aov' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      AOV
+                      {creativeSortConfig.field === 'aov'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'roas',
+                      direction: prev.field === 'roas' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      ROAS
+                      {creativeSortConfig.field === 'roas'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {creativeRows.map((creative, idx) => (
+                  <tr key={creative.key} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 text-sm text-gray-500">{idx + 1}</td>
+                    <td className="px-4 py-3 text-sm font-semibold text-gray-900 max-w-xs truncate" title={creative.name}>
+                      {creative.name}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.impressions)}</td>
+                    <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
+                    <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
+                    <td className="px-4 py-3 text-right text-sm text-green-700 font-semibold">{renderMetric(creative.roas, 'roas', 2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="p-6 text-sm text-gray-500">
+              {creativeCampaignOptions.length === 0
+                ? 'No campaign creatives to display.'
+                : 'No creatives found for this campaign.'}
+            </div>
+          )}
         </div>
       </div>
 
