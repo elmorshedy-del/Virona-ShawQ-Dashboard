@@ -170,6 +170,9 @@ export default function App() {
 
   // Include inactive campaigns/adsets/ads toggle (default: ACTIVE only)
   const [includeInactive, setIncludeInactive] = useState(false);
+  // Campaign scope selector
+  const [selectedCampaignId, setSelectedCampaignId] = useState('');
+  const [campaignOptions, setCampaignOptions] = useState([]);
 
   const diagnosticsCampaignOptions = useMemo(() => {
     if (!Array.isArray(metaAdManagerData)) return [];
@@ -186,6 +189,11 @@ export default function App() {
   }, [metaAdManagerData]);
 
   const store = STORES[currentStore];
+  const selectedCampaignOption = useMemo(
+    () => campaignOptions.find((c) => c.campaignId === selectedCampaignId) || null,
+    [campaignOptions, selectedCampaignId]
+  );
+  const campaignScopeLabel = selectedCampaignOption?.campaignName || 'All Campaigns';
 
   const renderStoreAvatar = (storeId) => {
     if (storeId === 'vironax') {
@@ -265,6 +273,21 @@ export default function App() {
     }));
   }, [currentStore]);
 
+  // Reset campaign scope when switching stores
+  useEffect(() => {
+    setSelectedCampaignId('');
+    setCampaignOptions([]);
+  }, [currentStore]);
+
+  // Ensure campaign selection remains valid as options change
+  useEffect(() => {
+    if (!selectedCampaignId) return;
+    const exists = campaignOptions.some((c) => c.campaignId === selectedCampaignId);
+    if (!exists && campaignOptions.length > 0) {
+      setSelectedCampaignId('');
+    }
+  }, [campaignOptions, selectedCampaignId]);
+
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -277,6 +300,12 @@ export default function App() {
       });
       const countryTrendParams = new URLSearchParams({ store: currentStore });
       const campaignTrendParams = new URLSearchParams({ store: currentStore });
+      if (selectedCampaignId) {
+        params.set('campaignId', selectedCampaignId);
+        budgetParams.set('campaignId', selectedCampaignId);
+        countryTrendParams.set('campaignId', selectedCampaignId);
+        campaignTrendParams.set('campaignId', selectedCampaignId);
+      }
       const applyDashboardRange = (targetParams) => {
         if (dateRange.type === 'custom') {
           targetParams.set('startDate', dateRange.start);
@@ -396,6 +425,25 @@ export default function App() {
       setManualOrders(Array.isArray(orders) ? orders : []);
       setManualSpendOverrides(Array.isArray(spendOverrides) ? spendOverrides : []);
 
+      const dashCampaigns = Array.isArray(dashData?.campaigns) ? dashData.campaigns : [];
+      setCampaignOptions((prev) => {
+        const map = new Map();
+        const addCampaign = (campaign) => {
+          const id = campaign?.campaignId || campaign?.campaign_id || campaign?.id;
+          const name = campaign?.campaignName || campaign?.campaign_name || campaign?.name;
+          if (id && name) {
+            map.set(id, { campaignId: id, campaignName: name });
+          }
+        };
+
+        prev.forEach(addCampaign);
+        dashCampaigns.forEach(addCampaign);
+
+        return Array.from(map.values())
+          .filter((c) => c.campaignId && c.campaignName)
+          .sort((a, b) => a.campaignName.localeCompare(b.campaignName));
+      });
+
       const safeCountries = (Array.isArray(countries) && countries.length > 0)
         ? countries.map(country => ({ ...country, flag: country.flag || countryCodeToFlag(country.code) }))
         : MASTER_COUNTRIES_WITH_FLAGS;
@@ -466,7 +514,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange]);
+  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange, selectedCampaignId]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -496,6 +544,10 @@ export default function App() {
           params.set(dateRange.type, dateRange.value);
         }
 
+        if (selectedCampaignId) {
+          params.set('campaignId', selectedCampaignId);
+        }
+
         const endpoint = metaBreakdown === 'age_gender'
           ? `${API_BASE}/analytics/campaigns/by-age-gender?${params}`
           : `${API_BASE}/analytics/campaigns/by-${metaBreakdown}?${params}`;
@@ -508,7 +560,7 @@ export default function App() {
     }
 
     loadBreakdown();
-  }, [metaBreakdown, currentStore, dateRange, storeLoaded]);
+  }, [metaBreakdown, currentStore, dateRange, storeLoaded, selectedCampaignId]);
 
   // Load Meta Ad Manager hierarchy data
   useEffect(() => {
@@ -536,6 +588,10 @@ export default function App() {
           params.set('includeInactive', 'true');
         }
 
+        if (selectedCampaignId) {
+          params.set('campaignId', selectedCampaignId);
+        }
+
         const data = await fetch(`${API_BASE}/analytics/meta-ad-manager?${params}`).then(r => r.json());
         setMetaAdManagerData(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
       } catch (error) {
@@ -545,7 +601,7 @@ export default function App() {
     }
 
     loadMetaAdManager();
-  }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded, includeInactive]);
+  }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded, includeInactive, selectedCampaignId]);
 
   // Load funnel diagnostics data
   useEffect(() => {
@@ -967,8 +1023,25 @@ export default function App() {
             )}
           </div>
 
-          <div className="ml-auto text-sm text-gray-500">
-            Showing: <strong>{getDateRangeLabel()}</strong>
+          <div className="ml-auto flex items-center gap-3 text-sm text-gray-500 flex-wrap">
+            <div>
+              Showing: <strong>{getDateRangeLabel()}</strong>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-700">Campaign:</span>
+              <select
+                value={selectedCampaignId}
+                onChange={(e) => setSelectedCampaignId(e.target.value)}
+                className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[180px]"
+              >
+                <option value="">All campaigns</option>
+                {campaignOptions.map((option) => (
+                  <option key={option.campaignId} value={option.campaignId}>
+                    {option.campaignName}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -983,6 +1056,7 @@ export default function App() {
             setMetaBreakdown={setMetaBreakdown}
             metaBreakdownData={metaBreakdownData}
             store={store}
+            campaignScopeLabel={campaignScopeLabel}
             nyTrendData={nyTrendData}
             diagnosticsCampaignOptions={diagnosticsCampaignOptions}
             countryTrends={countryTrends}
@@ -1117,6 +1191,7 @@ function DashboardTab({
   setMetaBreakdown = () => {},
   metaBreakdownData = [],
   store = {},
+  campaignScopeLabel = 'All Campaigns',
   nyTrendData = null,
   countryTrends = [],
   countryTrendsDataSource = '',
@@ -1581,7 +1656,7 @@ function DashboardTab({
   };
 
   const metaOverallRow = {
-    campaignName: 'All Campaigns',
+    campaignName: campaignScopeLabel,
     dimension: 'Overall',
     spend: metaTotals.spend,
     conversionValue: metaTotals.revenue,
@@ -1715,6 +1790,12 @@ function DashboardTab({
 
   return (
     <div className="space-y-6 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <div className="px-3 py-1 bg-white rounded-lg shadow-sm text-sm text-gray-700">
+          Scope: <span className="font-semibold text-gray-900">{campaignScopeLabel}</span>
+        </div>
+      </div>
+
       {/* KPI CARDS */}
       <div className="grid grid-cols-6 gap-4">
         {kpis.map((kpi) => (
