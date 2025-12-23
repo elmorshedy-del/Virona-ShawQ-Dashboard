@@ -1119,6 +1119,55 @@ function calculateMetrics(row) {
   };
 }
 
+function buildAdCountryBreakdown(db, store, startDate, endDate, statusFilter) {
+  const adCountryQuery = `
+    SELECT
+      ad_id,
+      ad_name,
+      adset_id,
+      adset_name,
+      campaign_id,
+      campaign_name,
+      country,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value,
+      CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+    FROM meta_ad_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country IS NOT NULL AND country != '' AND country != 'ALL'${statusFilter}
+    GROUP BY ad_id, country
+    ORDER BY spend DESC
+  `;
+
+  const countryRows = db.prepare(adCountryQuery).all(store, startDate, endDate);
+  const adCountryMap = new Map();
+
+  countryRows.forEach((row) => {
+    const countryInfo = getCountryInfo(row.country);
+    const entry = {
+      ...row,
+      countryName: countryInfo?.name || row.country || 'ALL',
+      countryFlag: countryInfo?.flag || '🌍',
+      ...calculateMetrics(row)
+    };
+
+    if (!adCountryMap.has(row.ad_id)) {
+      adCountryMap.set(row.ad_id, []);
+    }
+
+    adCountryMap.get(row.ad_id).push(entry);
+  });
+
+  return adCountryMap;
+}
+
 // Get hierarchical Meta Ad Manager data with optional breakdown
 // REDESIGNED: Country breakdown now shows as nested rows under each campaign
 export function getMetaAdManagerHierarchy(store, params) {
@@ -1130,6 +1179,7 @@ export function getMetaAdManagerHierarchy(store, params) {
 
   // CRITICAL: For country breakdown, we first get campaign totals, then country breakdowns as nested data
   // This ensures each campaign appears ONCE with countries as expandable nested rows
+  const adCountryMap = buildAdCountryBreakdown(db, store, startDate, endDate, statusFilter);
 
   if (breakdown === 'country') {
     // Get campaign totals (aggregate across all countries)
@@ -1272,7 +1322,10 @@ export function getMetaAdManagerHierarchy(store, params) {
         isActive: adset.adset_effective_status === 'ACTIVE' || adset.effective_status === 'ACTIVE',
         ...calculateMetrics(adset),
         level: 'adset',
-        ads: adMap.get(adset.adset_id) || []
+        ads: (adMap.get(adset.adset_id) || []).map(ad => ({
+          ...ad,
+          countries: adCountryMap.get(ad.ad_id) || []
+        }))
       });
     });
 
@@ -1423,7 +1476,8 @@ export function getMetaAdManagerHierarchy(store, params) {
     ad_effective_status: a.ad_effective_status || 'UNKNOWN',
     isActive: a.ad_effective_status === 'ACTIVE' || a.effective_status === 'ACTIVE',
     ...calculateMetrics(a),
-    level: 'ad'
+    level: 'ad',
+    countries: adCountryMap.get(a.ad_id) || []
   }));
 
   // Helper: Create composite key for matching with breakdown
