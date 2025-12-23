@@ -1197,6 +1197,10 @@ function DashboardTab({
 
   const getCampaignEmoji = (name = '') => {
     const n = name.toLowerCase();
+    if (n.includes('shawq winter')) return '❄️';
+    if (n.includes('shawq uk')) return '🇬🇧';
+    if (n.includes('shawq eu')) return '🇪🇺';
+    if (n.includes('white friday')) return '🤍';
     if (n.includes('remarket') || n.includes('retarget')) return '🎯';
     if (n.includes('prospect') || n.includes('cold')) return '🚀';
     if (n.includes('brand')) return '🌟';
