@@ -1323,6 +1323,7 @@ function DashboardTab({
       const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
       const impressions = ad.impressions || 0;
       const atc = ad.atc ?? ad.add_to_cart ?? 0;
+      const clicks = ad.clicks ?? ad.link_clicks ?? ad.linkClicks ?? ad.click ?? 0;
       const spend = ad.spend || 0;
       const aov = purchases > 0 ? revenue / purchases : null;
       const roas = spend > 0 ? revenue / spend : null;
@@ -1333,7 +1334,9 @@ function DashboardTab({
         name: ad.ad_name || ad.name || 'Creative',
         impressions,
         atc,
+        clicks,
         purchases,
+        ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
         aov,
         roas,
         spend,
@@ -1357,6 +1360,7 @@ function DashboardTab({
           name: ad.name,
           impressions: 0,
           atc: 0,
+          clicks: 0,
           purchases: 0,
           revenue: 0,
           spend: 0
@@ -1366,6 +1370,7 @@ function DashboardTab({
       const group = groups.get(key);
       group.impressions += ad.impressions || 0;
       group.atc += ad.atc || 0;
+      group.clicks += ad.clicks || 0;
       group.purchases += ad.purchases || 0;
       group.revenue += ad.revenue || 0;
       group.spend += ad.spend || 0;
@@ -1373,6 +1378,7 @@ function DashboardTab({
 
     const rows = Array.from(groups.values()).map(row => ({
       ...row,
+      ctr: row.impressions > 0 ? ((row.clicks || 0) / row.impressions) * 100 : null,
       aov: row.purchases > 0 ? row.revenue / row.purchases : null,
       roas: row.spend > 0 ? row.revenue / row.spend : null
     }));
@@ -1443,6 +1449,7 @@ function DashboardTab({
         const revenue = countryEntry.conversion_value ?? countryEntry.purchase_value ?? 0;
         const impressions = countryEntry.impressions || 0;
         const atc = countryEntry.add_to_cart ?? countryEntry.atc ?? 0;
+        const clicks = countryEntry.clicks ?? countryEntry.link_clicks ?? countryEntry.linkClicks ?? 0;
         const spend = countryEntry.spend || 0;
         const aov = purchases > 0 ? revenue / purchases : null;
         const roas = spend > 0 ? revenue / spend : null;
@@ -1455,8 +1462,10 @@ function DashboardTab({
           key: `${ad.key}-${code}-${idx}`,
           name: ad.name,
           impressions,
+          clicks,
           atc,
           purchases,
+          ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
           aov,
           roas
         });
@@ -2368,6 +2377,22 @@ function DashboardTab({
                   <th
                     className="px-4 py-3 text-right cursor-pointer select-none"
                     onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'ctr',
+                      direction: prev.field === 'ctr' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      CTR
+                      {creativeSortConfig.field === 'ctr'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
                       field: 'atc',
                       direction: prev.field === 'atc' && prev.direction === 'desc' ? 'asc' : 'desc'
                     }))}
@@ -2440,6 +2465,7 @@ function DashboardTab({
                         {creative.name}
                       </td>
                       <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.impressions)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.ctr, 'percent', 2)}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
                       <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
@@ -2452,7 +2478,7 @@ function DashboardTab({
                   {creativeCountrySections.map((section) => (
                     <Fragment key={section.code}>
                       <tr className="bg-gray-50">
-                        <td colSpan={7} className="px-4 py-3 text-xs font-semibold text-gray-600">
+                        <td colSpan={8} className="px-4 py-3 text-xs font-semibold text-gray-600">
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               <span className="text-lg">{section.flag}</span>
@@ -2469,6 +2495,7 @@ function DashboardTab({
                             {creative.name}
                           </td>
                           <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.impressions)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.ctr, 'percent', 2)}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
                           <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
