@@ -1172,6 +1172,7 @@ function DashboardTab({
   const [expandedCountries, setExpandedCountries] = useState(new Set());
   const [expandedStates, setExpandedStates] = useState(new Set());
   const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
+  const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const countryTrendQuickOptions = [
     { label: '1W', type: 'weeks', value: 1 },
     { label: '2W', type: 'weeks', value: 2 },
@@ -1237,7 +1238,7 @@ function DashboardTab({
   const creativeRows = useMemo(() => {
     if (!selectedCreativeCampaign) return [];
     const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
-    return ads
+    const rows = ads
       .map((ad, idx) => {
         const purchases = ad.conversions ?? ad.purchases ?? 0;
         const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
@@ -1256,9 +1257,24 @@ function DashboardTab({
           aov,
           roas
         };
-      })
-      .sort((a, b) => (b.purchases || 0) - (a.purchases || 0));
-  }, [selectedCreativeCampaign]);
+      });
+
+    const { field, direction } = creativeSortConfig;
+    const dir = direction === 'asc' ? 1 : -1;
+
+    return rows.sort((a, b) => {
+      const aVal = a[field];
+      const bVal = b[field];
+
+      if (typeof aVal === 'string' || typeof bVal === 'string') {
+        return dir * (String(aVal || '').localeCompare(String(bVal || '')));
+      }
+
+      const aNum = Number(aVal) || 0;
+      const bNum = Number(bVal) || 0;
+      return dir * (aNum - bNum);
+    });
+  }, [selectedCreativeCampaign, creativeSortConfig]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -2059,13 +2075,118 @@ function DashboardTab({
             <table className="min-w-full">
               <thead>
                 <tr className="text-xs uppercase text-gray-500 tracking-wide bg-gray-50">
-                  <th className="px-4 py-3 text-left">Rank</th>
-                  <th className="px-4 py-3 text-left">Creative</th>
-                  <th className="px-4 py-3 text-right">Impressions</th>
-                  <th className="px-4 py-3 text-right">Add to Cart</th>
-                  <th className="px-4 py-3 text-right">Purchases</th>
-                  <th className="px-4 py-3 text-right">AOV</th>
-                  <th className="px-4 py-3 text-right">ROAS</th>
+                  <th
+                    className="px-4 py-3 text-left cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'purchases',
+                      direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1">
+                      Rank
+                      {creativeSortConfig.field === 'purchases'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-left cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'name',
+                      direction: prev.field === 'name' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1">
+                      Creative
+                      {creativeSortConfig.field === 'name'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'impressions',
+                      direction: prev.field === 'impressions' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Impressions
+                      {creativeSortConfig.field === 'impressions'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'atc',
+                      direction: prev.field === 'atc' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Add to Cart
+                      {creativeSortConfig.field === 'atc'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'purchases',
+                      direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Purchases
+                      {creativeSortConfig.field === 'purchases'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'aov',
+                      direction: prev.field === 'aov' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      AOV
+                      {creativeSortConfig.field === 'aov'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'roas',
+                      direction: prev.field === 'roas' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      ROAS
+                      {creativeSortConfig.field === 'roas'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
