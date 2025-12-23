@@ -26,6 +26,12 @@ function NotificationRow({
   // Determine store logo based on notification.store
   const storeLogo = notification.store === 'shawq' ? '/shawq-logo.svg' : '/virona-logo.svg';
   const storeLabel = notification.store === 'shawq' ? 'Shawq' : 'Virona';
+  const campaignName = notification?.metadata?.campaign_name
+    || notification?.metadata?.campaignName
+    || notification?.metadata?.campaign
+    || notification?.metadata?.campaign_id
+    || notification?.metadata?.campaignId;
+  const showCampaignDetails = notification.store === 'shawq' && notification.type === 'order' && campaignName;
 
   return (
     <div 
@@ -49,11 +55,11 @@ function NotificationRow({
           <p className={`text-sm ${!notification.is_read ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
             {formatNotificationMessage(notification)}
           </p>
-          
+
           {/* Campaign source - smaller font */}
-          {notification.metadata?.campaign_name && (
-            <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={notification.metadata.campaign_name}>
-              📣 {notification.metadata.campaign_name}
+          {showCampaignDetails && (
+            <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={campaignName}>
+              🎯 Campaign: {campaignName}
             </p>
           )}
           
