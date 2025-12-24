@@ -73,6 +73,14 @@ function getActionValue(actions, type) {
   return action ? parseFloat(action.value) : 0;
 }
 
+// Helper: Extract numeric metric from Meta arrays or scalar fields
+function getMetricValue(value) {
+  if (Array.isArray(value)) {
+    return value.reduce((sum, entry) => sum + (parseFloat(entry?.value) || 0), 0);
+  }
+  return parseFloat(value || 0);
+}
+
 // Helper: Format date as YYYY-MM-DD
 function formatDate(date) {
   return date.toISOString().split('T')[0];
@@ -335,7 +343,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
   // Define fields based on level
   // Include inline_link_clicks and cost_per_inline_link_click for proper Link Clicks and CPC metrics
-  let fields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click';
+  let fields = 'spend,impressions,clicks,reach,frequency,actions,action_values,inline_link_clicks,outbound_clicks,cost_per_inline_link_click';
   if (level === 'campaign') {
     fields = 'campaign_name,campaign_id,' + fields;
   } else if (level === 'adset') {
@@ -425,14 +433,14 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         spend, impressions, clicks, reach,
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
-        inline_link_clicks, cost_per_inline_link_click,
+        inline_link_clicks, outbound_clicks, cost_per_inline_link_click, frequency,
         status, effective_status, ad_status, ad_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @ad_id, @ad_name, @country,
         @spend, @impressions, @clicks, @reach,
         @lpv, @atc, @checkout,
         @conversions, @conversion_value,
-        @inline_link_clicks, @cost_per_inline_link_click,
+        @inline_link_clicks, @outbound_clicks, @cost_per_inline_link_click, @frequency,
         @status, @effective_status, @ad_status, @ad_effective_status
       )
     `);
@@ -467,9 +475,11 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
       // Extract inline_link_clicks - Meta returns this as a single value
       const inlineLinkClicks = parseInt(row.inline_link_clicks || 0);
+      const outboundClicks = Math.round(getMetricValue(row.outbound_clicks));
       // cost_per_inline_link_click comes directly from Meta API (already calculated)
       // Apply currency rate to the cost
       const costPerInlineLinkClick = parseFloat(row.cost_per_inline_link_click || 0) * rate;
+      const frequency = parseFloat(row.frequency || 0);
 
       const data = {
         store: store,
@@ -487,7 +497,9 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         conversions: parseInt(purchases),
         conversion_value: parseFloat(revenue || 0) * rate,
         inline_link_clicks: inlineLinkClicks,
+        outbound_clicks: outboundClicks,
         cost_per_inline_link_click: costPerInlineLinkClick,
+        frequency,
         status: campaignStatus,
         effective_status: campaignEffectiveStatus
       };
