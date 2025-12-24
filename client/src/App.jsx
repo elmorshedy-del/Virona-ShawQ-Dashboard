@@ -1471,9 +1471,13 @@ function DashboardTab({
       const purchases = ad.conversions ?? ad.purchases ?? 0;
       const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
       const impressions = ad.impressions || 0;
-      const clicks = ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0;
-      const lpv = ad.landing_page_views ?? ad.lpv ?? 0;
-      const outboundClicks = ad.outbound_clicks ?? ad.outbound_clicks_click ?? 0;
+      const rawClicks = toNumber(ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0);
+      const rawLpv = toNumber(ad.landing_page_views ?? ad.lpv ?? 0);
+      const lpvRatio = toNumber(ad.landing_page_view_per_link_click);
+      const lpvFromRatio = lpvRatio > 0 && rawClicks > 0 ? lpvRatio * rawClicks : 0;
+      const lpv = rawLpv > 0 ? rawLpv : lpvFromRatio;
+      const clicks = rawClicks;
+      const outboundClicks = ad.outbound_clicks ?? 0;
       const atc = ad.atc ?? ad.add_to_cart ?? 0;
       const spend = ad.spend || 0;
       const aov = purchases > 0 ? revenue / purchases : null;
@@ -1482,9 +1486,11 @@ function DashboardTab({
       const visits = getVisitsProxy({
         landingPageViews: lpv,
         outboundClicks,
-        inlineLinkClicks: clicks
+        inlineLinkClicks: rawClicks
       });
-      const effectivePurchases = Math.min(purchases, visits);
+      const safeVisits = Number.isFinite(visits) && visits >= 0 ? visits : 0;
+      const safePurchases = toNumber(purchases);
+      const effectivePurchases = Math.min(safePurchases, safeVisits);
 
       return {
         key: ad.ad_id || ad.id || `creative-${idx}`,
@@ -1498,7 +1504,7 @@ function DashboardTab({
         roas,
         spend,
         revenue,
-        visits,
+        visits: safeVisits,
         effectivePurchases,
         countries,
         country: ad.country || ad.geo || null
@@ -1660,9 +1666,15 @@ function DashboardTab({
         const purchases = countryEntry.conversions ?? countryEntry.purchases ?? 0;
         const revenue = countryEntry.conversion_value ?? countryEntry.purchase_value ?? 0;
         const impressions = countryEntry.impressions || 0;
-        const clicks = countryEntry.inline_link_clicks ?? countryEntry.link_clicks ?? countryEntry.clicks ?? countryEntry.click ?? 0;
-        const lpv = countryEntry.landing_page_views ?? countryEntry.lpv ?? 0;
-        const outboundClicks = countryEntry.outbound_clicks ?? countryEntry.outbound_clicks_click ?? 0;
+        const rawClicks = toNumber(
+          countryEntry.inline_link_clicks ?? countryEntry.link_clicks ?? countryEntry.clicks ?? countryEntry.click ?? 0
+        );
+        const rawLpv = toNumber(countryEntry.landing_page_views ?? countryEntry.lpv ?? 0);
+        const lpvRatio = toNumber(countryEntry.landing_page_view_per_link_click);
+        const lpvFromRatio = lpvRatio > 0 && rawClicks > 0 ? lpvRatio * rawClicks : 0;
+        const lpv = rawLpv > 0 ? rawLpv : lpvFromRatio;
+        const clicks = rawClicks;
+        const outboundClicks = countryEntry.outbound_clicks ?? 0;
         const atc = countryEntry.add_to_cart ?? countryEntry.atc ?? 0;
         const spend = countryEntry.spend || 0;
         const aov = purchases > 0 ? revenue / purchases : null;
@@ -1670,16 +1682,18 @@ function DashboardTab({
         const visits = getVisitsProxy({
           landingPageViews: lpv,
           outboundClicks,
-          inlineLinkClicks: clicks
+          inlineLinkClicks: rawClicks
         });
-        const effectivePurchases = Math.min(purchases, visits);
+        const safeVisits = Number.isFinite(visits) && visits >= 0 ? visits : 0;
+        const safePurchases = toNumber(purchases);
+        const effectivePurchases = Math.min(safePurchases, safeVisits);
 
         if (!countryMap.has(code)) {
           countryMap.set(code, { code, flag, name, rows: [] });
         }
 
         const stats = computeCreativeBayesianStats({
-          visits,
+          visits: safeVisits,
           effectivePurchases,
           baselineCvr: creativeBaselineCvr,
           seedKey: `${ad.key}-${code}-${idx}`
