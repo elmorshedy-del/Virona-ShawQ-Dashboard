@@ -717,10 +717,12 @@ export async function syncMetaData(store) {
         ORDER BY date DESC
       `).all(store, startDate, endDate);
 
+      const syncTimestamp = new Date().toISOString();
       const metaOrders = metaOrderRows
         .filter(row => row.date === endDate)
         .filter(row => (row.conversions || 0) > 0 && (row.conversion_value || 0) > 0)
         .map(row => ({
+          date: row.date,
           country: row.country || 'ALL',
           order_count: row.conversions,
           order_total: row.conversion_value,
@@ -734,7 +736,9 @@ export async function syncMetaData(store) {
           campaign_name: row.campaign_name || null
         }));
 
-      const notificationCount = createOrderNotifications(store, 'meta', metaOrders);
+      const notificationCount = createOrderNotifications(store, 'meta', metaOrders, {
+        ingestionTimestamp: syncTimestamp
+      });
       if (notificationCount > 0) {
         console.log(`[Meta] Created ${notificationCount} notifications for ${store}`);
       }

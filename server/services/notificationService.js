@@ -32,7 +32,7 @@ function shouldCreateOrderNotification(store, source) {
 }
 
 // Create a notification
-export function createNotification({ store, type, message, metadata = {}, timestamp = null }) {
+export function createNotification({ store, type, message, metadata = {}, timestamp = null, eventKey = null }) {
   const db = getDb();
   
   // Ensure notifications table exists
@@ -48,7 +48,8 @@ export function createNotification({ store, type, message, metadata = {}, timest
       order_count INTEGER DEFAULT 1,
       is_read INTEGER DEFAULT 0,
       timestamp TEXT DEFAULT (datetime('now')),
-      metadata TEXT
+      metadata TEXT,
+      event_key TEXT
     )
   `);
   
@@ -65,8 +66,8 @@ export function createNotification({ store, type, message, metadata = {}, timest
 
   if (timestamp) {
     const stmt = db.prepare(`
-      INSERT INTO notifications (store, type, message, source, country, value, order_count, timestamp, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO notifications (store, type, message, source, country, value, order_count, timestamp, metadata, event_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     result = stmt.run(
@@ -78,12 +79,13 @@ export function createNotification({ store, type, message, metadata = {}, timest
       metadata.value || null,
       metadata.order_count || 1,
       timestamp,
-      metadataJson
+      metadataJson,
+      eventKey
     );
   } else {
     const stmt = db.prepare(`
-      INSERT INTO notifications (store, type, message, source, country, value, order_count, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO notifications (store, type, message, source, country, value, order_count, metadata, event_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     result = stmt.run(
@@ -94,7 +96,8 @@ export function createNotification({ store, type, message, metadata = {}, timest
       metadata.country || null,
       metadata.value || null,
       metadata.order_count || 1,
-      metadataJson
+      metadataJson,
+      eventKey
     );
   }
   
@@ -103,7 +106,7 @@ export function createNotification({ store, type, message, metadata = {}, timest
 }
 
 // Create order notification(s) from synced data
-export function createOrderNotifications(store, source, orders) {
+export function createOrderNotifications(store, source, orders, options = {}) {
   if (!Array.isArray(orders) || orders.length === 0) {
     return 0;
   }
@@ -186,52 +189,6 @@ export function createOrderNotifications(store, source, orders) {
   if (isNaN(lastTimestamp.getTime())) {
     lastTimestamp = new Date(0);
   }
-  
-  if (isShopify) {
-    const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
-    const sortedOrders = orders
-      .map(order => ({
-        order,
-        orderDate: new Date(order.order_created_at || order.created_at || order.date || order.timestamp)
-      }))
-      .filter(({ orderDate }) => !isNaN(orderDate))
-      .sort((a, b) => a.orderDate - b.orderDate);
-
-    let created = 0;
-
-    for (const { order, orderDate } of sortedOrders) {
-      if (orderDate <= lastTimestamp) {
-        continue;
-      }
-
-      const country = normalizeCountry(order);
-      const value = parseFloat(order.order_total || order.total_price || order.revenue || order.value || 0);
-      const currency = order.currency || fallbackCurrency;
-      const displayCountry = country.label || country.code || 'Unknown';
-      const amountLabel = `${currency} ${(value || 0).toFixed(2)}`;
-
-      const message = `${displayCountry} • ${amountLabel} • ${sourceLabel}`;
-
-      createNotification({
-        store,
-        type: 'order',
-        message,
-        metadata: {
-          source,
-          country: displayCountry,
-          country_code: country.code,
-          currency,
-          value,
-          order_count: 1,
-          timestamp: orderDate.toISOString()
-        }
-      });
-
-      created++;
-    }
-
-    return created;
-  }
 
   for (const order of orders) {
     // Shawq/Shopify uses order_created_at and order_total, others use created_at and total_price
@@ -242,7 +199,7 @@ export function createOrderNotifications(store, source, orders) {
     }
 
     // Only notify for orders newer than last notification
-    if (orderDate <= lastTimestamp) {
+    if (!isVironaMeta && orderDate <= lastTimestamp) {
       continue;
     }
 
@@ -264,7 +221,8 @@ export function createOrderNotifications(store, source, orders) {
         total: 0,
         latest: orderDate,
         currency,
-        campaign_name: campaignName
+        campaign_name: campaignName,
+        event_date: order.date || null
       };
     }
 
@@ -277,10 +235,14 @@ export function createOrderNotifications(store, source, orders) {
     if (order.currency) {
       ordersByCountry[groupKey].currency = order.currency;
     }
+
+    if (order.date && !ordersByCountry[groupKey].event_date) {
+      ordersByCountry[groupKey].event_date = order.date;
+    }
   }
 
   const ingestionTimestamp = isVironaMeta
-    ? new Date().toISOString()
+    ? (options.ingestionTimestamp || new Date().toISOString())
     : null;
 
   // Create notifications for each country
@@ -299,6 +261,31 @@ export function createOrderNotifications(store, source, orders) {
 
     // Format: Country • Amount • Source (clean format)
     const message = `${campaignLabel}${displayCountry} • ${amountLabel} • ${sourceLabel}`;
+    let eventKey = null;
+
+    if (isVironaMeta) {
+      const eventDate = data.event_date || (data.latest ? data.latest.toISOString().slice(0, 10) : 'unknown-date');
+      const eventCampaign = data.campaign_name || 'unknown-campaign';
+      eventKey = `meta|${store}|${eventDate}|${displayCountry}|${eventCampaign}`;
+      const exists = db.prepare(`
+        SELECT 1 FROM notifications WHERE store = ? AND source = ? AND event_key = ? LIMIT 1
+      `).get(store, source, eventKey);
+      if (exists) {
+        continue;
+      }
+    }
+
+    if (isShopify) {
+      const dateKey = data.latest ? data.latest.toISOString().slice(0, 10) : null;
+      const matchedCampaign = findShopifyCampaignName(db, {
+        store,
+        date: dateKey,
+        countryLabel: displayCountry,
+        countryCode: data.code,
+        amount: totalAmount
+      });
+      data.campaign_name = matchedCampaign || null;
+    }
 
     createNotification({
       store,
@@ -314,13 +301,38 @@ export function createOrderNotifications(store, source, orders) {
         timestamp: data.latest.toISOString(),
         campaign_name: data.campaign_name || null
       },
-      timestamp: ingestionTimestamp
+      timestamp: ingestionTimestamp,
+      eventKey
     });
     
     created++;
   }
   
   return created;
+}
+
+function findShopifyCampaignName(db, { store, date, countryLabel, countryCode, amount }) {
+  if (!date) {
+    return null;
+  }
+
+  const query = `
+    SELECT campaign_name, conversion_value
+    FROM meta_daily_metrics
+    WHERE store = ? AND date = ? AND country = ? AND conversion_value > 0
+    ORDER BY ABS(conversion_value - ?) ASC
+    LIMIT 1
+  `;
+
+  const candidates = [countryLabel, countryCode].filter(Boolean);
+  for (const country of candidates) {
+    const row = db.prepare(query).get(store, date, country, amount || 0);
+    if (row?.campaign_name) {
+      return row.campaign_name;
+    }
+  }
+
+  return null;
 }
 
 // Get recent notifications
