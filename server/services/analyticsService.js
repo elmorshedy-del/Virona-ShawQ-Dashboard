@@ -1825,3 +1825,225 @@ export function getFunnelDiagnostics(store, params) {
     period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
   };
 }
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function getInclusiveDays(startDate, endDate) {
+  if (!startDate || !endDate) return 0;
+  const diffMs = new Date(endDate).getTime() - new Date(startDate).getTime();
+  return Math.max(Math.floor(diffMs / MS_PER_DAY) + 1, 0);
+}
+
+function buildCampaignWhereClause(campaignId, campaignName) {
+  if (campaignId) {
+    return { clause: 'campaign_id = ?', value: campaignId, label: campaignId };
+  }
+  return { clause: 'campaign_name = ?', value: campaignName, label: campaignName };
+}
+
+function resolveAovSource(source, campaignA, campaignB) {
+  const fallbackAov = campaignB?.aov || campaignA?.aov || 0;
+  if (source === 'campaignA') return campaignA?.aov || fallbackAov;
+  if (source === 'campaignB') return campaignB?.aov || fallbackAov;
+  const totalConversions = (campaignA?.conversions || 0) + (campaignB?.conversions || 0);
+  const totalRevenue = (campaignA?.revenue || 0) + (campaignB?.revenue || 0);
+  return totalConversions > 0 ? totalRevenue / totalConversions : fallbackAov;
+}
+
+function calculateBudgetFromTests({ spend1, conv1, spend2, conv2, aov, margin, monthlyOverhead = 0 }) {
+  if (!spend1 || !conv1 || !spend2 || !conv2 || !aov || !margin) {
+    return { error: 'Missing spend, conversions, AOV, or margin.' };
+  }
+
+  const dailyOverhead = monthlyOverhead / 30;
+  const hasOverhead = monthlyOverhead > 0;
+
+  let lowSpend = spend1;
+  let highSpend = spend2;
+  let lowConv = conv1;
+  let highConv = conv2;
+  let swapApplied = false;
+
+  if (spend2 <= spend1) {
+    lowSpend = spend2;
+    highSpend = spend1;
+    lowConv = conv2;
+    highConv = conv1;
+    swapApplied = true;
+  }
+
+  if (highSpend <= lowSpend || highConv <= 0 || lowConv <= 0 || lowSpend <= 0) {
+    return { error: 'Spend and conversions must be positive, with distinct spend levels.' };
+  }
+
+  const B = Math.log(highConv / lowConv) / Math.log(highSpend / lowSpend);
+  const a = lowConv / Math.pow(lowSpend, B);
+
+  const breakevenRoas = 1 / margin;
+  let ceiling;
+  if (B < 1) {
+    ceiling = Math.pow(breakevenRoas / (a * aov), 1 / (B - 1));
+  } else {
+    ceiling = Infinity;
+  }
+
+  let realCeiling = ceiling;
+  if (hasOverhead && B < 1 && Number.isFinite(ceiling)) {
+    let low = 1;
+    let high = ceiling;
+    for (let i = 0; i < 50; i += 1) {
+      const mid = (low + high) / 2;
+      const conv = a * Math.pow(mid, B);
+      const profit = conv * aov * margin - mid;
+      if (profit > dailyOverhead) {
+        low = mid;
+      } else {
+        high = mid;
+      }
+    }
+    realCeiling = (low + high) / 2;
+  }
+
+  let optimal;
+  if (B < 1 && B > 0) {
+    optimal = Math.pow(1 / (a * B * aov * margin), 1 / (B - 1));
+  } else {
+    optimal = Infinity;
+  }
+
+  const convAtOptimal = a * Math.pow(optimal, B);
+  const revenueAtOptimal = convAtOptimal * aov;
+  const profitAtOptimal = revenueAtOptimal * margin - optimal - dailyOverhead;
+
+  return {
+    B,
+    a,
+    ceiling,
+    realCeiling,
+    optimal,
+    profitAtOptimal,
+    dailyOverhead,
+    hasOverhead,
+    swapApplied
+  };
+}
+
+export function getBudgetCalculatorByCountry(store, params = {}) {
+  const db = getDb();
+  const statusFilter = buildStatusFilter(params);
+  const campaignAName = params.campaignA || params.campaignAName;
+  const campaignBName = params.campaignB || params.campaignBName;
+  const campaignAId = params.campaignAId || params.campaignIdA;
+  const campaignBId = params.campaignBId || params.campaignIdB;
+  const marginPercent = parseFloat(params.margin);
+  const monthlyOverhead = parseFloat(params.overhead) || 0;
+  const aovSource = params.aovSource || 'blended';
+
+  if (!campaignAName && !campaignAId) {
+    return { error: 'campaignA (name or id) is required.' };
+  }
+  if (!campaignBName && !campaignBId) {
+    return { error: 'campaignB (name or id) is required.' };
+  }
+  if (!marginPercent || marginPercent <= 0) {
+    return { error: 'margin is required and must be greater than 0.' };
+  }
+
+  const campaignAFilter = buildCampaignWhereClause(campaignAId, campaignAName);
+  const campaignBFilter = buildCampaignWhereClause(campaignBId, campaignBName);
+
+  const campaignQuery = (filter) => db.prepare(`
+    SELECT
+      country,
+      SUM(spend) as spend,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as revenue,
+      MIN(date) as startDate,
+      MAX(date) as endDate
+    FROM meta_daily_metrics
+    WHERE store = ? AND ${filter.clause} AND country != 'ALL'${statusFilter}
+    GROUP BY country
+  `).all(store, filter.value);
+
+  const campaignARows = campaignQuery(campaignAFilter);
+  const campaignBRows = campaignQuery(campaignBFilter);
+
+  const buildCountryMap = (rows) => {
+    const map = new Map();
+    rows.forEach((row) => {
+      const days = getInclusiveDays(row.startDate, row.endDate);
+      const spend = row.spend || 0;
+      const conversions = row.conversions || 0;
+      const revenue = row.revenue || 0;
+      map.set(row.country, {
+        country: row.country,
+        spend,
+        conversions,
+        revenue,
+        startDate: row.startDate,
+        endDate: row.endDate,
+        days,
+        avgDailySpend: days > 0 ? spend / days : 0,
+        avgDailyConversions: days > 0 ? conversions / days : 0,
+        aov: conversions > 0 ? revenue / conversions : 0
+      });
+    });
+    return map;
+  };
+
+  const campaignAMap = buildCountryMap(campaignARows);
+  const campaignBMap = buildCountryMap(campaignBRows);
+  const countries = new Set([...campaignAMap.keys(), ...campaignBMap.keys()]);
+
+  const results = Array.from(countries).sort().map((country) => {
+    const campaignA = campaignAMap.get(country);
+    const campaignB = campaignBMap.get(country);
+    if (!campaignA || !campaignB) {
+      return {
+        country,
+        campaignA,
+        campaignB,
+        error: 'Missing data for one of the campaigns.'
+      };
+    }
+
+    const aovUsed = resolveAovSource(aovSource, campaignA, campaignB);
+    const calculation = calculateBudgetFromTests({
+      spend1: campaignA.avgDailySpend,
+      conv1: campaignA.avgDailyConversions,
+      spend2: campaignB.avgDailySpend,
+      conv2: campaignB.avgDailyConversions,
+      aov: aovUsed,
+      margin: marginPercent / 100,
+      monthlyOverhead
+    });
+
+    if (calculation.error) {
+      return {
+        country,
+        campaignA,
+        campaignB,
+        error: calculation.error
+      };
+    }
+
+    return {
+      country,
+      campaignA,
+      campaignB,
+      aovUsed,
+      marginPercent,
+      monthlyOverhead,
+      calculation
+    };
+  });
+
+  return {
+    campaignA: { label: campaignAFilter.label, filter: campaignAFilter.clause },
+    campaignB: { label: campaignBFilter.label, filter: campaignBFilter.clause },
+    aovSource,
+    marginPercent,
+    monthlyOverhead,
+    results
+  };
+}

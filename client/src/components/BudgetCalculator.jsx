@@ -56,7 +56,7 @@ function buildInterpretation({ B, optimal, profitAtOptimal, ceiling, realCeiling
     ⚠️ <strong>Ad Breakeven: $${Math.round(ceiling)}/day</strong>${overheadText}`;
 }
 
-export default function BudgetCalculator() {
+export default function BudgetCalculator({ store = 'vironax' }) {
   const [inputs, setInputs] = useState({
     spend1: '',
     conv1: '',
@@ -67,9 +67,23 @@ export default function BudgetCalculator() {
     overhead: '',
   });
   const [results, setResults] = useState(null);
+  const [campaignInputs, setCampaignInputs] = useState({
+    campaignA: '',
+    campaignB: '',
+    margin: '',
+    overhead: '',
+    aovSource: 'blended',
+  });
+  const [campaignResults, setCampaignResults] = useState(null);
+  const [campaignError, setCampaignError] = useState('');
+  const [campaignLoading, setCampaignLoading] = useState(false);
 
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
+  };
+
+  const updateCampaignInput = (key) => (event) => {
+    setCampaignInputs((prev) => ({ ...prev, [key]: event.target.value }));
   };
 
   const handleCalculate = () => {
@@ -206,6 +220,46 @@ export default function BudgetCalculator() {
     });
   };
 
+  const handleCampaignCalculate = async () => {
+    const { campaignA, campaignB, margin, overhead, aovSource } = campaignInputs;
+    if (!campaignA || !campaignB || !margin) {
+      setCampaignError('Please enter both campaign names and a margin.');
+      return;
+    }
+
+    setCampaignLoading(true);
+    setCampaignError('');
+    setCampaignResults(null);
+
+    const params = new URLSearchParams({
+      store,
+      campaignA,
+      campaignB,
+      margin,
+      overhead: overhead || '0',
+      aovSource,
+      includeInactive: 'true',
+    });
+
+    try {
+      const res = await fetch(`/api/analytics/budget-calculator?${params}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data?.error) {
+        setCampaignError(data.error);
+      } else {
+        setCampaignResults(data);
+      }
+    } catch (error) {
+      console.error('Failed to load campaign budget calculator data', error);
+      setCampaignError('Failed to load campaign data. Please try again.');
+    } finally {
+      setCampaignLoading(false);
+    }
+  };
+
   const formulaHtml = useMemo(() => {
     if (!results) {
       return 'Your Formula: Conversions = — × Spend^—';
@@ -241,8 +295,166 @@ export default function BudgetCalculator() {
     return `${position}%`;
   }, [results]);
 
+  const campaignHeaderA = campaignResults?.campaignA?.label || campaignInputs.campaignA || 'Campaign A';
+  const campaignHeaderB = campaignResults?.campaignB?.label || campaignInputs.campaignB || 'Campaign B';
+
+  const formatDateRange = (campaign) => {
+    if (!campaign?.startDate || !campaign?.endDate) return '—';
+    return `${campaign.startDate} → ${campaign.endDate} (${campaign.days || 0}d)`;
+  };
+
   return (
     <div className="space-y-6">
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div className="border-b border-gray-100 px-6 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">🧮 Campaign Budget Calculator (by Country)</h2>
+        </div>
+        <div className="p-6 space-y-6">
+          <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">Campaign A (e.g., White Friday)</label>
+              <input
+                type="text"
+                value={campaignInputs.campaignA}
+                onChange={updateCampaignInput('campaignA')}
+                placeholder="White Friday Campaign"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <p className="text-xs text-gray-400">Old campaign baseline</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">Campaign B (e.g., Winter)</label>
+              <input
+                type="text"
+                value={campaignInputs.campaignB}
+                onChange={updateCampaignInput('campaignB')}
+                placeholder="Winter Campaign"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <p className="text-xs text-gray-400">New campaign comparison</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">Profit Margin (%)</label>
+              <input
+                type="number"
+                value={campaignInputs.margin}
+                onChange={updateCampaignInput('margin')}
+                placeholder="35"
+                step="1"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <p className="text-xs text-gray-400">Used for breakeven and profit math</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">
+                Monthly Overhead <span className="text-xs text-gray-400">(optional)</span>
+              </label>
+              <input
+                type="number"
+                value={campaignInputs.overhead}
+                onChange={updateCampaignInput('overhead')}
+                placeholder="0"
+                step="1"
+                className="w-full rounded-lg border border-dashed border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <p className="text-xs text-gray-400">Used for real ceiling</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">AOV Source</label>
+              <select
+                value={campaignInputs.aovSource}
+                onChange={updateCampaignInput('aovSource')}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="blended">Blended (weighted)</option>
+                <option value="campaignA">Campaign A AOV</option>
+                <option value="campaignB">Campaign B AOV</option>
+              </select>
+              <p className="text-xs text-gray-400">Pick which AOV to use in the math</p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleCampaignCalculate}
+            disabled={campaignLoading}
+            className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-indigo-300"
+          >
+            {campaignLoading ? 'Calculating…' : 'Calculate from Campaigns'}
+          </button>
+
+          {campaignError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {campaignError}
+            </div>
+          )}
+
+          {campaignResults && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm text-gray-600">
+                Uses each campaign’s exact date range per country to compute average daily spend/conversions,
+                then runs the budget calculator math per country.
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-[1100px] w-full text-sm">
+                  <thead>
+                    <tr className="text-xs uppercase tracking-wide text-gray-400">
+                      <th className="py-2 text-left">Country</th>
+                      <th className="py-2 text-left">{campaignHeaderA} Range</th>
+                      <th className="py-2 text-right">{campaignHeaderA} Avg Daily Spend</th>
+                      <th className="py-2 text-right">{campaignHeaderA} Avg Daily Conv</th>
+                      <th className="py-2 text-right">{campaignHeaderA} AOV</th>
+                      <th className="py-2 text-left">{campaignHeaderB} Range</th>
+                      <th className="py-2 text-right">{campaignHeaderB} Avg Daily Spend</th>
+                      <th className="py-2 text-right">{campaignHeaderB} Avg Daily Conv</th>
+                      <th className="py-2 text-right">{campaignHeaderB} AOV</th>
+                      <th className="py-2 text-right">AOV Used</th>
+                      <th className="py-2 text-right">B</th>
+                      <th className="py-2 text-right">Optimal</th>
+                      <th className="py-2 text-right">Ad Breakeven</th>
+                      <th className="py-2 text-right">Max Daily Profit</th>
+                      <th className="py-2 text-left">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {campaignResults.results.map((row) => {
+                      const hasError = Boolean(row.error);
+                      const calc = row.calculation;
+                      const formatMetric = (value, formatter) => (hasError ? '—' : formatter(value));
+                      return (
+                        <tr key={row.country} className="border-t border-gray-100">
+                          <td className="py-2 text-left font-medium text-gray-900">{row.country}</td>
+                          <td className="py-2 text-left">{formatDateRange(row.campaignA)}</td>
+                          <td className="py-2 text-right">{formatMetric(row.campaignA?.avgDailySpend || 0, formatCurrency)}</td>
+                          <td className="py-2 text-right">
+                            {formatMetric(row.campaignA?.avgDailyConversions || 0, (value) => value.toFixed(2))}
+                          </td>
+                          <td className="py-2 text-right">{formatMetric(row.campaignA?.aov || 0, formatCurrency)}</td>
+                          <td className="py-2 text-left">{formatDateRange(row.campaignB)}</td>
+                          <td className="py-2 text-right">{formatMetric(row.campaignB?.avgDailySpend || 0, formatCurrency)}</td>
+                          <td className="py-2 text-right">
+                            {formatMetric(row.campaignB?.avgDailyConversions || 0, (value) => value.toFixed(2))}
+                          </td>
+                          <td className="py-2 text-right">{formatMetric(row.campaignB?.aov || 0, formatCurrency)}</td>
+                          <td className="py-2 text-right">{formatMetric(row.aovUsed || 0, formatCurrency)}</td>
+                          <td className="py-2 text-right">{hasError ? '—' : calc.B.toFixed(2)}</td>
+                          <td className="py-2 text-right">{hasError ? '—' : formatCurrency(calc.optimal)}</td>
+                          <td className="py-2 text-right">{hasError ? '—' : formatCurrency(calc.ceiling)}</td>
+                          <td className="py-2 text-right">{hasError ? '—' : formatProfit(calc.profitAtOptimal)}</td>
+                          <td className="py-2 text-left text-xs text-gray-500">
+                            {hasError ? row.error : calc.swapApplied ? 'Order swapped for higher spend' : 'OK'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
         <div className="border-b border-gray-100 px-6 py-4">
           <h2 className="text-lg font-semibold text-gray-900">📊 Input Your Data</h2>
