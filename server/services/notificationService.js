@@ -173,15 +173,15 @@ export function createOrderNotifications(store, source, orders) {
       `)
     : null;
 
-  const findMatchingCampaign = (countryCode, latestOrderDate, targetAov) => {
-    if (!campaignLookupStmt || !countryCode || !latestOrderDate || !targetAov || targetAov <= 0) {
+  const findMatchingCampaign = (countryLabel, latestOrderDate, targetAov) => {
+    if (!campaignLookupStmt || !countryLabel || !latestOrderDate || !targetAov || targetAov <= 0) {
       return null;
     }
 
     const endDate = formatDateAsGmt3(latestOrderDate);
     const startDate = formatDateAsGmt3(new Date(latestOrderDate.getTime() - 30 * 24 * 60 * 60 * 1000));
 
-    const rows = campaignLookupStmt.all(store, countryCode, startDate, endDate);
+    const rows = campaignLookupStmt.all(store, countryLabel, startDate, endDate);
     if (!rows || rows.length === 0) {
       return null;
     }
@@ -268,8 +268,8 @@ export function createOrderNotifications(store, source, orders) {
 
     if (isShawqShopify) {
       const targetAov = data.total && data.count ? data.total / data.count : 0;
-      const countryCode = data.code || data.label;
-      const matchedCampaign = findMatchingCampaign(countryCode, data.latest, targetAov);
+      const countryLabel = data.label || data.code;
+      const matchedCampaign = findMatchingCampaign(countryLabel, data.latest, targetAov);
       if (matchedCampaign) {
         campaignName = matchedCampaign;
       }
