@@ -32,7 +32,7 @@ function shouldCreateOrderNotification(store, source) {
 }
 
 // Create a notification
-export function createNotification({ store, type, message, metadata = {} }) {
+export function createNotification({ store, type, message, metadata = {}, timestamp = null, eventKey = null }) {
   const db = getDb();
   
   // Ensure notifications table exists
@@ -48,7 +48,8 @@ export function createNotification({ store, type, message, metadata = {} }) {
       order_count INTEGER DEFAULT 1,
       is_read INTEGER DEFAULT 0,
       timestamp TEXT DEFAULT (datetime('now')),
-      metadata TEXT
+      metadata TEXT,
+      event_key TEXT
     )
   `);
   
@@ -60,33 +61,59 @@ export function createNotification({ store, type, message, metadata = {} }) {
     }
   }
   
-  const stmt = db.prepare(`
-    INSERT INTO notifications (store, type, message, source, country, value, order_count, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  
-  const result = stmt.run(
-    store,
-    type,
-    message,
-    metadata.source || null,
-    metadata.country || null,
-    metadata.value || null,
-    metadata.order_count || 1,
-    JSON.stringify(metadata)
-  );
+  const metadataJson = JSON.stringify(metadata);
+  let result;
+
+  if (timestamp) {
+    const stmt = db.prepare(`
+      INSERT INTO notifications (store, type, message, source, country, value, order_count, timestamp, metadata, event_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    result = stmt.run(
+      store,
+      type,
+      message,
+      metadata.source || null,
+      metadata.country || null,
+      metadata.value || null,
+      metadata.order_count || 1,
+      timestamp,
+      metadataJson,
+      eventKey
+    );
+  } else {
+    const stmt = db.prepare(`
+      INSERT INTO notifications (store, type, message, source, country, value, order_count, metadata, event_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    result = stmt.run(
+      store,
+      type,
+      message,
+      metadata.source || null,
+      metadata.country || null,
+      metadata.value || null,
+      metadata.order_count || 1,
+      metadataJson,
+      eventKey
+    );
+  }
   
   console.log(`[Notification] Created: ${message}`);
   return result.lastInsertRowid;
 }
 
 // Create order notification(s) from synced data
-export function createOrderNotifications(store, source, orders) {
+export function createOrderNotifications(store, source, orders, options = {}) {
   if (!Array.isArray(orders) || orders.length === 0) {
     return 0;
   }
 
   const fallbackCurrency = store === 'shawq' ? 'USD' : 'SAR';
+  const isVironaMeta = store === 'vironax' && source === 'meta';
+  const isShopify = store === 'shawq' && source === 'shopify';
 
   // Check if we should create notifications for this source
   if (!shouldCreateOrderNotification(store, source)) {
@@ -111,28 +138,28 @@ export function createOrderNotifications(store, source, orders) {
   let lastTimestamp = new Date(0);
 
   if (lastNotification) {
-    try {
-      const storedMetadata = lastNotification.metadata ? JSON.parse(lastNotification.metadata) : null;
-      if (storedMetadata?.timestamp) {
-        const eventTime = new Date(storedMetadata.timestamp);
-        if (!isNaN(eventTime.getTime())) {
-          lastTimestamp = eventTime;
-        }
-      }
-    } catch (e) {
-      console.warn('[Notification] Failed to parse metadata timestamp:', e.message);
-    }
-
-    // Fallback to notification row timestamp if metadata is missing/invalid
-    if (isNaN(lastTimestamp.getTime())) {
+    if (store === 'vironax' && source === 'meta') {
       lastTimestamp = new Date(lastNotification.timestamp);
+    } else {
+      try {
+        const storedMetadata = lastNotification.metadata ? JSON.parse(lastNotification.metadata) : null;
+        if (storedMetadata?.timestamp) {
+          const eventTime = new Date(storedMetadata.timestamp);
+          if (!isNaN(eventTime.getTime())) {
+            lastTimestamp = eventTime;
+          }
+        }
+      } catch (e) {
+        console.warn('[Notification] Failed to parse metadata timestamp:', e.message);
+      }
+
+      // Fallback to notification row timestamp if metadata is missing/invalid
+      if (isNaN(lastTimestamp.getTime())) {
+        lastTimestamp = new Date(lastNotification.timestamp);
+      }
     }
   }
 
-  if (isNaN(lastTimestamp.getTime())) {
-    lastTimestamp = new Date(0);
-  }
-  
   // Group orders by country for cleaner notifications
   const ordersByCountry = {};
 
@@ -159,6 +186,10 @@ export function createOrderNotifications(store, source, orders) {
     return { code: rawCountry, label: rawCountry };
   };
 
+  if (isNaN(lastTimestamp.getTime())) {
+    lastTimestamp = new Date(0);
+  }
+
   for (const order of orders) {
     // Shawq/Shopify uses order_created_at and order_total, others use created_at and total_price
     const orderDate = new Date(order.order_created_at || order.created_at || order.date || order.timestamp);
@@ -168,7 +199,7 @@ export function createOrderNotifications(store, source, orders) {
     }
 
     // Only notify for orders newer than last notification
-    if (orderDate <= lastTimestamp) {
+    if (!isVironaMeta && orderDate <= lastTimestamp) {
       continue;
     }
 
@@ -190,7 +221,9 @@ export function createOrderNotifications(store, source, orders) {
         total: 0,
         latest: orderDate,
         currency,
-        campaign_name: campaignName
+        campaign_name: campaignName,
+        campaign_id: order.campaign_id || null,
+        event_date: order.date || null
       };
     }
 
@@ -203,19 +236,62 @@ export function createOrderNotifications(store, source, orders) {
     if (order.currency) {
       ordersByCountry[groupKey].currency = order.currency;
     }
+
+    if (order.date && !ordersByCountry[groupKey].event_date) {
+      ordersByCountry[groupKey].event_date = order.date;
+    }
+
+    if (order.campaign_id && !ordersByCountry[groupKey].campaign_id) {
+      ordersByCountry[groupKey].campaign_id = order.campaign_id;
+    }
   }
+
+  const ingestionTimestamp = isVironaMeta
+    ? (options.ingestionTimestamp || new Date().toISOString())
+    : null;
 
   // Create notifications for each country
   for (const data of Object.values(ordersByCountry)) {
     const currency = data.currency || fallbackCurrency;
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
     const displayCountry = data.label || data.code || 'Unknown';
-    const campaignLabel = (store === 'vironax' && source === 'meta' && data.campaign_name)
+    const campaignLabel = (isVironaMeta && data.campaign_name)
       ? `${data.campaign_name} • `
       : '';
 
+    const totalAmount = data.total || 0;
+    const amountLabel = isVironaMeta
+      ? `${Math.round(totalAmount).toLocaleString()} SAR`
+      : `${currency} ${totalAmount.toFixed(2)}`;
+
     // Format: Country • Amount • Source (clean format)
-    const message = `${campaignLabel}${displayCountry} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
+    const message = `${campaignLabel}${displayCountry} • ${amountLabel} • ${sourceLabel}`;
+    let eventKey = null;
+
+    if (isVironaMeta) {
+      const eventDate = data.event_date || (data.latest ? data.latest.toISOString().slice(0, 10) : 'unknown-date');
+      const eventCampaign = data.campaign_id || data.campaign_name || 'unknown-campaign';
+      const eventCountry = data.code || data.label || displayCountry;
+      eventKey = `meta|${store}|${eventDate}|${eventCountry}|${eventCampaign}`;
+      const exists = db.prepare(`
+        SELECT 1 FROM notifications WHERE store = ? AND source = ? AND event_key = ? LIMIT 1
+      `).get(store, source, eventKey);
+      if (exists) {
+        continue;
+      }
+    }
+
+    if (isShopify) {
+      const dateKey = data.latest ? data.latest.toISOString().slice(0, 10) : null;
+      const matchedCampaign = findShopifyCampaignName(db, {
+        store,
+        date: dateKey,
+        countryLabel: displayCountry,
+        countryCode: data.code,
+        amount: totalAmount
+      });
+      data.campaign_name = matchedCampaign || null;
+    }
 
     createNotification({
       store,
@@ -230,13 +306,91 @@ export function createOrderNotifications(store, source, orders) {
         order_count: data.count,
         timestamp: data.latest.toISOString(),
         campaign_name: data.campaign_name || null
-      }
+      },
+      timestamp: ingestionTimestamp,
+      eventKey
     });
     
     created++;
   }
   
   return created;
+}
+
+function findShopifyCampaignName(db, { store, date, countryLabel, countryCode, amount }) {
+  if (!date) {
+    return null;
+  }
+
+  const query = `
+    SELECT campaign_name, conversion_value
+    FROM meta_daily_metrics
+    WHERE store = ? AND date = ? AND country = ? AND conversion_value > 0
+    ORDER BY ABS(conversion_value - ?) ASC
+    LIMIT 1
+  `;
+
+  const candidates = [countryLabel, countryCode].filter(Boolean);
+  for (const country of candidates) {
+    const row = db.prepare(query).get(store, date, country, amount || 0);
+    if (row?.campaign_name) {
+      return row.campaign_name;
+    }
+  }
+
+  return null;
+}
+
+export function backfillShopifyCampaignNames(store = 'shawq') {
+  const db = getDb();
+  const notifications = db.prepare(`
+    SELECT id, metadata, country, value, timestamp
+    FROM notifications
+    WHERE store = ? AND source = 'shopify'
+  `).all(store);
+
+  let updated = 0;
+
+  for (const notification of notifications) {
+    let metadata;
+    try {
+      metadata = notification.metadata ? JSON.parse(notification.metadata) : {};
+    } catch (e) {
+      console.warn('[Notification] Failed to parse metadata for Shopify backfill:', e.message);
+      continue;
+    }
+
+    if (metadata?.campaign_name) {
+      continue;
+    }
+
+    const timestamp = metadata?.timestamp || notification.timestamp;
+    const date = timestamp ? new Date(timestamp) : null;
+    if (!date || isNaN(date)) {
+      continue;
+    }
+
+    const dateKey = date.toISOString().slice(0, 10);
+    const amount = metadata?.value ?? notification.value ?? 0;
+    const matchedCampaign = findShopifyCampaignName(db, {
+      store,
+      date: dateKey,
+      countryLabel: metadata?.country || notification.country,
+      countryCode: metadata?.country_code,
+      amount
+    });
+
+    if (!matchedCampaign) {
+      continue;
+    }
+
+    metadata.campaign_name = matchedCampaign;
+    db.prepare(`UPDATE notifications SET metadata = ? WHERE id = ?`)
+      .run(JSON.stringify(metadata), notification.id);
+    updated++;
+  }
+
+  return updated;
 }
 
 // Get recent notifications

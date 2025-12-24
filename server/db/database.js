@@ -96,7 +96,8 @@ export function initDb() {
       order_count INTEGER DEFAULT 1,
       is_read INTEGER DEFAULT 0,
       timestamp TEXT DEFAULT (datetime('now')),
-      metadata TEXT
+      metadata TEXT,
+      event_key TEXT
     )
   `);
 
@@ -115,6 +116,9 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN timestamp TEXT DEFAULT (datetime('now'))`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE notifications ADD COLUMN event_key TEXT`);
   } catch (e) { /* column exists */ }
 
   // Salla orders (VironaX only)

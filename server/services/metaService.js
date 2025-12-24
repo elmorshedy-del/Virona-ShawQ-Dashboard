@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
-import { createOrderNotifications } from './notificationService.js';
+import { createOrderNotifications, backfillShopifyCampaignNames } from './notificationService.js';
 
 const META_API_VERSION = 'v19.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -770,20 +770,26 @@ export async function syncMetaData(store) {
       const metaOrderRows = db.prepare(`
         SELECT date,
                country,
+               campaign_id,
                campaign_name,
                MAX(created_at) as latest_created_at,
                SUM(conversions) as conversions,
                SUM(conversion_value) as conversion_value
         FROM meta_daily_metrics
         WHERE store = ? AND date BETWEEN ? AND ?
-        GROUP BY date, country, campaign_name
+        GROUP BY date, country, campaign_id, campaign_name
         ORDER BY date DESC
       `).all(store, startDate, endDate);
 
+      const syncTimestamp = new Date().toISOString();
       const metaOrders = metaOrderRows
+        .filter(row => row.date === endDate)
         .filter(row => (row.conversions || 0) > 0 && (row.conversion_value || 0) > 0)
         .map(row => ({
+          date: row.date,
           country: row.country || 'ALL',
+          country_code: row.country || null,
+          campaign_id: row.campaign_id || null,
           order_count: row.conversions,
           order_total: row.conversion_value,
           currency: 'SAR',
@@ -796,9 +802,18 @@ export async function syncMetaData(store) {
           campaign_name: row.campaign_name || null
         }));
 
-      const notificationCount = createOrderNotifications(store, 'meta', metaOrders);
+      const notificationCount = createOrderNotifications(store, 'meta', metaOrders, {
+        ingestionTimestamp: syncTimestamp
+      });
       if (notificationCount > 0) {
         console.log(`[Meta] Created ${notificationCount} notifications for ${store}`);
+      }
+    }
+
+    if (store === 'shawq') {
+      const updated = backfillShopifyCampaignNames(store);
+      if (updated > 0) {
+        console.log(`[Meta] Backfilled ${updated} Shopify campaign names for ${store}`);
       }
     }
 
