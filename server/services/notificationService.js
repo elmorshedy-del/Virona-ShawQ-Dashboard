@@ -213,6 +213,9 @@ export function createOrderNotifications(store, source, orders) {
     const campaignLabel = (store === 'vironax' && source === 'meta' && data.campaign_name)
       ? `${data.campaign_name} • `
       : '';
+    const receivedAt = store === 'vironax' && source === 'meta'
+      ? new Date().toISOString()
+      : null;
 
     // Format: Country • Amount • Source (clean format)
     const message = `${campaignLabel}${displayCountry} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
@@ -229,7 +232,8 @@ export function createOrderNotifications(store, source, orders) {
         value: data.total,
         order_count: data.count,
         timestamp: data.latest.toISOString(),
-        campaign_name: data.campaign_name || null
+        campaign_name: data.campaign_name || null,
+        received_at: receivedAt
       }
     });
     

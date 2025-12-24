@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
+import { buildStatusFilter } from '../features/meta-awareness/statusFilter.js';
 import { createOrderNotifications } from './notificationService.js';
 
 const META_API_VERSION = 'v19.0';
@@ -703,14 +704,27 @@ export async function syncMetaData(store) {
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
 
     if (store === 'vironax') {
+      const statusFilter = buildStatusFilter({});
+      const lastNotification = db.prepare(`
+        SELECT timestamp FROM notifications
+        WHERE store = ? AND source = ?
+        ORDER BY timestamp DESC LIMIT 1
+      `).get(store, 'meta');
+      const createdAfter = lastNotification?.timestamp || null;
+      const createdAfterClause = createdAfter ? ' AND datetime(created_at) >= datetime(?)' : '';
+      const metaOrderParams = createdAfter
+        ? [store, startDate, endDate, createdAfter]
+        : [store, startDate, endDate];
       // Include campaign_name to show which campaign drove the conversion
       const metaOrderRows = db.prepare(`
         SELECT date, country, campaign_name, SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
         FROM meta_daily_metrics
         WHERE store = ? AND date BETWEEN ? AND ?
+        AND country IS NOT NULL AND country != '' AND country != 'ALL'${statusFilter}
+        ${createdAfterClause}
         GROUP BY date, country, campaign_name
         ORDER BY date DESC
-      `).all(store, startDate, endDate);
+      `).all(...metaOrderParams);
 
       const metaOrders = metaOrderRows
         .filter(row => (row.conversions || 0) > 0 && (row.conversion_value || 0) > 0)
