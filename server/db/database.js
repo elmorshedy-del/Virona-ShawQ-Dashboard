@@ -37,6 +37,7 @@ export function initDb() {
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
+      outbound_clicks INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
@@ -233,6 +234,7 @@ export function initDb() {
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
+      outbound_clicks INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
@@ -264,6 +266,7 @@ export function initDb() {
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
+      outbound_clicks INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
@@ -373,6 +376,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN outbound_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Add status columns to meta_adset_metrics if they don't exist
   try {
@@ -386,6 +392,9 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN adset_effective_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN outbound_clicks INTEGER DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
   // Add inline_link_clicks and cost_per_inline_link_click columns for adset metrics
@@ -408,6 +417,9 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN ad_effective_status TEXT DEFAULT 'UNKNOWN'`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN outbound_clicks INTEGER DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
   // Add inline_link_clicks and cost_per_inline_link_click columns for ad metrics
