@@ -73,6 +73,17 @@ function getActionValue(actions, type) {
   return action ? parseFloat(action.value) : 0;
 }
 
+function getMetricValue(metric) {
+  if (Array.isArray(metric)) {
+    return metric.reduce((sum, item) => sum + getMetricValue(item), 0);
+  }
+  if (metric && typeof metric === 'object' && 'value' in metric) {
+    return parseFloat(metric.value) || 0;
+  }
+  const parsed = parseFloat(metric);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 // Helper: Format date as YYYY-MM-DD
 function formatDate(date) {
   return date.toISOString().split('T')[0];
@@ -335,50 +346,79 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
   // Define fields based on level
   // Include inline_link_clicks and cost_per_inline_link_click for proper Link Clicks and CPC metrics
-  let fields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click';
+  const baseFields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click,outbound_clicks,unique_outbound_clicks,outbound_clicks_ctr,unique_outbound_clicks_ctr';
+  const lpvField = ',landing_page_views';
+  let fields = baseFields;
   if (level === 'campaign') {
-    fields = 'campaign_name,campaign_id,' + fields;
+    fields = `campaign_name,campaign_id,${baseFields}`;
   } else if (level === 'adset') {
-    fields = 'campaign_name,campaign_id,adset_name,adset_id,' + fields;
+    fields = `campaign_name,campaign_id,adset_name,adset_id,${baseFields}${lpvField}`;
   } else if (level === 'ad') {
-    fields = 'campaign_name,campaign_id,adset_name,adset_id,ad_name,ad_id,' + fields;
+    fields = `campaign_name,campaign_id,adset_name,adset_id,ad_name,ad_id,${baseFields}${lpvField}`;
   }
 
-  const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?` +
-    `level=${level}&` +
-    `fields=${fields}&` +
+  const baseParams = `level=${level}&` +
     `breakdowns=country&` +
     `time_range={'since':'${startDate}','until':'${endDate}'}&` +
     `time_increment=1&` +
     `limit=500&` +
     `access_token=${accessToken}`;
 
-  // CRITICAL: Implement pagination to fetch ALL data (not just first 500 rows)
-  let allRows = [];
-  let currentUrl = url;
-  let pageCount = 0;
+  const buildUrl = (fieldsList) =>
+    `${META_BASE_URL}/act_${cleanAccountId}/insights?fields=${fieldsList}&${baseParams}`;
 
-  console.log(`[Meta] Fetching ${level} data with pagination...`);
+  const fetchAllRows = async (fieldsList) => {
+    const url = buildUrl(fieldsList);
+    let allRows = [];
+    let currentUrl = url;
+    let pageCount = 0;
 
-  while (currentUrl) {
-    const response = await fetch(currentUrl);
-    const json = await response.json();
+    console.log(`[Meta] Fetching ${level} data with pagination...`);
 
-    if (json.error) throw new Error(json.error.message);
+    while (currentUrl) {
+      const response = await fetch(currentUrl);
+      const json = await response.json();
 
-    const pageData = json.data || [];
-    allRows = [...allRows, ...pageData];
-    pageCount++;
+      if (json.error) throw new Error(json.error.message);
 
-    console.log(`[Meta] ${level} - Page ${pageCount}: ${pageData.length} rows (total: ${allRows.length})`);
+      const pageData = json.data || [];
+      allRows = [...allRows, ...pageData];
+      pageCount++;
 
-    // Check for next page
-    currentUrl = json.paging?.next || null;
+      console.log(`[Meta] ${level} - Page ${pageCount}: ${pageData.length} rows (total: ${allRows.length})`);
+
+      // Check for next page
+      currentUrl = json.paging?.next || null;
+    }
+
+    console.log(`[Meta] ${level} - Completed: ${allRows.length} total rows from ${pageCount} pages`);
+    return allRows;
+  };
+
+  const fallbackFields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click';
+  const invalidLandingPageViewsMessage = 'landing_page_views is not valid for fields param';
+
+  let rows;
+  try {
+    rows = await fetchAllRows(fields);
+  } catch (error) {
+    const message = error?.message || '';
+    const isInvalidLpvField =
+      message.includes(invalidLandingPageViewsMessage) ||
+      message.includes(invalidLandingPageViewsMessage.toLowerCase());
+    const retryFields = isInvalidLpvField ? fields.replace(lpvField, '') : fallbackFields;
+    const retryReason = isInvalidLpvField ? 'landing_page_views not allowed' : 'fallback fields';
+
+    console.warn(`[Meta] ${level} fetch failed with primary fields: ${message}`);
+    console.warn(`[Meta] Retrying ${level} fetch (${retryReason}).`);
+
+    try {
+      rows = await fetchAllRows(retryFields);
+    } catch (retryError) {
+      console.error(`[Meta] ${level} fetch failed after retry: ${retryError?.message || retryError}`);
+      return 0;
+    }
   }
-
-  console.log(`[Meta] ${level} - Completed: ${allRows.length} total rows from ${pageCount} pages`);
-
-  const rows = allRows;
 
   // Prepare insert statement based on level
   let insertStmt;
@@ -390,6 +430,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
         inline_link_clicks, cost_per_inline_link_click,
+        outbound_clicks, unique_outbound_clicks, outbound_clicks_ctr, unique_outbound_clicks_ctr,
         status, effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @country,
@@ -397,6 +438,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         @lpv, @atc, @checkout,
         @conversions, @conversion_value,
         @inline_link_clicks, @cost_per_inline_link_click,
+        @outbound_clicks, @unique_outbound_clicks, @outbound_clicks_ctr, @unique_outbound_clicks_ctr,
         @status, @effective_status
       )
     `);
@@ -408,6 +450,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
         inline_link_clicks, cost_per_inline_link_click,
+        outbound_clicks, unique_outbound_clicks, outbound_clicks_ctr, unique_outbound_clicks_ctr,
         status, effective_status, adset_status, adset_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @country,
@@ -415,6 +458,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         @lpv, @atc, @checkout,
         @conversions, @conversion_value,
         @inline_link_clicks, @cost_per_inline_link_click,
+        @outbound_clicks, @unique_outbound_clicks, @outbound_clicks_ctr, @unique_outbound_clicks_ctr,
         @status, @effective_status, @adset_status, @adset_effective_status
       )
     `);
@@ -426,6 +470,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
         inline_link_clicks, cost_per_inline_link_click,
+        outbound_clicks, unique_outbound_clicks, outbound_clicks_ctr, unique_outbound_clicks_ctr,
         status, effective_status, ad_status, ad_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @ad_id, @ad_name, @country,
@@ -433,6 +478,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         @lpv, @atc, @checkout,
         @conversions, @conversion_value,
         @inline_link_clicks, @cost_per_inline_link_click,
+        @outbound_clicks, @unique_outbound_clicks, @outbound_clicks_ctr, @unique_outbound_clicks_ctr,
         @status, @effective_status, @ad_status, @ad_effective_status
       )
     `);
@@ -443,7 +489,8 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       // Parse specific funnel steps
       const purchases = getActionValue(row.actions, 'purchase') || getActionValue(row.actions, 'offsite_conversion.fb_pixel_purchase');
       const revenue = getActionValue(row.action_values, 'purchase') || getActionValue(row.action_values, 'offsite_conversion.fb_pixel_purchase');
-      const lpv = getActionValue(row.actions, 'landing_page_view');
+      const lpvFromField = getMetricValue(row.landing_page_views);
+      const lpv = lpvFromField > 0 ? lpvFromField : getActionValue(row.actions, 'landing_page_view');
       const atc = getActionValue(row.actions, 'add_to_cart');
       const checkout = getActionValue(row.actions, 'initiate_checkout');
 
@@ -470,6 +517,18 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       // cost_per_inline_link_click comes directly from Meta API (already calculated)
       // Apply currency rate to the cost
       const costPerInlineLinkClick = parseFloat(row.cost_per_inline_link_click || 0) * rate;
+      const outboundClicksField = getMetricValue(row.outbound_clicks);
+      const outboundClicksAction =
+        getActionValue(row.actions, 'outbound_click') ||
+        getActionValue(row.actions, 'outbound_clicks');
+      const outboundClicks = Math.round(outboundClicksField > 0 ? outboundClicksField : outboundClicksAction);
+      const uniqueOutboundClicksField = getMetricValue(row.unique_outbound_clicks);
+      const uniqueOutboundClicksAction =
+        getActionValue(row.actions, 'unique_outbound_click') ||
+        getActionValue(row.actions, 'unique_outbound_clicks');
+      const uniqueOutboundClicks = Math.round(uniqueOutboundClicksField > 0 ? uniqueOutboundClicksField : uniqueOutboundClicksAction);
+      const outboundClicksCtr = getMetricValue(row.outbound_clicks_ctr);
+      const uniqueOutboundClicksCtr = getMetricValue(row.unique_outbound_clicks_ctr);
 
       const data = {
         store: store,
@@ -488,6 +547,10 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         conversion_value: parseFloat(revenue || 0) * rate,
         inline_link_clicks: inlineLinkClicks,
         cost_per_inline_link_click: costPerInlineLinkClick,
+        outbound_clicks: outboundClicks,
+        unique_outbound_clicks: uniqueOutboundClicks,
+        outbound_clicks_ctr: outboundClicksCtr,
+        unique_outbound_clicks_ctr: uniqueOutboundClicksCtr,
         status: campaignStatus,
         effective_status: campaignEffectiveStatus
       };
