@@ -73,6 +73,22 @@ function getActionValue(actions, type) {
   return action ? parseFloat(action.value) : 0;
 }
 
+// Helper: Parse outbound_clicks defensively (array/object/number)
+function parseOutboundClicks(raw) {
+  if (raw === null || raw === undefined) return 0;
+  if (typeof raw === 'number') return raw;
+  if (typeof raw === 'string') return parseFloat(raw) || 0;
+  if (Array.isArray(raw)) {
+    return raw.reduce((sum, item) => sum + parseOutboundClicks(item?.value ?? item), 0);
+  }
+  if (typeof raw === 'object') {
+    if ('value' in raw) return parseOutboundClicks(raw.value);
+    const firstValue = Object.values(raw).find((value) => value !== null && value !== undefined);
+    return parseOutboundClicks(firstValue);
+  }
+  return 0;
+}
+
 // Helper: Format date as YYYY-MM-DD
 function formatDate(date) {
   return date.toISOString().split('T')[0];
@@ -341,7 +357,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
   } else if (level === 'adset') {
     fields = 'campaign_name,campaign_id,adset_name,adset_id,' + fields;
   } else if (level === 'ad') {
-    fields = 'campaign_name,campaign_id,adset_name,adset_id,ad_name,ad_id,' + fields;
+    fields = 'campaign_name,campaign_id,adset_name,adset_id,ad_name,ad_id,' + fields + ',outbound_clicks,frequency';
   }
 
   const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?` +
@@ -426,6 +442,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
         inline_link_clicks, cost_per_inline_link_click,
+        outbound_clicks, frequency,
         status, effective_status, ad_status, ad_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @ad_id, @ad_name, @country,
@@ -433,6 +450,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         @lpv, @atc, @checkout,
         @conversions, @conversion_value,
         @inline_link_clicks, @cost_per_inline_link_click,
+        @outbound_clicks, @frequency,
         @status, @effective_status, @ad_status, @ad_effective_status
       )
     `);
@@ -470,6 +488,8 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       // cost_per_inline_link_click comes directly from Meta API (already calculated)
       // Apply currency rate to the cost
       const costPerInlineLinkClick = parseFloat(row.cost_per_inline_link_click || 0) * rate;
+      const outboundClicks = parseOutboundClicks(row.outbound_clicks);
+      const frequency = parseFloat(row.frequency || 0);
 
       const data = {
         store: store,
@@ -488,6 +508,8 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         conversion_value: parseFloat(revenue || 0) * rate,
         inline_link_clicks: inlineLinkClicks,
         cost_per_inline_link_click: costPerInlineLinkClick,
+        outbound_clicks: outboundClicks,
+        frequency,
         status: campaignStatus,
         effective_status: campaignEffectiveStatus
       };

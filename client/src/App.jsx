@@ -1315,6 +1315,103 @@ function DashboardTab({
     return creativeCampaignOptions.find(c => c.id === selectedCreativeCampaignId) || creativeCampaignOptions[0];
   }, [creativeCampaignOptions, selectedCreativeCampaignId]);
 
+  const getVisits = (metrics = {}) => {
+    const lpv = Number(metrics.landing_page_views ?? metrics.lpv ?? 0);
+    const outboundClicks = Number(metrics.outbound_clicks ?? 0);
+    const inlineLinkClicks = Number(metrics.inline_link_clicks ?? metrics.link_clicks ?? metrics.clicks ?? 0);
+    return lpv || outboundClicks || inlineLinkClicks || 0;
+  };
+
+  const baselineTheta0 = useMemo(() => {
+    let totalVisits = 0;
+    let totalPurchases = 0;
+
+    metaAdManagerData.forEach((campaign) => {
+      (campaign?.adsets || []).forEach((adset) => {
+        (adset?.ads || []).forEach((ad) => {
+          const visits = getVisits(ad);
+          const purchases = ad.conversions ?? ad.purchases ?? 0;
+          totalVisits += visits;
+          totalPurchases += purchases || 0;
+        });
+      });
+    });
+
+    return totalVisits > 0 ? totalPurchases / totalVisits : 0;
+  }, [metaAdManagerData]);
+
+  const K0 = 200;
+  const CREATIVE_SCORE_SAMPLES = 2000;
+
+  const hashSeed = (value) => {
+    const str = String(value ?? '');
+    let hash = 2166136261;
+    for (let i = 0; i < str.length; i += 1) {
+      hash ^= str.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  };
+
+  const createSeededRng = (seed) => {
+    let t = seed >>> 0;
+    return () => {
+      t += 0x6D2B79F5;
+      let x = Math.imul(t ^ (t >>> 15), t | 1);
+      x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+      return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+
+  const sampleNormal = (rng) => {
+    let u = 0;
+    let v = 0;
+    while (u === 0) u = rng();
+    while (v === 0) v = rng();
+    return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+  };
+
+  const sampleGamma = (shape, rng) => {
+    if (shape < 1) {
+      const u = rng();
+      return sampleGamma(1 + shape, rng) * Math.pow(u, 1 / shape);
+    }
+
+    const d = shape - 1 / 3;
+    const c = 1 / Math.sqrt(9 * d);
+
+    while (true) {
+      const x = sampleNormal(rng);
+      let v = 1 + c * x;
+      if (v <= 0) continue;
+      v = v * v * v;
+      const u = rng();
+      if (u < 1 - 0.331 * Math.pow(x, 4)) return d * v;
+      if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+    }
+  };
+
+  const sampleBeta = (alpha, beta, rng) => {
+    const x = sampleGamma(alpha, rng);
+    const y = sampleGamma(beta, rng);
+    return x / (x + y);
+  };
+
+  const estimateCreativeScore = ({ purchases, visits, seedKey, baseline }) => {
+    if (visits <= 0 || baseline <= 0) return 0;
+    const alpha = 1 + Math.max(0, purchases);
+    const beta = 1 + Math.max(0, visits - purchases);
+    const rng = createSeededRng(hashSeed(seedKey));
+    let wins = 0;
+
+    for (let i = 0; i < CREATIVE_SCORE_SAMPLES; i += 1) {
+      const sample = sampleBeta(alpha, beta, rng);
+      if (sample > baseline) wins += 1;
+    }
+
+    return (wins / CREATIVE_SCORE_SAMPLES) * 100;
+  };
+
   const creativeAds = useMemo(() => {
     if (!selectedCreativeCampaign) return [];
     const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
@@ -1324,10 +1421,20 @@ function DashboardTab({
       const impressions = ad.impressions || 0;
       const clicks = ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0;
       const lpv = ad.landing_page_views ?? ad.lpv ?? 0;
+      const outboundClicks = ad.outbound_clicks ?? 0;
       const atc = ad.atc ?? ad.add_to_cart ?? 0;
       const spend = ad.spend || 0;
       const aov = purchases > 0 ? revenue / purchases : null;
       const roas = spend > 0 ? revenue / spend : null;
+      const visits = getVisits({ lpv, outbound_clicks: outboundClicks, inline_link_clicks: clicks });
+      const confidence = visits > 0 ? visits / (visits + K0) : 0;
+      const creativeScore = estimateCreativeScore({
+        purchases,
+        visits,
+        seedKey: ad.ad_id || ad.id || ad.ad_name || ad.name || idx,
+        baseline: baselineTheta0
+      });
+      const isProvisional = visits < 200 || spend < 20;
       const countries = Array.isArray(ad.countries) ? ad.countries : [];
 
       return {
@@ -1336,17 +1443,22 @@ function DashboardTab({
         impressions,
         clicks,
         lpv,
+        outboundClicks,
+        visits,
         atc,
         purchases,
         aov,
         roas,
         spend,
         revenue,
+        confidence,
+        creativeScore,
+        isProvisional,
         countries,
         country: ad.country || ad.geo || null
       };
     });
-  }, [selectedCreativeCampaign]);
+  }, [baselineTheta0, selectedCreativeCampaign]);
 
   const creativeRows = useMemo(() => {
     if (creativeAds.length === 0) return [];
@@ -1359,13 +1471,14 @@ function DashboardTab({
         groups.set(key, {
           key,
           name: ad.name,
-        impressions: 0,
-        clicks: 0,
-        lpv: 0,
-        atc: 0,
-        purchases: 0,
-        revenue: 0,
-        spend: 0
+          impressions: 0,
+          clicks: 0,
+          lpv: 0,
+          visits: 0,
+          atc: 0,
+          purchases: 0,
+          revenue: 0,
+          spend: 0
       });
       }
 
@@ -1373,6 +1486,7 @@ function DashboardTab({
       group.impressions += ad.impressions || 0;
       group.clicks += ad.clicks || 0;
       group.lpv += ad.lpv || 0;
+      group.visits += ad.visits || 0;
       group.atc += ad.atc || 0;
       group.purchases += ad.purchases || 0;
       group.revenue += ad.revenue || 0;
@@ -1384,7 +1498,16 @@ function DashboardTab({
       ctr: row.impressions > 0 ? (row.clicks / row.impressions) * 100 : null,
       atcRate: row.lpv > 0 ? (row.atc / row.lpv) * 100 : null,
       aov: row.purchases > 0 ? row.revenue / row.purchases : null,
-      roas: row.spend > 0 ? row.revenue / row.spend : null
+      roas: row.spend > 0 ? row.revenue / row.spend : null,
+      baselineCvr: baselineTheta0,
+      confidence: row.visits > 0 ? row.visits / (row.visits + K0) : 0,
+      creativeScore: estimateCreativeScore({
+        purchases: row.purchases,
+        visits: row.visits,
+        seedKey: row.key,
+        baseline: baselineTheta0
+      }),
+      isProvisional: row.visits < 200 || row.spend < 20
     }));
 
     const { field, direction } = creativeSortConfig;
@@ -1402,7 +1525,7 @@ function DashboardTab({
       const bNum = Number(bVal) || 0;
       return dir * (aNum - bNum);
     });
-  }, [creativeAds, creativeSortConfig]);
+  }, [baselineTheta0, creativeAds, creativeSortConfig]);
 
   const creativeCountrySections = useMemo(() => {
     if (creativeAds.length === 0) return [];
@@ -1436,12 +1559,13 @@ function DashboardTab({
     creativeAds.forEach((ad) => {
       const breakdowns = Array.isArray(ad.countries) && ad.countries.length > 0
         ? ad.countries
-        : [{
+          : [{
             country: ad.country || 'ALL',
             spend: ad.spend || 0,
             impressions: ad.impressions || 0,
             clicks: ad.clicks ?? 0,
             lpv: ad.lpv || 0,
+            outbound_clicks: ad.outboundClicks || 0,
             add_to_cart: ad.atc || 0,
             conversions: ad.purchases || 0,
             conversion_value: ad.revenue || 0
@@ -1456,10 +1580,20 @@ function DashboardTab({
         const impressions = countryEntry.impressions || 0;
         const clicks = countryEntry.inline_link_clicks ?? countryEntry.link_clicks ?? countryEntry.clicks ?? countryEntry.click ?? 0;
         const lpv = countryEntry.landing_page_views ?? countryEntry.lpv ?? 0;
+        const outboundClicks = countryEntry.outbound_clicks ?? 0;
         const atc = countryEntry.add_to_cart ?? countryEntry.atc ?? 0;
         const spend = countryEntry.spend || 0;
         const aov = purchases > 0 ? revenue / purchases : null;
         const roas = spend > 0 ? revenue / spend : null;
+        const visits = getVisits({ lpv, outbound_clicks: outboundClicks, inline_link_clicks: clicks });
+        const confidence = visits > 0 ? visits / (visits + K0) : 0;
+        const creativeScore = estimateCreativeScore({
+          purchases,
+          visits,
+          seedKey: `${ad.key}-${code}-${idx}`,
+          baseline: baselineTheta0
+        });
+        const isProvisional = visits < 200 || spend < 20;
 
         if (!countryMap.has(code)) {
           countryMap.set(code, { code, flag, name, rows: [] });
@@ -1472,12 +1606,17 @@ function DashboardTab({
           clicks,
           ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
           lpv,
+          visits,
           atc,
           atcRate: lpv > 0 ? (atc / lpv) * 100 : null,
           purchases,
           aov,
           roas,
-          spend
+          spend,
+          baselineCvr: baselineTheta0,
+          confidence,
+          creativeScore,
+          isProvisional
         });
       });
     });
@@ -1493,7 +1632,7 @@ function DashboardTab({
     });
 
     return sections.sort((a, b) => (b.totalPurchases || 0) - (a.totalPurchases || 0));
-  }, [creativeAds, creativeSortConfig]);
+  }, [baselineTheta0, creativeAds, creativeSortConfig]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -2403,6 +2542,22 @@ function DashboardTab({
                   <th
                     className="px-4 py-3 text-right cursor-pointer select-none"
                     onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'visits',
+                      direction: prev.field === 'visits' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Visits (V)
+                      {creativeSortConfig.field === 'visits'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
                       field: 'ctr',
                       direction: prev.field === 'ctr' && prev.direction === 'desc' ? 'asc' : 'desc'
                     }))}
@@ -2456,8 +2611,56 @@ function DashboardTab({
                     }))}
                   >
                     <div className="flex items-center gap-1 justify-end">
-                      Purchases
+                      Purchases (P)
                       {creativeSortConfig.field === 'purchases'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'baselineCvr',
+                      direction: prev.field === 'baselineCvr' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Baseline CVR (θ0)
+                      {creativeSortConfig.field === 'baselineCvr'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'confidence',
+                      direction: prev.field === 'confidence' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Confidence
+                      {creativeSortConfig.field === 'confidence'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'creativeScore',
+                      direction: prev.field === 'creativeScore' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Creative Score
+                      {creativeSortConfig.field === 'creativeScore'
                         ? (creativeSortConfig.direction === 'asc'
                           ? <ChevronUp className="w-3 h-3 text-indigo-600" />
                           : <ChevronDown className="w-3 h-3 text-indigo-600" />)
@@ -2508,10 +2711,27 @@ function DashboardTab({
                       </td>
                       <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.spend, 'currency')}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.impressions)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.visits)}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.ctr, 'percent', 2)}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.atcRate, 'percent', 2)}</td>
                       <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.baselineCvr, 'percent', 2)}</td>
+                      <td className="px-4 py-3 text-right text-sm">
+                        <div className="flex items-center justify-end gap-2">
+                          <span>{renderMetric(creative.confidence, 'percent', 0)}</span>
+                          <span
+                            className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                              creative.isProvisional ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                            }`}
+                          >
+                            {creative.isProvisional ? 'PROVISIONAL' : 'CONFIDENT'}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm font-semibold text-indigo-700">
+                        {renderMetric(creative.creativeScore, 'number')}
+                      </td>
                       <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
                       <td className="px-4 py-3 text-right text-sm text-green-700 font-semibold">{renderMetric(creative.roas, 'roas', 2)}</td>
                     </tr>
@@ -2522,7 +2742,7 @@ function DashboardTab({
                   {creativeCountrySections.map((section) => (
                     <Fragment key={section.code}>
                       <tr className="bg-gray-50">
-                        <td colSpan={10} className="px-4 py-3 text-xs font-semibold text-gray-600">
+                        <td colSpan={14} className="px-4 py-3 text-xs font-semibold text-gray-600">
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               <span className="text-lg">{section.flag}</span>
@@ -2540,10 +2760,27 @@ function DashboardTab({
                           </td>
                           <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.spend, 'currency')}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.impressions)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.visits)}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.ctr, 'percent', 2)}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.atcRate, 'percent', 2)}</td>
                           <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.baselineCvr, 'percent', 2)}</td>
+                          <td className="px-4 py-3 text-right text-sm">
+                            <div className="flex items-center justify-end gap-2">
+                              <span>{renderMetric(creative.confidence, 'percent', 0)}</span>
+                              <span
+                                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                  creative.isProvisional ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                                }`}
+                              >
+                                {creative.isProvisional ? 'PROVISIONAL' : 'CONFIDENT'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-right text-sm font-semibold text-indigo-700">
+                            {renderMetric(creative.creativeScore, 'number')}
+                          </td>
                           <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
                           <td className="px-4 py-3 text-right text-sm text-green-700 font-semibold">{renderMetric(creative.roas, 'roas', 2)}</td>
                         </tr>
