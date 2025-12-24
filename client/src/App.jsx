@@ -15,6 +15,7 @@ import NotificationCenter from './components/NotificationCenter';
 import AIAnalytics from './components/AIAnalytics';
 import AIBudget from './components/AIBudget';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
+import CampaignIntelligence from './components/CampaignIntelligence';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -104,7 +105,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics', 'AI Budget'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics', 'AI Budget', 'Campaign Intelligence'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1147,6 +1148,10 @@ export default function App() {
 
         {activeTab === 5 && (
           <AIBudget store={currentStore} />
+        )}
+
+        {activeTab === 6 && (
+          <CampaignIntelligence store={currentStore} />
         )}
       </div>
 
