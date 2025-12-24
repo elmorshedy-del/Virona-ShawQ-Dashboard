@@ -42,6 +42,10 @@ export function initDb() {
       checkouts_initiated INTEGER DEFAULT 0,
       conversions INTEGER DEFAULT 0,
       conversion_value REAL DEFAULT 0,
+      outbound_clicks INTEGER DEFAULT 0,
+      unique_outbound_clicks INTEGER DEFAULT 0,
+      outbound_clicks_ctr REAL DEFAULT 0,
+      unique_outbound_clicks_ctr REAL DEFAULT 0,
       cpm REAL DEFAULT 0,
       cpc REAL DEFAULT 0,
       ctr REAL DEFAULT 0,
@@ -238,6 +242,10 @@ export function initDb() {
       checkouts_initiated INTEGER DEFAULT 0,
       conversions INTEGER DEFAULT 0,
       conversion_value REAL DEFAULT 0,
+      outbound_clicks INTEGER DEFAULT 0,
+      unique_outbound_clicks INTEGER DEFAULT 0,
+      outbound_clicks_ctr REAL DEFAULT 0,
+      unique_outbound_clicks_ctr REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, date, adset_id, country, age, gender, publisher_platform, platform_position)
     )
@@ -269,6 +277,10 @@ export function initDb() {
       checkouts_initiated INTEGER DEFAULT 0,
       conversions INTEGER DEFAULT 0,
       conversion_value REAL DEFAULT 0,
+      outbound_clicks INTEGER DEFAULT 0,
+      unique_outbound_clicks INTEGER DEFAULT 0,
+      outbound_clicks_ctr REAL DEFAULT 0,
+      unique_outbound_clicks_ctr REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, date, ad_id, country, age, gender, publisher_platform, platform_position)
     )
@@ -373,6 +385,18 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN outbound_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN unique_outbound_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN outbound_clicks_ctr REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Add status columns to meta_adset_metrics if they don't exist
   try {
@@ -395,6 +419,18 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN outbound_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN unique_outbound_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN outbound_clicks_ctr REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Add status columns to meta_ad_metrics if they don't exist
   try {
@@ -416,6 +452,18 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN outbound_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN unique_outbound_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN outbound_clicks_ctr REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
   // Create indexes for performance
