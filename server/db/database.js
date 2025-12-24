@@ -417,6 +417,12 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN outbound_clicks INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN frequency REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Create indexes for performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_store_date ON meta_daily_metrics(store, date)`);

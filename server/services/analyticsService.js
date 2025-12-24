@@ -1169,6 +1169,7 @@ function buildAdCountryBreakdown(db, store, startDate, endDate, statusFilter) {
       SUM(reach) as reach,
       SUM(clicks) as clicks,
       SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
       SUM(landing_page_views) as lpv,
       SUM(add_to_cart) as atc,
       SUM(checkouts_initiated) as checkout,
@@ -1311,17 +1312,19 @@ export function getMetaAdManagerHierarchy(store, params) {
         MAX(status) as status, MAX(effective_status) as effective_status,
         MAX(ad_status) as ad_status, MAX(ad_effective_status) as ad_effective_status,
         SUM(spend) as spend,
-        SUM(impressions) as impressions,
-        SUM(reach) as reach,
-        SUM(clicks) as clicks,
-        SUM(inline_link_clicks) as inline_link_clicks,
-        SUM(landing_page_views) as lpv,
-        SUM(add_to_cart) as atc,
-        SUM(checkouts_initiated) as checkout,
-        SUM(conversions) as conversions,
-        SUM(conversion_value) as conversion_value,
-        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
-      FROM meta_ad_metrics
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversion_value,
+      AVG(frequency) as frequency,
+      CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+    FROM meta_ad_metrics
       WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
       GROUP BY ad_id
       ORDER BY spend DESC
@@ -1488,11 +1491,13 @@ export function getMetaAdManagerHierarchy(store, params) {
       SUM(reach) as reach,
       SUM(clicks) as clicks,
       SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
       SUM(landing_page_views) as lpv,
       SUM(add_to_cart) as atc,
       SUM(checkouts_initiated) as checkout,
       SUM(conversions) as conversions,
       SUM(conversion_value) as conversion_value,
+      AVG(frequency) as frequency,
       CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
       ${breakdownSelect}
     FROM meta_ad_metrics
