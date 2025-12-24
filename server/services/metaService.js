@@ -84,6 +84,15 @@ function getMetricValue(metric) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function isLandingPageViewsFieldError(error) {
+  const message = error?.message || error?.error?.message || '';
+  const code = error?.code || error?.error?.code;
+  return (
+    String(message).includes('landing_page_views is not valid for fields param') &&
+    String(code) === '100'
+  );
+}
+
 // Helper: Format date as YYYY-MM-DD
 function formatDate(date) {
   return date.toISOString().split('T')[0];
@@ -346,7 +355,9 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
   // Define fields based on level
   // Include inline_link_clicks and cost_per_inline_link_click for proper Link Clicks and CPC metrics
-  let fields = 'spend,impressions,clicks,reach,landing_page_views,actions,action_values,inline_link_clicks,cost_per_inline_link_click,outbound_clicks,unique_outbound_clicks,outbound_clicks_ctr,unique_outbound_clicks_ctr';
+  const baseFields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click,outbound_clicks,unique_outbound_clicks,outbound_clicks_ctr,unique_outbound_clicks_ctr';
+  const fieldsWithLpv = `landing_page_views,${baseFields}`;
+  let fields = level === 'campaign' ? baseFields : fieldsWithLpv;
   if (level === 'campaign') {
     fields = 'campaign_name,campaign_id,' + fields;
   } else if (level === 'adset') {
@@ -377,7 +388,12 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       const response = await fetch(currentUrl);
       const json = await response.json();
 
-      if (json.error) throw new Error(json.error.message);
+      if (json.error) {
+        const err = new Error(json.error.message);
+        err.code = json.error.code;
+        err.type = json.error.type;
+        throw err;
+      }
 
       const pageData = json.data || [];
       allRows = [...allRows, ...pageData];
@@ -393,16 +409,20 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
     return allRows;
   };
 
-  const fallbackFields = 'spend,impressions,clicks,reach,landing_page_views,actions,action_values,inline_link_clicks,cost_per_inline_link_click';
+  const fallbackFields = baseFields;
 
   let rows;
   try {
     rows = await fetchAllRows(fields);
   } catch (error) {
     const message = error?.message || '';
-    console.warn(`[Meta] ${level} fetch failed with primary fields: ${message}`);
-    console.warn(`[Meta] Retrying ${level} fetch with fallback fields.`);
-    rows = await fetchAllRows(fallbackFields);
+    if (isLandingPageViewsFieldError(error)) {
+      console.warn(`[Meta] landing_page_views not allowed for ${level}, retrying without it.`);
+      rows = await fetchAllRows(fallbackFields);
+    } else {
+      console.warn(`[Meta] ${level} fetch failed with primary fields: ${message}`);
+      throw error;
+    }
   }
 
   // Prepare insert statement based on level
@@ -743,9 +763,18 @@ export async function syncMetaData(store) {
     };
 
     // 5. Sync all three levels with status info
-    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, rate, statusMaps);
+    const safeSyncLevel = async (level) => {
+      try {
+        return await syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, rate, statusMaps);
+      } catch (error) {
+        console.warn(`[Meta] ${level} sync failed; continuing with other levels.`, error?.message || error);
+        return 0;
+      }
+    };
+
+    const campaignRows = await safeSyncLevel('campaign');
+    const adsetRows = await safeSyncLevel('adset');
+    const adRows = await safeSyncLevel('ad');
 
     const totalRows = campaignRows + adsetRows + adRows;
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
