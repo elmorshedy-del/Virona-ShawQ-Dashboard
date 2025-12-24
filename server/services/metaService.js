@@ -705,7 +705,12 @@ export async function syncMetaData(store) {
     if (store === 'vironax') {
       // Include campaign_name to show which campaign drove the conversion
       const metaOrderRows = db.prepare(`
-        SELECT date, country, campaign_name, SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
+        SELECT date,
+               country,
+               campaign_name,
+               MAX(created_at) as latest_created_at,
+               SUM(conversions) as conversions,
+               SUM(conversion_value) as conversion_value
         FROM meta_daily_metrics
         WHERE store = ? AND date BETWEEN ? AND ?
         GROUP BY date, country, campaign_name
@@ -719,9 +724,11 @@ export async function syncMetaData(store) {
           order_count: row.conversions,
           order_total: row.conversion_value,
           currency: 'SAR',
-          // Use start of day (00:00:00Z) instead of end of day to avoid future timestamp issues
-          // Meta aggregates data by day, so we use the beginning of that day
-          timestamp: new Date(`${row.date}T00:00:00Z`).toISOString(),
+          // Prefer latest record creation time to reflect when data arrived in our system
+          // Fallback to start of day when missing
+          timestamp: row.latest_created_at
+            ? new Date(row.latest_created_at).toISOString()
+            : new Date(`${row.date}T00:00:00Z`).toISOString(),
           source: 'meta',
           campaign_name: row.campaign_name || null
         }));

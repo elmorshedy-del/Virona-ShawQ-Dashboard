@@ -14,10 +14,14 @@ function NotificationRow({
   formatNotificationMessage,
   currentTime 
 }) {
-  const timestamp = notification?.metadata?.timestamp || 
-                    notification?.timestamp || 
-                    notification?.createdAt ||
-                    notification?.created_at;
+  const source = notification?.source || notification?.metadata?.source;
+  const useCreatedTimestamp = source === 'meta' && notification?.store === 'vironax';
+  const timestamp = useCreatedTimestamp
+    ? notification?.timestamp || notification?.createdAt || notification?.created_at
+    : notification?.metadata?.timestamp ||
+      notification?.timestamp ||
+      notification?.createdAt ||
+      notification?.created_at;
 
   // Calculate time ago directly using currentTime prop
   // This ensures the display updates whenever currentTime changes
