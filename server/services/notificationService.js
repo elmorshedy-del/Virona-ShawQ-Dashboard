@@ -109,6 +109,8 @@ export function createOrderNotifications(store, source, orders) {
   }
 
   const fallbackCurrency = store === 'shawq' ? 'USD' : 'SAR';
+  const isVironaMeta = store === 'vironax' && source === 'meta';
+  const isShopify = store === 'shawq' && source === 'shopify';
 
   // Check if we should create notifications for this source
   if (!shouldCreateOrderNotification(store, source)) {
@@ -155,10 +157,6 @@ export function createOrderNotifications(store, source, orders) {
     }
   }
 
-  if (isNaN(lastTimestamp.getTime())) {
-    lastTimestamp = new Date(0);
-  }
-  
   // Group orders by country for cleaner notifications
   const ordersByCountry = {};
 
@@ -184,6 +182,56 @@ export function createOrderNotifications(store, source, orders) {
 
     return { code: rawCountry, label: rawCountry };
   };
+
+  if (isNaN(lastTimestamp.getTime())) {
+    lastTimestamp = new Date(0);
+  }
+  
+  if (isShopify) {
+    const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
+    const sortedOrders = orders
+      .map(order => ({
+        order,
+        orderDate: new Date(order.order_created_at || order.created_at || order.date || order.timestamp)
+      }))
+      .filter(({ orderDate }) => !isNaN(orderDate))
+      .sort((a, b) => a.orderDate - b.orderDate);
+
+    let created = 0;
+
+    for (const { order, orderDate } of sortedOrders) {
+      if (orderDate <= lastTimestamp) {
+        continue;
+      }
+
+      const country = normalizeCountry(order);
+      const value = parseFloat(order.order_total || order.total_price || order.revenue || order.value || 0);
+      const currency = order.currency || fallbackCurrency;
+      const displayCountry = country.label || country.code || 'Unknown';
+      const amountLabel = `${currency} ${(value || 0).toFixed(2)}`;
+
+      const message = `${displayCountry} • ${amountLabel} • ${sourceLabel}`;
+
+      createNotification({
+        store,
+        type: 'order',
+        message,
+        metadata: {
+          source,
+          country: displayCountry,
+          country_code: country.code,
+          currency,
+          value,
+          order_count: 1,
+          timestamp: orderDate.toISOString()
+        }
+      });
+
+      created++;
+    }
+
+    return created;
+  }
 
   for (const order of orders) {
     // Shawq/Shopify uses order_created_at and order_total, others use created_at and total_price
@@ -231,7 +279,7 @@ export function createOrderNotifications(store, source, orders) {
     }
   }
 
-  const ingestionTimestamp = store === 'vironax' && source === 'meta'
+  const ingestionTimestamp = isVironaMeta
     ? new Date().toISOString()
     : null;
 
@@ -240,12 +288,12 @@ export function createOrderNotifications(store, source, orders) {
     const currency = data.currency || fallbackCurrency;
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
     const displayCountry = data.label || data.code || 'Unknown';
-    const campaignLabel = (store === 'vironax' && source === 'meta' && data.campaign_name)
+    const campaignLabel = (isVironaMeta && data.campaign_name)
       ? `${data.campaign_name} • `
       : '';
 
     const totalAmount = data.total || 0;
-    const amountLabel = (store === 'vironax' && source === 'meta')
+    const amountLabel = isVironaMeta
       ? `${Math.round(totalAmount).toLocaleString()} SAR`
       : `${currency} ${totalAmount.toFixed(2)}`;
 
