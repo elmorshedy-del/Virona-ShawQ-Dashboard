@@ -14,6 +14,7 @@ import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 import NotificationCenter from './components/NotificationCenter';
 import AIAnalytics from './components/AIAnalytics';
 import AIBudget from './components/AIBudget';
+import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 
 // Fixed "Connected" badge component
@@ -253,7 +254,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics', 'AI Budget'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics', 'AI Budget', 'Budget Calculator'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1296,6 +1297,10 @@ export default function App() {
 
         {activeTab === 5 && (
           <AIBudget store={currentStore} />
+        )}
+
+        {activeTab === 6 && (
+          <BudgetCalculator />
         )}
       </div>
 
