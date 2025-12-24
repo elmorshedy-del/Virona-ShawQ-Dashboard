@@ -133,21 +133,25 @@ export function createOrderNotifications(store, source, orders) {
   let lastTimestamp = new Date(0);
 
   if (lastNotification) {
-    try {
-      const storedMetadata = lastNotification.metadata ? JSON.parse(lastNotification.metadata) : null;
-      if (storedMetadata?.timestamp) {
-        const eventTime = new Date(storedMetadata.timestamp);
-        if (!isNaN(eventTime.getTime())) {
-          lastTimestamp = eventTime;
-        }
-      }
-    } catch (e) {
-      console.warn('[Notification] Failed to parse metadata timestamp:', e.message);
-    }
-
-    // Fallback to notification row timestamp if metadata is missing/invalid
-    if (isNaN(lastTimestamp.getTime())) {
+    if (store === 'vironax' && source === 'meta') {
       lastTimestamp = new Date(lastNotification.timestamp);
+    } else {
+      try {
+        const storedMetadata = lastNotification.metadata ? JSON.parse(lastNotification.metadata) : null;
+        if (storedMetadata?.timestamp) {
+          const eventTime = new Date(storedMetadata.timestamp);
+          if (!isNaN(eventTime.getTime())) {
+            lastTimestamp = eventTime;
+          }
+        }
+      } catch (e) {
+        console.warn('[Notification] Failed to parse metadata timestamp:', e.message);
+      }
+
+      // Fallback to notification row timestamp if metadata is missing/invalid
+      if (isNaN(lastTimestamp.getTime())) {
+        lastTimestamp = new Date(lastNotification.timestamp);
+      }
     }
   }
 
