@@ -61,6 +61,145 @@ const countryCodeToFlag = (code) => {
   return String.fromCodePoint(...code.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0)));
 };
 
+const EPSILON = 1e-6;
+const K_PRIOR = 50;
+const BAYES_SAMPLES = 2000;
+
+const hashSeed = (value) => {
+  const str = String(value ?? '');
+  let hash = 2166136261;
+  for (let i = 0; i < str.length; i += 1) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+};
+
+const createSeededRng = (seed) => {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const sampleNormal = (rng) => {
+  let u = 0;
+  let v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+};
+
+const sampleGamma = (shape, rng) => {
+  if (!Number.isFinite(shape) || shape <= 0) return 0;
+  if (shape < 1) {
+    const u = rng();
+    return sampleGamma(1 + shape, rng) * Math.pow(u, 1 / shape);
+  }
+
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+
+  while (true) {
+    const x = sampleNormal(rng);
+    const v = Math.pow(1 + c * x, 3);
+    if (v <= 0) continue;
+    const u = rng();
+    if (u < 1 - 0.0331 * Math.pow(x, 4)) return d * v;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+  }
+};
+
+const sampleBeta = (alpha, beta, rng) => {
+  const x = sampleGamma(alpha, rng);
+  const y = sampleGamma(beta, rng);
+  const sum = x + y;
+  if (sum === 0) return 0.5;
+  return x / sum;
+};
+
+const percentile = (values, p) => {
+  if (!values.length) return null;
+  const idx = Math.min(values.length - 1, Math.max(0, Math.floor(p * (values.length - 1))));
+  return values[idx];
+};
+
+const getVisitProxy = ({ lpv = 0, outboundClicks = 0, inlineClicks = 0 }) => {
+  if (lpv > 0) return lpv;
+  if (outboundClicks > 0) return outboundClicks;
+  if (inlineClicks > 0) return inlineClicks;
+  return 0;
+};
+
+const getDataStrength = (visits) => {
+  if (visits >= 200) return 'HIGH DATA';
+  if (visits >= 50) return 'MED DATA';
+  return 'LOW DATA';
+};
+
+const getVerdictLabel = ({ visits, dataStrength, winProb, p10, baseline }) => {
+  if (!visits || winProb == null) return 'NEUTRAL';
+  if (dataStrength === 'HIGH DATA' && winProb <= 0.10) return 'DEAD';
+  if (dataStrength === 'HIGH DATA' && winProb <= 0.30) return 'LOSER';
+  if (dataStrength === 'HIGH DATA' && winProb >= 0.95 && p10 > baseline) return 'WINNER';
+  if ((dataStrength === 'MED DATA' || dataStrength === 'HIGH DATA') && winProb >= 0.70) return 'PROMISING';
+  if (winProb >= 0.30) return 'NEUTRAL';
+  return 'NEUTRAL';
+};
+
+const computeBayesianStats = ({ visits, purchases, baseline, seedKey }) => {
+  const safeVisits = Number(visits) || 0;
+  if (safeVisits <= 0) {
+    return {
+      visits: 0,
+      effectivePurchases: 0,
+      pointCvr: null,
+      winProb: null,
+      p10: null,
+      p90: null,
+      dataStrength: 'LOW DATA',
+      verdict: 'NEUTRAL'
+    };
+  }
+
+  const effectivePurchases = Math.min(Number(purchases) || 0, safeVisits);
+  const pointCvr = safeVisits > 0 ? effectivePurchases / safeVisits : null;
+  const alpha0 = 1 + K_PRIOR * baseline;
+  const beta0 = 1 + K_PRIOR * (1 - baseline);
+  const alpha = alpha0 + effectivePurchases;
+  const beta = beta0 + (safeVisits - effectivePurchases);
+  const rng = createSeededRng(hashSeed(seedKey));
+  const samples = [];
+  let wins = 0;
+
+  for (let i = 0; i < BAYES_SAMPLES; i += 1) {
+    const sample = sampleBeta(alpha, beta, rng);
+    samples.push(sample);
+    if (sample > baseline) wins += 1;
+  }
+
+  samples.sort((a, b) => a - b);
+  const winProb = wins / BAYES_SAMPLES;
+  const p10 = percentile(samples, 0.1);
+  const p90 = percentile(samples, 0.9);
+  const dataStrength = getDataStrength(safeVisits);
+  const verdict = getVerdictLabel({ visits: safeVisits, dataStrength, winProb, p10, baseline });
+
+  return {
+    visits: safeVisits,
+    effectivePurchases,
+    pointCvr,
+    winProb,
+    p10,
+    p90,
+    dataStrength,
+    verdict
+  };
+};
+
 const MASTER_COUNTRIES_WITH_FLAGS = MASTER_COUNTRIES.map(country => ({
   ...country,
   flag: countryCodeToFlag(country.code)
@@ -1315,6 +1454,27 @@ function DashboardTab({
     return creativeCampaignOptions.find(c => c.id === selectedCreativeCampaignId) || creativeCampaignOptions[0];
   }, [creativeCampaignOptions, selectedCreativeCampaignId]);
 
+  const creativeBaselineCvr = useMemo(() => {
+    const ads = Array.isArray(selectedCreativeCampaign?.ads) ? selectedCreativeCampaign.ads : [];
+    const totals = ads.reduce(
+      (acc, ad) => {
+        const lpv = ad.landing_page_views ?? ad.lpv ?? 0;
+        const outboundClicks = ad.outbound_clicks ?? ad.outbound_click ?? 0;
+        const inlineClicks = ad.inline_link_clicks ?? ad.link_clicks ?? 0;
+        const visits = getVisitProxy({ lpv, outboundClicks, inlineClicks });
+        const purchases = ad.conversions ?? ad.purchases ?? 0;
+        const effectivePurchases = Math.min(purchases, visits);
+        acc.visits += visits;
+        acc.purchases += effectivePurchases;
+        return acc;
+      },
+      { visits: 0, purchases: 0 }
+    );
+
+    const rawCvr = totals.visits > 0 ? totals.purchases / totals.visits : 0;
+    return Math.max(rawCvr, EPSILON);
+  }, [selectedCreativeCampaign]);
+
   const creativeAds = useMemo(() => {
     if (!selectedCreativeCampaign) return [];
     const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
@@ -1322,7 +1482,9 @@ function DashboardTab({
       const purchases = ad.conversions ?? ad.purchases ?? 0;
       const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
       const impressions = ad.impressions || 0;
-      const clicks = ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0;
+      const inlineClicks = ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0;
+      const outboundClicks = ad.outbound_clicks ?? ad.outbound_click ?? 0;
+      const clicks = inlineClicks;
       const lpv = ad.landing_page_views ?? ad.lpv ?? 0;
       const atc = ad.atc ?? ad.add_to_cart ?? 0;
       const spend = ad.spend || 0;
@@ -1335,6 +1497,8 @@ function DashboardTab({
         name: ad.ad_name || ad.name || 'Creative',
         impressions,
         clicks,
+        inlineClicks,
+        outboundClicks,
         lpv,
         atc,
         purchases,
@@ -1361,6 +1525,8 @@ function DashboardTab({
           name: ad.name,
         impressions: 0,
         clicks: 0,
+        inlineClicks: 0,
+        outboundClicks: 0,
         lpv: 0,
         atc: 0,
         purchases: 0,
@@ -1372,6 +1538,8 @@ function DashboardTab({
       const group = groups.get(key);
       group.impressions += ad.impressions || 0;
       group.clicks += ad.clicks || 0;
+      group.inlineClicks += ad.inlineClicks || 0;
+      group.outboundClicks += ad.outboundClicks || 0;
       group.lpv += ad.lpv || 0;
       group.atc += ad.atc || 0;
       group.purchases += ad.purchases || 0;
@@ -1381,11 +1549,24 @@ function DashboardTab({
 
     const rows = Array.from(groups.values()).map(row => ({
       ...row,
+      visits: getVisitProxy({
+        lpv: row.lpv,
+        outboundClicks: row.outboundClicks,
+        inlineClicks: row.inlineClicks
+      }),
       ctr: row.impressions > 0 ? (row.clicks / row.impressions) * 100 : null,
       atcRate: row.lpv > 0 ? (row.atc / row.lpv) * 100 : null,
       aov: row.purchases > 0 ? row.revenue / row.purchases : null,
       roas: row.spend > 0 ? row.revenue / row.spend : null
-    }));
+    })).map(row => {
+      const stats = computeBayesianStats({
+        visits: row.visits,
+        purchases: row.purchases,
+        baseline: creativeBaselineCvr,
+        seedKey: row.key
+      });
+      return { ...row, ...stats };
+    });
 
     const { field, direction } = creativeSortConfig;
     const dir = direction === 'asc' ? 1 : -1;
@@ -1402,7 +1583,7 @@ function DashboardTab({
       const bNum = Number(bVal) || 0;
       return dir * (aNum - bNum);
     });
-  }, [creativeAds, creativeSortConfig]);
+  }, [creativeAds, creativeSortConfig, creativeBaselineCvr]);
 
   const creativeCountrySections = useMemo(() => {
     if (creativeAds.length === 0) return [];
@@ -1454,7 +1635,9 @@ function DashboardTab({
         const purchases = countryEntry.conversions ?? countryEntry.purchases ?? 0;
         const revenue = countryEntry.conversion_value ?? countryEntry.purchase_value ?? 0;
         const impressions = countryEntry.impressions || 0;
-        const clicks = countryEntry.inline_link_clicks ?? countryEntry.link_clicks ?? countryEntry.clicks ?? countryEntry.click ?? 0;
+        const inlineClicks = countryEntry.inline_link_clicks ?? countryEntry.link_clicks ?? countryEntry.clicks ?? countryEntry.click ?? 0;
+        const outboundClicks = countryEntry.outbound_clicks ?? countryEntry.outbound_click ?? 0;
+        const clicks = inlineClicks;
         const lpv = countryEntry.landing_page_views ?? countryEntry.lpv ?? 0;
         const atc = countryEntry.add_to_cart ?? countryEntry.atc ?? 0;
         const spend = countryEntry.spend || 0;
@@ -1471,6 +1654,8 @@ function DashboardTab({
           impressions,
           clicks,
           ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
+          inlineClicks,
+          outboundClicks,
           lpv,
           atc,
           atcRate: lpv > 0 ? (atc / lpv) * 100 : null,
@@ -1483,7 +1668,20 @@ function DashboardTab({
     });
 
     const sections = Array.from(countryMap.values()).map(section => {
-      const rows = sortRows(section.rows);
+      const rows = sortRows(section.rows.map(row => {
+        const visits = getVisitProxy({
+          lpv: row.lpv,
+          outboundClicks: row.outboundClicks,
+          inlineClicks: row.inlineClicks
+        });
+        const stats = computeBayesianStats({
+          visits,
+          purchases: row.purchases,
+          baseline: creativeBaselineCvr,
+          seedKey: row.key
+        });
+        return { ...row, visits, ...stats };
+      }));
       const totalPurchases = rows.reduce((sum, row) => sum + (row.purchases || 0), 0);
       return {
         ...section,
@@ -1493,7 +1691,7 @@ function DashboardTab({
     });
 
     return sections.sort((a, b) => (b.totalPurchases || 0) - (a.totalPurchases || 0));
-  }, [creativeAds, creativeSortConfig]);
+  }, [creativeAds, creativeSortConfig, creativeBaselineCvr]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -1737,6 +1935,41 @@ function DashboardTab({
     if (formatter === 'roas') return renderRoas(value);
 
     return value;
+  };
+
+  const renderDataStrengthBadge = (label) => {
+    const styles = {
+      'LOW DATA': 'bg-amber-50 text-amber-700 border-amber-200',
+      'MED DATA': 'bg-indigo-50 text-indigo-700 border-indigo-200',
+      'HIGH DATA': 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    };
+    return (
+      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${styles[label] || 'bg-gray-50 text-gray-600 border-gray-200'}`}>
+        {label}
+      </span>
+    );
+  };
+
+  const renderVerdictBadge = (label) => {
+    const styles = {
+      'WINNER': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      'PROMISING': 'bg-amber-50 text-amber-700 border-amber-200',
+      'NEUTRAL': 'bg-gray-50 text-gray-600 border-gray-200',
+      'LOSER': 'bg-red-50 text-red-700 border-red-200',
+      'DEAD': 'bg-red-100 text-red-800 border-red-200'
+    };
+    const labelMap = {
+      'WINNER': 'WINNER ✅',
+      'PROMISING': 'PROMISING 🟡',
+      'NEUTRAL': 'NEUTRAL ⚪',
+      'LOSER': 'LOSER 🔻',
+      'DEAD': 'DEAD ❌'
+    };
+    return (
+      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${styles[label] || 'bg-gray-50 text-gray-600 border-gray-200'}`}>
+        {labelMap[label] || label}
+      </span>
+    );
   };
 
   // SECTION 1 rows based on metaView
@@ -2451,6 +2684,22 @@ function DashboardTab({
                   <th
                     className="px-4 py-3 text-right cursor-pointer select-none"
                     onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'visits',
+                      direction: prev.field === 'visits' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Visits
+                      {creativeSortConfig.field === 'visits'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
                       field: 'purchases',
                       direction: prev.field === 'purchases' && prev.direction === 'desc' ? 'asc' : 'desc'
                     }))}
@@ -2496,6 +2745,41 @@ function DashboardTab({
                         : <ArrowUpDown className="w-3 h-3 opacity-40" />}
                     </div>
                   </th>
+                  <th className="px-4 py-3 text-right">Baseline CVR</th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'winProb',
+                      direction: prev.field === 'winProb' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      Win Prob
+                      {creativeSortConfig.field === 'winProb'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right cursor-pointer select-none"
+                    onClick={() => setCreativeSortConfig(prev => ({
+                      field: 'p10',
+                      direction: prev.field === 'p10' && prev.direction === 'desc' ? 'asc' : 'desc'
+                    }))}
+                  >
+                    <div className="flex items-center gap-1 justify-end">
+                      p10 CVR
+                      {creativeSortConfig.field === 'p10'
+                        ? (creativeSortConfig.direction === 'asc'
+                          ? <ChevronUp className="w-3 h-3 text-indigo-600" />
+                          : <ChevronDown className="w-3 h-3 text-indigo-600" />)
+                        : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+                    </div>
+                  </th>
+                  <th className="px-4 py-3 text-right">Data Strength</th>
+                  <th className="px-4 py-3 text-right">Verdict</th>
                 </tr>
               </thead>
               {creativeViewMode === 'aggregate' ? (
@@ -2511,9 +2795,15 @@ function DashboardTab({
                       <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.ctr, 'percent', 2)}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.atcRate, 'percent', 2)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.visits)}</td>
                       <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
                       <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
                       <td className="px-4 py-3 text-right text-sm text-green-700 font-semibold">{renderMetric(creative.roas, 'roas', 2)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderMetric(creativeBaselineCvr * 100, 'percent', 2)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.winProb != null ? creative.winProb * 100 : null, 'percent', 1)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.p10 != null ? creative.p10 * 100 : null, 'percent', 2)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderDataStrengthBadge(creative.dataStrength)}</td>
+                      <td className="px-4 py-3 text-right text-sm">{renderVerdictBadge(creative.verdict)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2522,7 +2812,7 @@ function DashboardTab({
                   {creativeCountrySections.map((section) => (
                     <Fragment key={section.code}>
                       <tr className="bg-gray-50">
-                        <td colSpan={10} className="px-4 py-3 text-xs font-semibold text-gray-600">
+                        <td colSpan={16} className="px-4 py-3 text-xs font-semibold text-gray-600">
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               <span className="text-lg">{section.flag}</span>
@@ -2543,9 +2833,15 @@ function DashboardTab({
                           <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.ctr, 'percent', 2)}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.atc)}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.atcRate, 'percent', 2)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderNumber(creative.visits)}</td>
                           <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{renderNumber(creative.purchases)}</td>
                           <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.aov, 'currency')}</td>
                           <td className="px-4 py-3 text-right text-sm text-green-700 font-semibold">{renderMetric(creative.roas, 'roas', 2)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderMetric(creativeBaselineCvr * 100, 'percent', 2)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.winProb != null ? creative.winProb * 100 : null, 'percent', 1)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderMetric(creative.p10 != null ? creative.p10 * 100 : null, 'percent', 2)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderDataStrengthBadge(creative.dataStrength)}</td>
+                          <td className="px-4 py-3 text-right text-sm">{renderVerdictBadge(creative.verdict)}</td>
                         </tr>
                       ))}
                     </Fragment>
