@@ -1,5 +1,6 @@
 import { getDb } from '../db/database.js';
 import { getCountryInfo } from '../utils/countryData.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 const DEFAULT_NOTIFICATION_LIMIT = 50;
 
@@ -133,11 +134,14 @@ export function createOrderNotifications(store, source, orders) {
     lastTimestamp = new Date(0);
   }
   
+  const isShawqShopify = store === 'shawq' && source === 'shopify';
+  const CAMPAIGN_AOV_MATCH_THRESHOLD = 0.35;
+
   // Group orders by country for cleaner notifications
   const ordersByCountry = {};
 
   const normalizeCountry = (order, fallback = 'Unknown') => {
-    const rawCountry = (order.country || order.shipping_country || order.country_code || '').toString().trim();
+    const rawCountry = (order.country_code || order.country || order.shipping_country || '').toString().trim();
     if (!rawCountry) {
       return { code: fallback, label: fallback };
     }
@@ -157,6 +161,56 @@ export function createOrderNotifications(store, source, orders) {
     }
 
     return { code: rawCountry, label: rawCountry };
+  };
+
+  const campaignLookupStmt = isShawqShopify
+    ? db.prepare(`
+        SELECT campaign_name, SUM(conversion_value) as conversion_value, SUM(conversions) as conversions, MAX(date) as latest_date
+        FROM meta_daily_metrics
+        WHERE store = ? AND country = ? AND date BETWEEN ? AND ?
+          AND conversions > 0 AND conversion_value > 0
+        GROUP BY campaign_name
+      `)
+    : null;
+
+  const findMatchingCampaign = (countryCode, latestOrderDate, targetAov) => {
+    if (!campaignLookupStmt || !countryCode || !latestOrderDate || !targetAov || targetAov <= 0) {
+      return null;
+    }
+
+    const endDate = formatDateAsGmt3(latestOrderDate);
+    const startDate = formatDateAsGmt3(new Date(latestOrderDate.getTime() - 30 * 24 * 60 * 60 * 1000));
+
+    const rows = campaignLookupStmt.all(store, countryCode, startDate, endDate);
+    if (!rows || rows.length === 0) {
+      return null;
+    }
+
+    let bestMatch = null;
+    let bestDiff = Infinity;
+
+    rows.forEach(row => {
+      const conversions = Number(row.conversions || 0);
+      const conversionValue = Number(row.conversion_value || 0);
+      if (!conversions || !conversionValue) {
+        return;
+      }
+
+      const aov = conversionValue / conversions;
+      if (!Number.isFinite(aov)) {
+        return;
+      }
+
+      const diff = Math.abs(aov - targetAov);
+      const maxDiff = Math.max(5, targetAov * CAMPAIGN_AOV_MATCH_THRESHOLD);
+
+      if (diff <= maxDiff && diff < bestDiff) {
+        bestDiff = diff;
+        bestMatch = row.campaign_name || null;
+      }
+    });
+
+    return bestMatch;
   };
 
   for (const order of orders) {
@@ -210,8 +264,19 @@ export function createOrderNotifications(store, source, orders) {
     const currency = data.currency || fallbackCurrency;
     const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
     const displayCountry = data.label || data.code || 'Unknown';
-    const campaignLabel = (store === 'vironax' && source === 'meta' && data.campaign_name)
-      ? `${data.campaign_name} • `
+    let campaignName = data.campaign_name || null;
+
+    if (isShawqShopify) {
+      const targetAov = data.total && data.count ? data.total / data.count : 0;
+      const countryCode = data.code || data.label;
+      const matchedCampaign = findMatchingCampaign(countryCode, data.latest, targetAov);
+      if (matchedCampaign) {
+        campaignName = matchedCampaign;
+      }
+    }
+
+    const campaignLabel = (store === 'vironax' && source === 'meta' && campaignName)
+      ? `${campaignName} • `
       : '';
 
     // Format: Country • Amount • Source (clean format)
@@ -229,7 +294,7 @@ export function createOrderNotifications(store, source, orders) {
         value: data.total,
         order_count: data.count,
         timestamp: data.latest.toISOString(),
-        campaign_name: data.campaign_name || null
+        campaign_name: campaignName
       }
     });
     
