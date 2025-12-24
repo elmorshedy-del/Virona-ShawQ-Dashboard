@@ -35,7 +35,8 @@ function NotificationRow({
     || notification?.metadata?.campaign
     || notification?.metadata?.campaign_id
     || notification?.metadata?.campaignId;
-  const showCampaignDetails = notification.store === 'shawq' && notification.type === 'order' && campaignName;
+  const showCampaignDetails = notification.type === 'order' && campaignName
+    && (notification.store === 'shawq' || (notification.store === 'vironax' && source === 'meta'));
 
   return (
     <div 

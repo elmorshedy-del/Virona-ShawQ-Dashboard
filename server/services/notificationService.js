@@ -32,7 +32,7 @@ function shouldCreateOrderNotification(store, source) {
 }
 
 // Create a notification
-export function createNotification({ store, type, message, metadata = {} }) {
+export function createNotification({ store, type, message, metadata = {}, timestamp = null }) {
   const db = getDb();
   
   // Ensure notifications table exists
@@ -60,21 +60,43 @@ export function createNotification({ store, type, message, metadata = {} }) {
     }
   }
   
-  const stmt = db.prepare(`
-    INSERT INTO notifications (store, type, message, source, country, value, order_count, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  
-  const result = stmt.run(
-    store,
-    type,
-    message,
-    metadata.source || null,
-    metadata.country || null,
-    metadata.value || null,
-    metadata.order_count || 1,
-    JSON.stringify(metadata)
-  );
+  const metadataJson = JSON.stringify(metadata);
+  let result;
+
+  if (timestamp) {
+    const stmt = db.prepare(`
+      INSERT INTO notifications (store, type, message, source, country, value, order_count, timestamp, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    result = stmt.run(
+      store,
+      type,
+      message,
+      metadata.source || null,
+      metadata.country || null,
+      metadata.value || null,
+      metadata.order_count || 1,
+      timestamp,
+      metadataJson
+    );
+  } else {
+    const stmt = db.prepare(`
+      INSERT INTO notifications (store, type, message, source, country, value, order_count, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    result = stmt.run(
+      store,
+      type,
+      message,
+      metadata.source || null,
+      metadata.country || null,
+      metadata.value || null,
+      metadata.order_count || 1,
+      metadataJson
+    );
+  }
   
   console.log(`[Notification] Created: ${message}`);
   return result.lastInsertRowid;
@@ -205,6 +227,10 @@ export function createOrderNotifications(store, source, orders) {
     }
   }
 
+  const ingestionTimestamp = store === 'vironax' && source === 'meta'
+    ? new Date().toISOString()
+    : null;
+
   // Create notifications for each country
   for (const data of Object.values(ordersByCountry)) {
     const currency = data.currency || fallbackCurrency;
@@ -214,8 +240,13 @@ export function createOrderNotifications(store, source, orders) {
       ? `${data.campaign_name} • `
       : '';
 
+    const totalAmount = data.total || 0;
+    const amountLabel = (store === 'vironax' && source === 'meta')
+      ? `${Math.round(totalAmount).toLocaleString()} SAR`
+      : `${currency} ${totalAmount.toFixed(2)}`;
+
     // Format: Country • Amount • Source (clean format)
-    const message = `${campaignLabel}${displayCountry} • ${currency} ${(data.total || 0).toFixed(2)} • ${sourceLabel}`;
+    const message = `${campaignLabel}${displayCountry} • ${amountLabel} • ${sourceLabel}`;
 
     createNotification({
       store,
@@ -230,7 +261,8 @@ export function createOrderNotifications(store, source, orders) {
         order_count: data.count,
         timestamp: data.latest.toISOString(),
         campaign_name: data.campaign_name || null
-      }
+      },
+      timestamp: ingestionTimestamp
     });
     
     created++;
