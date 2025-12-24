@@ -355,41 +355,55 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
     fields = 'campaign_name,campaign_id,adset_name,adset_id,ad_name,ad_id,' + fields;
   }
 
-  const url = `${META_BASE_URL}/act_${cleanAccountId}/insights?` +
-    `level=${level}&` +
-    `fields=${fields}&` +
+  const baseParams = `level=${level}&` +
     `breakdowns=country&` +
     `time_range={'since':'${startDate}','until':'${endDate}'}&` +
     `time_increment=1&` +
     `limit=500&` +
     `access_token=${accessToken}`;
 
-  // CRITICAL: Implement pagination to fetch ALL data (not just first 500 rows)
-  let allRows = [];
-  let currentUrl = url;
-  let pageCount = 0;
+  const buildUrl = (fieldsList) =>
+    `${META_BASE_URL}/act_${cleanAccountId}/insights?fields=${fieldsList}&${baseParams}`;
 
-  console.log(`[Meta] Fetching ${level} data with pagination...`);
+  const fetchAllRows = async (fieldsList) => {
+    const url = buildUrl(fieldsList);
+    let allRows = [];
+    let currentUrl = url;
+    let pageCount = 0;
 
-  while (currentUrl) {
-    const response = await fetch(currentUrl);
-    const json = await response.json();
+    console.log(`[Meta] Fetching ${level} data with pagination...`);
 
-    if (json.error) throw new Error(json.error.message);
+    while (currentUrl) {
+      const response = await fetch(currentUrl);
+      const json = await response.json();
 
-    const pageData = json.data || [];
-    allRows = [...allRows, ...pageData];
-    pageCount++;
+      if (json.error) throw new Error(json.error.message);
 
-    console.log(`[Meta] ${level} - Page ${pageCount}: ${pageData.length} rows (total: ${allRows.length})`);
+      const pageData = json.data || [];
+      allRows = [...allRows, ...pageData];
+      pageCount++;
 
-    // Check for next page
-    currentUrl = json.paging?.next || null;
+      console.log(`[Meta] ${level} - Page ${pageCount}: ${pageData.length} rows (total: ${allRows.length})`);
+
+      // Check for next page
+      currentUrl = json.paging?.next || null;
+    }
+
+    console.log(`[Meta] ${level} - Completed: ${allRows.length} total rows from ${pageCount} pages`);
+    return allRows;
+  };
+
+  const fallbackFields = 'spend,impressions,clicks,reach,landing_page_views,actions,action_values,inline_link_clicks,cost_per_inline_link_click';
+
+  let rows;
+  try {
+    rows = await fetchAllRows(fields);
+  } catch (error) {
+    const message = error?.message || '';
+    console.warn(`[Meta] ${level} fetch failed with primary fields: ${message}`);
+    console.warn(`[Meta] Retrying ${level} fetch with fallback fields.`);
+    rows = await fetchAllRows(fallbackFields);
   }
-
-  console.log(`[Meta] ${level} - Completed: ${allRows.length} total rows from ${pageCount} pages`);
-
-  const rows = allRows;
 
   // Prepare insert statement based on level
   let insertStmt;
