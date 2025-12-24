@@ -335,7 +335,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
   // Define fields based on level
   // Include inline_link_clicks and cost_per_inline_link_click for proper Link Clicks and CPC metrics
-  let fields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click';
+  let fields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click,outbound_clicks';
   if (level === 'campaign') {
     fields = 'campaign_name,campaign_id,' + fields;
   } else if (level === 'adset') {
@@ -387,14 +387,14 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       INSERT OR REPLACE INTO meta_daily_metrics (
         store, date, campaign_id, campaign_name, country,
         spend, impressions, clicks, reach,
-        landing_page_views, add_to_cart, checkouts_initiated,
+        outbound_clicks, landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
         inline_link_clicks, cost_per_inline_link_click,
         status, effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @country,
         @spend, @impressions, @clicks, @reach,
-        @lpv, @atc, @checkout,
+        @outbound_clicks, @lpv, @atc, @checkout,
         @conversions, @conversion_value,
         @inline_link_clicks, @cost_per_inline_link_click,
         @status, @effective_status
@@ -405,14 +405,14 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       INSERT OR REPLACE INTO meta_adset_metrics (
         store, date, campaign_id, campaign_name, adset_id, adset_name, country,
         spend, impressions, clicks, reach,
-        landing_page_views, add_to_cart, checkouts_initiated,
+        outbound_clicks, landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
         inline_link_clicks, cost_per_inline_link_click,
         status, effective_status, adset_status, adset_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @country,
         @spend, @impressions, @clicks, @reach,
-        @lpv, @atc, @checkout,
+        @outbound_clicks, @lpv, @atc, @checkout,
         @conversions, @conversion_value,
         @inline_link_clicks, @cost_per_inline_link_click,
         @status, @effective_status, @adset_status, @adset_effective_status
@@ -423,14 +423,14 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       INSERT OR REPLACE INTO meta_ad_metrics (
         store, date, campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name, country,
         spend, impressions, clicks, reach,
-        landing_page_views, add_to_cart, checkouts_initiated,
+        outbound_clicks, landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value,
         inline_link_clicks, cost_per_inline_link_click,
         status, effective_status, ad_status, ad_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @ad_id, @ad_name, @country,
         @spend, @impressions, @clicks, @reach,
-        @lpv, @atc, @checkout,
+        @outbound_clicks, @lpv, @atc, @checkout,
         @conversions, @conversion_value,
         @inline_link_clicks, @cost_per_inline_link_click,
         @status, @effective_status, @ad_status, @ad_effective_status
@@ -467,6 +467,10 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
       // Extract inline_link_clicks - Meta returns this as a single value
       const inlineLinkClicks = parseInt(row.inline_link_clicks || 0);
+      const outboundClickValue = Array.isArray(row.outbound_clicks)
+        ? row.outbound_clicks.reduce((sum, item) => sum + parseFloat(item?.value || 0), 0)
+        : parseFloat(row.outbound_clicks || 0);
+      const outboundClicks = parseInt(outboundClickValue || 0);
       // cost_per_inline_link_click comes directly from Meta API (already calculated)
       // Apply currency rate to the cost
       const costPerInlineLinkClick = parseFloat(row.cost_per_inline_link_click || 0) * rate;
@@ -481,6 +485,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         impressions: parseInt(row.impressions || 0),
         clicks: parseInt(row.clicks || 0),
         reach: parseInt(row.reach || 0),
+        outbound_clicks: outboundClicks,
         lpv: parseInt(lpv),
         atc: parseInt(atc),
         checkout: parseInt(checkout),

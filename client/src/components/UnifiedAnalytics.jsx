@@ -228,6 +228,75 @@ export default function UnifiedAnalytics({
     return formatCurrency(value, 2);
   };
 
+  // Seeded RNG helpers for stable Monte Carlo sampling
+  const createSeededRng = (seedString) => {
+    const xmur3 = (str) => {
+      let h = 1779033703 ^ str.length;
+      for (let i = 0; i < str.length; i++) {
+        h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+        h = (h << 13) | (h >>> 19);
+      }
+      return () => {
+        h = Math.imul(h ^ (h >>> 16), 2246822507);
+        h = Math.imul(h ^ (h >>> 13), 3266489909);
+        h ^= h >>> 16;
+        return h >>> 0;
+      };
+    };
+
+    const mulberry32 = (seed) => {
+      let t = seed;
+      return () => {
+        t += 0x6D2B79F5;
+        let r = Math.imul(t ^ (t >>> 15), t | 1);
+        r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+        return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+      };
+    };
+
+    const seedFn = xmur3(seedString || 'seed');
+    return mulberry32(seedFn());
+  };
+
+  const sampleGamma = (shape, rng) => {
+    const safeShape = Number.isFinite(shape) ? shape : 0;
+    if (safeShape <= 0) return 0;
+
+    if (safeShape < 1) {
+      const u = Math.max(rng(), 1e-12);
+      return sampleGamma(safeShape + 1, rng) * Math.pow(u, 1 / safeShape);
+    }
+
+    const d = safeShape - 1 / 3;
+    const c = 1 / Math.sqrt(9 * d);
+
+    while (true) {
+      let x = 0;
+      let v = 0;
+      do {
+        const u1 = Math.max(rng(), 1e-12);
+        const u2 = Math.max(rng(), 1e-12);
+        x = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+        v = 1 + c * x;
+      } while (v <= 0);
+
+      v = v * v * v;
+      const u = Math.max(rng(), 1e-12);
+      if (u < 1 - 0.0331 * Math.pow(x, 4)) return d * v;
+      if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+    }
+  };
+
+  const sampleBeta = (alpha, beta, rng) => {
+    const a = Math.max(alpha, 1e-6);
+    const b = Math.max(beta, 1e-6);
+    const x = sampleGamma(a, rng);
+    const y = sampleGamma(b, rng);
+    const total = x + y;
+    if (!Number.isFinite(total) || total <= 0) return 0;
+    return x / total;
+  };
+
   // Helper: Render percent with specified decimals
   const renderPercent = (value, decimals = 2) => {
     const num = Number(value);
@@ -263,6 +332,96 @@ export default function UnifiedAnalytics({
     return (purchases / lpv) * 100;
   };
 
+  // Creative score inputs
+  const getVisits = (row) => {
+    const lpv = Number(row.lpv);
+    if (Number.isFinite(lpv) && lpv > 0) return lpv;
+    const outbound = Number(row.outbound_clicks);
+    if (Number.isFinite(outbound) && outbound > 0) return outbound;
+    const inlineClicks = Number(row.inline_link_clicks);
+    if (Number.isFinite(inlineClicks) && inlineClicks > 0) return inlineClicks;
+    return 0;
+  };
+
+  const adRows = useMemo(() => {
+    if (!Array.isArray(metaAdManagerData)) return [];
+    const rows = [];
+    metaAdManagerData.forEach((campaign) => {
+      (campaign.adsets || []).forEach((adset) => {
+        (adset.ads || []).forEach((ad) => {
+          rows.push(ad);
+        });
+      });
+    });
+    return rows;
+  }, [metaAdManagerData]);
+
+  const creativeBaseline = useMemo(() => {
+    let sumV = 0;
+    let sumP = 0;
+
+    adRows.forEach((ad) => {
+      const visits = getVisits(ad);
+      const purchases = Number(ad.conversions) || 0;
+      if (Number.isFinite(visits)) sumV += visits;
+      if (Number.isFinite(purchases)) sumP += purchases;
+    });
+
+    const theta0 = sumV > 0 ? sumP / sumV : 0;
+    return {
+      sumV,
+      sumP,
+      theta0
+    };
+  }, [adRows]);
+
+  const creativeScoresByAdId = useMemo(() => {
+    const map = new Map();
+    const K0 = 500;
+    const theta0 = Number.isFinite(creativeBaseline.theta0) ? creativeBaseline.theta0 : 0;
+    const theta0Safe = Math.min(Math.max(theta0, 0), 1);
+    const a0 = Math.max(theta0Safe * K0, 1e-6);
+    const b0 = Math.max((1 - theta0Safe) * K0, 1e-6);
+
+    adRows.forEach((ad) => {
+      const visits = getVisits(ad);
+      const purchases = Number(ad.conversions) || 0;
+      const safeV = Math.max(visits, purchases, 0);
+      const safeP = Math.min(Math.max(purchases, 0), safeV);
+      const confidence = visits > 0 ? visits / (visits + K0) : 0;
+
+      let score = null;
+      if (safeV > 0 && Number.isFinite(theta0Safe)) {
+        const alpha = a0 + safeP;
+        const beta = b0 + Math.max(safeV - safeP, 0);
+        const seed = `${ad.ad_id || 'ad'}|${safeV}|${safeP}|${theta0Safe}|${dateRange?.startDate || ''}|${dateRange?.endDate || ''}`;
+        const rng = createSeededRng(seed);
+        const samples = 2000;
+        let wins = 0;
+        for (let i = 0; i < samples; i += 1) {
+          const theta = sampleBeta(alpha, beta, rng);
+          if (theta > theta0Safe) wins += 1;
+        }
+        const probability = samples > 0 ? wins / samples : 0;
+        score = 100 * probability * confidence;
+      }
+
+      const spend = Number(ad.spend) || 0;
+      const label = visits < 200 || spend < 20 ? 'PROVISIONAL' : 'CONFIDENT';
+
+      map.set(ad.ad_id, {
+        visits,
+        purchases,
+        baselineCvr: theta0Safe * 100,
+        confidence: confidence * 100,
+        score: Number.isFinite(score) ? Math.max(Math.min(score, 100), 0) : null,
+        label
+      });
+    });
+
+    return map;
+  }, [adRows, creativeBaseline, dateRange?.startDate, dateRange?.endDate]);
+
   // Check if orders occurred today
   const isOrderToday = (orderDate) => {
     return orderDate === todayDate;
@@ -295,6 +454,7 @@ export default function UnifiedAnalytics({
 
     // Calculate CVR (Conversions / LPV)
     const cvr = calculateCVR(row.conversions || 0, row.lpv || 0);
+    const creativeStats = level === 'ad' ? creativeScoresByAdId.get(row.ad_id) : null;
 
     // Indentation based on level
     const indentClass = level === 'campaign' ? 'pl-4' : level === 'adset' ? 'pl-10' : 'pl-16';
@@ -456,6 +616,30 @@ export default function UnifiedAnalytics({
         {/* CVR (Purchases/LPV) */}
         <td className="px-3 py-3 text-right text-gray-600">
           {renderMetric(cvr, 'percent', 2)}
+        </td>
+
+        {/* Creative Score Columns (Ad level only) */}
+        <td className="px-3 py-3 text-right text-gray-600 border-l border-gray-100">
+          {renderMetric(creativeStats?.visits, 'number')}
+        </td>
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(creativeStats?.purchases, 'number')}
+        </td>
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(creativeStats?.baselineCvr, 'percent', 2)}
+        </td>
+        <td className="px-3 py-3 text-right text-gray-600">
+          {renderMetric(creativeStats?.confidence, 'percent', 2)}
+        </td>
+        <td className="px-3 py-3 text-right text-gray-600">
+          {creativeStats?.score == null ? (
+            '—'
+          ) : (
+            <div className="flex items-center justify-end gap-1">
+              <span>{renderMetric(creativeStats.score, 'decimal', 1)}</span>
+              <span className="text-[10px] uppercase text-gray-400">{creativeStats.label}</span>
+            </div>
+          )}
         </td>
       </tr>
     );
@@ -623,7 +807,7 @@ export default function UnifiedAnalytics({
               <ColumnGroupHeader label="Financials" colSpan={6} bgColor="bg-emerald-50" />
               <ColumnGroupHeader label="Upper Funnel" colSpan={4} bgColor="bg-blue-50" />
               <ColumnGroupHeader label="Mid Funnel" colSpan={4} bgColor="bg-purple-50" />
-              <ColumnGroupHeader label="Lower Funnel" colSpan={4} bgColor="bg-orange-50" />
+              <ColumnGroupHeader label="Lower Funnel" colSpan={9} bgColor="bg-orange-50" />
             </tr>
 
             {/* Column Headers */}
@@ -663,6 +847,11 @@ export default function UnifiedAnalytics({
               <SortableHeader label="Checkout" field="checkout" sortConfig={sortConfig} onSort={handleSort} />
               <SortableHeader label="Orders" field="conversions" sortConfig={sortConfig} onSort={handleSort} />
               <SortableHeader label="CVR" field="cvr" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Visits" field="creative_visits" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
+              <SortableHeader label="Purchases" field="creative_purchases" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Baseline CVR" field="creative_baseline_cvr" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Confidence" field="creative_confidence" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Creative Score" field="creative_score" sortConfig={sortConfig} onSort={handleSort} />
             </tr>
           </thead>
           <tbody>
@@ -706,7 +895,7 @@ export default function UnifiedAnalytics({
             {/* Empty state */}
             {processedCampaigns.length === 0 && (
               <tr>
-                <td colSpan="20" className="px-4 py-12 text-center text-gray-500">
+                <td colSpan="25" className="px-4 py-12 text-center text-gray-500">
                   {loading ? (
                     <div className="flex items-center justify-center gap-2">
                       <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
