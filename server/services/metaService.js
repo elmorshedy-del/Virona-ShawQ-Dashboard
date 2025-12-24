@@ -718,6 +718,7 @@ export async function syncMetaData(store) {
       `).all(store, startDate, endDate);
 
       const metaOrders = metaOrderRows
+        .filter(row => row.date === endDate)
         .filter(row => (row.conversions || 0) > 0 && (row.conversion_value || 0) > 0)
         .map(row => ({
           country: row.country || 'ALL',
