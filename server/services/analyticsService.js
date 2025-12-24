@@ -1169,12 +1169,16 @@ function buildAdCountryBreakdown(db, store, startDate, endDate, statusFilter) {
       SUM(reach) as reach,
       SUM(clicks) as clicks,
       SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
+      SUM(unique_outbound_clicks) as unique_outbound_clicks,
       SUM(landing_page_views) as lpv,
       SUM(add_to_cart) as atc,
       SUM(checkouts_initiated) as checkout,
       SUM(conversions) as conversions,
       SUM(conversion_value) as conversion_value,
-      CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+      CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click,
+      CASE WHEN SUM(impressions) > 0 THEN (SUM(outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as outbound_clicks_ctr,
+      CASE WHEN SUM(impressions) > 0 THEN (SUM(unique_outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as unique_outbound_clicks_ctr
     FROM meta_ad_metrics
     WHERE store = ? AND date BETWEEN ? AND ? AND country IS NOT NULL AND country != '' AND country != 'ALL'${statusFilter}
     GROUP BY ad_id, country
@@ -1227,12 +1231,16 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(reach) as reach,
         SUM(clicks) as clicks,
         SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(outbound_clicks) as outbound_clicks,
+        SUM(unique_outbound_clicks) as unique_outbound_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as checkout,
         SUM(conversions) as conversions,
         SUM(conversion_value) as conversion_value,
-        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click,
+        CASE WHEN SUM(impressions) > 0 THEN (SUM(outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as outbound_clicks_ctr,
+        CASE WHEN SUM(impressions) > 0 THEN (SUM(unique_outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as unique_outbound_clicks_ctr
       FROM meta_daily_metrics
       WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
       GROUP BY campaign_id
@@ -1252,12 +1260,16 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(reach) as reach,
         SUM(clicks) as clicks,
         SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(outbound_clicks) as outbound_clicks,
+        SUM(unique_outbound_clicks) as unique_outbound_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as checkout,
         SUM(conversions) as conversions,
         SUM(conversion_value) as conversion_value,
-        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click,
+        CASE WHEN SUM(impressions) > 0 THEN (SUM(outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as outbound_clicks_ctr,
+        CASE WHEN SUM(impressions) > 0 THEN (SUM(unique_outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as unique_outbound_clicks_ctr
       FROM meta_daily_metrics
       WHERE store = ? AND date BETWEEN ? AND ? AND country IS NOT NULL AND country != '' AND country != 'ALL'${statusFilter}
       GROUP BY campaign_id, country
@@ -1292,12 +1304,16 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(reach) as reach,
         SUM(clicks) as clicks,
         SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(outbound_clicks) as outbound_clicks,
+        SUM(unique_outbound_clicks) as unique_outbound_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as checkout,
         SUM(conversions) as conversions,
         SUM(conversion_value) as conversion_value,
-        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click,
+        CASE WHEN SUM(impressions) > 0 THEN (SUM(outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as outbound_clicks_ctr,
+        CASE WHEN SUM(impressions) > 0 THEN (SUM(unique_outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as unique_outbound_clicks_ctr
       FROM meta_adset_metrics
       WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
       GROUP BY adset_id
@@ -1315,12 +1331,16 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(reach) as reach,
         SUM(clicks) as clicks,
         SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(outbound_clicks) as outbound_clicks,
+        SUM(unique_outbound_clicks) as unique_outbound_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
         SUM(checkouts_initiated) as checkout,
         SUM(conversions) as conversions,
         SUM(conversion_value) as conversion_value,
-        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click
+        CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(spend) / SUM(inline_link_clicks) ELSE NULL END as cost_per_inline_link_click,
+        CASE WHEN SUM(impressions) > 0 THEN (SUM(outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as outbound_clicks_ctr,
+        CASE WHEN SUM(impressions) > 0 THEN (SUM(unique_outbound_clicks) * 100.0) / SUM(impressions) ELSE NULL END as unique_outbound_clicks_ctr
       FROM meta_ad_metrics
       WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}
       GROUP BY ad_id
