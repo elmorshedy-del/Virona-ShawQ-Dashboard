@@ -21,7 +21,8 @@ import {
   getMetaAdManagerHierarchy,
   getFunnelDiagnostics,
   getReactivationCandidates,
-  getAllMetaObjects
+  getAllMetaObjects,
+  getBudgetCalculatorByCountry
 } from '../services/analyticsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
@@ -148,6 +149,16 @@ router.get('/newyork/trends', (req, res) => {
 router.get('/campaigns/trends', (req, res) => {
   try { res.json(getCampaignTrends(req.query.store, req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Budget calculator by country (campaign vs campaign)
+router.get('/budget-calculator', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getBudgetCalculatorByCountry(store, req.query));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.get('/shopify/time-of-day', (req, res) => {
