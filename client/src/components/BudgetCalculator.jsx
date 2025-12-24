@@ -56,7 +56,7 @@ function buildInterpretation({ B, optimal, profitAtOptimal, ceiling, realCeiling
     ⚠️ <strong>Ad Breakeven: $${Math.round(ceiling)}/day</strong>${overheadText}`;
 }
 
-export default function BudgetCalculator() {
+export default function BudgetCalculator({ store = 'shawq' }) {
   const [inputs, setInputs] = useState({
     spend1: '',
     conv1: '',
@@ -67,9 +67,26 @@ export default function BudgetCalculator() {
     overhead: '',
   });
   const [results, setResults] = useState(null);
+  const [campaignInputs, setCampaignInputs] = useState({
+    whiteFridayCampaignId: '',
+    whiteFridayStartDate: '',
+    whiteFridayEndDate: '',
+    winterCampaignId: '',
+    winterStartDate: '',
+    winterEndDate: '',
+    margin: '35',
+    overhead: '0',
+  });
+  const [campaignResults, setCampaignResults] = useState(null);
+  const [campaignLoading, setCampaignLoading] = useState(false);
+  const [campaignError, setCampaignError] = useState('');
 
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
+  };
+
+  const updateCampaignInput = (key) => (event) => {
+    setCampaignInputs((prev) => ({ ...prev, [key]: event.target.value }));
   };
 
   const handleCalculate = () => {
@@ -241,8 +258,214 @@ export default function BudgetCalculator() {
     return `${position}%`;
   }, [results]);
 
+  const handleCampaignCalculation = async ({ auto = false } = {}) => {
+    setCampaignError('');
+    setCampaignResults(null);
+    setCampaignLoading(true);
+    try {
+      const params = new URLSearchParams({
+        store,
+        margin: campaignInputs.margin,
+        overhead: campaignInputs.overhead,
+        ...(auto
+          ? {}
+          : {
+              whiteFridayCampaignId: campaignInputs.whiteFridayCampaignId,
+              whiteFridayStartDate: campaignInputs.whiteFridayStartDate,
+              whiteFridayEndDate: campaignInputs.whiteFridayEndDate,
+              winterCampaignId: campaignInputs.winterCampaignId,
+              winterStartDate: campaignInputs.winterStartDate,
+              winterEndDate: campaignInputs.winterEndDate,
+            }),
+      });
+
+      const response = await fetch(`/api/analytics/budget-calculator?${params.toString()}`);
+      const payload = await response.json();
+
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || 'Failed to load campaign tables.');
+      }
+
+      setCampaignResults(payload.data);
+    } catch (error) {
+      setCampaignError(error.message);
+    } finally {
+      setCampaignLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div className="border-b border-gray-100 px-6 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">🧾 Campaign Budget Table (Shawq)</h2>
+        </div>
+        <div className="p-6 space-y-6">
+          <p className="text-sm text-gray-500">
+            Auto-calculate will look for campaigns named “White Friday” and “Shawq Winter” in the unified campaign data.
+          </p>
+          <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">White Friday Campaign ID</label>
+              <input
+                type="text"
+                value={campaignInputs.whiteFridayCampaignId}
+                onChange={updateCampaignInput('whiteFridayCampaignId')}
+                placeholder="Enter campaign ID"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">White Friday Start Date</label>
+              <input
+                type="date"
+                value={campaignInputs.whiteFridayStartDate}
+                onChange={updateCampaignInput('whiteFridayStartDate')}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">White Friday End Date</label>
+              <input
+                type="date"
+                value={campaignInputs.whiteFridayEndDate}
+                onChange={updateCampaignInput('whiteFridayEndDate')}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">Winter Campaign ID</label>
+              <input
+                type="text"
+                value={campaignInputs.winterCampaignId}
+                onChange={updateCampaignInput('winterCampaignId')}
+                placeholder="Enter campaign ID"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">Winter Start Date</label>
+              <input
+                type="date"
+                value={campaignInputs.winterStartDate}
+                onChange={updateCampaignInput('winterStartDate')}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">Winter End Date</label>
+              <input
+                type="date"
+                value={campaignInputs.winterEndDate}
+                onChange={updateCampaignInput('winterEndDate')}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">Profit Margin (%)</label>
+              <input
+                type="number"
+                value={campaignInputs.margin}
+                onChange={updateCampaignInput('margin')}
+                placeholder="35"
+                step="1"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-600">
+                Monthly Overhead <span className="text-xs text-gray-400">(optional)</span>
+              </label>
+              <input
+                type="number"
+                value={campaignInputs.overhead}
+                onChange={updateCampaignInput('overhead')}
+                placeholder="0"
+                step="1"
+                className="w-full rounded-lg border border-dashed border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => handleCampaignCalculation({ auto: true })}
+              className="w-full rounded-lg bg-gray-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-gray-800"
+              disabled={campaignLoading}
+            >
+              {campaignLoading ? 'Calculating...' : 'Auto-Calculate from Shawq Campaigns'}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCampaignCalculation({ auto: false })}
+              className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500"
+              disabled={campaignLoading}
+            >
+              {campaignLoading ? 'Calculating...' : 'Run with Custom Campaign IDs'}
+            </button>
+          </div>
+
+          {campaignError && (
+            <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-sm text-rose-700">
+              {campaignError}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {campaignResults && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+          <div className="border-b border-gray-100 px-6 py-4">
+            <h2 className="text-lg font-semibold text-gray-900">🌍 Country Budget Tables</h2>
+          </div>
+          <div className="p-6 space-y-4">
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm text-gray-600">
+              White Friday: {campaignResults.whiteFriday?.dateRange?.startDate} → {campaignResults.whiteFriday?.dateRange?.endDate}
+              <br />
+              Winter: {campaignResults.winter?.dateRange?.startDate} → {campaignResults.winter?.dateRange?.endDate}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[960px] text-sm">
+                <thead>
+                  <tr className="text-xs uppercase tracking-wide text-gray-400">
+                    {campaignResults.tables?.[0] &&
+                      Object.keys(campaignResults.tables[0]).map((header) => (
+                        <th key={header} className="py-2 text-left">
+                          {header}
+                        </th>
+                      ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {campaignResults.tables?.map((row) => (
+                    <tr key={row.Country} className="border-t border-gray-100 text-gray-700">
+                      {Object.values(row).map((value, index) => (
+                        <td key={`${row.Country}-${index}`} className="py-2 pr-4 whitespace-nowrap">
+                          {value}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {campaignResults.warnings?.length > 0 && (
+              <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-700">
+                <p className="font-semibold">Skipped Countries</p>
+                <ul className="mt-2 list-disc pl-5">
+                  {campaignResults.warnings.map((warning) => (
+                    <li key={warning.country}>
+                      {warning.country}: {warning.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
         <div className="border-b border-gray-100 px-6 py-4">
           <h2 className="text-lg font-semibold text-gray-900">📊 Input Your Data</h2>
