@@ -23,6 +23,7 @@ import {
   getReactivationCandidates,
   getAllMetaObjects
 } from '../services/analyticsService.js';
+import { getCampaignBudgetReport } from '../services/budgetCalculatorService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
 import { getShopifyConnectionStatus } from '../services/shopifyService.js';
@@ -212,6 +213,18 @@ router.get('/funnel-diagnostics', (req, res) => {
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Analytics] Funnel diagnostics error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Budget calculator summary for campaign date ranges
+router.get('/budget-calculator', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const data = getCampaignBudgetReport(store, req.query);
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Analytics] Budget calculator error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
