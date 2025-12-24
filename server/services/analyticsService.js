@@ -1154,6 +1154,146 @@ function calculateMetrics(row) {
   };
 }
 
+// ============================================================================
+// CREATIVE SCORE HELPERS (Ad-level)
+// ============================================================================
+const CREATIVE_SCORE_SAMPLES = 2000;
+const CREATIVE_SCORE_K0 = 500;
+const CREATIVE_SCORE_EPSILON = 1e-6;
+
+function toNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function clamp01(value) {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function getVisitsForRow(row) {
+  const lpv = toNumber(row.lpv);
+  const outbound = toNumber(row.outbound_clicks);
+  const inline = toNumber(row.inline_link_clicks);
+  if (lpv > 0) return lpv;
+  if (outbound > 0) return outbound;
+  if (inline > 0) return inline;
+  return 0;
+}
+
+function hashSeed(input) {
+  let h = 1779033703 ^ input.length;
+  for (let i = 0; i < input.length; i += 1) {
+    h = Math.imul(h ^ input.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return (h >>> 0);
+}
+
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), t | 1);
+    r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function standardNormal(rng) {
+  let u = 0;
+  let v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+function sampleGamma(shape, rng) {
+  if (!Number.isFinite(shape) || shape <= 0) return 0;
+  if (shape < 1) {
+    const u = rng();
+    return sampleGamma(shape + 1, rng) * Math.pow(u, 1 / shape);
+  }
+
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  while (true) {
+    const x = standardNormal(rng);
+    let v = 1 + c * x;
+    if (v <= 0) continue;
+    v = v * v * v;
+    const u = rng();
+    if (u < 1 - 0.331 * (x ** 4)) return d * v;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+  }
+}
+
+function sampleBeta(alpha, beta, rng) {
+  const x = sampleGamma(alpha, rng);
+  const y = sampleGamma(beta, rng);
+  const sum = x + y;
+  if (sum <= 0) return 0;
+  return x / sum;
+}
+
+function estimateCreativeProbability(theta0, visits, purchases, seedInput) {
+  const baseline = clamp01(theta0);
+  const effectiveVisits = Math.max(toNumber(visits), toNumber(purchases));
+  if (effectiveVisits <= 0) return 0;
+
+  const alpha = Math.max(baseline * CREATIVE_SCORE_K0 + toNumber(purchases), CREATIVE_SCORE_EPSILON);
+  const beta = Math.max((1 - baseline) * CREATIVE_SCORE_K0 + Math.max(effectiveVisits - toNumber(purchases), 0), CREATIVE_SCORE_EPSILON);
+  const rng = mulberry32(hashSeed(seedInput));
+
+  let wins = 0;
+  for (let i = 0; i < CREATIVE_SCORE_SAMPLES; i += 1) {
+    const theta = sampleBeta(alpha, beta, rng);
+    if (theta > baseline) wins += 1;
+  }
+
+  return wins / CREATIVE_SCORE_SAMPLES;
+}
+
+function computeBaselineTheta(ads) {
+  let totalVisits = 0;
+  let totalPurchases = 0;
+
+  ads.forEach((row) => {
+    totalVisits += getVisitsForRow(row);
+    totalPurchases += toNumber(row.conversions);
+  });
+
+  if (totalVisits <= 0) {
+    return { theta0: 0, totalVisits, totalPurchases };
+  }
+
+  return {
+    theta0: clamp01(totalPurchases / totalVisits),
+    totalVisits,
+    totalPurchases
+  };
+}
+
+function computeCreativeMetrics(row, baselineTheta, seedInput) {
+  const visits = getVisitsForRow(row);
+  const purchases = toNumber(row.conversions);
+  const confidence = visits > 0 ? visits / (visits + CREATIVE_SCORE_K0) : 0;
+  const probability = estimateCreativeProbability(baselineTheta, visits, purchases, seedInput);
+  const rawScore = 100 * probability * confidence;
+  const spend = toNumber(row.spend);
+
+  return {
+    creative_visits: visits,
+    creative_purchases: purchases,
+    creative_baseline_cvr: baselineTheta,
+    creative_confidence: confidence,
+    creative_score: Number.isFinite(rawScore) ? Math.max(0, Math.min(100, rawScore)) : 0,
+    creative_score_label: visits < 200 || spend < 20 ? 'PROVISIONAL' : 'CONFIDENT'
+  };
+}
+
 function buildAdCountryBreakdown(db, store, startDate, endDate, statusFilter) {
   const adCountryQuery = `
     SELECT
@@ -1314,6 +1454,7 @@ export function getMetaAdManagerHierarchy(store, params) {
         SUM(impressions) as impressions,
         SUM(reach) as reach,
         SUM(clicks) as clicks,
+        SUM(outbound_clicks) as outbound_clicks,
         SUM(inline_link_clicks) as inline_link_clicks,
         SUM(landing_page_views) as lpv,
         SUM(add_to_cart) as atc,
@@ -1330,8 +1471,10 @@ export function getMetaAdManagerHierarchy(store, params) {
 
     // Group ads by adset_id
     const adMap = new Map();
+    const { theta0: adBaselineTheta } = computeBaselineTheta(ads);
     ads.forEach(ad => {
       if (!adMap.has(ad.adset_id)) adMap.set(ad.adset_id, []);
+      const seedInput = `${store}|${startDate}|${endDate}|${ad.ad_id}|${ad.lpv || 0}|${ad.outbound_clicks || 0}|${ad.inline_link_clicks || 0}|${ad.conversions || 0}|${adBaselineTheta.toFixed(6)}`;
       adMap.get(ad.adset_id).push({
         ...ad,
         status: ad.status || 'UNKNOWN',
@@ -1340,6 +1483,7 @@ export function getMetaAdManagerHierarchy(store, params) {
         ad_effective_status: ad.ad_effective_status || 'UNKNOWN',
         isActive: ad.ad_effective_status === 'ACTIVE' || ad.effective_status === 'ACTIVE',
         ...calculateMetrics(ad),
+        ...computeCreativeMetrics(ad, adBaselineTheta, seedInput),
         level: 'ad'
       });
     });
@@ -1487,6 +1631,7 @@ export function getMetaAdManagerHierarchy(store, params) {
       SUM(impressions) as impressions,
       SUM(reach) as reach,
       SUM(clicks) as clicks,
+      SUM(outbound_clicks) as outbound_clicks,
       SUM(inline_link_clicks) as inline_link_clicks,
       SUM(landing_page_views) as lpv,
       SUM(add_to_cart) as atc,
@@ -1501,8 +1646,9 @@ export function getMetaAdManagerHierarchy(store, params) {
     ORDER BY spend DESC
   `;
 
-  const ads = db.prepare(adQuery).all(store, startDate, endDate);
+    const ads = db.prepare(adQuery).all(store, startDate, endDate);
 
+  const { theta0: adBaselineTheta } = computeBaselineTheta(ads);
   const adsWithMetrics = ads.map(a => ({
     ...a,
     status: a.status || 'UNKNOWN',
@@ -1511,6 +1657,11 @@ export function getMetaAdManagerHierarchy(store, params) {
     ad_effective_status: a.ad_effective_status || 'UNKNOWN',
     isActive: a.ad_effective_status === 'ACTIVE' || a.effective_status === 'ACTIVE',
     ...calculateMetrics(a),
+    ...computeCreativeMetrics(
+      a,
+      adBaselineTheta,
+      `${store}|${startDate}|${endDate}|${a.ad_id}|${a.lpv || 0}|${a.outbound_clicks || 0}|${a.inline_link_clicks || 0}|${a.conversions || 0}|${adBaselineTheta.toFixed(6)}`
+    ),
     level: 'ad',
     countries: adCountryMap.get(a.ad_id) || []
   }));

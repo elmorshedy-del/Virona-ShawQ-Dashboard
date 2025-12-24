@@ -265,6 +265,7 @@ export function initDb() {
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
+      outbound_clicks INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
       conversions INTEGER DEFAULT 0,
@@ -416,6 +417,9 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN cost_per_inline_link_click REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN outbound_clicks INTEGER DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
   // Create indexes for performance

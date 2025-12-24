@@ -256,6 +256,19 @@ export default function UnifiedAnalytics({
     return value;
   };
 
+  const renderCreativeScore = (score, label) => {
+    const num = Number(score);
+    if (!Number.isFinite(num)) return '—';
+    return (
+      <div className="flex items-center justify-end gap-1">
+        <span>{num.toFixed(1)}</span>
+        {label ? (
+          <span className="text-[10px] font-semibold text-gray-400">{label}</span>
+        ) : null}
+      </div>
+    );
+  };
+
   // Calculate CVR (Conversion Rate from Landing Page Views to Purchases)
   // Formula: (Purchases / LPV) * 100
   const calculateCVR = (purchases, lpv) => {
@@ -295,6 +308,7 @@ export default function UnifiedAnalytics({
 
     // Calculate CVR (Conversions / LPV)
     const cvr = calculateCVR(row.conversions || 0, row.lpv || 0);
+    const isAdRow = level === 'ad';
 
     // Indentation based on level
     const indentClass = level === 'campaign' ? 'pl-4' : level === 'adset' ? 'pl-10' : 'pl-16';
@@ -456,6 +470,28 @@ export default function UnifiedAnalytics({
         {/* CVR (Purchases/LPV) */}
         <td className="px-3 py-3 text-right text-gray-600">
           {renderMetric(cvr, 'percent', 2)}
+        </td>
+
+        {/* CREATIVE SCORE GROUP (Ad-level only) */}
+        {/* Visits (V) */}
+        <td className="px-3 py-3 text-right text-gray-600 border-l border-gray-100">
+          {isAdRow ? renderMetric(row.creative_visits, 'number') : '—'}
+        </td>
+        {/* Purchases (P) */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {isAdRow ? renderMetric(row.creative_purchases, 'number') : '—'}
+        </td>
+        {/* Baseline CVR (theta0) */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {isAdRow ? renderMetric(row.creative_baseline_cvr * 100, 'percent', 2) : '—'}
+        </td>
+        {/* Confidence */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {isAdRow ? renderMetric(row.creative_confidence * 100, 'percent', 2) : '—'}
+        </td>
+        {/* Creative Score (0-100) */}
+        <td className="px-3 py-3 text-right text-gray-600">
+          {isAdRow ? renderCreativeScore(row.creative_score, row.creative_score_label) : '—'}
         </td>
       </tr>
     );
@@ -624,6 +660,7 @@ export default function UnifiedAnalytics({
               <ColumnGroupHeader label="Upper Funnel" colSpan={4} bgColor="bg-blue-50" />
               <ColumnGroupHeader label="Mid Funnel" colSpan={4} bgColor="bg-purple-50" />
               <ColumnGroupHeader label="Lower Funnel" colSpan={4} bgColor="bg-orange-50" />
+              <ColumnGroupHeader label="Creative Score" colSpan={5} bgColor="bg-gray-50" />
             </tr>
 
             {/* Column Headers */}
@@ -663,6 +700,13 @@ export default function UnifiedAnalytics({
               <SortableHeader label="Checkout" field="checkout" sortConfig={sortConfig} onSort={handleSort} />
               <SortableHeader label="Orders" field="conversions" sortConfig={sortConfig} onSort={handleSort} />
               <SortableHeader label="CVR" field="cvr" sortConfig={sortConfig} onSort={handleSort} />
+
+              {/* Creative Score */}
+              <SortableHeader label="Visits (V)" field="creative_visits" sortConfig={sortConfig} onSort={handleSort} className="border-l border-gray-200" />
+              <SortableHeader label="Purchases (P)" field="creative_purchases" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Baseline CVR" field="creative_baseline_cvr" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Confidence" field="creative_confidence" sortConfig={sortConfig} onSort={handleSort} />
+              <SortableHeader label="Creative Score" field="creative_score" sortConfig={sortConfig} onSort={handleSort} />
             </tr>
           </thead>
           <tbody>
@@ -706,7 +750,7 @@ export default function UnifiedAnalytics({
             {/* Empty state */}
             {processedCampaigns.length === 0 && (
               <tr>
-                <td colSpan="20" className="px-4 py-12 text-center text-gray-500">
+                <td colSpan="25" className="px-4 py-12 text-center text-gray-500">
                   {loading ? (
                     <div className="flex items-center justify-center gap-2">
                       <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
