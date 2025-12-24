@@ -1441,6 +1441,7 @@ function DashboardTab({
             spend: ad.spend || 0,
             impressions: ad.impressions || 0,
             clicks: ad.clicks ?? 0,
+            lpv: ad.lpv || 0,
             add_to_cart: ad.atc || 0,
             conversions: ad.purchases || 0,
             conversion_value: ad.revenue || 0
