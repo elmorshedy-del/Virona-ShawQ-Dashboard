@@ -392,6 +392,8 @@ export function getBudgetIntelligence(store, params) {
     // Return with camelCase names that frontend expects
     return {
       date: row.date,
+      startDate: row.startDate || null,
+      endDate: row.endDate || null,
       campaignId: row.campaignId,
       campaignName: row.campaignName,
       adsetId: row.adsetId || null,        // ✅ camelCase for frontend
@@ -429,6 +431,8 @@ export function getBudgetIntelligence(store, params) {
     const key = row.campaignId || row.campaignName;
     if (!key) return;
 
+    const startDate = row.startDate || null;
+    const endDate = row.endDate || null;
     const existing = aggregates.get(key) || {
       campaignId: row.campaignId || key,
       campaignName: row.campaignName || 'Unnamed Campaign',
@@ -441,7 +445,9 @@ export function getBudgetIntelligence(store, params) {
       atc: 0,
       ic: 0,
       purchases: 0,
-      revenue: 0
+      revenue: 0,
+      startDate: startDate,
+      endDate: endDate
     };
 
     if (row.country) existing.countries.add(row.country);
@@ -449,6 +455,13 @@ export function getBudgetIntelligence(store, params) {
     metricsToSum.forEach(metric => {
       existing[metric] += row[metric] || 0;
     });
+
+    if (startDate && (!existing.startDate || startDate < existing.startDate)) {
+      existing.startDate = startDate;
+    }
+    if (endDate && (!existing.endDate || endDate > existing.endDate)) {
+      existing.endDate = endDate;
+    }
 
     aggregates.set(key, existing);
   };
@@ -477,6 +490,8 @@ export function getBudgetIntelligence(store, params) {
       adsetName: null
     });
   });
+
+  const campaignCountryGuidance = campaignRows.map(row => processRowToGuidance(row));
 
   // Learning map scoring
   const learningMap = {
@@ -526,6 +541,7 @@ export function getBudgetIntelligence(store, params) {
     },
     startPlans,
     liveGuidance,
+    campaignCountryGuidance,
     learningMap,
     period: { startDate, endDate, days },
     priorRange
