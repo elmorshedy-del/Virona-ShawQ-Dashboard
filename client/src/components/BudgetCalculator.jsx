@@ -74,22 +74,47 @@ function sumCampaignMetrics(campaigns = []) {
   }, { spend: 0, purchases: 0, revenue: 0 });
 }
 
+function sumDailyMetrics(campaigns = [], periodDays) {
+  return campaigns.reduce((acc, campaign) => {
+    const daily = getCampaignDailyMetrics(campaign, periodDays);
+    acc.spendDaily += daily.spendDaily;
+    acc.purchasesDaily += daily.purchasesDaily;
+    acc.revenueDaily += daily.revenueDaily;
+    acc.revenue += daily.revenue;
+    acc.purchases += daily.purchases;
+    return acc;
+  }, { spendDaily: 0, purchasesDaily: 0, revenueDaily: 0, revenue: 0, purchases: 0 });
+}
+
+function getCampaignDays(campaign, periodDays) {
+  const startDate = campaign?.startDate ? new Date(campaign.startDate) : null;
+  const endDate = campaign?.endDate ? new Date(campaign.endDate) : null;
+  if (startDate && endDate && !Number.isNaN(startDate.getTime()) && !Number.isNaN(endDate.getTime())) {
+    const diffMs = endDate.getTime() - startDate.getTime();
+    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1;
+    return Math.max(diffDays, 1);
+  }
+  return Math.max(periodDays || 1, 1);
+}
+
 function getCampaignDailyMetrics(campaign, periodDays) {
-  const days = Math.max(periodDays || 1, 1);
+  const days = getCampaignDays(campaign, periodDays);
   const spend = Number(campaign?.spend || 0);
   const purchases = Number(campaign?.purchases || 0);
   const revenue = Number(campaign?.revenue || 0);
   return {
     spendDaily: spend / days,
     purchasesDaily: purchases / days,
+    revenueDaily: revenue / days,
     aov: purchases > 0 ? revenue / purchases : 0,
     spend,
     purchases,
-    revenue
+    revenue,
+    days
   };
 }
 
-function buildCampaignPrompt({ mode, campaignA, campaignB, allCampaigns, periodDays, inputs, request }) {
+function buildCampaignPrompt({ mode, campaignA, campaignB, allCampaigns, periodDays, inputs, request, previousAnswer }) {
   const header = `You are a budget calculator assistant. Use the data below to compute the two-point model exactly like the calculator.`;
   const formatGuide = `Return the results in the same order and style as the calculator, including:
 - B, a, Optimal Spend, Max Daily Profit, Ad Breakeven
@@ -124,6 +149,8 @@ ${inputContext}
 
 ${campaignContext}
 
+${previousAnswer ? `Previous GPT response:\n${previousAnswer}\n` : ''}
+
 User request: ${request}`;
 }
 
@@ -144,6 +171,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   const [campaignError, setCampaignError] = useState('');
   const [sortConfig, setSortConfig] = useState(DEFAULT_SORT);
   const [gptQuery, setGptQuery] = useState('');
+  const [gptFollowup, setGptFollowup] = useState('');
   const [gptLoading, setGptLoading] = useState(false);
   const [gptStreamingText, setGptStreamingText] = useState('');
   const [gptResult, setGptResult] = useState(null);
@@ -162,6 +190,8 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         spend: campaign.spend || 0,
         purchases: campaign.purchases || 0,
         revenue: campaign.revenue || 0,
+        startDate: campaign.startDate || null,
+        endDate: campaign.endDate || null,
         countries: campaign.countries || '—'
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -183,8 +213,6 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
 
   const applyCampaignInputs = () => {
     setCampaignError('');
-    const days = Math.max(periodDays || 1, 1);
-
     if (campaignMode === 'two') {
       if (!selectedCampaignA || !selectedCampaignB) {
         setCampaignError('Select two campaigns to build the calculator points.');
@@ -196,8 +224,8 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         return;
       }
 
-      const campaignA = getCampaignDailyMetrics(selectedCampaignA, days);
-      const campaignB = getCampaignDailyMetrics(selectedCampaignB, days);
+      const campaignA = getCampaignDailyMetrics(selectedCampaignA, periodDays);
+      const campaignB = getCampaignDailyMetrics(selectedCampaignB, periodDays);
 
       if (!campaignA.spendDaily || !campaignA.purchasesDaily || !campaignB.spendDaily || !campaignB.purchasesDaily) {
         setCampaignError('Selected campaigns need spend and conversions to build the model.');
@@ -242,21 +270,21 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       return;
     }
 
-    const highTotals = sumCampaignMetrics(highSpendGroup);
-    const lowTotals = sumCampaignMetrics(lowSpendGroup);
+    const highDailyTotals = sumDailyMetrics(highSpendGroup, periodDays);
+    const lowDailyTotals = sumDailyMetrics(lowSpendGroup, periodDays);
 
-    const highDailySpend = highTotals.spend / days;
-    const highDailyPurchases = highTotals.purchases / days;
-    const lowDailySpend = lowTotals.spend / days;
-    const lowDailyPurchases = lowTotals.purchases / days;
+    const highDailySpend = highDailyTotals.spendDaily;
+    const highDailyPurchases = highDailyTotals.purchasesDaily;
+    const lowDailySpend = lowDailyTotals.spendDaily;
+    const lowDailyPurchases = lowDailyTotals.purchasesDaily;
 
     if (!highDailySpend || !highDailyPurchases || !lowDailySpend || !lowDailyPurchases) {
       setCampaignError('Unified campaigns need spend and conversions to build the model.');
       return;
     }
 
-    const totalPurchases = highTotals.purchases + lowTotals.purchases;
-    const totalRevenue = highTotals.revenue + lowTotals.revenue;
+    const totalPurchases = highDailyTotals.purchases + lowDailyTotals.purchases;
+    const totalRevenue = highDailyTotals.revenue + lowDailyTotals.revenue;
     const aov = totalPurchases > 0 ? totalRevenue / totalPurchases : 0;
 
     setInputs((prev) => ({
@@ -473,25 +501,26 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     if (!campaignOptions.length) return 'No unified campaign data available.';
     return campaignOptions.map((campaign) => {
       const daily = getCampaignDailyMetrics(campaign, periodDays);
-      return `• ${campaign.name} (${campaign.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+      return `• ${campaign.name} (${campaign.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)} (running ${daily.days} days)`;
     }).join('\n');
   }, [campaignOptions, periodDays]);
 
   const campaignAContext = useMemo(() => {
     if (!selectedCampaignA) return 'Campaign A not selected.';
     const daily = getCampaignDailyMetrics(selectedCampaignA, periodDays);
-    return `${selectedCampaignA.name} (${selectedCampaignA.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+    return `${selectedCampaignA.name} (${selectedCampaignA.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)} (running ${daily.days} days)`;
   }, [selectedCampaignA, periodDays]);
 
   const campaignBContext = useMemo(() => {
     if (!selectedCampaignB) return 'Campaign B not selected.';
     const daily = getCampaignDailyMetrics(selectedCampaignB, periodDays);
-    return `${selectedCampaignB.name} (${selectedCampaignB.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+    return `${selectedCampaignB.name} (${selectedCampaignB.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)} (running ${daily.days} days)`;
   }, [selectedCampaignB, periodDays]);
 
-  const handleGptSubmit = async (event) => {
+  const handleGptSubmit = async (event, customQuery = null, previousAnswer = null) => {
     event?.preventDefault();
-    if (!gptQuery.trim() || gptLoading) return;
+    const query = (customQuery ?? gptQuery).trim();
+    if (!query || gptLoading) return;
 
     setGptLoading(true);
     setGptStreamingText('');
@@ -506,7 +535,8 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         allCampaigns: allCampaignContext,
         periodDays,
         inputs,
-        request: gptQuery.trim()
+        request: query,
+        previousAnswer
       });
 
       const response = await fetch('/api/ai/stream', {
@@ -694,6 +724,30 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
               )}
             </div>
           )}
+
+          <form
+            onSubmit={(event) => {
+              handleGptSubmit(event, gptFollowup, gptResult || gptStreamingText || '');
+              setGptFollowup('');
+            }}
+            className="space-y-3"
+          >
+            <input
+              type="text"
+              value={gptFollowup}
+              onChange={(event) => setGptFollowup(event.target.value)}
+              placeholder="Ask a follow-up question..."
+              className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-400"
+              disabled={gptLoading}
+            />
+            <button
+              type="submit"
+              disabled={gptLoading || !gptFollowup.trim()}
+              className="w-full rounded-lg border border-purple-200 bg-white px-4 py-3 text-sm font-semibold text-purple-700 transition hover:bg-purple-50 disabled:bg-gray-100 disabled:text-gray-400"
+            >
+              Send Follow-up
+            </button>
+          </form>
         </div>
       </div>
 

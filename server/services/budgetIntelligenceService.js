@@ -398,6 +398,8 @@ export function getBudgetIntelligence(store, params) {
       adsetName: row.adsetName || null,    // ✅ camelCase for frontend
       country: row.country,
       spend: row.spend,
+      startDate: row.startDate,
+      endDate: row.endDate,
       impressions: row.impressions || 0,
       clicks: row.link_clicks || 0,
       reach: row.reach || 0,
@@ -433,6 +435,8 @@ export function getBudgetIntelligence(store, params) {
       campaignId: row.campaignId || key,
       campaignName: row.campaignName || 'Unnamed Campaign',
       countries: new Set(),
+      startDate: row.startDate || null,
+      endDate: row.endDate || null,
       spend: 0,
       impressions: 0,
       link_clicks: 0,
@@ -445,6 +449,16 @@ export function getBudgetIntelligence(store, params) {
     };
 
     if (row.country) existing.countries.add(row.country);
+    if (row.startDate) {
+      if (!existing.startDate || row.startDate < existing.startDate) {
+        existing.startDate = row.startDate;
+      }
+    }
+    if (row.endDate) {
+      if (!existing.endDate || row.endDate > existing.endDate) {
+        existing.endDate = row.endDate;
+      }
+    }
     const metricsToSum = ['spend', 'impressions', 'link_clicks', 'reach', 'lpv', 'atc', 'ic', 'purchases', 'revenue'];
     metricsToSum.forEach(metric => {
       existing[metric] += row[metric] || 0;
