@@ -433,6 +433,8 @@ export function getBudgetIntelligence(store, params) {
       campaignId: row.campaignId || key,
       campaignName: row.campaignName || 'Unnamed Campaign',
       countries: new Set(),
+      startDate: row.startDate || null,
+      endDate: row.endDate || null,
       spend: 0,
       impressions: 0,
       link_clicks: 0,
@@ -445,6 +447,16 @@ export function getBudgetIntelligence(store, params) {
     };
 
     if (row.country) existing.countries.add(row.country);
+    if (row.startDate) {
+      if (!existing.startDate || row.startDate < existing.startDate) {
+        existing.startDate = row.startDate;
+      }
+    }
+    if (row.endDate) {
+      if (!existing.endDate || row.endDate > existing.endDate) {
+        existing.endDate = row.endDate;
+      }
+    }
     const metricsToSum = ['spend', 'impressions', 'link_clicks', 'reach', 'lpv', 'atc', 'ic', 'purchases', 'revenue'];
     metricsToSum.forEach(metric => {
       existing[metric] += row[metric] || 0;
@@ -468,10 +480,17 @@ export function getBudgetIntelligence(store, params) {
     const countryList = row.countries && row.countries.size > 0
       ? Array.from(row.countries).filter(Boolean).join(', ')
       : '—';
+    const hasDateRange = row.startDate && row.endDate;
+    const daysActive = hasDateRange
+      ? Math.ceil((new Date(row.endDate) - new Date(row.startDate)) / (24 * 60 * 60 * 1000)) + 1
+      : null;
 
     return processRowToGuidance({
       ...row,
       country: countryList,
+      startDate: row.startDate,
+      endDate: row.endDate,
+      daysActive,
       date: null,
       adsetId: null,
       adsetName: null
