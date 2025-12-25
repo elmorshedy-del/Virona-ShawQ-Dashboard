@@ -56,7 +56,16 @@ function buildInterpretation({ B, optimal, profitAtOptimal, ceiling, realCeiling
     ⚠️ <strong>Ad Breakeven: $${Math.round(ceiling)}/day</strong>${overheadText}`;
 }
 
-export default function BudgetCalculator() {
+export default function BudgetCalculator({ budgetIntelligence = null, store = null }) {
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiNotes, setAiNotes] = useState('');
+  const [aiModel, setAiModel] = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const [chatModel, setChatModel] = useState('');
   const [inputs, setInputs] = useState({
     spend1: '',
     conv1: '',
@@ -68,8 +77,155 @@ export default function BudgetCalculator() {
   });
   const [results, setResults] = useState(null);
 
+  const unifiedCampaign = useMemo(() => {
+    const rows = Array.isArray(budgetIntelligence?.liveGuidance) ? budgetIntelligence.liveGuidance : [];
+    if (rows.length === 0) return null;
+
+    return rows.reduce((acc, row) => ({
+      campaignId: 'unified',
+      campaignName: 'All Campaigns (Unified)',
+      spend: acc.spend + (row.spend || 0),
+      purchases: acc.purchases + (row.purchases || 0),
+      revenue: acc.revenue + (row.revenue || 0)
+    }), {
+      campaignId: 'unified',
+      campaignName: 'All Campaigns (Unified)',
+      spend: 0,
+      purchases: 0,
+      revenue: 0
+    });
+  }, [budgetIntelligence]);
+
+  const calculatorMath = `B = ln(conv2/conv1) / ln(spend2/spend1)
+a = conv1 / (spend1^B)
+breakeven ROAS = 1 / margin`;
+
+  const unifiedPayload = useMemo(() => {
+    if (!unifiedCampaign) return null;
+    const periodDays = budgetIntelligence?.period?.days || null;
+    const avgAov = unifiedCampaign.purchases > 0
+      ? unifiedCampaign.revenue / unifiedCampaign.purchases
+      : null;
+
+    return {
+      campaignId: unifiedCampaign.campaignId,
+      campaignName: unifiedCampaign.campaignName,
+      spend: unifiedCampaign.spend || 0,
+      purchases: unifiedCampaign.purchases || 0,
+      revenue: unifiedCampaign.revenue || 0,
+      aov: avgAov,
+      periodDays
+    };
+  }, [budgetIntelligence, unifiedCampaign]);
+
+  const buildUnifiedPrompt = (extraInstructions = '') => `
+You are a budget calculator assistant. You must use the exact calculator math below.
+
+Calculator math:
+${calculatorMath}
+
+Unified campaign data (aggregated):
+${JSON.stringify(unifiedPayload)}
+
+Constraints:
+- spend1 > 0, spend2 > spend1
+- conv1 > 0, conv2 > conv1
+- aov > 0
+- margin is a percent (0-100)
+- overhead is monthly (can be 0)
+
+${extraInstructions}
+`.trim();
+
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
+  };
+
+  const handleGenerateFromCampaign = async () => {
+    setAiError('');
+    setAiNotes('');
+    setAiModel('');
+
+    if (!store) {
+      setAiError('Select a store before using GPT-5.1 High autofill.');
+      return;
+    }
+
+    if (!unifiedCampaign || !unifiedPayload) {
+      setAiError('Unified campaign data is not available yet.');
+      return;
+    }
+
+    const prompt = `${buildUnifiedPrompt(
+      'Use the unified campaign data to generate two daily test points that align with the calculator math.'
+    )}
+
+Return ONLY valid JSON with numeric fields:
+{"spend1":number,"conv1":number,"spend2":number,"conv2":number,"aov":number,"margin":number,"overhead":number,"notes":"string"}
+If data is insufficient, set notes to explain assumptions and still provide reasonable values.`;
+
+    setAiLoading(true);
+    try {
+      const response = await fetch('/api/ai/decide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: prompt,
+          store,
+          depth: 'deep'
+        })
+      });
+
+      const data = await response.json();
+      if (!data?.success) {
+        throw new Error(data?.error || 'Failed to generate campaign inputs.');
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(data.answer);
+      } catch (parseError) {
+        throw new Error('GPT response was not valid JSON. Please try again.');
+      }
+
+      const toNumber = (value) => {
+        if (typeof value === 'number') return value;
+        if (typeof value === 'string') return parseFloat(value);
+        return Number.NaN;
+      };
+
+      const spend1 = toNumber(parsed.spend1);
+      const conv1 = toNumber(parsed.conv1);
+      const spend2 = toNumber(parsed.spend2);
+      const conv2 = toNumber(parsed.conv2);
+      const aov = toNumber(parsed.aov);
+      const margin = toNumber(parsed.margin);
+      const overhead = Number.isFinite(toNumber(parsed.overhead)) ? toNumber(parsed.overhead) : 0;
+
+      if (![spend1, conv1, spend2, conv2, aov, margin].every((val) => Number.isFinite(val) && val > 0)) {
+        throw new Error('GPT response contained invalid numeric values.');
+      }
+
+      if (spend2 <= spend1 || conv2 <= conv1) {
+        throw new Error('GPT response did not meet spend/conversion constraints.');
+      }
+
+      setInputs({
+        spend1: spend1.toFixed(2),
+        conv1: conv1.toFixed(2),
+        spend2: spend2.toFixed(2),
+        conv2: conv2.toFixed(2),
+        aov: aov.toFixed(2),
+        margin: margin.toFixed(2),
+        overhead: overhead ? overhead.toFixed(2) : ''
+      });
+      setAiNotes(parsed.notes || '');
+      setAiModel(data.model || '');
+    } catch (error) {
+      setAiError(error.message || 'Failed to generate inputs.');
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   const handleCalculate = () => {
@@ -243,6 +399,156 @@ export default function BudgetCalculator() {
 
   return (
     <div className="space-y-6">
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div className="border-b border-gray-100 px-6 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">🧠 GPT-5.1 High Autofill</h2>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-gray-500">
+            Generate calculator inputs using unified campaign performance data and GPT-5.1 (high reasoning).
+          </p>
+          <div className="rounded-lg border border-purple-100 bg-purple-50 px-4 py-3 text-sm text-purple-700">
+            {unifiedCampaign ? (
+              <div className="space-y-1">
+                <p className="font-semibold">{unifiedCampaign.campaignName}</p>
+                <p>Spend: ${Math.round(unifiedCampaign.spend || 0).toLocaleString()}</p>
+                <p>Purchases: {Math.round(unifiedCampaign.purchases || 0).toLocaleString()}</p>
+                <p>Revenue: ${Math.round(unifiedCampaign.revenue || 0).toLocaleString()}</p>
+              </div>
+            ) : (
+              <p>Unified campaign data is not available yet.</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={handleGenerateFromCampaign}
+            disabled={aiLoading || !unifiedCampaign}
+            className="w-full rounded-lg bg-purple-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-purple-500 disabled:cursor-not-allowed disabled:bg-purple-300"
+          >
+            {aiLoading ? 'Generating…' : 'Generate Inputs'}
+          </button>
+          {aiError && (
+            <div className="rounded-lg border border-rose-100 bg-rose-50 p-3 text-sm text-rose-600">
+              {aiError}
+            </div>
+          )}
+          {(aiNotes || aiModel) && (
+            <div className="rounded-lg border border-purple-100 bg-purple-50 p-3 text-sm text-purple-700 space-y-1">
+              {aiNotes && <p>{aiNotes}</p>}
+              {aiModel && <p className="text-xs text-purple-500">Model: {aiModel}</p>}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div className="border-b border-gray-100 px-6 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">💬 Budget Calculator Chat (GPT-5.1 High)</h2>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-gray-500">
+            Chat with GPT-5.1 using the calculator math and unified campaign data. Ask for projections,
+            sanity checks, or how inputs affect the model.
+          </p>
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 space-y-3 max-h-80 overflow-y-auto">
+            {chatMessages.length === 0 && (
+              <p className="text-sm text-gray-400">Ask a question to start the calculator chat.</p>
+            )}
+            {chatMessages.map((message, index) => (
+              <div key={`${message.role}-${index}`} className={message.role === 'user' ? 'text-right' : 'text-left'}>
+                <div
+                  className={`inline-block rounded-2xl px-4 py-2 text-sm ${
+                    message.role === 'user'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white border border-gray-200 text-gray-700'
+                  }`}
+                >
+                  {message.content}
+                </div>
+              </div>
+            ))}
+          </div>
+          {chatError && (
+            <div className="rounded-lg border border-rose-100 bg-rose-50 p-3 text-sm text-rose-600">
+              {chatError}
+            </div>
+          )}
+          {chatModel && !chatLoading && (
+            <p className="text-xs text-gray-400">Answered by {chatModel}</p>
+          )}
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (chatLoading || !chatInput.trim()) return;
+              if (!unifiedCampaign || !unifiedPayload) {
+                setChatError('Unified campaign data is not available yet.');
+                return;
+              }
+              setChatError('');
+              const userMessage = chatInput.trim();
+              setChatInput('');
+              setChatLoading(true);
+              setChatMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
+
+              const transcript = [...chatMessages, { role: 'user', content: userMessage }]
+                .slice(-6)
+                .map((entry) => `${entry.role.toUpperCase()}: ${entry.content}`)
+                .join('\n');
+
+              const chatPrompt = `${buildUnifiedPrompt(
+                'Answer the user question using the calculator math and unified data. Provide calculations when helpful.'
+              )}
+
+Conversation:
+${transcript}
+
+User question: ${userMessage}`;
+
+              fetch('/api/ai/decide', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  question: chatPrompt,
+                  store,
+                  depth: 'deep'
+                })
+              })
+                .then((response) => response.json())
+                .then((data) => {
+                  if (!data?.success) {
+                    throw new Error(data?.error || 'Failed to get a chat response.');
+                  }
+                  setChatMessages((prev) => [...prev, { role: 'assistant', content: data.answer }]);
+                  setChatModel(data.model || '');
+                })
+                .catch((error) => {
+                  setChatError(error.message || 'Failed to get a chat response.');
+                })
+                .finally(() => {
+                  setChatLoading(false);
+                });
+            }}
+            className="flex gap-2"
+          >
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(event) => setChatInput(event.target.value)}
+              placeholder="Ask about budgets, ROAS, or test points..."
+              className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+              disabled={chatLoading}
+            />
+            <button
+              type="submit"
+              disabled={chatLoading || !chatInput.trim()}
+              className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-purple-500 disabled:cursor-not-allowed disabled:bg-purple-300"
+            >
+              {chatLoading ? 'Sending…' : 'Send'}
+            </button>
+          </form>
+        </div>
+      </div>
+
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
         <div className="border-b border-gray-100 px-6 py-4">
           <h2 className="text-lg font-semibold text-gray-900">📊 Input Your Data</h2>
