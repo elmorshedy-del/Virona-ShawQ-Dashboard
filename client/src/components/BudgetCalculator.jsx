@@ -1,4 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import {
+  Bar,
+  BarChart,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts';
 
 const DEFAULT_SPEND_LEVELS = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200];
 
@@ -116,6 +126,105 @@ function aggregateByCountry(campaigns = []) {
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function getCampaignKey(campaign) {
+  return campaign?.campaignKey || campaign?.campaignId || campaign?.campaignName || campaign?.name || campaign?.id || '';
+}
+
+function buildTwoCampaignComparison({ campaignOptions, selectedCampaignA, selectedCampaignB, periodDays }) {
+  if (!selectedCampaignA || !selectedCampaignB) {
+    return {
+      context: 'Select Campaign A and Campaign B to generate country-by-country comparisons.',
+      chartData: []
+    };
+  }
+
+  const keyA = getCampaignKey(selectedCampaignA);
+  const keyB = getCampaignKey(selectedCampaignB);
+
+  const campaignAEntries = campaignOptions.filter((campaign) => getCampaignKey(campaign) === keyA);
+  const campaignBEntries = campaignOptions.filter((campaign) => getCampaignKey(campaign) === keyB);
+
+  if (!campaignAEntries.length || !campaignBEntries.length) {
+    return {
+      context: 'Selected campaigns do not have country-level data to compare.',
+      chartData: []
+    };
+  }
+
+  const mapA = new Map();
+  campaignAEntries.forEach((campaign) => {
+    const country = campaign.country || campaign.countries || '—';
+    mapA.set(country, { campaign, daily: getCampaignDailyMetrics(campaign, periodDays) });
+  });
+
+  const comparisons = [];
+  const chartData = [];
+
+  campaignBEntries.forEach((campaign) => {
+    const country = campaign.country || campaign.countries || '—';
+    if (!mapA.has(country)) return;
+    const entryA = mapA.get(country);
+    const entryB = { campaign, daily: getCampaignDailyMetrics(campaign, periodDays) };
+
+    const roasA = entryA.daily.spend > 0 ? entryA.daily.revenue / entryA.daily.spend : 0;
+    const roasB = entryB.daily.spend > 0 ? entryB.daily.revenue / entryB.daily.spend : 0;
+
+    comparisons.push(
+      `• ${country}: Campaign A spend ${formatCurrency(entryA.daily.spendDaily)}/day, purchases ${formatNumber(entryA.daily.purchasesDaily)}, ROAS ${formatNumber(roasA)} | ` +
+      `Campaign B spend ${formatCurrency(entryB.daily.spendDaily)}/day, purchases ${formatNumber(entryB.daily.purchasesDaily)}, ROAS ${formatNumber(roasB)}`
+    );
+
+    chartData.push({
+      name: country,
+      campaignA: Number(entryA.daily.spendDaily.toFixed(2)),
+      campaignB: Number(entryB.daily.spendDaily.toFixed(2))
+    });
+  });
+
+  if (!comparisons.length) {
+    return {
+      context: 'No matching countries found between Campaign A and Campaign B.',
+      chartData: []
+    };
+  }
+
+  return {
+    context: `Matching countries across Campaign A and B:\n${comparisons.join('\n')}`,
+    chartData
+  };
+}
+
+function buildUnifiedComparison({ countryOptions, periodDays }) {
+  if (countryOptions.length < 2) {
+    return {
+      context: 'Unified campaigns need at least two countries to compare.',
+      chartData: []
+    };
+  }
+
+  const sortedBySpend = [...countryOptions].sort((a, b) => b.spend - a.spend);
+  const topTwo = sortedBySpend.slice(0, 2);
+
+  const comparisons = topTwo.map((country) => {
+    const daily = getCampaignDailyMetrics(country, periodDays);
+    const roas = daily.spend > 0 ? daily.revenue / daily.spend : 0;
+    return `• ${country.country || country.name || '—'}: spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, ROAS ${formatNumber(roas)}`;
+  });
+
+  const chartData = topTwo.map((country) => {
+    const daily = getCampaignDailyMetrics(country, periodDays);
+    return {
+      name: country.country || country.name || '—',
+      spend: Number(daily.spendDaily.toFixed(2))
+    };
+  });
+
+  return {
+    context: `Top 2 countries by spend:\n${comparisons.join('\n')}`,
+    chartData
+  };
+}
+
 function getCampaignDailyMetrics(campaign, periodDays) {
   const days = getCampaignRunDays(campaign, periodDays);
   const spend = Number(campaign?.spend || 0);
@@ -132,14 +241,30 @@ function getCampaignDailyMetrics(campaign, periodDays) {
   };
 }
 
-function buildCampaignPrompt({ mode, campaignA, campaignB, allCampaigns, periodDays, inputs, request, previousAnswer }) {
+function buildCampaignPrompt({
+  mode,
+  campaignA,
+  campaignB,
+  allCampaigns,
+  periodDays,
+  inputs,
+  request,
+  previousAnswer,
+  comparisonContext
+}) {
   const header = `You are a budget calculator assistant. Use the data below to compute the two-point model exactly like the calculator.`;
   const formatGuide = `Return the results in the same order and style as the calculator, including:
 - B, a, Optimal Spend, Max Daily Profit, Ad Breakeven
 - B Scale Interpretation
 - Formula lines
 - "What This Means" paragraph
-- ROAS Predictions table with columns: Daily Spend, Conversions, Revenue, ROAS, Daily Profit`;
+- ROAS Predictions table with columns: Daily Spend, Conversions, Revenue, ROAS, Daily Profit
+
+Formatting requirements:
+- Use Markdown with headings, bullet points, and well-structured tables.
+- Use LaTeX-style math for formulas (wrap in $$ ... $$).
+- Include at least one comparison table for the country insights.
+- Keep the response clean and professional with clear section headers.`;
 
   const inputContext = `Calculator inputs:
 spend1=${inputs.spend1 || '—'}
@@ -163,6 +288,10 @@ ${campaignA}
 Campaign B:
 ${campaignB}`;
 
+  const comparisonSection = comparisonContext
+    ? `\nCountry comparison data:\n${comparisonContext}`
+    : '';
+
   return `${header}
 
 ${formatGuide}
@@ -170,6 +299,8 @@ ${formatGuide}
 ${inputContext}
 
 ${campaignContext}
+
+${comparisonSection}
 
 ${followupContext}
 
@@ -183,7 +314,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     spend2: '',
     conv2: '',
     aov: '',
-    margin: '',
+    margin: '35',
     overhead: '',
   });
   const [results, setResults] = useState(null);
@@ -194,14 +325,38 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   const [sortConfig, setSortConfig] = useState(DEFAULT_SORT);
   const [gptQuery, setGptQuery] = useState('');
   const [gptLoading, setGptLoading] = useState(false);
-  const [gptStreamingText, setGptStreamingText] = useState('');
+  const [gptMessages, setGptMessages] = useState([]);
   const [gptResult, setGptResult] = useState(null);
   const [gptModel, setGptModel] = useState(null);
   const [gptFollowup, setGptFollowup] = useState('');
+  const [codeHighlighter, setCodeHighlighter] = useState(null);
 
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
   };
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadHighlighter = async () => {
+      try {
+        const { getHighlighter } = await import('shiki');
+        const highlighter = await getHighlighter({
+          themes: ['github-dark'],
+          langs: ['bash', 'js', 'jsx', 'ts', 'tsx', 'json', 'markdown']
+        });
+        if (isMounted) {
+          setCodeHighlighter(highlighter);
+        }
+      } catch (error) {
+        console.warn('[BudgetCalculator] Shiki failed to load', error);
+      }
+    };
+
+    loadHighlighter();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const campaignOptions = useMemo(() => {
     return campaigns
@@ -209,6 +364,9 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       .map((campaign) => ({
         id: `${campaign.campaignId || campaign.campaignName}-${campaign.country || campaign.countries || '—'}`,
         name: campaign.campaignName || 'Unnamed Campaign',
+        campaignId: campaign.campaignId || null,
+        campaignName: campaign.campaignName || '',
+        campaignKey: campaign.campaignId || campaign.campaignName || '',
         spend: campaign.spend || 0,
         purchases: campaign.purchases || 0,
         revenue: campaign.revenue || 0,
@@ -264,14 +422,18 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         .reduce((acc, item) => acc + item.purchases, 0);
       const aov = combinedPurchases > 0 ? combinedAov / combinedPurchases : 0;
 
-      setInputs((prev) => ({
-        ...prev,
+      const nextInputs = {
+        ...inputs,
         spend1: campaignA.spendDaily.toFixed(2),
         conv1: campaignA.purchasesDaily.toFixed(2),
         spend2: campaignB.spendDaily.toFixed(2),
         conv2: campaignB.purchasesDaily.toFixed(2),
-        aov: aov > 0 ? aov.toFixed(2) : prev.aov
-      }));
+        aov: aov > 0 ? aov.toFixed(2) : inputs.aov,
+        margin: '35'
+      };
+
+      setInputs(nextInputs);
+      void handleAutoInsight(nextInputs);
       return;
     }
 
@@ -306,14 +468,18 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     const totalRevenue = highTotals.revenue + lowTotals.revenue;
     const aov = totalPurchases > 0 ? totalRevenue / totalPurchases : 0;
 
-    setInputs((prev) => ({
-      ...prev,
+    const nextInputs = {
+      ...inputs,
       spend1: lowDailySpend.toFixed(2),
       conv1: lowDailyPurchases.toFixed(2),
       spend2: highDailySpend.toFixed(2),
       conv2: highDailyPurchases.toFixed(2),
-      aov: aov > 0 ? aov.toFixed(2) : prev.aov
-    }));
+      aov: aov > 0 ? aov.toFixed(2) : inputs.aov,
+      margin: '35'
+    };
+
+    setInputs(nextInputs);
+    void handleAutoInsight(nextInputs);
   };
 
   const handleSort = (key) => {
@@ -536,16 +702,51 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     return `${selectedCampaignB.name} (${selectedCampaignB.country || selectedCampaignB.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
   }, [selectedCampaignB, periodDays]);
 
-  const runGptRequest = async (requestText, previousAnswer = '') => {
+  const comparisonData = useMemo(() => {
+    if (campaignMode === 'two') {
+      return buildTwoCampaignComparison({
+        campaignOptions,
+        selectedCampaignA,
+        selectedCampaignB,
+        periodDays
+      });
+    }
+    return buildUnifiedComparison({ countryOptions, periodDays });
+  }, [campaignMode, campaignOptions, countryOptions, periodDays, selectedCampaignA, selectedCampaignB]);
+
+  const autoInsightRequest = useMemo(() => {
+    if (campaignMode === 'two') {
+      return 'Provide high-effort insights and recommendations by comparing matching countries across Campaign A and Campaign B. Highlight winners, gaps, and actionable next steps. Include a comparison table and equations.';
+    }
+    return 'Provide high-effort insights and recommendations comparing the top two countries by spend. Highlight key differences, risks, and next steps. Include a comparison table and equations.';
+  }, [campaignMode]);
+
+  const appendGptMessage = (message) => {
+    setGptMessages((prev) => [...prev, message]);
+  };
+
+  const updateGptMessage = (id, updates) => {
+    setGptMessages((prev) => prev.map((message) => (
+      message.id === id ? { ...message, ...updates } : message
+    )));
+  };
+
+  const runGptRequest = async ({
+    requestText,
+    previousAnswer = '',
+    inputOverride = null,
+    assistantMessageId
+  }) => {
     const prompt = buildCampaignPrompt({
       mode: campaignMode,
       campaignA: campaignAContext,
       campaignB: campaignBContext,
       allCampaigns: allCampaignContext,
       periodDays,
-      inputs,
+      inputs: inputOverride || inputs,
       request: requestText,
-      previousAnswer
+      previousAnswer,
+      comparisonContext: comparisonData.context
     });
 
     const response = await fetch('/api/ai/stream', {
@@ -554,9 +755,13 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       body: JSON.stringify({
         question: prompt,
         store: storeName || 'vironax',
-        depth: 'fast'
+        depth: 'deep'
       })
     });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
 
     const reader = response.body?.getReader();
     if (!reader) {
@@ -580,11 +785,11 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
           const data = JSON.parse(payload);
           if (data.type === 'delta') {
             fullText += data.text;
-            setGptStreamingText(fullText);
+            updateGptMessage(assistantMessageId, { content: fullText, isStreaming: true });
           } else if (data.type === 'done') {
             setGptModel(data.model);
             setGptResult(fullText);
-            setGptStreamingText('');
+            updateGptMessage(assistantMessageId, { content: fullText, isStreaming: false, model: data.model });
           } else if (data.type === 'error') {
             throw new Error(data.error || 'GPT request failed.');
           }
@@ -600,13 +805,38 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     if (!gptQuery.trim() || gptLoading) return;
 
     setGptLoading(true);
-    setGptStreamingText('');
     setGptResult(null);
     setGptModel(null);
 
+    const messageId = Date.now();
+    appendGptMessage({
+      id: messageId,
+      role: 'user',
+      content: gptQuery.trim(),
+      timestamp: new Date().toISOString()
+    });
+    setGptQuery('');
+
+    const assistantMessageId = messageId + 1;
+    appendGptMessage({
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      isStreaming: true
+    });
+
     try {
-      await runGptRequest(gptQuery.trim());
+      await runGptRequest({
+        requestText: gptQuery.trim(),
+        assistantMessageId
+      });
     } catch (error) {
+      updateGptMessage(assistantMessageId, {
+        content: `Error: ${error.message}`,
+        isStreaming: false,
+        isError: true
+      });
       setGptResult(`Error: ${error.message}`);
     } finally {
       setGptLoading(false);
@@ -618,19 +848,130 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     if (!gptFollowup.trim() || gptLoading) return;
 
     setGptLoading(true);
-    setGptStreamingText('');
     setGptResult(null);
     setGptModel(null);
 
+    const messageId = Date.now();
+    appendGptMessage({
+      id: messageId,
+      role: 'user',
+      content: gptFollowup.trim(),
+      timestamp: new Date().toISOString()
+    });
+
+    const assistantMessageId = messageId + 1;
+    appendGptMessage({
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      isStreaming: true
+    });
+
     try {
-      await runGptRequest(gptFollowup.trim(), gptResult || '');
+      await runGptRequest({
+        requestText: gptFollowup.trim(),
+        previousAnswer: gptResult || '',
+        assistantMessageId
+      });
       setGptFollowup('');
     } catch (error) {
+      updateGptMessage(assistantMessageId, {
+        content: `Error: ${error.message}`,
+        isStreaming: false,
+        isError: true
+      });
       setGptResult(`Error: ${error.message}`);
     } finally {
       setGptLoading(false);
     }
   };
+
+  const handleAutoInsight = async (nextInputs) => {
+    if (gptLoading) return;
+
+    setGptLoading(true);
+    setGptResult(null);
+    setGptModel(null);
+
+    const messageId = Date.now();
+    appendGptMessage({
+      id: messageId,
+      role: 'user',
+      content: 'Auto-insight request based on unified campaign autofill.',
+      timestamp: new Date().toISOString(),
+      isAuto: true
+    });
+
+    const assistantMessageId = messageId + 1;
+    appendGptMessage({
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      isStreaming: true,
+      isAuto: true
+    });
+
+    try {
+      await runGptRequest({
+        requestText: autoInsightRequest,
+        inputOverride: nextInputs,
+        assistantMessageId
+      });
+    } catch (error) {
+      updateGptMessage(assistantMessageId, {
+        content: `Error: ${error.message}`,
+        isStreaming: false,
+        isError: true
+      });
+      setGptResult(`Error: ${error.message}`);
+    } finally {
+      setGptLoading(false);
+    }
+  };
+
+  const markdownComponents = useMemo(() => ({
+    code({ inline, className, children }) {
+      const codeText = String(children).replace(/\n$/, '');
+      const language = className?.replace('language-', '');
+
+      if (inline) {
+        return (
+          <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-700">
+            {codeText}
+          </code>
+        );
+      }
+
+      if (!codeHighlighter || !language) {
+        return (
+          <pre className="overflow-x-auto rounded-xl bg-slate-900 p-4 text-xs text-slate-100">
+            <code>{codeText}</code>
+          </pre>
+        );
+      }
+
+      const highlighted = codeHighlighter.codeToHtml(codeText, {
+        lang: language,
+        theme: 'github-dark'
+      });
+
+      return (
+        <div
+          className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900 text-xs"
+          dangerouslySetInnerHTML={{ __html: highlighted }}
+        />
+      );
+    },
+    table({ children }) {
+      return (
+        <div className="overflow-x-auto">
+          <table className="min-w-full border-collapse">{children}</table>
+        </div>
+      );
+    }
+  }), [codeHighlighter]);
 
   return (
     <div className="space-y-6">
@@ -738,57 +1079,129 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
         <div className="border-b border-gray-100 px-6 py-4">
-          <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (Low Effort)</h2>
-          <p className="text-xs text-gray-400 mt-1">Explain what you want, and GPT will compute results using your unified campaign data.</p>
+          <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (High Effort)</h2>
+          <p className="text-xs text-gray-400 mt-1">
+            Auto-insights run immediately after campaign autofill, with structured tables and equations.
+          </p>
         </div>
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-6">
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 text-sm text-indigo-700">
+            ✨ Auto mode is on. Each time you autofill the calculator, ChatGPT will compare matching countries
+            and recommend next steps.
+          </div>
+
+          <div className="space-y-4">
+            {gptMessages.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-400">
+                No insights yet. Click "Use Unified Campaign Data" to auto-generate recommendations.
+              </div>
+            )}
+
+            {gptMessages.map((message) => (
+              <div
+                key={message.id}
+                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-3xl w-full rounded-2xl border px-4 py-3 shadow-sm ${
+                    message.role === 'user'
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white border-gray-200'
+                  }`}
+                >
+                  <div className="text-xs uppercase tracking-wide text-gray-400 mb-2">
+                    {message.role === 'user' ? 'You' : 'Assistant'}
+                    {message.isAuto && message.role === 'user' ? ' · Auto' : ''}
+                  </div>
+
+                  {message.role === 'assistant' ? (
+                    <>
+                      {message.content ? (
+                        <ReactMarkdown
+                          components={markdownComponents}
+                          className="prose prose-sm prose-slate max-w-none"
+                        >
+                          {message.content}
+                        </ReactMarkdown>
+                      ) : (
+                        <div className="space-y-2 animate-pulse">
+                          <div className="h-3 rounded bg-slate-200 w-3/4" />
+                          <div className="h-3 rounded bg-slate-200 w-full" />
+                          <div className="h-3 rounded bg-slate-200 w-5/6" />
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-sm">{message.content}</p>
+                  )}
+
+                  {message.model && !message.isStreaming && (
+                    <p className="mt-3 text-xs text-slate-400">Answered by {message.model}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {comparisonData.chartData.length > 0 && (
+            <div className="rounded-2xl border border-gray-200 bg-white p-4">
+              <div className="mb-3 text-sm font-semibold text-gray-700">Country Spend Comparison</div>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={comparisonData.chartData}>
+                    <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Legend />
+                    {campaignMode === 'two' ? (
+                      <>
+                        <Bar dataKey="campaignA" name="Campaign A" fill="#6366f1" radius={[6, 6, 0, 0]} />
+                        <Bar dataKey="campaignB" name="Campaign B" fill="#a855f7" radius={[6, 6, 0, 0]} />
+                      </>
+                    ) : (
+                      <Bar dataKey="spend" name="Daily Spend" fill="#6366f1" radius={[6, 6, 0, 0]} />
+                    )}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleGptSubmit} className="space-y-3">
+            <label className="text-sm font-medium text-gray-600">Manual prompt (optional)</label>
             <textarea
               value={gptQuery}
               onChange={(event) => setGptQuery(event.target.value)}
-              placeholder="Describe how you want the calculator to interpret these campaigns..."
+              placeholder="Ask a follow-up or request a different analysis..."
               rows={3}
-              className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-400"
+              className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
             />
             <button
               type="submit"
               disabled={gptLoading || !gptQuery.trim()}
-              className="w-full rounded-lg bg-purple-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-purple-700 disabled:bg-gray-300"
+              className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:bg-gray-300"
             >
-              {gptLoading ? 'Thinking...' : 'Run GPT-5.1 (Low Effort)'}
+              {gptLoading ? 'Thinking...' : 'Send to GPT-5.1 (High Effort)'}
             </button>
           </form>
 
-          {(gptStreamingText || gptResult) && (
-            <div className="rounded-2xl border border-purple-100 bg-purple-50/60 p-4">
-              <h3 className="text-sm font-semibold text-purple-700 mb-2">GPT Result</h3>
-              <div className="whitespace-pre-wrap text-sm text-slate-700 leading-relaxed">
-                {gptStreamingText || gptResult}
-                {gptLoading && <span className="inline-block w-2 h-4 bg-purple-400 animate-pulse ml-1" />}
-              </div>
-              {gptModel && !gptLoading && (
-                <p className="text-xs text-purple-400 mt-3">Answered by {gptModel}</p>
-              )}
-            </div>
-          )}
-
           {!!gptResult && !gptLoading && (
             <form onSubmit={handleGptFollowup} className="space-y-2">
-              <label className="text-xs font-medium text-purple-600">Follow-up prompt</label>
-              <div className="flex gap-2">
+              <label className="text-xs font-medium text-indigo-600">Follow-up prompt</label>
+              <div className="flex flex-col gap-2 md:flex-row">
                 <input
                   type="text"
                   value={gptFollowup}
                   onChange={(event) => setGptFollowup(event.target.value)}
                   placeholder="Ask a follow-up based on the results..."
-                  className="flex-1 rounded-xl border border-purple-100 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-300"
+                  className="flex-1 rounded-xl border border-indigo-100 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
                 />
                 <button
                   type="submit"
                   disabled={!gptFollowup.trim()}
-                  className="rounded-xl bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-purple-700 disabled:bg-gray-300"
+                  className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:bg-gray-300"
                 >
-                  Send
+                  Send Follow-up
                 </button>
               </div>
             </form>
