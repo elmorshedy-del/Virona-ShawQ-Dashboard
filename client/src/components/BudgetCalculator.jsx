@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 const DEFAULT_SPEND_LEVELS = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200];
 
@@ -75,6 +76,12 @@ function formatNumber(value, digits = 2) {
   return Number(value).toFixed(digits);
 }
 
+function formatDelta(value) {
+  if (!Number.isFinite(value)) return '—';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}`;
+}
+
 function sumCampaignMetrics(campaigns = []) {
   return campaigns.reduce((acc, campaign) => {
     acc.spend += Number(campaign?.spend || 0);
@@ -116,6 +123,98 @@ function aggregateByCountry(campaigns = []) {
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function buildCountryComparisonRows(campaignsA, campaignsB, periodDays) {
+  const mapA = new Map();
+  const mapB = new Map();
+
+  campaignsA.forEach((campaign) => {
+    const country = campaign.country || campaign.countries || '—';
+    mapA.set(country, {
+      country,
+      metrics: getCampaignDailyMetrics(campaign, periodDays),
+    });
+  });
+
+  campaignsB.forEach((campaign) => {
+    const country = campaign.country || campaign.countries || '—';
+    mapB.set(country, {
+      country,
+      metrics: getCampaignDailyMetrics(campaign, periodDays),
+    });
+  });
+
+  const rows = [];
+  mapA.forEach((valueA, country) => {
+    const valueB = mapB.get(country);
+    if (!valueB) return;
+    const revenueDailyA = valueA.metrics.aov * valueA.metrics.purchasesDaily;
+    const revenueDailyB = valueB.metrics.aov * valueB.metrics.purchasesDaily;
+    const roasA = valueA.metrics.spendDaily > 0
+      ? revenueDailyA / valueA.metrics.spendDaily
+      : 0;
+    const roasB = valueB.metrics.spendDaily > 0
+      ? revenueDailyB / valueB.metrics.spendDaily
+      : 0;
+    rows.push({
+      country,
+      spendA: valueA.metrics.spendDaily,
+      spendB: valueB.metrics.spendDaily,
+      purchasesA: valueA.metrics.purchasesDaily,
+      purchasesB: valueB.metrics.purchasesDaily,
+      roasA,
+      roasB,
+      deltaSpend: valueB.metrics.spendDaily - valueA.metrics.spendDaily,
+      deltaPurchases: valueB.metrics.purchasesDaily - valueA.metrics.purchasesDaily,
+      deltaRoas: roasB - roasA,
+    });
+  });
+
+  return rows.sort((left, right) => left.country.localeCompare(right.country));
+}
+
+function buildCountryComparisonTable(rows = [], labelA, labelB) {
+  if (!rows.length) {
+    return 'No matching countries found across the two selected campaigns.';
+  }
+
+  const header = `| Country | ${labelA} Spend/Day | ${labelA} Purchases/Day | ${labelA} ROAS | ${labelB} Spend/Day | ${labelB} Purchases/Day | ${labelB} ROAS | Δ Spend/Day | Δ Purchases/Day | Δ ROAS |`;
+  const divider = '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |';
+  const body = rows.map((row) => (
+    `| ${row.country} | $${row.spendA.toFixed(2)} | ${row.purchasesA.toFixed(2)} | ${formatNumber(row.roasA, 2)} | ` +
+    `$${row.spendB.toFixed(2)} | ${row.purchasesB.toFixed(2)} | ${formatNumber(row.roasB, 2)} | ` +
+    `$${formatDelta(row.deltaSpend)} | ${formatDelta(row.deltaPurchases)} | ${formatNumber(row.deltaRoas, 2)} |`
+  )).join('\n');
+
+  return `${header}\n${divider}\n${body}`;
+}
+
+function MarkdownCodeBlock({ inline, className, children }) {
+  const language = className?.replace('language-', '') || 'text';
+  const rawCode = String(children || '').replace(/\n$/, '');
+
+  if (inline) {
+    return (
+      <code className="rounded bg-slate-100 px-1 py-0.5 text-[0.8rem] text-slate-700">
+        {children}
+      </code>
+    );
+  }
+
+  if (!rawCode.trim()) {
+    return (
+      <pre className="rounded-xl border border-slate-200 bg-slate-900/90 p-3 text-xs text-slate-100">
+        <code>{children}</code>
+      </pre>
+    );
+  }
+
+  return (
+    <pre className="rounded-xl border border-slate-200 bg-slate-900/90 p-3 text-xs text-slate-100">
+      <code className={`language-${language}`}>{children}</code>
+    </pre>
+  );
+}
+
 function getCampaignDailyMetrics(campaign, periodDays) {
   const days = getCampaignRunDays(campaign, periodDays);
   const spend = Number(campaign?.spend || 0);
@@ -132,14 +231,29 @@ function getCampaignDailyMetrics(campaign, periodDays) {
   };
 }
 
-function buildCampaignPrompt({ mode, campaignA, campaignB, allCampaigns, periodDays, inputs, request, previousAnswer }) {
+function buildCampaignPrompt({
+  mode,
+  campaignA,
+  campaignB,
+  allCampaigns,
+  periodDays,
+  inputs,
+  request,
+  previousAnswer,
+  comparisonContext
+}) {
   const header = `You are a budget calculator assistant. Use the data below to compute the two-point model exactly like the calculator.`;
   const formatGuide = `Return the results in the same order and style as the calculator, including:
 - B, a, Optimal Spend, Max Daily Profit, Ad Breakeven
 - B Scale Interpretation
-- Formula lines
+- Formula lines (also show LaTeX equations)
 - "What This Means" paragraph
-- ROAS Predictions table with columns: Daily Spend, Conversions, Revenue, ROAS, Daily Profit`;
+- ROAS Predictions table with columns: Daily Spend, Conversions, Revenue, ROAS, Daily Profit
+
+Formatting requirements:
+- Use Markdown headings and tables
+- Use LaTeX for equations (wrap in $$...$$)
+- Keep tables well-structured and aligned`;
 
   const inputContext = `Calculator inputs:
 spend1=${inputs.spend1 || '—'}
@@ -163,6 +277,11 @@ ${campaignA}
 Campaign B:
 ${campaignB}`;
 
+  const comparisonBlock = comparisonContext
+    ? `Country comparison data:
+${comparisonContext}`
+    : '';
+
   return `${header}
 
 ${formatGuide}
@@ -170,6 +289,8 @@ ${formatGuide}
 ${inputContext}
 
 ${campaignContext}
+
+${comparisonBlock}
 
 ${followupContext}
 
@@ -183,7 +304,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     spend2: '',
     conv2: '',
     aov: '',
-    margin: '',
+    margin: '35',
     overhead: '',
   });
   const [results, setResults] = useState(null);
@@ -198,6 +319,8 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   const [gptResult, setGptResult] = useState(null);
   const [gptModel, setGptModel] = useState(null);
   const [gptFollowup, setGptFollowup] = useState('');
+  const [gptPrompt, setGptPrompt] = useState('');
+  const gptRequestIdRef = useRef(0);
 
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
@@ -230,6 +353,55 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     () => campaignOptions.find((campaign) => campaign.id === campaignBId),
     [campaignBId, campaignOptions]
   );
+
+  const campaignATotalCountries = useMemo(() => {
+    if (!selectedCampaignA) return [];
+    return campaignOptions.filter((campaign) => campaign.name === selectedCampaignA.name);
+  }, [campaignOptions, selectedCampaignA]);
+
+  const campaignBTotalCountries = useMemo(() => {
+    if (!selectedCampaignB) return [];
+    return campaignOptions.filter((campaign) => campaign.name === selectedCampaignB.name);
+  }, [campaignOptions, selectedCampaignB]);
+
+  const topCountriesBySpend = useMemo(() => {
+    return [...countryOptions].sort((a, b) => b.spend - a.spend).slice(0, 2);
+  }, [countryOptions]);
+
+  const countryComparisonContext = useMemo(() => {
+    if (campaignMode === 'two') {
+      if (!campaignATotalCountries.length || !campaignBTotalCountries.length) {
+        return 'Select two campaigns to compare matching countries.';
+      }
+
+      const rows = buildCountryComparisonRows(campaignATotalCountries, campaignBTotalCountries, periodDays);
+      return buildCountryComparisonTable(rows, selectedCampaignA?.name || 'Campaign A', selectedCampaignB?.name || 'Campaign B');
+    }
+
+    if (topCountriesBySpend.length < 2) {
+      return 'Not enough countries available to build a top-two comparison.';
+    }
+
+    const [first, second] = topCountriesBySpend;
+    const firstDaily = getCampaignDailyMetrics(first, periodDays);
+    const secondDaily = getCampaignDailyMetrics(second, periodDays);
+    const firstRevenueDaily = firstDaily.aov * firstDaily.purchasesDaily;
+    const secondRevenueDaily = secondDaily.aov * secondDaily.purchasesDaily;
+
+    return `Top 2 countries by spend (for unified model):
+| Country | Spend/Day | Purchases/Day | ROAS |
+| --- | ---: | ---: | ---: |
+| ${first.country || first.name || '—'} | $${firstDaily.spendDaily.toFixed(2)} | ${firstDaily.purchasesDaily.toFixed(2)} | ${formatNumber(firstRevenueDaily / Math.max(firstDaily.spendDaily, 1), 2)} |
+| ${second.country || second.name || '—'} | $${secondDaily.spendDaily.toFixed(2)} | ${secondDaily.purchasesDaily.toFixed(2)} | ${formatNumber(secondRevenueDaily / Math.max(secondDaily.spendDaily, 1), 2)} |`;
+  }, [
+    campaignMode,
+    campaignATotalCountries,
+    campaignBTotalCountries,
+    periodDays,
+    selectedCampaignA,
+    selectedCampaignB,
+    topCountriesBySpend
+  ]);
 
   const handleCampaignModeChange = (mode) => {
     setCampaignMode(mode);
@@ -264,14 +436,21 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         .reduce((acc, item) => acc + item.purchases, 0);
       const aov = combinedPurchases > 0 ? combinedAov / combinedPurchases : 0;
 
-      setInputs((prev) => ({
-        ...prev,
+      const nextInputs = {
         spend1: campaignA.spendDaily.toFixed(2),
         conv1: campaignA.purchasesDaily.toFixed(2),
         spend2: campaignB.spendDaily.toFixed(2),
         conv2: campaignB.purchasesDaily.toFixed(2),
-        aov: aov > 0 ? aov.toFixed(2) : prev.aov
+        aov: aov > 0 ? aov.toFixed(2) : inputs.aov,
+        margin: '35',
+        overhead: inputs.overhead
+      };
+
+      setInputs((prev) => ({
+        ...prev,
+        ...nextInputs
       }));
+      void triggerAutoGpt(nextInputs);
       return;
     }
 
@@ -285,9 +464,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       return;
     }
 
-    const sortedBySpend = [...countryOptions].sort((a, b) => b.spend - a.spend);
-    const highCountry = sortedBySpend[0];
-    const lowCountry = sortedBySpend[1];
+    const [highCountry, lowCountry] = topCountriesBySpend;
 
     const highTotals = sumCampaignMetrics([highCountry]);
     const lowTotals = sumCampaignMetrics([lowCountry]);
@@ -306,14 +483,21 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     const totalRevenue = highTotals.revenue + lowTotals.revenue;
     const aov = totalPurchases > 0 ? totalRevenue / totalPurchases : 0;
 
-    setInputs((prev) => ({
-      ...prev,
+    const nextInputs = {
       spend1: lowDailySpend.toFixed(2),
       conv1: lowDailyPurchases.toFixed(2),
       spend2: highDailySpend.toFixed(2),
       conv2: highDailyPurchases.toFixed(2),
-      aov: aov > 0 ? aov.toFixed(2) : prev.aov
+      aov: aov > 0 ? aov.toFixed(2) : inputs.aov,
+      margin: '35',
+      overhead: inputs.overhead
+    };
+
+    setInputs((prev) => ({
+      ...prev,
+      ...nextInputs
     }));
+    void triggerAutoGpt(nextInputs);
   };
 
   const handleSort = (key) => {
@@ -536,16 +720,20 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     return `${selectedCampaignB.name} (${selectedCampaignB.country || selectedCampaignB.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
   }, [selectedCampaignB, periodDays]);
 
-  const runGptRequest = async (requestText, previousAnswer = '') => {
+  const runGptRequest = async (requestText, previousAnswer = '', overrideInputs = null) => {
+    const requestId = gptRequestIdRef.current + 1;
+    gptRequestIdRef.current = requestId;
+    const effectiveInputs = overrideInputs || inputs;
     const prompt = buildCampaignPrompt({
       mode: campaignMode,
       campaignA: campaignAContext,
       campaignB: campaignBContext,
       allCampaigns: allCampaignContext,
       periodDays,
-      inputs,
+      inputs: effectiveInputs,
       request: requestText,
-      previousAnswer
+      previousAnswer,
+      comparisonContext: countryComparisonContext
     });
 
     const response = await fetch('/api/ai/stream', {
@@ -554,7 +742,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       body: JSON.stringify({
         question: prompt,
         store: storeName || 'vironax',
-        depth: 'fast'
+        depth: 'deep'
       })
     });
 
@@ -580,11 +768,15 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
           const data = JSON.parse(payload);
           if (data.type === 'delta') {
             fullText += data.text;
-            setGptStreamingText(fullText);
+            if (gptRequestIdRef.current === requestId) {
+              setGptStreamingText(fullText);
+            }
           } else if (data.type === 'done') {
-            setGptModel(data.model);
-            setGptResult(fullText);
-            setGptStreamingText('');
+            if (gptRequestIdRef.current === requestId) {
+              setGptModel(data.model);
+              setGptResult(fullText);
+              setGptStreamingText('');
+            }
           } else if (data.type === 'error') {
             throw new Error(data.error || 'GPT request failed.');
           }
@@ -600,6 +792,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     if (!gptQuery.trim() || gptLoading) return;
 
     setGptLoading(true);
+    setGptPrompt(gptQuery.trim());
     setGptStreamingText('');
     setGptResult(null);
     setGptModel(null);
@@ -618,6 +811,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     if (!gptFollowup.trim() || gptLoading) return;
 
     setGptLoading(true);
+    setGptPrompt(gptFollowup.trim());
     setGptStreamingText('');
     setGptResult(null);
     setGptModel(null);
@@ -631,6 +825,30 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       setGptLoading(false);
     }
   };
+
+  const triggerAutoGpt = async (nextInputs) => {
+    if (gptLoading) return;
+
+    const requestText = campaignMode === 'two'
+      ? `Automatically compare matching countries between Campaign A and Campaign B. Use the country comparison table to highlight differences in spend, purchases, and ROAS. Provide concise insights and recommendations, and include a summary table plus key equations.`
+      : `Automatically summarize the unified campaign using the top 2 countries by spend. Provide insights, recommendations, and highlight differences. Include a summary table plus key equations.`;
+
+    setGptLoading(true);
+    setGptPrompt(requestText);
+    setGptStreamingText('');
+    setGptResult(null);
+    setGptModel(null);
+
+    try {
+      await runGptRequest(requestText, '', nextInputs);
+    } catch (error) {
+      setGptResult(`Error: ${error.message}`);
+    } finally {
+      setGptLoading(false);
+    }
+  };
+
+  const gptDisplayText = gptStreamingText || gptResult;
 
   return (
     <div className="space-y-6">
@@ -738,8 +956,10 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
         <div className="border-b border-gray-100 px-6 py-4">
-          <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (Low Effort)</h2>
-          <p className="text-xs text-gray-400 mt-1">Explain what you want, and GPT will compute results using your unified campaign data.</p>
+          <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (High Effort)</h2>
+          <p className="text-xs text-gray-400 mt-1">
+            Auto-insights trigger after campaign autofill. You can also ask manual follow-ups below.
+          </p>
         </div>
         <div className="p-6 space-y-4">
           <form onSubmit={handleGptSubmit} className="space-y-3">
@@ -755,20 +975,49 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
               disabled={gptLoading || !gptQuery.trim()}
               className="w-full rounded-lg bg-purple-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-purple-700 disabled:bg-gray-300"
             >
-              {gptLoading ? 'Thinking...' : 'Run GPT-5.1 (Low Effort)'}
+              {gptLoading ? 'Thinking...' : 'Run GPT-5.1 (High Effort)'}
             </button>
           </form>
 
-          {(gptStreamingText || gptResult) && (
-            <div className="rounded-2xl border border-purple-100 bg-purple-50/60 p-4">
-              <h3 className="text-sm font-semibold text-purple-700 mb-2">GPT Result</h3>
-              <div className="whitespace-pre-wrap text-sm text-slate-700 leading-relaxed">
-                {gptStreamingText || gptResult}
-                {gptLoading && <span className="inline-block w-2 h-4 bg-purple-400 animate-pulse ml-1" />}
+          {(gptPrompt || gptDisplayText || gptLoading) && (
+            <div className="rounded-2xl border border-purple-100 bg-gradient-to-br from-purple-50/70 to-white p-4 shadow-sm">
+              <div className="space-y-4">
+                {gptPrompt && (
+                  <div className="flex justify-end">
+                    <div className="max-w-[90%] rounded-2xl bg-purple-600 px-4 py-3 text-sm text-white shadow">
+                      <p className="text-xs uppercase tracking-wide text-purple-200 mb-1">Prompt</p>
+                      <p className="whitespace-pre-wrap">{gptPrompt}</p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex justify-start">
+                  <div className="max-w-[92%] rounded-2xl border border-purple-100 bg-white px-4 py-3 text-sm text-slate-700 shadow">
+                    <p className="text-xs uppercase tracking-wide text-purple-400 mb-2">Assistant</p>
+                    {gptDisplayText ? (
+                      <ReactMarkdown
+                        components={{ code: MarkdownCodeBlock }}
+                        className="prose max-w-none"
+                      >
+                        {gptDisplayText}
+                      </ReactMarkdown>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="h-3 w-3/4 animate-pulse rounded-full bg-slate-200" />
+                        <div className="h-3 w-full animate-pulse rounded-full bg-slate-200" />
+                        <div className="h-3 w-5/6 animate-pulse rounded-full bg-slate-200" />
+                      </div>
+                    )}
+                    {gptLoading && (
+                      <div className="mt-2 h-2 w-2 animate-pulse rounded-full bg-purple-400" />
+                    )}
+                  </div>
+                </div>
+
+                {gptModel && !gptLoading && (
+                  <p className="text-xs text-purple-400">Answered by {gptModel}</p>
+                )}
               </div>
-              {gptModel && !gptLoading && (
-                <p className="text-xs text-purple-400 mt-3">Answered by {gptModel}</p>
-              )}
             </div>
           )}
 
