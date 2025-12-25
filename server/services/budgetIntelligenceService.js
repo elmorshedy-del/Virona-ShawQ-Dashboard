@@ -392,11 +392,14 @@ export function getBudgetIntelligence(store, params) {
     // Return with camelCase names that frontend expects
     return {
       date: row.date,
+      startDate: row.startDate || null,
+      endDate: row.endDate || null,
       campaignId: row.campaignId,
       campaignName: row.campaignName,
       adsetId: row.adsetId || null,        // ✅ camelCase for frontend
       adsetName: row.adsetName || null,    // ✅ camelCase for frontend
       country: row.country,
+      countryBreakdown: row.countryBreakdown || [],
       spend: row.spend,
       impressions: row.impressions || 0,
       clicks: row.link_clicks || 0,
@@ -429,6 +432,8 @@ export function getBudgetIntelligence(store, params) {
     const key = row.campaignId || row.campaignName;
     if (!key) return;
 
+    const startDate = row.startDate || null;
+    const endDate = row.endDate || null;
     const existing = aggregates.get(key) || {
       campaignId: row.campaignId || key,
       campaignName: row.campaignName || 'Unnamed Campaign',
@@ -441,7 +446,10 @@ export function getBudgetIntelligence(store, params) {
       atc: 0,
       ic: 0,
       purchases: 0,
-      revenue: 0
+      revenue: 0,
+      startDate: startDate,
+      endDate: endDate,
+      countryBreakdown: new Map()
     };
 
     if (row.country) existing.countries.add(row.country);
@@ -449,6 +457,34 @@ export function getBudgetIntelligence(store, params) {
     metricsToSum.forEach(metric => {
       existing[metric] += row[metric] || 0;
     });
+
+    if (startDate && (!existing.startDate || startDate < existing.startDate)) {
+      existing.startDate = startDate;
+    }
+    if (endDate && (!existing.endDate || endDate > existing.endDate)) {
+      existing.endDate = endDate;
+    }
+
+    if (row.country) {
+      const entry = existing.countryBreakdown.get(row.country) || {
+        country: row.country,
+        spend: 0,
+        purchases: 0,
+        revenue: 0,
+        startDate: row.startDate || null,
+        endDate: row.endDate || null
+      };
+      entry.spend += row.spend || 0;
+      entry.purchases += row.purchases || 0;
+      entry.revenue += row.revenue || 0;
+      if (row.startDate && (!entry.startDate || row.startDate < entry.startDate)) {
+        entry.startDate = row.startDate;
+      }
+      if (row.endDate && (!entry.endDate || row.endDate > entry.endDate)) {
+        entry.endDate = row.endDate;
+      }
+      existing.countryBreakdown.set(row.country, entry);
+    }
 
     aggregates.set(key, existing);
   };
@@ -468,10 +504,14 @@ export function getBudgetIntelligence(store, params) {
     const countryList = row.countries && row.countries.size > 0
       ? Array.from(row.countries).filter(Boolean).join(', ')
       : '—';
+    const countryBreakdown = row.countryBreakdown
+      ? Array.from(row.countryBreakdown.values())
+      : [];
 
     return processRowToGuidance({
       ...row,
       country: countryList,
+      countryBreakdown,
       date: null,
       adsetId: null,
       adsetName: null
