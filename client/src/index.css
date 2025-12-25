@@ -8,6 +8,58 @@ body {
   color: #1a1a2e;
 }
 
+.prose {
+  color: #334155;
+  line-height: 1.6;
+}
+
+.prose h1,
+.prose h2,
+.prose h3 {
+  color: #0f172a;
+  font-weight: 600;
+  margin-top: 1.2em;
+  margin-bottom: 0.6em;
+}
+
+.prose p {
+  margin: 0.6em 0;
+}
+
+.prose strong {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.85rem;
+}
+
+.prose th,
+.prose td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 0.4em 0.6em;
+  text-align: left;
+}
+
+.prose th {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+  color: #64748b;
+}
+
+.prose code {
+  background: #f1f5f9;
+  border-radius: 6px;
+  padding: 0.1em 0.3em;
+  font-size: 0.8em;
+  color: #1f2937;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
