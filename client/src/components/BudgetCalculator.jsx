@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 const DEFAULT_SPEND_LEVELS = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200];
 
@@ -75,16 +75,38 @@ function formatNumber(value, digits = 2) {
   return Number(value).toFixed(digits);
 }
 
-function sumCampaignMetrics(campaigns = []) {
+function sumCountryMetrics(campaigns = [], country) {
+  if (!country) return { spend: 0, purchases: 0, revenue: 0 };
   return campaigns.reduce((acc, campaign) => {
-    acc.spend += Number(campaign?.spend || 0);
-    acc.purchases += Number(campaign?.purchases || 0);
-    acc.revenue += Number(campaign?.revenue || 0);
+    const match = campaign?.countryBreakdown?.find((entry) => entry.country === country);
+    if (!match) return acc;
+    acc.spend += Number(match.spend || 0);
+    acc.purchases += Number(match.purchases || 0);
+    acc.revenue += Number(match.revenue || 0);
     return acc;
   }, { spend: 0, purchases: 0, revenue: 0 });
 }
 
-function getCampaignDailyMetrics(campaign, periodDays) {
+function getCampaignDailyMetrics(campaign, periodDays, country = '') {
+  if (country && Array.isArray(campaign?.countryBreakdown)) {
+    const match = campaign.countryBreakdown.find((entry) => entry.country === country);
+    if (match) {
+      const days = getCampaignRunDays(match, periodDays);
+      const spend = Number(match.spend || 0);
+      const purchases = Number(match.purchases || 0);
+      const revenue = Number(match.revenue || 0);
+      return {
+        spendDaily: spend / days,
+        purchasesDaily: purchases / days,
+        aov: purchases > 0 ? revenue / purchases : 0,
+        daysRunning: days,
+        spend,
+        purchases,
+        revenue
+      };
+    }
+  }
+
   const days = getCampaignRunDays(campaign, periodDays);
   const spend = Number(campaign?.spend || 0);
   const purchases = Number(campaign?.purchases || 0);
@@ -101,7 +123,7 @@ function getCampaignDailyMetrics(campaign, periodDays) {
 }
 
 function buildCampaignPrompt({ mode, campaignA, campaignB, allCampaigns, periodDays, inputs, request, previousAnswer }) {
-  const header = `You are a budget calculator assistant. Use the data below to compute the two-point model exactly like the calculator.`;
+  const header = `You are a budget calculator assistant. Use the country-isolated data below to compute the two-point model exactly like the calculator.`;
   const formatGuide = `Return the results in the same order and style as the calculator, including:
 - B, a, Optimal Spend, Max Daily Profit, Ad Breakeven
 - B Scale Interpretation
@@ -123,7 +145,7 @@ overhead=${inputs.overhead || '0'}`;
     : '';
 
   const campaignContext = mode === 'all'
-    ? `All Campaigns (Unified data across campaigns with per-campaign run days):
+    ? `All Campaigns (Country-isolated unified data with per-campaign run days):
 ${allCampaigns}`
     : `Campaign A:
 ${campaignA}
@@ -158,6 +180,10 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   const [campaignMode, setCampaignMode] = useState('two');
   const [campaignAId, setCampaignAId] = useState('');
   const [campaignBId, setCampaignBId] = useState('');
+  const [campaignACountry, setCampaignACountry] = useState('');
+  const [campaignBCountry, setCampaignBCountry] = useState('');
+  const [unifiedCountryA, setUnifiedCountryA] = useState('');
+  const [unifiedCountryB, setUnifiedCountryB] = useState('');
   const [campaignError, setCampaignError] = useState('');
   const [sortConfig, setSortConfig] = useState(DEFAULT_SORT);
   const [gptQuery, setGptQuery] = useState('');
@@ -182,10 +208,21 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         revenue: campaign.revenue || 0,
         countries: campaign.countries || '—',
         startDate: campaign.startDate || null,
-        endDate: campaign.endDate || null
+        endDate: campaign.endDate || null,
+        countryBreakdown: Array.isArray(campaign.countryBreakdown) ? campaign.countryBreakdown : []
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [campaigns]);
+
+  const unifiedCountries = useMemo(() => {
+    const set = new Set();
+    campaignOptions.forEach((campaign) => {
+      campaign.countryBreakdown.forEach((entry) => {
+        if (entry?.country) set.add(entry.country);
+      });
+    });
+    return Array.from(set.values()).sort((a, b) => a.localeCompare(b));
+  }, [campaignOptions]);
 
   const selectedCampaignA = useMemo(
     () => campaignOptions.find((campaign) => campaign.id === campaignAId),
@@ -195,6 +232,28 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     () => campaignOptions.find((campaign) => campaign.id === campaignBId),
     [campaignBId, campaignOptions]
   );
+
+  const campaignACountries = useMemo(() => {
+    return selectedCampaignA?.countryBreakdown?.map((entry) => entry.country).filter(Boolean) || [];
+  }, [selectedCampaignA]);
+  const campaignBCountries = useMemo(() => {
+    return selectedCampaignB?.countryBreakdown?.map((entry) => entry.country).filter(Boolean) || [];
+  }, [selectedCampaignB]);
+
+  useEffect(() => {
+    if (campaignACountry && !campaignACountries.includes(campaignACountry)) {
+      setCampaignACountry('');
+    }
+    if (campaignBCountry && !campaignBCountries.includes(campaignBCountry)) {
+      setCampaignBCountry('');
+    }
+    if (unifiedCountryA && !unifiedCountries.includes(unifiedCountryA)) {
+      setUnifiedCountryA('');
+    }
+    if (unifiedCountryB && !unifiedCountries.includes(unifiedCountryB)) {
+      setUnifiedCountryB('');
+    }
+  }, [campaignACountry, campaignACountries, campaignBCountry, campaignBCountries, unifiedCountryA, unifiedCountryB, unifiedCountries]);
 
   const handleCampaignModeChange = (mode) => {
     setCampaignMode(mode);
@@ -214,8 +273,13 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         return;
       }
 
-      const campaignA = getCampaignDailyMetrics(selectedCampaignA, periodDays);
-      const campaignB = getCampaignDailyMetrics(selectedCampaignB, periodDays);
+      if (!campaignACountry || !campaignBCountry) {
+        setCampaignError('Select a country for both campaigns to compare.');
+        return;
+      }
+
+      const campaignA = getCampaignDailyMetrics(selectedCampaignA, periodDays, campaignACountry);
+      const campaignB = getCampaignDailyMetrics(selectedCampaignB, periodDays, campaignBCountry);
 
       if (!campaignA.spendDaily || !campaignA.purchasesDaily || !campaignB.spendDaily || !campaignB.purchasesDaily) {
         setCampaignError('Selected campaigns need spend and conversions to build the model.');
@@ -245,6 +309,16 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       return;
     }
 
+    if (!unifiedCountryA || !unifiedCountryB) {
+      setCampaignError('Select two countries to compare for unified campaigns.');
+      return;
+    }
+
+    if (unifiedCountryA === unifiedCountryB) {
+      setCampaignError('Choose two different countries for a country vs country comparison.');
+      return;
+    }
+
     const sortedBySpend = [...campaignOptions].sort((a, b) => b.spend - a.spend);
     if (sortedBySpend.length < 2) {
       setCampaignError('Need at least two campaigns to build two calculator points.');
@@ -260,23 +334,23 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       return;
     }
 
-    const highTotals = sumCampaignMetrics(highSpendGroup);
-    const lowTotals = sumCampaignMetrics(lowSpendGroup);
+    const highTotals = sumCountryMetrics(highSpendGroup, unifiedCountryA);
+    const lowTotals = sumCountryMetrics(lowSpendGroup, unifiedCountryB);
 
     const highDailySpend = highSpendGroup.reduce(
-      (acc, campaign) => acc + getCampaignDailyMetrics(campaign, periodDays).spendDaily,
+      (acc, campaign) => acc + getCampaignDailyMetrics(campaign, periodDays, unifiedCountryA).spendDaily,
       0
     );
     const highDailyPurchases = highSpendGroup.reduce(
-      (acc, campaign) => acc + getCampaignDailyMetrics(campaign, periodDays).purchasesDaily,
+      (acc, campaign) => acc + getCampaignDailyMetrics(campaign, periodDays, unifiedCountryA).purchasesDaily,
       0
     );
     const lowDailySpend = lowSpendGroup.reduce(
-      (acc, campaign) => acc + getCampaignDailyMetrics(campaign, periodDays).spendDaily,
+      (acc, campaign) => acc + getCampaignDailyMetrics(campaign, periodDays, unifiedCountryB).spendDaily,
       0
     );
     const lowDailyPurchases = lowSpendGroup.reduce(
-      (acc, campaign) => acc + getCampaignDailyMetrics(campaign, periodDays).purchasesDaily,
+      (acc, campaign) => acc + getCampaignDailyMetrics(campaign, periodDays, unifiedCountryB).purchasesDaily,
       0
     );
 
@@ -501,23 +575,36 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
 
   const allCampaignContext = useMemo(() => {
     if (!campaignOptions.length) return 'No unified campaign data available.';
-    return campaignOptions.map((campaign) => {
-      const daily = getCampaignDailyMetrics(campaign, periodDays);
-      return `• ${campaign.name} (${campaign.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
-    }).join('\n');
-  }, [campaignOptions, periodDays]);
+    const buildCountryBlock = (country) => {
+      const label = country || 'all';
+      const lines = campaignOptions.map((campaign) => {
+        const daily = getCampaignDailyMetrics(campaign, periodDays, country);
+        return `• ${campaign.name} (${label}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+      });
+      return `Country ${label}\n${lines.join('\n')}`;
+    };
+
+    const blocks = [];
+    if (unifiedCountryA) blocks.push(buildCountryBlock(unifiedCountryA));
+    if (unifiedCountryB && unifiedCountryB !== unifiedCountryA) blocks.push(buildCountryBlock(unifiedCountryB));
+    if (!blocks.length) blocks.push(buildCountryBlock(''));
+
+    return blocks.join('\n\n');
+  }, [campaignOptions, periodDays, unifiedCountryA, unifiedCountryB]);
 
   const campaignAContext = useMemo(() => {
     if (!selectedCampaignA) return 'Campaign A not selected.';
-    const daily = getCampaignDailyMetrics(selectedCampaignA, periodDays);
-    return `${selectedCampaignA.name} (${selectedCampaignA.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
-  }, [selectedCampaignA, periodDays]);
+    const daily = getCampaignDailyMetrics(selectedCampaignA, periodDays, campaignACountry);
+    const countryLabel = campaignACountry || selectedCampaignA.countries || '—';
+    return `${selectedCampaignA.name} (${countryLabel}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+  }, [selectedCampaignA, periodDays, campaignACountry]);
 
   const campaignBContext = useMemo(() => {
     if (!selectedCampaignB) return 'Campaign B not selected.';
-    const daily = getCampaignDailyMetrics(selectedCampaignB, periodDays);
-    return `${selectedCampaignB.name} (${selectedCampaignB.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
-  }, [selectedCampaignB, periodDays]);
+    const daily = getCampaignDailyMetrics(selectedCampaignB, periodDays, campaignBCountry);
+    const countryLabel = campaignBCountry || selectedCampaignB.countries || '—';
+    return `${selectedCampaignB.name} (${countryLabel}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+  }, [selectedCampaignB, periodDays, campaignBCountry]);
 
   const runGptRequest = async (requestText, previousAnswer = '') => {
     const prompt = buildCampaignPrompt({
@@ -581,6 +668,16 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   const handleGptSubmit = async (event) => {
     event?.preventDefault();
     if (!gptQuery.trim() || gptLoading) return;
+
+    if (campaignMode === 'two' && (!campaignACountry || !campaignBCountry)) {
+      setGptResult('Error: Select a country for both campaigns before running GPT.');
+      return;
+    }
+
+    if (campaignMode === 'all' && (!unifiedCountryA || !unifiedCountryB)) {
+      setGptResult('Error: Select two countries for unified campaigns before running GPT.');
+      return;
+    }
 
     setGptLoading(true);
     setGptStreamingText('');
@@ -662,10 +759,21 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
                     <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
                   ))}
                 </select>
+                <select
+                  value={campaignACountry}
+                  onChange={(event) => setCampaignACountry(event.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  disabled={!campaignACountries.length}
+                >
+                  <option value="">{campaignACountries.length ? 'Select country' : 'No country data'}</option>
+                  {campaignACountries.map((country) => (
+                    <option key={country} value={country}>{country}</option>
+                  ))}
+                </select>
                 {selectedCampaignA && (
                   <p className="text-xs text-gray-400">
-                    {formatCurrency(getCampaignDailyMetrics(selectedCampaignA, periodDays).spendDaily)}/day •
-                    {` ${formatNumber(getCampaignDailyMetrics(selectedCampaignA, periodDays).purchasesDaily)} purchases/day`}
+                    {formatCurrency(getCampaignDailyMetrics(selectedCampaignA, periodDays, campaignACountry).spendDaily)}/day •
+                    {` ${formatNumber(getCampaignDailyMetrics(selectedCampaignA, periodDays, campaignACountry).purchasesDaily)} purchases/day`}
                   </p>
                 )}
               </div>
@@ -681,10 +789,21 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
                     <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
                   ))}
                 </select>
+                <select
+                  value={campaignBCountry}
+                  onChange={(event) => setCampaignBCountry(event.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  disabled={!campaignBCountries.length}
+                >
+                  <option value="">{campaignBCountries.length ? 'Select country' : 'No country data'}</option>
+                  {campaignBCountries.map((country) => (
+                    <option key={country} value={country}>{country}</option>
+                  ))}
+                </select>
                 {selectedCampaignB && (
                   <p className="text-xs text-gray-400">
-                    {formatCurrency(getCampaignDailyMetrics(selectedCampaignB, periodDays).spendDaily)}/day •
-                    {` ${formatNumber(getCampaignDailyMetrics(selectedCampaignB, periodDays).purchasesDaily)} purchases/day`}
+                    {formatCurrency(getCampaignDailyMetrics(selectedCampaignB, periodDays, campaignBCountry).spendDaily)}/day •
+                    {` ${formatNumber(getCampaignDailyMetrics(selectedCampaignB, periodDays, campaignBCountry).purchasesDaily)} purchases/day`}
                   </p>
                 )}
               </div>
@@ -693,7 +812,35 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
 
           {campaignMode === 'all' && (
             <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 text-sm text-indigo-700">
-              Unified campaigns are split into high-spend and low-spend groups to create two calculator points.
+              Unified campaigns are split into high-spend and low-spend groups per country to create two calculator points.
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-indigo-700">Country A (high-spend group)</label>
+                  <select
+                    value={unifiedCountryA}
+                    onChange={(event) => setUnifiedCountryA(event.target.value)}
+                    className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  >
+                    <option value="">Select country</option>
+                    {unifiedCountries.map((country) => (
+                      <option key={country} value={country}>{country}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-indigo-700">Country B (low-spend group)</label>
+                  <select
+                    value={unifiedCountryB}
+                    onChange={(event) => setUnifiedCountryB(event.target.value)}
+                    className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  >
+                    <option value="">Select country</option>
+                    {unifiedCountries.map((country) => (
+                      <option key={country} value={country}>{country}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
           )}
 
