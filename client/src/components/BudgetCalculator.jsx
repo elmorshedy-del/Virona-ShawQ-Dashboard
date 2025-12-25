@@ -56,7 +56,78 @@ function buildInterpretation({ B, optimal, profitAtOptimal, ceiling, realCeiling
     ⚠️ <strong>Ad Breakeven: $${Math.round(ceiling)}/day</strong>${overheadText}`;
 }
 
-export default function BudgetCalculator() {
+const DEFAULT_SORT = { key: 'spend', direction: 'asc' };
+
+function formatNumber(value, digits = 2) {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return Number(value).toFixed(digits);
+}
+
+function sumCampaignMetrics(campaigns = []) {
+  return campaigns.reduce((acc, campaign) => {
+    acc.spend += Number(campaign?.spend || 0);
+    acc.purchases += Number(campaign?.purchases || 0);
+    acc.revenue += Number(campaign?.revenue || 0);
+    return acc;
+  }, { spend: 0, purchases: 0, revenue: 0 });
+}
+
+function getCampaignDailyMetrics(campaign, periodDays) {
+  const days = Math.max(periodDays || 1, 1);
+  const spend = Number(campaign?.spend || 0);
+  const purchases = Number(campaign?.purchases || 0);
+  const revenue = Number(campaign?.revenue || 0);
+  return {
+    spendDaily: spend / days,
+    purchasesDaily: purchases / days,
+    aov: purchases > 0 ? revenue / purchases : 0,
+    spend,
+    purchases,
+    revenue
+  };
+}
+
+function buildCampaignPrompt({ mode, campaignA, campaignB, allCampaigns, periodDays, inputs, request }) {
+  const header = `You are a budget calculator assistant. Use the data below to compute the two-point model exactly like the calculator.`;
+  const formatGuide = `Return the results in the same order and style as the calculator, including:
+- B, a, Optimal Spend, Max Daily Profit, Ad Breakeven
+- B Scale Interpretation
+- Formula lines
+- "What This Means" paragraph
+- ROAS Predictions table with columns: Daily Spend, Conversions, Revenue, ROAS, Daily Profit`;
+
+  const inputContext = `Calculator inputs:
+spend1=${inputs.spend1 || '—'}
+conv1=${inputs.conv1 || '—'}
+spend2=${inputs.spend2 || '—'}
+conv2=${inputs.conv2 || '—'}
+aov=${inputs.aov || '—'}
+margin=${inputs.margin || '—'}
+overhead=${inputs.overhead || '0'}`;
+
+  const campaignContext = mode === 'all'
+    ? `All Campaigns (Unified data across campaigns, ${periodDays || 'n/a'} days):
+${allCampaigns}`
+    : `Campaign A:
+${campaignA}
+
+Campaign B:
+${campaignB}`;
+
+  return `${header}
+
+${formatGuide}
+
+${inputContext}
+
+${campaignContext}
+
+User request: ${request}`;
+}
+
+export default function BudgetCalculator({ campaigns = [], periodDays = 30, storeName = '' }) {
   const [inputs, setInputs] = useState({
     spend1: '',
     conv1: '',
@@ -67,9 +138,153 @@ export default function BudgetCalculator() {
     overhead: '',
   });
   const [results, setResults] = useState(null);
+  const [campaignMode, setCampaignMode] = useState('two');
+  const [campaignAId, setCampaignAId] = useState('');
+  const [campaignBId, setCampaignBId] = useState('');
+  const [campaignError, setCampaignError] = useState('');
+  const [sortConfig, setSortConfig] = useState(DEFAULT_SORT);
+  const [gptQuery, setGptQuery] = useState('');
+  const [gptLoading, setGptLoading] = useState(false);
+  const [gptStreamingText, setGptStreamingText] = useState('');
+  const [gptResult, setGptResult] = useState(null);
+  const [gptModel, setGptModel] = useState(null);
 
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
+  };
+
+  const campaignOptions = useMemo(() => {
+    return campaigns
+      .filter((campaign) => campaign?.campaignId || campaign?.campaignName)
+      .map((campaign) => ({
+        id: campaign.campaignId || campaign.campaignName,
+        name: campaign.campaignName || 'Unnamed Campaign',
+        spend: campaign.spend || 0,
+        purchases: campaign.purchases || 0,
+        revenue: campaign.revenue || 0,
+        countries: campaign.countries || '—'
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [campaigns]);
+
+  const selectedCampaignA = useMemo(
+    () => campaignOptions.find((campaign) => campaign.id === campaignAId),
+    [campaignAId, campaignOptions]
+  );
+  const selectedCampaignB = useMemo(
+    () => campaignOptions.find((campaign) => campaign.id === campaignBId),
+    [campaignBId, campaignOptions]
+  );
+
+  const handleCampaignModeChange = (mode) => {
+    setCampaignMode(mode);
+    setCampaignError('');
+  };
+
+  const applyCampaignInputs = () => {
+    setCampaignError('');
+    const days = Math.max(periodDays || 1, 1);
+
+    if (campaignMode === 'two') {
+      if (!selectedCampaignA || !selectedCampaignB) {
+        setCampaignError('Select two campaigns to build the calculator points.');
+        return;
+      }
+
+      if (selectedCampaignA.id === selectedCampaignB.id) {
+        setCampaignError('Campaign A and Campaign B must be different.');
+        return;
+      }
+
+      const campaignA = getCampaignDailyMetrics(selectedCampaignA, days);
+      const campaignB = getCampaignDailyMetrics(selectedCampaignB, days);
+
+      if (!campaignA.spendDaily || !campaignA.purchasesDaily || !campaignB.spendDaily || !campaignB.purchasesDaily) {
+        setCampaignError('Selected campaigns need spend and conversions to build the model.');
+        return;
+      }
+
+      const combinedAov = [campaignA, campaignB]
+        .filter((item) => item.purchases > 0)
+        .reduce((acc, item) => acc + item.revenue, 0);
+      const combinedPurchases = [campaignA, campaignB]
+        .reduce((acc, item) => acc + item.purchases, 0);
+      const aov = combinedPurchases > 0 ? combinedAov / combinedPurchases : 0;
+
+      setInputs((prev) => ({
+        ...prev,
+        spend1: campaignA.spendDaily.toFixed(2),
+        conv1: campaignA.purchasesDaily.toFixed(2),
+        spend2: campaignB.spendDaily.toFixed(2),
+        conv2: campaignB.purchasesDaily.toFixed(2),
+        aov: aov > 0 ? aov.toFixed(2) : prev.aov
+      }));
+      return;
+    }
+
+    if (!campaignOptions.length) {
+      setCampaignError('No unified campaigns available for this store.');
+      return;
+    }
+
+    const sortedBySpend = [...campaignOptions].sort((a, b) => b.spend - a.spend);
+    if (sortedBySpend.length < 2) {
+      setCampaignError('Need at least two campaigns to build two calculator points.');
+      return;
+    }
+
+    const midpoint = Math.ceil(sortedBySpend.length / 2);
+    const highSpendGroup = sortedBySpend.slice(0, midpoint);
+    const lowSpendGroup = sortedBySpend.slice(midpoint);
+
+    if (!lowSpendGroup.length) {
+      setCampaignError('Not enough campaigns to split into two spend groups.');
+      return;
+    }
+
+    const highTotals = sumCampaignMetrics(highSpendGroup);
+    const lowTotals = sumCampaignMetrics(lowSpendGroup);
+
+    const highDailySpend = highTotals.spend / days;
+    const highDailyPurchases = highTotals.purchases / days;
+    const lowDailySpend = lowTotals.spend / days;
+    const lowDailyPurchases = lowTotals.purchases / days;
+
+    if (!highDailySpend || !highDailyPurchases || !lowDailySpend || !lowDailyPurchases) {
+      setCampaignError('Unified campaigns need spend and conversions to build the model.');
+      return;
+    }
+
+    const totalPurchases = highTotals.purchases + lowTotals.purchases;
+    const totalRevenue = highTotals.revenue + lowTotals.revenue;
+    const aov = totalPurchases > 0 ? totalRevenue / totalPurchases : 0;
+
+    setInputs((prev) => ({
+      ...prev,
+      spend1: lowDailySpend.toFixed(2),
+      conv1: lowDailyPurchases.toFixed(2),
+      spend2: highDailySpend.toFixed(2),
+      conv2: highDailyPurchases.toFixed(2),
+      aov: aov > 0 ? aov.toFixed(2) : prev.aov
+    }));
+  };
+
+  const handleSort = (key) => {
+    setSortConfig((prev) => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+      }
+      return { key, direction: 'asc' };
+    });
+  };
+
+  const buildSortIndicator = (key) => {
+    if (sortConfig.key !== key) return <span className="ml-1 text-xs text-gray-300">↕</span>;
+    return (
+      <span className="ml-1 text-xs text-gray-500">
+        {sortConfig.direction === 'asc' ? '▲' : '▼'}
+      </span>
+    );
   };
 
   const handleCalculate = () => {
@@ -241,8 +456,247 @@ export default function BudgetCalculator() {
     return `${position}%`;
   }, [results]);
 
+  const sortedPredictions = useMemo(() => {
+    if (!results) return [];
+    const sorted = [...results.predictions];
+    sorted.sort((left, right) => {
+      const leftValue = left[sortConfig.key];
+      const rightValue = right[sortConfig.key];
+      if (leftValue === rightValue) return 0;
+      if (sortConfig.direction === 'asc') return leftValue > rightValue ? 1 : -1;
+      return leftValue < rightValue ? 1 : -1;
+    });
+    return sorted;
+  }, [results, sortConfig]);
+
+  const allCampaignContext = useMemo(() => {
+    if (!campaignOptions.length) return 'No unified campaign data available.';
+    return campaignOptions.map((campaign) => {
+      const daily = getCampaignDailyMetrics(campaign, periodDays);
+      return `• ${campaign.name} (${campaign.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+    }).join('\n');
+  }, [campaignOptions, periodDays]);
+
+  const campaignAContext = useMemo(() => {
+    if (!selectedCampaignA) return 'Campaign A not selected.';
+    const daily = getCampaignDailyMetrics(selectedCampaignA, periodDays);
+    return `${selectedCampaignA.name} (${selectedCampaignA.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+  }, [selectedCampaignA, periodDays]);
+
+  const campaignBContext = useMemo(() => {
+    if (!selectedCampaignB) return 'Campaign B not selected.';
+    const daily = getCampaignDailyMetrics(selectedCampaignB, periodDays);
+    return `${selectedCampaignB.name} (${selectedCampaignB.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
+  }, [selectedCampaignB, periodDays]);
+
+  const handleGptSubmit = async (event) => {
+    event?.preventDefault();
+    if (!gptQuery.trim() || gptLoading) return;
+
+    setGptLoading(true);
+    setGptStreamingText('');
+    setGptResult(null);
+    setGptModel(null);
+
+    try {
+      const prompt = buildCampaignPrompt({
+        mode: campaignMode,
+        campaignA: campaignAContext,
+        campaignB: campaignBContext,
+        allCampaigns: allCampaignContext,
+        periodDays,
+        inputs,
+        request: gptQuery.trim()
+      });
+
+      const response = await fetch('/api/ai/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: prompt,
+          store: storeName || 'vironax',
+          depth: 'fast'
+        })
+      });
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No streaming response available.');
+      }
+
+      const decoder = new TextDecoder();
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          try {
+            const data = JSON.parse(payload);
+            if (data.type === 'delta') {
+              fullText += data.text;
+              setGptStreamingText(fullText);
+            } else if (data.type === 'done') {
+              setGptModel(data.model);
+              setGptResult(fullText);
+              setGptStreamingText('');
+            } else if (data.type === 'error') {
+              throw new Error(data.error || 'GPT request failed.');
+            }
+          } catch (parseError) {
+            console.error('[BudgetCalculator] GPT stream parse error', parseError);
+          }
+        }
+      }
+    } catch (error) {
+      setGptResult(`Error: ${error.message}`);
+    } finally {
+      setGptLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div className="border-b border-gray-100 px-6 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">🧩 Unified Campaigns Input</h2>
+          <p className="text-xs text-gray-400 mt-1">Campaigns are fed from the unified campaign data source.</p>
+        </div>
+        <div className="p-6 space-y-5">
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => handleCampaignModeChange('two')}
+              className={`px-4 py-2 rounded-full border text-sm font-medium transition ${
+                campaignMode === 'two'
+                  ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                  : 'border-gray-200 text-gray-600 hover:border-indigo-200 hover:text-indigo-600'
+              }`}
+            >
+              Two Campaigns (Two Points)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCampaignModeChange('all')}
+              className={`px-4 py-2 rounded-full border text-sm font-medium transition ${
+                campaignMode === 'all'
+                  ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                  : 'border-gray-200 text-gray-600 hover:border-indigo-200 hover:text-indigo-600'
+              }`}
+            >
+              All Campaigns (Unified)
+            </button>
+          </div>
+
+          {campaignMode === 'two' && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-600">Campaign A</label>
+                <select
+                  value={campaignAId}
+                  onChange={(event) => setCampaignAId(event.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Select campaign</option>
+                  {campaignOptions.map((campaign) => (
+                    <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
+                  ))}
+                </select>
+                {selectedCampaignA && (
+                  <p className="text-xs text-gray-400">
+                    {formatCurrency(getCampaignDailyMetrics(selectedCampaignA, periodDays).spendDaily)}/day •
+                    {` ${formatNumber(getCampaignDailyMetrics(selectedCampaignA, periodDays).purchasesDaily)} purchases/day`}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-600">Campaign B</label>
+                <select
+                  value={campaignBId}
+                  onChange={(event) => setCampaignBId(event.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Select campaign</option>
+                  {campaignOptions.map((campaign) => (
+                    <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
+                  ))}
+                </select>
+                {selectedCampaignB && (
+                  <p className="text-xs text-gray-400">
+                    {formatCurrency(getCampaignDailyMetrics(selectedCampaignB, periodDays).spendDaily)}/day •
+                    {` ${formatNumber(getCampaignDailyMetrics(selectedCampaignB, periodDays).purchasesDaily)} purchases/day`}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {campaignMode === 'all' && (
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 text-sm text-indigo-700">
+              Unified campaigns are split into high-spend and low-spend groups to create two calculator points.
+            </div>
+          )}
+
+          {campaignError && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-600">
+              {campaignError}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={applyCampaignInputs}
+            className="w-full rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-100"
+          >
+            Use Unified Campaign Data
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div className="border-b border-gray-100 px-6 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (Low Effort)</h2>
+          <p className="text-xs text-gray-400 mt-1">Explain what you want, and GPT will compute results using your unified campaign data.</p>
+        </div>
+        <div className="p-6 space-y-4">
+          <form onSubmit={handleGptSubmit} className="space-y-3">
+            <textarea
+              value={gptQuery}
+              onChange={(event) => setGptQuery(event.target.value)}
+              placeholder="Describe how you want the calculator to interpret these campaigns..."
+              rows={3}
+              className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-400"
+            />
+            <button
+              type="submit"
+              disabled={gptLoading || !gptQuery.trim()}
+              className="w-full rounded-lg bg-purple-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-purple-700 disabled:bg-gray-300"
+            >
+              {gptLoading ? 'Thinking...' : 'Run GPT-5.1 (Low Effort)'}
+            </button>
+          </form>
+
+          {(gptStreamingText || gptResult) && (
+            <div className="rounded-2xl border border-purple-100 bg-purple-50/60 p-4">
+              <h3 className="text-sm font-semibold text-purple-700 mb-2">GPT Result</h3>
+              <div className="whitespace-pre-wrap text-sm text-slate-700 leading-relaxed">
+                {gptStreamingText || gptResult}
+                {gptLoading && <span className="inline-block w-2 h-4 bg-purple-400 animate-pulse ml-1" />}
+              </div>
+              {gptModel && !gptLoading && (
+                <p className="text-xs text-purple-400 mt-3">Answered by {gptModel}</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
         <div className="border-b border-gray-100 px-6 py-4">
           <h2 className="text-lg font-semibold text-gray-900">📊 Input Your Data</h2>
@@ -439,26 +893,36 @@ export default function BudgetCalculator() {
               <table className="w-full min-w-[720px] text-sm">
                 <thead>
                   <tr className="text-xs uppercase tracking-wide text-gray-400">
-                    <th className="py-2 text-left">Daily Spend</th>
-                    <th className="py-2 text-right">Conversions</th>
-                    <th className="py-2 text-right">Revenue</th>
-                    <th className="py-2 text-right">ROAS</th>
-                    <th className="py-2 text-right">{results.hasOverhead ? 'Net Profit' : 'Daily Profit'}</th>
+                    <th className="py-2 text-left cursor-pointer" onClick={() => handleSort('spend')}>
+                      Daily Spend {buildSortIndicator('spend')}
+                    </th>
+                    <th className="py-2 text-right cursor-pointer" onClick={() => handleSort('conv')}>
+                      Conversions {buildSortIndicator('conv')}
+                    </th>
+                    <th className="py-2 text-right cursor-pointer" onClick={() => handleSort('revenue')}>
+                      Revenue {buildSortIndicator('revenue')}
+                    </th>
+                    <th className="py-2 text-right cursor-pointer" onClick={() => handleSort('roas')}>
+                      ROAS {buildSortIndicator('roas')}
+                    </th>
+                    <th className="py-2 text-right cursor-pointer" onClick={() => handleSort('displayProfit')}>
+                      {results.hasOverhead ? 'Net Profit' : 'Daily Profit'} {buildSortIndicator('displayProfit')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {results.predictions.map((row) => (
-                    <tr key={row.spend} className={`border-t border-gray-100 ${row.rowClass}`}>
-                      <td className="py-2 text-left font-medium">
-                        ${row.spend}
-                        {row.label && <span className="ml-2 text-xs font-semibold">{row.label}</span>}
-                      </td>
-                      <td className="py-2 text-right">{row.conv.toFixed(2)}</td>
-                      <td className="py-2 text-right">{formatCurrency(row.revenue)}</td>
-                      <td className="py-2 text-right">{row.roas.toFixed(2)}</td>
-                      <td className="py-2 text-right">{formatProfit(row.displayProfit)}</td>
-                    </tr>
-                  ))}
+              {sortedPredictions.map((row) => (
+                <tr key={row.spend} className={`border-t border-gray-100 ${row.rowClass}`}>
+                  <td className="py-2 text-left font-medium">
+                    ${row.spend}
+                    {row.label && <span className="ml-2 text-xs font-semibold">{row.label}</span>}
+                  </td>
+                  <td className="py-2 text-right">{row.conv.toFixed(2)}</td>
+                  <td className="py-2 text-right">{formatCurrency(row.revenue)}</td>
+                  <td className="py-2 text-right">{row.roas.toFixed(2)}</td>
+                  <td className="py-2 text-right">{formatProfit(row.displayProfit)}</td>
+                </tr>
+              ))}
                 </tbody>
               </table>
             </div>
