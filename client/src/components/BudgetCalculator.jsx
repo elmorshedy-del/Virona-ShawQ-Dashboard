@@ -62,6 +62,16 @@ export default function BudgetCalculator({ budgetIntelligence = null, store = nu
   const [aiError, setAiError] = useState('');
   const [aiNotes, setAiNotes] = useState('');
   const [aiModel, setAiModel] = useState('');
+  const [chatInput, setChatInput] = useState('');
+  const [chatError, setChatError] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatModel, setChatModel] = useState('');
+  const [chatMessages, setChatMessages] = useState([
+    {
+      role: 'assistant',
+      content: 'Ask me to compute results or suggest test points using the same formulas as the calculator.'
+    }
+  ]);
   const [inputs, setInputs] = useState({
     spend1: '',
     conv1: '',
@@ -235,6 +245,120 @@ If data is insufficient, set notes to explain assumptions and still provide reas
       setAiError(error.message || 'Failed to generate inputs.');
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const buildChatPrompt = (question) => {
+    const periodDays = budgetIntelligence?.period?.days || null;
+    const avgAov = selectedCampaign?.purchases > 0
+      ? selectedCampaign.revenue / selectedCampaign.purchases
+      : null;
+
+    const campaignPayload = selectedCampaign
+      ? {
+          campaignId: selectedCampaign.campaignId,
+          campaignName: selectedCampaign.campaignName,
+          spend: selectedCampaign.spend || 0,
+          purchases: selectedCampaign.purchases || 0,
+          revenue: selectedCampaign.revenue || 0,
+          aov: avgAov,
+          periodDays
+        }
+      : null;
+
+    const calculatorInputs = {
+      spend1: inputs.spend1,
+      conv1: inputs.conv1,
+      spend2: inputs.spend2,
+      conv2: inputs.conv2,
+      aov: inputs.aov,
+      margin: inputs.margin,
+      overhead: inputs.overhead
+    };
+
+    const transcript = chatMessages
+      .slice(-6)
+      .map((msg) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
+      .join('\n');
+
+    return `
+You are the Budget Calculator. Use the exact formulas and rounding rules below and answer the user's question.
+
+Calculator math:
+- B = ln(conv2/conv1) / ln(spend2/spend1)
+- a = conv1 / (spend1^B)
+- breakeven ROAS = 1 / margin
+- ceiling (ad breakeven): if B < 1, ceiling = (breakevenROAS / (a * aov))^(1 / (B - 1)), else Infinity
+- optimal: if 0 < B < 1, optimal = (1 / (a * B * aov * margin))^(1 / (B - 1)), else Infinity
+- profitAtOptimal = (a * optimal^B * aov * margin) - optimal - dailyOverhead
+- dailyOverhead = monthlyOverhead / 30
+
+Rounding rules:
+- B: 2 decimals
+- a: 4 decimals
+- Spend/profit/ceiling/optimal: round to whole dollars
+- Show Infinity as ∞
+
+Unified campaign data (if selected):
+${JSON.stringify(campaignPayload)}
+
+Current calculator inputs:
+${JSON.stringify(calculatorInputs)}
+
+Recent chat:
+${transcript}
+
+User question:
+${question}
+
+When computing results, show B, a, optimal, ad breakeven, and max daily profit using the same formulas above.
+`;
+  };
+
+  const handleChatSubmit = async (event) => {
+    event?.preventDefault();
+    const question = chatInput.trim();
+    if (!question || chatLoading) return;
+
+    setChatError('');
+    setChatModel('');
+
+    if (!store) {
+      setChatError('Select a store before using GPT-5.1 High chat.');
+      return;
+    }
+
+    if (!selectedCampaign) {
+      setChatError('Select a campaign (or unified row) before chatting.');
+      return;
+    }
+
+    setChatLoading(true);
+    setChatMessages((prev) => [...prev, { role: 'user', content: question }]);
+
+    try {
+      const response = await fetch('/api/ai/decide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: buildChatPrompt(question),
+          store,
+          depth: 'deep'
+        })
+      });
+
+      const data = await response.json();
+      if (!data?.success) {
+        throw new Error(data?.error || 'Failed to get chat response.');
+      }
+
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: data.answer }]);
+      setChatModel(data.model || '');
+      setChatInput('');
+    } catch (error) {
+      setChatError(error.message || 'Failed to get chat response.');
+    } finally {
+      setChatLoading(false);
     }
   };
 
@@ -454,6 +578,66 @@ If data is insufficient, set notes to explain assumptions and still provide reas
               {aiModel && <p className="text-xs text-purple-500">Model: {aiModel}</p>}
             </div>
           )}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div className="border-b border-gray-100 px-6 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">💬 GPT-5.1 Calculator Chat</h2>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-gray-500">
+            This chat uses unified campaign data plus the exact calculator math to answer questions or compute results.
+          </p>
+          <div className="space-y-3 max-h-[320px] overflow-y-auto rounded-xl border border-gray-100 bg-gray-50 p-4">
+            {chatMessages.map((message, index) => (
+              <div key={`${message.role}-${index}`} className={message.role === 'user' ? 'text-right' : 'text-left'}>
+                <span
+                  className={`inline-block rounded-lg px-3 py-2 text-sm ${
+                    message.role === 'user'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-gray-700 border border-gray-200'
+                  }`}
+                >
+                  {message.content}
+                </span>
+              </div>
+            ))}
+            {chatLoading && (
+              <div className="text-left">
+                <span className="inline-block rounded-lg px-3 py-2 text-sm bg-white text-gray-500 border border-gray-200">
+                  Thinking…
+                </span>
+              </div>
+            )}
+          </div>
+          <form onSubmit={handleChatSubmit} className="space-y-3">
+            <div className="relative">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                placeholder="Ask to calculate or propose test points..."
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-purple-500"
+                disabled={chatLoading}
+              />
+              <button
+                type="submit"
+                disabled={chatLoading || !chatInput.trim()}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-purple-600 px-3 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-purple-300"
+              >
+                Send
+              </button>
+            </div>
+            {chatError && (
+              <div className="rounded-lg border border-rose-100 bg-rose-50 p-3 text-sm text-rose-600">
+                {chatError}
+              </div>
+            )}
+            {chatModel && !chatLoading && (
+              <div className="text-xs text-gray-400">Model: {chatModel}</div>
+            )}
+          </form>
         </div>
       </div>
 
