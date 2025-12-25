@@ -1300,7 +1300,7 @@ export default function App() {
         )}
 
         {activeTab === 6 && (
-          <BudgetCalculator />
+          <BudgetCalculator storeId={currentStore} storeName={store?.name} />
         )}
       </div>
 
