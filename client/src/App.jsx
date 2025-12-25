@@ -1300,7 +1300,11 @@ export default function App() {
         )}
 
         {activeTab === 6 && (
-          <BudgetCalculator />
+          <BudgetCalculator
+            campaigns={budgetIntelligence?.liveGuidance || []}
+            periodDays={budgetIntelligence?.period?.days || 30}
+            storeName={store?.id}
+          />
         )}
       </div>
 
