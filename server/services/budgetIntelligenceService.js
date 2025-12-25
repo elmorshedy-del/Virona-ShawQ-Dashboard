@@ -111,6 +111,15 @@ function confidenceLabel(effectiveN) {
   return 'Low';
 }
 
+function calculateDaysRunning(startDate, endDate) {
+  if (!startDate || !endDate) return null;
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  const diff = Math.ceil((end - start) / (24 * 60 * 60 * 1000)) + 1;
+  return Math.max(diff, 1);
+}
+
 export function getBudgetIntelligence(store, params) {
   const db = getDb();
   const { startDate, endDate, days } = getDateRange(params);
@@ -397,6 +406,9 @@ export function getBudgetIntelligence(store, params) {
       adsetId: row.adsetId || null,        // ✅ camelCase for frontend
       adsetName: row.adsetName || null,    // ✅ camelCase for frontend
       country: row.country,
+      startDate: row.startDate || null,
+      endDate: row.endDate || null,
+      daysRunning: row.daysRunning || null,
       spend: row.spend,
       impressions: row.impressions || 0,
       clicks: row.link_clicks || 0,
@@ -433,6 +445,8 @@ export function getBudgetIntelligence(store, params) {
       campaignId: row.campaignId || key,
       campaignName: row.campaignName || 'Unnamed Campaign',
       countries: new Set(),
+      startDate: row.startDate || null,
+      endDate: row.endDate || null,
       spend: 0,
       impressions: 0,
       link_clicks: 0,
@@ -449,6 +463,12 @@ export function getBudgetIntelligence(store, params) {
     metricsToSum.forEach(metric => {
       existing[metric] += row[metric] || 0;
     });
+    if (row.startDate && (!existing.startDate || row.startDate < existing.startDate)) {
+      existing.startDate = row.startDate;
+    }
+    if (row.endDate && (!existing.endDate || row.endDate > existing.endDate)) {
+      existing.endDate = row.endDate;
+    }
 
     aggregates.set(key, existing);
   };
@@ -468,10 +488,12 @@ export function getBudgetIntelligence(store, params) {
     const countryList = row.countries && row.countries.size > 0
       ? Array.from(row.countries).filter(Boolean).join(', ')
       : '—';
+    const daysRunning = calculateDaysRunning(row.startDate, row.endDate);
 
     return processRowToGuidance({
       ...row,
       country: countryList,
+      daysRunning,
       date: null,
       adsetId: null,
       adsetName: null
