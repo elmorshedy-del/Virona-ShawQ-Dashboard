@@ -1,6 +1,13 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const DEFAULT_SPEND_LEVELS = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200];
+const DEFAULT_MARGIN = '35';
+
+const AUTO_GPT_REQUEST = `Auto-analyze the calculator inputs with GPT-5.1 high effort. 
+Provide insights, recommendations, and compare matching countries (two-campaign mode) or the top 2 unified countries.
+Use clear markdown tables and math-style equations where helpful.`;
 
 function formatCurrency(value) {
   if (!Number.isFinite(value)) {
@@ -132,7 +139,73 @@ function getCampaignDailyMetrics(campaign, periodDays) {
   };
 }
 
-function buildCampaignPrompt({ mode, campaignA, campaignB, allCampaigns, periodDays, inputs, request, previousAnswer }) {
+function buildComparisonContext({
+  campaignMode,
+  campaignOptions,
+  selectedCampaignA,
+  selectedCampaignB,
+  countryOptions,
+  periodDays
+}) {
+  if (campaignMode === 'two') {
+    if (!selectedCampaignA || !selectedCampaignB) {
+      return 'Select two campaigns to compare matching countries.';
+    }
+
+    const campaignAGroup = campaignOptions.filter((campaign) => campaign.name === selectedCampaignA.name);
+    const campaignBGroup = campaignOptions.filter((campaign) => campaign.name === selectedCampaignB.name);
+    const campaignAByCountry = aggregateByCountry(campaignAGroup);
+    const campaignBByCountry = aggregateByCountry(campaignBGroup);
+    const campaignBMap = new Map(
+      campaignBByCountry.map((campaign) => [campaign.country || campaign.name || '—', campaign])
+    );
+
+    const comparisons = campaignAByCountry
+      .map((campaign) => {
+        const key = campaign.country || campaign.name || '—';
+        const match = campaignBMap.get(key);
+        if (!match) return null;
+
+        const dailyA = getCampaignDailyMetrics(campaign, periodDays);
+        const dailyB = getCampaignDailyMetrics(match, periodDays);
+        const roasA = campaign.spend > 0 ? campaign.revenue / campaign.spend : 0;
+        const roasB = match.spend > 0 ? match.revenue / match.spend : 0;
+
+        return `• ${key}: Campaign A ${formatCurrency(dailyA.spendDaily)}/day, ${formatNumber(dailyA.purchasesDaily)} purchases/day, ROAS ${formatNumber(roasA)} | Campaign B ${formatCurrency(dailyB.spendDaily)}/day, ${formatNumber(dailyB.purchasesDaily)} purchases/day, ROAS ${formatNumber(roasB)}`;
+      })
+      .filter(Boolean);
+
+    if (!comparisons.length) {
+      return 'No overlapping countries between Campaign A and Campaign B.';
+    }
+
+    return comparisons.join('\n');
+  }
+
+  if (countryOptions.length < 2) {
+    return 'Not enough unified countries to compare top performers.';
+  }
+
+  const sortedBySpend = [...countryOptions].sort((a, b) => b.spend - a.spend);
+  const topCountries = sortedBySpend.slice(0, 2);
+  return topCountries.map((campaign) => {
+    const daily = getCampaignDailyMetrics(campaign, periodDays);
+    const roas = campaign.spend > 0 ? campaign.revenue / campaign.spend : 0;
+    return `• ${campaign.country || campaign.name || '—'}: ${formatCurrency(daily.spendDaily)}/day, ${formatNumber(daily.purchasesDaily)} purchases/day, ROAS ${formatNumber(roas)}`;
+  }).join('\n');
+}
+
+function buildCampaignPrompt({
+  mode,
+  campaignA,
+  campaignB,
+  allCampaigns,
+  comparisonContext,
+  periodDays,
+  inputs,
+  request,
+  previousAnswer
+}) {
   const header = `You are a budget calculator assistant. Use the data below to compute the two-point model exactly like the calculator.`;
   const formatGuide = `Return the results in the same order and style as the calculator, including:
 - B, a, Optimal Spend, Max Daily Profit, Ad Breakeven
@@ -163,6 +236,11 @@ ${campaignA}
 Campaign B:
 ${campaignB}`;
 
+  const comparisonBlock = comparisonContext
+    ? `Comparison data:
+${comparisonContext}`
+    : '';
+
   return `${header}
 
 ${formatGuide}
@@ -170,6 +248,8 @@ ${formatGuide}
 ${inputContext}
 
 ${campaignContext}
+
+${comparisonBlock}
 
 ${followupContext}
 
@@ -183,7 +263,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     spend2: '',
     conv2: '',
     aov: '',
-    margin: '',
+    margin: DEFAULT_MARGIN,
     overhead: '',
   });
   const [results, setResults] = useState(null);
@@ -198,6 +278,27 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   const [gptResult, setGptResult] = useState(null);
   const [gptModel, setGptModel] = useState(null);
   const [gptFollowup, setGptFollowup] = useState('');
+  const [gptRequest, setGptRequest] = useState('');
+  const [shikiHighlighter, setShikiHighlighter] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadHighlighter = async () => {
+      const { createHighlighter } = await import('shiki');
+      const highlighter = await createHighlighter({
+        themes: ['github-dark'],
+        langs: ['javascript', 'json', 'markdown', 'bash', 'yaml', 'tsx', 'jsx', 'plaintext']
+      });
+      if (isMounted) {
+        setShikiHighlighter(highlighter);
+      }
+    };
+
+    loadHighlighter();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
@@ -264,14 +365,18 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         .reduce((acc, item) => acc + item.purchases, 0);
       const aov = combinedPurchases > 0 ? combinedAov / combinedPurchases : 0;
 
-      setInputs((prev) => ({
-        ...prev,
+      const nextInputs = {
+        ...inputs,
         spend1: campaignA.spendDaily.toFixed(2),
         conv1: campaignA.purchasesDaily.toFixed(2),
         spend2: campaignB.spendDaily.toFixed(2),
         conv2: campaignB.purchasesDaily.toFixed(2),
-        aov: aov > 0 ? aov.toFixed(2) : prev.aov
-      }));
+        aov: aov > 0 ? aov.toFixed(2) : inputs.aov,
+        margin: DEFAULT_MARGIN
+      };
+
+      setInputs(nextInputs);
+      triggerAutoGpt(nextInputs);
       return;
     }
 
@@ -306,14 +411,18 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     const totalRevenue = highTotals.revenue + lowTotals.revenue;
     const aov = totalPurchases > 0 ? totalRevenue / totalPurchases : 0;
 
-    setInputs((prev) => ({
-      ...prev,
+    const nextInputs = {
+      ...inputs,
       spend1: lowDailySpend.toFixed(2),
       conv1: lowDailyPurchases.toFixed(2),
       spend2: highDailySpend.toFixed(2),
       conv2: highDailyPurchases.toFixed(2),
-      aov: aov > 0 ? aov.toFixed(2) : prev.aov
-    }));
+      aov: aov > 0 ? aov.toFixed(2) : inputs.aov,
+      margin: DEFAULT_MARGIN
+    };
+
+    setInputs(nextInputs);
+    triggerAutoGpt(nextInputs);
   };
 
   const handleSort = (key) => {
@@ -536,14 +645,24 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     return `${selectedCampaignB.name} (${selectedCampaignB.country || selectedCampaignB.countries || '—'}): spend ${formatCurrency(daily.spendDaily)}/day over ${daily.daysRunning} days, purchases ${formatNumber(daily.purchasesDaily)}, revenue ${formatCurrency(daily.revenue)}`;
   }, [selectedCampaignB, periodDays]);
 
-  const runGptRequest = async (requestText, previousAnswer = '') => {
+  const comparisonContext = useMemo(() => buildComparisonContext({
+    campaignMode,
+    campaignOptions,
+    selectedCampaignA,
+    selectedCampaignB,
+    countryOptions,
+    periodDays
+  }), [campaignMode, campaignOptions, selectedCampaignA, selectedCampaignB, countryOptions, periodDays]);
+
+  const runGptRequest = async ({ requestText, previousAnswer = '', inputsOverride, comparisonOverride }) => {
     const prompt = buildCampaignPrompt({
       mode: campaignMode,
       campaignA: campaignAContext,
       campaignB: campaignBContext,
       allCampaigns: allCampaignContext,
+      comparisonContext: comparisonOverride ?? comparisonContext,
       periodDays,
-      inputs,
+      inputs: inputsOverride || inputs,
       request: requestText,
       previousAnswer
     });
@@ -554,7 +673,7 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       body: JSON.stringify({
         question: prompt,
         store: storeName || 'vironax',
-        depth: 'fast'
+        depth: 'deep'
       })
     });
 
@@ -595,6 +714,24 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     }
   };
 
+  async function triggerAutoGpt(nextInputs) {
+    if (gptLoading) return;
+    setGptRequest(AUTO_GPT_REQUEST);
+    setGptLoading(true);
+    setGptStreamingText('');
+    setGptResult(null);
+    setGptModel(null);
+    setGptFollowup('');
+
+    try {
+      await runGptRequest({ requestText: AUTO_GPT_REQUEST, inputsOverride: nextInputs });
+    } catch (error) {
+      setGptResult(`Error: ${error.message}`);
+    } finally {
+      setGptLoading(false);
+    }
+  }
+
   const handleGptSubmit = async (event) => {
     event?.preventDefault();
     if (!gptQuery.trim() || gptLoading) return;
@@ -603,9 +740,10 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     setGptStreamingText('');
     setGptResult(null);
     setGptModel(null);
+    setGptRequest(gptQuery.trim());
 
     try {
-      await runGptRequest(gptQuery.trim());
+      await runGptRequest({ requestText: gptQuery.trim() });
     } catch (error) {
       setGptResult(`Error: ${error.message}`);
     } finally {
@@ -621,9 +759,10 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
     setGptStreamingText('');
     setGptResult(null);
     setGptModel(null);
+    setGptRequest(gptFollowup.trim());
 
     try {
-      await runGptRequest(gptFollowup.trim(), gptResult || '');
+      await runGptRequest({ requestText: gptFollowup.trim(), previousAnswer: gptResult || '' });
       setGptFollowup('');
     } catch (error) {
       setGptResult(`Error: ${error.message}`);
@@ -631,6 +770,52 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       setGptLoading(false);
     }
   };
+
+  const markdownComponents = useMemo(() => ({
+    table: ({ children }) => (
+      <div className="my-3 overflow-x-auto">
+        <table className="w-full text-left text-xs border border-slate-200 rounded-lg overflow-hidden">
+          {children}
+        </table>
+      </div>
+    ),
+    th: ({ children }) => (
+      <th className="border-b border-slate-200 bg-slate-50 px-3 py-2 font-semibold text-slate-600">
+        {children}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{children}</td>
+    ),
+    code: ({ inline, className, children }) => {
+      const rawCode = String(children).replace(/\n$/, '');
+      if (inline) {
+        return (
+          <code className="rounded bg-slate-100 px-1 py-0.5 text-xs font-medium text-slate-700">
+            {children}
+          </code>
+        );
+      }
+
+      const language = className?.replace('language-', '') || 'plaintext';
+      if (shikiHighlighter) {
+        try {
+          const html = shikiHighlighter.codeToHtml(rawCode, { lang: language, theme: 'github-dark' });
+          return (
+            <div className="my-3 overflow-x-auto rounded-lg text-sm shadow-sm" dangerouslySetInnerHTML={{ __html: html }} />
+          );
+        } catch (error) {
+          console.warn('[BudgetCalculator] Shiki highlight failed', error);
+        }
+      }
+
+      return (
+        <pre className="my-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100">
+          <code>{rawCode}</code>
+        </pre>
+      );
+    }
+  }), [shikiHighlighter]);
 
   return (
     <div className="space-y-6">
@@ -738,10 +923,53 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
         <div className="border-b border-gray-100 px-6 py-4">
-          <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (Low Effort)</h2>
-          <p className="text-xs text-gray-400 mt-1">Explain what you want, and GPT will compute results using your unified campaign data.</p>
+          <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (High Effort)</h2>
+          <p className="text-xs text-gray-400 mt-1">Auto-insights trigger after campaign autofill, with markdown tables, equations, and comparison insights.</p>
         </div>
         <div className="p-6 space-y-4">
+          <div className="rounded-2xl border border-purple-100 bg-purple-50/60 p-4">
+            <div className="space-y-4">
+              {!!gptRequest && (
+                <div className="flex justify-end">
+                  <div className="max-w-[85%] rounded-2xl bg-purple-600 px-4 py-3 text-sm text-white shadow">
+                    <p className="text-[10px] uppercase tracking-wide text-purple-200">You</p>
+                    <p className="mt-1 leading-relaxed">{gptRequest}</p>
+                  </div>
+                </div>
+              )}
+
+              {(gptStreamingText || gptResult || gptLoading) && (
+                <div className="flex justify-start">
+                  <div className="max-w-[85%] rounded-2xl border border-purple-100 bg-white px-4 py-3 text-sm text-slate-700 shadow">
+                    <p className="text-[10px] uppercase tracking-wide text-purple-400">Assistant</p>
+                    {gptLoading && !gptStreamingText && !gptResult && (
+                      <div className="mt-3 space-y-2 animate-pulse">
+                        <div className="h-3 w-4/5 rounded bg-slate-200" />
+                        <div className="h-3 w-3/5 rounded bg-slate-200" />
+                        <div className="h-3 w-2/5 rounded bg-slate-200" />
+                      </div>
+                    )}
+                    {(gptStreamingText || gptResult) && (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={markdownComponents}
+                        className="prose prose-slate prose-sm max-w-none mt-2"
+                      >
+                        {gptStreamingText || gptResult}
+                      </ReactMarkdown>
+                    )}
+                    {gptLoading && (
+                      <span className="mt-2 inline-block h-4 w-2 bg-purple-400 animate-pulse" />
+                    )}
+                    {gptModel && !gptLoading && (
+                      <p className="mt-3 text-xs text-purple-400">Answered by {gptModel}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
           <form onSubmit={handleGptSubmit} className="space-y-3">
             <textarea
               value={gptQuery}
@@ -755,22 +983,9 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
               disabled={gptLoading || !gptQuery.trim()}
               className="w-full rounded-lg bg-purple-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-purple-700 disabled:bg-gray-300"
             >
-              {gptLoading ? 'Thinking...' : 'Run GPT-5.1 (Low Effort)'}
+              {gptLoading ? 'Thinking...' : 'Run GPT-5.1 (High Effort)'}
             </button>
           </form>
-
-          {(gptStreamingText || gptResult) && (
-            <div className="rounded-2xl border border-purple-100 bg-purple-50/60 p-4">
-              <h3 className="text-sm font-semibold text-purple-700 mb-2">GPT Result</h3>
-              <div className="whitespace-pre-wrap text-sm text-slate-700 leading-relaxed">
-                {gptStreamingText || gptResult}
-                {gptLoading && <span className="inline-block w-2 h-4 bg-purple-400 animate-pulse ml-1" />}
-              </div>
-              {gptModel && !gptLoading && (
-                <p className="text-xs text-purple-400 mt-3">Answered by {gptModel}</p>
-              )}
-            </div>
-          )}
 
           {!!gptResult && !gptLoading && (
             <form onSubmit={handleGptFollowup} className="space-y-2">
