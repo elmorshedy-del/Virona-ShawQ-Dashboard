@@ -1685,6 +1685,22 @@ export function getFunnelDiagnostics(store, params) {
   const { startDate, endDate } = getDateRange(params);
   const campaignId = params.campaignId || null; // Optional campaign filter
   const statusFilter = buildStatusFilter(params);
+  const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
+  // Shawq historical imports may store totals under country='ALL'; prefer those totals when present
+  // to avoid double counting with per-country rows and to align sparkline spend with Meta history.
+  const buildCountryClause = (rangeStart, rangeEnd) => {
+    if (store !== 'shawq') return '';
+    const baseParams = campaignId
+      ? [store, rangeStart, rangeEnd, campaignId]
+      : [store, rangeStart, rangeEnd];
+    const hasAll = db.prepare(`
+      SELECT 1
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ? AND country = 'ALL'${campaignFilter}${statusFilter}
+      LIMIT 1
+    `).get(...baseParams);
+    return hasAll ? " AND country = 'ALL'" : '';
+  };
 
   // Calculate previous period for comparison
   const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
@@ -1694,16 +1710,16 @@ export function getFunnelDiagnostics(store, params) {
   const prevEndStr = formatDateAsGmt3(prevEndDate);
 
   // Build WHERE clause with optional campaign filter
-  const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
   const queryParams = campaignId
     ? [store, startDate, endDate, campaignId]
     : [store, startDate, endDate];
   const prevQueryParams = campaignId
     ? [store, prevStartStr, prevEndStr, campaignId]
     : [store, prevStartStr, prevEndStr];
+  const countryClause = buildCountryClause(startDate, endDate);
+  const prevCountryClause = buildCountryClause(prevStartStr, prevEndStr);
 
-  // Get current period metrics
-  const currentQuery = `
+  const buildSummaryQuery = (countryFilter) => `
     SELECT
       SUM(spend) as spend,
       SUM(impressions) as impressions,
@@ -1715,11 +1731,13 @@ export function getFunnelDiagnostics(store, params) {
       SUM(conversions) as purchases,
       SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}${statusFilter}
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}${statusFilter}${countryFilter}
   `;
 
+  const currentQuery = buildSummaryQuery(countryClause);
+  const previousQuery = buildSummaryQuery(prevCountryClause);
   const current = db.prepare(currentQuery).get(...queryParams);
-  const previous = db.prepare(currentQuery).get(...prevQueryParams);
+  const previous = db.prepare(previousQuery).get(...prevQueryParams);
 
   // Get daily data for sparklines (last 7 days of current period)
   const dailyQuery = `
@@ -1735,7 +1753,7 @@ export function getFunnelDiagnostics(store, params) {
       SUM(conversions) as purchases,
       SUM(conversion_value) as revenue
     FROM meta_daily_metrics
-    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}${statusFilter}
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter}${statusFilter}${countryClause}
     GROUP BY date
     ORDER BY date DESC
     LIMIT 7
