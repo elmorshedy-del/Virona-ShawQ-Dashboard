@@ -55,15 +55,17 @@ try {
   }
 } catch (e) { console.log('[Cleanup] Skipped:', e.message); }
 
-// One-time VironaX Meta notification reset (deployment-only)
+// Optional VironaX Meta notification reset (manual trigger only)
 try {
-  const db = getDb();
-  db.exec(`CREATE TABLE IF NOT EXISTS cleanup_flags (flag_name TEXT PRIMARY KEY, completed_at TEXT)`);
-  const done = db.prepare(`SELECT 1 FROM cleanup_flags WHERE flag_name = 'vironax_meta_notification_reset_v2'`).get();
-  if (!done) {
-    const result = db.prepare(`DELETE FROM notifications WHERE store = 'vironax' AND source = 'meta'`).run();
-    db.prepare(`INSERT INTO cleanup_flags VALUES ('vironax_meta_notification_reset_v2', ?)`).run(new Date().toISOString());
-    console.log(`[Cleanup] VironaX Meta notifications reset (${result.changes})`);
+  if (process.env.RESET_VIRONAX_META_NOTIFICATIONS === 'true') {
+    const db = getDb();
+    db.exec(`CREATE TABLE IF NOT EXISTS cleanup_flags (flag_name TEXT PRIMARY KEY, completed_at TEXT)`);
+    const done = db.prepare(`SELECT 1 FROM cleanup_flags WHERE flag_name = 'vironax_meta_notification_reset_v2'`).get();
+    if (!done) {
+      const result = db.prepare(`DELETE FROM notifications WHERE store = 'vironax' AND source = 'meta'`).run();
+      db.prepare(`INSERT INTO cleanup_flags VALUES ('vironax_meta_notification_reset_v2', ?)`).run(new Date().toISOString());
+      console.log(`[Cleanup] VironaX Meta notifications reset (${result.changes})`);
+    }
   }
 } catch (e) { console.log('[Cleanup] Virona reset skipped:', e.message); }
 
