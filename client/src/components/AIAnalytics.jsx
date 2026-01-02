@@ -8,8 +8,10 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import ExploreMode from './explore/ExploreMode';
+import VisualizationDock from './visualization/VisualizationDock';
 
 // Import Meta Awareness feature module
 import {
@@ -32,7 +34,16 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const [activeMode, setActiveMode] = useState('ask');
   const [insightMode, setInsightMode] = useState('balanced'); // 'instant', 'fast', 'balanced', 'max'
   const [showReactivation, setShowReactivation] = useState(true); // Show reactivation panel
+  const [dockState, setDockState] = useState({
+    status: 'hidden',
+    pinned: false,
+    spec: null,
+    data: [],
+    meta: null
+  });
   const messagesEndRef = useRef(null);
+  const abortControllerRef = useRef(null);
+  const timeoutRef = useRef(null);
 
   // Use reactivation candidates hook
   const {
@@ -102,6 +113,12 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         // NEW: Reactivation pillar
         { icon: '🔄', label: 'Reactivation plan' }
       ]
+    },
+    explore: {
+      icon: '🔍',
+      label: 'Explore',
+      description: 'Visual data explorer',
+      pillars: []
     }
   };
 
@@ -144,6 +161,19 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     setMessages(prev => [...prev, assistantMessage]);
 
     try {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      abortControllerRef.current = new AbortController();
+
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = setTimeout(() => {
+        abortControllerRef.current?.abort();
+        setIsLoading(false);
+      }, 45000);
+
       // Map frontend modes to backend stream modes
       const modeMap = {
         'ask': 'analyze',
@@ -179,6 +209,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(requestBody),
+        signal: abortControllerRef.current.signal
       });
 
       if (!response.ok) {
@@ -215,6 +246,20 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                     ? { ...msg, content: fullContent }
                     : msg
                 ));
+              } else if (data.type === 'tool') {
+                try {
+                  if (isValidChartPayload(data.payload)) {
+                    setDockState(prev => ({
+                      ...prev,
+                      status: 'active',
+                      spec: data.payload.spec,
+                      data: data.payload.data,
+                      meta: data.payload.meta || null
+                    }));
+                  }
+                } catch (toolError) {
+                  console.error('Chart render failed:', toolError);
+                }
               } else if (data.type === 'done') {
                 // Update metadata when complete
                 setMessages(prev => prev.map(msg => 
@@ -264,6 +309,9 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
           : msg
       ));
     } finally {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
       setIsLoading(false);
     }
   };
@@ -321,6 +369,23 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       setActiveMode('deepdive');
     }
   };
+
+  const isValidChartPayload = (payload) => {
+    if (!payload?.spec || !payload?.data) return false;
+    if (!['line', 'bar', 'area', 'pie'].includes(payload.spec.chartType)) return false;
+    if (!Array.isArray(payload.data)) return false;
+    return true;
+  };
+
+  const chartColors = activeStore === 'shawq'
+    ? ['#F97316', '#FB7185', '#F59E0B', '#EF4444', '#F43F5E', '#FB923C']
+    : ['#8B5CF6', '#A78BFA', '#C4B5FD', '#7C3AED', '#6D28D9', '#5B21B6'];
+
+  useEffect(() => {
+    if (!dockState.pinned) {
+      setDockState(prev => ({ ...prev, status: 'hidden' }));
+    }
+  }, [activeMode, dockState.pinned]);
 
   const renderMessage = (message, index) => {
     const isUser = message.role === 'user';
@@ -434,7 +499,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
               </button>
 
               {/* Pillars - shown when mode is active */}
-              {activeMode === modeKey && (
+              {activeMode === modeKey && mode.pillars.length > 0 && (
                 <div className="mt-2 ml-2 pl-3 border-l-2 border-gray-200">
                   <div className="flex flex-wrap gap-1.5">
                     {mode.pillars.map((pillar, idx) => (
@@ -481,7 +546,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         )}
 
         {/* Reactivation Panel - Shows paused/archived campaigns with good performance */}
-        {hasReactivationCandidates && (
+        {hasReactivationCandidates && activeMode !== 'explore' && (
           <div className="mt-6 pt-4 border-t border-gray-200">
             <ReactivationPanel
               store={activeStore}
@@ -506,113 +571,135 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         </div>
       </div>
 
-      {/* Main Chat Area */}
+      {/* Main Content Area */}
       <div className="flex-1 flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm">
-        {/* Header */}
-        <div className="p-4 bg-white/80 backdrop-blur-md sticky top-0 z-10 rounded-t-2xl">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">{currentMode.icon}</span>
-              <div>
-                <h2 className="text-lg font-semibold">{currentMode.label}</h2>
-                <p className="text-xs font-normal text-gray-400">{currentMode.description}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              {/* Reactivation indicator in header */}
-              {hasReactivationCandidates && (
-                <button
-                  onClick={() => handleReactivationPromptClick('What are the best reactivation candidates?')}
-                  className="flex items-center gap-1.5 px-2.5 py-1 bg-orange-50 text-orange-700 text-xs font-medium rounded-lg hover:bg-orange-100 transition-colors"
-                  title="Click to ask about reactivation candidates"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>{reactivationSummary.total} to reactivate</span>
-                </button>
-              )}
-              {activeMode === 'deepdive' && (
-                <div className="flex items-center gap-3 px-3 py-1.5 bg-purple-50 rounded-lg">
-                  <Brain className="w-4 h-4 text-purple-500" />
-                  <span className="text-xs text-purple-700 font-medium">
-                    {insightModes.find(m => m.id === insightMode)?.label}
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-gray-500">
-              <div className="text-center max-w-md">
-                <span className="text-5xl mb-4 mx-auto flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-blue-50 to-indigo-50">
-                  {currentMode.icon}
-                </span>
-                <p className="text-lg font-medium mb-2">{currentMode.label}</p>
-                <p className="text-sm font-normal text-gray-400 mb-6">{currentMode.description}</p>
-
-                {/* Quick Action Buttons */}
-                <div className="flex flex-wrap justify-center gap-3">
-                  {currentMode.pillars.slice(0, 4).map((pillar, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleQuickAction(pillar.label)}
-                      className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-blue-50 hover:text-blue-600 rounded-full transition-colors"
-                    >
-                      {pillar.icon} {pillar.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Reactivation quick prompt if candidates exist */}
-                {hasReactivationCandidates && (
-                  <div className="mt-6 pt-4 border-t border-gray-200">
-                    <p className="text-xs text-orange-600 font-medium mb-2">🔄 Reactivation Opportunities</p>
-                    <button
-                      onClick={() => handleReactivationPromptClick('What are the best campaigns, ad sets, or ads I should reactivate based on historical performance?')}
-                      className="px-4 py-2 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg transition-colors"
-                    >
-                      Analyze {reactivationSummary.total} reactivation candidates
-                    </button>
+        {activeMode === 'explore' ? (
+          <ExploreMode store={activeStore} chartColors={chartColors} />
+        ) : (
+          <>
+            {/* Header */}
+            <div className="p-4 bg-white/80 backdrop-blur-md sticky top-0 z-10 rounded-t-2xl">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">{currentMode.icon}</span>
+                  <div>
+                    <h2 className="text-lg font-semibold">{currentMode.label}</h2>
+                    <p className="text-xs font-normal text-gray-400">{currentMode.description}</p>
                   </div>
-                )}
+                </div>
+                <div className="flex items-center gap-3">
+                  {/* Reactivation indicator in header */}
+                  {hasReactivationCandidates && (
+                    <button
+                      onClick={() => handleReactivationPromptClick('What are the best reactivation candidates?')}
+                      className="flex items-center gap-1.5 px-2.5 py-1 bg-orange-50 text-orange-700 text-xs font-medium rounded-lg hover:bg-orange-100 transition-colors"
+                      title="Click to ask about reactivation candidates"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>{reactivationSummary.total} to reactivate</span>
+                    </button>
+                  )}
+                  {activeMode === 'deepdive' && (
+                    <div className="flex items-center gap-3 px-3 py-1.5 bg-purple-50 rounded-lg">
+                      <Brain className="w-4 h-4 text-purple-500" />
+                      <span className="text-xs text-purple-700 font-medium">
+                        {insightModes.find(m => m.id === insightMode)?.label}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          ) : (
-            <>
-              {messages.map((message, index) => renderMessage(message, index))}
-              <div ref={messagesEndRef} />
-            </>
-          )}
-        </div>
 
-        {/* Input Area */}
-        <div className="p-4 border-t border-gray-200">
-          <div className="flex gap-3">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyPress}
-              placeholder={`Ask about ${currentMode.label.toLowerCase()}...`}
-              className="flex-1 p-3 bg-gray-50 border-0 rounded-xl resize-none focus:outline-none focus:bg-white focus:ring-2 focus:ring-blue-100 shadow-inner text-gray-900"
-              rows={2}
-              disabled={isLoading}
-            />
-            <button
-              onClick={sendMessage}
-              disabled={isLoading || !input.trim()}
-              className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-            >
-              {isLoading ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
+            {/* Messages Area */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <VisualizationDock
+                status={dockState.status}
+                spec={dockState.spec}
+                data={dockState.data}
+                meta={dockState.meta}
+                pinned={dockState.pinned}
+                onTogglePin={() => setDockState(prev => ({ ...prev, pinned: !prev.pinned }))}
+                onClose={() => {
+                  setDockState(prev => ({ ...prev, status: 'dismiss' }));
+                  setTimeout(() => {
+                    setDockState(prev => ({ ...prev, status: 'hidden' }));
+                  }, 200);
+                }}
+                chartColors={chartColors}
+              />
+
+              {messages.length === 0 ? (
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center max-w-md">
+                    <span className="text-5xl mb-4 mx-auto flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-blue-50 to-indigo-50">
+                      {currentMode.icon}
+                    </span>
+                    <p className="text-lg font-medium mb-2">{currentMode.label}</p>
+                    <p className="text-sm font-normal text-gray-400 mb-6">{currentMode.description}</p>
+
+                    {/* Quick Action Buttons */}
+                    <div className="flex flex-wrap justify-center gap-3">
+                      {currentMode.pillars.slice(0, 4).map((pillar, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => handleQuickAction(pillar.label)}
+                          className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-blue-50 hover:text-blue-600 rounded-full transition-colors"
+                        >
+                          {pillar.icon} {pillar.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Reactivation quick prompt if candidates exist */}
+                    {hasReactivationCandidates && (
+                      <div className="mt-6 pt-4 border-t border-gray-200">
+                        <p className="text-xs text-orange-600 font-medium mb-2">🔄 Reactivation Opportunities</p>
+                        <button
+                          onClick={() => handleReactivationPromptClick('What are the best campaigns, ad sets, or ads I should reactivate based on historical performance?')}
+                          className="px-4 py-2 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg transition-colors"
+                        >
+                          Analyze {reactivationSummary.total} reactivation candidates
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
               ) : (
-                <Send className="w-5 h-5" />
+                <>
+                  {messages.map((message, index) => renderMessage(message, index))}
+                  <div ref={messagesEndRef} />
+                </>
               )}
-            </button>
-          </div>
-        </div>
+            </div>
+
+            {/* Input Area */}
+            <div className="p-4 border-t border-gray-200">
+              <div className="flex gap-3">
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyPress}
+                  placeholder={`Ask about ${currentMode.label.toLowerCase()}...`}
+                  className="flex-1 p-3 bg-gray-50 border-0 rounded-xl resize-none focus:outline-none focus:bg-white focus:ring-2 focus:ring-blue-100 shadow-inner text-gray-900"
+                  rows={2}
+                  disabled={isLoading}
+                />
+                <button
+                  onClick={sendMessage}
+                  disabled={isLoading || !input.trim()}
+                  className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isLoading ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Send className="w-5 h-5" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
