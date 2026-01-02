@@ -16,10 +16,16 @@ const client = new OpenAI({
 });
 
 const MODELS = {
-  ASK: 'gpt-4o',           // Fast, direct answers - no fallback needed
+  ASK: 'gpt-4o-mini',           // Fast, direct answers - no fallback needed
   NANO: 'gpt-5-nano',
   MINI: 'gpt-5-mini',
   STRATEGIST: 'gpt-5.1'
+};
+
+const STREAM_MODELS = {
+  ask: 'gpt-4o-mini',
+  analyze: 'gpt-4o',
+  deepdive: 'gpt-4o'
 };
 
 const FALLBACK_MODELS = {
@@ -43,6 +49,59 @@ const DEPTH_TO_EFFORT = {
   balanced: 'medium',
   deep: 'high'
 };
+
+const VALID_METRICS = ['revenue', 'orders', 'spend', 'impressions', 'clicks', 'roas', 'aov', 'conversion_rate', 'add_to_cart'];
+const VALID_DIMENSIONS = ['date', 'country', 'campaign_name', 'adset_name', 'platform', 'age', 'gender'];
+const VALID_CHART_TYPES = ['line', 'bar', 'area', 'pie'];
+
+const SHOW_CHART_TOOL = {
+  type: 'function',
+  function: {
+    name: 'show_chart',
+    description: 'Display a chart in the visualization dock to help explain data to the user. Only use when a visual would genuinely help understanding.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Chart title, human readable' },
+        note: { type: 'string', description: 'One sentence explaining why you are showing this chart' },
+        chartType: { type: 'string', enum: VALID_CHART_TYPES },
+        metric: { type: 'string', enum: VALID_METRICS },
+        dimension: { type: 'string', enum: VALID_DIMENSIONS },
+        dateRange: { type: 'string', enum: ['7d', '14d', '30d'] }
+      },
+      required: ['title', 'note', 'chartType', 'metric', 'dimension', 'dateRange']
+    }
+  }
+};
+
+const CHART_CAPABILITY_PROMPT = `
+CHART CAPABILITY:
+You have the ability to show charts using the show_chart tool. Use it when visualization genuinely helps understanding.
+
+WHEN TO SHOW A CHART:
+- Trends over time: "how's revenue this month?" → line chart helps see the shape
+- Comparisons: "which country performs best?" → bar chart makes ranking clear
+- Proportions: "what's the split between platforms?" → pie chart shows share
+- When the user explicitly asks: "show me", "chart", "visualize", "graph"
+- When explaining a change that's easier to see than describe
+
+WHEN NOT TO SHOW A CHART:
+- Simple factual answers: "what's my ROAS?" → just say "4.2"
+- Yes/no questions: "is revenue up?" → just say "yes, up 12%"
+- Strategic advice: "should I pause this campaign?" → judgment, not visualization
+- When you already showed a relevant chart in this conversation
+- When words alone are clearer
+
+THINK LIKE A HUMAN ANALYST:
+- A chart is evidence you're pulling up to support your point
+- If you can answer clearly in one sentence, don't add a chart
+- If you're about to say "as you can see in the data..." → that's when a chart earns its place
+- Never show a chart just to look thorough
+
+WHEN YOU SHOW A CHART:
+- Always include a note explaining why: "Showing 30-day revenue trend — notice the dip around Dec 20"
+- Keep talking around the chart, don't just dump it and stop
+- Reference the chart in your explanation: "As the chart shows..."`;
 
 // ============================================================================
 // OPTIMIZED DATA FETCHING - Full hierarchy with funnel metrics (120k token support)
@@ -1089,7 +1148,8 @@ RESPONSE STYLE:
 - Use clear structure with line breaks between sections
 - Use bullet points (•) for lists, not dashes
 - If comparing, show the delta/change (↑ or ↓ with %)
-- End with a clear takeaway or recommended action when relevant`;
+- End with a clear takeaway or recommended action when relevant
+${CHART_CAPABILITY_PROMPT}`;
 
   // Mode-specific instructions
   if (mode === 'analyze') {
@@ -1117,6 +1177,277 @@ ${getAnalyzeFormat(question)}`;
 
 MODE: DEEP DIVE (Strategic Analysis)
 ${getDeepDiveFormat(question)}`;
+}
+
+// ============================================================================
+// CHART UTILITIES (Explore + Visualization Dock)
+// ============================================================================
+
+export function validateToolCall(toolCall) {
+  if (!toolCall) return false;
+  const { metric, dimension, chartType } = toolCall;
+  if (!VALID_METRICS.includes(metric)) return false;
+  if (!VALID_DIMENSIONS.includes(dimension)) return false;
+  if (!VALID_CHART_TYPES.includes(chartType)) return false;
+  return true;
+}
+
+function getDateRangeForSpec(spec) {
+  const now = new Date();
+  const end = spec.customDateEnd ? new Date(spec.customDateEnd) : now;
+  let start;
+  switch (spec.dateRange) {
+    case '7d':
+      start = new Date(end);
+      start.setDate(end.getDate() - 7);
+      break;
+    case '14d':
+      start = new Date(end);
+      start.setDate(end.getDate() - 14);
+      break;
+    case '30d':
+      start = new Date(end);
+      start.setDate(end.getDate() - 30);
+      break;
+    case 'custom':
+      start = spec.customDateStart ? new Date(spec.customDateStart) : new Date(end);
+      break;
+    default:
+      start = new Date(end);
+      start.setDate(end.getDate() - 30);
+  }
+
+  const formatDate = (date) => date.toISOString().split('T')[0];
+  return {
+    start: formatDate(start),
+    end: formatDate(end),
+    label: spec.dateRange === 'custom'
+      ? `${formatDate(start)} to ${formatDate(end)}`
+      : `Last ${spec.dateRange?.replace('d', '') || 30} days`
+  };
+}
+
+function getMetricConfig(metric) {
+  const config = {
+    revenue: { expr: 'SUM(conversion_value)', format: 'currency' },
+    orders: { expr: 'SUM(conversions)', format: 'number' },
+    spend: { expr: 'SUM(spend)', format: 'currency' },
+    impressions: { expr: 'SUM(impressions)', format: 'number' },
+    clicks: { expr: 'SUM(clicks)', format: 'number' },
+    roas: { expr: 'CASE WHEN SUM(spend) = 0 THEN 0 ELSE SUM(conversion_value) / SUM(spend) END', format: 'number' },
+    aov: { expr: 'CASE WHEN SUM(conversions) = 0 THEN 0 ELSE SUM(conversion_value) / SUM(conversions) END', format: 'currency' },
+    conversion_rate: { expr: 'CASE WHEN SUM(clicks) = 0 THEN 0 ELSE CAST(SUM(conversions) AS REAL) / SUM(clicks) END', format: 'percent' },
+    add_to_cart: { expr: 'SUM(add_to_cart)', format: 'number' }
+  };
+  return config[metric] || config.revenue;
+}
+
+function getDimensionConfig(dimension) {
+  const config = {
+    date: { column: 'date', table: 'meta_daily_metrics' },
+    country: { column: 'country', table: 'meta_daily_metrics' },
+    campaign_name: { column: 'campaign_name', table: 'meta_daily_metrics' },
+    adset_name: { column: 'adset_name', table: 'meta_adset_metrics' },
+    platform: { column: 'publisher_platform', table: 'meta_daily_metrics' },
+    age: { column: 'age', table: 'meta_daily_metrics' },
+    gender: { column: 'gender', table: 'meta_daily_metrics' }
+  };
+  return config[dimension] || config.country;
+}
+
+function getAutoReason(chartType, dimension) {
+  if (chartType === 'line' || chartType === 'area') {
+    return 'trend over time';
+  }
+  if (chartType === 'pie') {
+    return 'share of total';
+  }
+  if (dimension === 'date') {
+    return 'time series trend (date dimension)';
+  }
+  return 'categorical breakdown';
+}
+
+function parseJsonFromText(text) {
+  if (!text) return null;
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch (e) {
+    const match = trimmed.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch (err) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function normalizeExploreSpec(spec = {}, fallback = {}) {
+  const dateRange = spec.dateRange || fallback.dateRange || '30d';
+  const chartType = VALID_CHART_TYPES.includes(spec.chartType) ? spec.chartType : fallback.chartType || 'bar';
+
+  return {
+    title: spec.title || fallback.title || 'Explore Chart',
+    metric: VALID_METRICS.includes(spec.metric) ? spec.metric : fallback.metric || 'revenue',
+    dimension: VALID_DIMENSIONS.includes(spec.dimension) ? spec.dimension : fallback.dimension || 'country',
+    chartType,
+    dateRange,
+    customDateStart: spec.customDateStart || fallback.customDateStart || null,
+    customDateEnd: spec.customDateEnd || fallback.customDateEnd || null,
+    autoReason: spec.autoReason || fallback.autoReason || getAutoReason(chartType, spec.dimension || fallback.dimension)
+  };
+}
+
+export function buildExploreSpecFromFilters(filters = {}) {
+  const chartType = VALID_CHART_TYPES.includes(filters.chartType) ? filters.chartType : 'bar';
+  return normalizeExploreSpec({
+    title: filters.title || 'Explore Chart',
+    metric: filters.metric,
+    dimension: filters.dimension,
+    chartType,
+    dateRange: filters.dateRange || '30d',
+    customDateStart: filters.customDateStart || null,
+    customDateEnd: filters.customDateEnd || null,
+    autoReason: filters.autoReason || getAutoReason(chartType, filters.dimension)
+  });
+}
+
+export async function fetchChartData(spec, store) {
+  const db = getDb();
+  const { start, end, label } = getDateRangeForSpec(spec);
+  const metricConfig = getMetricConfig(spec.metric);
+  const dimensionConfig = getDimensionConfig(spec.dimension);
+  const table = dimensionConfig.table;
+  const metricExpr = metricConfig.expr;
+  const maxRows = spec.dimension === 'date' ? 100 : 10;
+
+  let data = [];
+  if (spec.dimension === 'date') {
+    data = db.prepare(`
+      SELECT date as date, ${metricExpr} as value
+      FROM ${table}
+      WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+      GROUP BY date
+      ORDER BY date ASC
+      LIMIT ${maxRows}
+    `).all(store.toLowerCase(), start, end);
+  } else {
+    const column = dimensionConfig.column;
+    data = db.prepare(`
+      SELECT COALESCE(NULLIF(${column}, ''), 'Unknown') as category, ${metricExpr} as value
+      FROM ${table}
+      WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+      GROUP BY ${column}
+      ORDER BY value DESC
+      LIMIT ${maxRows}
+    `).all(store.toLowerCase(), start, end);
+  }
+
+  if (spec.chartType === 'pie' && data.length > 6) {
+    const top = data.slice(0, 6);
+    const rest = data.slice(6).reduce((sum, row) => sum + (row.value || 0), 0);
+    data = [...top, { category: 'Other', value: rest }];
+  }
+
+  const totalRow = db.prepare(`
+    SELECT ${metricExpr} as total
+    FROM ${table}
+    WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+  `).get(store.toLowerCase(), start, end);
+
+  return {
+    data,
+    meta: {
+      total: totalRow?.total || 0,
+      currency: store.toLowerCase() === 'vironax' ? 'SAR' : 'USD',
+      periodStart: start,
+      periodEnd: end,
+      periodLabel: label
+    }
+  };
+}
+
+export async function getExploreSpec(query, currentFilters = {}) {
+  const systemPrompt = `You are a data visualization assistant. Your job is to interpret natural language queries and return a chart specification.
+
+AVAILABLE METRICS:
+- revenue (currency)
+- orders (number)
+- spend (currency)
+- impressions (number)
+- clicks (number)
+- roas (number, ratio)
+- aov (currency)
+- conversion_rate (percent)
+- add_to_cart (number)
+
+AVAILABLE DIMENSIONS:
+- date (for time series)
+- country
+- campaign_name
+- adset_name
+- platform
+- age
+- gender
+
+CHART TYPES:
+- line: use for trends over time (requires date dimension)
+- bar: use for categorical comparisons
+- area: use for cumulative trends over time
+- pie: use for showing share/proportion (max 6 segments)
+
+RULES:
+1. Always return valid JSON matching the schema below.
+2. Only use metrics and dimensions from the lists above.
+3. If the query is ambiguous, make a reasonable assumption.
+4. If the query asks for something impossible, return an error message.
+5. For pie charts, limit to top 6 categories; group rest as \"Other\".
+6. Default date range is 30 days if not specified.
+
+OUTPUT FORMAT:
+{
+  \"success\": true,
+  \"spec\": {
+    \"title\": \"Human readable title\",
+    \"metric\": \"metric_key\",
+    \"dimension\": \"dimension_key\",
+    \"chartType\": \"line|bar|area|pie\",
+    \"dateRange\": \"7d|14d|30d|custom\",
+    \"customDateStart\": \"YYYY-MM-DD\" (only if dateRange is custom),
+    \"customDateEnd\": \"YYYY-MM-DD\" (only if dateRange is custom),
+    \"autoReason\": \"Brief explanation of why this chart type was chosen\"
+  }
+}
+
+OR if the query cannot be fulfilled:
+{
+  \"success\": false,
+  \"error\": \"Human readable explanation of why this can't be charted\"
+}`;
+
+  const response = await client.chat.completions.create({
+    model: STREAM_MODELS.ask,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: query }
+    ],
+    max_tokens: 500,
+    temperature: 0.2
+  });
+
+  const parsed = parseJsonFromText(response.choices[0]?.message?.content || '');
+  if (!parsed) {
+    return { success: false, error: 'Unable to parse explore response.' };
+  }
+  if (parsed.success === false) {
+    return { success: false, error: parsed.error || 'Explore request failed.' };
+  }
+  const spec = normalizeExploreSpec(parsed.spec || {}, currentFilters);
+  return { success: true, spec };
 }
 
 // ============================================================================
@@ -1220,6 +1551,51 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
   }
 }
 
+async function streamChatWithTools(model, systemPrompt, userMessage, maxTokens, onDelta, temperature = 0.6) {
+  const response = await client.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage }
+    ],
+    max_tokens: maxTokens,
+    temperature,
+    tools: [SHOW_CHART_TOOL],
+    stream: true
+  });
+
+  const toolCalls = {};
+
+  for await (const chunk of response) {
+    const delta = chunk.choices[0]?.delta;
+    if (delta?.content) {
+      onDelta(delta.content);
+    }
+    if (delta?.tool_calls) {
+      for (const toolCall of delta.tool_calls) {
+        if (!toolCalls[toolCall.index]) {
+          toolCalls[toolCall.index] = {
+            index: toolCall.index,
+            id: toolCall.id,
+            type: toolCall.type,
+            function: { name: '', arguments: '' }
+          };
+        }
+        if (toolCall.function?.name) {
+          toolCalls[toolCall.index].function.name = toolCall.function.name;
+        }
+        if (toolCall.function?.arguments) {
+          toolCalls[toolCall.index].function.arguments += toolCall.function.arguments;
+        }
+      }
+    }
+  }
+
+  const orderedToolCalls = Object.values(toolCalls).sort((a, b) => (a.index || 0) - (b.index || 0));
+
+  return { model, reasoning: null, toolCalls: orderedToolCalls };
+}
+
 // ============================================================================
 // EXPORTS - Analyze, Summarize, Decide
 // ============================================================================
@@ -1262,42 +1638,27 @@ export async function decideQuestion(question, store, depth = 'balanced', histor
 export async function decideQuestionStream(question, store, depth = 'balanced', onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
-  const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
-  return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta, MODE_TEMPERATURES.decide);
+  console.log(`[OpenAI] Streaming ${STREAM_MODELS.deepdive} for Deep Dive mode`);
+  return await streamChatWithTools(STREAM_MODELS.deepdive, systemPrompt, question, maxTokens, onDelta, MODE_TEMPERATURES.decide);
 }
 
 // Streaming versions for Analyze and Summarize
 export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
-  
-  // Use GPT-4o directly for Ask mode - faster streaming
-  console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
-  const response = await client.chat.completions.create({
-    model: MODELS.ASK,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: question }
-    ],
-    max_tokens: TOKEN_LIMITS.nano,
-    temperature: MODE_TEMPERATURES.analyze,
-    stream: true
-  });
 
-  for await (const chunk of response) {
-    const delta = chunk.choices[0]?.delta?.content;
-    if (delta) onDelta(delta);
-  }
-
-  return { model: MODELS.ASK, reasoning: null };
+  console.log(`[OpenAI] Streaming ${STREAM_MODELS.ask} for Ask mode`);
+  return await streamChatWithTools(STREAM_MODELS.ask, systemPrompt, question, TOKEN_LIMITS.nano, onDelta, MODE_TEMPERATURES.analyze);
 }
 
 export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
-  return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
+
+  console.log(`[OpenAI] Streaming ${STREAM_MODELS.analyze} for Analyze mode`);
+  return await streamChatWithTools(STREAM_MODELS.analyze, systemPrompt, question, TOKEN_LIMITS.mini, onDelta, MODE_TEMPERATURES.summarize);
 }
 
 // ============================================================================

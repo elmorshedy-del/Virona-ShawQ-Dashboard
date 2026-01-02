@@ -9,7 +9,11 @@ import {
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
-  runQuery
+  runQuery,
+  fetchChartData,
+  getExploreSpec,
+  validateToolCall,
+  buildExploreSpecFromFilters
 } from '../services/openaiService.js';
 import { getDb } from '../db/database.js';
 
@@ -148,6 +152,42 @@ router.post('/conversations/:id/messages', (req, res) => {
   }
 });
 
+// ============================================================================
+// EXPLORE MODE - Chart specification + data
+// ============================================================================
+router.post('/explore', async (req, res) => {
+  try {
+    const { query, store, currentFilters, skipAi } = req.body;
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    let specResult;
+    if (skipAi || !query) {
+      specResult = { success: true, spec: buildExploreSpecFromFilters(currentFilters || {}) };
+    } else {
+      specResult = await getExploreSpec(query, currentFilters || {});
+    }
+
+    if (!specResult.success) {
+      return res.status(400).json({ success: false, error: specResult.error });
+    }
+
+    const { data, meta } = await fetchChartData(specResult.spec, store);
+
+    res.json({
+      success: true,
+      spec: specResult.spec,
+      data,
+      meta
+    });
+  } catch (error) {
+    console.error('[API] Explore error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Get conversation history for AI context
 function getConversationHistory(conversationId, limit = 10) {
   const db = getDb();
@@ -161,6 +201,13 @@ function getConversationHistory(conversationId, limit = 10) {
   } catch (e) {
     return [];
   }
+}
+
+function getAutoReason(chartType, dimension) {
+  if (chartType === 'line' || chartType === 'area') return 'trend over time';
+  if (chartType === 'pie') return 'share of total';
+  if (dimension === 'date') return 'time series trend (date dimension)';
+  return 'categorical breakdown';
 }
 
 // ============================================================================
@@ -361,6 +408,31 @@ router.post('/stream', async (req, res) => {
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
+
+    if (result.toolCalls?.length) {
+      for (const toolCall of result.toolCalls) {
+        if (toolCall?.function?.name !== 'show_chart') continue;
+        try {
+          const args = JSON.parse(toolCall.function.arguments || '{}');
+          if (!validateToolCall(args)) continue;
+
+          const spec = {
+            title: args.title,
+            note: args.note,
+            metric: args.metric,
+            dimension: args.dimension,
+            chartType: args.chartType,
+            dateRange: args.dateRange,
+            autoReason: args.autoReason || getAutoReason(args.chartType, args.dimension)
+          };
+
+          const { data, meta } = await fetchChartData(spec, store);
+          res.write(`data: ${JSON.stringify({ type: 'tool', name: 'show_chart', payload: { spec, data, meta } })}\n\n`);
+        } catch (toolError) {
+          console.error('[API] Tool call error:', toolError.message);
+        }
+      }
+    }
 
     res.write(`data: ${JSON.stringify({
       type: 'done',
