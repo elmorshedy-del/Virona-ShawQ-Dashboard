@@ -9,7 +9,9 @@ import {
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
-  runQuery
+  runQuery,
+  exploreQuery,
+  getChartRecommendation
 } from '../services/openaiService.js';
 import { getDb } from '../db/database.js';
 
@@ -163,8 +165,113 @@ function getConversationHistory(conversationId, limit = 10) {
   }
 }
 
+const CHART_METRICS = ['revenue', 'orders', 'spend', 'impressions', 'clicks', 'roas', 'aov', 'conversion_rate', 'add_to_cart'];
+const CHART_DIMENSIONS = ['date', 'country', 'campaign_name', 'adset_name', 'platform', 'age', 'gender'];
+const CHART_TYPES = ['line', 'bar', 'area', 'pie', 'auto'];
+const MAX_ROWS = 100;
+
+function validateChartSpec(spec) {
+  if (!spec) return false;
+  if (!CHART_METRICS.includes(spec.metric)) return false;
+  if (!CHART_DIMENSIONS.includes(spec.dimension)) return false;
+  if (!CHART_TYPES.includes(spec.chartType)) return false;
+  return true;
+}
+
+function getDateRange(preset, customStart, customEnd) {
+  const end = new Date();
+  const start = new Date();
+  switch (preset) {
+    case '7d':
+      start.setDate(end.getDate() - 7);
+      break;
+    case '14d':
+      start.setDate(end.getDate() - 14);
+      break;
+    case '30d':
+    default:
+      start.setDate(end.getDate() - 30);
+      break;
+  }
+
+  return {
+    start: customStart || start.toISOString().split('T')[0],
+    end: customEnd || end.toISOString().split('T')[0]
+  };
+}
+
+function getMetricExpression(metric) {
+  const expressions = {
+    revenue: 'SUM(conversion_value)',
+    orders: 'SUM(conversions)',
+    spend: 'SUM(spend)',
+    impressions: 'SUM(impressions)',
+    clicks: 'SUM(clicks)',
+    roas: 'CASE WHEN SUM(spend) = 0 THEN 0 ELSE SUM(conversion_value) / SUM(spend) END',
+    aov: 'CASE WHEN SUM(conversions) = 0 THEN 0 ELSE SUM(conversion_value) / SUM(conversions) END',
+    conversion_rate: 'CASE WHEN SUM(clicks) = 0 THEN 0 ELSE SUM(conversions) / SUM(clicks) END',
+    add_to_cart: 'SUM(add_to_cart)'
+  };
+  return expressions[metric] || 'SUM(conversion_value)';
+}
+
+function resolveAutoChart(spec, data) {
+  if (spec.dimension === 'date') {
+    return { chartType: 'line', autoReason: 'trend over time' };
+  }
+  if ((data?.length || 0) <= 6) {
+    return { chartType: 'pie', autoReason: 'share of total' };
+  }
+  return { chartType: 'bar', autoReason: 'categorical breakdown' };
+}
+
+function fetchChartData(spec, store, startDate, endDate) {
+  const db = getDb();
+  const metricExpression = getMetricExpression(spec.metric);
+  const dimension = spec.dimension;
+
+  if (dimension === 'date') {
+    const data = db.prepare(`
+      SELECT date, ${metricExpression} as value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+      GROUP BY date
+      ORDER BY date ASC
+      LIMIT ${MAX_ROWS}
+    `).all(store.toLowerCase(), startDate, endDate);
+    return { data, total: data.reduce((sum, row) => sum + (row.value || 0), 0) };
+  }
+
+  const columnMap = {
+    country: 'country',
+    campaign_name: 'campaign_name',
+    adset_name: 'adset_name',
+    platform: 'platform',
+    age: 'age',
+    gender: 'gender'
+  };
+  const column = columnMap[dimension] || 'country';
+
+  const data = db.prepare(`
+    SELECT COALESCE(${column}, 'Unknown') as category, ${metricExpression} as value
+    FROM meta_daily_metrics
+    WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+    GROUP BY category
+    ORDER BY value DESC
+    LIMIT 10
+  `).all(store.toLowerCase(), startDate, endDate);
+
+  const totalRow = db.prepare(`
+    SELECT ${metricExpression} as value
+    FROM meta_daily_metrics
+    WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+  `).get(store.toLowerCase(), startDate, endDate);
+
+  return { data, total: totalRow?.value || 0 };
+}
+
 // ============================================================================
-// ANALYZE - GPT-5 nano (Quick metrics)
+// ANALYZE - GPT-4o-mini (Quick metrics)
 // ============================================================================
 router.post('/analyze', async (req, res) => {
   try {
@@ -210,7 +317,7 @@ router.post('/analyze', async (req, res) => {
 });
 
 // ============================================================================
-// SUMMARIZE - GPT-5 mini (Trends & patterns)
+// SUMMARIZE - GPT-4o (Trends & patterns)
 // ============================================================================
 router.post('/summarize', async (req, res) => {
   try {
@@ -256,7 +363,7 @@ router.post('/summarize', async (req, res) => {
 });
 
 // ============================================================================
-// DECIDE - GPT-5.1 (Strategic decisions - non-streaming)
+// DECIDE - GPT-4o (Strategic decisions - non-streaming)
 // ============================================================================
 router.post('/decide', async (req, res) => {
   try {
@@ -340,24 +447,70 @@ router.post('/stream', async (req, res) => {
     console.log(`[API] History: ${history.length} messages`);
     if (activeMode === 'daily-summary') {
       console.log(`[API] Report Type: ${reportType || 'am'}`);
-      console.log(`[API] Using GPT-5.1 Deep for daily summary`);
+      console.log(`[API] Using GPT-4o for daily summary`);
     }
     console.log(`========================================`);
 
     let result;
+    let chartPromise = null;
     const onDelta = (delta) => {
       res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
     };
 
     if (activeMode === 'daily-summary') {
-      // Daily summary uses GPT-5.1 deep - always for both stores
+      // Daily summary uses GPT-4o - always for both stores
       result = await dailySummaryStream(reportType || 'am', onDelta);
-    } else if (activeMode === 'analyze') {
-      result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
-    } else if (activeMode === 'summarize') {
-      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
     } else {
-      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
+      chartPromise = (async () => {
+        try {
+          const decision = await getChartRecommendation(question, activeMode);
+          if (!decision?.showChart || !decision.spec) return;
+          const normalizedSpec = {
+            ...decision.spec,
+            chartType: decision.spec.chartType?.toLowerCase(),
+            metric: decision.spec.metric?.toLowerCase(),
+            dimension: decision.spec.dimension?.toLowerCase(),
+            dateRange: decision.spec.dateRange?.toLowerCase()
+          };
+          if (!validateChartSpec(normalizedSpec)) return;
+
+          const dateRange = getDateRange(normalizedSpec.dateRange);
+          const { data, total } = fetchChartData(normalizedSpec, store, dateRange.start, dateRange.end);
+          if (res.writableEnded) return;
+
+          res.write(`data: ${JSON.stringify({
+            type: 'tool',
+            name: 'show_chart',
+            payload: {
+              spec: {
+                ...normalizedSpec,
+                autoReason: normalizedSpec.autoReason || (normalizedSpec.dimension === 'date' ? 'trend over time' : 'categorical breakdown')
+              },
+              data,
+              meta: {
+                total,
+                currency: store.toLowerCase() === 'shawq' ? 'USD' : 'SAR',
+                periodStart: dateRange.start,
+                periodEnd: dateRange.end
+              }
+            }
+          })}\n\n`);
+        } catch (chartError) {
+          console.error('[API] Chart tool failed:', chartError.message);
+        }
+      })();
+
+      if (activeMode === 'analyze') {
+        result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
+      } else if (activeMode === 'summarize') {
+        result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
+      } else {
+        result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
+      }
+    }
+
+    if (chartPromise) {
+      await chartPromise;
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
@@ -373,6 +526,72 @@ router.post('/stream', async (req, res) => {
     console.error(`[API] Stream error:`, error.message);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
+  }
+});
+
+// ============================================================================
+// EXPLORE - AI chart spec + data
+// ============================================================================
+router.post('/explore', async (req, res) => {
+  try {
+    const { query, store, currentFilters, specOverride } = req.body;
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    let spec;
+    if (specOverride) {
+      spec = specOverride;
+    } else if (query) {
+      const result = await exploreQuery(query, store, currentFilters || {});
+      if (!result?.success) {
+        return res.status(400).json({ success: false, error: result?.error || 'Explore failed' });
+      }
+      spec = result.spec;
+    } else if (currentFilters) {
+      spec = currentFilters;
+    }
+
+    const normalizedSpec = {
+      ...spec,
+      chartType: spec.chartType?.toLowerCase(),
+      metric: spec.metric?.toLowerCase(),
+      dimension: spec.dimension?.toLowerCase(),
+      dateRange: spec.dateRange?.toLowerCase()
+    };
+
+    if (!validateChartSpec(normalizedSpec)) {
+      return res.status(400).json({ success: false, error: 'Invalid chart spec' });
+    }
+
+    const dateRange = getDateRange(normalizedSpec.dateRange, normalizedSpec.customDateStart, normalizedSpec.customDateEnd);
+    const { data, total } = fetchChartData(normalizedSpec, store, dateRange.start, dateRange.end);
+
+    let finalSpec = { ...normalizedSpec };
+    if (normalizedSpec.chartType === 'auto') {
+      const auto = resolveAutoChart(normalizedSpec, data);
+      finalSpec = {
+        ...normalizedSpec,
+        autoChartType: auto.chartType,
+        autoReason: normalizedSpec.autoReason || auto.autoReason
+      };
+    }
+
+    res.json({
+      success: true,
+      spec: finalSpec,
+      data,
+      meta: {
+        total,
+        currency: store.toLowerCase() === 'shawq' ? 'USD' : 'SAR',
+        periodStart: dateRange.start,
+        periodEnd: dateRange.end
+      }
+    });
+  } catch (error) {
+    console.error('[API] Explore error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -507,9 +726,9 @@ router.get('/status', (req, res) => {
     configured,
     keyPrefix: configured ? `${keyPrefix}...` : 'not set',
     models: {
-      analyze: 'gpt-5-nano (fallback: gpt-4o-mini)',
-      summarize: 'gpt-5-mini (fallback: gpt-4o)',
-      decide: 'gpt-5.1 (fallback: gpt-4o)'
+      analyze: 'gpt-4o-mini',
+      summarize: 'gpt-4o',
+      decide: 'gpt-4o'
     },
     features: {
       streaming: true,
