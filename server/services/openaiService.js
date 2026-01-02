@@ -1371,6 +1371,462 @@ If there are promising reactivation candidates, include a "Reactivation Opportun
 }
 
 // ============================================================================
+// EXPLORE MODE - Visual data explorer with GPT-4o-mini for query interpretation
+// Uses the SAME data pathways as other AI modes for consistent data access
+// ============================================================================
+
+/**
+ * Build dynamic explore prompt with store context
+ * This gives GPT-4o-mini intelligence about the actual data
+ */
+function buildExploreSystemPrompt(storeContext = {}) {
+  const { storeName, currency, topCountries, topCampaigns, dateRange } = storeContext;
+
+  return `You are an intelligent e-commerce data visualization assistant for ${storeName || 'an online store'}.
+Your job is to deeply understand what the user wants to see and translate it into a precise chart specification.
+
+ABOUT THIS STORE:
+- Currency: ${currency || 'USD'}
+- Top performing countries: ${topCountries?.join(', ') || 'Various'}
+- Active campaigns: ${topCampaigns?.length || 'Multiple'} campaigns running
+- Data available from: ${dateRange?.start || 'last 90 days'}
+
+AVAILABLE METRICS (what to measure):
+- revenue: Total sales value (conversion_value) - use for money questions
+- orders: Number of purchases (conversions) - use for volume questions
+- spend: Ad spend amount - use for cost/investment questions
+- impressions: How many times ads were shown - use for reach/visibility
+- clicks: Link clicks to website - use for engagement
+- roas: Return on ad spend (revenue/spend) - use for efficiency/ROI questions
+- aov: Average order value (revenue/orders) - use for basket size questions
+- conversion_rate: Purchases per click (%) - use for funnel efficiency
+- add_to_cart: Cart additions - use for shopping behavior
+
+AVAILABLE DIMENSIONS (how to break it down):
+- date: Time series (days) - use for trends, patterns over time
+- country: Geographic breakdown - use for regional analysis
+- campaign_name: By marketing campaign - use for campaign performance
+- adset_name: By ad set - use for audience/targeting analysis
+- platform: Facebook vs Instagram etc - use for channel analysis
+- age: Age demographics - use for audience insights
+- gender: Gender demographics - use for audience insights
+
+CHART TYPES:
+- line: Best for trends over time, showing change/patterns
+- bar: Best for comparing categories, rankings, breakdowns
+- area: Best for cumulative/stacked trends, showing volume over time
+- pie: Best for share of total, proportion analysis (limit 6 segments)
+
+COMPARISON CHARTS (overlay multiple metrics):
+You can compare up to 3 metrics on the same chart when it makes sense:
+- "revenue vs spend over time" → overlay revenue and spend lines
+- "compare orders and impressions" → dual axis comparison
+- "show spend, revenue, and ROAS trend" → multi-metric overlay
+
+UNDERSTANDING USER INTENT:
+Parse natural language intelligently:
+- "how are we doing" → revenue trend (default health check)
+- "what's working" → revenue by campaign (find winners)
+- "where's the money coming from" → revenue by country
+- "am I profitable" → ROAS trend or by campaign
+- "show me everything" → revenue trend with spend overlay
+- "compare X and Y" → overlay chart with both metrics
+- "X vs Y" → comparison chart
+- "break down by" / "split by" → categorical breakdown
+- "over time" / "trend" / "daily" → time series (date dimension)
+- "top" / "best" / "worst" → categorical ranking
+- "efficiency" / "ROI" / "return" → ROAS metric
+- "growth" / "change" → implies time series comparison
+
+SMART DEFAULTS:
+- No time mentioned? Default to 30 days for trends, 14 days for comparisons
+- Vague question? Start with revenue (the metric that matters most)
+- "Performance"? Usually means ROAS or revenue
+- "Results"? Usually means orders or revenue
+- "Cost"? Usually means spend or CPA
+
+OUTPUT FORMAT:
+{
+  "success": true,
+  "spec": {
+    "title": "Human readable, specific title",
+    "metrics": ["primary_metric", "optional_second", "optional_third"],
+    "dimension": "dimension_key",
+    "chartType": "line|bar|area|pie",
+    "dateRange": "7d|14d|30d",
+    "autoReason": "Why this visualization answers the user's question",
+    "insight": "One sentence about what to look for in this chart"
+  }
+}
+
+For simple single-metric charts, metrics array has one element.
+For comparison/overlay charts, include 2-3 metrics.
+
+ERROR RESPONSE (only if truly impossible):
+{
+  "success": false,
+  "error": "Friendly explanation + suggestion for what they could ask instead"
+}
+
+IMPORTANT: Be smart. Interpret intent, don't just match keywords. The user is a busy marketer who wants answers, not technical precision.`;
+}
+
+// Keep backward compatible single prompt for simple cases
+const EXPLORE_SYSTEM_PROMPT = buildExploreSystemPrompt({});
+
+// Metric to database column mapping
+const METRIC_TO_COLUMN = {
+  revenue: 'conversion_value',
+  orders: 'conversions',
+  spend: 'spend',
+  impressions: 'impressions',
+  clicks: 'inline_link_clicks',
+  add_to_cart: 'add_to_cart',
+  roas: null, // calculated
+  aov: null,  // calculated
+  conversion_rate: null // calculated
+};
+
+// Dimension to database column mapping
+const DIMENSION_TO_COLUMN = {
+  date: 'date',
+  country: 'country',
+  campaign_name: 'campaign_name',
+  adset_name: 'adset_name',
+  platform: 'publisher_platform',
+  age: 'age',
+  gender: 'gender'
+};
+
+/**
+ * Get store context for smarter AI interpretation
+ * Provides GPT with knowledge about the store's actual data
+ */
+function getStoreContextForExplore(db, storeName) {
+  const today = new Date().toISOString().split('T')[0];
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+  try {
+    // Get top countries
+    const topCountries = db.prepare(`
+      SELECT country, SUM(conversion_value) as revenue
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND country IS NOT NULL AND country != '' AND country != 'ALL'
+      GROUP BY country ORDER BY revenue DESC LIMIT 5
+    `).all(storeName, thirtyDaysAgo).map(r => r.country);
+
+    // Get active campaigns
+    const topCampaigns = db.prepare(`
+      SELECT campaign_name, SUM(conversion_value) as revenue
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date >= ? AND campaign_name IS NOT NULL
+      AND (effective_status = 'ACTIVE' OR effective_status IS NULL)
+      GROUP BY campaign_name ORDER BY revenue DESC LIMIT 10
+    `).all(storeName, thirtyDaysAgo).map(r => r.campaign_name);
+
+    // Get date range
+    const dateRangeResult = db.prepare(`
+      SELECT MIN(date) as start, MAX(date) as end
+      FROM meta_daily_metrics WHERE LOWER(store) = ?
+    `).get(storeName);
+
+    return {
+      storeName: storeName === 'vironax' ? 'VironaX (Saudi jewelry)' : 'Shawq (Palestinian apparel)',
+      currency: storeName === 'vironax' ? 'SAR' : 'USD',
+      topCountries,
+      topCampaigns,
+      dateRange: dateRangeResult
+    };
+  } catch (e) {
+    return {
+      storeName: storeName === 'vironax' ? 'VironaX' : 'Shawq',
+      currency: storeName === 'vironax' ? 'SAR' : 'USD'
+    };
+  }
+}
+
+/**
+ * Fetch chart data from database using the SAME tables as getStoreData
+ * Supports multiple metrics for overlay/comparison charts
+ */
+function fetchExploreChartData(db, storeName, spec, startDate, endDate) {
+  // Support both single metric and array of metrics
+  const metrics = Array.isArray(spec.metrics) ? spec.metrics : [spec.metric || spec.metrics];
+  const { dimension, dateRange } = spec;
+
+  // Calculate date range
+  const today = new Date();
+  let periodStart = startDate;
+  let periodEnd = endDate || today.toISOString().split('T')[0];
+
+  if (!periodStart) {
+    const daysBack = dateRange === '7d' ? 7 : dateRange === '14d' ? 14 : 30;
+    periodStart = new Date(today.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  }
+
+  const dimensionColumn = DIMENSION_TO_COLUMN[dimension] || dimension;
+  const activeFilter = `AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)`;
+
+  let data = [];
+  let totals = {};
+
+  // Helper to get SQL expression for a metric
+  const getMetricSQL = (metric) => {
+    switch (metric) {
+      case 'roas':
+        return 'ROUND(CASE WHEN SUM(spend) > 0 THEN SUM(conversion_value) / SUM(spend) ELSE 0 END, 2)';
+      case 'aov':
+        return 'ROUND(CASE WHEN SUM(conversions) > 0 THEN SUM(conversion_value) / SUM(conversions) ELSE 0 END, 2)';
+      case 'conversion_rate':
+        return 'ROUND(CASE WHEN SUM(inline_link_clicks) > 0 THEN SUM(conversions) * 100.0 / SUM(inline_link_clicks) ELSE 0 END, 2)';
+      default:
+        const col = METRIC_TO_COLUMN[metric];
+        return col ? `SUM(${col})` : 'SUM(conversion_value)';
+    }
+  };
+
+  try {
+    if (dimension === 'date') {
+      // Time series query - supports multiple metrics for overlay
+      if (metrics.length === 1) {
+        // Single metric - simple query
+        const metricSQL = getMetricSQL(metrics[0]);
+        const rows = db.prepare(`
+          SELECT date, ${metricSQL} as value
+          FROM meta_daily_metrics
+          WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+          ${activeFilter}
+          GROUP BY date
+          ORDER BY date ASC
+        `).all(storeName, periodStart, periodEnd);
+        data = rows;
+        totals[metrics[0]] = rows.reduce((sum, r) => sum + (r.value || 0), 0);
+      } else {
+        // Multiple metrics - overlay chart
+        const metricSelects = metrics.map((m, i) => `${getMetricSQL(m)} as value${i}`).join(', ');
+        const rows = db.prepare(`
+          SELECT date, ${metricSelects}
+          FROM meta_daily_metrics
+          WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+          ${activeFilter}
+          GROUP BY date
+          ORDER BY date ASC
+        `).all(storeName, periodStart, periodEnd);
+
+        // Transform to multi-series format
+        data = rows.map(row => {
+          const point = { date: row.date };
+          metrics.forEach((m, i) => {
+            point[m] = row[`value${i}`] || 0;
+          });
+          return point;
+        });
+
+        // Calculate totals for each metric
+        metrics.forEach((m, i) => {
+          totals[m] = rows.reduce((sum, r) => sum + (r[`value${i}`] || 0), 0);
+        });
+      }
+    } else {
+      // Categorical query - primary metric only for bar/pie
+      const primaryMetric = metrics[0];
+      const metricSQL = getMetricSQL(primaryMetric);
+
+      const rows = db.prepare(`
+        SELECT ${dimensionColumn} as category, ${metricSQL} as value
+        FROM meta_daily_metrics
+        WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+        AND ${dimensionColumn} IS NOT NULL AND ${dimensionColumn} != '' AND ${dimensionColumn} != 'ALL'
+        ${activeFilter}
+        GROUP BY ${dimensionColumn}
+        ORDER BY value DESC
+        LIMIT 10
+      `).all(storeName, periodStart, periodEnd);
+
+      data = rows;
+      totals[primaryMetric] = rows.reduce((sum, r) => sum + (r.value || 0), 0);
+    }
+  } catch (error) {
+    console.error('[fetchExploreChartData] Query error:', error.message);
+    return { data: [], totals: {}, metrics, periodStart, periodEnd };
+  }
+
+  return {
+    data,
+    totals,
+    metrics,
+    total: totals[metrics[0]] || 0, // Backward compatible
+    periodStart,
+    periodEnd
+  };
+}
+
+/**
+ * Explore query handler - uses GPT-4o-mini to interpret queries intelligently
+ * Gives GPT context about the store's actual data for smarter interpretation
+ * Then fetches data using same database as getStoreData
+ */
+export async function exploreQuery(query, store, currentFilters = {}, startDate = null, endDate = null) {
+  const db = getDb();
+  const storeName = (store || 'vironax').toLowerCase();
+  const currency = storeName === 'vironax' ? 'SAR' : 'USD';
+
+  console.log(`[Explore] Query: "${query}" for ${storeName}`);
+
+  try {
+    // Step 1: Get store context for smarter AI interpretation
+    const storeContext = getStoreContextForExplore(db, storeName);
+    const dynamicPrompt = buildExploreSystemPrompt(storeContext);
+
+    // Step 2: Use GPT-4o-mini to interpret the query intelligently
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: dynamicPrompt },
+        {
+          role: 'user',
+          content: `User query: "${query}"
+
+Current UI filters (use as hints if query is ambiguous):
+${JSON.stringify(currentFilters, null, 2)}
+
+Interpret what the user wants to see and return a chart specification.
+If they want to compare metrics, include multiple metrics in the array.
+Be smart about understanding intent, not just matching keywords.`
+        }
+      ],
+      max_tokens: 600,
+      temperature: 0.4, // Slightly higher for more creative interpretation
+      response_format: { type: 'json_object' }
+    });
+
+    const aiResponse = JSON.parse(response.choices[0].message.content);
+
+    if (!aiResponse.success) {
+      return {
+        success: false,
+        error: aiResponse.error || 'Could not interpret query'
+      };
+    }
+
+    const spec = aiResponse.spec;
+    console.log(`[Explore] AI spec:`, spec);
+
+    // Normalize metrics to array format
+    const metrics = Array.isArray(spec.metrics) ? spec.metrics : [spec.metrics || spec.metric || 'revenue'];
+
+    // Step 3: Fetch chart data using same database tables as getStoreData
+    const chartResult = fetchExploreChartData(db, storeName, { ...spec, metrics }, startDate, endDate);
+
+    return {
+      success: true,
+      spec: {
+        ...spec,
+        metrics,
+        metric: metrics[0], // Backward compatible
+        chartType: spec.chartType === 'auto' ? (spec.dimension === 'date' ? 'line' : 'bar') : spec.chartType,
+        isComparison: metrics.length > 1
+      },
+      data: chartResult.data,
+      meta: {
+        total: chartResult.total,
+        totals: chartResult.totals,
+        metrics,
+        currency,
+        periodStart: chartResult.periodStart,
+        periodEnd: chartResult.periodEnd
+      }
+    };
+
+  } catch (error) {
+    console.error('[Explore] Error:', error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// ============================================================================
+// SHOW_CHART TOOL - For chat modes to display visualizations
+// Uses same data pathways as Explore mode
+// ============================================================================
+
+export const SHOW_CHART_TOOL = {
+  type: "function",
+  function: {
+    name: "show_chart",
+    description: "Display a chart in the visualization dock to help explain data to the user. Only use when a visual would genuinely help understanding - for trends, comparisons, or proportions.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Chart title, human readable"
+        },
+        note: {
+          type: "string",
+          description: "One sentence explaining why you're showing this chart"
+        },
+        chartType: {
+          type: "string",
+          enum: ["line", "bar", "area", "pie"],
+          description: "Type of chart"
+        },
+        metric: {
+          type: "string",
+          enum: ["revenue", "orders", "spend", "impressions", "clicks", "roas", "aov", "conversion_rate", "add_to_cart"],
+          description: "Which metric to chart"
+        },
+        dimension: {
+          type: "string",
+          enum: ["date", "country", "campaign_name", "adset_name", "platform", "age", "gender"],
+          description: "How to break down the data"
+        },
+        dateRange: {
+          type: "string",
+          enum: ["7d", "14d", "30d"],
+          description: "Time period for data"
+        }
+      },
+      required: ["title", "note", "chartType", "metric", "dimension", "dateRange"]
+    }
+  }
+};
+
+/**
+ * Handle show_chart tool call - fetches data and returns chart payload
+ */
+export function handleShowChartTool(toolArgs, store, startDate = null, endDate = null) {
+  const db = getDb();
+  const storeName = (store || 'vironax').toLowerCase();
+  const currency = storeName === 'vironax' ? 'SAR' : 'USD';
+
+  const spec = {
+    title: toolArgs.title,
+    note: toolArgs.note,
+    chartType: toolArgs.chartType,
+    metric: toolArgs.metric,
+    dimension: toolArgs.dimension,
+    dateRange: toolArgs.dateRange,
+    autoReason: `${toolArgs.dimension === 'date' ? 'Time series' : 'Categorical'} data`
+  };
+
+  const chartResult = fetchExploreChartData(db, storeName, spec, startDate, endDate);
+
+  return {
+    spec,
+    data: chartResult.data,
+    meta: {
+      total: chartResult.total,
+      currency,
+      periodStart: chartResult.periodStart,
+      periodEnd: chartResult.periodEnd
+    }
+  };
+}
+
+// ============================================================================
 // CLEANUP - Delete demo Salla data
 // ============================================================================
 

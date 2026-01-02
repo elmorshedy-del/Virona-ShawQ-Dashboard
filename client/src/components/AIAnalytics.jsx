@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 // Import Meta Awareness feature module
@@ -18,6 +18,11 @@ import {
   REACTIVATION_PROMPTS,
   useReactivationCandidates
 } from '../features/meta-awareness';
+
+// Import Explore mode and Visualization components
+import ExploreMode from './explore/ExploreMode';
+import VisualizationDock from './visualization/VisualizationDock';
+import { getBrandColors } from './shared/chartUtils';
 
 export default function AIAnalytics({ store, selectedStore, startDate, endDate }) {
   // Support both 'store' and 'selectedStore' props for backward compatibility
@@ -53,7 +58,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   }, [messages]);
 
   // Mode configurations with pillars
-  // UPDATED: Added reactivation pillars to relevant modes
+  // UPDATED: Added reactivation pillars and Explore mode
   const modes = {
     ask: {
       icon: '💬',
@@ -102,6 +107,12 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         // NEW: Reactivation pillar
         { icon: '🔄', label: 'Reactivation plan' }
       ]
+    },
+    explore: {
+      icon: '🔍',
+      label: 'Explore',
+      description: 'Visual data explorer',
+      pillars: [] // No pillars - uses query bar instead
     }
   };
 
@@ -506,114 +517,124 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         </div>
       </div>
 
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm">
-        {/* Header */}
-        <div className="p-4 bg-white/80 backdrop-blur-md sticky top-0 z-10 rounded-t-2xl">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">{currentMode.icon}</span>
-              <div>
-                <h2 className="text-lg font-semibold">{currentMode.label}</h2>
-                <p className="text-xs font-normal text-gray-400">{currentMode.description}</p>
+      {/* Main Content Area - Explore Mode or Chat */}
+      {activeMode === 'explore' ? (
+        // Explore Mode - Full visual data explorer
+        <ExploreMode
+          store={activeStore}
+          startDate={startDate}
+          endDate={endDate}
+        />
+      ) : (
+        // Chat Modes (Ask, Analyze, Deep Dive)
+        <div className="flex-1 flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm">
+          {/* Header */}
+          <div className="p-4 bg-white/80 backdrop-blur-md sticky top-0 z-10 rounded-t-2xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">{currentMode.icon}</span>
+                <div>
+                  <h2 className="text-lg font-semibold">{currentMode.label}</h2>
+                  <p className="text-xs font-normal text-gray-400">{currentMode.description}</p>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-3">
-              {/* Reactivation indicator in header */}
-              {hasReactivationCandidates && (
-                <button
-                  onClick={() => handleReactivationPromptClick('What are the best reactivation candidates?')}
-                  className="flex items-center gap-1.5 px-2.5 py-1 bg-orange-50 text-orange-700 text-xs font-medium rounded-lg hover:bg-orange-100 transition-colors"
-                  title="Click to ask about reactivation candidates"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>{reactivationSummary.total} to reactivate</span>
-                </button>
-              )}
-              {activeMode === 'deepdive' && (
-                <div className="flex items-center gap-3 px-3 py-1.5 bg-purple-50 rounded-lg">
-                  <Brain className="w-4 h-4 text-purple-500" />
-                  <span className="text-xs text-purple-700 font-medium">
-                    {insightModes.find(m => m.id === insightMode)?.label}
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-gray-500">
-              <div className="text-center max-w-md">
-                <span className="text-5xl mb-4 mx-auto flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-blue-50 to-indigo-50">
-                  {currentMode.icon}
-                </span>
-                <p className="text-lg font-medium mb-2">{currentMode.label}</p>
-                <p className="text-sm font-normal text-gray-400 mb-6">{currentMode.description}</p>
-
-                {/* Quick Action Buttons */}
-                <div className="flex flex-wrap justify-center gap-3">
-                  {currentMode.pillars.slice(0, 4).map((pillar, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleQuickAction(pillar.label)}
-                      className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-blue-50 hover:text-blue-600 rounded-full transition-colors"
-                    >
-                      {pillar.icon} {pillar.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Reactivation quick prompt if candidates exist */}
+              <div className="flex items-center gap-3">
+                {/* Reactivation indicator in header */}
                 {hasReactivationCandidates && (
-                  <div className="mt-6 pt-4 border-t border-gray-200">
-                    <p className="text-xs text-orange-600 font-medium mb-2">🔄 Reactivation Opportunities</p>
-                    <button
-                      onClick={() => handleReactivationPromptClick('What are the best campaigns, ad sets, or ads I should reactivate based on historical performance?')}
-                      className="px-4 py-2 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg transition-colors"
-                    >
-                      Analyze {reactivationSummary.total} reactivation candidates
-                    </button>
+                  <button
+                    onClick={() => handleReactivationPromptClick('What are the best reactivation candidates?')}
+                    className="flex items-center gap-1.5 px-2.5 py-1 bg-orange-50 text-orange-700 text-xs font-medium rounded-lg hover:bg-orange-100 transition-colors"
+                    title="Click to ask about reactivation candidates"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>{reactivationSummary.total} to reactivate</span>
+                  </button>
+                )}
+                {activeMode === 'deepdive' && (
+                  <div className="flex items-center gap-3 px-3 py-1.5 bg-purple-50 rounded-lg">
+                    <Brain className="w-4 h-4 text-purple-500" />
+                    <span className="text-xs text-purple-700 font-medium">
+                      {insightModes.find(m => m.id === insightMode)?.label}
+                    </span>
                   </div>
                 )}
               </div>
             </div>
-          ) : (
-            <>
-              {messages.map((message, index) => renderMessage(message, index))}
-              <div ref={messagesEndRef} />
-            </>
-          )}
-        </div>
+          </div>
 
-        {/* Input Area */}
-        <div className="p-4 border-t border-gray-200">
-          <div className="flex gap-3">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyPress}
-              placeholder={`Ask about ${currentMode.label.toLowerCase()}...`}
-              className="flex-1 p-3 bg-gray-50 border-0 rounded-xl resize-none focus:outline-none focus:bg-white focus:ring-2 focus:ring-blue-100 shadow-inner text-gray-900"
-              rows={2}
-              disabled={isLoading}
-            />
-            <button
-              onClick={sendMessage}
-              disabled={isLoading || !input.trim()}
-              className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-            >
-              {isLoading ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <Send className="w-5 h-5" />
-              )}
-            </button>
+          {/* Messages Area */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {messages.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-gray-500">
+                <div className="text-center max-w-md">
+                  <span className="text-5xl mb-4 mx-auto flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-blue-50 to-indigo-50">
+                    {currentMode.icon}
+                  </span>
+                  <p className="text-lg font-medium mb-2">{currentMode.label}</p>
+                  <p className="text-sm font-normal text-gray-400 mb-6">{currentMode.description}</p>
+
+                  {/* Quick Action Buttons */}
+                  <div className="flex flex-wrap justify-center gap-3">
+                    {currentMode.pillars.slice(0, 4).map((pillar, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => handleQuickAction(pillar.label)}
+                        className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-blue-50 hover:text-blue-600 rounded-full transition-colors"
+                      >
+                        {pillar.icon} {pillar.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Reactivation quick prompt if candidates exist */}
+                  {hasReactivationCandidates && (
+                    <div className="mt-6 pt-4 border-t border-gray-200">
+                      <p className="text-xs text-orange-600 font-medium mb-2">🔄 Reactivation Opportunities</p>
+                      <button
+                        onClick={() => handleReactivationPromptClick('What are the best campaigns, ad sets, or ads I should reactivate based on historical performance?')}
+                        className="px-4 py-2 text-xs bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg transition-colors"
+                      >
+                        Analyze {reactivationSummary.total} reactivation candidates
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                {messages.map((message, index) => renderMessage(message, index))}
+                <div ref={messagesEndRef} />
+              </>
+            )}
+          </div>
+
+          {/* Input Area */}
+          <div className="p-4 border-t border-gray-200">
+            <div className="flex gap-3">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyPress}
+                placeholder={`Ask about ${currentMode.label.toLowerCase()}...`}
+                className="flex-1 p-3 bg-gray-50 border-0 rounded-xl resize-none focus:outline-none focus:bg-white focus:ring-2 focus:ring-blue-100 shadow-inner text-gray-900"
+                rows={2}
+                disabled={isLoading}
+              />
+              <button
+                onClick={sendMessage}
+                disabled={isLoading || !input.trim()}
+                className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                {isLoading ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Send className="w-5 h-5" />
+                )}
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

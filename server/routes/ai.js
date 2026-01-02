@@ -1,7 +1,7 @@
 import express from 'express';
-import { 
-  analyzeQuestion, 
-  summarizeData, 
+import {
+  analyzeQuestion,
+  summarizeData,
   decideQuestion,
   decideQuestionStream,
   analyzeQuestionStream,
@@ -9,7 +9,10 @@ import {
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
-  runQuery
+  runQuery,
+  exploreQuery,
+  handleShowChartTool,
+  SHOW_CHART_TOOL
 } from '../services/openaiService.js';
 import { getDb } from '../db/database.js';
 
@@ -373,6 +376,45 @@ router.post('/stream', async (req, res) => {
     console.error(`[API] Stream error:`, error.message);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
+  }
+});
+
+// ============================================================================
+// EXPLORE - Visual data explorer with GPT-4o-mini query interpretation
+// Uses same data pathways as other AI modes for consistent data access
+// ============================================================================
+router.post('/explore', async (req, res) => {
+  try {
+    const { query, store, currentFilters, startDate, endDate } = req.body;
+
+    if (!query) {
+      return res.status(400).json({ success: false, error: 'Query required' });
+    }
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    console.log(`\n========================================`);
+    console.log(`[API] POST /ai/explore`);
+    console.log(`[API] Query: "${query}"`);
+    console.log(`[API] Store: ${store}`);
+    console.log(`[API] Filters:`, currentFilters);
+    console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
+    console.log(`========================================`);
+
+    const result = await exploreQuery(query, store, currentFilters, startDate, endDate);
+
+    console.log(`[API] Explore result: success=${result.success}, data points=${result.data?.length || 0}`);
+
+    res.json(result);
+  } catch (error) {
+    console.error(`[API] Explore error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Check server logs for more info'
+    });
   }
 });
 
