@@ -1,4 +1,6 @@
 import express from 'express';
+import OpenAI from 'openai';
+import { z } from 'zod';
 import { 
   analyzeQuestion, 
   summarizeData, 
@@ -9,11 +11,14 @@ import {
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
-  runQuery
+  runQuery,
+  getRelevantData,
+  buildSystemPrompt
 } from '../services/openaiService.js';
 import { getDb } from '../db/database.js';
 
 const router = express.Router();
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ============================================================================
 // CONVERSATION MANAGEMENT
@@ -371,6 +376,471 @@ router.post('/stream', async (req, res) => {
     res.end();
   } catch (error) {
     console.error(`[API] Stream error:`, error.message);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+// ============================================================================
+// AI ANALYTICS STREAM WITH TOOL CALLING
+// ============================================================================
+
+const visualizationSeriesSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  kind: z.enum(['raw', 'ma']),
+  derivedFrom: z.string().optional(),
+  window: z.union([z.literal(7), z.literal(14), z.literal(30)]).optional()
+}).superRefine((value, ctx) => {
+  if (value.kind === 'ma') {
+    if (!value.derivedFrom) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'MA series requires derivedFrom' });
+    }
+    if (!value.window) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'MA series requires window' });
+    }
+  }
+});
+
+const visualizationDockSchema = z.object({
+  id: z.literal('primary'),
+  title: z.string(),
+  mode: z.enum(['auto', 'manual']),
+  autoReason: z.string().optional(),
+  chartType: z.enum(['line', 'bar', 'totals', 'blocked']),
+  xKey: z.string().optional(),
+  yFormat: z.enum(['number', 'currency', 'percent']).optional(),
+  series: z.array(visualizationSeriesSchema).optional(),
+  data: z.array(z.record(z.any())).optional(),
+  totals: z.record(z.union([z.number(), z.string()])).optional(),
+  controls: z.object({
+    allowMetric: z.boolean(),
+    allowRange: z.boolean(),
+    allowGroupBy: z.boolean(),
+    allowMA: z.boolean()
+  }).optional(),
+  ui: z.object({
+    rangePreset: z.enum(['7d', '14d', '30d', 'custom']).optional(),
+    groupBy: z.enum(['day', 'week', 'month']).optional(),
+    metric: z.string().optional()
+  }).optional()
+});
+
+const visualizationDockUpdateSchema = visualizationDockSchema.partial().extend({
+  id: z.literal('primary')
+});
+
+const visualizationDockClearSchema = z.object({
+  id: z.literal('primary')
+});
+
+const TOOL_DEFINITIONS = [
+  {
+    type: 'function',
+    function: {
+      name: 'getAvailableDataShape',
+      description: 'Return available analytics data shape for charting.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {}
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'setVisualizationDock',
+      description: 'Set the primary visualization dock configuration.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'title', 'mode', 'chartType'],
+        properties: {
+          id: { type: 'string', enum: ['primary'] },
+          title: { type: 'string' },
+          mode: { type: 'string', enum: ['auto', 'manual'] },
+          autoReason: { type: 'string' },
+          chartType: { type: 'string', enum: ['line', 'bar', 'totals', 'blocked'] },
+          xKey: { type: 'string' },
+          yFormat: { type: 'string', enum: ['number', 'currency', 'percent'] },
+          series: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['key', 'label', 'kind'],
+              properties: {
+                key: { type: 'string' },
+                label: { type: 'string' },
+                kind: { type: 'string', enum: ['raw', 'ma'] },
+                derivedFrom: { type: 'string' },
+                window: { type: 'number', enum: [7, 14, 30] }
+              }
+            }
+          },
+          data: {
+            type: 'array',
+            items: { type: 'object' }
+          },
+          totals: {
+            type: 'object',
+            additionalProperties: { type: ['number', 'string'] }
+          },
+          controls: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              allowMetric: { type: 'boolean' },
+              allowRange: { type: 'boolean' },
+              allowGroupBy: { type: 'boolean' },
+              allowMA: { type: 'boolean' }
+            }
+          },
+          ui: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              rangePreset: { type: 'string', enum: ['7d', '14d', '30d', 'custom'] },
+              groupBy: { type: 'string', enum: ['day', 'week', 'month'] },
+              metric: { type: 'string' }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'updateVisualizationDock',
+      description: 'Update the primary visualization dock configuration.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id'],
+        properties: {
+          id: { type: 'string', enum: ['primary'] },
+          title: { type: 'string' },
+          mode: { type: 'string', enum: ['auto', 'manual'] },
+          autoReason: { type: 'string' },
+          chartType: { type: 'string', enum: ['line', 'bar', 'totals', 'blocked'] },
+          xKey: { type: 'string' },
+          yFormat: { type: 'string', enum: ['number', 'currency', 'percent'] },
+          series: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['key', 'label', 'kind'],
+              properties: {
+                key: { type: 'string' },
+                label: { type: 'string' },
+                kind: { type: 'string', enum: ['raw', 'ma'] },
+                derivedFrom: { type: 'string' },
+                window: { type: 'number', enum: [7, 14, 30] }
+              }
+            }
+          },
+          data: {
+            type: 'array',
+            items: { type: 'object' }
+          },
+          totals: {
+            type: 'object',
+            additionalProperties: { type: ['number', 'string'] }
+          },
+          controls: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              allowMetric: { type: 'boolean' },
+              allowRange: { type: 'boolean' },
+              allowGroupBy: { type: 'boolean' },
+              allowMA: { type: 'boolean' }
+            }
+          },
+          ui: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              rangePreset: { type: 'string', enum: ['7d', '14d', '30d', 'custom'] },
+              groupBy: { type: 'string', enum: ['day', 'week', 'month'] },
+              metric: { type: 'string' }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'clearVisualizationDock',
+      description: 'Clear the primary visualization dock.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id'],
+        properties: {
+          id: { type: 'string', enum: ['primary'] }
+        }
+      }
+    }
+  }
+];
+
+function getAvailableDataShape(store) {
+  const db = getDb();
+  let columns = [];
+  try {
+    columns = db.prepare(`PRAGMA table_info(meta_daily_metrics)`).all();
+  } catch (error) {
+    columns = [];
+  }
+
+  const metricKeys = [];
+  const dimensionKeys = [];
+
+  for (const column of columns) {
+    const type = (column.type || '').toLowerCase();
+    if (type.includes('int') || type.includes('real') || type.includes('numeric')) {
+      metricKeys.push(column.name);
+    } else {
+      dimensionKeys.push(column.name);
+    }
+  }
+
+  const timeSeriesAvailable = db.prepare(`
+    SELECT COUNT(*) as count FROM meta_daily_metrics WHERE LOWER(store) = ?
+  `).get(store?.toLowerCase() || 'vironax')?.count > 0;
+
+  let currency = null;
+  if ((store || '').toLowerCase() === 'shawq') {
+    currency = db.prepare(`SELECT currency FROM shopify_orders WHERE store = ? AND currency IS NOT NULL LIMIT 1`)
+      .get(store)?.currency || null;
+  } else if ((store || '').toLowerCase() === 'vironax') {
+    currency = db.prepare(`SELECT currency FROM salla_orders WHERE store = ? AND currency IS NOT NULL LIMIT 1`)
+      .get(store)?.currency || null;
+  }
+
+  return {
+    timeSeriesAvailable,
+    timeKey: columns.some(col => col.name === 'date') ? 'date' : null,
+    metricKeys,
+    dimensionKeys,
+    currency
+  };
+}
+
+function isValidSeriesKeys(payload) {
+  if (!payload?.series || !payload?.data || payload.data.length === 0) return true;
+  const dataKeys = new Set(Object.keys(payload.data[0] || {}));
+  return payload.series.every(series => series.kind === 'ma' || dataKeys.has(series.key));
+}
+
+async function streamAnalyticsWithTools({
+  systemPrompt,
+  userMessage,
+  model,
+  maxTokens,
+  reasoningEffort,
+  store,
+  onDelta,
+  onTool
+}) {
+  let responseId = null;
+  let toolOutputs = [];
+  let safetyCounter = 0;
+
+  const createStream = async (input, previousResponseId) => {
+    const requestBody = {
+      model,
+      input,
+      max_output_tokens: maxTokens,
+      stream: true,
+      tools: TOOL_DEFINITIONS
+    };
+
+    if (previousResponseId) {
+      requestBody.previous_response_id = previousResponseId;
+    }
+
+    if (reasoningEffort && model.includes('5.1')) {
+      requestBody.reasoning = { effort: reasoningEffort };
+    }
+
+    return openai.responses.create(requestBody);
+  };
+
+  let nextInput = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userMessage }
+  ];
+
+  while (safetyCounter < 4) {
+    safetyCounter += 1;
+    toolOutputs = [];
+    const pendingToolCalls = new Map();
+    const stream = await createStream(nextInput, responseId);
+
+    for await (const event of stream) {
+      if (event.response?.id) {
+        responseId = event.response.id;
+      }
+
+      if (event.type === 'response.output_text.delta') {
+        onDelta(event.delta);
+      }
+
+      if (event.type === 'response.function_call_arguments.delta') {
+        const callId = event.call_id || event.item?.id || event.item?.call_id;
+        const name = event.name || event.item?.name;
+        if (!callId) continue;
+        if (!pendingToolCalls.has(callId)) {
+          pendingToolCalls.set(callId, { name, arguments: '' });
+        }
+        const entry = pendingToolCalls.get(callId);
+        entry.arguments += event.delta || '';
+      }
+
+      if (event.type === 'response.function_call_arguments.done') {
+        const callId = event.call_id || event.item?.id || event.item?.call_id;
+        const name = event.name || event.item?.name;
+        const rawArgs = event.arguments || pendingToolCalls.get(callId)?.arguments || '{}';
+        let parsedArgs = {};
+
+        try {
+          parsedArgs = rawArgs ? JSON.parse(rawArgs) : {};
+        } catch (error) {
+          parsedArgs = {};
+        }
+
+        let toolResult = { success: true };
+
+        if (name === 'getAvailableDataShape') {
+          toolResult = getAvailableDataShape(store);
+        } else if (name === 'setVisualizationDock') {
+          const parsed = visualizationDockSchema.safeParse(parsedArgs);
+          if (!parsed.success || !isValidSeriesKeys(parsed.data)) {
+            toolResult = { success: false, error: 'Invalid visualization payload' };
+          } else {
+            onTool(name, parsed.data);
+          }
+        } else if (name === 'updateVisualizationDock') {
+          const parsed = visualizationDockUpdateSchema.safeParse(parsedArgs);
+          if (!parsed.success || !isValidSeriesKeys(parsed.data)) {
+            toolResult = { success: false, error: 'Invalid visualization update payload' };
+          } else {
+            onTool(name, parsed.data);
+          }
+        } else if (name === 'clearVisualizationDock') {
+          const parsed = visualizationDockClearSchema.safeParse(parsedArgs);
+          if (!parsed.success) {
+            toolResult = { success: false, error: 'Invalid visualization clear payload' };
+          } else {
+            onTool(name, parsed.data);
+          }
+        } else {
+          toolResult = { success: false, error: 'Unknown tool' };
+        }
+
+        if (callId) {
+          toolOutputs.push({
+            tool_call_id: callId,
+            output: JSON.stringify(toolResult)
+          });
+        }
+      }
+    }
+
+    if (toolOutputs.length === 0) {
+      break;
+    }
+
+    nextInput = toolOutputs.map(output => ({
+      role: 'tool',
+      tool_call_id: output.tool_call_id,
+      content: output.output
+    }));
+  }
+
+  return responseId;
+}
+
+router.post('/analytics/stream', async (req, res) => {
+  try {
+    const { question, store, depth, mode, startDate, endDate } = req.body;
+
+    if (!question) {
+      return res.status(400).json({ success: false, error: 'Question required' });
+    }
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const activeMode = mode || 'decide';
+    const data = getRelevantData(store, question, startDate, endDate);
+    const basePrompt = buildSystemPrompt(store, activeMode, data, question);
+    const toolInstructions = `\n\nTOOLING RULES:\n- Always call getAvailableDataShape FIRST before selecting or recommending charts.\n- If a visualization is useful, call setVisualizationDock EARLY, then continue your text response.\n- Use updateVisualizationDock for refinements.\n- If user asks for a trend but timeSeriesAvailable is false, call setVisualizationDock with chartType \"blocked\" (optionally include totals) and explain.\n- Do not invent data fields or time-series not in data shape.\n- series.key must exist in the data rows (except MA series).`;
+
+    const systemPrompt = `${basePrompt}${toolInstructions}`;
+
+    const modelMap = {
+      analyze: 'gpt-5-nano',
+      summarize: 'gpt-5-mini',
+      decide: 'gpt-5.1'
+    };
+    const maxTokenMap = {
+      analyze: 8000,
+      summarize: 16000,
+      decide: 64000
+    };
+    const depthMap = {
+      instant: 'none',
+      fast: 'low',
+      balanced: 'medium',
+      deep: 'high'
+    };
+
+    const model = modelMap[activeMode] || 'gpt-5.1';
+    const maxTokens = maxTokenMap[activeMode] || 64000;
+    const reasoningEffort = model.includes('5.1') ? (depthMap[depth] || 'medium') : null;
+
+    const onDelta = (delta) => {
+      res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
+    };
+
+    const onTool = (name, payload) => {
+      res.write(`data: ${JSON.stringify({ type: 'tool', name, payload })}\n\n`);
+    };
+
+    await streamAnalyticsWithTools({
+      systemPrompt,
+      userMessage: question,
+      model,
+      maxTokens,
+      reasoningEffort,
+      store,
+      onDelta,
+      onTool
+    });
+
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      model,
+      reasoning: reasoningEffort
+    })}\n\n`);
+
+    res.end();
+  } catch (error) {
+    console.error(`[API] Analytics stream error:`, error.message);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
   }
