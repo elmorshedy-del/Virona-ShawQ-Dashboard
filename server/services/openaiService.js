@@ -10,6 +10,90 @@ import {
   getAccountStructure as getFeatureAccountStructure
 } from '../features/meta-awareness/index.js';
 
+// Lightweight Zod-style validator (minimal subset for tool payload validation)
+const z = (() => {
+  const createSchema = (checker) => ({
+    safeParse(value) {
+      try {
+        return checker(value);
+      } catch (error) {
+        return { success: false, error };
+      }
+    },
+    optional() {
+      return createSchema((value) => {
+        if (value === undefined) return { success: true, data: value };
+        return checker(value);
+      });
+    },
+    nullable() {
+      return createSchema((value) => {
+        if (value === null) return { success: true, data: value };
+        return checker(value);
+      });
+    },
+    strict() {
+      if (!checker._isObject) return createSchema(checker);
+      const strictChecker = (value) => checker(value, true);
+      strictChecker._isObject = true;
+      return createSchema(strictChecker);
+    }
+  });
+
+  const fail = (message) => ({ success: false, error: new Error(message) });
+
+  const string = () => createSchema((value) => (typeof value === 'string' ? { success: true, data: value } : fail('Expected string')));
+  const number = () => createSchema((value) => (typeof value === 'number' && !Number.isNaN(value) ? { success: true, data: value } : fail('Expected number')));
+  const boolean = () => createSchema((value) => (typeof value === 'boolean' ? { success: true, data: value } : fail('Expected boolean')));
+  const literal = (literalValue) => createSchema((value) => (value === literalValue ? { success: true, data: value } : fail('Expected literal')));
+  const any = () => createSchema((value) => ({ success: true, data: value }));
+  const enumType = (values) => createSchema((value) => (values.includes(value) ? { success: true, data: value } : fail('Expected enum value')));
+  const array = (schema) => createSchema((value) => {
+    if (!Array.isArray(value)) return fail('Expected array');
+    for (const item of value) {
+      const parsed = schema.safeParse(item);
+      if (!parsed.success) return parsed;
+    }
+    return { success: true, data: value };
+  });
+  const record = (schema) => createSchema((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('Expected record');
+    for (const item of Object.values(value)) {
+      const parsed = schema.safeParse(item);
+      if (!parsed.success) return parsed;
+    }
+    return { success: true, data: value };
+  });
+  const object = (shape) => {
+    const checker = (value, strictMode = false) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('Expected object');
+      if (strictMode) {
+        const extraKeys = Object.keys(value).filter((key) => !Object.keys(shape).includes(key));
+        if (extraKeys.length) return fail('Unexpected keys');
+      }
+      for (const [key, schema] of Object.entries(shape)) {
+        const parsed = schema.safeParse(value[key]);
+        if (!parsed.success) return parsed;
+      }
+      return { success: true, data: value };
+    };
+    checker._isObject = true;
+    return createSchema(checker);
+  };
+
+  return {
+    string,
+    number,
+    boolean,
+    literal,
+    any,
+    enum: enumType,
+    array,
+    record,
+    object
+  };
+})();
+
 // OpenAI Service - GPT-5 + GPT-4 fallback
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -43,6 +127,84 @@ const DEPTH_TO_EFFORT = {
   balanced: 'medium',
   deep: 'high'
 };
+
+// ============================================================================
+// TOOL SCHEMAS (Visualization Dock)
+// ============================================================================
+
+const seriesSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  kind: z.enum(['raw', 'ma']),
+  derivedFrom: z.string().optional(),
+  window: z.enum([7, 14, 30]).optional()
+}).strict();
+
+const controlsSchema = z.object({
+  allowMetric: z.boolean(),
+  allowRange: z.boolean(),
+  allowGroupBy: z.boolean(),
+  allowMA: z.boolean()
+}).strict();
+
+const uiSchema = z.object({
+  rangePreset: z.enum(['7d', '14d', '30d', 'custom']).optional(),
+  groupBy: z.enum(['day', 'week', 'month']).optional(),
+  metric: z.string().optional()
+}).strict();
+
+const dockSetSchema = z.object({
+  id: z.literal('primary'),
+  title: z.string(),
+  mode: z.enum(['auto', 'manual']),
+  autoReason: z.string().optional(),
+  chartType: z.enum(['line', 'bar', 'totals', 'blocked']),
+  xKey: z.string().optional(),
+  yFormat: z.enum(['number', 'currency', 'percent']).optional(),
+  series: z.array(seriesSchema).optional(),
+  data: z.array(z.record(z.any())).optional(),
+  totals: z.record(z.any()).optional(),
+  controls: controlsSchema.optional(),
+  ui: uiSchema.optional()
+}).strict();
+
+const dockUpdateSchema = z.object({
+  id: z.literal('primary'),
+  title: z.string().optional(),
+  mode: z.enum(['auto', 'manual']).optional(),
+  autoReason: z.string().optional(),
+  chartType: z.enum(['line', 'bar', 'totals', 'blocked']).optional(),
+  xKey: z.string().optional(),
+  yFormat: z.enum(['number', 'currency', 'percent']).optional(),
+  series: z.array(seriesSchema).optional(),
+  data: z.array(z.record(z.any())).optional(),
+  totals: z.record(z.any()).optional(),
+  controls: controlsSchema.optional(),
+  ui: uiSchema.optional()
+}).strict();
+
+const dockClearSchema = z.object({
+  id: z.literal('primary')
+}).strict();
+
+function validateDockPayload(schema, payload) {
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    return { valid: false, error: parsed.error?.message || 'Invalid payload' };
+  }
+  const value = parsed.data;
+  if (value?.series && value?.data) {
+    const rows = Array.isArray(value.data) ? value.data : [];
+    for (const series of value.series) {
+      if (series.kind === 'ma') continue;
+      const missing = rows.some((row) => row && typeof row === 'object' && !(series.key in row));
+      if (missing) {
+        return { valid: false, error: `Series key ${series.key} missing in data rows` };
+      }
+    }
+  }
+  return { valid: true, value };
+}
 
 // ============================================================================
 // OPTIMIZED DATA FETCHING - Full hierarchy with funnel metrics (120k token support)
@@ -508,6 +670,56 @@ function getRelevantData(store, question, startDate = null, endDate = null) {
 
   // Clean up empty data
   return removeEmpty(data);
+}
+
+function getAvailableDataShapeForStore(store) {
+  const db = getDb();
+  const normalizedStore = (store || '').toLowerCase();
+  let dayCount = 0;
+  try {
+    const result = db.prepare(`
+      SELECT COUNT(DISTINCT date) as days
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ?
+    `).get(normalizedStore);
+    dayCount = result?.days || 0;
+  } catch (error) {
+    dayCount = 0;
+  }
+
+  const metricKeys = [
+    'spend',
+    'impressions',
+    'reach',
+    'clicks',
+    'inline_link_clicks',
+    'lpv',
+    'atc',
+    'checkout',
+    'conversions',
+    'conversion_value',
+    'cpm',
+    'ctr',
+    'cpc',
+    'roas',
+    'cpa',
+    'aov',
+    'lpv_rate',
+    'atc_rate',
+    'checkout_rate',
+    'purchase_rate',
+    'overall_cvr'
+  ];
+
+  const dimensionKeys = ['campaign_name', 'adset_name', 'ad_name', 'country'];
+
+  return {
+    timeSeriesAvailable: dayCount > 1,
+    timeKey: dayCount > 1 ? 'date' : null,
+    metricKeys,
+    dimensionKeys,
+    currency: normalizedStore === 'vironax' ? 'SAR' : normalizedStore ? 'USD' : null
+  };
 }
 
 function removeEmpty(obj) {
@@ -1119,6 +1331,25 @@ MODE: DEEP DIVE (Strategic Analysis)
 ${getDeepDiveFormat(question)}`;
 }
 
+function buildAnalyticsSystemPrompt(store, mode, data, question = '') {
+  return buildSystemPrompt(store, mode, data, question) + `
+
+VISUALIZATION TOOLS:
+- ALWAYS call getAvailableDataShape() first before choosing any chart.
+- If a visualization is useful, call setVisualizationDock EARLY, then continue explaining in text.
+- Never invent time-series data. If timeSeriesAvailable is false and user asks for a trend, use chartType "blocked" or "totals".
+- series.key must exist in provided data rows, except kind="ma" which must reference derivedFrom.
+
+TOOL BEHAVIOR:
+- setVisualizationDock creates the dock with id="primary".
+- updateVisualizationDock updates the existing dock.
+- clearVisualizationDock clears the dock.
+
+USER EXPECTATION:
+- The dock should appear while you are still streaming text.
+- If data is missing for trends, show a blocked state and explain.`;
+}
+
 // ============================================================================
 // API CALLS - GPT-5 Responses API + GPT-4 fallback
 // ============================================================================
@@ -1298,6 +1529,329 @@ export async function summarizeDataStream(question, store, onDelta, history = []
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
   return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
+}
+
+// ============================================================================
+// ANALYTICS STREAM WITH TOOLS (Visualization Dock)
+// ============================================================================
+
+const analyticsTools = [
+  {
+    type: 'function',
+    name: 'getAvailableDataShape',
+    description: 'Return available data shape for analytics charts.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    type: 'function',
+    name: 'setVisualizationDock',
+    description: 'Create/replace the primary visualization dock.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id', 'title', 'mode', 'chartType'],
+      properties: {
+        id: { type: 'string', enum: ['primary'] },
+        title: { type: 'string' },
+        mode: { type: 'string', enum: ['auto', 'manual'] },
+        autoReason: { type: 'string' },
+        chartType: { type: 'string', enum: ['line', 'bar', 'totals', 'blocked'] },
+        xKey: { type: 'string' },
+        yFormat: { type: 'string', enum: ['number', 'currency', 'percent'] },
+        series: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['key', 'label', 'kind'],
+            properties: {
+              key: { type: 'string' },
+              label: { type: 'string' },
+              kind: { type: 'string', enum: ['raw', 'ma'] },
+              derivedFrom: { type: 'string' },
+              window: { type: 'number', enum: [7, 14, 30] }
+            }
+          }
+        },
+        data: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        totals: { type: 'object', additionalProperties: true },
+        controls: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            allowMetric: { type: 'boolean' },
+            allowRange: { type: 'boolean' },
+            allowGroupBy: { type: 'boolean' },
+            allowMA: { type: 'boolean' }
+          }
+        },
+        ui: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            rangePreset: { type: 'string', enum: ['7d', '14d', '30d', 'custom'] },
+            groupBy: { type: 'string', enum: ['day', 'week', 'month'] },
+            metric: { type: 'string' }
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    name: 'updateVisualizationDock',
+    description: 'Update fields of the primary visualization dock.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        id: { type: 'string', enum: ['primary'] },
+        title: { type: 'string' },
+        mode: { type: 'string', enum: ['auto', 'manual'] },
+        autoReason: { type: 'string' },
+        chartType: { type: 'string', enum: ['line', 'bar', 'totals', 'blocked'] },
+        xKey: { type: 'string' },
+        yFormat: { type: 'string', enum: ['number', 'currency', 'percent'] },
+        series: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['key', 'label', 'kind'],
+            properties: {
+              key: { type: 'string' },
+              label: { type: 'string' },
+              kind: { type: 'string', enum: ['raw', 'ma'] },
+              derivedFrom: { type: 'string' },
+              window: { type: 'number', enum: [7, 14, 30] }
+            }
+          }
+        },
+        data: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        totals: { type: 'object', additionalProperties: true },
+        controls: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            allowMetric: { type: 'boolean' },
+            allowRange: { type: 'boolean' },
+            allowGroupBy: { type: 'boolean' },
+            allowMA: { type: 'boolean' }
+          }
+        },
+        ui: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            rangePreset: { type: 'string', enum: ['7d', '14d', '30d', 'custom'] },
+            groupBy: { type: 'string', enum: ['day', 'week', 'month'] },
+            metric: { type: 'string' }
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    name: 'clearVisualizationDock',
+    description: 'Clear the primary visualization dock.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        id: { type: 'string', enum: ['primary'] }
+      }
+    }
+  }
+];
+
+function parseToolArguments(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+}
+
+export async function analyticsStreamWithTools(question, store, mode, depth, onDelta, onToolEvent, history = [], startDate = null, endDate = null) {
+  const data = getRelevantData(store, question, startDate, endDate);
+  const systemPrompt = buildAnalyticsSystemPrompt(store, mode, data, question);
+  const effort = DEPTH_TO_EFFORT[depth] || 'medium';
+  const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
+
+  const modelConfig = {
+    analyze: { model: MODELS.ASK, maxTokens: TOKEN_LIMITS.nano, reasoning: null },
+    summarize: { model: MODELS.MINI, maxTokens: TOKEN_LIMITS.mini, reasoning: null },
+    decide: { model: MODELS.STRATEGIST, maxTokens, reasoning: effort }
+  };
+
+  const config = modelConfig[mode] || modelConfig.decide;
+
+  let input = [
+    { role: 'system', content: systemPrompt },
+    ...history,
+    { role: 'user', content: question }
+  ];
+
+  let responseId = null;
+  let previousResponseId = null;
+  let finalModel = config.model;
+  let finalReasoning = config.reasoning;
+
+  while (true) {
+    responseId = null;
+    const requestBody = {
+      model: config.model,
+      input,
+      max_output_tokens: config.maxTokens,
+      stream: true,
+      tools: analyticsTools,
+      tool_choice: 'auto'
+    };
+
+    if (config.reasoning && config.model.includes('5.1')) {
+      requestBody.reasoning = { effort: config.reasoning };
+    }
+    if (previousResponseId) {
+      requestBody.previous_response_id = previousResponseId;
+    }
+
+    const stream = await client.responses.create(requestBody);
+
+    const toolCalls = new Map();
+    const completedToolCalls = [];
+
+    const finalizeToolCall = (toolCall) => {
+      if (!toolCall || toolCall.completed) return;
+      toolCall.completed = true;
+      completedToolCalls.push(toolCall);
+    };
+
+    for await (const event of stream) {
+      if (event.type === 'response.created' && event.response?.id) {
+        responseId = event.response.id;
+      }
+
+      if (event.type === 'response.output_text.delta') {
+        onDelta(event.delta || '');
+      }
+
+      if (event.type === 'response.output_item.added' && event.item?.type === 'tool_call') {
+        const toolCallId = event.item?.id;
+        if (toolCallId) {
+          toolCalls.set(toolCallId, {
+            id: toolCallId,
+            name: event.item?.name || '',
+            arguments: ''
+          });
+        }
+      }
+
+      if (event.type === 'response.output_item.done' && event.item?.type === 'tool_call') {
+        const toolCallId = event.item?.id;
+        const existing = toolCallId ? toolCalls.get(toolCallId) : null;
+        if (existing) finalizeToolCall(existing);
+      }
+
+      const isToolArgsDelta = event.type?.includes('function_call_arguments.delta') || event.type?.includes('tool_call_arguments.delta');
+      const isToolArgsDone = event.type?.includes('function_call_arguments.done') || event.type?.includes('tool_call_arguments.done');
+      const isToolCallDone = event.type?.includes('tool_call.done') || event.type?.includes('function_call.done');
+
+      if (isToolArgsDelta) {
+        const toolCallId = event.tool_call_id || event.item?.id || event.id;
+        if (!toolCallId) continue;
+        const existing = toolCalls.get(toolCallId) || { id: toolCallId, name: event.name || event.item?.name || '', arguments: '' };
+        existing.name = existing.name || event.name || event.item?.name || '';
+        existing.arguments += event.delta || '';
+        toolCalls.set(toolCallId, existing);
+      }
+
+      if (isToolArgsDone || isToolCallDone) {
+        const toolCallId = event.tool_call_id || event.item?.id || event.id;
+        const existing = toolCallId ? toolCalls.get(toolCallId) : null;
+        if (existing) finalizeToolCall(existing);
+      }
+    }
+
+    if (responseId) {
+      previousResponseId = responseId;
+    }
+
+    for (const call of toolCalls.values()) {
+      if (!call.completed) finalizeToolCall(call);
+    }
+
+    if (completedToolCalls.length === 0) {
+      break;
+    }
+
+    const toolOutputs = [];
+
+    for (const toolCall of completedToolCalls) {
+      const name = toolCall.name || toolCall.function?.name || '';
+      const args = parseToolArguments(toolCall.arguments);
+
+      if (name === 'getAvailableDataShape') {
+        const output = getAvailableDataShapeForStore(store);
+        toolOutputs.push({ tool_call_id: toolCall.id, output });
+        continue;
+      }
+
+      if (name === 'setVisualizationDock') {
+        const validation = validateDockPayload(dockSetSchema, args);
+        if (validation.valid) {
+          onToolEvent({ name, payload: validation.value });
+          toolOutputs.push({ tool_call_id: toolCall.id, output: { success: true } });
+        } else {
+          toolOutputs.push({ tool_call_id: toolCall.id, output: { success: false, error: validation.error } });
+        }
+        continue;
+      }
+
+      if (name === 'updateVisualizationDock') {
+        const validation = validateDockPayload(dockUpdateSchema, args);
+        if (validation.valid) {
+          onToolEvent({ name, payload: validation.value });
+          toolOutputs.push({ tool_call_id: toolCall.id, output: { success: true } });
+        } else {
+          toolOutputs.push({ tool_call_id: toolCall.id, output: { success: false, error: validation.error } });
+        }
+        continue;
+      }
+
+      if (name === 'clearVisualizationDock') {
+        const validation = validateDockPayload(dockClearSchema, args);
+        if (validation.valid) {
+          onToolEvent({ name, payload: validation.value });
+          toolOutputs.push({ tool_call_id: toolCall.id, output: { success: true } });
+        } else {
+          toolOutputs.push({ tool_call_id: toolCall.id, output: { success: false, error: validation.error } });
+        }
+        continue;
+      }
+
+      toolOutputs.push({ tool_call_id: toolCall.id, output: { success: false, error: 'Unknown tool' } });
+    }
+
+    input = toolOutputs.map((toolOutput) => ({
+      type: 'tool_output',
+      tool_call_id: toolOutput.tool_call_id,
+      output: JSON.stringify(toolOutput.output)
+    }));
+
+    if (!responseId) {
+      break;
+    }
+  }
+
+  return { model: finalModel, reasoning: finalReasoning };
 }
 
 // ============================================================================
