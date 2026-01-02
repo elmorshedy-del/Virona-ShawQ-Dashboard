@@ -44,6 +44,111 @@ const DEPTH_TO_EFFORT = {
   deep: 'high'
 };
 
+const EXPLORE_MODEL = 'gpt-4o-mini';
+
+const METRIC_KEYS = [
+  'revenue',
+  'orders',
+  'spend',
+  'impressions',
+  'clicks',
+  'roas',
+  'aov',
+  'conversion_rate',
+  'add_to_cart'
+];
+
+const DIMENSION_KEYS = [
+  'date',
+  'country',
+  'campaign_name',
+  'adset_name',
+  'platform',
+  'age',
+  'gender'
+];
+
+const CHART_TYPES = ['line', 'bar', 'area', 'pie'];
+
+const SHOW_CHART_TOOL = {
+  type: 'function',
+  function: {
+    name: 'show_chart',
+    description: 'Display a chart in the visualization dock to help explain data to the user. Only use when a visual would genuinely help understanding.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        note: { type: 'string' },
+        chartType: { type: 'string', enum: CHART_TYPES },
+        metric: { type: 'string', enum: METRIC_KEYS },
+        dimension: { type: 'string', enum: DIMENSION_KEYS },
+        dateRange: { type: 'string', enum: ['7d', '14d', '30d'] }
+      },
+      required: ['title', 'note', 'chartType', 'metric', 'dimension', 'dateRange']
+    }
+  }
+};
+
+const METRIC_COLUMN_MAP = {
+  revenue: 'conversion_value',
+  orders: 'conversions',
+  spend: 'spend',
+  impressions: 'impressions',
+  clicks: 'clicks',
+  add_to_cart: 'add_to_cart'
+};
+
+function getMetricExpression(metric) {
+  if (metric === 'roas') {
+    return `CASE WHEN SUM(spend) = 0 THEN 0 ELSE SUM(conversion_value) / SUM(spend) END`;
+  }
+  if (metric === 'aov') {
+    return `CASE WHEN SUM(conversions) = 0 THEN 0 ELSE SUM(conversion_value) / SUM(conversions) END`;
+  }
+  if (metric === 'conversion_rate') {
+    return `CASE WHEN SUM(landing_page_views) = 0 THEN 0 ELSE SUM(conversions) * 1.0 / SUM(landing_page_views) END`;
+  }
+  const column = METRIC_COLUMN_MAP[metric];
+  return column ? `SUM(${column})` : '0';
+}
+
+function getFormatType(metric) {
+  if (['revenue', 'spend', 'aov'].includes(metric)) return 'currency';
+  if (metric === 'conversion_rate') return 'percent';
+  return 'number';
+}
+
+function getCurrencyForStore(store) {
+  return store?.toLowerCase() === 'vironax' ? 'SAR' : 'USD';
+}
+
+function getDimensionConfig(dimension) {
+  if (dimension === 'adset_name') {
+    return { column: 'adset_name', table: 'meta_adset_metrics' };
+  }
+  if (dimension === 'platform') {
+    return { column: 'publisher_platform', table: 'meta_daily_metrics' };
+  }
+  return { column: dimension, table: 'meta_daily_metrics' };
+}
+
+function getPresetDateRange(preset = '30d') {
+  const end = new Date();
+  const start = new Date();
+  if (preset === '7d') {
+    start.setDate(end.getDate() - 7);
+  } else if (preset === '14d') {
+    start.setDate(end.getDate() - 14);
+  } else {
+    start.setDate(end.getDate() - 30);
+  }
+  return {
+    start: start.toISOString().split('T')[0],
+    end: end.toISOString().split('T')[0]
+  };
+}
+
 // ============================================================================
 // OPTIMIZED DATA FETCHING - Full hierarchy with funnel metrics (120k token support)
 // ============================================================================
@@ -1083,6 +1188,11 @@ MARKDOWN FORMATTING:
 - Use | table | format for comparisons when helpful
 - Use emoji headers (📊 🎯 💡 ⚡) for visual structure
 
+CHART CAPABILITY:
+- You can show charts using the show_chart tool when a visualization would clarify trends, comparisons, or proportions.
+- Use charts for trends over time, clear comparisons, or when the user explicitly asks to visualize.
+- Avoid charts for simple factual answers or when text alone is clearer.
+
 RESPONSE STYLE:
 - Be direct and confident - you're a trusted growth advisor
 - Lead with the key insight or answer first
@@ -1117,6 +1227,260 @@ ${getAnalyzeFormat(question)}`;
 
 MODE: DEEP DIVE (Strategic Analysis)
 ${getDeepDiveFormat(question)}`;
+}
+
+// ========================================================================
+// VISUALIZATION HELPERS
+// ========================================================================
+
+function isValidChartSpec(spec) {
+  if (!spec) return false;
+  if (!METRIC_KEYS.includes(spec.metric)) return false;
+  if (!DIMENSION_KEYS.includes(spec.dimension)) return false;
+  if (!CHART_TYPES.includes(spec.chartType)) return false;
+  return true;
+}
+
+function buildChartTitle(metric, dimension) {
+  const metricLabel = metric.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+  const dimensionLabel = dimension === 'date'
+    ? 'Over Time'
+    : dimension.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+  return `${metricLabel} by ${dimensionLabel}`;
+}
+
+function resolveChartType({ dimension, chartType }) {
+  if (chartType && chartType !== 'auto') return chartType;
+  if (dimension === 'date') return 'line';
+  return 'bar';
+}
+
+function getAutoReason({ dimension }) {
+  if (dimension === 'date') return 'trend over time';
+  return 'categorical breakdown';
+}
+
+export async function fetchChartData({ spec, store }) {
+  const db = getDb();
+  const metric = spec.metric;
+  const dimension = spec.dimension;
+  const formatType = getFormatType(metric);
+  const currency = getCurrencyForStore(store);
+  const { column, table } = getDimensionConfig(dimension);
+  const metricExpression = getMetricExpression(metric);
+  const MAX_ROWS = 100;
+
+  let startDate = spec.customDateStart;
+  let endDate = spec.customDateEnd;
+
+  if (!startDate || !endDate || spec.dateRange !== 'custom') {
+    const range = getPresetDateRange(spec.dateRange);
+    startDate = range.start;
+    endDate = range.end;
+  }
+
+  let data = [];
+
+  if (dimension === 'date') {
+    data = db.prepare(`
+      SELECT date as date, ${metricExpression} as value
+      FROM ${table}
+      WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+      GROUP BY date
+      ORDER BY date ASC
+      LIMIT ${MAX_ROWS}
+    `).all(store.toLowerCase(), startDate, endDate);
+  } else {
+    data = db.prepare(`
+      SELECT ${column} as category, ${metricExpression} as value
+      FROM ${table}
+      WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+        AND ${column} IS NOT NULL AND ${column} != '' AND ${column} != 'ALL'
+      GROUP BY ${column}
+      ORDER BY value DESC
+      LIMIT 10
+    `).all(store.toLowerCase(), startDate, endDate);
+  }
+
+  const totals = db.prepare(`
+    SELECT
+      SUM(conversion_value) as revenue,
+      SUM(conversions) as orders,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(clicks) as clicks,
+      SUM(add_to_cart) as add_to_cart,
+      SUM(landing_page_views) as lpv
+    FROM ${table}
+    WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+  `).get(store.toLowerCase(), startDate, endDate);
+
+  const totalValue = (() => {
+    switch (metric) {
+      case 'revenue':
+        return totals.revenue || 0;
+      case 'orders':
+        return totals.orders || 0;
+      case 'spend':
+        return totals.spend || 0;
+      case 'impressions':
+        return totals.impressions || 0;
+      case 'clicks':
+        return totals.clicks || 0;
+      case 'add_to_cart':
+        return totals.add_to_cart || 0;
+      case 'roas':
+        return totals.spend ? (totals.revenue || 0) / totals.spend : 0;
+      case 'aov':
+        return totals.orders ? (totals.revenue || 0) / totals.orders : 0;
+      case 'conversion_rate':
+        return totals.lpv ? (totals.orders || 0) / totals.lpv : 0;
+      default:
+        return 0;
+    }
+  })();
+
+  return {
+    data,
+    meta: {
+      total: totalValue,
+      currency,
+      formatType,
+      periodStart: startDate,
+      periodEnd: endDate
+    }
+  };
+}
+
+export async function exploreQuery({ query, store, currentFilters }) {
+  const systemPrompt = `You are a data visualization assistant. Your job is to interpret natural language queries and return a chart specification.
+
+AVAILABLE METRICS:
+- revenue (currency)
+- orders (number)
+- spend (currency)
+- impressions (number)
+- clicks (number)
+- roas (number, ratio)
+- aov (currency)
+- conversion_rate (percent)
+- add_to_cart (number)
+
+AVAILABLE DIMENSIONS:
+- date (for time series)
+- country
+- campaign_name
+- adset_name
+- platform
+- age
+- gender
+
+CHART TYPES:
+- line: use for trends over time (requires date dimension)
+- bar: use for categorical comparisons
+- area: use for cumulative trends over time
+- pie: use for showing share/proportion (max 6 segments)
+
+RULES:
+1. Always return valid JSON matching the schema below.
+2. Only use metrics and dimensions from the lists above.
+3. If the query is ambiguous, make a reasonable assumption.
+4. If the query asks for something impossible, return an error message.
+5. For pie charts, limit to top 6 categories; group rest as \"Other\".
+6. Default date range is 30 days if not specified.
+
+OUTPUT FORMAT:
+{
+  \"success\": true,
+  \"spec\": {
+    \"title\": \"Human readable title\",
+    \"metric\": \"metric_key\",
+    \"dimension\": \"dimension_key\",
+    \"chartType\": \"line|bar|area|pie\",
+    \"dateRange\": \"7d|14d|30d|custom\",
+    \"customDateStart\": \"YYYY-MM-DD\",
+    \"customDateEnd\": \"YYYY-MM-DD\",
+    \"autoReason\": \"Brief explanation of why this chart type was chosen\"
+  }
+}
+
+OR if the query cannot be fulfilled:
+{
+  \"success\": false,
+  \"error\": \"Human readable explanation of why this can't be charted\"
+}`;
+
+  const userPrompt = `QUERY: ${query}\nCURRENT FILTERS: ${JSON.stringify(currentFilters || {})}`;
+
+  const response = await client.chat.completions.create({
+    model: EXPLORE_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+    max_tokens: 800
+  });
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    return { success: false, error: 'No response from model' };
+  }
+
+  try {
+    return JSON.parse(content);
+  } catch (error) {
+    return { success: false, error: 'Invalid JSON response from model' };
+  }
+}
+
+export async function planChatVisualization({ question, store }) {
+  const systemPrompt = `You are a data visualization assistant deciding whether a chart would help explain an answer.
+Respond ONLY with JSON.
+
+Return format:
+{
+  \"showChart\": true|false,
+  \"spec\": {
+    \"title\": \"Chart title\",
+    \"note\": \"One sentence explaining why you're showing this chart\",
+    \"chartType\": \"line|bar|area|pie\",
+    \"metric\": \"revenue|orders|spend|impressions|clicks|roas|aov|conversion_rate|add_to_cart\",
+    \"dimension\": \"date|country|campaign_name|adset_name|platform|age|gender\",
+    \"dateRange\": \"7d|14d|30d\",
+    \"autoReason\": \"Brief explanation of why this chart type was chosen\"
+  }
+}
+
+Rules:
+- If a chart would not add clarity, set showChart to false and omit spec.
+- Use line/area for trends over time, bar for comparisons, pie for split/share.
+- Only use the allowed metrics/dimensions.
+- Prefer 30d if timeframe isn't explicit.`;
+
+  const response = await client.chat.completions.create({
+    model: EXPLORE_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: question }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+    max_tokens: 500
+  });
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) return { showChart: false };
+
+  try {
+    const parsed = JSON.parse(content);
+    if (!parsed?.showChart || !parsed?.spec) return { showChart: false };
+    if (!isValidChartSpec(parsed.spec)) return { showChart: false };
+    return parsed;
+  } catch (error) {
+    return { showChart: false };
+  }
 }
 
 // ============================================================================
