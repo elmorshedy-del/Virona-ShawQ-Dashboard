@@ -1628,23 +1628,54 @@ function fetchExploreChartData(db, storeName, spec, startDate, endDate) {
         });
       }
     } else {
-      // Categorical query - primary metric only for bar/pie
-      const primaryMetric = metrics[0];
-      const metricSQL = getMetricSQL(primaryMetric);
+      // Categorical query - supports multiple metrics for grouped comparison
+      if (metrics.length === 1) {
+        // Single metric - simple query
+        const primaryMetric = metrics[0];
+        const metricSQL = getMetricSQL(primaryMetric);
 
-      const rows = db.prepare(`
-        SELECT ${dimensionColumn} as category, ${metricSQL} as value
-        FROM meta_daily_metrics
-        WHERE LOWER(store) = ? AND date >= ? AND date <= ?
-        AND ${dimensionColumn} IS NOT NULL AND ${dimensionColumn} != '' AND ${dimensionColumn} != 'ALL'
-        ${activeFilter}
-        GROUP BY ${dimensionColumn}
-        ORDER BY value DESC
-        LIMIT 10
-      `).all(storeName, periodStart, periodEnd);
+        const rows = db.prepare(`
+          SELECT ${dimensionColumn} as category, ${metricSQL} as value
+          FROM meta_daily_metrics
+          WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+          AND ${dimensionColumn} IS NOT NULL AND ${dimensionColumn} != '' AND ${dimensionColumn} != 'ALL'
+          ${activeFilter}
+          GROUP BY ${dimensionColumn}
+          ORDER BY value DESC
+          LIMIT 10
+        `).all(storeName, periodStart, periodEnd);
 
-      data = rows;
-      totals[primaryMetric] = rows.reduce((sum, r) => sum + (r.value || 0), 0);
+        data = rows;
+        totals[primaryMetric] = rows.reduce((sum, r) => sum + (r.value || 0), 0);
+      } else {
+        // Multiple metrics - grouped bar chart for comparison
+        const metricSelects = metrics.map((m, i) => `${getMetricSQL(m)} as value${i}`).join(', ');
+
+        const rows = db.prepare(`
+          SELECT ${dimensionColumn} as category, ${metricSelects}
+          FROM meta_daily_metrics
+          WHERE LOWER(store) = ? AND date >= ? AND date <= ?
+          AND ${dimensionColumn} IS NOT NULL AND ${dimensionColumn} != '' AND ${dimensionColumn} != 'ALL'
+          ${activeFilter}
+          GROUP BY ${dimensionColumn}
+          ORDER BY value0 DESC
+          LIMIT 10
+        `).all(storeName, periodStart, periodEnd);
+
+        // Transform to multi-series format for grouped bar chart
+        data = rows.map(row => {
+          const point = { category: row.category };
+          metrics.forEach((m, i) => {
+            point[m] = row[`value${i}`] || 0;
+          });
+          return point;
+        });
+
+        // Calculate totals for each metric
+        metrics.forEach((m, i) => {
+          totals[m] = rows.reduce((sum, r) => sum + (r[`value${i}`] || 0), 0);
+        });
+      }
     }
   } catch (error) {
     console.error('[fetchExploreChartData] Query error:', error.message);
@@ -1944,6 +1975,7 @@ async function streamWithToolSupport(
 
     let toolCallBuffer = null;
     let fullContent = '';
+    let chartEmitted = false;
 
     for await (const chunk of response) {
       const choice = chunk.choices[0];
@@ -1974,17 +2006,24 @@ async function streamWithToolSupport(
       }
 
       // Check if stream finished with a tool call
-      if (choice?.finish_reason === 'tool_calls' && toolCallBuffer) {
+      if (choice?.finish_reason === 'tool_calls' && toolCallBuffer && !chartEmitted) {
         if (toolCallBuffer.name === 'show_chart' && onChart) {
           try {
-            const toolArgs = JSON.parse(toolCallBuffer.arguments);
-            console.log(`[OpenAI] GPT-5.1 called show_chart:`, toolArgs);
+            // Validate JSON completeness before parsing
+            const argsStr = toolCallBuffer.arguments.trim();
+            if (!argsStr.endsWith('}')) {
+              console.warn('[OpenAI] Incomplete tool call arguments, skipping chart');
+            } else {
+              const toolArgs = JSON.parse(argsStr);
+              console.log(`[OpenAI] GPT-5.1 called show_chart:`, toolArgs);
 
-            // Fetch chart data and emit to frontend
-            const chartPayload = handleShowChartTool(toolArgs, store, startDate, endDate);
-            onChart(chartPayload);
+              // Fetch chart data and emit to frontend
+              const chartPayload = handleShowChartTool(toolArgs, store, startDate, endDate);
+              onChart(chartPayload);
+              chartEmitted = true;
+            }
           } catch (err) {
-            console.error('[OpenAI] Failed to parse tool call:', err.message);
+            console.error('[OpenAI] Failed to parse tool call:', err.message, 'Args:', toolCallBuffer.arguments);
           }
         }
       }

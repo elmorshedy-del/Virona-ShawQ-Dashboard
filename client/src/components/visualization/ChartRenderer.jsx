@@ -148,9 +148,53 @@ export default function ChartRenderer({
     );
   }
 
-  // Bar Chart (horizontal for categorical data)
+  // Bar Chart - supports single metric or multi-metric grouped comparison
   if (chartType === 'bar') {
-    // For categorical data, use horizontal bars
+    // Multi-metric comparison - grouped vertical bars
+    if (isComparison) {
+      return (
+        <ResponsiveContainer width="100%" height={height}>
+          <BarChart data={data} margin={{ top: 5, right: 20, left: 10, bottom: isComparison ? 25 : 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis
+              dataKey={xKey}
+              tick={{ fontSize: 11, fill: '#6B7280' }}
+              axisLine={{ stroke: '#E5E7EB' }}
+              tickLine={false}
+              tickFormatter={(val) => truncateLabel(val, 12)}
+            />
+            <YAxis
+              tick={{ fontSize: 11, fill: '#6B7280' }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={formatChartValue}
+              width={60}
+            />
+            <Tooltip content={<ComparisonTooltip />} />
+            <Legend
+              verticalAlign="bottom"
+              height={20}
+              formatter={(value) => getMetricLabel(value)}
+              wrapperStyle={{ fontSize: '11px' }}
+            />
+            {metrics.map((metricKey, idx) => (
+              <Bar
+                key={metricKey}
+                dataKey={metricKey}
+                name={metricKey}
+                fill={colors[idx % colors.length]}
+                radius={[4, 4, 0, 0]}
+                isAnimationActive={animate}
+                animationDuration={400}
+                animationEasing="ease-out"
+              />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Single metric - For categorical data, use horizontal bars
     const isHorizontal = data.length <= 10;
 
     if (isHorizontal) {

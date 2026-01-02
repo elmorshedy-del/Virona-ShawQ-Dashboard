@@ -132,6 +132,7 @@ export default function VisualizationDock({
                 data={data}
                 xKey={getXKey(spec?.dimension)}
                 yKey="value"
+                metrics={spec?.isComparison ? (meta?.metrics || spec?.metrics) : null}
                 height={180}
                 currency={currency}
                 formatType={getFormatType(spec?.metric)}
