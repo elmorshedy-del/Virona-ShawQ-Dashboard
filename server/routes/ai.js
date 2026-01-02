@@ -1,15 +1,20 @@
 import express from 'express';
-import { 
-  analyzeQuestion, 
-  summarizeData, 
+import {
+  analyzeQuestion,
+  summarizeData,
   decideQuestion,
   decideQuestionStream,
   analyzeQuestionStream,
   summarizeDataStream,
+  summarizeDataStreamWithChart,
+  decideQuestionStreamWithChart,
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
-  runQuery
+  runQuery,
+  exploreQuery,
+  handleShowChartTool,
+  SHOW_CHART_TOOL
 } from '../services/openaiService.js';
 import { getDb } from '../db/database.js';
 
@@ -349,15 +354,24 @@ router.post('/stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
     };
 
+    // Chart callback - emits chart data via SSE when GPT-5.1 calls show_chart tool
+    const onChart = (chartPayload) => {
+      console.log(`[API] Chart event: ${chartPayload.spec?.title}`);
+      res.write(`data: ${JSON.stringify({ type: 'chart', chart: chartPayload })}\n\n`);
+    };
+
     if (activeMode === 'daily-summary') {
       // Daily summary uses GPT-5.1 deep - always for both stores
       result = await dailySummaryStream(reportType || 'am', onDelta);
     } else if (activeMode === 'analyze') {
+      // Ask mode - quick facts, no chart support
       result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
     } else if (activeMode === 'summarize') {
-      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
+      // Analyze mode - uses GPT-5-mini with show_chart tool
+      result = await summarizeDataStreamWithChart(question, store, onDelta, onChart, history, startDate, endDate);
     } else {
-      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
+      // Deep Dive mode - uses GPT-5.1 with show_chart tool
+      result = await decideQuestionStreamWithChart(question, store, depth || 'balanced', onDelta, onChart, history, startDate, endDate);
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
@@ -373,6 +387,45 @@ router.post('/stream', async (req, res) => {
     console.error(`[API] Stream error:`, error.message);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
+  }
+});
+
+// ============================================================================
+// EXPLORE - Visual data explorer with GPT-4o-mini query interpretation
+// Uses same data pathways as other AI modes for consistent data access
+// ============================================================================
+router.post('/explore', async (req, res) => {
+  try {
+    const { query, store, currentFilters, startDate, endDate } = req.body;
+
+    if (!query) {
+      return res.status(400).json({ success: false, error: 'Query required' });
+    }
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    console.log(`\n========================================`);
+    console.log(`[API] POST /ai/explore`);
+    console.log(`[API] Query: "${query}"`);
+    console.log(`[API] Store: ${store}`);
+    console.log(`[API] Filters:`, currentFilters);
+    console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
+    console.log(`========================================`);
+
+    const result = await exploreQuery(query, store, currentFilters, startDate, endDate);
+
+    console.log(`[API] Explore result: success=${result.success}, data points=${result.data?.length || 0}`);
+
+    res.json(result);
+  } catch (error) {
+    console.error(`[API] Explore error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Check server logs for more info'
+    });
   }
 });
 
