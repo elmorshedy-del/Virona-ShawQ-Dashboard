@@ -10,6 +10,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { z } from 'zod';
+import VisualizationDock from './VisualizationDock';
 
 // Import Meta Awareness feature module
 import {
@@ -33,6 +35,66 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const [insightMode, setInsightMode] = useState('balanced'); // 'instant', 'fast', 'balanced', 'max'
   const [showReactivation, setShowReactivation] = useState(true); // Show reactivation panel
   const messagesEndRef = useRef(null);
+  const previousModeRef = useRef('ask');
+
+  const visualizationSeriesSchema = z.object({
+    key: z.string(),
+    label: z.string(),
+    kind: z.enum(['raw', 'ma']),
+    derivedFrom: z.string().optional(),
+    window: z.union([z.literal(7), z.literal(14), z.literal(30)]).optional()
+  }).strict();
+
+  const visualizationDockSchema = z.object({
+    id: z.literal('primary'),
+    title: z.string(),
+    mode: z.enum(['auto', 'manual']),
+    autoReason: z.string().optional(),
+    chartType: z.enum(['line', 'bar', 'totals', 'blocked']),
+    xKey: z.string().optional(),
+    yFormat: z.enum(['number', 'currency', 'percent']).optional(),
+    series: z.array(visualizationSeriesSchema).optional(),
+    data: z.array(z.record(z.any())).optional(),
+    totals: z.record(z.union([z.number(), z.string()])).optional(),
+    controls: z.object({
+      allowMetric: z.boolean(),
+      allowRange: z.boolean(),
+      allowGroupBy: z.boolean(),
+      allowMA: z.boolean()
+    }).strict().optional(),
+    ui: z.object({
+      rangePreset: z.enum(['7d', '14d', '30d', 'custom']).optional(),
+      groupBy: z.enum(['day', 'week', 'month']).optional(),
+      metric: z.string().optional()
+    }).strict().optional()
+  }).strict();
+
+  const visualizationDockUpdateSchema = visualizationDockSchema.partial().extend({
+    id: z.literal('primary')
+  }).strict();
+
+  const visualizationDockClearSchema = z.object({
+    id: z.literal('primary')
+  }).strict();
+
+  const dataShapeSchema = z.object({
+    timeSeriesAvailable: z.boolean(),
+    timeKey: z.string().nullable(),
+    metricKeys: z.array(z.string()),
+    dimensionKeys: z.array(z.string()),
+    currency: z.string().nullable()
+  }).strict();
+
+  const [dockState, setDockState] = useState({
+    spec: null,
+    pinned: false,
+    compareEnabled: false,
+    compareSnapshot: null,
+    replaceNext: false,
+    lastRefreshed: null,
+    dataShape: null,
+    selectedMA: 'off'
+  });
 
   // Use reactivation candidates hook
   const {
@@ -45,12 +107,76 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     messagesEndRef.current?.scrollIntoView({ behavior: instant ? "instant" : "smooth" });
   };
 
+  const validateSeriesKeys = (data, series) => {
+    if (!Array.isArray(data) || !Array.isArray(series)) return true;
+    return series.every(item => {
+      if (item.kind === 'ma') return true;
+      return data.some(row => Object.prototype.hasOwnProperty.call(row || {}, item.key));
+    });
+  };
+
+  const applyDockSet = (payload) => {
+    setDockState(prev => {
+      const shouldReplace = prev.replaceNext;
+      const previousSpec = prev.spec;
+      const shouldCompare = prev.compareEnabled && !shouldReplace;
+      const compareSnapshot = shouldCompare
+        ? (prev.compareSnapshot || (previousSpec ? JSON.parse(JSON.stringify(previousSpec)) : null))
+        : null;
+      return {
+        ...prev,
+        spec: payload,
+        replaceNext: false,
+        compareEnabled: shouldReplace ? false : prev.compareEnabled,
+        compareSnapshot,
+        lastRefreshed: new Date().toISOString()
+      };
+    });
+  };
+
+  const applyDockUpdate = (payload) => {
+    setDockState(prev => {
+      if (!prev.spec || prev.replaceNext) return prev;
+      const previousSpec = prev.spec;
+      const nextSpec = { ...prev.spec, ...payload };
+      const compareSnapshot = prev.compareEnabled
+        ? (prev.compareSnapshot || JSON.parse(JSON.stringify(previousSpec)))
+        : prev.compareSnapshot;
+      return {
+        ...prev,
+        spec: nextSpec,
+        lastRefreshed: new Date().toISOString(),
+        compareSnapshot
+      };
+    });
+  };
+
+  const clearDock = () => {
+    setDockState(prev => ({
+      ...prev,
+      spec: null,
+      compareEnabled: false,
+      compareSnapshot: null,
+      replaceNext: false,
+      lastRefreshed: null
+    }));
+  };
+
   // Scroll to bottom when messages change (including during streaming)
   useEffect(() => {
     // Use instant scroll during streaming for smoother UX
     const isAnyStreaming = messages.some(m => m.isStreaming);
     scrollToBottom(isAnyStreaming);
   }, [messages]);
+
+  useEffect(() => {
+    if (previousModeRef.current !== activeMode) {
+      if (!dockState.pinned) {
+        clearDock();
+      }
+      previousModeRef.current = activeMode;
+    }
+  }, [activeMode, dockState.pinned]);
 
   // Mode configurations with pillars
   // UPDATED: Added reactivation pillars to relevant modes
@@ -113,17 +239,18 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     { id: 'max', label: '🧬 Max Insight', description: 'Deep reasoning' }
   ];
 
-  const sendMessage = async () => {
-    if (!input.trim() || isLoading) return;
+  const sendMessage = async (overrideText = null) => {
+    const messageText = (overrideText ?? input).trim();
+    if (!messageText || isLoading) return;
 
     const userMessage = {
       role: 'user',
-      content: input,
+      content: messageText,
       timestamp: new Date().toISOString()
     };
 
     setMessages(prev => [...prev, userMessage]);
-    const currentInput = input;
+    const currentInput = messageText;
     setInput('');
     setIsLoading(true);
 
@@ -173,7 +300,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       }
 
       // Use streaming endpoint with SSE
-      const response = await fetch('/api/ai/stream', {
+      const response = await fetch('/api/ai/analytics/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -215,6 +342,37 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                     ? { ...msg, content: fullContent }
                     : msg
                 ));
+              } else if (data.type === 'tool') {
+                if (data.name === 'getAvailableDataShape') {
+                  const parsed = dataShapeSchema.safeParse(data.payload);
+                  if (parsed.success) {
+                    setDockState(prev => ({
+                      ...prev,
+                      dataShape: parsed.data
+                    }));
+                  }
+                }
+
+                if (data.name === 'setVisualizationDock') {
+                  const parsed = visualizationDockSchema.safeParse(data.payload);
+                  if (parsed.success && validateSeriesKeys(parsed.data.data, parsed.data.series)) {
+                    applyDockSet(parsed.data);
+                  }
+                }
+
+                if (data.name === 'updateVisualizationDock') {
+                  const parsed = visualizationDockUpdateSchema.safeParse(data.payload);
+                  if (parsed.success && validateSeriesKeys(parsed.data.data, parsed.data.series)) {
+                    applyDockUpdate(parsed.data);
+                  }
+                }
+
+                if (data.name === 'clearVisualizationDock') {
+                  const parsed = visualizationDockClearSchema.safeParse(data.payload);
+                  if (parsed.success) {
+                    clearDock();
+                  }
+                }
               } else if (data.type === 'done') {
                 // Update metadata when complete
                 setMessages(prev => prev.map(msg => 
@@ -320,6 +478,57 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     if (activeMode === 'ask') {
       setActiveMode('deepdive');
     }
+  };
+
+  const handlePinToggle = () => {
+    setDockState(prev => ({
+      ...prev,
+      pinned: !prev.pinned
+    }));
+  };
+
+  const handleReplaceNext = () => {
+    setDockState(prev => ({
+      ...prev,
+      replaceNext: true
+    }));
+  };
+
+  const handleCompareToggle = () => {
+    setDockState(prev => {
+      if (!prev.spec) return prev;
+      if (prev.compareEnabled) {
+        return {
+          ...prev,
+          compareEnabled: false,
+          compareSnapshot: null
+        };
+      }
+      const snapshot = JSON.parse(JSON.stringify(prev.spec));
+      return {
+        ...prev,
+        compareEnabled: true,
+        compareSnapshot: snapshot
+      };
+    });
+  };
+
+  const handleShowTotals = () => {
+    setDockState(prev => {
+      if (!prev.spec) return prev;
+      return {
+        ...prev,
+        spec: {
+          ...prev.spec,
+          chartType: 'totals'
+        },
+        lastRefreshed: new Date().toISOString()
+      };
+    });
+  };
+
+  const handleExplainMissingData = () => {
+    sendMessage('Explain why daily trend data is missing and summarize using totals instead.');
   };
 
   const renderMessage = (message, index) => {
@@ -541,6 +750,28 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
             </div>
           </div>
         </div>
+
+        {dockState.spec && (
+          <div className="px-4 pt-4">
+            <VisualizationDock
+              visualization={dockState.spec}
+              pinned={dockState.pinned}
+              compareEnabled={dockState.compareEnabled}
+              compareSnapshot={dockState.compareSnapshot}
+              replaceNext={dockState.replaceNext}
+              lastRefreshed={dockState.lastRefreshed}
+              dataShape={dockState.dataShape}
+              selectedMA={dockState.selectedMA}
+              onPinToggle={handlePinToggle}
+              onReplace={handleReplaceNext}
+              onCompareToggle={handleCompareToggle}
+              onClear={clearDock}
+              onShowTotals={handleShowTotals}
+              onExplainMissingData={handleExplainMissingData}
+              onSelectMA={(value) => setDockState(prev => ({ ...prev, selectedMA: value }))}
+            />
+          </div>
+        )}
 
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">

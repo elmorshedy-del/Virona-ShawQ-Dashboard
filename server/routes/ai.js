@@ -6,6 +6,7 @@ import {
   decideQuestionStream,
   analyzeQuestionStream,
   summarizeDataStream,
+  analyticsQuestionStream,
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
@@ -371,6 +372,74 @@ router.post('/stream', async (req, res) => {
     res.end();
   } catch (error) {
     console.error(`[API] Stream error:`, error.message);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+// ============================================================================
+// ANALYTICS STREAM - Visualization tools + SSE streaming
+// ============================================================================
+router.post('/analytics/stream', async (req, res) => {
+  try {
+    const { question, store, depth, mode, conversationId, startDate, endDate } = req.body;
+
+    if (!question) {
+      return res.status(400).json({ success: false, error: 'Question required' });
+    }
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const history = conversationId ? getConversationHistory(conversationId) : [];
+    const activeMode = mode || 'decide';
+
+    console.log(`\n========================================`);
+    console.log(`[API] POST /ai/analytics/stream`);
+    console.log(`[API] Mode: ${activeMode}`);
+    console.log(`[API] Question: "${(question || '').substring(0, 100)}..."`);
+    console.log(`[API] Store: ${store}`);
+    console.log(`[API] Depth: ${depth || 'balanced'}`);
+    console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
+    console.log(`[API] Conversation: ${conversationId || 'none'}`);
+    console.log(`[API] History: ${history.length} messages`);
+    console.log(`========================================`);
+
+    const onDelta = (delta) => {
+      res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
+    };
+
+    const onTool = (toolEvent) => {
+      res.write(`data: ${JSON.stringify({ type: 'tool', ...toolEvent })}\n\n`);
+    };
+
+    const result = await analyticsQuestionStream({
+      question,
+      store,
+      mode: activeMode,
+      depth: depth || 'balanced',
+      onDelta,
+      onTool,
+      history,
+      startDate,
+      endDate
+    });
+
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      model: result.model,
+      reasoning: result.reasoning
+    })}\n\n`);
+
+    res.end();
+  } catch (error) {
+    console.error(`[API] Analytics stream error:`, error.message);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
   }
