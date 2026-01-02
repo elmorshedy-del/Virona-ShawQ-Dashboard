@@ -1468,7 +1468,9 @@ ERROR RESPONSE (only if truly impossible):
   "error": "Friendly explanation + suggestion for what they could ask instead"
 }
 
-IMPORTANT: Be smart. Interpret intent, don't just match keywords. The user is a busy marketer who wants answers, not technical precision.`;
+IMPORTANT: Be smart. Interpret intent, don't just match keywords. The user is a busy marketer who wants answers, not technical precision.
+
+Always respond with valid JSON matching the OUTPUT FORMAT above.`;
 }
 
 // Keep backward compatible single prompt for simple cases
@@ -1721,7 +1723,7 @@ export async function exploreQuery(query, store, currentFilters = {}, startDate 
 Current UI filters (use as hints if query is ambiguous):
 ${JSON.stringify(currentFilters, null, 2)}
 
-Interpret what the user wants to see and return a chart specification.
+Interpret what the user wants to see and return a JSON chart specification.
 If they want to compare metrics, include multiple metrics in the array.
 Be smart about understanding intent, not just matching keywords.`
         }
@@ -1836,7 +1838,7 @@ async function analyzeChartNeed(question, mode) {
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: CHART_DECISION_PROMPT },
-        { role: 'user', content: `User question: "${question}"\nMode: ${mode}` }
+        { role: 'user', content: `User question: "${question}"\nMode: ${mode}\n\nRespond with JSON.` }
       ],
       max_tokens: 300,
       temperature: 0.2,
