@@ -39,6 +39,11 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const [showReactivation, setShowReactivation] = useState(true); // Show reactivation panel
   const messagesEndRef = useRef(null);
 
+  // Visualization dock state - charts shown by GPT-5.1 during chat
+  const [dockChart, setDockChart] = useState(null);
+  const [isDockPinned, setIsDockPinned] = useState(false);
+  const [isDockLoading, setIsDockLoading] = useState(false);
+
   // Use reactivation candidates hook
   const {
     candidates: reactivationCandidates,
@@ -221,17 +226,22 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
               if (data.type === 'delta') {
                 // Append new text to the message
                 fullContent += data.text;
-                setMessages(prev => prev.map(msg => 
-                  msg.id === assistantMessageId 
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
                     ? { ...msg, content: fullContent }
                     : msg
                 ));
+              } else if (data.type === 'chart') {
+                // GPT-5.1 called show_chart tool - display in dock
+                console.log('[AIAnalytics] Chart event received:', data.chart?.spec?.title);
+                setDockChart(data.chart);
+                setIsDockLoading(false);
               } else if (data.type === 'done') {
                 // Update metadata when complete
-                setMessages(prev => prev.map(msg => 
-                  msg.id === assistantMessageId 
-                    ? { 
-                        ...msg, 
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? {
+                        ...msg,
                         isStreaming: false,
                         metadata: {
                           ...msg.metadata,
@@ -561,6 +571,22 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
               </div>
             </div>
           </div>
+
+          {/* Visualization Dock - Shows charts when GPT-5.1 calls show_chart */}
+          {(dockChart || isDockLoading) && (
+            <VisualizationDock
+              chartData={dockChart}
+              isLoading={isDockLoading}
+              isPinned={isDockPinned}
+              onPin={() => setIsDockPinned(!isDockPinned)}
+              onClose={() => {
+                if (!isDockPinned) {
+                  setDockChart(null);
+                }
+              }}
+              store={activeStore}
+            />
+          )}
 
           {/* Messages Area */}
           <div className="flex-1 overflow-y-auto p-4 space-y-4">

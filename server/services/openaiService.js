@@ -1748,6 +1748,370 @@ Be smart about understanding intent, not just matching keywords.`
 }
 
 // ============================================================================
+// CHART DECISION PROMPT - Quick analysis for whether to show a chart
+// Used in parallel with main response stream for best UX
+// ============================================================================
+
+const CHART_DECISION_PROMPT = `You are a visualization decision assistant. Given a user's question about their e-commerce/advertising data, decide if showing a chart would genuinely help them understand the answer.
+
+SHOW A CHART WHEN:
+- Trends over time: "how's revenue this month?" → line chart shows the shape
+- Comparisons: "which country performs best?" → bar chart makes ranking clear
+- Proportions: "what's the split between platforms?" → pie chart shows share
+- User explicitly asks: "show me", "chart", "visualize", "graph"
+- Explaining a change that's easier to see than describe
+
+DO NOT SHOW A CHART WHEN:
+- Simple factual answers: "what's my ROAS?" → just a number
+- Yes/no questions: "is revenue up?" → just say yes/no
+- Strategic advice: "should I pause this campaign?" → needs explanation, not chart
+- The answer is a single value or simple comparison
+- When words alone are clearer
+
+If a chart would help, respond with JSON:
+{
+  "showChart": true,
+  "title": "Human readable title",
+  "note": "One sentence explaining why this chart helps",
+  "chartType": "line|bar|area|pie",
+  "metric": "revenue|orders|spend|impressions|clicks|roas|aov|conversion_rate|add_to_cart",
+  "dimension": "date|country|campaign_name|adset_name|platform|age|gender",
+  "dateRange": "7d|14d|30d"
+}
+
+If no chart needed, respond with:
+{
+  "showChart": false
+}
+
+Be conservative. Only show charts when they genuinely add value.`;
+
+/**
+ * Analyze if a question warrants a chart visualization
+ * Uses GPT-4o-mini for fast decision (~300-500ms)
+ */
+async function analyzeChartNeed(question, mode) {
+  // Only consider charts for Analyze and Deep Dive modes, not Ask
+  if (mode === 'analyze' || mode === 'ask') {
+    // Ask mode is for quick facts - rarely needs charts
+    // Only show chart if explicitly requested
+    if (!question.toLowerCase().match(/show|chart|graph|visualize|trend|compare/)) {
+      return { showChart: false };
+    }
+  }
+
+  try {
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: CHART_DECISION_PROMPT },
+        { role: 'user', content: `User question: "${question}"\nMode: ${mode}` }
+      ],
+      max_tokens: 300,
+      temperature: 0.2,
+      response_format: { type: 'json_object' }
+    });
+
+    return JSON.parse(response.choices[0].message.content);
+  } catch (error) {
+    console.log('[ChartDecision] Error:', error.message);
+    return { showChart: false };
+  }
+}
+
+/**
+ * Stream with parallel chart analysis
+ * Runs chart decision in parallel with main stream for best UX
+ */
+export async function streamWithChartSupport(
+  question,
+  store,
+  mode,
+  depth,
+  onDelta,
+  onChart,
+  history = [],
+  startDate = null,
+  endDate = null
+) {
+  const data = getRelevantData(store, question, startDate, endDate);
+  const systemPrompt = buildSystemPrompt(store, mode === 'decide' ? 'decide' : mode, data, question);
+
+  // Determine model and settings based on mode
+  let primaryModel, fallbackModel, maxTokens, reasoningEffort, temperature;
+
+  if (mode === 'decide' || mode === 'deepdive') {
+    primaryModel = MODELS.STRATEGIST;
+    fallbackModel = FALLBACK_MODELS.STRATEGIST;
+    reasoningEffort = DEPTH_TO_EFFORT[depth] || 'medium';
+    maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
+    temperature = MODE_TEMPERATURES.decide;
+  } else if (mode === 'summarize' || mode === 'analyze') {
+    primaryModel = MODELS.MINI;
+    fallbackModel = FALLBACK_MODELS.MINI;
+    reasoningEffort = null;
+    maxTokens = TOKEN_LIMITS.mini;
+    temperature = MODE_TEMPERATURES.summarize;
+  } else {
+    // Ask mode
+    primaryModel = MODELS.ASK;
+    fallbackModel = MODELS.ASK;
+    reasoningEffort = null;
+    maxTokens = TOKEN_LIMITS.nano;
+    temperature = MODE_TEMPERATURES.analyze;
+  }
+
+  // Run chart analysis and main stream in PARALLEL
+  const chartPromise = analyzeChartNeed(question, mode);
+
+  // Start main stream
+  const streamPromise = streamWithFallback(
+    primaryModel,
+    fallbackModel,
+    systemPrompt,
+    question,
+    maxTokens,
+    reasoningEffort,
+    onDelta,
+    temperature
+  );
+
+  // Handle chart decision when it completes (usually before stream ends)
+  chartPromise.then(chartDecision => {
+    if (chartDecision.showChart && onChart) {
+      try {
+        // Fetch chart data and emit event
+        const chartPayload = handleShowChartTool(chartDecision, store, startDate, endDate);
+        onChart(chartPayload);
+      } catch (error) {
+        console.log('[ChartDecision] Failed to generate chart:', error.message);
+      }
+    }
+  }).catch(err => {
+    console.log('[ChartDecision] Promise error:', err.message);
+  });
+
+  // Wait for stream to complete
+  const result = await streamPromise;
+
+  return result;
+}
+
+// ============================================================================
+// STREAMING WITH TOOL SUPPORT - GPT-5.1 decides when to show charts
+// Uses chat.completions API with tools for streaming + function calling
+// ============================================================================
+
+/**
+ * Stream with tool support - allows GPT-5.1 to call show_chart during response
+ * This is the core function that enables visualization dock in chat modes
+ */
+async function streamWithToolSupport(
+  primaryModel,
+  fallbackModel,
+  systemPrompt,
+  userMessage,
+  maxTokens,
+  reasoningEffort,
+  onDelta,
+  onChart,
+  store,
+  startDate,
+  endDate,
+  temperature = 0.7
+) {
+  // Build messages array
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userMessage }
+  ];
+
+  // Try primary model first (GPT-5.1 via chat completions for tool support)
+  const modelToUse = primaryModel.includes('5.1') ? 'gpt-5.1' : primaryModel;
+
+  try {
+    console.log(`[OpenAI] Streaming ${modelToUse} with tool support`);
+
+    const response = await client.chat.completions.create({
+      model: modelToUse,
+      messages,
+      max_tokens: maxTokens,
+      temperature,
+      stream: true,
+      tools: [SHOW_CHART_TOOL],
+      tool_choice: 'auto' // Let the model decide when to use the tool
+    });
+
+    let toolCallBuffer = null;
+    let fullContent = '';
+
+    for await (const chunk of response) {
+      const choice = chunk.choices[0];
+
+      // Handle text content
+      if (choice?.delta?.content) {
+        fullContent += choice.delta.content;
+        onDelta(choice.delta.content);
+      }
+
+      // Handle tool calls
+      if (choice?.delta?.tool_calls) {
+        for (const toolCall of choice.delta.tool_calls) {
+          if (toolCall.index === 0) {
+            // Initialize or append to tool call buffer
+            if (!toolCallBuffer) {
+              toolCallBuffer = {
+                id: toolCall.id || '',
+                name: toolCall.function?.name || '',
+                arguments: ''
+              };
+            }
+            if (toolCall.id) toolCallBuffer.id = toolCall.id;
+            if (toolCall.function?.name) toolCallBuffer.name = toolCall.function.name;
+            if (toolCall.function?.arguments) toolCallBuffer.arguments += toolCall.function.arguments;
+          }
+        }
+      }
+
+      // Check if stream finished with a tool call
+      if (choice?.finish_reason === 'tool_calls' && toolCallBuffer) {
+        if (toolCallBuffer.name === 'show_chart' && onChart) {
+          try {
+            const toolArgs = JSON.parse(toolCallBuffer.arguments);
+            console.log(`[OpenAI] GPT-5.1 called show_chart:`, toolArgs);
+
+            // Fetch chart data and emit to frontend
+            const chartPayload = handleShowChartTool(toolArgs, store, startDate, endDate);
+            onChart(chartPayload);
+          } catch (err) {
+            console.error('[OpenAI] Failed to parse tool call:', err.message);
+          }
+        }
+      }
+    }
+
+    return { model: modelToUse, reasoning: reasoningEffort };
+
+  } catch (error) {
+    console.log(`[OpenAI] ${modelToUse} with tools failed: ${error.message}, trying ${fallbackModel}`);
+
+    // Fallback to model without tools
+    const response = await client.chat.completions.create({
+      model: fallbackModel,
+      messages,
+      max_tokens: maxTokens,
+      temperature,
+      stream: true
+    });
+
+    for await (const chunk of response) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) onDelta(delta);
+    }
+
+    return { model: fallbackModel, reasoning: null };
+  }
+}
+
+/**
+ * Streaming export for Analyze mode with chart support
+ * Uses GPT-5-mini with show_chart tool
+ */
+export async function summarizeDataStreamWithChart(
+  question,
+  store,
+  onDelta,
+  onChart,
+  history = [],
+  startDate = null,
+  endDate = null
+) {
+  const data = getRelevantData(store, question, startDate, endDate);
+  const systemPrompt = buildSystemPromptWithChartGuidance(store, 'summarize', data, question);
+
+  return await streamWithToolSupport(
+    MODELS.MINI,
+    FALLBACK_MODELS.MINI,
+    systemPrompt,
+    question,
+    TOKEN_LIMITS.mini,
+    null,
+    onDelta,
+    onChart,
+    store,
+    startDate,
+    endDate,
+    MODE_TEMPERATURES.summarize
+  );
+}
+
+/**
+ * Streaming export for Deep Dive mode with chart support
+ * Uses GPT-5.1 with show_chart tool
+ */
+export async function decideQuestionStreamWithChart(
+  question,
+  store,
+  depth = 'balanced',
+  onDelta,
+  onChart,
+  history = [],
+  startDate = null,
+  endDate = null
+) {
+  const data = getRelevantData(store, question, startDate, endDate);
+  const systemPrompt = buildSystemPromptWithChartGuidance(store, 'decide', data, question);
+  const effort = DEPTH_TO_EFFORT[depth] || 'medium';
+  const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
+
+  return await streamWithToolSupport(
+    MODELS.STRATEGIST,
+    FALLBACK_MODELS.STRATEGIST,
+    systemPrompt,
+    question,
+    maxTokens,
+    effort,
+    onDelta,
+    onChart,
+    store,
+    startDate,
+    endDate,
+    MODE_TEMPERATURES.decide
+  );
+}
+
+/**
+ * Build system prompt with chart tool guidance
+ * Extends the base prompt with instructions on when to use show_chart
+ */
+function buildSystemPromptWithChartGuidance(store, mode, data, question = '') {
+  const basePrompt = buildSystemPrompt(store, mode, data, question);
+
+  const chartGuidance = `
+
+VISUALIZATION TOOL:
+You have access to a show_chart tool that displays charts in a dock above your response.
+
+USE SHOW_CHART WHEN:
+- Showing trends over time (revenue trend, spend pattern, etc.) → use line chart
+- Comparing categories (countries, campaigns, etc.) → use bar chart
+- Showing proportions/shares (market split, platform distribution) → use pie chart
+- The user explicitly asks for a visual ("show me", "chart", "visualize")
+- A pattern is easier to see than describe
+
+DO NOT USE SHOW_CHART WHEN:
+- Answering a simple factual question ("what's my ROAS?")
+- Giving strategic recommendations (words are better)
+- The answer is a single number or yes/no
+- You're explaining concepts or strategies
+
+If you use show_chart, continue your response explaining what the chart shows.
+Only call show_chart once per response - pick the most helpful visualization.`;
+
+  return basePrompt + chartGuidance;
+}
+
+// ============================================================================
 // SHOW_CHART TOOL - For chat modes to display visualizations
 // Uses same data pathways as Explore mode
 // ============================================================================

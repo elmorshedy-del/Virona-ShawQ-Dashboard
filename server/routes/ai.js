@@ -6,6 +6,8 @@ import {
   decideQuestionStream,
   analyzeQuestionStream,
   summarizeDataStream,
+  summarizeDataStreamWithChart,
+  decideQuestionStreamWithChart,
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
@@ -352,15 +354,24 @@ router.post('/stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
     };
 
+    // Chart callback - emits chart data via SSE when GPT-5.1 calls show_chart tool
+    const onChart = (chartPayload) => {
+      console.log(`[API] Chart event: ${chartPayload.spec?.title}`);
+      res.write(`data: ${JSON.stringify({ type: 'chart', chart: chartPayload })}\n\n`);
+    };
+
     if (activeMode === 'daily-summary') {
       // Daily summary uses GPT-5.1 deep - always for both stores
       result = await dailySummaryStream(reportType || 'am', onDelta);
     } else if (activeMode === 'analyze') {
+      // Ask mode - quick facts, no chart support
       result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
     } else if (activeMode === 'summarize') {
-      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
+      // Analyze mode - uses GPT-5-mini with show_chart tool
+      result = await summarizeDataStreamWithChart(question, store, onDelta, onChart, history, startDate, endDate);
     } else {
-      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
+      // Deep Dive mode - uses GPT-5.1 with show_chart tool
+      result = await decideQuestionStreamWithChart(question, store, depth || 'balanced', onDelta, onChart, history, startDate, endDate);
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
