@@ -9,7 +9,10 @@ import {
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
-  runQuery
+  runQuery,
+  exploreQuery,
+  fetchChartData,
+  planChatVisualization
 } from '../services/openaiService.js';
 import { getDb } from '../db/database.js';
 
@@ -163,6 +166,32 @@ function getConversationHistory(conversationId, limit = 10) {
   }
 }
 
+function buildExploreSpecFromFilters(filters, override = {}) {
+  const metricLabel = (filters.metric || 'metric')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase());
+  const dimensionLabel = filters.dimension === 'date'
+    ? 'Over Time'
+    : (filters.dimension || 'dimension')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, char => char.toUpperCase());
+
+  const resolvedChartType = filters.chartType === 'auto'
+    ? (filters.dimension === 'date' ? 'line' : 'bar')
+    : filters.chartType;
+
+  return {
+    title: override.title || `${metricLabel} by ${dimensionLabel}`,
+    metric: filters.metric || 'revenue',
+    dimension: filters.dimension || 'country',
+    chartType: resolvedChartType,
+    dateRange: filters.dateRange || '30d',
+    customDateStart: filters.customDateStart || null,
+    customDateEnd: filters.customDateEnd || null,
+    autoReason: override.autoReason || (filters.dimension === 'date' ? 'trend over time' : 'categorical breakdown')
+  };
+}
+
 // ============================================================================
 // ANALYZE - GPT-5 nano (Quick metrics)
 // ============================================================================
@@ -256,6 +285,51 @@ router.post('/summarize', async (req, res) => {
 });
 
 // ============================================================================
+// EXPLORE - AI chart spec + data
+// ============================================================================
+router.post('/explore', async (req, res) => {
+  try {
+    const { query, store, currentFilters, skipAI, specOverride } = req.body;
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    if (!skipAI && !query) {
+      return res.status(400).json({ success: false, error: 'Query required' });
+    }
+
+    let spec;
+    if (skipAI) {
+      spec = buildExploreSpecFromFilters(currentFilters || {}, specOverride || {});
+    } else {
+      const aiResult = await exploreQuery({ query, store, currentFilters });
+      if (!aiResult.success) {
+        return res.status(400).json({ success: false, error: aiResult.error || 'Explore request failed' });
+      }
+      spec = aiResult.spec;
+    }
+
+    if (!spec.chartType || spec.chartType === 'auto') {
+      spec.chartType = spec.dimension === 'date' ? 'line' : 'bar';
+      spec.autoReason = spec.autoReason || (spec.dimension === 'date' ? 'trend over time' : 'categorical breakdown');
+    }
+
+    const { data, meta } = await fetchChartData({ spec, store });
+
+    return res.json({
+      success: true,
+      spec,
+      data,
+      meta
+    });
+  } catch (error) {
+    console.error('[API] Explore error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
 // DECIDE - GPT-5.1 (Strategic decisions - non-streaming)
 // ============================================================================
 router.post('/decide', async (req, res) => {
@@ -345,9 +419,40 @@ router.post('/stream', async (req, res) => {
     console.log(`========================================`);
 
     let result;
+    let chartTask = null;
     const onDelta = (delta) => {
       res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
     };
+
+    if (activeMode !== 'daily-summary' && question) {
+      chartTask = (async () => {
+        try {
+          const plan = await planChatVisualization({ question, store });
+          if (!plan?.showChart || !plan.spec) return;
+
+          res.write(`data: ${JSON.stringify({
+            type: 'tool',
+            name: 'show_chart',
+            status: 'loading',
+            payload: { spec: plan.spec }
+          })}\n\n`);
+
+          const { data, meta } = await fetchChartData({ spec: plan.spec, store });
+
+          res.write(`data: ${JSON.stringify({
+            type: 'tool',
+            name: 'show_chart',
+            payload: {
+              spec: plan.spec,
+              data,
+              meta
+            }
+          })}\n\n`);
+        } catch (error) {
+          console.error('[API] Chart tool error:', error.message);
+        }
+      })();
+    }
 
     if (activeMode === 'daily-summary') {
       // Daily summary uses GPT-5.1 deep - always for both stores
@@ -358,6 +463,10 @@ router.post('/stream', async (req, res) => {
       result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
     } else {
       result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
+    }
+
+    if (chartTask) {
+      await chartTask;
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
