@@ -35,13 +35,17 @@ function NotificationRow({
     || notification?.metadata?.campaign
     || notification?.metadata?.campaign_id
     || notification?.metadata?.campaignId;
+  const matchMethod = notification?.metadata?.match_method || notification?.metadata?.matched_via;
+  const isCampaignMatch = notification?.type === 'campaign_match';
   const showCampaignDetails = notification.type === 'order' && campaignName
     && (notification.store === 'shawq' || (notification.store === 'vironax' && source === 'meta'));
 
   return (
     <div 
       className={`p-4 hover:bg-gray-50 transition-colors ${
-        !notification.is_read ? 'bg-indigo-50/50' : ''
+        isCampaignMatch ? 'bg-violet-50/70 border-l-4 border-violet-900' : ''
+      } ${
+        !notification.is_read && !isCampaignMatch ? 'bg-indigo-50/50' : ''
       }`}
     >
       <div className="flex items-start justify-between gap-3">
@@ -67,9 +71,21 @@ function NotificationRow({
               🎯 Campaign: {campaignName}
             </p>
           )}
+
+          {isCampaignMatch && campaignName && (
+            <p className="text-[10px] text-violet-800 mt-0.5 truncate" title={campaignName}>
+              🎯 Matched Campaign: {campaignName}
+              {matchMethod ? ` (${matchMethod.toUpperCase()})` : ''}
+            </p>
+          )}
           
           {/* Meta row: source badge + time */}
           <div className="flex items-center gap-2 mt-1.5">
+            {isCampaignMatch && (
+              <span className="px-2 py-0.5 rounded text-xs font-medium bg-violet-900 text-white inline-flex items-center gap-1">
+                Matched
+              </span>
+            )}
             {getSourceBadge(notification.source || notification.metadata?.source)}
             <span className="text-xs text-gray-500">
               {timeAgoDisplay}
