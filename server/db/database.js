@@ -83,6 +83,27 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN order_created_at TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN landing_site TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN referring_site TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN utm_source TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN utm_medium TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN utm_campaign TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN utm_content TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN utm_term TEXT`);
+  } catch (e) { /* column exists */ }
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -168,6 +189,13 @@ export function initDb() {
       payment_method TEXT,
       currency TEXT DEFAULT 'USD',
       order_created_at TEXT,
+      landing_site TEXT,
+      referring_site TEXT,
+      utm_source TEXT,
+      utm_medium TEXT,
+      utm_campaign TEXT,
+      utm_content TEXT,
+      utm_term TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, order_id)
     )
