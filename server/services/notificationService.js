@@ -223,7 +223,12 @@ export function createOrderNotifications(store, source, orders, options = {}) {
         currency,
         campaign_name: campaignName,
         campaign_id: order.campaign_id || null,
-        event_date: order.date || null
+        event_date: order.date || null,
+        utm_campaign: order.utm_campaign || null,
+        utm_source: order.utm_source || null,
+        utm_medium: order.utm_medium || null,
+        utm_content: order.utm_content || null,
+        utm_term: order.utm_term || null
       };
     }
 
@@ -243,6 +248,22 @@ export function createOrderNotifications(store, source, orders, options = {}) {
 
     if (order.campaign_id && !ordersByCountry[groupKey].campaign_id) {
       ordersByCountry[groupKey].campaign_id = order.campaign_id;
+    }
+
+    if (order.utm_campaign && !ordersByCountry[groupKey].utm_campaign) {
+      ordersByCountry[groupKey].utm_campaign = order.utm_campaign;
+    }
+    if (order.utm_source && !ordersByCountry[groupKey].utm_source) {
+      ordersByCountry[groupKey].utm_source = order.utm_source;
+    }
+    if (order.utm_medium && !ordersByCountry[groupKey].utm_medium) {
+      ordersByCountry[groupKey].utm_medium = order.utm_medium;
+    }
+    if (order.utm_content && !ordersByCountry[groupKey].utm_content) {
+      ordersByCountry[groupKey].utm_content = order.utm_content;
+    }
+    if (order.utm_term && !ordersByCountry[groupKey].utm_term) {
+      ordersByCountry[groupKey].utm_term = order.utm_term;
     }
   }
 
@@ -281,18 +302,6 @@ export function createOrderNotifications(store, source, orders, options = {}) {
       }
     }
 
-    if (isShopify) {
-      const dateKey = data.latest ? data.latest.toISOString().slice(0, 10) : null;
-      const matchedCampaign = findShopifyCampaignName(db, {
-        store,
-        date: dateKey,
-        countryLabel: displayCountry,
-        countryCode: data.code,
-        amount: totalAmount
-      });
-      data.campaign_name = matchedCampaign || null;
-    }
-
     createNotification({
       store,
       type: 'order',
@@ -305,7 +314,12 @@ export function createOrderNotifications(store, source, orders, options = {}) {
         value: data.total,
         order_count: data.count,
         timestamp: data.latest.toISOString(),
-        campaign_name: data.campaign_name || null
+        campaign_name: data.campaign_name || null,
+        utm_campaign: data.utm_campaign || null,
+        utm_source: data.utm_source || null,
+        utm_medium: data.utm_medium || null,
+        utm_content: data.utm_content || null,
+        utm_term: data.utm_term || null
       },
       timestamp: ingestionTimestamp,
       eventKey
@@ -317,28 +331,138 @@ export function createOrderNotifications(store, source, orders, options = {}) {
   return created;
 }
 
-function findShopifyCampaignName(db, { store, date, countryLabel, countryCode, amount }) {
+function findShopifyCampaignMatch(db, { store, date, countryLabel, countryCode, amount, utmCampaign }) {
   if (!date) {
     return null;
   }
 
-  const query = `
-    SELECT campaign_name, conversion_value
-    FROM meta_daily_metrics
-    WHERE store = ? AND date = ? AND country = ? AND conversion_value > 0
-    ORDER BY ABS(conversion_value - ?) ASC
-    LIMIT 1
-  `;
-
   const candidates = [countryLabel, countryCode].filter(Boolean);
   for (const country of candidates) {
-    const row = db.prepare(query).get(store, date, country, amount || 0);
+    if (utmCampaign) {
+      const utmRow = db.prepare(`
+        SELECT campaign_id, campaign_name
+        FROM meta_daily_metrics
+        WHERE store = ? AND date = ? AND country = ?
+          AND (LOWER(campaign_name) = LOWER(?) OR campaign_id = ?)
+        LIMIT 1
+      `).get(store, date, country, utmCampaign, utmCampaign);
+      if (utmRow?.campaign_name) {
+        return {
+          campaign_id: utmRow.campaign_id || null,
+          campaign_name: utmRow.campaign_name,
+          match_type: 'utm'
+        };
+      }
+    }
+
+    const row = db.prepare(`
+      SELECT campaign_id, campaign_name, conversion_value
+      FROM meta_daily_metrics
+      WHERE store = ? AND date = ? AND country = ? AND conversion_value > 0
+      ORDER BY ABS(conversion_value - ?) ASC
+      LIMIT 1
+    `).get(store, date, country, amount || 0);
     if (row?.campaign_name) {
-      return row.campaign_name;
+      return {
+        campaign_id: row.campaign_id || null,
+        campaign_name: row.campaign_name,
+        match_type: 'aov'
+      };
     }
   }
 
   return null;
+}
+
+function findShopifyCampaignName(db, { store, date, countryLabel, countryCode, amount }) {
+  const match = findShopifyCampaignMatch(db, { store, date, countryLabel, countryCode, amount });
+  return match?.campaign_name || null;
+}
+
+export function createShopifyCampaignMatchNotifications(store = 'shawq') {
+  const db = getDb();
+  const notifications = db.prepare(`
+    SELECT id, metadata, country, value, timestamp
+    FROM notifications
+    WHERE store = ? AND source = 'shopify' AND type = 'order'
+  `).all(store);
+
+  let created = 0;
+
+  for (const notification of notifications) {
+    let metadata;
+    try {
+      metadata = notification.metadata ? JSON.parse(notification.metadata) : {};
+    } catch (e) {
+      console.warn('[Notification] Failed to parse metadata for Shopify match:', e.message);
+      continue;
+    }
+
+    if (metadata?.campaign_name) {
+      continue;
+    }
+
+    const timestamp = metadata?.timestamp || notification.timestamp;
+    const date = timestamp ? new Date(timestamp) : null;
+    if (!date || isNaN(date)) {
+      continue;
+    }
+
+    const dateKey = date.toISOString().slice(0, 10);
+    const amount = metadata?.value ?? notification.value ?? 0;
+    const countryLabel = metadata?.country || notification.country;
+    const countryCode = metadata?.country_code;
+    const utmCampaign = metadata?.utm_campaign || null;
+
+    const match = findShopifyCampaignMatch(db, {
+      store,
+      date: dateKey,
+      countryLabel,
+      countryCode,
+      amount,
+      utmCampaign
+    });
+
+    if (!match?.campaign_name) {
+      continue;
+    }
+
+    const eventKey = `shopify-match|${store}|${notification.id}|${match.campaign_id || match.campaign_name}`;
+    const exists = db.prepare(`
+      SELECT 1 FROM notifications WHERE store = ? AND event_key = ? LIMIT 1
+    `).get(store, eventKey);
+    if (exists) {
+      continue;
+    }
+
+    const displayCountry = countryLabel || countryCode || 'Unknown';
+    const currency = metadata?.currency || 'USD';
+    const amountLabel = `${Math.round(amount).toLocaleString()} ${currency}`;
+    const message = `Matched to ${match.campaign_name} • ${displayCountry} • ${amountLabel}`;
+
+    createNotification({
+      store,
+      type: 'order_match',
+      message,
+      metadata: {
+        source: 'meta',
+        campaign_name: match.campaign_name,
+        campaign_id: match.campaign_id,
+        match_type: match.match_type,
+        matched_notification_id: notification.id,
+        country: displayCountry,
+        country_code: countryCode || null,
+        value: amount,
+        timestamp: date.toISOString(),
+        utm_campaign: utmCampaign || null
+      },
+      eventKey
+    });
+
+    created++;
+  }
+
+  return created;
 }
 
 export function backfillShopifyCampaignNames(store = 'shawq') {
