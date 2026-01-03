@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
-import { createOrderNotifications, backfillShopifyCampaignNames } from './notificationService.js';
+import { createOrderNotifications, createShopifyCampaignMatchNotifications } from './notificationService.js';
 
 const META_API_VERSION = 'v19.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -811,9 +811,9 @@ export async function syncMetaData(store) {
     }
 
     if (store === 'shawq') {
-      const updated = backfillShopifyCampaignNames(store);
-      if (updated > 0) {
-        console.log(`[Meta] Backfilled ${updated} Shopify campaign names for ${store}`);
+      const matched = createShopifyCampaignMatchNotifications(store);
+      if (matched > 0) {
+        console.log(`[Meta] Created ${matched} Shopify campaign match notifications for ${store}`);
       }
     }
 
