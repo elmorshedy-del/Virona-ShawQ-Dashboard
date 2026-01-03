@@ -281,18 +281,6 @@ export function createOrderNotifications(store, source, orders, options = {}) {
       }
     }
 
-    if (isShopify) {
-      const dateKey = data.latest ? data.latest.toISOString().slice(0, 10) : null;
-      const matchedCampaign = findShopifyCampaignName(db, {
-        store,
-        date: dateKey,
-        countryLabel: displayCountry,
-        countryCode: data.code,
-        amount: totalAmount
-      });
-      data.campaign_name = matchedCampaign || null;
-    }
-
     createNotification({
       store,
       type: 'order',
@@ -317,24 +305,56 @@ export function createOrderNotifications(store, source, orders, options = {}) {
   return created;
 }
 
-function findShopifyCampaignName(db, { store, date, countryLabel, countryCode, amount }) {
-  if (!date) {
+function findShopifyCampaignMatch(db, { store, date, countryLabel, countryCode, amount, utmCampaign }) {
+  if (!date || !amount) {
     return null;
   }
 
-  const query = `
-    SELECT campaign_name, conversion_value
+  const candidates = [countryLabel, countryCode].filter(Boolean);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const utmQuery = `
+    SELECT campaign_id, campaign_name
     FROM meta_daily_metrics
-    WHERE store = ? AND date = ? AND country = ? AND conversion_value > 0
-    ORDER BY ABS(conversion_value - ?) ASC
+    WHERE store = ? AND date = ? AND country = ? AND LOWER(campaign_name) = LOWER(?)
     LIMIT 1
   `;
 
-  const candidates = [countryLabel, countryCode].filter(Boolean);
+  if (utmCampaign) {
+    for (const country of candidates) {
+      const row = db.prepare(utmQuery).get(store, date, country, utmCampaign);
+      if (row?.campaign_name) {
+        return {
+          campaign_id: row.campaign_id || null,
+          campaign_name: row.campaign_name,
+          match_reason: 'utm_campaign'
+        };
+      }
+    }
+  }
+
+  const aovQuery = `
+    SELECT campaign_id,
+           campaign_name,
+           conversion_value,
+           conversions
+    FROM meta_daily_metrics
+    WHERE store = ? AND date = ? AND country = ? AND conversions > 0 AND conversion_value > 0
+    ORDER BY ABS((conversion_value / conversions) - ?) ASC
+    LIMIT 1
+  `;
+
   for (const country of candidates) {
-    const row = db.prepare(query).get(store, date, country, amount || 0);
+    const row = db.prepare(aovQuery).get(store, date, country, amount);
     if (row?.campaign_name) {
-      return row.campaign_name;
+      return {
+        campaign_id: row.campaign_id || null,
+        campaign_name: row.campaign_name,
+        match_reason: 'aov_closest',
+        matched_aov: row.conversions ? row.conversion_value / row.conversions : null
+      };
     }
   }
 
@@ -391,6 +411,88 @@ export function backfillShopifyCampaignNames(store = 'shawq') {
   }
 
   return updated;
+}
+
+export function createShopifyCampaignMatchNotifications(store = 'shawq', { startDate, endDate } = {}) {
+  const db = getDb();
+  const params = [store];
+  const dateClause = startDate && endDate ? 'AND date BETWEEN ? AND ?' : '';
+  if (dateClause) {
+    params.push(startDate, endDate);
+  }
+
+  const orders = db.prepare(`
+    SELECT order_id,
+           date,
+           country,
+           country_code,
+           order_total,
+           currency,
+           order_created_at,
+           utm_campaign
+    FROM shopify_orders
+    WHERE store = ?
+    ${dateClause}
+  `).all(...params);
+
+  let created = 0;
+
+  for (const order of orders) {
+    const dateKey = order.date || (order.order_created_at ? new Date(order.order_created_at).toISOString().slice(0, 10) : null);
+    const amount = parseFloat(order.order_total) || 0;
+    if (!dateKey || !amount) {
+      continue;
+    }
+
+    const match = findShopifyCampaignMatch(db, {
+      store,
+      date: dateKey,
+      countryLabel: order.country,
+      countryCode: order.country_code,
+      amount,
+      utmCampaign: order.utm_campaign
+    });
+
+    if (!match?.campaign_name) {
+      continue;
+    }
+
+    const eventKey = order.order_id ? `match|${store}|${order.order_id}` : null;
+    if (eventKey) {
+      const exists = db.prepare(`SELECT 1 FROM notifications WHERE event_key = ? LIMIT 1`).get(eventKey);
+      if (exists) {
+        continue;
+      }
+    }
+
+    const currency = order.currency || 'USD';
+    const amountLabel = `${currency} ${amount.toFixed(2)}`;
+    const countryLabel = order.country || order.country_code || 'Unknown';
+    const message = `Matched Campaign • ${match.campaign_name} • ${countryLabel} • ${amountLabel}`;
+
+    createNotification({
+      store,
+      type: 'campaign_match',
+      message,
+      metadata: {
+        source: 'match',
+        campaign_id: match.campaign_id || null,
+        campaign_name: match.campaign_name,
+        match_reason: match.match_reason,
+        matched_aov: match.matched_aov || null,
+        order_id: order.order_id || null,
+        country: countryLabel,
+        country_code: order.country_code || null,
+        value: amount,
+        currency
+      },
+      eventKey
+    });
+
+    created++;
+  }
+
+  return created;
 }
 
 // Get recent notifications
