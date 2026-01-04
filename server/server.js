@@ -18,6 +18,7 @@ import { syncMetaData } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
+import { syncShopifyMetaAttribution } from './services/metaAttributionService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -102,6 +103,7 @@ async function backgroundSync() {
       syncShopifyOrders(),
       syncSallaOrders()
     ]);
+    await syncShopifyMetaAttribution('shawq');
     cleanupOldNotifications();
     console.log('[Sync] Background sync complete');
   } catch (error) {
@@ -126,6 +128,7 @@ async function shopifyRealtimeSync() {
   console.log('[Shopify] Starting rapid Shopify sync...');
   try {
     await syncShopifyOrders();
+    await syncShopifyMetaAttribution('shawq', { lookbackHours: 6 });
     console.log('[Shopify] Rapid Shopify sync complete');
   } catch (error) {
     console.error('[Shopify] Rapid Shopify sync error:', error);
