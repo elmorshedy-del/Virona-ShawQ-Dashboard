@@ -16,6 +16,7 @@ import AIAnalytics from './components/AIAnalytics';
 import AIBudget from './components/AIBudget';
 import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
+import CreativePreview from './components/CreativePreview';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -254,7 +255,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'AI Analytics', 'AI Budget', 'Budget Calculator'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'AI Analytics', 'AI Budget', 'Budget Calculator'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1290,16 +1291,20 @@ export default function App() {
         )}
 
         {activeTab === 4 && (
+          <CreativePreview storeId={store?.id} />
+        )}
+
+        {activeTab === 5 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 5 && (
+        {activeTab === 6 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 6 && (
+        {activeTab === 7 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
