@@ -11,6 +11,7 @@ import aiRouter from './routes/ai.js';
 import budgetIntelligenceRouter from './routes/budgetIntelligence.js';
 import whatifRouter from './routes/whatif.js';
 import aibudgetRouter from './routes/aibudget.js';
+import metaRouter from './routes/meta.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
@@ -84,6 +85,7 @@ app.use('/api/ai', aiRouter);
 app.use('/api/budget-intelligence', budgetIntelligenceRouter);
 app.use('/api/whatif', whatifRouter);
 app.use('/api/aibudget', aibudgetRouter);
+app.use('/api/meta', metaRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
