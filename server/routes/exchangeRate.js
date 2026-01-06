@@ -11,7 +11,7 @@ router.get('/debug', (req, res) => {
 
     // Get last 60 days of rates
     const rates = db.prepare(`
-      SELECT date, rate, source, fetched_at
+      SELECT date, rate, source, created_at
       FROM exchange_rates
       WHERE from_currency = 'TRY' AND to_currency = 'USD'
       ORDER BY date DESC
@@ -40,7 +40,7 @@ router.get('/debug', (req, res) => {
     const apiCallsThisMonth = db.prepare(`
       SELECT COUNT(*) as count
       FROM exchange_rates
-      WHERE source = 'oxr' AND fetched_at >= ?
+      WHERE source = 'oxr' AND created_at >= ?
     `).get(monthStr);
 
     // Get missing dates in last 60 days
@@ -70,7 +70,7 @@ router.get('/debug', (req, res) => {
         rate: r.rate,
         usdToTry: (1 / r.rate).toFixed(2),
         source: r.source,
-        fetchedAt: r.fetched_at
+        createdAt: r.created_at
       })),
       conversionStats: conversionStats.map(s => ({
         date: s.date,
