@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fetch from 'node-fetch';
 
 import { initDb, getDb } from './db/database.js';
 import analyticsRouter from './routes/analytics.js';
@@ -12,6 +13,7 @@ import budgetIntelligenceRouter from './routes/budgetIntelligence.js';
 import whatifRouter from './routes/whatif.js';
 import aibudgetRouter from './routes/aibudget.js';
 import metaRouter from './routes/meta.js';
+import exchangeRateRoutes from './routes/exchangeRate.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
@@ -86,6 +88,7 @@ app.use('/api/budget-intelligence', budgetIntelligenceRouter);
 app.use('/api/whatif', whatifRouter);
 app.use('/api/aibudget', aibudgetRouter);
 app.use('/api/meta', metaRouter);
+app.use('/api/exchange-rates', exchangeRateRoutes);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
@@ -134,6 +137,52 @@ async function shopifyRealtimeSync() {
   }
 }
 
+// Daily exchange rate sync - fetch yesterday's final rate
+async function syncDailyExchangeRate() {
+  const OXR_APP_ID = process.env.OXR_APP_ID;
+  if (!OXR_APP_ID) {
+    console.log('[Exchange] No OXR_APP_ID configured, skipping daily rate sync');
+    return;
+  }
+
+  const db = getDb();
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const dateStr = yesterday.toISOString().split('T')[0];
+
+  // Check if already have yesterday's rate
+  const existing = db.prepare(`
+    SELECT rate FROM exchange_rates
+    WHERE from_currency = 'TRY' AND to_currency = 'USD' AND date = ?
+  `).get(dateStr);
+
+  if (existing) {
+    console.log(`[Exchange] Already have rate for ${dateStr}: ${existing.rate.toFixed(6)}`);
+    return;
+  }
+
+  // Fetch from OXR
+  try {
+    const url = `https://openexchangerates.org/api/historical/${dateStr}.json?app_id=${OXR_APP_ID}&symbols=TRY`;
+    console.log(`[Exchange] Fetching daily rate for ${dateStr}...`);
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (data.rates?.TRY) {
+      const tryToUsd = 1 / data.rates.TRY;
+
+      db.prepare(`
+        INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source, fetched_at)
+        VALUES ('TRY', 'USD', ?, ?, 'oxr', datetime('now'))
+      `).run(tryToUsd, dateStr);
+
+      console.log(`[Exchange] Stored ${dateStr}: TRY→USD = ${tryToUsd.toFixed(6)}`);
+    }
+  } catch (err) {
+    console.error(`[Exchange] Daily sync error: ${err.message}`);
+  }
+}
+
 // Initial sync on startup
 setTimeout(backgroundSync, 5000);
 
@@ -148,6 +197,11 @@ setInterval(shopifyRealtimeSync, SHOPIFY_SYNC_INTERVAL);
 
 // What-If sync every 24 hours
 setInterval(whatifSync, 24 * 60 * 60 * 1000);
+
+// Daily exchange rate sync - runs once per day at startup check + every 24 hours
+// Fetches yesterday's final TRY→USD rate
+setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
+setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
