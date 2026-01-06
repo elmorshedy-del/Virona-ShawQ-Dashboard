@@ -24,7 +24,7 @@ import {
   getAllMetaObjects
 } from '../services/analyticsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
-import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
+import { syncMetaData, getBackfillStatus, triggerBackfill, getExchangeRateDebug } from '../services/metaService.js';
 import { getShopifyConnectionStatus } from '../services/shopifyService.js';
 
 const router = express.Router();
@@ -85,6 +85,16 @@ router.post('/meta/import', async (req, res) => {
   } catch (err) {
     console.error('Meta import error:', err);
     res.status(500).json({ error: err?.message || 'Meta import failed' });
+  }
+});
+
+// Meta exchange rate debug endpoint (Shawq)
+router.get('/meta/exchange-rate-debug', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getExchangeRateDebug(store));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
