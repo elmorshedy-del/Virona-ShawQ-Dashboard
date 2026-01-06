@@ -319,33 +319,63 @@ router.get('/ads/:adId/video', async (req, res) => {
     });
   }
 
-  const videoResult = await fetchMetaJson({
+  const previewResult = await fetchMetaJson({
     path: `/${videoId}`,
-    params: { fields: 'source,picture,thumbnails{uri},length,permalink_url' },
+    params: { fields: 'picture,thumbnails{uri},length,permalink_url' },
     store,
     adAccountId,
     localEndpoint: '/api/meta/ads/:adId/video'
   });
 
-  if (!videoResult.ok) {
-    return res.status(videoResult.status).json({
-      error: videoResult.data?.error?.message || 'Meta request failed',
+  if (!previewResult.ok) {
+    const errorCode = previewResult.data?.error?.code;
+    if (errorCode === 10) {
+      return res.json({ playable: false, reason: 'NO_VIDEO_PERMISSION', video_id: videoId });
+    }
+    return res.status(previewResult.status).json({
+      error: previewResult.data?.error?.message || 'Meta request failed',
       video_id: videoId
     });
   }
 
-  const videoData = videoResult.data || {};
+  const previewData = previewResult.data || {};
   const thumbnailUrl =
-    videoData?.picture ||
-    videoData?.thumbnails?.data?.[0]?.uri ||
+    previewData?.picture ||
+    previewData?.thumbnails?.data?.[0]?.uri ||
     null;
+
+  const sourceResult = await fetchMetaJson({
+    path: `/${videoId}`,
+    params: { fields: 'source' },
+    store,
+    adAccountId,
+    localEndpoint: '/api/meta/ads/:adId/video'
+  });
+
+  if (!sourceResult.ok) {
+    const errorCode = sourceResult.data?.error?.code;
+    if (errorCode === 10) {
+      return res.json({
+        playable: false,
+        reason: 'NO_SOURCE_PERMISSION',
+        video_id: videoId,
+        thumbnail_url: thumbnailUrl,
+        permalink_url: previewData?.permalink_url || null,
+        length: previewData?.length ?? null
+      });
+    }
+    return res.status(sourceResult.status).json({
+      error: sourceResult.data?.error?.message || 'Meta request failed',
+      video_id: videoId
+    });
+  }
 
   res.json({
     video_id: videoId,
-    source_url: videoData?.source || null,
+    source_url: sourceResult.data?.source || null,
     thumbnail_url: thumbnailUrl,
-    length: videoData?.length ?? null,
-    permalink_url: videoData?.permalink_url || null
+    length: previewData?.length ?? null,
+    permalink_url: previewData?.permalink_url || null
   });
 });
 
