@@ -58,6 +58,8 @@ const getLocalDateString = (date = new Date()) => {
   return localDate.toISOString().split('T')[0];
 };
 
+const getUtcDateString = (date = new Date()) => date.toISOString().split('T')[0];
+
 const EPSILON = 1e-6;
 const K_PRIOR = 50;
 const CREATIVE_SAMPLES = 2000;
@@ -324,6 +326,8 @@ export default function App() {
   // Campaign scope selector
   const [selectedCampaignId, setSelectedCampaignId] = useState('');
   const [campaignOptions, setCampaignOptions] = useState([]);
+  const [exchangeRateDebug, setExchangeRateDebug] = useState(null);
+  const [exchangeRateStatus, setExchangeRateStatus] = useState({ loading: false, error: null });
 
   const diagnosticsCampaignOptions = useMemo(() => {
     if (!Array.isArray(metaAdManagerData)) return [];
@@ -345,6 +349,27 @@ export default function App() {
     [campaignOptions, selectedCampaignId]
   );
   const campaignScopeLabel = selectedCampaignOption?.campaignName || 'All Campaigns';
+
+  const exchangeRateWeek = useMemo(() => {
+    if (currentStore !== 'shawq') return [];
+    const weekRates = Array.isArray(exchangeRateDebug?.weekRates) ? exchangeRateDebug.weekRates : [];
+    const rateMap = new Map(weekRates.map((row) => [row.date, row]));
+    const dates = [];
+    const today = new Date();
+    for (let i = 6; i >= 0; i -= 1) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      const dateStr = getUtcDateString(date);
+      const row = rateMap.get(dateStr);
+      dates.push({
+        date: dateStr,
+        rate: row?.rate ?? null,
+        source: row?.source ?? null,
+        fetched_at: row?.fetched_at ?? null
+      });
+    }
+    return dates;
+  }, [currentStore, exchangeRateDebug]);
 
   const renderStoreAvatar = (storeId) => {
     if (storeId === 'vironax') {
@@ -672,6 +697,30 @@ export default function App() {
       loadData();
     }
   }, [loadData, storeLoaded]);
+
+  const loadExchangeRateDebug = useCallback(async () => {
+    if (currentStore !== 'shawq') return;
+    setExchangeRateStatus(prev => ({ ...prev, loading: true }));
+    const data = await fetchJson(`${API_BASE}/meta/exchange-rate-debug?store=${currentStore}`, null);
+    if (data) {
+      setExchangeRateDebug(data);
+      setExchangeRateStatus({ loading: false, error: null });
+    } else {
+      setExchangeRateStatus({ loading: false, error: 'Unable to load exchange rate status.' });
+    }
+  }, [currentStore]);
+
+  useEffect(() => {
+    if (!storeLoaded || currentStore !== 'shawq') {
+      setExchangeRateDebug(null);
+      setExchangeRateStatus({ loading: false, error: null });
+      return;
+    }
+
+    loadExchangeRateDebug();
+    const interval = setInterval(loadExchangeRateDebug, 60 * 1000);
+    return () => clearInterval(interval);
+  }, [currentStore, loadExchangeRateDebug, storeLoaded]);
 
   // Load breakdown data for Section 2 (pure meta)
   useEffect(() => {
@@ -1310,6 +1359,105 @@ export default function App() {
             periodDays={budgetIntelligence?.period?.days || 30}
             storeName={store?.id}
           />
+        )}
+
+        {currentStore === 'shawq' && (
+          <div className="mt-8 bg-white rounded-xl p-6 shadow-sm border border-gray-200">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">FX Debug Panel</h3>
+                <p className="text-xs text-gray-500">TRY → USD daily exchange rate status</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {exchangeRateStatus.loading && (
+                  <span className="text-xs text-gray-400">Updating...</span>
+                )}
+                <span
+                  className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                    exchangeRateDebug?.apiStatus === 'success'
+                      ? 'bg-green-100 text-green-700'
+                      : exchangeRateDebug?.apiStatus === 'fallback'
+                        ? 'bg-amber-100 text-amber-700'
+                        : 'bg-gray-100 text-gray-600'
+                  }`}
+                >
+                  {exchangeRateDebug?.apiStatus === 'success'
+                    ? 'API Success'
+                    : exchangeRateDebug?.apiStatus === 'fallback'
+                      ? 'API Fallback'
+                      : 'Status Unknown'}
+                </span>
+              </div>
+            </div>
+
+            {exchangeRateStatus.error && (
+              <div className="mb-4 text-sm text-red-600">{exchangeRateStatus.error}</div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              <div className="p-4 rounded-lg bg-gray-50 border border-gray-200">
+                <div className="text-xs text-gray-500 mb-1">Latest rate</div>
+                <div className="text-lg font-semibold text-gray-900">
+                  {exchangeRateDebug?.latestRate?.rate ? exchangeRateDebug.latestRate.rate.toFixed(6) : '—'}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {exchangeRateDebug?.latestRate?.date || 'No rate stored'}
+                </div>
+              </div>
+              <div className="p-4 rounded-lg bg-gray-50 border border-gray-200">
+                <div className="text-xs text-gray-500 mb-1">Last updated</div>
+                <div className="text-sm font-medium text-gray-900">
+                  {exchangeRateDebug?.latestRate?.fetched_at
+                    ? new Date(exchangeRateDebug.latestRate.fetched_at).toLocaleString()
+                    : '—'}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  Source: {exchangeRateDebug?.latestRate?.source || '—'}
+                </div>
+              </div>
+              <div className="p-4 rounded-lg bg-gray-50 border border-gray-200">
+                <div className="text-xs text-gray-500 mb-1">Last fetch attempt</div>
+                <div className="text-sm font-medium text-gray-900">
+                  {exchangeRateDebug?.lastFetch?.status || '—'}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {exchangeRateDebug?.lastFetch?.timestamp
+                    ? new Date(exchangeRateDebug.lastFetch.timestamp).toLocaleString()
+                    : '—'}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-sm font-semibold text-gray-800 mb-3">Previous 7 days</div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b">
+                      <th className="py-2 pr-4">Date</th>
+                      <th className="py-2 pr-4">Rate</th>
+                      <th className="py-2 pr-4">Source</th>
+                      <th className="py-2">Fetched at</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {exchangeRateWeek.map((row) => (
+                      <tr key={row.date} className="border-b last:border-0">
+                        <td className="py-2 pr-4 text-gray-700">{row.date}</td>
+                        <td className="py-2 pr-4 text-gray-900">
+                          {row.rate ? Number(row.rate).toFixed(6) : '—'}
+                        </td>
+                        <td className="py-2 pr-4 text-gray-500">{row.source || '—'}</td>
+                        <td className="py-2 text-gray-500">
+                          {row.fetched_at ? new Date(row.fetched_at).toLocaleString() : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
