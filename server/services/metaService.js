@@ -60,7 +60,7 @@ async function fetchTryToUsdRateForDate(date) {
   }
 
   try {
-    const url = `https://v6.exchangerate-api.com/v6/${apiKey}/history/TRY/${date}`;
+    const url = `https://v6.exchangerate-api.com/v6/${apiKey}/history/TRY/${date.replace(/-/g, '/')}`;
     const response = await fetch(url);
     if (response.ok) {
       const data = await response.json();
