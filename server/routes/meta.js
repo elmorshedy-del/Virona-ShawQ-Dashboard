@@ -204,6 +204,10 @@ function extractVideoId(creative) {
   return null;
 }
 
+function isMetaPermissionError(result, code) {
+  return result?.data?.error?.code === code;
+}
+
 router.get('/adaccounts', async (req, res) => {
   const store = req.query.store || 'vironax';
   const { accessToken } = getStoreConfig(store);
@@ -319,33 +323,69 @@ router.get('/ads/:adId/video', async (req, res) => {
     });
   }
 
-  const videoResult = await fetchMetaJson({
+  const safePreviewResult = await fetchMetaJson({
     path: `/${videoId}`,
-    params: { fields: 'source,picture,thumbnails{uri},length,permalink_url' },
+    params: { fields: 'picture,thumbnails{uri},length,permalink_url' },
     store,
     adAccountId,
     localEndpoint: '/api/meta/ads/:adId/video'
   });
 
-  if (!videoResult.ok) {
-    return res.status(videoResult.status).json({
-      error: videoResult.data?.error?.message || 'Meta request failed',
+  if (!safePreviewResult.ok) {
+    if (isMetaPermissionError(safePreviewResult, 10)) {
+      return res.status(200).json({
+        playable: false,
+        reason: 'NO_VIDEO_PERMISSION',
+        video_id: videoId
+      });
+    }
+
+    return res.status(safePreviewResult.status).json({
+      error: safePreviewResult.data?.error?.message || 'Meta request failed',
       video_id: videoId
     });
   }
 
-  const videoData = videoResult.data || {};
+  const safePreviewData = safePreviewResult.data || {};
   const thumbnailUrl =
-    videoData?.picture ||
-    videoData?.thumbnails?.data?.[0]?.uri ||
+    safePreviewData?.picture ||
+    safePreviewData?.thumbnails?.data?.[0]?.uri ||
     null;
+
+  const sourceResult = await fetchMetaJson({
+    path: `/${videoId}`,
+    params: { fields: 'source' },
+    store,
+    adAccountId,
+    localEndpoint: '/api/meta/ads/:adId/video'
+  });
+
+  if (!sourceResult.ok) {
+    if (isMetaPermissionError(sourceResult, 10)) {
+      return res.status(200).json({
+        playable: false,
+        reason: 'NO_SOURCE_PERMISSION',
+        video_id: videoId,
+        thumbnail_url: thumbnailUrl,
+        permalink_url: safePreviewData?.permalink_url || null,
+        length: safePreviewData?.length ?? null
+      });
+    }
+
+    return res.status(sourceResult.status).json({
+      error: sourceResult.data?.error?.message || 'Meta request failed',
+      video_id: videoId
+    });
+  }
+
+  const sourceData = sourceResult.data || {};
 
   res.json({
     video_id: videoId,
-    source_url: videoData?.source || null,
+    source_url: sourceData?.source || null,
     thumbnail_url: thumbnailUrl,
-    length: videoData?.length ?? null,
-    permalink_url: videoData?.permalink_url || null
+    length: safePreviewData?.length ?? null,
+    permalink_url: safePreviewData?.permalink_url || null
   });
 });
 
