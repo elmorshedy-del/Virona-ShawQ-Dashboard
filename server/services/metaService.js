@@ -142,11 +142,13 @@ async function getTryToUsdRatesForRange(startDate, endDate) {
     rateCacheByDate.set(row.date, row);
   });
 
-  for (const date of dates) {
-    if (!rateMap.has(date)) {
-      const rate = await getTryToUsdRateForDate(date);
-      rateMap.set(date, rate);
-    }
+  const missingDates = dates.filter((date) => !rateMap.has(date));
+  if (missingDates.length > 0) {
+    const ratePromises = missingDates.map((date) => getTryToUsdRateForDate(date));
+    const fetchedRates = await Promise.all(ratePromises);
+    missingDates.forEach((date, i) => {
+      rateMap.set(date, fetchedRates[i]);
+    });
   }
 
   return rateMap;
