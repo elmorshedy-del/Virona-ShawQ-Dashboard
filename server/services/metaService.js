@@ -66,6 +66,88 @@ async function getCurrencyRate(store) {
   return 1.0;
 }
 
+/**
+ * Get TRY→USD exchange rate for a specific date.
+ * - For today: uses previous day's rate (today's rate not finalized until tomorrow)
+ * - For past dates: checks DB cache, fetches from OXR if missing
+ * @param {string} dateStr - Date in YYYY-MM-DD format
+ * @returns {Promise<number>} - TRY to USD rate
+ */
+async function getExchangeRateForDate(dateStr) {
+  const db = getDb();
+  const today = new Date().toISOString().split('T')[0];
+
+  // For today, use yesterday's rate (today's rate not available until tomorrow)
+  let lookupDate = dateStr;
+  if (dateStr === today) {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    lookupDate = yesterday.toISOString().split('T')[0];
+  }
+
+  // Check cache first
+  const cached = db.prepare(`
+    SELECT rate FROM exchange_rates
+    WHERE from_currency = 'TRY' AND to_currency = 'USD' AND date = ?
+  `).get(lookupDate);
+
+  if (cached) {
+    return cached.rate;
+  }
+
+  // Fetch from OXR if not cached
+  const OXR_APP_ID = process.env.OXR_APP_ID;
+  if (!OXR_APP_ID) {
+    console.warn(`[Exchange] No OXR_APP_ID, using fallback rate for ${lookupDate}`);
+    return FALLBACK_TRY_TO_USD;
+  }
+
+  try {
+    const url = `https://openexchangerates.org/api/historical/${lookupDate}.json?app_id=${OXR_APP_ID}&symbols=TRY`;
+    console.log(`[Exchange] Fetching rate for ${lookupDate} from OXR...`);
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (data.error) {
+      console.error(`[Exchange] OXR API error for ${lookupDate}: ${data.message || data.description}`);
+      return FALLBACK_TRY_TO_USD;
+    }
+
+    if (data.rates?.TRY) {
+      const tryToUsd = 1 / data.rates.TRY;
+
+      // Cache it
+      db.prepare(`
+        INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source, fetched_at)
+        VALUES ('TRY', 'USD', ?, ?, 'oxr', datetime('now'))
+      `).run(tryToUsd, lookupDate);
+
+      console.log(`[Exchange] Fetched ${lookupDate}: TRY→USD = ${tryToUsd.toFixed(6)} (1 USD = ${data.rates.TRY.toFixed(2)} TRY)`);
+      return tryToUsd;
+    }
+  } catch (err) {
+    console.error(`[Exchange] Error fetching ${lookupDate}: ${err.message}`);
+  }
+
+  // Fallback: try previous day from cache
+  const prevDate = new Date(lookupDate);
+  prevDate.setDate(prevDate.getDate() - 1);
+  const prevDateStr = prevDate.toISOString().split('T')[0];
+
+  const prevCached = db.prepare(`
+    SELECT rate FROM exchange_rates
+    WHERE from_currency = 'TRY' AND to_currency = 'USD' AND date = ?
+  `).get(prevDateStr);
+
+  if (prevCached) {
+    console.log(`[Exchange] Using previous day's cached rate for ${lookupDate}: ${prevCached.rate.toFixed(6)}`);
+    return prevCached.rate;
+  }
+
+  console.warn(`[Exchange] Using fallback rate for ${lookupDate}: ${FALLBACK_TRY_TO_USD}`);
+  return FALLBACK_TRY_TO_USD;
+}
+
 // Helper: Extract metric from Meta's "actions" list
 function getActionValue(actions, type) {
   if (!Array.isArray(actions)) return 0;
@@ -339,7 +421,7 @@ async function fetchMetaObjects(store, accountId, accessToken) {
 // ============================================================================
 // SYNC INSIGHTS WITH STATUS (campaign, adset, or ad level)
 // ============================================================================
-async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, rate, statusMaps = {}) {
+async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, statusMaps = {}) {
   const db = getDb();
   const cleanAccountId = accountId.replace(/^act_/, '');
   const { campaignStatusMap = new Map(), adsetStatusMap = new Map() } = statusMaps;
@@ -426,66 +508,82 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
     insertStmt = db.prepare(`
       INSERT OR REPLACE INTO meta_daily_metrics (
         store, date, campaign_id, campaign_name, country,
-        spend, impressions, clicks, reach,
+        spend, spend_original, impressions, clicks, reach,
         landing_page_views, add_to_cart, checkouts_initiated,
-        conversions, conversion_value,
-        inline_link_clicks, cost_per_inline_link_click,
+        conversions, conversion_value, conversion_value_original,
+        inline_link_clicks, cost_per_inline_link_click, cost_per_inline_link_click_original,
         outbound_clicks, unique_outbound_clicks, outbound_clicks_ctr, unique_outbound_clicks_ctr,
-        status, effective_status
+        original_currency, status, effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @country,
-        @spend, @impressions, @clicks, @reach,
+        @spend, @spend_original, @impressions, @clicks, @reach,
         @lpv, @atc, @checkout,
-        @conversions, @conversion_value,
-        @inline_link_clicks, @cost_per_inline_link_click,
+        @conversions, @conversion_value, @conversion_value_original,
+        @inline_link_clicks, @cost_per_inline_link_click, @cost_per_inline_link_click_original,
         @outbound_clicks, @unique_outbound_clicks, @outbound_clicks_ctr, @unique_outbound_clicks_ctr,
-        @status, @effective_status
+        @original_currency, @status, @effective_status
       )
     `);
   } else if (level === 'adset') {
     insertStmt = db.prepare(`
       INSERT OR REPLACE INTO meta_adset_metrics (
         store, date, campaign_id, campaign_name, adset_id, adset_name, country,
-        spend, impressions, clicks, reach,
+        spend, spend_original, impressions, clicks, reach,
         landing_page_views, add_to_cart, checkouts_initiated,
-        conversions, conversion_value,
-        inline_link_clicks, cost_per_inline_link_click,
+        conversions, conversion_value, conversion_value_original,
+        inline_link_clicks, cost_per_inline_link_click, cost_per_inline_link_click_original,
         outbound_clicks, unique_outbound_clicks, outbound_clicks_ctr, unique_outbound_clicks_ctr,
-        status, effective_status, adset_status, adset_effective_status
+        original_currency, status, effective_status, adset_status, adset_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @country,
-        @spend, @impressions, @clicks, @reach,
+        @spend, @spend_original, @impressions, @clicks, @reach,
         @lpv, @atc, @checkout,
-        @conversions, @conversion_value,
-        @inline_link_clicks, @cost_per_inline_link_click,
+        @conversions, @conversion_value, @conversion_value_original,
+        @inline_link_clicks, @cost_per_inline_link_click, @cost_per_inline_link_click_original,
         @outbound_clicks, @unique_outbound_clicks, @outbound_clicks_ctr, @unique_outbound_clicks_ctr,
-        @status, @effective_status, @adset_status, @adset_effective_status
+        @original_currency, @status, @effective_status, @adset_status, @adset_effective_status
       )
     `);
   } else if (level === 'ad') {
     insertStmt = db.prepare(`
       INSERT OR REPLACE INTO meta_ad_metrics (
         store, date, campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name, country,
-        spend, impressions, clicks, reach,
+        spend, spend_original, impressions, clicks, reach,
         landing_page_views, add_to_cart, checkouts_initiated,
-        conversions, conversion_value,
-        inline_link_clicks, cost_per_inline_link_click,
+        conversions, conversion_value, conversion_value_original,
+        inline_link_clicks, cost_per_inline_link_click, cost_per_inline_link_click_original,
         outbound_clicks, unique_outbound_clicks, outbound_clicks_ctr, unique_outbound_clicks_ctr,
-        status, effective_status, ad_status, ad_effective_status
+        original_currency, status, effective_status, ad_status, ad_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @ad_id, @ad_name, @country,
-        @spend, @impressions, @clicks, @reach,
+        @spend, @spend_original, @impressions, @clicks, @reach,
         @lpv, @atc, @checkout,
-        @conversions, @conversion_value,
-        @inline_link_clicks, @cost_per_inline_link_click,
+        @conversions, @conversion_value, @conversion_value_original,
+        @inline_link_clicks, @cost_per_inline_link_click, @cost_per_inline_link_click_original,
         @outbound_clicks, @unique_outbound_clicks, @outbound_clicks_ctr, @unique_outbound_clicks_ctr,
-        @status, @effective_status, @ad_status, @ad_effective_status
+        @original_currency, @status, @effective_status, @ad_status, @ad_effective_status
       )
     `);
   }
 
+  // Pre-fetch exchange rates for all unique dates (for Shawq only)
+  const ratesByDate = new Map();
+  if (store === 'shawq') {
+    const uniqueDates = [...new Set(rows.map(row => row.date_start))];
+    for (const date of uniqueDates) {
+      const rate = await getExchangeRateForDate(date);
+      ratesByDate.set(date, rate);
+    }
+  }
+
   const tx = db.transaction(() => {
     for (const row of rows) {
+      // Get date-specific exchange rate for Shawq
+      let rate = 1.0;
+      if (store === 'shawq') {
+        rate = ratesByDate.get(row.date_start) || 1.0;
+      }
+
       // Parse specific funnel steps
       const purchases = getActionValue(row.actions, 'purchase') || getActionValue(row.actions, 'offsite_conversion.fb_pixel_purchase');
       const revenue = getActionValue(row.action_values, 'purchase') || getActionValue(row.action_values, 'offsite_conversion.fb_pixel_purchase');
@@ -537,6 +635,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         campaign_name: row.campaign_name,
         country: row.country || 'ALL',
         spend: parseFloat(row.spend || 0) * rate,
+        spend_original: parseFloat(row.spend || 0),
         impressions: parseInt(row.impressions || 0),
         clicks: parseInt(row.clicks || 0),
         reach: parseInt(row.reach || 0),
@@ -545,12 +644,15 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         checkout: parseInt(checkout),
         conversions: parseInt(purchases),
         conversion_value: parseFloat(revenue || 0) * rate,
+        conversion_value_original: parseFloat(revenue || 0),
         inline_link_clicks: inlineLinkClicks,
         cost_per_inline_link_click: costPerInlineLinkClick,
+        cost_per_inline_link_click_original: parseFloat(row.cost_per_inline_link_click || 0),
         outbound_clicks: outboundClicks,
         unique_outbound_clicks: uniqueOutboundClicks,
         outbound_clicks_ctr: outboundClicksCtr,
         unique_outbound_clicks_ctr: uniqueOutboundClicksCtr,
+        original_currency: store === 'shawq' ? 'TRY' : 'USD',
         status: campaignStatus,
         effective_status: campaignEffectiveStatus
       };
@@ -586,7 +688,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 // ============================================================================
 // HISTORICAL BACKFILL - Fetch as much history as Meta allows
 // ============================================================================
-async function performHistoricalBackfill(store, accountId, accessToken, rate, statusMaps) {
+async function performHistoricalBackfill(store, accountId, accessToken, statusMaps) {
   const db = getDb();
 
   // Get current backfill metadata
@@ -650,9 +752,9 @@ async function performHistoricalBackfill(store, accountId, accessToken, rate, st
 
     try {
       // Fetch all three levels for this chunk
-      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, rate, statusMaps);
-      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, rate, statusMaps);
-      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, rate, statusMaps);
+      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, statusMaps);
+      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, statusMaps);
+      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, statusMaps);
 
       const chunkTotal = campaignRows + adsetRows + adRows;
       totalRecords += chunkTotal;
@@ -728,20 +830,19 @@ export async function syncMetaData(store) {
   const tokenEnv = store === 'shawq' ? 'SHAWQ_META_ACCESS_TOKEN' : 'META_ACCESS_TOKEN';
   const accountId = process.env[accountIdEnv];
   const accessToken = process.env[tokenEnv];
-  const rate = await getCurrencyRate(store);
 
   if (!accountId || !accessToken) {
     console.log(`[Meta] Skipping sync for ${store}: Missing credentials`);
     return { success: false, error: 'Missing credentials' };
   }
 
-  // 2. Date Range (Last 30 Days for regular sync)
+  // 2. Date Range (Last 60 Days for regular sync)
   // Use simple date format without timezone conversion - Meta returns data in ad account timezone
   // We preserve the original Meta time reference to avoid date misalignment in daily metrics
   const endDate = formatDate(new Date());
-  const startDate = formatDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const startDate = formatDate(new Date(Date.now() - 60 * 24 * 60 * 60 * 1000));
 
-  console.log(`[Meta] Syncing ${store} (Rate: ${rate}) from ${startDate} to ${endDate}...`);
+  console.log(`[Meta] Syncing ${store} from ${startDate} to ${endDate}...`);
 
   try {
     // 3. Safety: Ensure DB columns exist
@@ -758,9 +859,9 @@ export async function syncMetaData(store) {
     };
 
     // 5. Sync all three levels with status info
-    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, rate, statusMaps);
+    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, statusMaps);
+    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, statusMaps);
+    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, statusMaps);
 
     const totalRows = campaignRows + adsetRows + adRows;
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
@@ -821,7 +922,7 @@ export async function syncMetaData(store) {
     const backfillMeta = db.prepare(`SELECT backfill_status FROM meta_backfill_metadata WHERE store = ?`).get(store);
     if (!backfillMeta || backfillMeta.backfill_status !== 'completed') {
       // Run backfill asynchronously (don't await)
-      performHistoricalBackfill(store, accountId, accessToken, rate, statusMaps)
+      performHistoricalBackfill(store, accountId, accessToken, statusMaps)
         .then(result => console.log(`[Meta] Backfill result for ${store}:`, result))
         .catch(err => console.error(`[Meta] Backfill error for ${store}:`, err.message));
     }

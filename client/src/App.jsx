@@ -17,6 +17,8 @@ import AIBudget from './components/AIBudget';
 import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysis from './components/CreativeAnalysis.jsx';
+import ExchangeRateDebug from './components/ExchangeRateDebug';
+import CurrencyToggle from './components/CurrencyToggle';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -255,13 +257,14 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'AI Analytics', 'AI Budget', 'Budget Calculator'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
   const [storeLoaded, setStoreLoaded] = useState(false);
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
+  const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   
@@ -1023,7 +1026,13 @@ export default function App() {
                   </div>
                 )}
               </div>
-              
+
+              <CurrencyToggle
+                value={displayCurrency}
+                onChange={setDisplayCurrency}
+                store={store?.id}
+              />
+
               <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded">
                 Dashboard
               </span>
@@ -1310,6 +1319,10 @@ export default function App() {
             periodDays={budgetIntelligence?.period?.days || 30}
             storeName={store?.id}
           />
+        )}
+
+        {activeTab === 8 && (
+          <ExchangeRateDebug />
         )}
       </div>
 
