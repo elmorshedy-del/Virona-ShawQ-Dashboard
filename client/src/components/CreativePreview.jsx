@@ -21,6 +21,8 @@ export default function CreativePreview({ store }) {
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
   const [loadingAds, setLoadingAds] = useState(false);
   const [error, setError] = useState('');
+  const [showInactiveCampaigns, setShowInactiveCampaigns] = useState(false);
+  const [showInactiveAds, setShowInactiveAds] = useState(false);
 
   const [activeAd, setActiveAd] = useState(null);
   const [videoData, setVideoData] = useState(null);
@@ -68,6 +70,7 @@ export default function CreativePreview({ store }) {
     if (!selectedAccount) {
       setCampaigns([]);
       setSelectedCampaign('');
+      setShowInactiveCampaigns(false);
       return;
     }
 
@@ -87,6 +90,7 @@ export default function CreativePreview({ store }) {
         const list = Array.isArray(data?.data) ? data.data : [];
         setCampaigns(list);
         setSelectedCampaign(list[0]?.id || '');
+        setShowInactiveCampaigns(false);
       })
       .catch((err) => {
         if (!isMounted) return;
@@ -104,6 +108,7 @@ export default function CreativePreview({ store }) {
   useEffect(() => {
     if (!selectedCampaign) {
       setAds([]);
+      setShowInactiveAds(false);
       return;
     }
 
@@ -124,6 +129,7 @@ export default function CreativePreview({ store }) {
         if (!isMounted) return;
         const list = Array.isArray(data?.data) ? data.data : [];
         setAds(list);
+        setShowInactiveAds(false);
       })
       .catch((err) => {
         if (!isMounted) return;
@@ -177,8 +183,10 @@ export default function CreativePreview({ store }) {
   };
 
   const hasVideo = !!videoData?.source_url;
-  const hasThumbnail = !hasVideo && !!videoData?.thumbnail_url;
-  const showNoVideo = !videoLoading && (!videoData?.source_url && !videoData?.thumbnail_url);
+  const fallbackThumbnail = videoData?.thumbnail_url || activeAd?.thumbnail || null;
+  const hasThumbnail = !hasVideo && !!fallbackThumbnail;
+  const showNoVideo = !videoLoading && (!videoData?.source_url && !fallbackThumbnail);
+  const isUnplayable = videoData?.playable === false;
 
   const modalMaxWidth = useMemo(() => {
     const width = mediaDimensions.width;
@@ -205,12 +213,33 @@ export default function CreativePreview({ store }) {
     }
   };
 
-  const adRows = ads.map((ad) => ({
+  const normalizeStatus = (value) => (value || 'UNKNOWN').toString().toUpperCase();
+  const isActiveStatus = (value) => normalizeStatus(value) === 'ACTIVE';
+
+  const campaignRows = useMemo(() => campaigns.map((campaign) => ({
+    id: campaign.id,
+    name: campaign.name || 'Untitled campaign',
+    status: normalizeStatus(campaign.effective_status || campaign.status)
+  })), [campaigns]);
+
+  const activeCampaigns = useMemo(
+    () => campaignRows.filter((campaign) => isActiveStatus(campaign.status)),
+    [campaignRows]
+  );
+  const inactiveCampaigns = useMemo(
+    () => campaignRows.filter((campaign) => !isActiveStatus(campaign.status)),
+    [campaignRows]
+  );
+
+  const adRows = useMemo(() => ads.map((ad) => ({
     id: ad.id,
     name: ad.name || 'Untitled ad',
-    status: ad.effective_status || ad.status || 'UNKNOWN',
+    status: normalizeStatus(ad.effective_status || ad.status),
     thumbnail: ad.thumbnail_url
-  }));
+  })), [ads]);
+
+  const activeAds = useMemo(() => adRows.filter((ad) => isActiveStatus(ad.status)), [adRows]);
+  const inactiveAds = useMemo(() => adRows.filter((ad) => !isActiveStatus(ad.status)), [adRows]);
 
   return (
     <div className="space-y-6">
@@ -235,24 +264,87 @@ export default function CreativePreview({ store }) {
             </select>
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Campaign</label>
-            <select
-              value={selectedCampaign}
-              onChange={(e) => setSelectedCampaign(e.target.value)}
-              className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[260px]"
-              disabled={!selectedAccount || loadingCampaigns}
-            >
-              {loadingCampaigns && <option>Loading...</option>}
-              {!loadingCampaigns && campaigns.length === 0 && (
-                <option value="">No campaigns</option>
+          <div className="flex flex-col gap-1 min-w-[260px]">
+            <label className="text-sm font-medium text-gray-700">Campaigns</label>
+            <div className="rounded-lg border border-gray-200 bg-white p-3">
+              {loadingCampaigns && (
+                <div className="text-sm text-gray-500">Loading campaigns...</div>
               )}
-              {campaigns.map((campaign) => (
-                <option key={campaign.id} value={campaign.id}>
-                  {campaign.name || campaign.id}
-                </option>
-              ))}
-            </select>
+              {!loadingCampaigns && campaignRows.length === 0 && (
+                <div className="text-sm text-gray-500">No campaigns</div>
+              )}
+              {!loadingCampaigns && campaignRows.length > 0 && (
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase">
+                      <span>Active Campaigns</span>
+                      <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700">
+                        {activeCampaigns.length}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex flex-col gap-2 max-h-40 overflow-y-auto pr-1">
+                      {activeCampaigns.map((campaign) => {
+                        const isSelected = campaign.id === selectedCampaign;
+                        return (
+                          <button
+                            key={campaign.id}
+                            type="button"
+                            onClick={() => setSelectedCampaign(campaign.id)}
+                            className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors text-left ${
+                              isSelected
+                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                                : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                            }`}
+                          >
+                            <span className="block truncate" title={campaign.name}>
+                              {campaign.name}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowInactiveCampaigns((prev) => !prev)}
+                      className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 uppercase"
+                    >
+                      <span>Inactive Campaigns</span>
+                      <span className="flex items-center gap-2">
+                        <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-600">
+                          {inactiveCampaigns.length}
+                        </span>
+                        <span className="text-xs">{showInactiveCampaigns ? '▾' : '▸'}</span>
+                      </span>
+                    </button>
+                    {showInactiveCampaigns && (
+                      <div className="mt-2 flex flex-col gap-2 max-h-40 overflow-y-auto pr-1">
+                        {inactiveCampaigns.map((campaign) => {
+                          const isSelected = campaign.id === selectedCampaign;
+                          return (
+                            <button
+                              key={campaign.id}
+                              type="button"
+                              onClick={() => setSelectedCampaign(campaign.id)}
+                              className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors text-left ${
+                                isSelected
+                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                              }`}
+                            >
+                              <span className="block truncate" title={campaign.name}>
+                                {campaign.name}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -290,27 +382,69 @@ export default function CreativePreview({ store }) {
                 </tr>
               )}
 
-              {adRows.map((ad) => (
-                <tr
-                  key={ad.id}
-                  className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
-                  onClick={() => handleAdClick(ad)}
-                >
-                  <td className="px-4 py-3 text-gray-700">{ad.name}</td>
-                  <td className="px-4 py-3 text-gray-700">{ad.status}</td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {ad.thumbnail ? (
-                      <img
-                        src={ad.thumbnail}
-                        alt="Ad thumbnail"
-                        className="w-10 h-10 rounded object-cover"
-                      />
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {!loadingAds && adRows.length > 0 && (
+                <>
+                  <tr className="bg-gray-50 text-xs uppercase text-gray-500">
+                    <td colSpan="3" className="px-4 py-2 font-semibold">
+                      Active Ads ({activeAds.length})
+                    </td>
+                  </tr>
+                  {activeAds.map((ad) => (
+                    <tr
+                      key={ad.id}
+                      className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                      onClick={() => handleAdClick(ad)}
+                    >
+                      <td className="px-4 py-3 text-gray-700">{ad.name}</td>
+                      <td className="px-4 py-3 text-gray-700">{ad.status}</td>
+                      <td className="px-4 py-3 text-gray-500">
+                        {ad.thumbnail ? (
+                          <img
+                            src={ad.thumbnail}
+                            alt="Ad thumbnail"
+                            className="w-10 h-10 rounded object-cover"
+                          />
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="bg-gray-50 text-xs uppercase text-gray-500">
+                    <td colSpan="3" className="px-4 py-2 font-semibold">
+                      <button
+                        type="button"
+                        onClick={() => setShowInactiveAds((prev) => !prev)}
+                        className="flex items-center gap-2"
+                      >
+                        <span>Inactive Ads ({inactiveAds.length})</span>
+                        <span className="text-xs">{showInactiveAds ? '▾' : '▸'}</span>
+                      </button>
+                    </td>
+                  </tr>
+                  {showInactiveAds && inactiveAds.map((ad) => (
+                    <tr
+                      key={ad.id}
+                      className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                      onClick={() => handleAdClick(ad)}
+                    >
+                      <td className="px-4 py-3 text-gray-700">{ad.name}</td>
+                      <td className="px-4 py-3 text-gray-700">{ad.status}</td>
+                      <td className="px-4 py-3 text-gray-500">
+                        {ad.thumbnail ? (
+                          <img
+                            src={ad.thumbnail}
+                            alt="Ad thumbnail"
+                            className="w-10 h-10 rounded object-cover"
+                          />
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </>
+              )}
             </tbody>
           </table>
         </div>
@@ -359,12 +493,14 @@ export default function CreativePreview({ store }) {
                   <div className="text-center">
                     <img
                       ref={imageRef}
-                      src={videoData.thumbnail_url}
+                      src={fallbackThumbnail}
                       alt="Ad thumbnail"
                       onLoad={handleImageLoad}
                       className="w-full h-auto max-h-[85vh] object-contain"
                     />
-                    <p className="mt-3 text-sm text-gray-600">Playable video source unavailable.</p>
+                    <p className="mt-3 text-sm text-gray-600">
+                      {isUnplayable ? "Can't play this video here." : 'Playable video source unavailable.'}
+                    </p>
                     {videoData?.permalink_url && (
                       <button
                         onClick={() => window.open(videoData.permalink_url, '_blank')}
