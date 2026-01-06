@@ -286,6 +286,7 @@ export default function App() {
   // Days of week
   const [daysOfWeek, setDaysOfWeek] = useState({ data: [], source: '', totalOrders: 0, period: '14d' });
   const [daysOfWeekPeriod, setDaysOfWeekPeriod] = useState('14d');
+  const [exchangeRateDebug, setExchangeRateDebug] = useState(null);
   // KPI charts
   const [expandedKpis, setExpandedKpis] = useState([]);
   // Section 2 breakdown (pure meta)
@@ -547,7 +548,8 @@ export default function App() {
         nyTrend,
         campaignTrendData,
         timeOfDayData,
-        dowData
+        dowData,
+        exchangeRateData
       ] = await Promise.all([
         fetchJson(`${API_BASE}/analytics/dashboard?${params}`, {}),
         fetchJson(`${API_BASE}/analytics/efficiency?${params}`, {}),
@@ -563,7 +565,8 @@ export default function App() {
         // Time of day - now fetches for both stores
         fetchJson(`${API_BASE}/analytics/time-of-day?${timeOfDayParams}`, { data: [], timezone: null, sampleTimestamps: [], source: '', message: '' }),
         // Days of week
-        fetchJson(`${API_BASE}/analytics/days-of-week?store=${currentStore}&period=${daysOfWeekPeriod}`, { data: [], source: '', totalOrders: 0, period: daysOfWeekPeriod })
+        fetchJson(`${API_BASE}/analytics/days-of-week?store=${currentStore}&period=${daysOfWeekPeriod}`, { data: [], source: '', totalOrders: 0, period: daysOfWeekPeriod }),
+        fetchJson(`${API_BASE}/analytics/meta/exchange-rate-debug?store=${currentStore}`, { enabled: false })
       ]);
 
       setDashboard(dashData || {});
@@ -661,6 +664,7 @@ export default function App() {
 
       // Set days of week data
       setDaysOfWeek(dowData || { data: [], source: '', totalOrders: 0, period: '14d' });
+      setExchangeRateDebug(exchangeRateData || null);
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -1197,9 +1201,9 @@ export default function App() {
         </div>
 
         {activeTab === 0 && dashboard && (
-          <DashboardTab
-            dashboard={dashboard}
-            expandedKpis={expandedKpis}
+            <DashboardTab
+              dashboard={dashboard}
+              expandedKpis={expandedKpis}
             setExpandedKpis={setExpandedKpis}
             formatCurrency={formatCurrency}
             formatNumber={formatNumber}
@@ -1226,11 +1230,12 @@ export default function App() {
             timeOfDay={timeOfDay}
             selectedShopifyRegion={selectedShopifyRegion}
             setSelectedShopifyRegion={setSelectedShopifyRegion}
-            daysOfWeek={daysOfWeek}
-            daysOfWeekPeriod={daysOfWeekPeriod}
-            setDaysOfWeekPeriod={setDaysOfWeekPeriod}
-            loading={loading}
-            analyticsMode={analyticsMode}
+              daysOfWeek={daysOfWeek}
+              daysOfWeekPeriod={daysOfWeekPeriod}
+              setDaysOfWeekPeriod={setDaysOfWeekPeriod}
+              exchangeRateDebug={exchangeRateDebug}
+              loading={loading}
+              analyticsMode={analyticsMode}
             setAnalyticsMode={setAnalyticsMode}
             metaAdManagerData={metaAdManagerData}
             adManagerBreakdown={adManagerBreakdown}
@@ -1375,6 +1380,7 @@ function DashboardTab({
   daysOfWeek = { data: [], source: '', totalOrders: 0, period: '14d' },
   daysOfWeekPeriod = '14d',
   setDaysOfWeekPeriod = () => {},
+  exchangeRateDebug = null,
   loading = false,
   analyticsMode = 'meta-ad-manager',
   setAnalyticsMode = () => {},
@@ -3315,6 +3321,46 @@ function DashboardTab({
           If campaign spend is far below Ads Manager, suspect pagination, date
           filters, or currency conversion.
         </p>
+      </div>
+
+      <div className="bg-gray-900 text-gray-100 rounded-xl p-4 mt-4 text-sm">
+        <h3 className="font-semibold mb-2">Debug · Exchange Rates</h3>
+        {!exchangeRateDebug?.enabled ? (
+          <p className="text-xs text-gray-400">
+            Exchange rate diagnostics are only available for Shawq (TRY → USD).
+          </p>
+        ) : (
+          <>
+            <p>
+              API status:{' '}
+              <span className={`font-mono ${exchangeRateDebug.apiStatus === 'success' ? 'text-green-300' : 'text-rose-300'}`}>
+                {exchangeRateDebug.apiStatus === 'success' ? 'success' : 'failed'}
+              </span>
+            </p>
+            <p>
+              Latest fetched rate:{' '}
+              <span className="font-mono">
+                {exchangeRateDebug.latestFetch?.rate ?? '—'}
+              </span>
+              {exchangeRateDebug.latestFetch?.fetched_at && (
+                <span className="text-xs text-gray-400">
+                  {' '}({exchangeRateDebug.latestFetch.fetched_at})
+                </span>
+              )}
+            </p>
+            <p className="text-xs text-gray-400 mt-2">Previous 7 days (stored rates)</p>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {(exchangeRateDebug.weekRates || []).map((rateRow) => (
+                <div key={rateRow.date} className="bg-gray-800 rounded-lg px-3 py-2">
+                  <div className="text-xs text-gray-400">{rateRow.date}</div>
+                  <div className="font-mono">
+                    {rateRow.rate ?? 'missing'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

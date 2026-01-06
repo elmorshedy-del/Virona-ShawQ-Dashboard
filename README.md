@@ -54,8 +54,8 @@ Without API credentials, dashboard shows realistic demo data for both stores.
 ## Currency Conversion
 
 Shawq's Meta account reports in Turkish Lira (TRY). The dashboard automatically:
-1. Fetches daily TRY→USD exchange rate
-2. Converts all spend/revenue values to USD
-3. Caches rates to avoid repeated API calls
+1. Fetches TRY→USD exchange rates for each day of data
+2. Stores the rate per day (no future rate overwrites)
+3. Converts all spend/revenue values to USD using the stored daily rate
 
 VironaX stays in SAR (no conversion needed).

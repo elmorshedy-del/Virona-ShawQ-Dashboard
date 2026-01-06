@@ -12,58 +12,104 @@ const MAX_HISTORICAL_DAYS = 730; // Attempt up to 2 years of history (Meta typic
 // Fallback rate: 1 USD = 42.5 TRY (so TRY to USD = 1/42.5)
 const FALLBACK_TRY_TO_USD = 1 / 42.5;
 
-// Cache for exchange rate (refresh every hour)
 import metaToAIBridge from './metaToAIBridge.js';
-let cachedTryToUsd = null;
-let cacheTimestamp = 0;
-const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
 
-// Helper: Fetch actual TRY→USD exchange rate
-async function fetchTryToUsdRate() {
-  // Return cached rate if still valid
-  if (cachedTryToUsd && (Date.now() - cacheTimestamp) < CACHE_DURATION_MS) {
-    return cachedTryToUsd;
+const exchangeRateCache = new Map();
+
+function parseDateParts(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return { year, month, day };
+}
+
+function listDateRange(startDate, endDate) {
+  const dates = [];
+  const current = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+
+  while (current <= end) {
+    dates.push(formatDate(current));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  return dates;
+}
+
+function storeExchangeRate({ date, rate, source }) {
+  const db = getDb();
+  db.prepare(`
+    INSERT OR IGNORE INTO exchange_rates (
+      from_currency, to_currency, rate, date, source, fetched_at
+    ) VALUES (
+      'TRY', 'USD', ?, ?, ?, datetime('now')
+    )
+  `).run(rate, date, source);
+}
+
+async function fetchTryToUsdRateForDate(dateStr) {
+  if (exchangeRateCache.has(dateStr)) {
+    return exchangeRateCache.get(dateStr);
+  }
+
+  const db = getDb();
+  const existing = db.prepare(`
+    SELECT rate FROM exchange_rates
+    WHERE from_currency = 'TRY' AND to_currency = 'USD' AND date = ?
+    ORDER BY fetched_at DESC
+    LIMIT 1
+  `).get(dateStr);
+
+  if (existing?.rate) {
+    exchangeRateCache.set(dateStr, existing.rate);
+    return existing.rate;
   }
 
   const apiKey = process.env.EXCHANGE_RATE_API_KEY;
   if (!apiKey) {
     console.warn('[Meta] EXCHANGE_RATE_API_KEY not found in environment. Using fallback exchange rate.');
+    storeExchangeRate({ date: dateStr, rate: FALLBACK_TRY_TO_USD, source: 'fallback' });
+    exchangeRateCache.set(dateStr, FALLBACK_TRY_TO_USD);
     return FALLBACK_TRY_TO_USD;
   }
 
   try {
-    const url = `https://v6.exchangerate-api.com/v6/${apiKey}/latest/TRY`;
+    const { year, month, day } = parseDateParts(dateStr);
+    const url = `https://v6.exchangerate-api.com/v6/${apiKey}/history/TRY/${year}/${month}/${day}`;
     const response = await fetch(url);
     if (response.ok) {
       const data = await response.json();
       if (data.result === 'success' && data.rates?.USD) {
-        cachedTryToUsd = data.rates.USD;
-        cacheTimestamp = Date.now();
-        console.log(`[Meta] Fetched TRY→USD rate: ${cachedTryToUsd}`);
-        return cachedTryToUsd;
-      } else {
-        console.warn(`[Meta] Failed to fetch exchange rate from API: ${data['error-type'] || 'Unknown error'}`);
+        const rate = data.rates.USD;
+        storeExchangeRate({ date: dateStr, rate, source: 'exchangerate-api' });
+        exchangeRateCache.set(dateStr, rate);
+        console.log(`[Meta] Fetched TRY→USD rate for ${dateStr}: ${rate}`);
+        return rate;
       }
+      console.warn(`[Meta] Failed to fetch exchange rate for ${dateStr}: ${data['error-type'] || 'Unknown error'}`);
     } else {
-      console.warn(`[Meta] Exchange rate API request failed with status: ${response.status}`);
+      console.warn(`[Meta] Exchange rate API request failed for ${dateStr} with status: ${response.status}`);
     }
   } catch (err) {
-    console.warn(`[Meta] Failed to fetch exchange rate: ${err.message}`);
+    console.warn(`[Meta] Failed to fetch exchange rate for ${dateStr}: ${err.message}`);
   }
 
-  // Fallback to hardcoded rate
-  console.log(`[Meta] Using fallback TRY→USD rate: ${FALLBACK_TRY_TO_USD}`);
+  storeExchangeRate({ date: dateStr, rate: FALLBACK_TRY_TO_USD, source: 'fallback' });
+  exchangeRateCache.set(dateStr, FALLBACK_TRY_TO_USD);
+  console.log(`[Meta] Using fallback TRY→USD rate for ${dateStr}: ${FALLBACK_TRY_TO_USD}`);
   return FALLBACK_TRY_TO_USD;
 }
 
-// Helper: Get currency conversion rate
-async function getCurrencyRate(store) {
-  if (store === 'shawq') {
-    // Shawq Meta reports in TRY, convert to USD
-    return await fetchTryToUsdRate();
+async function getDailyRateMap(store, startDate, endDate) {
+  const dates = listDateRange(startDate, endDate);
+
+  if (store !== 'shawq') {
+    return new Map(dates.map(date => [date, 1.0]));
   }
-  if (store === 'vironax') return 1.0; // Keep SAR as SAR
-  return 1.0;
+
+  const entries = await Promise.all(
+    dates.map(async (date) => [date, await fetchTryToUsdRateForDate(date)])
+  );
+
+  return new Map(entries);
 }
 
 // Helper: Extract metric from Meta's "actions" list
@@ -339,7 +385,7 @@ async function fetchMetaObjects(store, accountId, accessToken) {
 // ============================================================================
 // SYNC INSIGHTS WITH STATUS (campaign, adset, or ad level)
 // ============================================================================
-async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, rate, statusMaps = {}) {
+async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, rateByDate, statusMaps = {}) {
   const db = getDb();
   const cleanAccountId = accountId.replace(/^act_/, '');
   const { campaignStatusMap = new Map(), adsetStatusMap = new Map() } = statusMaps;
@@ -514,9 +560,10 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
       // Extract inline_link_clicks - Meta returns this as a single value
       const inlineLinkClicks = parseInt(row.inline_link_clicks || 0);
+      const dailyRate = rateByDate?.get(row.date_start) ?? 1;
       // cost_per_inline_link_click comes directly from Meta API (already calculated)
       // Apply currency rate to the cost
-      const costPerInlineLinkClick = parseFloat(row.cost_per_inline_link_click || 0) * rate;
+      const costPerInlineLinkClick = parseFloat(row.cost_per_inline_link_click || 0) * dailyRate;
       const outboundClicksField = getMetricValue(row.outbound_clicks);
       const outboundClicksAction =
         getActionValue(row.actions, 'outbound_click') ||
@@ -536,7 +583,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         campaign_id: row.campaign_id,
         campaign_name: row.campaign_name,
         country: row.country || 'ALL',
-        spend: parseFloat(row.spend || 0) * rate,
+        spend: parseFloat(row.spend || 0) * dailyRate,
         impressions: parseInt(row.impressions || 0),
         clicks: parseInt(row.clicks || 0),
         reach: parseInt(row.reach || 0),
@@ -544,7 +591,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         atc: parseInt(atc),
         checkout: parseInt(checkout),
         conversions: parseInt(purchases),
-        conversion_value: parseFloat(revenue || 0) * rate,
+        conversion_value: parseFloat(revenue || 0) * dailyRate,
         inline_link_clicks: inlineLinkClicks,
         cost_per_inline_link_click: costPerInlineLinkClick,
         outbound_clicks: outboundClicks,
@@ -586,7 +633,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 // ============================================================================
 // HISTORICAL BACKFILL - Fetch as much history as Meta allows
 // ============================================================================
-async function performHistoricalBackfill(store, accountId, accessToken, rate, statusMaps) {
+async function performHistoricalBackfill(store, accountId, accessToken, statusMaps) {
   const db = getDb();
 
   // Get current backfill metadata
@@ -650,9 +697,10 @@ async function performHistoricalBackfill(store, accountId, accessToken, rate, st
 
     try {
       // Fetch all three levels for this chunk
-      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, rate, statusMaps);
-      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, rate, statusMaps);
-      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, rate, statusMaps);
+      const rateByDate = await getDailyRateMap(store, startStr, endStr);
+      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, rateByDate, statusMaps);
+      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, rateByDate, statusMaps);
+      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, rateByDate, statusMaps);
 
       const chunkTotal = campaignRows + adsetRows + adRows;
       totalRecords += chunkTotal;
@@ -728,7 +776,6 @@ export async function syncMetaData(store) {
   const tokenEnv = store === 'shawq' ? 'SHAWQ_META_ACCESS_TOKEN' : 'META_ACCESS_TOKEN';
   const accountId = process.env[accountIdEnv];
   const accessToken = process.env[tokenEnv];
-  const rate = await getCurrencyRate(store);
 
   if (!accountId || !accessToken) {
     console.log(`[Meta] Skipping sync for ${store}: Missing credentials`);
@@ -741,7 +788,7 @@ export async function syncMetaData(store) {
   const endDate = formatDate(new Date());
   const startDate = formatDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 
-  console.log(`[Meta] Syncing ${store} (Rate: ${rate}) from ${startDate} to ${endDate}...`);
+  console.log(`[Meta] Syncing ${store} from ${startDate} to ${endDate} with daily FX rates...`);
 
   try {
     // 3. Safety: Ensure DB columns exist
@@ -758,9 +805,10 @@ export async function syncMetaData(store) {
     };
 
     // 5. Sync all three levels with status info
-    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, rate, statusMaps);
+    const rateByDate = await getDailyRateMap(store, startDate, endDate);
+    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, rateByDate, statusMaps);
+    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, rateByDate, statusMaps);
+    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, rateByDate, statusMaps);
 
     const totalRows = campaignRows + adsetRows + adRows;
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
@@ -821,7 +869,7 @@ export async function syncMetaData(store) {
     const backfillMeta = db.prepare(`SELECT backfill_status FROM meta_backfill_metadata WHERE store = ?`).get(store);
     if (!backfillMeta || backfillMeta.backfill_status !== 'completed') {
       // Run backfill asynchronously (don't await)
-      performHistoricalBackfill(store, accountId, accessToken, rate, statusMaps)
+      performHistoricalBackfill(store, accountId, accessToken, statusMaps)
         .then(result => console.log(`[Meta] Backfill result for ${store}:`, result))
         .catch(err => console.error(`[Meta] Backfill error for ${store}:`, err.message));
     }
@@ -857,6 +905,66 @@ export function getBackfillStatus(store) {
     backfill_status: 'not_started',
     earliest_successful_date: null,
     latest_successful_date: null
+  };
+}
+
+export function getExchangeRateDebug(store) {
+  if (store !== 'shawq') {
+    return {
+      enabled: false,
+      message: 'Exchange rate debugging is only available for Shawq.'
+    };
+  }
+
+  const db = getDb();
+  const latestFetch = db.prepare(`
+    SELECT rate, date, source, fetched_at
+    FROM exchange_rates
+    WHERE from_currency = 'TRY' AND to_currency = 'USD'
+    ORDER BY fetched_at DESC
+    LIMIT 1
+  `).get();
+
+  const today = new Date();
+  const start = new Date(today);
+  start.setUTCDate(start.getUTCDate() - 6);
+  const startDate = formatDate(start);
+  const endDate = formatDate(today);
+  const rangeDates = listDateRange(startDate, endDate);
+
+  const rows = db.prepare(`
+    SELECT date, rate, source, fetched_at
+    FROM exchange_rates
+    WHERE from_currency = 'TRY' AND to_currency = 'USD'
+      AND date BETWEEN ? AND ?
+    ORDER BY date ASC
+  `).all(startDate, endDate);
+
+  const rateMap = new Map(rows.map((row) => [row.date, row]));
+  const weekRates = rangeDates.map((date) => {
+    const row = rateMap.get(date);
+    return {
+      date,
+      rate: row?.rate ?? null,
+      source: row?.source ?? null,
+      fetched_at: row?.fetched_at ?? null
+    };
+  });
+
+  const apiStatus = latestFetch?.source === 'exchangerate-api' ? 'success' : 'failed';
+
+  return {
+    enabled: true,
+    apiStatus,
+    latestFetch: latestFetch
+      ? {
+          rate: latestFetch.rate,
+          date: latestFetch.date,
+          source: latestFetch.source,
+          fetched_at: latestFetch.fetched_at
+        }
+      : null,
+    weekRates
   };
 }
 
