@@ -402,6 +402,20 @@ export function initDb() {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
+  // Add original currency columns to meta_daily_metrics
+  try {
+    db.exec('ALTER TABLE meta_daily_metrics ADD COLUMN spend_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_daily_metrics ADD COLUMN conversion_value_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_daily_metrics ADD COLUMN cost_per_inline_link_click_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_daily_metrics ADD COLUMN original_currency TEXT DEFAULT "USD"');
+  } catch (e) { /* column exists */ }
+
   // Add status columns to meta_adset_metrics if they don't exist
   try {
     db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);
@@ -436,6 +450,20 @@ export function initDb() {
     db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
+  // Add original currency columns to meta_adset_metrics
+  try {
+    db.exec('ALTER TABLE meta_adset_metrics ADD COLUMN spend_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_adset_metrics ADD COLUMN conversion_value_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_adset_metrics ADD COLUMN cost_per_inline_link_click_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_adset_metrics ADD COLUMN original_currency TEXT DEFAULT "USD"');
+  } catch (e) { /* column exists */ }
+
   // Add status columns to meta_ad_metrics if they don't exist
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);
@@ -468,6 +496,20 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+
+  // Add original currency columns to meta_ad_metrics
+  try {
+    db.exec('ALTER TABLE meta_ad_metrics ADD COLUMN spend_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_ad_metrics ADD COLUMN conversion_value_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_ad_metrics ADD COLUMN cost_per_inline_link_click_original REAL');
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec('ALTER TABLE meta_ad_metrics ADD COLUMN original_currency TEXT DEFAULT "USD"');
   } catch (e) { /* column exists */ }
 
   // Create indexes for performance
