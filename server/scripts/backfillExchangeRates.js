@@ -49,8 +49,8 @@ async function backfill(daysBack = 60) {
         const tryToUsd = 1 / data.rates.TRY;
 
         db.prepare(`
-          INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source, fetched_at)
-          VALUES ('TRY', 'USD', ?, ?, 'oxr', datetime('now'))
+          INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source)
+          VALUES ('TRY', 'USD', ?, ?, 'oxr')
         `).run(tryToUsd, dateStr);
 
         console.log(`[Backfill] ${dateStr}: TRY→USD = ${tryToUsd.toFixed(6)} (1 USD = ${data.rates.TRY.toFixed(2)} TRY)`);

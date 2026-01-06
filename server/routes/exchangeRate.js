@@ -112,8 +112,8 @@ router.post('/backfill-single', async (req, res) => {
       const tryToUsd = 1 / data.rates.TRY;
 
       db.prepare(`
-        INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source, fetched_at)
-        VALUES ('TRY', 'USD', ?, ?, 'oxr', datetime('now'))
+        INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source)
+        VALUES ('TRY', 'USD', ?, ?, 'oxr')
       `).run(tryToUsd, date);
 
       return res.json({
