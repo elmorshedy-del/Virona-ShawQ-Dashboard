@@ -1,5 +1,6 @@
 import express from 'express';
 import fetch from 'node-fetch';
+import { getExchangeRateDebugData } from '../services/metaService.js';
 
 const router = express.Router();
 
@@ -392,6 +393,12 @@ router.get('/debug/events', (req, res) => {
 router.delete('/debug/events', (req, res) => {
   debugEvents.length = 0;
   res.json({ ok: true });
+});
+
+router.get('/exchange-rate-debug', (req, res) => {
+  const store = req.query.store || 'vironax';
+  const data = getExchangeRateDebugData(store);
+  res.json(data);
 });
 
 export default router;

@@ -12,58 +12,156 @@ const MAX_HISTORICAL_DAYS = 730; // Attempt up to 2 years of history (Meta typic
 // Fallback rate: 1 USD = 42.5 TRY (so TRY to USD = 1/42.5)
 const FALLBACK_TRY_TO_USD = 1 / 42.5;
 
-// Cache for exchange rate (refresh every hour)
+// Cache for exchange rates (per-day)
 import metaToAIBridge from './metaToAIBridge.js';
-let cachedTryToUsd = null;
-let cacheTimestamp = 0;
-const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
+const rateCacheByDate = new Map();
+let lastRateFetchStatus = null;
 
-// Helper: Fetch actual TRY→USD exchange rate
-async function fetchTryToUsdRate() {
-  // Return cached rate if still valid
-  if (cachedTryToUsd && (Date.now() - cacheTimestamp) < CACHE_DURATION_MS) {
-    return cachedTryToUsd;
+const RATE_SOURCE_API = 'exchangerate-api';
+const RATE_SOURCE_FALLBACK = 'fallback';
+
+const formatDateString = (dateStr) => {
+  if (!dateStr) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  return formatDate(new Date(dateStr));
+};
+
+const parseDateString = (dateStr) => new Date(`${dateStr}T00:00:00Z`);
+
+const getDatesInRange = (startDate, endDate) => {
+  const dates = [];
+  const start = parseDateString(startDate);
+  const end = parseDateString(endDate);
+  const cursor = new Date(start);
+
+  while (cursor <= end) {
+    dates.push(formatDate(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
+  return dates;
+};
+
+const setLastRateFetchStatus = (payload) => {
+  lastRateFetchStatus = {
+    ...payload,
+    timestamp: new Date().toISOString()
+  };
+};
+
+// Helper: Fetch historical TRY→USD exchange rate for a given date
+async function fetchTryToUsdRateForDate(date) {
   const apiKey = process.env.EXCHANGE_RATE_API_KEY;
   if (!apiKey) {
-    console.warn('[Meta] EXCHANGE_RATE_API_KEY not found in environment. Using fallback exchange rate.');
-    return FALLBACK_TRY_TO_USD;
+    const message = 'EXCHANGE_RATE_API_KEY not found in environment. Using fallback exchange rate.';
+    console.warn(`[Meta] ${message}`);
+    setLastRateFetchStatus({ date, status: 'fallback', message, rate: FALLBACK_TRY_TO_USD });
+    return { rate: FALLBACK_TRY_TO_USD, source: RATE_SOURCE_FALLBACK, status: 'fallback', message };
   }
 
   try {
-    const url = `https://v6.exchangerate-api.com/v6/${apiKey}/latest/TRY`;
+    const url = `https://v6.exchangerate-api.com/v6/${apiKey}/history/TRY/${date}`;
     const response = await fetch(url);
     if (response.ok) {
       const data = await response.json();
-      if (data.result === 'success' && data.rates?.USD) {
-        cachedTryToUsd = data.rates.USD;
-        cacheTimestamp = Date.now();
-        console.log(`[Meta] Fetched TRY→USD rate: ${cachedTryToUsd}`);
-        return cachedTryToUsd;
-      } else {
-        console.warn(`[Meta] Failed to fetch exchange rate from API: ${data['error-type'] || 'Unknown error'}`);
+      const rate = data?.rates?.USD ?? data?.conversion_rates?.USD ?? data?.conversion_rate?.USD ?? data?.USD;
+      if (data.result === 'success' && rate) {
+        console.log(`[Meta] Fetched TRY→USD rate for ${date}: ${rate}`);
+        setLastRateFetchStatus({ date, status: 'success', rate });
+        return { rate, source: RATE_SOURCE_API, status: 'success', message: null };
       }
+      const message = `Failed to fetch exchange rate from API: ${data?.['error-type'] || 'Unknown error'}`;
+      console.warn(`[Meta] ${message}`);
+      setLastRateFetchStatus({ date, status: 'failed', message, rate: FALLBACK_TRY_TO_USD });
     } else {
-      console.warn(`[Meta] Exchange rate API request failed with status: ${response.status}`);
+      const message = `Exchange rate API request failed with status: ${response.status}`;
+      console.warn(`[Meta] ${message}`);
+      setLastRateFetchStatus({ date, status: 'failed', message, rate: FALLBACK_TRY_TO_USD });
     }
   } catch (err) {
-    console.warn(`[Meta] Failed to fetch exchange rate: ${err.message}`);
+    const message = `Failed to fetch exchange rate: ${err.message}`;
+    console.warn(`[Meta] ${message}`);
+    setLastRateFetchStatus({ date, status: 'failed', message, rate: FALLBACK_TRY_TO_USD });
   }
 
-  // Fallback to hardcoded rate
-  console.log(`[Meta] Using fallback TRY→USD rate: ${FALLBACK_TRY_TO_USD}`);
-  return FALLBACK_TRY_TO_USD;
+  console.log(`[Meta] Using fallback TRY→USD rate for ${date}: ${FALLBACK_TRY_TO_USD}`);
+  return { rate: FALLBACK_TRY_TO_USD, source: RATE_SOURCE_FALLBACK, status: 'fallback', message: 'Fallback rate used' };
 }
 
-// Helper: Get currency conversion rate
-async function getCurrencyRate(store) {
-  if (store === 'shawq') {
-    // Shawq Meta reports in TRY, convert to USD
-    return await fetchTryToUsdRate();
+async function getTryToUsdRateForDate(date) {
+  const normalizedDate = formatDateString(date);
+  if (!normalizedDate) return FALLBACK_TRY_TO_USD;
+  if (rateCacheByDate.has(normalizedDate)) {
+    return rateCacheByDate.get(normalizedDate).rate;
   }
-  if (store === 'vironax') return 1.0; // Keep SAR as SAR
-  return 1.0;
+
+  const db = getDb();
+  const existing = db.prepare(`
+    SELECT rate, source, fetched_at
+    FROM exchange_rates
+    WHERE from_currency = ? AND to_currency = ? AND date = ?
+  `).get('TRY', 'USD', normalizedDate);
+
+  if (existing?.rate) {
+    rateCacheByDate.set(normalizedDate, existing);
+    return existing.rate;
+  }
+
+  const result = await fetchTryToUsdRateForDate(normalizedDate);
+  db.prepare(`
+    INSERT INTO exchange_rates (from_currency, to_currency, rate, date, source, fetched_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(from_currency, to_currency, date) DO UPDATE SET
+      rate = excluded.rate,
+      source = excluded.source,
+      fetched_at = datetime('now')
+  `).run('TRY', 'USD', result.rate, normalizedDate, result.source);
+
+  rateCacheByDate.set(normalizedDate, {
+    rate: result.rate,
+    source: result.source,
+    fetched_at: new Date().toISOString()
+  });
+
+  return result.rate;
+}
+
+async function getTryToUsdRatesForRange(startDate, endDate) {
+  const db = getDb();
+  const dates = getDatesInRange(startDate, endDate);
+  const rateMap = new Map();
+
+  const existingRates = db.prepare(`
+    SELECT date, rate, source, fetched_at
+    FROM exchange_rates
+    WHERE from_currency = ? AND to_currency = ? AND date BETWEEN ? AND ?
+  `).all('TRY', 'USD', startDate, endDate);
+
+  existingRates.forEach((row) => {
+    rateMap.set(row.date, row.rate);
+    rateCacheByDate.set(row.date, row);
+  });
+
+  for (const date of dates) {
+    if (!rateMap.has(date)) {
+      const rate = await getTryToUsdRateForDate(date);
+      rateMap.set(date, rate);
+    }
+  }
+
+  return rateMap;
+}
+
+// Helper: Get currency conversion rates per date
+async function getCurrencyRatesForRange(store, startDate, endDate) {
+  if (store === 'shawq') {
+    return await getTryToUsdRatesForRange(startDate, endDate);
+  }
+  const rateMap = new Map();
+  getDatesInRange(startDate, endDate).forEach((date) => {
+    rateMap.set(date, 1.0);
+  });
+  return rateMap;
 }
 
 // Helper: Extract metric from Meta's "actions" list
@@ -339,7 +437,7 @@ async function fetchMetaObjects(store, accountId, accessToken) {
 // ============================================================================
 // SYNC INSIGHTS WITH STATUS (campaign, adset, or ad level)
 // ============================================================================
-async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, rate, statusMaps = {}) {
+async function syncMetaLevel(store, level, accountId, accessToken, startDate, endDate, rateByDate, statusMaps = {}) {
   const db = getDb();
   const cleanAccountId = accountId.replace(/^act_/, '');
   const { campaignStatusMap = new Map(), adsetStatusMap = new Map() } = statusMaps;
@@ -486,6 +584,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
   const tx = db.transaction(() => {
     for (const row of rows) {
+      const rate = rateByDate?.get(row.date_start) ?? 1;
       // Parse specific funnel steps
       const purchases = getActionValue(row.actions, 'purchase') || getActionValue(row.actions, 'offsite_conversion.fb_pixel_purchase');
       const revenue = getActionValue(row.action_values, 'purchase') || getActionValue(row.action_values, 'offsite_conversion.fb_pixel_purchase');
@@ -586,7 +685,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 // ============================================================================
 // HISTORICAL BACKFILL - Fetch as much history as Meta allows
 // ============================================================================
-async function performHistoricalBackfill(store, accountId, accessToken, rate, statusMaps) {
+async function performHistoricalBackfill(store, accountId, accessToken, statusMaps) {
   const db = getDb();
 
   // Get current backfill metadata
@@ -650,9 +749,10 @@ async function performHistoricalBackfill(store, accountId, accessToken, rate, st
 
     try {
       // Fetch all three levels for this chunk
-      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, rate, statusMaps);
-      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, rate, statusMaps);
-      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, rate, statusMaps);
+      const rateByDate = await getCurrencyRatesForRange(store, startStr, endStr);
+      const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startStr, endStr, rateByDate, statusMaps);
+      const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startStr, endStr, rateByDate, statusMaps);
+      const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startStr, endStr, rateByDate, statusMaps);
 
       const chunkTotal = campaignRows + adsetRows + adRows;
       totalRecords += chunkTotal;
@@ -728,8 +828,6 @@ export async function syncMetaData(store) {
   const tokenEnv = store === 'shawq' ? 'SHAWQ_META_ACCESS_TOKEN' : 'META_ACCESS_TOKEN';
   const accountId = process.env[accountIdEnv];
   const accessToken = process.env[tokenEnv];
-  const rate = await getCurrencyRate(store);
-
   if (!accountId || !accessToken) {
     console.log(`[Meta] Skipping sync for ${store}: Missing credentials`);
     return { success: false, error: 'Missing credentials' };
@@ -741,7 +839,7 @@ export async function syncMetaData(store) {
   const endDate = formatDate(new Date());
   const startDate = formatDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 
-  console.log(`[Meta] Syncing ${store} (Rate: ${rate}) from ${startDate} to ${endDate}...`);
+  console.log(`[Meta] Syncing ${store} (daily FX) from ${startDate} to ${endDate}...`);
 
   try {
     // 3. Safety: Ensure DB columns exist
@@ -758,9 +856,10 @@ export async function syncMetaData(store) {
     };
 
     // 5. Sync all three levels with status info
-    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, rate, statusMaps);
-    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, rate, statusMaps);
+    const rateByDate = await getCurrencyRatesForRange(store, startDate, endDate);
+    const campaignRows = await syncMetaLevel(store, 'campaign', accountId, accessToken, startDate, endDate, rateByDate, statusMaps);
+    const adsetRows = await syncMetaLevel(store, 'adset', accountId, accessToken, startDate, endDate, rateByDate, statusMaps);
+    const adRows = await syncMetaLevel(store, 'ad', accountId, accessToken, startDate, endDate, rateByDate, statusMaps);
 
     const totalRows = campaignRows + adsetRows + adRows;
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
@@ -821,7 +920,7 @@ export async function syncMetaData(store) {
     const backfillMeta = db.prepare(`SELECT backfill_status FROM meta_backfill_metadata WHERE store = ?`).get(store);
     if (!backfillMeta || backfillMeta.backfill_status !== 'completed') {
       // Run backfill asynchronously (don't await)
-      performHistoricalBackfill(store, accountId, accessToken, rate, statusMaps)
+      performHistoricalBackfill(store, accountId, accessToken, statusMaps)
         .then(result => console.log(`[Meta] Backfill result for ${store}:`, result))
         .catch(err => console.error(`[Meta] Backfill error for ${store}:`, err.message));
     }
@@ -845,6 +944,57 @@ export async function syncMetaData(store) {
     console.error(`[Meta] Sync error:`, error.message);
     return { success: false, error: error.message };
   }
+}
+
+// ============================================================================
+// EXCHANGE RATE DEBUGGING
+// ============================================================================
+export function getExchangeRateDebugData(store) {
+  const normalizedStore = store || 'vironax';
+  if (normalizedStore !== 'shawq') {
+    return {
+      store: normalizedStore,
+      latestRate: null,
+      weekRates: [],
+      apiStatus: 'not_applicable',
+      lastFetch: lastRateFetchStatus
+    };
+  }
+
+  const db = getDb();
+  const today = formatDate(new Date());
+  const weekStart = new Date();
+  weekStart.setDate(weekStart.getDate() - 6);
+  const weekStartStr = formatDate(weekStart);
+
+  const latestRate = db.prepare(`
+    SELECT date, rate, source, fetched_at
+    FROM exchange_rates
+    WHERE from_currency = ? AND to_currency = ?
+    ORDER BY date DESC
+    LIMIT 1
+  `).get('TRY', 'USD');
+
+  const weekRates = db.prepare(`
+    SELECT date, rate, source, fetched_at
+    FROM exchange_rates
+    WHERE from_currency = ? AND to_currency = ? AND date BETWEEN ? AND ?
+    ORDER BY date ASC
+  `).all('TRY', 'USD', weekStartStr, today);
+
+  const apiStatus = latestRate?.source === RATE_SOURCE_API
+    ? 'success'
+    : latestRate
+      ? 'fallback'
+      : 'unknown';
+
+  return {
+    store: normalizedStore,
+    latestRate: latestRate || null,
+    weekRates,
+    apiStatus,
+    lastFetch: lastRateFetchStatus
+  };
 }
 
 // ============================================================================
