@@ -243,6 +243,30 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
   };
 }
 
+function getMetaTotalsForRange(db, store, startDate, endDate, params = {}) {
+  const statusFilter = buildStatusFilter(params);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
+
+  const metaTotals = db.prepare(`
+    SELECT SUM(spend) as spend, SUM(conversion_value) as revenue, SUM(conversions) as orders
+    FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+  `).get(store, startDate, endDate, ...campaignArgs) || {};
+
+  const totalSpend = metaTotals.spend || 0;
+  const totalRevenue = metaTotals.revenue || 0;
+  const totalOrders = metaTotals.orders || 0;
+
+  return {
+    spend: totalSpend,
+    revenue: totalRevenue,
+    orders: totalOrders,
+    aov: totalOrders > 0 ? totalRevenue / totalOrders : 0,
+    cac: totalOrders > 0 ? totalSpend / totalOrders : 0,
+    roas: totalSpend > 0 ? totalRevenue / totalSpend : 0
+  };
+}
+
 // ============================================================================
 // DASHBOARD
 // ============================================================================
@@ -500,6 +524,47 @@ function getTrends(store, startDate, endDate, params = {}) {
 
   salesData.forEach(r => { if(map.has(r.date)) { map.get(r.date).orders = r.orders; map.get(r.date).revenue = r.revenue; }});
   spendData.forEach(r => { if(map.has(r.date)) { map.get(r.date).spend = r.spend; }});
+
+  return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
+    ...d,
+    aov: d.orders > 0 ? d.revenue / d.orders : 0,
+    cac: d.orders > 0 ? d.spend / d.orders : 0,
+    roas: d.spend > 0 ? d.revenue / d.spend : 0
+  }));
+}
+
+function getMetaTrends(store, startDate, endDate, params = {}) {
+  const db = getDb();
+  const statusFilter = buildStatusFilter(params);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
+  const allDates = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    allDates.push(formatDateAsGmt3(d));
+  }
+
+  const rows = db.prepare(`
+    SELECT date, SUM(spend) as spend, SUM(conversions) as orders, SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    GROUP BY date
+  `).all(store, startDate, endDate, ...campaignArgs);
+
+  const map = new Map();
+  allDates.forEach(d => map.set(d, { date: d, orders: 0, revenue: 0, spend: 0 }));
+
+  rows.forEach(r => {
+    if (map.has(r.date)) {
+      map.set(r.date, {
+        date: r.date,
+        orders: r.orders || 0,
+        revenue: r.revenue || 0,
+        spend: r.spend || 0
+      });
+    }
+  });
 
   return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
     ...d,
@@ -1057,8 +1122,8 @@ export function getEfficiency(store, params) {
   const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
   const campaignArgs = campaignValue ? [campaignValue] : [];
 
-  const current = getTotalsForRange(db, store, startDate, endDate, params);
-  const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
+  const current = getMetaTotalsForRange(db, store, startDate, endDate, params);
+  const previous = getMetaTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
 
   const spendChange = previous.spend > 0 ? ((current.spend - previous.spend) / previous.spend) * 100 : 0;
   const roasChange = previous.roas > 0 ? ((current.roas - previous.roas) / previous.roas) * 100 : 0;
@@ -1137,7 +1202,7 @@ export function getEfficiency(store, params) {
 
 export function getEfficiencyTrends(store, params) {
   const { startDate, endDate } = getDateRange(params);
-  const trends = getTrends(store, startDate, endDate, params);
+  const trends = getMetaTrends(store, startDate, endDate, params);
   const windowSize = 3;
 
   return trends.map((day, i) => {
@@ -1165,39 +1230,31 @@ export function getRecommendations(store, params) {
   const efficiency = getEfficiency(store, params);
   const recommendations = [];
 
-  if (!efficiency?.current || efficiency.current.spend <= 0) {
-    return recommendations;
-  }
-
-  if (efficiency.efficiencyRatio < 0.85 || efficiency.marginalCac > efficiency.averageCac * 1.3) {
+  if (efficiency.efficiencyRatio < 0.7 || efficiency.marginalPremium > 50) {
     recommendations.push({
       type: 'urgent',
-      title: 'Efficiency slipping at higher spend',
-      detail: 'Recent scale has increased CAC faster than revenue. Consider tightening budgets or reallocating to stronger performers.'
+      title: 'Efficiency collapsing at current scale',
+      detail: 'Marginal CAC is far above average. Reduce spend or tighten targeting until efficiency stabilizes.'
     });
-  }
-
-  if (efficiency.efficiencyRatio >= 1.05 && efficiency.marginalCac <= efficiency.averageCac * 1.1) {
-    recommendations.push({
-      type: 'positive',
-      title: 'Scaling efficiency improving',
-      detail: 'Revenue efficiency is keeping pace with spend. Maintain testing and keep scaling in controlled increments.'
-    });
-  }
-
-  if (efficiency.current.roas < 1) {
-    recommendations.push({
-      type: 'urgent',
-      title: 'ROAS below breakeven',
-      detail: 'Spend is not recovering revenue. Prioritize creative/campaign fixes before expanding budget.'
-    });
-  }
-
-  if (recommendations.length === 0) {
+  } else if (efficiency.efficiencyRatio < 0.85 || efficiency.marginalPremium > 30) {
     recommendations.push({
       type: 'neutral',
-      title: 'Monitor and hold steady',
-      detail: 'Efficiency is stable. Continue watching marginal CAC as you test incremental changes.'
+      title: 'Moderate efficiency pressure',
+      detail: 'Spend growth is outpacing ROAS. Hold budgets flat and shift spend toward best-performing geos.'
+    });
+  } else {
+    recommendations.push({
+      type: 'positive',
+      title: 'Efficiency holding up',
+      detail: 'ROAS is keeping pace with spend. Consider cautious scale in top-performing countries.'
+    });
+  }
+
+  if (efficiency.marginalCac > efficiency.averageCac * 1.1) {
+    recommendations.push({
+      type: 'neutral',
+      title: 'Monitor marginal CAC',
+      detail: 'Incremental orders are getting more expensive. Watch for fatigue and refresh creatives.'
     });
   }
 
