@@ -3813,7 +3813,7 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
       </div>
 
       {trends && trends.length > 0 && (
-        <div className="grid grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="bg-white rounded-xl p-6 shadow-sm">
             <h3 className="font-semibold mb-4">CAC Trend</h3>
             <div className="h-64">
@@ -3851,6 +3851,28 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                     name="Daily ROAS"
                     stroke="#10b981"
                     fill="#10b981"
+                    fillOpacity={0.2}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl p-6 shadow-sm">
+            <h3 className="font-semibold mb-4">Spend Trend</h3>
+            <div className="h-64">
+              <ResponsiveContainer>
+                <AreaChart data={trends}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Area
+                    type="monotone"
+                    dataKey="spend"
+                    name="Daily Spend"
+                    stroke="#f59e0b"
+                    fill="#f59e0b"
                     fillOpacity={0.2}
                   />
                 </AreaChart>
