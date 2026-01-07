@@ -195,32 +195,34 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     totalRevenue = ecomData.revenue || 0;
   }
 
-  const manualCampaignArgs = [];
-  let manualCampaignClause = '';
-  if (campaignValue) {
-    const campaign = db.prepare('SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1').get(campaignValue);
-    if (campaign?.campaign_name) {
-      manualCampaignClause = ' AND campaign = ?';
-      manualCampaignArgs.push(campaign.campaign_name);
-    } else {
-      // If campaign ID is unknown, ensure no manual orders are matched.
-      manualCampaignClause = ' AND 1=0';
+  if (store !== 'vironax') {
+    const manualCampaignArgs = [];
+    let manualCampaignClause = '';
+    if (campaignValue) {
+      const campaign = db.prepare('SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1').get(campaignValue);
+      if (campaign?.campaign_name) {
+        manualCampaignClause = ' AND campaign = ?';
+        manualCampaignArgs.push(campaign.campaign_name);
+      } else {
+        // If campaign ID is unknown, ensure no manual orders are matched.
+        manualCampaignClause = ' AND 1=0';
+      }
     }
+
+    const manualData = db.prepare(`
+      SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
+      FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
+    `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
+
+    totalSpend += manualData.spend || 0;
+    totalRevenue += manualData.revenue || 0;
+    totalOrders += manualData.orders || 0;
+
+    const override = db.prepare(`
+      SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
+    `).get(store, startDate, endDate);
+    if (override?.amount) totalSpend = override.amount;
   }
-
-  const manualData = db.prepare(`
-    SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
-    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
-  `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
-
-  totalSpend += manualData.spend || 0;
-  totalRevenue += manualData.revenue || 0;
-  totalOrders += manualData.orders || 0;
-
-  const override = db.prepare(`
-    SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
-  `).get(store, startDate, endDate);
-  if (override?.amount) totalSpend = override.amount;
 
   return {
     spend: totalSpend,
@@ -1042,6 +1044,9 @@ export function getEfficiency(store, params) {
   const { startDate, endDate } = getDateRange(params);
   const db = getDb();
   const prevRange = getPreviousDateRange(startDate, endDate);
+  const statusFilter = buildStatusFilter(params);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
 
   const current = getTotalsForRange(db, store, startDate, endDate, params);
   const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
@@ -1064,6 +1069,40 @@ export function getEfficiency(store, params) {
     status = 'red';
   }
 
+  const countryRows = db.prepare(`
+    SELECT country,
+           SUM(spend) as spend,
+           SUM(conversions) as orders,
+           SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country IS NOT NULL AND country != 'ALL'${statusFilter}${campaignClause}
+    GROUP BY country
+    ORDER BY spend DESC
+  `).all(store, startDate, endDate, ...campaignArgs);
+
+  const countries = countryRows.map((row) => {
+    const cac = row.orders > 0 ? row.spend / row.orders : 0;
+    const roas = row.spend > 0 ? row.revenue / row.spend : 0;
+    let scaling = 'red';
+    let headroom = 'Limited';
+
+    if (roas >= current.roas * 1.1 && cac <= current.cac) {
+      scaling = 'green';
+      headroom = 'High';
+    } else if (roas >= current.roas * 0.9 && cac <= current.cac * 1.2) {
+      scaling = 'yellow';
+      headroom = 'Moderate';
+    }
+
+    const info = getCountryInfo(row.country) || {};
+    return {
+      code: row.country,
+      name: info.name || row.country,
+      scaling,
+      headroom
+    };
+  });
+
   return {
     status,
     current,
@@ -1073,7 +1112,8 @@ export function getEfficiency(store, params) {
     efficiencyRatio,
     averageCac: current.cac,
     marginalCac,
-    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0
+    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0,
+    countries
   };
 }
 
@@ -1104,7 +1144,52 @@ export function getEfficiencyTrends(store, params) {
 }
 
 export function getRecommendations(store, params) {
-  return [];
+  const efficiency = getEfficiency(store, params);
+  const recs = [];
+  const ratio = efficiency.efficiencyRatio || 1;
+  const marginalPremium = efficiency.marginalPremium || 0;
+
+  if (efficiency.status === 'red') {
+    recs.push({
+      type: 'urgent',
+      title: 'Efficiency is under heavy pressure',
+      detail: 'Marginal CAC is meaningfully higher than average. Pause scaling and re-evaluate targeting or creative.'
+    });
+  }
+
+  if (ratio < 0.85) {
+    recs.push({
+      type: 'neutral',
+      title: 'Efficiency ratio is declining',
+      detail: `ROAS is not keeping up with spend increases (ratio ${ratio.toFixed(2)}). Focus budget on top-performing countries/campaigns.`
+    });
+  }
+
+  if (marginalPremium > 30) {
+    recs.push({
+      type: 'urgent',
+      title: 'Marginal CAC premium is elevated',
+      detail: `Marginal CAC is ${Math.round(marginalPremium)}% above average. Reduce incremental spend and improve conversion rate before scaling.`
+    });
+  }
+
+  if (efficiency.status === 'green') {
+    recs.push({
+      type: 'positive',
+      title: 'Efficiency is stable',
+      detail: 'ROAS and CAC are tracking well against spend changes. Continue scaling cautiously and monitor marginal CAC.'
+    });
+  }
+
+  if (recs.length === 0) {
+    recs.push({
+      type: 'neutral',
+      title: 'Efficiency is mixed',
+      detail: 'Signals are inconclusive. Watch CAC and ROAS closely over the next few days.'
+    });
+  }
+
+  return recs;
 }
 
 export function getAvailableCountries(store) {
