@@ -195,32 +195,34 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     totalRevenue = ecomData.revenue || 0;
   }
 
-  const manualCampaignArgs = [];
-  let manualCampaignClause = '';
-  if (campaignValue) {
-    const campaign = db.prepare('SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1').get(campaignValue);
-    if (campaign?.campaign_name) {
-      manualCampaignClause = ' AND campaign = ?';
-      manualCampaignArgs.push(campaign.campaign_name);
-    } else {
-      // If campaign ID is unknown, ensure no manual orders are matched.
-      manualCampaignClause = ' AND 1=0';
+  if (store !== 'vironax') {
+    const manualCampaignArgs = [];
+    let manualCampaignClause = '';
+    if (campaignValue) {
+      const campaign = db.prepare('SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1').get(campaignValue);
+      if (campaign?.campaign_name) {
+        manualCampaignClause = ' AND campaign = ?';
+        manualCampaignArgs.push(campaign.campaign_name);
+      } else {
+        // If campaign ID is unknown, ensure no manual orders are matched.
+        manualCampaignClause = ' AND 1=0';
+      }
     }
+
+    const manualData = db.prepare(`
+      SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
+      FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
+    `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
+
+    totalSpend += manualData.spend || 0;
+    totalRevenue += manualData.revenue || 0;
+    totalOrders += manualData.orders || 0;
+
+    const override = db.prepare(`
+      SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
+    `).get(store, startDate, endDate);
+    if (override?.amount) totalSpend = override.amount;
   }
-
-  const manualData = db.prepare(`
-    SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
-    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
-  `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
-
-  totalSpend += manualData.spend || 0;
-  totalRevenue += manualData.revenue || 0;
-  totalOrders += manualData.orders || 0;
-
-  const override = db.prepare(`
-    SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
-  `).get(store, startDate, endDate);
-  if (override?.amount) totalSpend = override.amount;
 
   return {
     spend: totalSpend,
@@ -1042,6 +1044,9 @@ export function getEfficiency(store, params) {
   const { startDate, endDate } = getDateRange(params);
   const db = getDb();
   const prevRange = getPreviousDateRange(startDate, endDate);
+  const statusFilter = buildStatusFilter(params);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
 
   const current = getTotalsForRange(db, store, startDate, endDate, params);
   const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
@@ -1064,6 +1069,36 @@ export function getEfficiency(store, params) {
     status = 'red';
   }
 
+  const countryRows = db.prepare(`
+    SELECT country, SUM(spend) as spend, SUM(conversions) as orders, SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    GROUP BY country
+    ORDER BY SUM(spend) DESC
+  `).all(store, startDate, endDate, ...campaignArgs);
+
+  const countries = countryRows
+    .map((row) => {
+      const spend = row.spend || 0;
+      const orders = row.orders || 0;
+      const revenue = row.revenue || 0;
+      const cac = orders > 0 ? spend / orders : 0;
+      const roas = spend > 0 ? revenue / spend : 0;
+      const info = getCountryInfo(row.country);
+      const isStrong = roas >= current.roas * 1.05 && cac <= current.cac * 0.95;
+      const isOkay = roas >= current.roas * 0.9;
+      const scaling = isStrong ? 'green' : isOkay ? 'yellow' : 'red';
+      const headroom = isStrong ? 'Strong headroom' : isOkay ? 'Some headroom' : 'Limited';
+
+      return {
+        code: row.country,
+        name: info?.name || row.country,
+        scaling,
+        headroom
+      };
+    })
+    .filter((row) => row.code);
+
   return {
     status,
     current,
@@ -1073,7 +1108,8 @@ export function getEfficiency(store, params) {
     efficiencyRatio,
     averageCac: current.cac,
     marginalCac,
-    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0
+    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0,
+    countries
   };
 }
 
@@ -1104,7 +1140,38 @@ export function getEfficiencyTrends(store, params) {
 }
 
 export function getRecommendations(store, params) {
-  return [];
+  const efficiency = getEfficiency(store, params);
+  const recommendations = [];
+
+  if (efficiency.efficiencyRatio < 0.7 || efficiency.marginalPremium > 50) {
+    recommendations.push({
+      type: 'urgent',
+      title: 'Efficiency collapsing at current scale',
+      detail: 'Marginal CAC is far above average. Reduce spend or tighten targeting until efficiency stabilizes.'
+    });
+  } else if (efficiency.efficiencyRatio < 0.85 || efficiency.marginalPremium > 30) {
+    recommendations.push({
+      type: 'neutral',
+      title: 'Moderate efficiency pressure',
+      detail: 'Spend growth is outpacing ROAS. Hold budgets flat and shift spend toward best-performing geos.'
+    });
+  } else {
+    recommendations.push({
+      type: 'positive',
+      title: 'Efficiency holding up',
+      detail: 'ROAS is keeping pace with spend. Consider cautious scale in top-performing countries.'
+    });
+  }
+
+  if (efficiency.marginalCac > efficiency.averageCac * 1.1) {
+    recommendations.push({
+      type: 'neutral',
+      title: 'Monitor marginal CAC',
+      detail: 'Incremental orders are getting more expensive. Watch for fatigue and refresh creatives.'
+    });
+  }
+
+  return recommendations;
 }
 
 export function getAvailableCountries(store) {
