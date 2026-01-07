@@ -323,10 +323,21 @@ export function getBudgetIntelligence(store, params) {
     recommendedDaily = Math.min(Math.max(recommendedDaily, minDaily), maxDaily);
 
     const expectedPurchases = recommendedDaily * testDays / Math.max(c.posteriorCAC || priorMeanCAC, 1);
-    const expectedRange = {
-      low: Math.max(targetPurchasesRange.min * 0.8, expectedPurchases * 0.8),
-      high: Math.min(targetPurchasesRange.max * 1.2, expectedPurchases * 1.2)
-    };
+    const expectedRange = (() => {
+      const baseLow = Math.max(0, expectedPurchases * 0.8);
+      const baseHigh = Math.max(0, expectedPurchases * 1.2);
+      const targetLow = targetPurchasesRange.min * 0.8;
+      const targetHigh = targetPurchasesRange.max * 1.2;
+      let low = Math.max(baseLow, targetLow);
+      let high = Math.min(baseHigh, targetHigh);
+
+      if (low > high) {
+        low = Math.min(baseLow, baseHigh);
+        high = Math.max(baseLow, baseHigh);
+      }
+
+      return { low, high };
+    })();
 
     const sigmaRoas = Math.max(0.15, 1 / Math.sqrt(c.effectiveN)) * c.posteriorROAS;
     const confidenceBand = {
