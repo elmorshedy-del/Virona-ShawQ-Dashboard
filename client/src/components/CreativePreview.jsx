@@ -187,9 +187,10 @@ export default function CreativePreview({ store }) {
   };
 
   const hasVideo = !!videoData?.source_url;
+  const hasEmbed = !hasVideo && !!videoData?.embed_html;
   const displayThumbnail = videoData?.thumbnail_url || activeAd?.thumbnail || null;
-  const hasThumbnail = !hasVideo && !!displayThumbnail;
-  const showNoVideo = !videoLoading && (!videoData?.source_url && !displayThumbnail);
+  const hasThumbnail = !hasVideo && !hasEmbed && !!displayThumbnail;
+  const showNoVideo = !videoLoading && !hasVideo && !hasEmbed && !hasThumbnail;
   const showPermissionFallback = videoData?.playable === false && hasThumbnail;
   const fallbackMessage =
     videoData?.message ||
@@ -522,6 +523,13 @@ export default function CreativePreview({ store }) {
                     controls
                     onLoadedMetadata={handleVideoMetadata}
                     className="w-full h-auto max-h-[85vh] object-contain"
+                  />
+                )}
+
+                {!videoLoading && hasEmbed && (
+                  <div
+                    className="w-full flex justify-center"
+                    dangerouslySetInnerHTML={{ __html: videoData.embed_html }}
                   />
                 )}
 
