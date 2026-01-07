@@ -204,9 +204,22 @@ function extractVideoId(creative) {
   return null;
 }
 
+function extractThumbnailUrl(creative) {
+  if (!creative) return null;
+  return (
+    creative.thumbnail_url ||
+    creative.image_url ||
+    creative.object_story_spec?.video_data?.image_url ||
+    creative.asset_feed_spec?.images?.[0]?.image_url ||
+    creative.asset_feed_spec?.videos?.[0]?.thumbnail_url ||
+    null
+  );
+}
+
 router.get('/adaccounts', async (req, res) => {
   const store = req.query.store || 'vironax';
-  const { accessToken } = getStoreConfig(store);
+  const config = getStoreConfig(store);
+  const { accessToken } = config;
 
   if (!accessToken) {
     return res.status(400).json({ error: 'Missing Meta credentials.' });
@@ -223,9 +236,16 @@ router.get('/adaccounts', async (req, res) => {
     return res.status(result.status).json({ error: result.data?.error?.message || 'Meta request failed' });
   }
 
-  res.json({
-    data: Array.isArray(result.data?.data) ? result.data.data : []
-  });
+  let accounts = Array.isArray(result.data?.data) ? result.data.data : [];
+
+  if (accounts.length === 0 && config.adAccountId) {
+    accounts = [{
+      id: `act_${config.adAccountId.replace('act_', '')}`,
+      name: `Manual Account (${config.adAccountId})`
+    }];
+  }
+
+  res.json({ data: accounts });
 });
 
 router.get('/campaigns', async (req, res) => {
@@ -266,7 +286,7 @@ router.get('/campaigns/:campaignId/ads', async (req, res) => {
   const result = await fetchMetaJson({
     path: `/${campaignId}/ads`,
     params: {
-      fields: 'id,name,status,effective_status,creative{object_story_spec,asset_feed_spec},thumbnail_url',
+      fields: 'id,name,status,effective_status,creative{thumbnail_url,image_url,object_story_spec,asset_feed_spec}',
       limit: '500'
     },
     store,
@@ -279,7 +299,11 @@ router.get('/campaigns/:campaignId/ads', async (req, res) => {
   }
 
   const ads = Array.isArray(result.data?.data) ? result.data.data : [];
-  res.json({ data: ads });
+  const formattedAds = ads.map(ad => ({
+    ...ad,
+    thumbnail_url: extractThumbnailUrl(ad.creative)
+  }));
+  res.json({ data: formattedAds });
 });
 
 router.get('/ads/:adId/video', async (req, res) => {
