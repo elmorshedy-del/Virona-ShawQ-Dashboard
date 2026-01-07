@@ -195,10 +195,19 @@ function extractVideoId(creative) {
   const directVideoId = creative?.object_story_spec?.video_data?.video_id;
   if (directVideoId) return directVideoId;
 
+  const linkVideoId = creative?.object_story_spec?.link_data?.video_id;
+  if (linkVideoId) return linkVideoId;
+
   const videos = creative?.asset_feed_spec?.videos;
-  if (Array.isArray(videos)) {
+  if (Array.isArray(videos) && videos.length > 0) {
     const videoEntry = videos.find(video => video?.video_id) || videos[0];
     return videoEntry?.video_id || null;
+  }
+
+  const carouselElements = creative?.object_story_spec?.link_data?.child_attachments;
+  if (Array.isArray(carouselElements)) {
+    const videoElement = carouselElements.find(element => element?.video_id);
+    if (videoElement?.video_id) return videoElement.video_id;
   }
 
   return null;
@@ -206,14 +215,44 @@ function extractVideoId(creative) {
 
 function extractThumbnailUrl(creative) {
   if (!creative) return null;
-  return (
-    creative.thumbnail_url ||
-    creative.image_url ||
-    creative.object_story_spec?.video_data?.image_url ||
-    creative.asset_feed_spec?.images?.[0]?.image_url ||
-    creative.asset_feed_spec?.videos?.[0]?.thumbnail_url ||
-    null
-  );
+  if (creative.thumbnail_url) return creative.thumbnail_url;
+  if (creative.image_url) return creative.image_url;
+
+  const videoImage = creative?.object_story_spec?.video_data?.image_url;
+  if (videoImage) return videoImage;
+
+  const linkImage =
+    creative?.object_story_spec?.link_data?.image_url ||
+    creative?.object_story_spec?.link_data?.picture;
+  if (linkImage) return linkImage;
+
+  const photoUrl =
+    creative?.object_story_spec?.photo_data?.url ||
+    creative?.object_story_spec?.photo_data?.image_url;
+  if (photoUrl) return photoUrl;
+
+  const assetImages = creative?.asset_feed_spec?.images;
+  if (Array.isArray(assetImages) && assetImages.length > 0) {
+    const image = assetImages[0];
+    if (image?.url) return image.url;
+    if (image?.image_url) return image.image_url;
+  }
+
+  const assetVideos = creative?.asset_feed_spec?.videos;
+  if (Array.isArray(assetVideos) && assetVideos.length > 0) {
+    const video = assetVideos[0];
+    if (video?.thumbnail_url) return video.thumbnail_url;
+    if (video?.picture) return video.picture;
+  }
+
+  const carouselElements = creative?.object_story_spec?.link_data?.child_attachments;
+  if (Array.isArray(carouselElements) && carouselElements.length > 0) {
+    const first = carouselElements[0];
+    if (first?.picture) return first.picture;
+    if (first?.image_url) return first.image_url;
+  }
+
+  return null;
 }
 
 router.get('/adaccounts', async (req, res) => {
@@ -287,7 +326,7 @@ router.get('/campaigns/:campaignId/ads', async (req, res) => {
     path: `/${campaignId}/ads`,
     params: {
       fields:
-        'id,name,status,effective_status,creative{thumbnail_url,image_url,object_story_spec,asset_feed_spec}',
+        'id,name,status,effective_status,creative{thumbnail_url,image_url,object_story_spec{video_data,link_data,photo_data},asset_feed_spec{videos,images}}',
       limit: '500'
     },
     store,
@@ -346,7 +385,7 @@ router.get('/ads/:adId/video', async (req, res) => {
 
   const previewResult = await fetchMetaJson({
     path: `/${videoId}`,
-    params: { fields: 'picture,thumbnails{uri},length,permalink_url' },
+    params: { fields: 'picture,thumbnails{uri},length,permalink_url,embed_html' },
     store,
     adAccountId,
     localEndpoint: '/api/meta/ads/:adId/video'
@@ -404,6 +443,7 @@ router.get('/ads/:adId/video', async (req, res) => {
   res.json({
     video_id: videoId,
     source_url: sourceData?.source || null,
+    embed_html: previewData?.embed_html || null,
     thumbnail_url: thumbnailUrl,
     length: previewData?.length ?? null,
     permalink_url: previewData?.permalink_url || null
