@@ -402,6 +402,10 @@ export default function App() {
       if (saved && STORES[saved]) {
         setCurrentStore(saved);
       }
+      const savedIncludeInactive = localStorage.getItem('includeInactive');
+      if (savedIncludeInactive !== null) {
+        setIncludeInactive(savedIncludeInactive === 'true');
+      }
     } catch (e) {
       console.error('Error reading localStorage:', e);
     }
@@ -417,6 +421,15 @@ export default function App() {
       console.error('Error writing localStorage:', e);
     }
   }, [currentStore, storeLoaded]);
+
+  useEffect(() => {
+    if (!storeLoaded) return;
+    try {
+      localStorage.setItem('includeInactive', includeInactive ? 'true' : 'false');
+    } catch (e) {
+      console.error('Error writing localStorage:', e);
+    }
+  }, [includeInactive, storeLoaded]);
 
   useEffect(() => {
     const newStore = STORES[currentStore];
