@@ -195,32 +195,34 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     totalRevenue = ecomData.revenue || 0;
   }
 
-  const manualCampaignArgs = [];
-  let manualCampaignClause = '';
-  if (campaignValue) {
-    const campaign = db.prepare('SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1').get(campaignValue);
-    if (campaign?.campaign_name) {
-      manualCampaignClause = ' AND campaign = ?';
-      manualCampaignArgs.push(campaign.campaign_name);
-    } else {
-      // If campaign ID is unknown, ensure no manual orders are matched.
-      manualCampaignClause = ' AND 1=0';
+  if (store !== 'vironax') {
+    const manualCampaignArgs = [];
+    let manualCampaignClause = '';
+    if (campaignValue) {
+      const campaign = db.prepare('SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1').get(campaignValue);
+      if (campaign?.campaign_name) {
+        manualCampaignClause = ' AND campaign = ?';
+        manualCampaignArgs.push(campaign.campaign_name);
+      } else {
+        // If campaign ID is unknown, ensure no manual orders are matched.
+        manualCampaignClause = ' AND 1=0';
+      }
     }
+
+    const manualData = db.prepare(`
+      SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
+      FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
+    `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
+
+    totalSpend += manualData.spend || 0;
+    totalRevenue += manualData.revenue || 0;
+    totalOrders += manualData.orders || 0;
+
+    const override = db.prepare(`
+      SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
+    `).get(store, startDate, endDate);
+    if (override?.amount) totalSpend = override.amount;
   }
-
-  const manualData = db.prepare(`
-    SELECT SUM(spend) as spend, SUM(orders_count) as orders, SUM(revenue) as revenue
-    FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
-  `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
-
-  totalSpend += manualData.spend || 0;
-  totalRevenue += manualData.revenue || 0;
-  totalOrders += manualData.orders || 0;
-
-  const override = db.prepare(`
-    SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
-  `).get(store, startDate, endDate);
-  if (override?.amount) totalSpend = override.amount;
 
   return {
     spend: totalSpend,
@@ -1064,6 +1066,43 @@ export function getEfficiency(store, params) {
     status = 'red';
   }
 
+  const statusFilter = buildStatusFilter(params);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
+  const countryRows = db.prepare(`
+    SELECT country, SUM(spend) as spend, SUM(conversions) as orders, SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
+    GROUP BY country
+    ORDER BY SUM(spend) DESC
+  `).all(store, startDate, endDate, ...campaignArgs);
+
+  const efficiencyCountries = countryRows
+    .filter(row => row?.country && row.country !== 'ALL')
+    .map((row) => {
+      const cac = row.orders > 0 ? row.spend / row.orders : 0;
+      const roas = row.spend > 0 ? row.revenue / row.spend : 0;
+      let scaling = 'yellow';
+      let headroom = 'Moderate';
+
+      if (roas >= current.roas && (current.cac === 0 || cac <= current.cac)) {
+        scaling = 'green';
+        headroom = 'High';
+      } else if (roas <= current.roas * 0.8 || (current.cac > 0 && cac >= current.cac * 1.2)) {
+        scaling = 'red';
+        headroom = 'Low';
+      }
+
+      const countryInfo = getCountryInfo(row.country);
+      return {
+        code: row.country,
+        name: countryInfo?.name || row.country,
+        scaling,
+        headroom
+      };
+    })
+    .slice(0, 6);
+
   return {
     status,
     current,
@@ -1073,7 +1112,8 @@ export function getEfficiency(store, params) {
     efficiencyRatio,
     averageCac: current.cac,
     marginalCac,
-    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0
+    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0,
+    countries: efficiencyCountries
   };
 }
 
@@ -1104,7 +1144,54 @@ export function getEfficiencyTrends(store, params) {
 }
 
 export function getRecommendations(store, params) {
-  return [];
+  const { startDate, endDate } = getDateRange(params);
+  const db = getDb();
+  const prevRange = getPreviousDateRange(startDate, endDate);
+
+  const current = getTotalsForRange(db, store, startDate, endDate, params);
+  const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
+
+  const spendChange = previous.spend > 0 ? ((current.spend - previous.spend) / previous.spend) * 100 : 0;
+  const roasChange = previous.roas > 0 ? ((current.roas - previous.roas) / previous.roas) * 100 : 0;
+  const incrementalSpend = current.spend - previous.spend;
+  const incrementalOrders = current.orders - previous.orders;
+  const marginalCac = incrementalOrders > 0 ? incrementalSpend / incrementalOrders : current.cac;
+
+  const recommendations = [];
+
+  if (spendChange > 10 && roasChange < 0) {
+    recommendations.push({
+      type: 'urgent',
+      title: 'Efficiency slipping as spend rises',
+      detail: 'Spend is up while ROAS is down. Focus budget on the top-performing campaigns and pause the weakest ad sets.'
+    });
+  }
+
+  if (marginalCac > current.cac * 1.3) {
+    recommendations.push({
+      type: 'urgent',
+      title: 'Marginal CAC is running high',
+      detail: 'New spend is driving more expensive purchases than your average. Consider slowing scale or shifting budget to higher-ROAS segments.'
+    });
+  }
+
+  if (roasChange > 5 && spendChange <= 10) {
+    recommendations.push({
+      type: 'positive',
+      title: 'Efficiency improving',
+      detail: 'ROAS is up with controlled spend. You have room to cautiously scale the strongest campaigns.'
+    });
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push({
+      type: 'info',
+      title: 'Maintain steady allocation',
+      detail: 'Efficiency metrics are stable. Keep budgets consistent and monitor for early shifts.'
+    });
+  }
+
+  return recommendations;
 }
 
 export function getAvailableCountries(store) {
