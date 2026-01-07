@@ -195,6 +195,17 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     totalRevenue = ecomData.revenue || 0;
   }
 
+  if (store === 'vironax') {
+    return {
+      spend: totalSpend,
+      revenue: totalRevenue,
+      orders: totalOrders,
+      aov: totalOrders > 0 ? totalRevenue / totalOrders : 0,
+      cac: totalOrders > 0 ? totalSpend / totalOrders : 0,
+      roas: totalSpend > 0 ? totalRevenue / totalSpend : 0
+    };
+  }
+
   const manualCampaignArgs = [];
   let manualCampaignClause = '';
   if (campaignValue) {
@@ -1042,6 +1053,9 @@ export function getEfficiency(store, params) {
   const { startDate, endDate } = getDateRange(params);
   const db = getDb();
   const prevRange = getPreviousDateRange(startDate, endDate);
+  const statusFilter = buildStatusFilter(params);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const campaignArgs = campaignValue ? [campaignValue] : [];
 
   const current = getTotalsForRange(db, store, startDate, endDate, params);
   const previous = getTotalsForRange(db, store, prevRange.startDate, prevRange.endDate, params);
@@ -1064,6 +1078,49 @@ export function getEfficiency(store, params) {
     status = 'red';
   }
 
+  const countryRows = db.prepare(`
+    SELECT country, SUM(spend) as spend, SUM(conversions) as orders, SUM(conversion_value) as revenue
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}${campaignClause}
+    GROUP BY country
+    ORDER BY SUM(spend) DESC
+  `).all(store, startDate, endDate, ...campaignArgs);
+
+  const averageCac = current.cac || 0;
+  const averageRoas = current.roas || 0;
+  const countries = countryRows
+    .map((row) => {
+      const orders = row.orders || 0;
+      const spend = row.spend || 0;
+      const revenue = row.revenue || 0;
+      const cac = orders > 0 ? spend / orders : 0;
+      const roas = spend > 0 ? revenue / spend : 0;
+      const info = getCountryInfo(row.country);
+
+      let scaling = 'yellow';
+      if (orders < 3 || spend < 100) {
+        scaling = 'red';
+      } else if ((averageRoas > 0 && roas >= averageRoas * 1.05) || (averageCac > 0 && cac <= averageCac * 0.95)) {
+        scaling = 'green';
+      } else if ((averageRoas > 0 && roas < averageRoas * 0.9) || (averageCac > 0 && cac >= averageCac * 1.1)) {
+        scaling = 'red';
+      }
+
+      const headroom = scaling === 'green'
+        ? 'Increase 15–25%'
+        : scaling === 'yellow'
+          ? 'Hold / small test'
+          : 'Reduce / pause';
+
+      return {
+        code: info?.code || row.country,
+        name: info?.name || row.country,
+        scaling,
+        headroom
+      };
+    })
+    .filter((row) => row.code);
+
   return {
     status,
     current,
@@ -1073,7 +1130,8 @@ export function getEfficiency(store, params) {
     efficiencyRatio,
     averageCac: current.cac,
     marginalCac,
-    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0
+    marginalPremium: current.cac > 0 ? ((marginalCac - current.cac) / current.cac) * 100 : 0,
+    countries
   };
 }
 
@@ -1104,7 +1162,46 @@ export function getEfficiencyTrends(store, params) {
 }
 
 export function getRecommendations(store, params) {
-  return [];
+  const efficiency = getEfficiency(store, params);
+  const recommendations = [];
+
+  if (!efficiency?.current || efficiency.current.spend <= 0) {
+    return recommendations;
+  }
+
+  if (efficiency.efficiencyRatio < 0.85 || efficiency.marginalCac > efficiency.averageCac * 1.3) {
+    recommendations.push({
+      type: 'urgent',
+      title: 'Efficiency slipping at higher spend',
+      detail: 'Recent scale has increased CAC faster than revenue. Consider tightening budgets or reallocating to stronger performers.'
+    });
+  }
+
+  if (efficiency.efficiencyRatio >= 1.05 && efficiency.marginalCac <= efficiency.averageCac * 1.1) {
+    recommendations.push({
+      type: 'positive',
+      title: 'Scaling efficiency improving',
+      detail: 'Revenue efficiency is keeping pace with spend. Maintain testing and keep scaling in controlled increments.'
+    });
+  }
+
+  if (efficiency.current.roas < 1) {
+    recommendations.push({
+      type: 'urgent',
+      title: 'ROAS below breakeven',
+      detail: 'Spend is not recovering revenue. Prioritize creative/campaign fixes before expanding budget.'
+    });
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push({
+      type: 'neutral',
+      title: 'Monitor and hold steady',
+      detail: 'Efficiency is stable. Continue watching marginal CAC as you test incremental changes.'
+    });
+  }
+
+  return recommendations;
 }
 
 export function getAvailableCountries(store) {
