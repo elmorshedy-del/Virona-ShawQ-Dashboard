@@ -1466,7 +1466,7 @@ function DashboardTab({
   
   const kpis = [
     { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6' },
-    { key: 'spend', label: 'Ad Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1' },
+    { key: 'spend', label: 'AD Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1' },
     { key: 'orders', label: 'Orders', value: overview.orders, change: overview.ordersChange, format: 'number', color: '#22c55e' },
     { key: 'aov', label: 'AOV', value: overview.aov, change: overview.aovChange, format: 'currency', color: '#f59e0b' },
     { key: 'cac', label: 'CAC', value: overview.cac, change: overview.cacChange, format: 'currency', color: '#ef4444' },
@@ -2015,6 +2015,77 @@ function DashboardTab({
     return formatCountryTooltip(fallbackLabel);
   }, [formatCountryTooltip]);
 
+  const tooltipMetricLabels = {
+    revenue: 'Revenue',
+    spend: 'AD Spend',
+    orders: 'Orders',
+    aov: 'AOV',
+    roas: 'ROAS',
+    cac: 'CAC'
+  };
+
+  const normalizeMetricKey = (key = '') => key.replace(/(Complete|Incomplete)$/i, '');
+
+  const formatTooltipMetricValue = useCallback((metricKey, value) => {
+    const baseKey = normalizeMetricKey(metricKey);
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return null;
+    if (['revenue', 'spend', 'aov', 'cac'].includes(baseKey)) {
+      return formatCurrency(numericValue, 0);
+    }
+    if (baseKey === 'roas') {
+      return `${numericValue.toFixed(2)}x`;
+    }
+    if (baseKey === 'orders') {
+      return Math.round(numericValue).toLocaleString();
+    }
+    return Math.round(numericValue).toLocaleString();
+  }, [formatCurrency]);
+
+  const getBucketTimeLeftLabel = useCallback((payload) => {
+    const point = payload?.find(item => item?.payload)?.payload;
+    if (!point?.isIncomplete) return '';
+    const startDate = parseLocalDate(point.bucketStartDate);
+    if (!startDate) return '';
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expectedEnd = new Date(startDate);
+    expectedEnd.setDate(startDate.getDate() + bucketDays - 1);
+    expectedEnd.setHours(0, 0, 0, 0);
+    const diffMs = expectedEnd.getTime() - today.getTime();
+    const diffDays = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+    if (bucketDays >= 7) {
+      const weeksLeft = Math.max(0, Math.ceil(diffDays / 7));
+      return `${weeksLeft} week${weeksLeft === 1 ? '' : 's'} left`;
+    }
+    return `${diffDays} day${diffDays === 1 ? '' : 's'} left`;
+  }, [bucketDays, parseLocalDate]);
+
+  const renderBucketTooltip = useCallback(({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const rangeLabel = getTrendRangeLabel(payload, label);
+    const timeLeftLabel = getBucketTimeLeftLabel(payload);
+    const headerText = `${rangeLabel}${timeLeftLabel ? ` (in progress • ${timeLeftLabel})` : ''}`;
+    const filtered = payload.filter(item => item?.value !== null && item?.value !== undefined);
+    return (
+      <div className="rounded-md bg-white p-2 shadow text-xs">
+        <div className="font-semibold text-gray-700 mb-1">{headerText}</div>
+        {filtered.map((item) => {
+          const metricKey = normalizeMetricKey(item.dataKey || item.name || '');
+          const metricLabel = tooltipMetricLabels[metricKey] || item.name || metricKey;
+          const valueText = formatTooltipMetricValue(metricKey, item.value);
+          if (valueText === null) return null;
+          return (
+            <div key={`${item.dataKey}-${metricLabel}`} className="flex justify-between gap-3">
+              <span className="text-gray-500">{metricLabel}</span>
+              <span className="font-semibold text-gray-900">{valueText}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }, [formatTooltipMetricValue, getBucketTimeLeftLabel, getTrendRangeLabel, tooltipMetricLabels]);
+
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
   const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
@@ -2326,14 +2397,7 @@ function DashboardTab({
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip
-                  labelFormatter={(label, payload) => {
-                    const rangeLabel = getTrendRangeLabel(payload, label);
-                    const isInProgress = payload?.some(item => item?.payload?.isIncomplete);
-                    return `${rangeLabel}${isInProgress ? ' (in progress)' : ''}`;
-                  }}
-                  formatter={(value) => formatNumber(value)}
-                />
+                <Tooltip content={renderBucketTooltip} />
                 <Line
                   type="monotone"
                   dataKey="ordersComplete"
@@ -2415,18 +2479,7 @@ function DashboardTab({
                       <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                       <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                       <YAxis tick={{ fontSize: 12 }} />
-                      <Tooltip
-                        labelFormatter={(label, payload) => {
-                          const rangeLabel = getTrendRangeLabel(payload, label);
-                          const isInProgress = payload?.some(item => item?.payload?.isIncomplete);
-                          return `${rangeLabel}${isInProgress ? ' (in progress)' : ''}`;
-                        }}
-                        formatter={(value) => {
-                          if (thisKpi.format === 'currency') return formatCurrency(value);
-                          if (thisKpi.format === 'roas') return `${Number(value || 0).toFixed(2)}×`;
-                          return formatNumber(value);
-                        }}
-                      />
+                      <Tooltip content={renderBucketTooltip} />
                       <Line
                         type="monotone"
                         dataKey={`${key}Complete`}
@@ -2634,7 +2687,11 @@ function DashboardTab({
                 <XAxis dataKey="hourLabel" tick={{ fontSize: 10 }} />
                 <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
                 <Tooltip
-                  formatter={(value, name) => [value, name === 'orders' ? 'Orders' : 'Revenue']}
+                  formatter={(value, name) => {
+                    const metricLabel = tooltipMetricLabels[name] || name;
+                    const valueText = formatTooltipMetricValue(name, value);
+                    return valueText ? [valueText, metricLabel] : null;
+                  }}
                   labelFormatter={(label) => `${label}`}
                 />
                 <Line
@@ -3339,10 +3396,11 @@ function DashboardTab({
                         <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                         <Tooltip
                           labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
+                          formatter={(value, name) => {
+                            const metricLabel = tooltipMetricLabels[name] || name;
+                            const valueText = formatTooltipMetricValue(name, value);
+                            return valueText ? [valueText, metricLabel] : null;
+                          }}
                         />
                         <Line
                           type="monotone"
@@ -3474,10 +3532,11 @@ function DashboardTab({
                         <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                         <Tooltip
                           labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
+                          formatter={(value, name) => {
+                            const metricLabel = tooltipMetricLabels[name] || name;
+                            const valueText = formatTooltipMetricValue(name, value);
+                            return valueText ? [valueText, metricLabel] : null;
+                          }}
                         />
                         <Line
                           type="monotone"
@@ -4035,6 +4094,18 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
   };
   
   const status = statusColors[efficiency.status] || statusColors.yellow;
+  const tooltipMetricLabels = {
+    cac: 'CAC',
+    spend: 'AD Spend',
+    roas: 'ROAS'
+  };
+
+  const formatTooltipMetricValue = (metricKey, value) => {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return null;
+    if (metricKey === 'roas') return `${numericValue.toFixed(2)}x`;
+    return formatCurrency(numericValue, 0);
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -4108,7 +4179,13 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
+                  <Tooltip
+                    formatter={(value, name) => {
+                      const metricLabel = tooltipMetricLabels[name] || name;
+                      const valueText = formatTooltipMetricValue(name, value);
+                      return valueText ? [valueText, metricLabel] : null;
+                    }}
+                  />
                   <Line
                     type="monotone"
                     dataKey="cac"
@@ -4130,7 +4207,13 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
+                  <Tooltip
+                    formatter={(value, name) => {
+                      const metricLabel = tooltipMetricLabels[name] || name;
+                      const valueText = formatTooltipMetricValue(name, value);
+                      return valueText ? [valueText, metricLabel] : null;
+                    }}
+                  />
                   <Line
                     type="monotone"
                     dataKey="spend"
@@ -4152,7 +4235,13 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
+                  <Tooltip
+                    formatter={(value, name) => {
+                      const metricLabel = tooltipMetricLabels[name] || name;
+                      const valueText = formatTooltipMetricValue(name, value);
+                      return valueText ? [valueText, metricLabel] : null;
+                    }}
+                  />
                   <Area
                     type="monotone"
                     dataKey="roas"
