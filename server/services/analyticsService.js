@@ -498,6 +498,78 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
 // ============================================================================
 // TRENDS
 // ============================================================================
+const getBucketDays = (totalDays) => {
+  if (totalDays <= 7) return 1; // Daily
+  if (totalDays <= 14) return 3; // 3-day buckets
+  if (totalDays <= 60) return 7; // Weekly buckets
+  return 30; // Monthly buckets
+};
+
+const resolveBucketDays = (totalDays, params = {}) => {
+  if (totalDays > 60) {
+    if (params.bucket === 'weekly') return 7;
+    if (params.bucket === 'monthly') return 30;
+  }
+
+  return getBucketDays(totalDays);
+};
+
+const aggregateBucket = (dataPoints) => {
+  if (!Array.isArray(dataPoints) || dataPoints.length === 0) {
+    return null;
+  }
+
+  const orders = dataPoints.reduce((sum, point) => sum + (point.orders || 0), 0);
+  const revenue = dataPoints.reduce((sum, point) => sum + (point.revenue || 0), 0);
+  const spend = dataPoints.reduce((sum, point) => sum + (point.spend || 0), 0);
+
+  return {
+    orders,
+    revenue,
+    spend,
+    aov: orders > 0 ? revenue / orders : 0,
+    cac: orders > 0 ? spend / orders : 0,
+    roas: spend > 0 ? revenue / spend : 0
+  };
+};
+
+const bucketizeTrends = (dailyPoints, bucketDays) => {
+  if (!Array.isArray(dailyPoints) || dailyPoints.length === 0) {
+    return [];
+  }
+
+  if (bucketDays <= 1) {
+    return dailyPoints.map(point => ({
+      ...point,
+      bucketStartDate: point.date,
+      bucketEndDate: point.date,
+      aov: point.orders > 0 ? point.revenue / point.orders : 0,
+      cac: point.orders > 0 ? point.spend / point.orders : 0,
+      roas: point.spend > 0 ? point.revenue / point.spend : 0
+    }));
+  }
+
+  const buckets = [];
+
+  for (let i = 0; i < dailyPoints.length; i += bucketDays) {
+    const slice = dailyPoints.slice(i, i + bucketDays);
+    const aggregate = aggregateBucket(slice);
+    if (!aggregate) continue;
+
+    const bucketStartDate = slice[0]?.date;
+    const bucketEndDate = slice[slice.length - 1]?.date;
+
+    buckets.push({
+      date: bucketEndDate,
+      bucketStartDate,
+      bucketEndDate,
+      ...aggregate
+    });
+  }
+
+  return buckets;
+};
+
 function getTrends(store, startDate, endDate, params = {}) {
   const db = getDb();
   const statusFilter = buildStatusFilter(params);
@@ -509,6 +581,7 @@ function getTrends(store, startDate, endDate, params = {}) {
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     allDates.push(formatDateAsGmt3(d));
   }
+  const bucketDays = resolveBucketDays(allDates.length, params);
 
   let salesData = [];
   if (store === 'shawq' && !campaignValue) {
@@ -525,12 +598,8 @@ function getTrends(store, startDate, endDate, params = {}) {
   salesData.forEach(r => { if(map.has(r.date)) { map.get(r.date).orders = r.orders; map.get(r.date).revenue = r.revenue; }});
   spendData.forEach(r => { if(map.has(r.date)) { map.get(r.date).spend = r.spend; }});
 
-  return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
-    ...d,
-    aov: d.orders > 0 ? d.revenue / d.orders : 0,
-    cac: d.orders > 0 ? d.spend / d.orders : 0,
-    roas: d.spend > 0 ? d.revenue / d.spend : 0
-  }));
+  const dailyPoints = Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+  return bucketizeTrends(dailyPoints, bucketDays);
 }
 
 function getMetaTrends(store, startDate, endDate, params = {}) {
@@ -544,6 +613,7 @@ function getMetaTrends(store, startDate, endDate, params = {}) {
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     allDates.push(formatDateAsGmt3(d));
   }
+  const bucketDays = resolveBucketDays(allDates.length, params);
 
   const salesData = db.prepare(`
     SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue
@@ -565,12 +635,8 @@ function getMetaTrends(store, startDate, endDate, params = {}) {
   salesData.forEach(r => { if (map.has(r.date)) { map.get(r.date).orders = r.orders; map.get(r.date).revenue = r.revenue; }});
   spendData.forEach(r => { if (map.has(r.date)) { map.get(r.date).spend = r.spend; }});
 
-  return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
-    ...d,
-    aov: d.orders > 0 ? d.revenue / d.orders : 0,
-    cac: d.orders > 0 ? d.spend / d.orders : 0,
-    roas: d.spend > 0 ? d.revenue / d.spend : 0
-  }));
+  const dailyPoints = Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+  return bucketizeTrends(dailyPoints, bucketDays);
 }
 
 // ============================================================================
