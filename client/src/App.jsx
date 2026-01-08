@@ -60,6 +60,97 @@ const getLocalDateString = (date = new Date()) => {
   return localDate.toISOString().split('T')[0];
 };
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const parseLocalDate = (dateString) => {
+  if (!dateString) return null;
+  const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(dateString) ? `${dateString}T00:00:00` : dateString;
+  const parsed = new Date(safeDate);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const addDays = (date, days) => new Date(date.getTime() + days * DAY_MS);
+
+const formatShortDate = (date) =>
+  date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+const formatLongDate = (date) =>
+  date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+const resolveBucketSize = (rangeDays, mode) => {
+  if (mode === 'daily') return 1;
+  if (mode === '3d') return 3;
+  if (mode === 'weekly') return 7;
+  if (rangeDays >= 28) return 7;
+  if (rangeDays >= 14) return 3;
+  return 1;
+};
+
+const buildBucketLabels = (startDate, endDate, bucketSize) => {
+  if (bucketSize <= 1) {
+    return {
+      label: formatShortDate(startDate),
+      tooltipLabel: formatLongDate(startDate)
+    };
+  }
+
+  return {
+    label: `${formatShortDate(startDate)}–${formatShortDate(endDate)}`,
+    tooltipLabel: `${formatLongDate(startDate)} – ${formatLongDate(endDate)}`
+  };
+};
+
+const aggregateTrendSeries = (data, valueKey, mode = 'auto') => {
+  if (!Array.isArray(data) || data.length === 0) return [];
+  const normalized = data
+    .map((item) => ({ ...item, __date: parseLocalDate(item.date) }))
+    .filter((item) => item.__date);
+  if (normalized.length === 0) return [];
+
+  const sorted = [...normalized].sort((a, b) => a.__date - b.__date);
+  const startDate = sorted[0].__date;
+  const endDate = sorted[sorted.length - 1].__date;
+  const rangeDays = Math.max(1, Math.round((endDate - startDate) / DAY_MS) + 1);
+  const bucketSize = resolveBucketSize(rangeDays, mode);
+  const now = new Date();
+  const buckets = new Map();
+
+  sorted.forEach((item) => {
+    const dayIndex = Math.floor((item.__date - startDate) / DAY_MS);
+    const bucketIndex = Math.floor(dayIndex / bucketSize);
+    const bucketStart = addDays(startDate, bucketIndex * bucketSize);
+    const bucketEnd = addDays(bucketStart, bucketSize - 1);
+    const entry = buckets.get(bucketIndex) || {
+      index: bucketIndex,
+      start: bucketStart,
+      end: bucketEnd,
+      sum: 0,
+      count: 0
+    };
+    const value = Number(item?.[valueKey]);
+    if (Number.isFinite(value)) {
+      entry.sum += value;
+      entry.count += 1;
+    }
+    buckets.set(bucketIndex, entry);
+  });
+
+  return [...buckets.values()]
+    .sort((a, b) => a.index - b.index)
+    .map((bucket) => {
+      const average = bucket.count > 0 ? bucket.sum / bucket.count : 0;
+      const endExclusive = addDays(bucket.start, bucketSize);
+      const isComplete = now >= endExclusive;
+      const { label, tooltipLabel } = buildBucketLabels(bucket.start, bucket.end, bucketSize);
+      return {
+        label,
+        tooltipLabel,
+        lineValue: isComplete ? average : null,
+        displayValue: average
+      };
+    });
+};
+
 const EPSILON = 1e-6;
 const K_PRIOR = 50;
 const CREATIVE_SAMPLES = 2000;
@@ -1431,6 +1522,9 @@ function DashboardTab({
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
   const [showCountryTrends, setShowCountryTrends] = useState(false);
   const [showCampaignTrends, setShowCampaignTrends] = useState(false);
+  const [sparklineSmoothingMode, setSparklineSmoothingMode] = useState('auto');
+  const [countryTrendSmoothingMode, setCountryTrendSmoothingMode] = useState('auto');
+  const [campaignTrendSmoothingMode, setCampaignTrendSmoothingMode] = useState('auto');
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
@@ -1443,6 +1537,12 @@ function DashboardTab({
     { label: '2W', type: 'weeks', value: 2 },
     { label: '3W', type: 'weeks', value: 3 },
     { label: '1M', type: 'months', value: 1 }
+  ];
+  const smoothingOptions = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'daily', label: 'Daily' },
+    { value: '3d', label: '3-day Avg' },
+    { value: 'weekly', label: 'Weekly Avg' }
   ];
 
   // Note: toggleHideCampaign, showAllCampaigns, and handleCampaignSelect
@@ -1838,26 +1938,10 @@ function DashboardTab({
     return 'Using dashboard date range';
   };
 
-  const parseLocalDate = useCallback((dateString) => {
-    if (!dateString) return null;
-    const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(dateString) ? `${dateString}T00:00:00` : dateString;
-    const parsed = new Date(safeDate);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  const formatSmoothedValue = useCallback((value) => {
+    if (value == null || Number.isNaN(value)) return '—';
+    return Number.isInteger(value) ? value.toString() : value.toFixed(1);
   }, []);
-
-  const formatCountryTick = useCallback((dateString) => {
-    const date = parseLocalDate(dateString);
-    return date
-      ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-      : dateString;
-  }, [parseLocalDate]);
-
-  const formatCountryTooltip = useCallback((dateString) => {
-    const date = parseLocalDate(dateString);
-    return date
-      ? date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-      : dateString;
-  }, [parseLocalDate]);
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
@@ -2114,6 +2198,24 @@ function DashboardTab({
       </div>
 
       {/* KPI CARDS */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm text-gray-500">Sparkline smoothing</div>
+        <div className="flex flex-wrap items-center gap-2">
+          {smoothingOptions.map((option) => (
+            <button
+              key={`sparkline-${option.value}`}
+              onClick={() => setSparklineSmoothingMode(option.value)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                sparklineSmoothingMode === option.value
+                  ? 'bg-gray-900 text-white border-gray-900'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="grid grid-cols-6 gap-4">
         {kpis.map((kpi) => (
           <KPICard 
@@ -2123,6 +2225,7 @@ function DashboardTab({
             expanded={expandedKpis.includes(kpi.key)}
             onToggle={() => toggleKpi(kpi.key)}
             formatCurrency={formatCurrency}
+            smoothingMode={sparklineSmoothingMode}
           />
         ))}
       </div>
@@ -3002,6 +3105,22 @@ function DashboardTab({
                     Quick ranges
                   </button>
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-gray-500">Smoothing:</span>
+                  {smoothingOptions.map((option) => (
+                    <button
+                      key={`country-smooth-${option.value}`}
+                      onClick={() => setCountryTrendSmoothingMode(option.value)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                        countryTrendSmoothingMode === option.value
+                          ? 'bg-gray-900 text-white border-gray-900'
+                          : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 <div className="flex items-center gap-2 text-sm text-gray-600">
                   <span className="px-3 py-1 bg-gray-100 rounded-full font-medium">
                     {getCountryTrendRangeLabel()}
@@ -3045,29 +3164,42 @@ function DashboardTab({
                   </div>
                   <div className="h-32">
                     <ResponsiveContainer>
-                      <AreaChart data={country.trends}>
+                      <LineChart data={aggregateTrendSeries(country.trends, 'orders', countryTrendSmoothingMode)}>
+                        <defs>
+                          <linearGradient id={`country-${country.countryCode}-stroke`} x1="0" y1="0" x2="1" y2="0">
+                            <stop offset="0%" stopColor="#818cf8" stopOpacity={0.35} />
+                            <stop offset="100%" stopColor="#6366f1" stopOpacity={1} />
+                          </linearGradient>
+                        </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                         <XAxis
-                          dataKey="date"
+                          dataKey="label"
                           tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
                         />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                        <YAxis tick={{ fontSize: 10 }} allowDecimals />
                         <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
+                          labelFormatter={(label, payload) => payload?.[0]?.payload?.tooltipLabel || label}
+                          formatter={(value, name) =>
+                            name === 'lineValue' ? null : [formatSmoothedValue(value), 'Orders']
+                          }
                         />
-                        <Area 
-                          type="monotone" 
-                          dataKey="orders" 
-                          stroke="#6366f1"
-                          fill="#6366f1"
-                          fillOpacity={0.2}
+                        <Line
+                          type="natural"
+                          dataKey="lineValue"
+                          stroke={`url(#country-${country.countryCode}-stroke)`}
+                          strokeWidth={2.5}
+                          dot={false}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
                         />
-                      </AreaChart>
+                        <Line
+                          type="natural"
+                          dataKey="displayValue"
+                          stroke="none"
+                          dot={{ r: 2.5, fill: '#6366f1', stroke: '#fff', strokeWidth: 1 }}
+                          activeDot={{ r: 4 }}
+                        />
+                      </LineChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
@@ -3112,7 +3244,7 @@ function DashboardTab({
             </div>
           </button>
 
-          {showCampaignTrends && (
+              {showCampaignTrends && (
             <div className="p-6 pt-0 space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -3136,6 +3268,22 @@ function DashboardTab({
                   >
                     Quick ranges
                   </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-gray-500">Smoothing:</span>
+                  {smoothingOptions.map((option) => (
+                    <button
+                      key={`campaign-smooth-${option.value}`}
+                      onClick={() => setCampaignTrendSmoothingMode(option.value)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                        campaignTrendSmoothingMode === option.value
+                          ? 'bg-gray-900 text-white border-gray-900'
+                          : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
                 </div>
                 <div className="flex items-center gap-2 text-sm text-gray-600">
                   <span className="px-3 py-1 bg-gray-100 rounded-full font-medium">
@@ -3166,46 +3314,64 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCampaignTrends.map((campaign) => (
-                <div
-                  key={campaign.campaignId || campaign.campaignName}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="font-semibold">{campaign.campaignName}</span>
-                    <span className="text-sm text-gray-500">
-                      ({campaign.totalOrders} orders)
-                    </span>
+              {orderedCampaignTrends.map((campaign) => {
+                const campaignGradientId = `campaign-${String(campaign.campaignId || campaign.campaignName)
+                  .replace(/[^a-zA-Z0-9-_]/g, '')}-stroke`;
+                const campaignChartData = aggregateTrendSeries(campaign.trends, 'orders', campaignTrendSmoothingMode);
+                return (
+                  <div
+                    key={campaign.campaignId || campaign.campaignName}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="font-semibold">{campaign.campaignName}</span>
+                      <span className="text-sm text-gray-500">
+                        ({campaign.totalOrders} orders)
+                      </span>
+                    </div>
+                    <div className="h-32">
+                      <ResponsiveContainer>
+                        <LineChart data={campaignChartData}>
+                          <defs>
+                            <linearGradient id={campaignGradientId} x1="0" y1="0" x2="1" y2="0">
+                              <stop offset="0%" stopColor="#86efac" stopOpacity={0.35} />
+                              <stop offset="100%" stopColor="#22c55e" stopOpacity={1} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="label"
+                            tick={{ fontSize: 10 }}
+                          />
+                          <YAxis tick={{ fontSize: 10 }} allowDecimals />
+                          <Tooltip
+                            labelFormatter={(label, payload) => payload?.[0]?.payload?.tooltipLabel || label}
+                            formatter={(value, name) =>
+                              name === 'lineValue' ? null : [formatSmoothedValue(value), 'Orders']
+                            }
+                          />
+                          <Line
+                            type="natural"
+                            dataKey="lineValue"
+                            stroke={`url(#${campaignGradientId})`}
+                            strokeWidth={2.5}
+                            dot={false}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <Line
+                            type="natural"
+                            dataKey="displayValue"
+                            stroke="none"
+                            dot={{ r: 2.5, fill: '#22c55e', stroke: '#fff', strokeWidth: 1 }}
+                            activeDot={{ r: 4 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <AreaChart data={campaign.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="orders"
-                          stroke="#22c55e"
-                          fill="#22c55e"
-                          fillOpacity={0.2}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -3346,10 +3512,9 @@ function DashboardTab({
   );
 }
 
-function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
-  const trendData = trends && trends.length > 0
-    ? trends.slice(-7).map(t => ({ value: t[kpi.key] || 0 }))
-    : [];
+function KPICard({ kpi, trends, expanded, onToggle, formatCurrency, smoothingMode }) {
+  const sparklineSource = trends && trends.length > 0 ? trends.slice(-14) : [];
+  const trendData = aggregateTrendSeries(sparklineSource, kpi.key, smoothingMode);
   
   // Use the pre-calculated change from backend (works correctly for Today/Yesterday)
   const change = kpi.change || 0;
@@ -3393,12 +3558,27 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
         <div className="h-10 mt-3">
           <ResponsiveContainer>
             <LineChart data={trendData}>
-              <Line 
-                type="monotone" 
-                dataKey="value" 
-                stroke={kpi.color} 
-                strokeWidth={2}
+              <defs>
+                <linearGradient id={`kpi-${kpi.key}-stroke`} x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor={kpi.color} stopOpacity={0.35} />
+                  <stop offset="100%" stopColor={kpi.color} stopOpacity={1} />
+                </linearGradient>
+              </defs>
+              <Line
+                type="natural"
+                dataKey="lineValue"
+                stroke={`url(#kpi-${kpi.key}-stroke)`}
+                strokeWidth={2.5}
                 dot={false}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <Line
+                type="natural"
+                dataKey="displayValue"
+                stroke="none"
+                dot={{ r: 2.5, fill: kpi.color, stroke: '#fff', strokeWidth: 1 }}
+                activeDot={{ r: 4 }}
               />
             </LineChart>
           </ResponsiveContainer>
