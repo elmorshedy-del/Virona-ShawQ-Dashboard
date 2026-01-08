@@ -2026,21 +2026,6 @@ function DashboardTab({
     return Math.round(value || 0).toLocaleString();
   }, [formatCurrency]);
 
-  const getBucketTimeRemaining = useCallback((point) => {
-    if (!point?.isIncomplete) return null;
-    const bucketEnd = parseLocalDate(point.bucketEndDate);
-    if (!bucketEnd) return null;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const diffMs = bucketEnd.getTime() - today.getTime();
-    const diffDays = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
-    if (bucketDays >= 7) {
-      const weeksLeft = Math.ceil(diffDays / 7);
-      return `${weeksLeft} week${weeksLeft === 1 ? '' : 's'} left`;
-    }
-    return `${diffDays} day${diffDays === 1 ? '' : 's'} left`;
-  }, [bucketDays, parseLocalDate]);
-
   const getTrendRangeLabel = useCallback((payload, fallbackLabel) => {
     const point = payload?.find(item => item?.payload)?.payload;
     if (point?.bucketStartDate && point?.bucketEndDate) {
@@ -2062,21 +2047,42 @@ function DashboardTab({
     const displayItem = payload.find(item => item?.value != null && !String(item?.dataKey).includes('Incomplete'))
       || payload.find(item => item?.value != null);
     const metricKey = metricKeyOverride || getTooltipMetricKey(displayItem?.dataKey || '');
-    const metricLabel = getTooltipMetricLabel(metricKey);
+    let metricLabel = getTooltipMetricLabel(metricKey);
     const formattedValue = formatTooltipMetricValue(metricKey, displayItem?.value);
-    const timeRemaining = point ? getBucketTimeRemaining(point) : null;
+    let dateLabel = `${rangeLabel}${isInProgress ? ' (in progress)' : ''}`;
+
+    if (isInProgress && point?.bucketStartDate && point?.bucketEndDate) {
+      const getTurkeyToday = () => {
+        const now = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
+        const turkeyDate = new Date(now);
+        turkeyDate.setHours(0, 0, 0, 0);
+        return turkeyDate.getTime();
+      };
+
+      const today = getTurkeyToday();
+      const endDate = new Date(point.bucketEndDate).setHours(0, 0, 0, 0);
+      const daysLeft = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
+      const formatDate = (date) =>
+        new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+      dateLabel = `${formatDate(point.bucketStartDate)} - ${formatDate(point.bucketEndDate)} (in progress)`;
+
+      if (daysLeft > 0) {
+        metricLabel += ` (${daysLeft} day${daysLeft > 1 ? 's' : ''} left)`;
+      }
+    }
 
     return (
       <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
         <p className="text-xs text-gray-500">
-          {`${rangeLabel}${isInProgress ? ' (in progress)' : ''}`}
+          {dateLabel}
         </p>
         <p className="text-sm font-medium text-gray-900">
-          {metricLabel}: {formattedValue}{isInProgress && timeRemaining ? ` (${timeRemaining})` : ''}
+          {metricLabel}: {formattedValue}
         </p>
       </div>
     );
-  }, [formatTooltipMetricValue, getBucketTimeRemaining, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel]);
+  }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel]);
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
