@@ -3031,47 +3031,59 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCountryTrends.map((country) => (
-                <div
-                  key={country.countryCode}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xl">{country.flag}</span>
-                    <span className="font-semibold">{country.country}</span>
-                    <span className="text-sm text-gray-500">
-                      ({country.totalOrders} orders)
-                    </span>
+              {orderedCountryTrends.map((country) => {
+                const gradientId = `country-trend-${country.countryCode}`;
+                return (
+                  <div
+                    key={country.countryCode}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-xl">{country.flag}</span>
+                      <span className="font-semibold">{country.country}</span>
+                      <span className="text-sm text-gray-500">
+                        ({country.totalOrders} orders)
+                      </span>
+                    </div>
+                    <div className="h-32">
+                      <ResponsiveContainer>
+                        <LineChart data={country.trends}>
+                          <defs>
+                            <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
+                              <stop offset="0%" stopColor="#4f46e5" />
+                              <stop offset="100%" stopColor="#818cf8" />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 10, fill: '#94a3b8' }}
+                            tickFormatter={formatCountryTick}
+                          />
+                          <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} allowDecimals={false} />
+                          <Tooltip
+                            labelFormatter={formatCountryTooltip}
+                            formatter={(value, name) => [
+                              value,
+                              name === 'orders' ? 'Orders' : 'Revenue'
+                            ]}
+                          />
+                          <Line
+                            type="natural"
+                            dataKey="orders"
+                            stroke={`url(#${gradientId})`}
+                            strokeWidth={2.5}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            dot={false}
+                            activeDot={{ r: 3 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <AreaChart data={country.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
-                        />
-                        <Area 
-                          type="monotone" 
-                          dataKey="orders" 
-                          stroke="#6366f1"
-                          fill="#6366f1"
-                          fillOpacity={0.2}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -3166,46 +3178,60 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCampaignTrends.map((campaign) => (
-                <div
-                  key={campaign.campaignId || campaign.campaignName}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="font-semibold">{campaign.campaignName}</span>
-                    <span className="text-sm text-gray-500">
-                      ({campaign.totalOrders} orders)
-                    </span>
+              {orderedCampaignTrends.map((campaign) => {
+                const gradientId = `campaign-trend-${String(campaign.campaignId || campaign.campaignName || '')
+                  .replace(/\s+/g, '-')
+                  .replace(/[^a-zA-Z0-9-_]/g, '')}`;
+                return (
+                  <div
+                    key={campaign.campaignId || campaign.campaignName}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="font-semibold">{campaign.campaignName}</span>
+                      <span className="text-sm text-gray-500">
+                        ({campaign.totalOrders} orders)
+                      </span>
+                    </div>
+                    <div className="h-32">
+                      <ResponsiveContainer>
+                        <LineChart data={campaign.trends}>
+                          <defs>
+                            <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
+                              <stop offset="0%" stopColor="#16a34a" />
+                              <stop offset="100%" stopColor="#86efac" />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 10, fill: '#94a3b8' }}
+                            tickFormatter={formatCountryTick}
+                          />
+                          <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} allowDecimals={false} />
+                          <Tooltip
+                            labelFormatter={formatCountryTooltip}
+                            formatter={(value, name) => [
+                              value,
+                              name === 'orders' ? 'Orders' : 'Revenue'
+                            ]}
+                          />
+                          <Line
+                            type="natural"
+                            dataKey="orders"
+                            stroke={`url(#${gradientId})`}
+                            strokeWidth={2.5}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            dot={false}
+                            activeDot={{ r: 3 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <AreaChart data={campaign.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="orders"
-                          stroke="#22c55e"
-                          fill="#22c55e"
-                          fillOpacity={0.2}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -3394,10 +3420,12 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
           <ResponsiveContainer>
             <LineChart data={trendData}>
               <Line 
-                type="monotone" 
+                type="natural" 
                 dataKey="value" 
                 stroke={kpi.color} 
-                strokeWidth={2}
+                strokeWidth={2.25}
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 dot={false}
               />
             </LineChart>
