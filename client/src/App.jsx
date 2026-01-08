@@ -2050,7 +2050,7 @@ function DashboardTab({
     let metricLabel = getTooltipMetricLabel(metricKey);
     const formattedValue = formatTooltipMetricValue(metricKey, displayItem?.value);
 
-    if (isInProgress && point?.bucketStartDate && point?.bucketEndDate) {
+    if (isInProgress && point?.bucketStartDate) {
       const getTurkeyToday = () => {
         const now = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
         const turkeyDate = new Date(now);
@@ -2058,20 +2058,22 @@ function DashboardTab({
         return turkeyDate.getTime();
       };
 
-      const today = getTurkeyToday();
-      const endDate = new Date(point.bucketEndDate);
-      endDate.setHours(0, 0, 0, 0);
-      const daysLeft = Math.ceil((endDate.getTime() - today) / (1000 * 60 * 60 * 24));
+      const actualEndDate = new Date(point.bucketStartDate);
+      actualEndDate.setDate(actualEndDate.getDate() + bucketDays - 1);
 
       const formatDate = (date) => new Date(date).toLocaleDateString('en-US', {
         month: 'short',
         day: 'numeric'
       });
 
-      rangeLabel = `${formatDate(point.bucketStartDate)} - ${formatDate(point.bucketEndDate)} (in progress)`;
+      rangeLabel = `${formatDate(point.bucketStartDate)} - ${formatDate(actualEndDate)} (in progress)`;
 
-      if (daysLeft > 0) {
-        metricLabel += ` (${daysLeft} day${daysLeft > 1 ? 's' : ''} left)`;
+      const today = getTurkeyToday();
+      const endTime = actualEndDate.setHours(0, 0, 0, 0);
+      const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
+
+      if (daysLeft >= 0) {
+        metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
       }
     }
 
