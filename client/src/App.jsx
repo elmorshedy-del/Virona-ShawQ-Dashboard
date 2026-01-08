@@ -2002,6 +2002,71 @@ function DashboardTab({
       : dateString;
   }, [parseLocalDate]);
 
+  const getMetricLabel = useCallback((key) => {
+    switch (key) {
+      case 'revenue':
+        return 'Revenue';
+      case 'spend':
+        return 'AD Spend';
+      case 'orders':
+        return 'Orders';
+      case 'aov':
+        return 'AOV';
+      case 'roas':
+        return 'ROAS';
+      case 'cac':
+        return 'CAC';
+      default:
+        return '';
+    }
+  }, []);
+
+  const formatMetricValue = useCallback((key, value) => {
+    if (key === 'revenue' || key === 'spend' || key === 'aov' || key === 'cac') {
+      return formatCurrency(value, 0);
+    }
+    if (key === 'roas') {
+      return `${Number(value || 0).toFixed(2)}x`;
+    }
+    if (key === 'orders') {
+      return Math.round(value || 0).toLocaleString();
+    }
+    return Math.round(value || 0).toLocaleString();
+  }, [formatCurrency]);
+
+  const normalizeMetricKey = useCallback((dataKey = '') => (
+    dataKey.replace(/(Complete|Incomplete)$/, '')
+  ), []);
+
+  const formatTooltipEntry = useCallback((value, name, item) => {
+    if (value == null) return null;
+    const dataKey = item?.dataKey || name;
+    const metricKey = normalizeMetricKey(dataKey);
+    if (!metricKey) return null;
+    if (dataKey.endsWith('Incomplete') && item?.payload?.[`${metricKey}Complete`] != null) {
+      return null;
+    }
+    const label = getMetricLabel(metricKey);
+    if (!label) return null;
+    return [formatMetricValue(metricKey, value), label];
+  }, [formatMetricValue, getMetricLabel, normalizeMetricKey]);
+
+  const getBucketProgressLabel = useCallback((payload) => {
+    const point = payload?.find(item => item?.payload)?.payload;
+    if (!point?.isIncomplete) return '';
+    const bucketEnd = parseLocalDate(point.bucketEndDate);
+    if (!bucketEnd) return 'In progress';
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffMs = bucketEnd.getTime() - today.getTime();
+    const remainingDays = Math.max(Math.ceil(diffMs / (1000 * 60 * 60 * 24)), 0);
+    if (remainingDays >= 7 && bucketDays >= 7) {
+      const weeksLeft = Math.ceil(remainingDays / 7);
+      return `In progress · ${weeksLeft} week${weeksLeft === 1 ? '' : 's'} left`;
+    }
+    return `In progress · ${remainingDays} day${remainingDays === 1 ? '' : 's'} left`;
+  }, [bucketDays, parseLocalDate]);
+
   const getTrendRangeLabel = useCallback((payload, fallbackLabel) => {
     const point = payload?.find(item => item?.payload)?.payload;
     if (point?.bucketStartDate && point?.bucketEndDate) {
@@ -2329,10 +2394,10 @@ function DashboardTab({
                 <Tooltip
                   labelFormatter={(label, payload) => {
                     const rangeLabel = getTrendRangeLabel(payload, label);
-                    const isInProgress = payload?.some(item => item?.payload?.isIncomplete);
-                    return `${rangeLabel}${isInProgress ? ' (in progress)' : ''}`;
+                    const progressLabel = getBucketProgressLabel(payload);
+                    return progressLabel ? `${rangeLabel} (${progressLabel})` : rangeLabel;
                   }}
-                  formatter={(value) => formatNumber(value)}
+                  formatter={formatTooltipEntry}
                 />
                 <Line
                   type="monotone"
@@ -2418,14 +2483,10 @@ function DashboardTab({
                       <Tooltip
                         labelFormatter={(label, payload) => {
                           const rangeLabel = getTrendRangeLabel(payload, label);
-                          const isInProgress = payload?.some(item => item?.payload?.isIncomplete);
-                          return `${rangeLabel}${isInProgress ? ' (in progress)' : ''}`;
+                          const progressLabel = getBucketProgressLabel(payload);
+                          return progressLabel ? `${rangeLabel} (${progressLabel})` : rangeLabel;
                         }}
-                        formatter={(value) => {
-                          if (thisKpi.format === 'currency') return formatCurrency(value);
-                          if (thisKpi.format === 'roas') return `${Number(value || 0).toFixed(2)}×`;
-                          return formatNumber(value);
-                        }}
+                        formatter={formatTooltipEntry}
                       />
                       <Line
                         type="monotone"
@@ -2634,7 +2695,7 @@ function DashboardTab({
                 <XAxis dataKey="hourLabel" tick={{ fontSize: 10 }} />
                 <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
                 <Tooltip
-                  formatter={(value, name) => [value, name === 'orders' ? 'Orders' : 'Revenue']}
+                  formatter={formatTooltipEntry}
                   labelFormatter={(label) => `${label}`}
                 />
                 <Line
@@ -3339,10 +3400,7 @@ function DashboardTab({
                         <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                         <Tooltip
                           labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
+                          formatter={formatTooltipEntry}
                         />
                         <Line
                           type="monotone"
@@ -3474,10 +3532,7 @@ function DashboardTab({
                         <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                         <Tooltip
                           labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
+                          formatter={formatTooltipEntry}
                         />
                         <Line
                           type="monotone"
@@ -4108,7 +4163,7 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
+                  <Tooltip formatter={formatTooltipEntry} />
                   <Line
                     type="monotone"
                     dataKey="cac"
@@ -4130,7 +4185,7 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
+                  <Tooltip formatter={formatTooltipEntry} />
                   <Line
                     type="monotone"
                     dataKey="spend"
@@ -4152,7 +4207,7 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
+                  <Tooltip formatter={formatTooltipEntry} />
                   <Area
                     type="monotone"
                     dataKey="roas"
