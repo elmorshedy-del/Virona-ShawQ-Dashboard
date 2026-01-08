@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 import {
@@ -971,6 +971,7 @@ export default function App() {
     }
     if (dateRange.type === 'yesterday') return 'Yesterday';
     if (dateRange.type === 'days' && dateRange.value === 1) return 'Today';
+    if (dateRange.type === 'days' && dateRange.value === 2) return 'Today & Yesterday';
     if (dateRange.type === 'days') return `Last ${dateRange.value} days`;
     if (dateRange.type === 'weeks') return `Last ${dateRange.value} weeks`;
     if (dateRange.type === 'months') return `Last ${dateRange.value} months`;
@@ -1113,6 +1114,18 @@ export default function App() {
             }`}
           >
             Yesterday
+          </button>
+
+          {/* Today + Yesterday */}
+          <button
+            onClick={() => { setDateRange({ type: 'days', value: 2 }); setShowCustomPicker(false); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              dateRange.type === 'days' && dateRange.value === 2
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+            }`}
+          >
+            Today & Yesterday
           </button>
           
           {[3, 7, 14, 30].map(d => (
@@ -1425,12 +1438,14 @@ function DashboardTab({
   dateRange = {},
   diagnosticsCampaignOptions = [],
 }) {
-  const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
+  const { overview = {}, trends = [], campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
   const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
   const [showCountryTrends, setShowCountryTrends] = useState(false);
   const [showCampaignTrends, setShowCampaignTrends] = useState(false);
+  const [showOrdersTrend, setShowOrdersTrend] = useState(true);
+  const [bucketGranularity, setBucketGranularity] = useState('monthly'); // 'weekly' | 'monthly'
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
@@ -1852,12 +1867,156 @@ function DashboardTab({
       : dateString;
   }, [parseLocalDate]);
 
-  const formatCountryTooltip = useCallback((dateString) => {
-    const date = parseLocalDate(dateString);
-    return date
-      ? date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-      : dateString;
+  const todayStart = useMemo(() => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }, []);
+
+  const getRangeStartEnd = useCallback((rangeConfig, data = []) => {
+    if (rangeConfig?.type === 'custom' && rangeConfig.start && rangeConfig.end) {
+      return {
+        start: parseLocalDate(rangeConfig.start),
+        end: parseLocalDate(rangeConfig.end)
+      };
+    }
+    if (Array.isArray(data) && data.length > 0) {
+      const sorted = [...data].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      return {
+        start: parseLocalDate(sorted[0].date),
+        end: parseLocalDate(sorted[sorted.length - 1].date)
+      };
+    }
+    return { start: null, end: null };
   }, [parseLocalDate]);
+
+  const getRangeTotalDays = useCallback((rangeConfig, data = []) => {
+    if (rangeConfig?.type === 'custom' && rangeConfig.start && rangeConfig.end) {
+      const start = parseLocalDate(rangeConfig.start);
+      const end = parseLocalDate(rangeConfig.end);
+      if (start && end) {
+        const diffMs = end.getTime() - start.getTime();
+        return Math.max(Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1, 1);
+      }
+    }
+    if (rangeConfig?.type === 'yesterday') return 1;
+    if (rangeConfig?.type === 'days' && rangeConfig.value) return rangeConfig.value;
+    if (rangeConfig?.type === 'weeks' && rangeConfig.value) return rangeConfig.value * 7;
+    if (rangeConfig?.type === 'months' && rangeConfig.value) return rangeConfig.value * 30;
+    if (Array.isArray(data) && data.length > 0) {
+      return data.length;
+    }
+    return 0;
+  }, [parseLocalDate]);
+
+  const getBucketDays = useCallback((totalDays = 0) => {
+    if (totalDays <= 7) return 1;
+    if (totalDays <= 14) return 3;
+    if (totalDays <= 60) return 7;
+    return bucketGranularity === 'weekly' ? 7 : 30;
+  }, [bucketGranularity]);
+
+  const aggregateBucket = useCallback((dataPoints = []) => {
+    const orders = dataPoints.reduce((sum, d) => sum + (d.orders || 0), 0);
+    const revenue = dataPoints.reduce((sum, d) => sum + (d.revenue || 0), 0);
+    const spend = dataPoints.reduce((sum, d) => sum + (d.spend || 0), 0);
+
+    return {
+      orders,
+      revenue,
+      spend,
+      aov: orders > 0 ? revenue / orders : 0,
+      roas: spend > 0 ? revenue / spend : 0,
+      cac: orders > 0 ? spend / orders : 0
+    };
+  }, []);
+
+  const formatBucketLabel = useCallback((bucketStart, bucketEnd) => {
+    if (!bucketStart || !bucketEnd) return bucketStart || bucketEnd || '';
+    const startDate = parseLocalDate(bucketStart);
+    const endDate = parseLocalDate(bucketEnd);
+    if (!startDate || !endDate) {
+      return bucketStart === bucketEnd ? bucketEnd : `${bucketStart} - ${bucketEnd}`;
+    }
+    const startLabel = startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const endLabel = endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return startLabel === endLabel ? endLabel : `${startLabel} - ${endLabel}`;
+  }, [parseLocalDate]);
+
+  const buildBucketedTrends = useCallback((data = [], rangeConfig = {}) => {
+    if (!Array.isArray(data) || data.length === 0) return [];
+    const { start, end } = getRangeStartEnd(rangeConfig, data);
+    if (!start || !end) return [];
+
+    const totalDays = getRangeTotalDays(rangeConfig, data);
+    const bucketDays = getBucketDays(totalDays);
+    const pointsByDate = new Map(data.map(point => [point.date, point]));
+    const bucketed = [];
+
+    for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + bucketDays)) {
+      const bucketStart = new Date(cursor);
+      const bucketEnd = new Date(Math.min(end.getTime(), new Date(cursor).setDate(cursor.getDate() + bucketDays - 1)));
+      const bucketPoints = [];
+
+      for (let day = new Date(bucketStart); day <= bucketEnd; day.setDate(day.getDate() + 1)) {
+        const key = getLocalDateString(day);
+        if (pointsByDate.has(key)) {
+          bucketPoints.push(pointsByDate.get(key));
+        }
+      }
+
+      if (bucketPoints.length === 0) {
+        continue;
+      }
+
+      const bucketStartKey = getLocalDateString(bucketStart);
+      const bucketEndKey = getLocalDateString(bucketEnd);
+      const isIncomplete = bucketEnd >= todayStart;
+
+      bucketed.push({
+        date: bucketEndKey,
+        label: formatBucketLabel(bucketStartKey, bucketEndKey),
+        bucketStart: bucketStartKey,
+        bucketEnd: bucketEndKey,
+        isIncomplete,
+        ...aggregateBucket(bucketPoints)
+      });
+    }
+
+    return bucketed;
+  }, [aggregateBucket, formatBucketLabel, getBucketDays, getRangeStartEnd, getRangeTotalDays, todayStart]);
+
+  const formatBucketTick = useCallback((value, data = []) => {
+    const item = data.find(point => point.date === value);
+    if (!item) return value;
+    return item.bucketEnd ? formatCountryTick(item.bucketEnd) : value;
+  }, [formatCountryTick]);
+
+  const formatBucketTooltipLabel = useCallback((label, data = []) => {
+    const item = data.find(point => point.date === label);
+    if (!item) return label;
+    const baseLabel = item.label || label;
+    return item.isIncomplete ? `${baseLabel} (in progress)` : baseLabel;
+  }, []);
+
+  const getIncompleteSegmentData = useCallback((data = []) => {
+    if (!Array.isArray(data) || data.length < 2) return [];
+    const lastPoint = data[data.length - 1];
+    if (!lastPoint?.isIncomplete) return [];
+    return [data[data.length - 2], lastPoint];
+  }, []);
+
+  const getSolidTrendData = useCallback((data = []) => {
+    const incompleteSegment = getIncompleteSegmentData(data);
+    return incompleteSegment.length > 0 ? data.slice(0, -1) : data;
+  }, [getIncompleteSegmentData]);
+
+  const renderIncompleteDot = useCallback(({ cx, cy, payload, stroke }) => {
+    if (!payload?.isIncomplete || cx == null || cy == null) return null;
+    return (
+      <circle cx={cx} cy={cy} r={4} fill="white" stroke={stroke} strokeWidth={2} />
+    );
+  }, []);
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
@@ -1870,6 +2029,26 @@ function DashboardTab({
   }));
 
   const totalHourlyOrders = timeOfDayData.reduce((sum, point) => sum + (point.orders || 0), 0);
+
+  const dashboardTotalDays = useMemo(
+    () => getRangeTotalDays(dateRange, trends),
+    [dateRange, trends, getRangeTotalDays]
+  );
+  const showBucketToggle = dashboardTotalDays > 60;
+  const bucketedTrends = useMemo(
+    () => buildBucketedTrends(trends, dateRange),
+    [trends, dateRange, buildBucketedTrends]
+  );
+  const bucketedTrendsIncomplete = useMemo(
+    () => getIncompleteSegmentData(bucketedTrends),
+    [bucketedTrends, getIncompleteSegmentData]
+  );
+  const bucketedTrendsSolid = useMemo(
+    () => getSolidTrendData(bucketedTrends),
+    [bucketedTrends, getSolidTrendData]
+  );
+  const countryRangeConfig = countryTrendsRangeMode === 'quick' ? countryTrendsQuickRange : dateRange;
+  const campaignRangeConfig = campaignTrendsRangeMode === 'quick' ? campaignTrendsQuickRange : dateRange;
 
   const handleCountrySort = (field) => {
     setCountrySortConfig(prev => ({
@@ -1935,6 +2114,11 @@ function DashboardTab({
   };
 
   const toggleKpi = (key) => {
+    if (key === 'orders') {
+      setShowOrdersTrend(prev => !prev);
+      setExpandedKpis(prev => prev.filter(k => k !== key));
+      return;
+    }
     setExpandedKpis(prev =>
       prev.includes(key)
         ? prev.filter(k => k !== key)
@@ -2128,31 +2312,75 @@ function DashboardTab({
       </div>
 
       {/* Global Orders Trend */}
-      {trends && trends.length > 0 && (
+      {showOrdersTrend && bucketedTrends.length > 0 && (
         <div className="bg-white rounded-xl p-6 shadow-sm">
-          <h3 className="text-lg font-semibold mb-4">Orders Trend</h3>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <h3 className="text-lg font-semibold">Orders Trend</h3>
+            {showBucketToggle && (
+              <div className="flex items-center gap-1 rounded-lg bg-gray-100 p-1 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setBucketGranularity('weekly')}
+                  className={`px-3 py-1 rounded-md font-medium transition-colors ${
+                    bucketGranularity === 'weekly'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Weekly
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBucketGranularity('monthly')}
+                  className={`px-3 py-1 rounded-md font-medium transition-colors ${
+                    bucketGranularity === 'monthly'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Monthly
+                </button>
+              </div>
+            )}
+          </div>
           <div className="h-64">
             <ResponsiveContainer>
-              <AreaChart data={trends}>
+              <LineChart data={bucketedTrends}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Area 
-                  type="monotone" 
-                  dataKey="orders" 
-                  stroke="#22c55e"
-                  fill="#22c55e"
-                  fillOpacity={0.2}
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={(value) => formatBucketTick(value, bucketedTrends)}
                 />
-              </AreaChart>
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip labelFormatter={(label) => formatBucketTooltipLabel(label, bucketedTrends)} />
+                <Line
+                  type="monotone"
+                  data={bucketedTrendsSolid}
+                  dataKey="orders"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  dot={false}
+                />
+                {bucketedTrendsIncomplete.length > 0 && (
+                  <Line
+                    type="monotone"
+                    data={bucketedTrendsIncomplete}
+                    dataKey="orders"
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    strokeDasharray="5,5"
+                    dot={renderIncompleteDot}
+                  />
+                )}
+              </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
       )}
 
       {/* Expanded KPI charts */}
-      {expandedKpis.length > 0 && trends && trends.length > 0 && (
+      {expandedKpis.length > 0 && bucketedTrends.length > 0 && (
         <div className="space-y-6">
           {expandedKpis.map((key) => {
             const thisKpi = kpis.find(k => k.key === key);
@@ -2162,19 +2390,35 @@ function DashboardTab({
                 <h3 className="text-lg font-semibold mb-4">{thisKpi.label} Trend</h3>
                 <div className="h-64">
                   <ResponsiveContainer>
-                    <AreaChart data={trends}>
+                    <LineChart data={bucketedTrends}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                      <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                      <YAxis tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Area 
-                        type="monotone" 
-                        dataKey={key} 
-                        stroke={thisKpi.color}
-                        fill={thisKpi.color}
-                        fillOpacity={0.2}
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fontSize: 12 }}
+                        tickFormatter={(value) => formatBucketTick(value, bucketedTrends)}
                       />
-                    </AreaChart>
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <Tooltip labelFormatter={(label) => formatBucketTooltipLabel(label, bucketedTrends)} />
+                      <Line
+                        type="monotone"
+                        data={bucketedTrendsSolid}
+                        dataKey={key}
+                        stroke={thisKpi.color}
+                        strokeWidth={2}
+                        dot={false}
+                      />
+                      {bucketedTrendsIncomplete.length > 0 && (
+                        <Line
+                          type="monotone"
+                          data={bucketedTrendsIncomplete}
+                          dataKey={key}
+                          stroke={thisKpi.color}
+                          strokeWidth={2}
+                          strokeDasharray="5,5"
+                          dot={renderIncompleteDot}
+                        />
+                      )}
+                    </LineChart>
                   </ResponsiveContainer>
                 </div>
               </div>
@@ -3031,47 +3275,64 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCountryTrends.map((country) => (
-                <div
-                  key={country.countryCode}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xl">{country.flag}</span>
-                    <span className="font-semibold">{country.country}</span>
-                    <span className="text-sm text-gray-500">
-                      ({country.totalOrders} orders)
-                    </span>
+              {orderedCountryTrends.map((country) => {
+                const bucketedCountryTrends = buildBucketedTrends(country.trends, countryRangeConfig);
+                const bucketedCountryIncomplete = getIncompleteSegmentData(bucketedCountryTrends);
+                const bucketedCountrySolid = getSolidTrendData(bucketedCountryTrends);
+                return (
+                  <div
+                    key={country.countryCode}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-xl">{country.flag}</span>
+                      <span className="font-semibold">{country.country}</span>
+                      <span className="text-sm text-gray-500">
+                        ({country.totalOrders} orders)
+                      </span>
+                    </div>
+                    <div className="h-32">
+                      <ResponsiveContainer>
+                        <LineChart data={bucketedCountryTrends}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={(value) => formatBucketTick(value, bucketedCountryTrends)}
+                          />
+                          <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                          <Tooltip
+                            labelFormatter={(label) => formatBucketTooltipLabel(label, bucketedCountryTrends)}
+                            formatter={(value, name) => [
+                              value,
+                              name === 'orders' ? 'Orders' : 'Revenue'
+                            ]}
+                          />
+                          <Line
+                            type="monotone"
+                            data={bucketedCountrySolid}
+                            dataKey="orders"
+                            stroke="#6366f1"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                          {bucketedCountryIncomplete.length > 0 && (
+                            <Line
+                              type="monotone"
+                              data={bucketedCountryIncomplete}
+                              dataKey="orders"
+                              stroke="#6366f1"
+                              strokeWidth={2}
+                              strokeDasharray="5,5"
+                              dot={renderIncompleteDot}
+                            />
+                          )}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <AreaChart data={country.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
-                        />
-                        <Area 
-                          type="monotone" 
-                          dataKey="orders" 
-                          stroke="#6366f1"
-                          fill="#6366f1"
-                          fillOpacity={0.2}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -3166,46 +3427,63 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCampaignTrends.map((campaign) => (
-                <div
-                  key={campaign.campaignId || campaign.campaignName}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="font-semibold">{campaign.campaignName}</span>
-                    <span className="text-sm text-gray-500">
-                      ({campaign.totalOrders} orders)
-                    </span>
+              {orderedCampaignTrends.map((campaign) => {
+                const bucketedCampaignTrends = buildBucketedTrends(campaign.trends, campaignRangeConfig);
+                const bucketedCampaignIncomplete = getIncompleteSegmentData(bucketedCampaignTrends);
+                const bucketedCampaignSolid = getSolidTrendData(bucketedCampaignTrends);
+                return (
+                  <div
+                    key={campaign.campaignId || campaign.campaignName}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="font-semibold">{campaign.campaignName}</span>
+                      <span className="text-sm text-gray-500">
+                        ({campaign.totalOrders} orders)
+                      </span>
+                    </div>
+                    <div className="h-32">
+                      <ResponsiveContainer>
+                        <LineChart data={bucketedCampaignTrends}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={(value) => formatBucketTick(value, bucketedCampaignTrends)}
+                          />
+                          <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                          <Tooltip
+                            labelFormatter={(label) => formatBucketTooltipLabel(label, bucketedCampaignTrends)}
+                            formatter={(value, name) => [
+                              value,
+                              name === 'orders' ? 'Orders' : 'Revenue'
+                            ]}
+                          />
+                          <Line
+                            type="monotone"
+                            data={bucketedCampaignSolid}
+                            dataKey="orders"
+                            stroke="#22c55e"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                          {bucketedCampaignIncomplete.length > 0 && (
+                            <Line
+                              type="monotone"
+                              data={bucketedCampaignIncomplete}
+                              dataKey="orders"
+                              stroke="#22c55e"
+                              strokeWidth={2}
+                              strokeDasharray="5,5"
+                              dot={renderIncompleteDot}
+                            />
+                          )}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <AreaChart data={campaign.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => [
-                            value,
-                            name === 'orders' ? 'Orders' : 'Revenue'
-                          ]}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="orders"
-                          stroke="#22c55e"
-                          fill="#22c55e"
-                          fillOpacity={0.2}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -3862,20 +4140,20 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
             <h3 className="font-semibold mb-4">ROAS Trend</h3>
             <div className="h-64">
               <ResponsiveContainer>
-                <AreaChart data={trends}>
+                <LineChart data={trends}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
                   <Tooltip />
-                  <Area
+                  <Line
                     type="monotone"
                     dataKey="roas"
                     name="Daily ROAS"
                     stroke="#10b981"
-                    fill="#10b981"
-                    fillOpacity={0.2}
+                    strokeWidth={2}
+                    dot={false}
                   />
-                </AreaChart>
+                </LineChart>
               </ResponsiveContainer>
             </div>
           </div>
