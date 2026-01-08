@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 import {
@@ -17,6 +17,7 @@ import AIBudget from './components/AIBudget';
 import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysis from './components/CreativeAnalysis.jsx';
+import CreativePreview from './components/CreativePreview.jsx';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
 
@@ -58,6 +59,121 @@ const getLocalDateString = (date = new Date()) => {
   const offsetMs = date.getTimezoneOffset() * 60 * 1000;
   const localDate = new Date(date.getTime() - offsetMs);
   return localDate.toISOString().split('T')[0];
+};
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+const formatDateKey = (date) => getLocalDateString(date);
+
+const getTotalDaysFromRange = (range = {}) => {
+  if (range.type === 'custom' && range.start && range.end) {
+    const start = new Date(`${range.start}T00:00:00`);
+    const end = new Date(`${range.end}T00:00:00`);
+    const diff = Math.floor((end - start) / MS_PER_DAY);
+    return Math.max(1, diff + 1);
+  }
+  if (range.type === 'yesterday') return 1;
+  if (range.type === 'weeks') return (range.value || 1) * 7;
+  if (range.type === 'months') return (range.value || 1) * 30;
+  if (range.type === 'days') return range.value || 1;
+  return 7;
+};
+
+const getBucketDays = (totalDays, preference = 'auto') => {
+  if (totalDays > 60) {
+    if (preference === 'weekly') return 7;
+    if (preference === 'monthly') return 30;
+  }
+  if (totalDays <= 7) return 1; // Daily
+  if (totalDays <= 14) return 3; // 3-day buckets
+  if (totalDays <= 60) return 7; // Weekly buckets
+  return 30; // Monthly buckets
+};
+
+const aggregateBucket = (dataPoints = []) => {
+  if (dataPoints.length === 0) return null;
+  const totals = {};
+
+  dataPoints.forEach(point => {
+    Object.entries(point).forEach(([key, value]) => {
+      if (key === 'date') return;
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        totals[key] = (totals[key] || 0) + value;
+      }
+    });
+  });
+
+  const orders = totals.orders || 0;
+  const revenue = totals.revenue || 0;
+  const spend = totals.spend || 0;
+
+  return {
+    ...totals,
+    orders,
+    revenue,
+    spend,
+    roas: spend > 0 ? revenue / spend : 0,
+    cac: orders > 0 ? spend / orders : 0,
+    aov: orders > 0 ? revenue / orders : 0
+  };
+};
+
+const bucketTrendData = (trendData = [], bucketDays = 1) => {
+  if (!Array.isArray(trendData) || trendData.length === 0) return [];
+  const sorted = [...trendData].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const firstDate = new Date(`${sorted[0].date}T00:00:00`);
+
+  const buckets = new Map();
+  sorted.forEach(point => {
+    if (!point?.date) return;
+    const pointDate = new Date(`${point.date}T00:00:00`);
+    const index = Math.floor((pointDate - firstDate) / MS_PER_DAY / bucketDays);
+    if (!buckets.has(index)) buckets.set(index, []);
+    buckets.get(index).push(point);
+  });
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([index, points]) => {
+      const bucketStart = new Date(firstDate.getTime() + index * bucketDays * MS_PER_DAY);
+      const bucketEnd = new Date(bucketStart.getTime() + (bucketDays - 1) * MS_PER_DAY);
+      const aggregate = aggregateBucket(points);
+      if (!aggregate) return null;
+      return {
+        date: formatDateKey(bucketEnd),
+        startDate: formatDateKey(bucketStart),
+        endDate: formatDateKey(bucketEnd),
+        isIncomplete: bucketEnd >= today,
+        ...aggregate
+      };
+    })
+    .filter(Boolean);
+};
+
+const buildTrendSeries = (trendData, key) => {
+  const incompleteKey = `${key}Incomplete`;
+  if (!Array.isArray(trendData) || trendData.length === 0) {
+    return { data: [], incompleteKey, hasIncomplete: false };
+  }
+  const last = trendData[trendData.length - 1];
+  const hasIncomplete = !!last?.isIncomplete && trendData.length > 1;
+  if (!hasIncomplete) {
+    return { data: trendData, incompleteKey, hasIncomplete: false };
+  }
+  const startIndex = trendData.length - 2;
+  const data = trendData.map((entry, index) => ({
+    ...entry,
+    [incompleteKey]: index >= startIndex ? entry[key] : null
+  }));
+  return { data, incompleteKey, hasIncomplete: true };
+};
+
+const renderIncompleteDot = ({ cx, cy, payload, stroke }) => {
+  if (!payload?.isIncomplete || cx == null || cy == null) return null;
+  return <circle cx={cx} cy={cy} r={4} fill="#ffffff" stroke={stroke} strokeWidth={2} />;
 };
 
 const EPSILON = 1e-6;
@@ -257,7 +373,18 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS = [
+  'Dashboard',
+  'Budget Efficiency',
+  'Budget Intelligence',
+  'Manual Data',
+  'Creative Analysis 🎨 📊',
+  'Creative Preview',
+  'AI Analytics',
+  'AI Budget',
+  'Budget Calculator',
+  'Exchange Rates'
+];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1114,6 +1241,18 @@ export default function App() {
           >
             Yesterday
           </button>
+
+          {/* Today + Yesterday */}
+          <button
+            onClick={() => { setDateRange({ type: 'days', value: 2 }); setShowCustomPicker(false); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              dateRange.type === 'days' && dateRange.value === 2
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+            }`}
+          >
+            Today + Yesterday
+          </button>
           
           {[3, 7, 14, 30].map(d => (
             <button
@@ -1272,7 +1411,7 @@ export default function App() {
             setShowHiddenDropdown={setShowHiddenDropdown}
             includeInactive={includeInactive}
             setIncludeInactive={setIncludeInactive}
-            dateRange={dashboard?.dateRange}
+            dateRange={dateRange}
           />
           )}
         
@@ -1317,16 +1456,20 @@ export default function App() {
         )}
 
         {activeTab === 5 && (
+          <CreativePreview store={store} />
+        )}
+
+        {activeTab === 6 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 6 && (
+        {activeTab === 7 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 7 && (
+        {activeTab === 8 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1334,7 +1477,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === 9 && (
           <ExchangeRateDebug />
         )}
       </div>
@@ -1425,12 +1568,13 @@ function DashboardTab({
   dateRange = {},
   diagnosticsCampaignOptions = [],
 }) {
-  const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
+  const { overview = {}, trends = [], campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
 
   const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
   const [showCountryTrends, setShowCountryTrends] = useState(false);
   const [showCampaignTrends, setShowCampaignTrends] = useState(false);
+  const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
@@ -1438,6 +1582,7 @@ function DashboardTab({
   const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'country'
+  const [bucketPreference, setBucketPreference] = useState('auto');
   const countryTrendQuickOptions = [
     { label: '1W', type: 'weeks', value: 1 },
     { label: '2W', type: 'weeks', value: 2 },
@@ -1799,12 +1944,60 @@ function DashboardTab({
     return campaignSortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
   });
 
+  const totalDays = useMemo(() => getTotalDaysFromRange(dateRange), [dateRange]);
+  const bucketDays = useMemo(
+    () => getBucketDays(totalDays, bucketPreference),
+    [totalDays, bucketPreference]
+  );
+  const showBucketToggle = totalDays > 60;
+
+  useEffect(() => {
+    if (!showBucketToggle && bucketPreference !== 'auto') {
+      setBucketPreference('auto');
+    }
+    if (showBucketToggle && bucketPreference === 'auto') {
+      setBucketPreference('monthly');
+    }
+  }, [showBucketToggle, bucketPreference]);
+
+  useEffect(() => {
+    if (expandedKpis.includes('orders')) {
+      setExpandedKpis(prev => prev.filter(k => k !== 'orders'));
+    }
+  }, [expandedKpis, setExpandedKpis]);
+
+  const bucketedTrends = useMemo(
+    () => bucketTrendData(Array.isArray(trends) ? trends : [], bucketDays),
+    [trends, bucketDays]
+  );
+
+  const ordersTrendSeries = useMemo(
+    () => buildTrendSeries(bucketedTrends, 'orders'),
+    [bucketedTrends]
+  );
+
   // Sort country trends by total orders (descending), with New York first if available
   const orderedCountryTrends = [
     ...(nyTrendData ? [nyTrendData] : []),
     ...countryTrends
   ].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
   const orderedCampaignTrends = [...campaignTrends].sort((a, b) => (b.totalOrders || 0) - (a.totalOrders || 0));
+
+  const bucketedCountryTrends = useMemo(
+    () => orderedCountryTrends.map((country) => ({
+      ...country,
+      trends: bucketTrendData(country.trends || [], bucketDays)
+    })),
+    [orderedCountryTrends, bucketDays]
+  );
+
+  const bucketedCampaignTrends = useMemo(
+    () => orderedCampaignTrends.map((campaign) => ({
+      ...campaign,
+      trends: bucketTrendData(campaign.trends || [], bucketDays)
+    })),
+    [orderedCampaignTrends, bucketDays]
+  );
   const getCountryTrendRangeLabel = () => {
     if (countryTrendsRangeMode === 'quick') {
       const { type, value } = countryTrendsQuickRange || {};
@@ -1816,8 +2009,8 @@ function DashboardTab({
       }
       return 'Quick range';
     }
-    if (dateRange?.startDate && dateRange?.endDate) {
-      return `Using dashboard range (${dateRange.startDate} to ${dateRange.endDate})`;
+    if (dateRange?.type === 'custom' && dateRange?.start && dateRange?.end) {
+      return `Using dashboard range (${dateRange.start} to ${dateRange.end})`;
     }
     return 'Using dashboard date range';
   };
@@ -1832,8 +2025,8 @@ function DashboardTab({
       }
       return 'Quick range';
     }
-    if (dateRange?.startDate && dateRange?.endDate) {
-      return `Using dashboard range (${dateRange.startDate} to ${dateRange.endDate})`;
+    if (dateRange?.type === 'custom' && dateRange?.start && dateRange?.end) {
+      return `Using dashboard range (${dateRange.start} to ${dateRange.end})`;
     }
     return 'Using dashboard date range';
   };
@@ -1858,6 +2051,14 @@ function DashboardTab({
       ? date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
       : dateString;
   }, [parseLocalDate]);
+
+  const formatTrendTooltipLabel = useCallback(
+    (label, payload) => {
+      const base = formatCountryTooltip(label);
+      return payload?.[0]?.payload?.isIncomplete ? `${base} (in progress)` : base;
+    },
+    [formatCountryTooltip]
+  );
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
@@ -1935,6 +2136,10 @@ function DashboardTab({
   };
 
   const toggleKpi = (key) => {
+    if (key === 'orders') {
+      setShowOrdersTrend(prev => !prev);
+      return;
+    }
     setExpandedKpis(prev =>
       prev.includes(key)
         ? prev.filter(k => k !== key)
@@ -2119,8 +2324,8 @@ function DashboardTab({
           <KPICard 
             key={kpi.key}
             kpi={kpi}
-            trends={trends}
-            expanded={expandedKpis.includes(kpi.key)}
+            trends={bucketedTrends}
+            expanded={kpi.key === 'orders' ? showOrdersTrend : expandedKpis.includes(kpi.key)}
             onToggle={() => toggleKpi(kpi.key)}
             formatCurrency={formatCurrency}
           />
@@ -2128,53 +2333,107 @@ function DashboardTab({
       </div>
 
       {/* Global Orders Trend */}
-      {trends && trends.length > 0 && (
+      {showOrdersTrend && bucketedTrends.length > 0 && (
         <div className="bg-white rounded-xl p-6 shadow-sm">
-          <h3 className="text-lg font-semibold mb-4">Orders Trend</h3>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <h3 className="text-lg font-semibold">Orders Trend</h3>
+            {showBucketToggle && (
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-gray-500">Buckets:</span>
+                <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setBucketPreference('weekly')}
+                    className={`px-3 py-1.5 text-sm font-medium ${
+                      bucketPreference === 'weekly'
+                        ? 'bg-gray-900 text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Weekly
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBucketPreference('monthly')}
+                    className={`px-3 py-1.5 text-sm font-medium ${
+                      bucketPreference === 'monthly'
+                        ? 'bg-gray-900 text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Monthly
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           <div className="h-64">
             <ResponsiveContainer>
-              <AreaChart data={trends}>
+              <LineChart data={ordersTrendSeries.data}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Area 
-                  type="monotone" 
-                  dataKey="orders" 
-                  stroke="#22c55e"
-                  fill="#22c55e"
-                  fillOpacity={0.2}
+                <Tooltip labelFormatter={formatTrendTooltipLabel} />
+                <Line
+                  type="monotone"
+                  dataKey="orders"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  dot={false}
                 />
-              </AreaChart>
+                {ordersTrendSeries.hasIncomplete && (
+                  <Line
+                    type="monotone"
+                    dataKey={ordersTrendSeries.incompleteKey}
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    strokeDasharray="5 5"
+                    dot={renderIncompleteDot}
+                    activeDot={{ r: 4 }}
+                  />
+                )}
+              </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
       )}
 
       {/* Expanded KPI charts */}
-      {expandedKpis.length > 0 && trends && trends.length > 0 && (
+      {expandedKpis.length > 0 && bucketedTrends.length > 0 && (
         <div className="space-y-6">
           {expandedKpis.map((key) => {
             const thisKpi = kpis.find(k => k.key === key);
             if (!thisKpi) return null;
+            const trendSeries = buildTrendSeries(bucketedTrends, key);
             return (
               <div key={key} className="bg-white rounded-xl p-6 shadow-sm animate-fade-in">
                 <h3 className="text-lg font-semibold mb-4">{thisKpi.label} Trend</h3>
                 <div className="h-64">
                   <ResponsiveContainer>
-                    <AreaChart data={trends}>
+                    <LineChart data={trendSeries.data}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                       <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                       <YAxis tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Area 
-                        type="monotone" 
-                        dataKey={key} 
+                      <Tooltip labelFormatter={formatTrendTooltipLabel} />
+                      <Line
+                        type="monotone"
+                        dataKey={key}
                         stroke={thisKpi.color}
-                        fill={thisKpi.color}
-                        fillOpacity={0.2}
+                        strokeWidth={2}
+                        dot={false}
                       />
-                    </AreaChart>
+                      {trendSeries.hasIncomplete && (
+                        <Line
+                          type="monotone"
+                          dataKey={trendSeries.incompleteKey}
+                          stroke={thisKpi.color}
+                          strokeWidth={2}
+                          strokeDasharray="5 5"
+                          dot={renderIncompleteDot}
+                          activeDot={{ r: 4 }}
+                        />
+                      )}
+                    </LineChart>
                   </ResponsiveContainer>
                 </div>
               </div>
@@ -2943,7 +3202,7 @@ function DashboardTab({
       </div>
 
       {/* Country order trends (collapsible) */}
-      {orderedCountryTrends && orderedCountryTrends.length > 0 && (
+      {bucketedCountryTrends && bucketedCountryTrends.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">
           <button
             onClick={() => setShowCountryTrends(!showCountryTrends)}
@@ -3031,7 +3290,9 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCountryTrends.map((country) => (
+              {bucketedCountryTrends.map((country) => {
+                const trendSeries = buildTrendSeries(country.trends, 'orders');
+                return (
                 <div
                   key={country.countryCode}
                   className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
@@ -3045,7 +3306,7 @@ function DashboardTab({
                   </div>
                   <div className="h-32">
                     <ResponsiveContainer>
-                      <AreaChart data={country.trends}>
+                      <LineChart data={trendSeries.data}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                         <XAxis
                           dataKey="date"
@@ -3054,31 +3315,43 @@ function DashboardTab({
                         />
                         <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                         <Tooltip
-                          labelFormatter={formatCountryTooltip}
+                          labelFormatter={formatTrendTooltipLabel}
                           formatter={(value, name) => [
                             value,
                             name === 'orders' ? 'Orders' : 'Revenue'
                           ]}
                         />
-                        <Area 
-                          type="monotone" 
-                          dataKey="orders" 
+                        <Line
+                          type="monotone"
+                          dataKey="orders"
                           stroke="#6366f1"
-                          fill="#6366f1"
-                          fillOpacity={0.2}
+                          strokeWidth={2}
+                          dot={false}
                         />
-                      </AreaChart>
+                        {trendSeries.hasIncomplete && (
+                          <Line
+                            type="monotone"
+                            dataKey={trendSeries.incompleteKey}
+                            stroke="#6366f1"
+                            strokeWidth={2}
+                            strokeDasharray="5 5"
+                            dot={renderIncompleteDot}
+                            activeDot={{ r: 3 }}
+                          />
+                        )}
+                      </LineChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
-              ))}
+              );
+              })}
             </div>
           )}
         </div>
       )}
 
       {/* Campaign order trends */}
-      {orderedCampaignTrends && orderedCampaignTrends.length > 0 && (
+      {bucketedCampaignTrends && bucketedCampaignTrends.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden mt-6">
           <button
             onClick={() => setShowCampaignTrends(!showCampaignTrends)}
@@ -3166,7 +3439,9 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCampaignTrends.map((campaign) => (
+              {bucketedCampaignTrends.map((campaign) => {
+                const trendSeries = buildTrendSeries(campaign.trends, 'orders');
+                return (
                 <div
                   key={campaign.campaignId || campaign.campaignName}
                   className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
@@ -3179,7 +3454,7 @@ function DashboardTab({
                   </div>
                   <div className="h-32">
                     <ResponsiveContainer>
-                      <AreaChart data={campaign.trends}>
+                      <LineChart data={trendSeries.data}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                         <XAxis
                           dataKey="date"
@@ -3188,24 +3463,36 @@ function DashboardTab({
                         />
                         <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                         <Tooltip
-                          labelFormatter={formatCountryTooltip}
+                          labelFormatter={formatTrendTooltipLabel}
                           formatter={(value, name) => [
                             value,
                             name === 'orders' ? 'Orders' : 'Revenue'
                           ]}
                         />
-                        <Area
+                        <Line
                           type="monotone"
                           dataKey="orders"
                           stroke="#22c55e"
-                          fill="#22c55e"
-                          fillOpacity={0.2}
+                          strokeWidth={2}
+                          dot={false}
                         />
-                      </AreaChart>
+                        {trendSeries.hasIncomplete && (
+                          <Line
+                            type="monotone"
+                            dataKey={trendSeries.incompleteKey}
+                            stroke="#22c55e"
+                            strokeWidth={2}
+                            strokeDasharray="5 5"
+                            dot={renderIncompleteDot}
+                            activeDot={{ r: 3 }}
+                          />
+                        )}
+                      </LineChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
-              ))}
+              );
+              })}
             </div>
           )}
         </div>
@@ -3862,20 +4149,20 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
             <h3 className="font-semibold mb-4">ROAS Trend</h3>
             <div className="h-64">
               <ResponsiveContainer>
-                <AreaChart data={trends}>
+                <LineChart data={trends}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
                   <Tooltip />
-                  <Area
+                  <Line
                     type="monotone"
                     dataKey="roas"
                     name="Daily ROAS"
                     stroke="#10b981"
-                    fill="#10b981"
-                    fillOpacity={0.2}
+                    strokeWidth={2}
+                    dot={false}
                   />
-                </AreaChart>
+                </LineChart>
               </ResponsiveContainer>
             </div>
           </div>
