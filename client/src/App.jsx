@@ -934,6 +934,48 @@ export default function App() {
     return Math.round(v).toString();
   };
 
+  const formatTooltipNumber = (value) => Math.round(value || 0).toLocaleString();
+
+  const getMetricKeyFromDataKey = (dataKey = '') => dataKey.replace(/(Complete|Incomplete)$/, '');
+
+  const getTooltipLabel = (metricKey, fallbackLabel = '') => {
+    const labelMap = {
+      revenue: 'Revenue',
+      spend: 'AD Spend',
+      orders: 'Orders',
+      aov: 'AOV',
+      roas: 'ROAS',
+      cac: 'CAC'
+    };
+    return labelMap[metricKey] || fallbackLabel || metricKey;
+  };
+
+  const formatTooltipValue = (metricKey, value) => {
+    if (metricKey === 'roas') return `${Number(value || 0).toFixed(2)}x`;
+    if (metricKey === 'orders') return formatTooltipNumber(value);
+    if (['revenue', 'spend', 'aov', 'cac'].includes(metricKey)) {
+      return formatCurrency(value, 0);
+    }
+    return formatTooltipNumber(value);
+  };
+
+  const getBucketTimeRemainingLabel = (point) => {
+    if (!point?.isIncomplete || !point?.bucketEndDate) return '';
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const bucketEnd = parseLocalDate(point.bucketEndDate);
+    if (!bucketEnd) return '';
+    const remainingDays = Math.max(
+      0,
+      Math.ceil((bucketEnd.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+    );
+    if (bucketDays > 7 && remainingDays >= 7) {
+      const remainingWeeks = Math.max(1, Math.ceil(remainingDays / 7));
+      return `${remainingWeeks} ${remainingWeeks === 1 ? 'week' : 'weeks'} left`;
+    }
+    return `${remainingDays} ${remainingDays === 1 ? 'day' : 'days'} left`;
+  };
+
   // Hide/show campaign functions
   const toggleHideCampaign = (campaignId) => {
     setHiddenCampaigns(prev => {
@@ -2329,10 +2371,17 @@ function DashboardTab({
                 <Tooltip
                   labelFormatter={(label, payload) => {
                     const rangeLabel = getTrendRangeLabel(payload, label);
-                    const isInProgress = payload?.some(item => item?.payload?.isIncomplete);
-                    return `${rangeLabel}${isInProgress ? ' (in progress)' : ''}`;
+                    return rangeLabel;
                   }}
-                  formatter={(value) => formatNumber(value)}
+                  formatter={(value, name, props) => {
+                    const metricKey = getMetricKeyFromDataKey(props?.dataKey);
+                    const formattedValue = formatTooltipValue(metricKey, value);
+                    const remainingLabel = getBucketTimeRemainingLabel(props?.payload);
+                    const valueLabel = remainingLabel
+                      ? `${formattedValue} (to date, ${remainingLabel})`
+                      : formattedValue;
+                    return [valueLabel, getTooltipLabel(metricKey, 'Orders')];
+                  }}
                 />
                 <Line
                   type="monotone"
@@ -2418,13 +2467,16 @@ function DashboardTab({
                       <Tooltip
                         labelFormatter={(label, payload) => {
                           const rangeLabel = getTrendRangeLabel(payload, label);
-                          const isInProgress = payload?.some(item => item?.payload?.isIncomplete);
-                          return `${rangeLabel}${isInProgress ? ' (in progress)' : ''}`;
+                          return rangeLabel;
                         }}
-                        formatter={(value) => {
-                          if (thisKpi.format === 'currency') return formatCurrency(value);
-                          if (thisKpi.format === 'roas') return `${Number(value || 0).toFixed(2)}×`;
-                          return formatNumber(value);
+                        formatter={(value, name, props) => {
+                          const metricKey = getMetricKeyFromDataKey(props?.dataKey);
+                          const formattedValue = formatTooltipValue(metricKey, value);
+                          const remainingLabel = getBucketTimeRemainingLabel(props?.payload);
+                          const valueLabel = remainingLabel
+                            ? `${formattedValue} (to date, ${remainingLabel})`
+                            : formattedValue;
+                          return [valueLabel, getTooltipLabel(metricKey, thisKpi.label)];
                         }}
                       />
                       <Line
