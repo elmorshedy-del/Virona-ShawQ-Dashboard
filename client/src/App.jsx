@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 import {
@@ -58,6 +58,28 @@ const getLocalDateString = (date = new Date()) => {
   const offsetMs = date.getTimezoneOffset() * 60 * 1000;
   const localDate = new Date(date.getTime() - offsetMs);
   return localDate.toISOString().split('T')[0];
+};
+
+const getInclusiveDaysBetween = (startDate, endDate) => {
+  if (!startDate || !endDate) return 0;
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+  const diffMs = end.getTime() - start.getTime();
+  if (diffMs < 0) return 0;
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1;
+};
+
+const getTotalDaysFromRange = (range) => {
+  if (!range || typeof range !== 'object') return 0;
+  if (range.type === 'custom') {
+    return getInclusiveDaysBetween(range.start, range.end);
+  }
+  if (range.type === 'yesterday') return 1;
+  if (range.type === 'days') return Number(range.value) || 0;
+  if (range.type === 'weeks') return (Number(range.value) || 0) * 7;
+  if (range.type === 'months') return (Number(range.value) || 0) * 30;
+  return 0;
 };
 
 const EPSILON = 1e-6;
@@ -274,6 +296,9 @@ export default function App() {
     end: getLocalDateString()
   });
   const [showCustomPicker, setShowCustomPicker] = useState(false);
+  const [bucketGranularity, setBucketGranularity] = useState('monthly');
+  const totalDays = useMemo(() => getTotalDaysFromRange(dateRange), [dateRange]);
+  const shouldShowBucketToggle = totalDays > 60;
   
   const [dashboard, setDashboard] = useState(null);
   const [efficiency, setEfficiency] = useState(null);
@@ -483,6 +508,11 @@ export default function App() {
           targetParams.set(dateRange.type, dateRange.value);
         }
       };
+      const applyBucketPreference = (targetParams) => {
+        if (shouldShowBucketToggle) {
+          targetParams.set('bucket', bucketGranularity);
+        }
+      };
       const applyCountryTrendsRange = (targetParams) => {
         if (countryTrendsRangeMode === 'quick') {
           const quickRange = countryTrendsQuickRange || { type: 'weeks', value: 2 };
@@ -534,6 +564,7 @@ export default function App() {
       const shouldShowArrows = true;
 
       applyDashboardRange(params);
+      applyBucketPreference(params);
       applyCountryTrendsRange(countryTrendParams);
       applyCampaignTrendsRange(campaignTrendParams);
       
@@ -681,7 +712,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange, selectedCampaignId]);
+  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange, selectedCampaignId, bucketGranularity, shouldShowBucketToggle]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -1114,6 +1145,18 @@ export default function App() {
           >
             Yesterday
           </button>
+
+          {/* Today + Yesterday */}
+          <button
+            onClick={() => { setDateRange({ type: 'days', value: 2 }); setShowCustomPicker(false); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              dateRange.type === 'days' && dateRange.value === 2
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+            }`}
+          >
+            Today & Yesterday
+          </button>
           
           {[3, 7, 14, 30].map(d => (
             <button
@@ -1195,6 +1238,34 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {shouldShowBucketToggle && (
+            <div className="flex items-center gap-2 ml-2">
+              <span className="text-xs font-medium text-gray-500">Buckets:</span>
+              <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-lg">
+                <button
+                  onClick={() => setBucketGranularity('weekly')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    bucketGranularity === 'weekly'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Weekly
+                </button>
+                <button
+                  onClick={() => setBucketGranularity('monthly')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    bucketGranularity === 'monthly'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Monthly
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="ml-auto flex items-center gap-3 text-sm text-gray-500 flex-wrap">
             <div>
@@ -1426,6 +1497,7 @@ function DashboardTab({
   diagnosticsCampaignOptions = [],
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
+  const trendSeries = Array.isArray(trends) ? trends : [];
 
   const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
@@ -1433,6 +1505,7 @@ function DashboardTab({
   const [showCampaignTrends, setShowCampaignTrends] = useState(false);
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
+  const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [expandedCountries, setExpandedCountries] = useState(new Set());
   const [expandedStates, setExpandedStates] = useState(new Set());
   const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
@@ -1859,6 +1932,60 @@ function DashboardTab({
       : dateString;
   }, [parseLocalDate]);
 
+  const todayStart = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today;
+  }, []);
+
+  const normalizedTrends = useMemo(() => {
+    if (!trendSeries.length) return [];
+    return trendSeries.map((point, idx) => {
+      const bucketStartDate = point.bucketStartDate || point.date;
+      const bucketEndDate = point.bucketEndDate || point.date;
+      const endDate = parseLocalDate(bucketEndDate);
+      const isIncomplete = idx === trendSeries.length - 1 && endDate && endDate >= todayStart;
+
+      return {
+        ...point,
+        bucketStartDate,
+        bucketEndDate,
+        isIncomplete
+      };
+    });
+  }, [trendSeries, parseLocalDate, todayStart]);
+
+  const hasIncompleteTrend = normalizedTrends.length > 0 && normalizedTrends[normalizedTrends.length - 1].isIncomplete;
+  const completeTrendData = hasIncompleteTrend
+    ? normalizedTrends.slice(0, -1)
+    : normalizedTrends;
+  const inProgressTrendData = hasIncompleteTrend
+    ? normalizedTrends.slice(-2)
+    : [];
+
+  const formatTrendTooltipLabel = useCallback((label, payload) => {
+    const isIncomplete = payload?.[0]?.payload?.isIncomplete;
+    return `${label}${isIncomplete ? ' (in progress)' : ''}`;
+  }, []);
+
+  const renderIncompleteDot = useCallback(
+    (color) => (props) => {
+      const { cx, cy, payload } = props;
+      if (!payload?.isIncomplete || cx == null || cy == null) return null;
+      return (
+        <circle
+          cx={cx}
+          cy={cy}
+          r={4}
+          fill="#ffffff"
+          stroke={color}
+          strokeWidth={2}
+        />
+      );
+    },
+    []
+  );
+
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
   const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
@@ -1935,6 +2062,11 @@ function DashboardTab({
   };
 
   const toggleKpi = (key) => {
+    if (key === 'orders') {
+      setShowOrdersTrend(prev => !prev);
+      setExpandedKpis(prev => prev.filter(k => k !== 'orders'));
+      return;
+    }
     setExpandedKpis(prev =>
       prev.includes(key)
         ? prev.filter(k => k !== key)
@@ -2128,31 +2260,45 @@ function DashboardTab({
       </div>
 
       {/* Global Orders Trend */}
-      {trends && trends.length > 0 && (
+      {showOrdersTrend && normalizedTrends.length > 0 && (
         <div className="bg-white rounded-xl p-6 shadow-sm">
           <h3 className="text-lg font-semibold mb-4">Orders Trend</h3>
           <div className="h-64">
             <ResponsiveContainer>
-              <AreaChart data={trends}>
+              <LineChart data={normalizedTrends}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Area 
-                  type="monotone" 
-                  dataKey="orders" 
-                  stroke="#22c55e"
-                  fill="#22c55e"
-                  fillOpacity={0.2}
-                />
-              </AreaChart>
+                <Tooltip labelFormatter={formatTrendTooltipLabel} />
+                {completeTrendData.length > 0 && (
+                  <Line
+                    type="monotone"
+                    dataKey="orders"
+                    stroke="#22c55e"
+                    strokeWidth={2}
+                    dot={false}
+                    data={completeTrendData}
+                  />
+                )}
+                {hasIncompleteTrend && (
+                  <Line
+                    type="monotone"
+                    dataKey="orders"
+                    stroke="#22c55e"
+                    strokeWidth={2}
+                    strokeDasharray="5,5"
+                    dot={renderIncompleteDot('#22c55e')}
+                    data={inProgressTrendData}
+                  />
+                )}
+              </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
       )}
 
       {/* Expanded KPI charts */}
-      {expandedKpis.length > 0 && trends && trends.length > 0 && (
+      {expandedKpis.length > 0 && normalizedTrends.length > 0 && (
         <div className="space-y-6">
           {expandedKpis.map((key) => {
             const thisKpi = kpis.find(k => k.key === key);
@@ -2162,19 +2308,33 @@ function DashboardTab({
                 <h3 className="text-lg font-semibold mb-4">{thisKpi.label} Trend</h3>
                 <div className="h-64">
                   <ResponsiveContainer>
-                    <AreaChart data={trends}>
+                    <LineChart data={normalizedTrends}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                       <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                       <YAxis tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Area 
-                        type="monotone" 
-                        dataKey={key} 
-                        stroke={thisKpi.color}
-                        fill={thisKpi.color}
-                        fillOpacity={0.2}
-                      />
-                    </AreaChart>
+                      <Tooltip labelFormatter={formatTrendTooltipLabel} />
+                      {completeTrendData.length > 0 && (
+                        <Line
+                          type="monotone"
+                          dataKey={key}
+                          stroke={thisKpi.color}
+                          strokeWidth={2}
+                          dot={false}
+                          data={completeTrendData}
+                        />
+                      )}
+                      {hasIncompleteTrend && (
+                        <Line
+                          type="monotone"
+                          dataKey={key}
+                          stroke={thisKpi.color}
+                          strokeWidth={2}
+                          strokeDasharray="5,5"
+                          dot={renderIncompleteDot(thisKpi.color)}
+                          data={inProgressTrendData}
+                        />
+                      )}
+                    </LineChart>
                   </ResponsiveContainer>
                 </div>
               </div>
@@ -3045,7 +3205,7 @@ function DashboardTab({
                   </div>
                   <div className="h-32">
                     <ResponsiveContainer>
-                      <AreaChart data={country.trends}>
+                      <LineChart data={country.trends}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                         <XAxis
                           dataKey="date"
@@ -3060,14 +3220,14 @@ function DashboardTab({
                             name === 'orders' ? 'Orders' : 'Revenue'
                           ]}
                         />
-                        <Area 
-                          type="monotone" 
-                          dataKey="orders" 
+                        <Line
+                          type="monotone"
+                          dataKey="orders"
                           stroke="#6366f1"
-                          fill="#6366f1"
-                          fillOpacity={0.2}
+                          strokeWidth={2}
+                          dot={false}
                         />
-                      </AreaChart>
+                      </LineChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
@@ -3179,7 +3339,7 @@ function DashboardTab({
                   </div>
                   <div className="h-32">
                     <ResponsiveContainer>
-                      <AreaChart data={campaign.trends}>
+                      <LineChart data={campaign.trends}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                         <XAxis
                           dataKey="date"
@@ -3194,14 +3354,14 @@ function DashboardTab({
                             name === 'orders' ? 'Orders' : 'Revenue'
                           ]}
                         />
-                        <Area
+                        <Line
                           type="monotone"
                           dataKey="orders"
                           stroke="#22c55e"
-                          fill="#22c55e"
-                          fillOpacity={0.2}
+                          strokeWidth={2}
+                          dot={false}
                         />
-                      </AreaChart>
+                      </LineChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
@@ -3862,20 +4022,20 @@ function EfficiencyTab({ efficiency, trends, recommendations, formatCurrency }) 
             <h3 className="font-semibold mb-4">ROAS Trend</h3>
             <div className="h-64">
               <ResponsiveContainer>
-                <AreaChart data={trends}>
+                <LineChart data={trends}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
                   <Tooltip />
-                  <Area
+                  <Line
                     type="monotone"
                     dataKey="roas"
                     name="Daily ROAS"
                     stroke="#10b981"
-                    fill="#10b981"
-                    fillOpacity={0.2}
+                    strokeWidth={2}
+                    dot={false}
                   />
-                </AreaChart>
+                </LineChart>
               </ResponsiveContainer>
             </div>
           </div>
