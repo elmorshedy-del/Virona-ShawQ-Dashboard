@@ -2026,20 +2026,32 @@ function DashboardTab({
     return Math.round(value || 0).toLocaleString();
   }, [formatCurrency]);
 
-  const getBucketTimeRemaining = useCallback((point) => {
+  const getTurkeyToday = useCallback(() => {
+    const now = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
+    const turkeyDate = new Date(now);
+    turkeyDate.setHours(0, 0, 0, 0);
+    return turkeyDate.getTime();
+  }, []);
+
+  const formatBucketDate = useCallback((date) => (
+    new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  ), []);
+
+  const getInProgressBucketInfo = useCallback((point) => {
     if (!point?.isIncomplete) return null;
-    const bucketEnd = parseLocalDate(point.bucketEndDate);
-    if (!bucketEnd) return null;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const diffMs = bucketEnd.getTime() - today.getTime();
-    const diffDays = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
-    if (bucketDays >= 7) {
-      const weeksLeft = Math.ceil(diffDays / 7);
-      return `${weeksLeft} week${weeksLeft === 1 ? '' : 's'} left`;
-    }
-    return `${diffDays} day${diffDays === 1 ? '' : 's'} left`;
-  }, [bucketDays, parseLocalDate]);
+    if (!point?.bucketEndDate) return null;
+    const today = getTurkeyToday();
+    const endDate = new Date(point.bucketEndDate);
+    endDate.setHours(0, 0, 0, 0);
+    const daysLeft = Math.ceil((endDate.getTime() - today) / (1000 * 60 * 60 * 24));
+    const dateLabel = point?.bucketStartDate && point?.bucketEndDate
+      ? `${formatBucketDate(point.bucketStartDate)} - ${formatBucketDate(point.bucketEndDate)} (in progress)`
+      : null;
+    const metricSuffix = daysLeft > 0
+      ? ` (${daysLeft} day${daysLeft > 1 ? 's' : ''} left)`
+      : '';
+    return { dateLabel, metricSuffix };
+  }, [formatBucketDate, getTurkeyToday]);
 
   const getTrendRangeLabel = useCallback((payload, fallbackLabel) => {
     const point = payload?.find(item => item?.payload)?.payload;
@@ -2056,27 +2068,29 @@ function DashboardTab({
 
   const renderBucketTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
-    const rangeLabel = getTrendRangeLabel(payload, label);
     const isInProgress = payload.some(item => item?.payload?.isIncomplete);
     const point = payload.find(item => item?.payload)?.payload;
+    const rangeLabel = getTrendRangeLabel(payload, label);
     const displayItem = payload.find(item => item?.value != null && !String(item?.dataKey).includes('Incomplete'))
       || payload.find(item => item?.value != null);
     const metricKey = metricKeyOverride || getTooltipMetricKey(displayItem?.dataKey || '');
     const metricLabel = getTooltipMetricLabel(metricKey);
     const formattedValue = formatTooltipMetricValue(metricKey, displayItem?.value);
-    const timeRemaining = point ? getBucketTimeRemaining(point) : null;
+    const inProgressInfo = point ? getInProgressBucketInfo(point) : null;
+    const dateLabel = inProgressInfo?.dateLabel || `${rangeLabel}${isInProgress ? ' (in progress)' : ''}`;
+    const metricText = `${metricLabel}${inProgressInfo?.metricSuffix || ''}`;
 
     return (
       <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
         <p className="text-xs text-gray-500">
-          {`${rangeLabel}${isInProgress ? ' (in progress)' : ''}`}
+          {dateLabel}
         </p>
         <p className="text-sm font-medium text-gray-900">
-          {metricLabel}: {formattedValue}{isInProgress && timeRemaining ? ` (${timeRemaining})` : ''}
+          {metricText}: {formattedValue}
         </p>
       </div>
     );
-  }, [formatTooltipMetricValue, getBucketTimeRemaining, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel]);
+  }, [formatTooltipMetricValue, getInProgressBucketInfo, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel]);
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
