@@ -3045,8 +3045,8 @@ function DashboardTab({
                   </div>
                   <div className="h-32">
                     <ResponsiveContainer>
-                      <AreaChart data={country.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                      <LineChart data={country.trends}>
+                        <CartesianGrid strokeDasharray="2 8" stroke="#e2e8f0" />
                         <XAxis
                           dataKey="date"
                           tick={{ fontSize: 10 }}
@@ -3060,14 +3060,17 @@ function DashboardTab({
                             name === 'orders' ? 'Orders' : 'Revenue'
                           ]}
                         />
-                        <Area 
-                          type="monotone" 
-                          dataKey="orders" 
+                        <Line
+                          type="natural"
+                          dataKey="orders"
                           stroke="#6366f1"
-                          fill="#6366f1"
-                          fillOpacity={0.2}
+                          strokeWidth={2.5}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          dot={false}
+                          activeDot={{ r: 4, strokeWidth: 2 }}
                         />
-                      </AreaChart>
+                      </LineChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
@@ -3179,8 +3182,8 @@ function DashboardTab({
                   </div>
                   <div className="h-32">
                     <ResponsiveContainer>
-                      <AreaChart data={campaign.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                      <LineChart data={campaign.trends}>
+                        <CartesianGrid strokeDasharray="2 8" stroke="#e2e8f0" />
                         <XAxis
                           dataKey="date"
                           tick={{ fontSize: 10 }}
@@ -3194,14 +3197,17 @@ function DashboardTab({
                             name === 'orders' ? 'Orders' : 'Revenue'
                           ]}
                         />
-                        <Area
-                          type="monotone"
+                        <Line
+                          type="natural"
                           dataKey="orders"
                           stroke="#22c55e"
-                          fill="#22c55e"
-                          fillOpacity={0.2}
+                          strokeWidth={2.5}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          dot={false}
+                          activeDot={{ r: 4, strokeWidth: 2 }}
                         />
-                      </AreaChart>
+                      </LineChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
@@ -3393,12 +3399,15 @@ function KPICard({ kpi, trends, expanded, onToggle, formatCurrency }) {
         <div className="h-10 mt-3">
           <ResponsiveContainer>
             <LineChart data={trendData}>
-              <Line 
-                type="monotone" 
-                dataKey="value" 
-                stroke={kpi.color} 
-                strokeWidth={2}
+              <Line
+                type="natural"
+                dataKey="value"
+                stroke={kpi.color}
+                strokeWidth={2.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 dot={false}
+                activeDot={{ r: 3, strokeWidth: 2 }}
               />
             </LineChart>
           </ResponsiveContainer>
