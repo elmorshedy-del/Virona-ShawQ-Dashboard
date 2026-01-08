@@ -3,6 +3,8 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { initDb, getDb } from './db/database.js';
 import analyticsRouter from './routes/analytics.js';
@@ -29,6 +31,7 @@ const clientPublic = path.join(__dirname, '../client/public');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '60000', 10);
+const execPromise = promisify(exec);
 
 // Initialize database
 initDb();
@@ -89,6 +92,14 @@ app.use('/api/whatif', whatifRouter);
 app.use('/api/aibudget', aibudgetRouter);
 app.use('/api/meta', metaRouter);
 app.use('/api/exchange-rates', exchangeRateRoutes);
+app.get('/api/test/yt-dlp', async (req, res) => {
+  try {
+    const { stdout } = await execPromise('yt-dlp --version');
+    res.json({ installed: true, version: stdout.trim() });
+  } catch (err) {
+    res.json({ installed: false, error: err.message });
+  }
+});
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');

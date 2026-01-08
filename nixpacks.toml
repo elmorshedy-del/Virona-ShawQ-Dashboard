@@ -1,6 +1,6 @@
 [phases.setup]
 # Install Node.js 20 so npm is available, plus your existing tools
-nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake"]
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg"]
 
 [phases.install.env]
 PYTHON = "python3"
