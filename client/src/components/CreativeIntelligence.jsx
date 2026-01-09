@@ -68,10 +68,23 @@ export default function CreativeIntelligence({ store }) {
   // Settings states
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState(null);
+  const [debugInfo, setDebugInfo] = useState({ analyze: null, chat: null });
   
   // Refs
   const videoRef = useRef(null);
   const chatEndRef = useRef(null);
+  const buildTranscript = (scriptData) => {
+    if (scriptData?.analysisType !== 'video_frames' || !Array.isArray(scriptData.frames)) return null;
+    const lines = scriptData.frames
+      .map(frame => {
+        const voiceover = typeof frame?.voiceover === 'string' ? frame.voiceover.trim() : '';
+        if (!voiceover || voiceover.toLowerCase() === 'none') return null;
+        const time = frame?.time ? `${frame.time} ` : '';
+        return `${time}${voiceover}`;
+      })
+      .filter(Boolean);
+    return lines.length ? lines.join('\n') : null;
+  };
 
   // ============================================================================
   // FETCH AD ACCOUNTS
@@ -199,6 +212,7 @@ export default function CreativeIntelligence({ store }) {
     setScriptStatus(null);
     setChatMessages([]);
     setConversationId(null);
+    setDebugInfo({ analyze: null, chat: null });
 
     try {
       // Fetch video data
@@ -232,11 +246,30 @@ export default function CreativeIntelligence({ store }) {
     if (!selectedAd || !videoData) return;
     
     setScriptStatus({ status: 'processing' });
+    const analyzeEndpoint = `${API_BASE}/creative-intelligence/analyze-video`;
+
+    setDebugInfo(prev => ({
+      ...prev,
+      analyze: {
+        status: 'running',
+        endpoint: analyzeEndpoint,
+        steps: [
+          `Client → API: POST ${analyzeEndpoint}`,
+          'API → Gemini: pending'
+        ],
+        error: null,
+        usage: null,
+        transcript: null,
+        analysisType: null,
+        cached: false,
+        timestamp: new Date().toISOString()
+      }
+    }));
 
     try {
       const campaign = campaigns.find(c => c.id === selectedCampaign);
       
-      const res = await fetch(`${API_BASE}/creative-intelligence/analyze-video`, {
+      const res = await fetch(analyzeEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -253,16 +286,62 @@ export default function CreativeIntelligence({ store }) {
 
       const data = await res.json();
       
-      if (data.success) {
+      if (res.ok && data.success) {
+        const transcript = buildTranscript(data.script);
         setScriptStatus({ exists: true, status: 'complete', script: data.script });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'complete' }));
+        setDebugInfo(prev => ({
+          ...prev,
+          analyze: {
+            ...prev.analyze,
+            status: 'success',
+            steps: [
+              `Client → API: POST ${analyzeEndpoint}`,
+              `API → Gemini: ${data.analysisType || data.script?.analysisType || 'analysis'}`,
+              'Gemini → API: success',
+              `API → Client: ${res.status}`
+            ],
+            usage: data.usage || null,
+            transcript,
+            analysisType: data.analysisType || data.script?.analysisType || null,
+            cached: data.cached || false,
+            error: null
+          }
+        }));
       } else {
+        const errorMessage = data?.error || `Request failed with status ${res.status}`;
         setScriptStatus({ status: 'failed', error: data.error });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+        setDebugInfo(prev => ({
+          ...prev,
+          analyze: {
+            ...prev.analyze,
+            status: 'failed',
+            steps: [
+              `Client → API: POST ${analyzeEndpoint}`,
+              'API → Gemini: failed',
+              `API → Client: ${res.status}`
+            ],
+            error: { message: errorMessage, status: res.status },
+            usage: data.usage || null
+          }
+        }));
       }
     } catch (err) {
       setScriptStatus({ status: 'failed', error: err.message });
       setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+      setDebugInfo(prev => ({
+        ...prev,
+        analyze: {
+          ...prev.analyze,
+          status: 'failed',
+          steps: [
+            `Client → API: POST ${analyzeEndpoint}`,
+            'API → Gemini: failed'
+          ],
+          error: { message: err.message }
+        }
+      }));
     }
   };
 
@@ -277,9 +356,26 @@ export default function CreativeIntelligence({ store }) {
     setChatInput('');
     setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setChatLoading(true);
+    const chatEndpoint = `${API_BASE}/creative-intelligence/chat`;
+
+    setDebugInfo(prev => ({
+      ...prev,
+      chat: {
+        status: 'running',
+        endpoint: chatEndpoint,
+        model: settings?.model || 'sonnet-4.5',
+        steps: [
+          `Client → API: POST ${chatEndpoint}`,
+          `API → Claude (${settings?.model || 'sonnet-4.5'})`
+        ],
+        error: null,
+        usage: null,
+        timestamp: new Date().toISOString()
+      }
+    }));
 
     try {
-      const res = await fetch(`${API_BASE}/creative-intelligence/chat`, {
+      const res = await fetch(chatEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -323,6 +419,35 @@ export default function CreativeIntelligence({ store }) {
                     updated[updated.length - 1] = { role: 'assistant', content: assistantMessage };
                     return updated;
                   });
+                  setDebugInfo(prev => ({
+                    ...prev,
+                    chat: {
+                      ...prev.chat,
+                      status: 'success',
+                      steps: [
+                        `Client → API: POST ${chatEndpoint}`,
+                        `API → Claude (${settings?.model || 'sonnet-4.5'})`,
+                        `API → Client: ${res.status}`
+                      ],
+                      usage: data.usage || null,
+                      error: null
+                    }
+                  }));
+                } else if (data.type === 'error') {
+                  setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error}` }]);
+                  setDebugInfo(prev => ({
+                    ...prev,
+                    chat: {
+                      ...prev.chat,
+                      status: 'failed',
+                      steps: [
+                        `Client → API: POST ${chatEndpoint}`,
+                        `API → Claude (${settings?.model || 'sonnet-4.5'})`,
+                        `API → Client: ${res.status}`
+                      ],
+                      error: { message: data.error, status: res.status }
+                    }
+                  }));
                 }
               } catch {}
             }
@@ -331,13 +456,55 @@ export default function CreativeIntelligence({ store }) {
       } else {
         // Non-streaming response
         const data = await res.json();
-        if (data.success) {
+        if (res.ok && data.success) {
           setChatMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
           setConversationId(data.conversationId);
+          setDebugInfo(prev => ({
+            ...prev,
+            chat: {
+              ...prev.chat,
+              status: 'success',
+              steps: [
+                `Client → API: POST ${chatEndpoint}`,
+                `API → Claude (${settings?.model || 'sonnet-4.5'})`,
+                `API → Client: ${res.status}`
+              ],
+              usage: data.usage || null,
+              error: null
+            }
+          }));
+        } else {
+          const errorMessage = data?.error || `Request failed with status ${res.status}`;
+          setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${errorMessage}` }]);
+          setDebugInfo(prev => ({
+            ...prev,
+            chat: {
+              ...prev.chat,
+              status: 'failed',
+              steps: [
+                `Client → API: POST ${chatEndpoint}`,
+                `API → Claude (${settings?.model || 'sonnet-4.5'})`,
+                `API → Client: ${res.status}`
+              ],
+              error: { message: errorMessage, status: res.status }
+            }
+          }));
         }
       }
     } catch (err) {
       setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+      setDebugInfo(prev => ({
+        ...prev,
+        chat: {
+          ...prev.chat,
+          status: 'failed',
+          steps: [
+            `Client → API: POST ${chatEndpoint}`,
+            `API → Claude (${settings?.model || 'sonnet-4.5'})`
+          ],
+          error: { message: err.message }
+        }
+      }));
     } finally {
       setChatLoading(false);
     }
@@ -400,6 +567,22 @@ export default function CreativeIntelligence({ store }) {
 
   const hasVideo = !!videoData?.source_url;
   const hasThumbnail = !hasVideo && !!(videoData?.thumbnail_url || selectedAd?.thumbnail);
+  const geminiTokenRows = (usage) => {
+    if (!usage) return [];
+    return [
+      { label: 'Prompt', value: usage.promptTokenCount },
+      { label: 'Candidates', value: usage.candidatesTokenCount },
+      { label: 'Total', value: usage.totalTokenCount }
+    ].filter(row => row.value !== undefined && row.value !== null);
+  };
+  const sonnetTokenRows = (usage) => {
+    if (!usage) return [];
+    return [
+      { label: 'Input', value: usage.input_tokens },
+      { label: 'Output', value: usage.output_tokens },
+      { label: 'Total', value: usage.total_tokens }
+    ].filter(row => row.value !== undefined && row.value !== null);
+  };
 
   // ============================================================================
   // RENDER
@@ -704,6 +887,112 @@ export default function CreativeIntelligence({ store }) {
               Analyze the ad first to enable chat
             </div>
           )}
+        </div>
+
+        {/* Debug Panel */}
+        <div className="border-t" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+          <div className="p-4 text-xs space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold" style={{ color: colors.text }}>Debugging & Token Usage</div>
+              <div className="text-[11px]" style={{ color: colors.textSecondary }}>
+                {debugInfo?.analyze?.timestamp || debugInfo?.chat?.timestamp ? 'Latest activity captured' : 'No activity yet'}
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-xl border p-3 space-y-3" style={{ borderColor: colors.border }}>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold" style={{ color: colors.text }}>Analyze (Gemini)</div>
+                  <div className="text-[11px]" style={{ color: colors.textSecondary }}>
+                    {debugInfo?.analyze?.status || 'idle'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-semibold uppercase" style={{ color: colors.textSecondary }}>Connection Pathway</div>
+                  <ul className="mt-2 space-y-1 text-[11px]">
+                    {(debugInfo?.analyze?.steps || ['Awaiting analyze request...']).map((step, index) => (
+                      <li key={index} className="flex gap-2">
+                        <span className="text-gray-400">{index + 1}.</span>
+                        <span style={{ color: colors.text }}>{step}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-[11px]">
+                  {geminiTokenRows(debugInfo?.analyze?.usage).map(row => (
+                    <div key={row.label} className="rounded-lg bg-gray-50 p-2">
+                      <div className="font-semibold text-gray-600">{row.label}</div>
+                      <div className="text-gray-900">{row.value?.toLocaleString?.() || row.value}</div>
+                    </div>
+                  ))}
+                  {geminiTokenRows(debugInfo?.analyze?.usage).length === 0 && (
+                    <div className="col-span-3 text-[11px]" style={{ color: colors.textSecondary }}>
+                      Token usage will appear after analysis completes.
+                    </div>
+                  )}
+                </div>
+                {debugInfo?.analyze?.transcript && (
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase" style={{ color: colors.textSecondary }}>Gemini Transcript</div>
+                    <pre className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-2 text-[11px] text-gray-700">
+                      {debugInfo.analyze.transcript}
+                    </pre>
+                  </div>
+                )}
+                {debugInfo?.analyze?.status === 'failed' && (
+                  <div className="rounded-lg bg-red-50 p-2 text-[11px] text-red-700">
+                    <div className="font-semibold">Failure Details</div>
+                    <div>{debugInfo.analyze?.error?.message || 'Unknown error'}</div>
+                    {debugInfo.analyze?.error?.status && (
+                      <div>Status: {debugInfo.analyze.error.status}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-xl border p-3 space-y-3" style={{ borderColor: colors.border }}>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold" style={{ color: colors.text }}>Sonnet Response</div>
+                  <div className="text-[11px]" style={{ color: colors.textSecondary }}>
+                    {debugInfo?.chat?.status || 'idle'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-semibold uppercase" style={{ color: colors.textSecondary }}>Connection Pathway</div>
+                  <ul className="mt-2 space-y-1 text-[11px]">
+                    {(debugInfo?.chat?.steps || ['Awaiting chat request...']).map((step, index) => (
+                      <li key={index} className="flex gap-2">
+                        <span className="text-gray-400">{index + 1}.</span>
+                        <span style={{ color: colors.text }}>{step}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-[11px]">
+                  {sonnetTokenRows(debugInfo?.chat?.usage).map(row => (
+                    <div key={row.label} className="rounded-lg bg-gray-50 p-2">
+                      <div className="font-semibold text-gray-600">{row.label}</div>
+                      <div className="text-gray-900">{row.value?.toLocaleString?.() || row.value}</div>
+                    </div>
+                  ))}
+                  {sonnetTokenRows(debugInfo?.chat?.usage).length === 0 && (
+                    <div className="col-span-3 text-[11px]" style={{ color: colors.textSecondary }}>
+                      Token usage will appear after Claude responds.
+                    </div>
+                  )}
+                </div>
+                {debugInfo?.chat?.status === 'failed' && (
+                  <div className="rounded-lg bg-red-50 p-2 text-[11px] text-red-700">
+                    <div className="font-semibold">Failure Details</div>
+                    <div>{debugInfo.chat?.error?.message || 'Unknown error'}</div>
+                    {debugInfo.chat?.error?.status && (
+                      <div>Status: {debugInfo.chat.error.status}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     

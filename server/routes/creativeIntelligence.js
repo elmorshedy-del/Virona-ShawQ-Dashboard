@@ -140,7 +140,8 @@ router.post('/analyze-video', async (req, res) => {
       return res.json({ 
         success: true, 
         script: JSON.parse(existing.script),
-        cached: true 
+        cached: true,
+        usage: null
       });
     }
 
@@ -176,6 +177,7 @@ router.post('/analyze-video', async (req, res) => {
 
     let script;
     let analysisType = 'thumbnail';
+    let usageMetadata = null;
 
     if (hasVideo) {
       // TRY TO DOWNLOAD AND UPLOAD VIDEO
@@ -266,6 +268,7 @@ Return ONLY valid JSON array, no markdown:
           ]);
 
           const responseText = result.response.text();
+          usageMetadata = result.response.usageMetadata || null;
           
           // Parse JSON
           try {
@@ -333,6 +336,7 @@ Return as JSON object with these sections. No markdown.`
       ]);
 
       const responseText = result.response.text();
+      usageMetadata = result.response.usageMetadata || null;
       
       try {
         const cleanJson = responseText.replace(/```json\n?|\n?```/g, '').trim();
@@ -365,7 +369,7 @@ Return as JSON object with these sections. No markdown.`
       WHERE store = ? AND ad_id = ?
     `).run(JSON.stringify(scriptData), videoUrl, thumbnailUrl, store, adId);
 
-    res.json({ success: true, script: scriptData, cached: false, analysisType });
+    res.json({ success: true, script: scriptData, cached: false, analysisType, usage: usageMetadata });
 
   } catch (error) {
     console.error('[Gemini] Analysis error:', error);
@@ -570,25 +574,37 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
         res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
       });
 
-      stream.on('end', () => {
+      stream.on('error', (err) => {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
+          res.end();
+        }
+      });
+
+      try {
+        const finalMessage = await stream.finalMessage();
+        if (res.writableEnded) return;
+
+        const assistantMessage = finalMessage?.content?.[0]?.text || fullResponse;
+
         // Save assistant message
         db.prepare(`
           INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
-        `).run(convId, fullResponse, settings.model);
+        `).run(convId, assistantMessage, settings.model);
 
         // Update conversation timestamp
         db.prepare(`
           UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
         `).run(convId);
 
-        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, usage: finalMessage?.usage || null })}\n\n`);
         res.end();
-      });
-
-      stream.on('error', (err) => {
-        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
-        res.end();
-      });
+      } catch (err) {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
+          res.end();
+        }
+      }
 
     } else {
       // Non-streaming response
@@ -614,7 +630,8 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.json({
         success: true,
         message: assistantMessage,
-        conversationId: convId
+        conversationId: convId,
+        usage: response.usage || null
       });
     }
 
