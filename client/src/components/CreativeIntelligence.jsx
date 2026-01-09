@@ -64,6 +64,11 @@ export default function CreativeIntelligence({ store }) {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+
+  // Debug states
+  const [debugEntries, setDebugEntries] = useState([]);
+  const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
+  const [analysisTranscript, setAnalysisTranscript] = useState('');
   
   // Settings states
   const [showSettings, setShowSettings] = useState(false);
@@ -232,37 +237,83 @@ export default function CreativeIntelligence({ store }) {
     if (!selectedAd || !videoData) return;
     
     setScriptStatus({ status: 'processing' });
+    const campaign = campaigns.find(c => c.id === selectedCampaign);
+    const payload = {
+      store: storeId,
+      adId: selectedAd.id,
+      adName: selectedAd.name,
+      campaignId: selectedCampaign,
+      campaignName: campaign?.name,
+      sourceUrl: videoData.source_url,
+      embedHtml: videoData.embed_html,
+      thumbnailUrl: videoData.thumbnail_url
+    };
+    const requestId = `analyze-${Date.now()}`;
+    const startTime = performance.now();
+    pushDebugEntry({
+      type: 'analyze',
+      status: 'started',
+      requestId,
+      endpoint: `${API_BASE}/creative-intelligence/analyze-video`,
+      method: 'POST',
+      store: storeId,
+      adId: selectedAd.id,
+      campaignId: selectedCampaign,
+      payloadPreview: {
+        sourceUrl: payload.sourceUrl,
+        hasEmbedHtml: !!payload.embedHtml,
+        thumbnailUrl: payload.thumbnailUrl
+      }
+    });
 
     try {
-      const campaign = campaigns.find(c => c.id === selectedCampaign);
-      
       const res = await fetch(`${API_BASE}/creative-intelligence/analyze-video`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          store: storeId,
-          adId: selectedAd.id,
-          adName: selectedAd.name,
-          campaignId: selectedCampaign,
-          campaignName: campaign?.name,
-          sourceUrl: videoData.source_url,
-          embedHtml: videoData.embed_html,
-          thumbnailUrl: videoData.thumbnail_url
-        })
+        body: JSON.stringify(payload)
       });
 
       const data = await res.json();
+      const durationMs = Math.round(performance.now() - startTime);
       
-      if (data.success) {
+      if (res.ok && data.success) {
         setScriptStatus({ exists: true, status: 'complete', script: data.script });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'complete' }));
+        setTokenUsage(prev => ({ ...prev, gemini: data.usage || null }));
+        setAnalysisTranscript(buildTranscript(data.script));
+        pushDebugEntry({
+          type: 'analyze',
+          status: 'success',
+          requestId,
+          durationMs,
+          httpStatus: res.status,
+          analysisType: data.analysisType,
+          cached: data.cached,
+          usage: data.usage || null
+        });
       } else {
         setScriptStatus({ status: 'failed', error: data.error });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+        pushDebugEntry({
+          type: 'analyze',
+          status: 'failed',
+          requestId,
+          durationMs,
+          httpStatus: res.status,
+          error: data.error || 'Unknown error',
+          response: data
+        });
       }
     } catch (err) {
       setScriptStatus({ status: 'failed', error: err.message });
       setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+      pushDebugEntry({
+        type: 'analyze',
+        status: 'failed',
+        requestId,
+        error: err.message,
+        stack: err.stack
+      });
     }
   };
 
@@ -277,6 +328,19 @@ export default function CreativeIntelligence({ store }) {
     setChatInput('');
     setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setChatLoading(true);
+    const requestId = `chat-${Date.now()}`;
+    const startTime = performance.now();
+    pushDebugEntry({
+      type: 'chat',
+      status: 'started',
+      requestId,
+      endpoint: `${API_BASE}/creative-intelligence/chat`,
+      method: 'POST',
+      store: storeId,
+      adId: selectedAd?.id,
+      conversationId,
+      messagePreview: userMessage.slice(0, 140)
+    });
 
     try {
       const res = await fetch(`${API_BASE}/creative-intelligence/chat`, {
@@ -290,11 +354,24 @@ export default function CreativeIntelligence({ store }) {
         })
       });
 
+      if (!res.ok) {
+        const errorText = await res.text();
+        pushDebugEntry({
+          type: 'chat',
+          status: 'failed',
+          requestId,
+          durationMs: Math.round(performance.now() - startTime),
+          httpStatus: res.status,
+          error: errorText || 'Request failed'
+        });
+      }
+
       if (settings?.streaming) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let assistantMessage = '';
+        let usage = null;
 
         setChatMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }]);
 
@@ -318,10 +395,30 @@ export default function CreativeIntelligence({ store }) {
                   });
                 } else if (data.type === 'done') {
                   setConversationId(data.conversationId);
+                  if (data.usage) {
+                    usage = data.usage;
+                    setTokenUsage(prev => ({ ...prev, sonnet: data.usage }));
+                  }
                   setChatMessages(prev => {
                     const updated = [...prev];
                     updated[updated.length - 1] = { role: 'assistant', content: assistantMessage };
                     return updated;
+                  });
+                  pushDebugEntry({
+                    type: 'chat',
+                    status: 'success',
+                    requestId,
+                    durationMs: Math.round(performance.now() - startTime),
+                    conversationId: data.conversationId,
+                    usage
+                  });
+                } else if (data.type === 'error') {
+                  pushDebugEntry({
+                    type: 'chat',
+                    status: 'failed',
+                    requestId,
+                    durationMs: Math.round(performance.now() - startTime),
+                    error: data.error
                   });
                 }
               } catch {}
@@ -334,10 +431,39 @@ export default function CreativeIntelligence({ store }) {
         if (data.success) {
           setChatMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
           setConversationId(data.conversationId);
+          if (data.usage) {
+            setTokenUsage(prev => ({ ...prev, sonnet: data.usage }));
+          }
+          pushDebugEntry({
+            type: 'chat',
+            status: 'success',
+            requestId,
+            durationMs: Math.round(performance.now() - startTime),
+            conversationId: data.conversationId,
+            usage: data.usage || null
+          });
+        } else {
+          pushDebugEntry({
+            type: 'chat',
+            status: 'failed',
+            requestId,
+            durationMs: Math.round(performance.now() - startTime),
+            httpStatus: res.status,
+            error: data.error || 'Unknown error',
+            response: data
+          });
         }
       }
     } catch (err) {
       setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+      pushDebugEntry({
+        type: 'chat',
+        status: 'failed',
+        requestId,
+        durationMs: Math.round(performance.now() - startTime),
+        error: err.message,
+        stack: err.stack
+      });
     } finally {
       setChatLoading(false);
     }
@@ -364,6 +490,39 @@ export default function CreativeIntelligence({ store }) {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
+
+  // ============================================================================
+  // DEBUG HELPERS
+  // ============================================================================
+  const pushDebugEntry = useCallback((entry) => {
+    const timestamp = new Date().toISOString();
+    setDebugEntries(prev => [
+      { id: `${timestamp}-${Math.random().toString(16).slice(2)}`, timestamp, ...entry },
+      ...prev
+    ].slice(0, 15));
+  }, []);
+
+  const buildTranscript = useCallback((script) => {
+    if (!script) return '';
+    if (script.analysisType === 'video_frames' && Array.isArray(script.frames)) {
+      const lines = script.frames
+        .map(frame => {
+          const voiceover = typeof frame?.voiceover === 'string' ? frame.voiceover.trim() : '';
+          if (!voiceover || voiceover.toLowerCase() === 'none') return null;
+          const time = frame?.time ? `[${frame.time}] ` : '';
+          return `${time}${voiceover}`;
+        })
+        .filter(Boolean);
+      return lines.join('\n');
+    }
+    return '';
+  }, []);
+
+  useEffect(() => {
+    if (scriptStatus?.status === 'complete' && scriptStatus?.script) {
+      setAnalysisTranscript(buildTranscript(scriptStatus.script));
+    }
+  }, [buildTranscript, scriptStatus]);
 
   // ============================================================================
   // DERIVED DATA
@@ -704,6 +863,71 @@ export default function CreativeIntelligence({ store }) {
               Analyze the ad first to enable chat
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Debug & Token Panel */}
+      <div className="border-t" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+        <div className="p-4 space-y-4">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: colors.textSecondary }}>
+              Debugging & Token Usage
+            </div>
+            <div className="mt-2 grid gap-2 text-xs">
+              <div className="flex flex-wrap gap-3">
+                <span className="font-medium" style={{ color: colors.text }}>Gemini tokens:</span>
+                <span style={{ color: colors.textSecondary }}>
+                  {tokenUsage.gemini
+                    ? `Prompt ${tokenUsage.gemini.promptTokenCount ?? '—'} · Output ${tokenUsage.gemini.candidatesTokenCount ?? '—'} · Total ${tokenUsage.gemini.totalTokenCount ?? '—'}`
+                    : 'No usage reported yet'}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <span className="font-medium" style={{ color: colors.text }}>Sonnet tokens:</span>
+                <span style={{ color: colors.textSecondary }}>
+                  {tokenUsage.sonnet
+                    ? `Input ${tokenUsage.sonnet.input_tokens ?? '—'} · Output ${tokenUsage.sonnet.output_tokens ?? '—'} · Total ${tokenUsage.sonnet.total_tokens ?? '—'}`
+                    : 'No usage reported yet'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: colors.textSecondary }}>
+              Gemini Transcript (Extracted)
+            </div>
+            <div className="mt-2 text-xs whitespace-pre-wrap rounded-lg border p-3" style={{ borderColor: colors.border, color: colors.textSecondary }}>
+              {analysisTranscript || 'No transcript available for this analysis.'}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: colors.textSecondary }}>
+              Connection Pathways & Fail Details
+            </div>
+            {debugEntries.length === 0 ? (
+              <div className="mt-2 text-xs" style={{ color: colors.textSecondary }}>
+                No debug events yet. Run analyze or send a chat prompt to populate this panel.
+              </div>
+            ) : (
+              <div className="mt-2 space-y-2">
+                {debugEntries.map(entry => (
+                  <div key={entry.id} className="rounded-lg border p-3 text-xs" style={{ borderColor: colors.border }}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-medium" style={{ color: colors.text }}>
+                        {entry.type === 'analyze' ? 'Analyze' : 'Chat'} · {entry.status.toUpperCase()}
+                      </div>
+                      <div style={{ color: colors.textSecondary }}>{entry.timestamp}</div>
+                    </div>
+                    <pre className="mt-2 whitespace-pre-wrap" style={{ color: colors.textSecondary }}>
+                      {JSON.stringify(entry, null, 2)}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     
