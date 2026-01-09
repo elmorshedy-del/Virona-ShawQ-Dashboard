@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 const API_BASE = '/api';
+const AD_ACCOUNT_NAME_BY_STORE = {
+  vironax: 'Virona Shop',
+  shawq: 'Shawq.Co'
+};
+
+const filterAdAccountsForStore = (accounts, storeId) => {
+  const targetName = AD_ACCOUNT_NAME_BY_STORE[storeId];
+  if (!targetName) return accounts;
+  return accounts.filter((account) => (account?.name || '') === targetName);
+};
 
 const EMPTY_VIDEO = {
   video_id: null,
@@ -50,9 +60,12 @@ export default function CreativePreview({ store }) {
       .then((data) => {
         if (!isMounted) return;
         const list = Array.isArray(data?.data) ? data.data : [];
-        setAdAccounts(list);
-        if (list.length > 0) {
-          setSelectedAccount(list[0].id);
+        const scopedList = filterAdAccountsForStore(list, store.id);
+        setAdAccounts(scopedList);
+        if (scopedList.length > 0) {
+          setSelectedAccount(scopedList[0].id);
+        } else {
+          setSelectedAccount('');
         }
       })
       .catch((err) => {
