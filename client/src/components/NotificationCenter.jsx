@@ -35,14 +35,17 @@ function NotificationRow({
     || notification?.metadata?.campaign
     || notification?.metadata?.campaign_id
     || notification?.metadata?.campaignId;
-  const showCampaignDetails = notification.type === 'order' && campaignName
-    && (notification.store === 'shawq' || (notification.store === 'vironax' && source === 'meta'));
+  const isCampaignMatch = notification.type === 'campaign_match';
+  const showCampaignDetails = campaignName && (
+    isCampaignMatch || (notification.type === 'order' && notification.store === 'vironax' && source === 'meta')
+  );
+  const rowHighlight = isCampaignMatch ? 'border-l-4 border-violet-900 bg-violet-950/5' : '';
 
   return (
     <div 
       className={`p-4 hover:bg-gray-50 transition-colors ${
         !notification.is_read ? 'bg-indigo-50/50' : ''
-      }`}
+      } ${rowHighlight}`}
     >
       <div className="flex items-start justify-between gap-3">
         {/* Store Logo */}
@@ -64,13 +67,13 @@ function NotificationRow({
           {/* Campaign source - smaller font */}
           {showCampaignDetails && (
             <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={campaignName}>
-              🎯 Campaign: {campaignName}
+              🎯 {isCampaignMatch ? 'Matched Campaign' : 'Campaign'}: {campaignName}
             </p>
           )}
           
           {/* Meta row: source badge + time */}
           <div className="flex items-center gap-2 mt-1.5">
-            {getSourceBadge(notification.source || notification.metadata?.source)}
+            {getSourceBadge(isCampaignMatch ? 'match' : (notification.source || notification.metadata?.source))}
             <span className="text-xs text-gray-500">
               {timeAgoDisplay}
             </span>
@@ -336,7 +339,8 @@ export default function NotificationCenter({ currentStore }) {
       shopify: 0,
       salla: 0,
       meta: 0,
-      manual: 0
+      manual: 0,
+      match: 0
     };
 
     notifications.forEach(notification => {
@@ -359,7 +363,8 @@ export default function NotificationCenter({ currentStore }) {
       shopify: { label: 'Shopify', color: 'bg-green-100 text-green-700' },
       salla: { label: 'Salla', color: 'bg-blue-100 text-blue-700' },
       meta: { label: 'Meta', color: 'bg-yellow-100 text-yellow-700' },
-      manual: { label: 'Manual', color: 'bg-purple-100 text-purple-700' }
+      manual: { label: 'Manual', color: 'bg-purple-100 text-purple-700' },
+      match: { label: 'Matched', color: 'bg-violet-900 text-white' }
     };
 
     const badge = badges[source] || { label: source || 'Unknown', color: 'bg-gray-100 text-gray-700' };
