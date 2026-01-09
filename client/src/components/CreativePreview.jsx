@@ -24,6 +24,7 @@ export default function CreativePreview({ store }) {
   const [error, setError] = useState('');
   const [showInactiveCampaigns, setShowInactiveCampaigns] = useState(false);
   const [showInactiveAds, setShowInactiveAds] = useState(false);
+  const [ytdlpStatus, setYtdlpStatus] = useState(null);
 
   const [activeAd, setActiveAd] = useState(null);
   const [videoData, setVideoData] = useState(null);
@@ -154,6 +155,13 @@ export default function CreativePreview({ store }) {
       videoRef.current.play().catch(() => undefined);
     }
   }, [modalOpen, videoData]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/test/yt-dlp`)
+      .then((res) => res.json())
+      .then(setYtdlpStatus)
+      .catch((err) => setYtdlpStatus({ installed: false, error: err.message }));
+  }, []);
 
   const handleAdClick = async (ad) => {
     setActiveAd(ad);
@@ -573,6 +581,17 @@ export default function CreativePreview({ store }) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {ytdlpStatus && (
+        <div className="fixed bottom-4 right-4 bg-white p-3 rounded-lg shadow-lg border text-sm z-50">
+          <div className="font-medium">yt-dlp Status</div>
+          {ytdlpStatus.installed ? (
+            <div className="text-green-600">✅ v{ytdlpStatus.version}</div>
+          ) : (
+            <div className="text-red-600">❌ {ytdlpStatus.error}</div>
+          )}
         </div>
       )}
     </div>
