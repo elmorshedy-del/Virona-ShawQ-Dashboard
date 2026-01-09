@@ -3,8 +3,6 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
 
 import { initDb, getDb } from './db/database.js';
 import analyticsRouter from './routes/analytics.js';
@@ -16,7 +14,9 @@ import whatifRouter from './routes/whatif.js';
 import aibudgetRouter from './routes/aibudget.js';
 import metaRouter from './routes/meta.js';
 import exchangeRateRoutes from './routes/exchangeRate.js';
+import creativeIntelligenceRouter from './routes/creativeIntelligence.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
+import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
 import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
 import { syncMetaData } from './services/metaService.js';
@@ -31,7 +31,6 @@ const clientPublic = path.join(__dirname, '../client/public');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '60000', 10);
-const execPromise = promisify(exec);
 
 // Initialize database
 initDb();
@@ -47,6 +46,9 @@ runAIBudgetMigration()
 
 // Run What-If migration (creates whatif_timeseries table if not exists)
 runWhatIfMigration();
+
+// Run Creative Intelligence migration
+runCreativeIntelligenceMigration();
 
 // One-time Salla cleanup (safe - won't crash if tables don't exist)
 try {
@@ -92,14 +94,7 @@ app.use('/api/whatif', whatifRouter);
 app.use('/api/aibudget', aibudgetRouter);
 app.use('/api/meta', metaRouter);
 app.use('/api/exchange-rates', exchangeRateRoutes);
-app.get('/api/test/yt-dlp', async (req, res) => {
-  try {
-    const { stdout } = await execPromise('yt-dlp --version');
-    res.json({ installed: true, version: stdout.trim() });
-  } catch (err) {
-    res.json({ installed: false, error: err.message });
-  }
-});
+app.use('/api/creative-intelligence', creativeIntelligenceRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
