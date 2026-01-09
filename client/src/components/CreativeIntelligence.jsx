@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const API_BASE = '/api';
+const AD_ACCOUNT_NAME_BY_STORE = {
+  vironax: 'Virona Shop',
+  shawq: 'Shawq.Co'
+};
+
+const filterAdAccountsForStore = (accounts, storeId) => {
+  const targetName = AD_ACCOUNT_NAME_BY_STORE[storeId];
+  if (!targetName) return accounts;
+  return accounts.filter((account) => (account?.name || '') === targetName);
+};
 
 // ============================================================================
 // DESIGN TOKENS
@@ -31,11 +41,13 @@ export default function CreativeIntelligence({ store }) {
   const [selectedAccount, setSelectedAccount] = useState('');
   const [selectedCampaign, setSelectedCampaign] = useState('');
   const [selectedAd, setSelectedAd] = useState(null);
+  const [adScriptStatuses, setAdScriptStatuses] = useState({});
   
   // Loading states
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
   const [loadingAds, setLoadingAds] = useState(false);
+  const [loadingScriptStatuses, setLoadingScriptStatuses] = useState(false);
   const [loadingVideo, setLoadingVideo] = useState(false);
   
   // UI states
@@ -73,8 +85,13 @@ export default function CreativeIntelligence({ store }) {
       .then(data => {
         if (!mounted) return;
         const list = Array.isArray(data?.data) ? data.data : [];
-        setAdAccounts(list);
-        if (list.length > 0) setSelectedAccount(list[0].id);
+        const scopedList = filterAdAccountsForStore(list, storeId);
+        setAdAccounts(scopedList);
+        if (scopedList.length > 0) {
+          setSelectedAccount(scopedList[0].id);
+        } else {
+          setSelectedAccount('');
+        }
       })
       .catch(err => mounted && setError(err.message))
       .finally(() => mounted && setLoadingAccounts(false));
@@ -118,6 +135,7 @@ export default function CreativeIntelligence({ store }) {
   useEffect(() => {
     if (!selectedCampaign) {
       setAds([]);
+      setAdScriptStatuses({});
       return;
     }
 
@@ -135,6 +153,50 @@ export default function CreativeIntelligence({ store }) {
 
     return () => { mounted = false; };
   }, [selectedCampaign, selectedAccount, storeId]);
+
+  // ========================================================================
+  // FETCH SCRIPT STATUSES
+  // ========================================================================
+  useEffect(() => {
+    if (!storeId) return;
+    if (ads.length === 0) {
+      setAdScriptStatuses({});
+      return;
+    }
+
+    let mounted = true;
+    setLoadingScriptStatuses(true);
+
+    const loadStatuses = async () => {
+      try {
+        const entries = await Promise.all(
+          ads.map(async (ad) => {
+            try {
+              const res = await fetch(
+                `${API_BASE}/creative-intelligence/script/${ad.id}?store=${storeId}`
+              );
+              const data = await res.json();
+              if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+              return [ad.id, data];
+            } catch (err) {
+              return [ad.id, { exists: false, status: null, error: err?.message }];
+            }
+          })
+        );
+        if (mounted) {
+          setAdScriptStatuses(Object.fromEntries(entries));
+        }
+      } finally {
+        if (mounted) setLoadingScriptStatuses(false);
+      }
+    };
+
+    loadStatuses();
+
+    return () => {
+      mounted = false;
+    };
+  }, [ads, storeId]);
 
   // ============================================================================
   // FETCH SETTINGS
@@ -173,6 +235,7 @@ export default function CreativeIntelligence({ store }) {
       );
       const script = await scriptRes.json();
       setScriptStatus(script);
+      setAdScriptStatuses((prev) => ({ ...prev, [ad.id]: script }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -209,12 +272,27 @@ export default function CreativeIntelligence({ store }) {
       const data = await res.json();
       
       if (data.success) {
-        setScriptStatus({ exists: true, status: 'complete', script: data.script });
+        const nextStatus = { exists: true, status: 'complete', script: data.script };
+        setScriptStatus(nextStatus);
+        setAdScriptStatuses((prev) => ({
+          ...prev,
+          [selectedAd.id]: nextStatus
+        }));
       } else {
-        setScriptStatus({ status: 'failed', error: data.error });
+        const nextStatus = { status: 'failed', error: data.error };
+        setScriptStatus(nextStatus);
+        setAdScriptStatuses((prev) => ({
+          ...prev,
+          [selectedAd.id]: nextStatus
+        }));
       }
     } catch (err) {
-      setScriptStatus({ status: 'failed', error: err.message });
+      const nextStatus = { status: 'failed', error: err.message };
+      setScriptStatus(nextStatus);
+      setAdScriptStatuses((prev) => ({
+        ...prev,
+        [selectedAd.id]: nextStatus
+      }));
     }
   };
 
@@ -338,14 +416,25 @@ export default function CreativeIntelligence({ store }) {
       name: ad.name || 'Untitled',
       status: (ad.effective_status || ad.status || 'UNKNOWN').toUpperCase(),
       isActive: (ad.effective_status || ad.status || '').toUpperCase() === 'ACTIVE',
-      thumbnail: ad.thumbnail_url
+      thumbnail: ad.thumbnail_url,
+      scriptStatus: adScriptStatuses?.[ad.id]?.status || null
     }));
-  }, [ads]);
+  }, [ads, adScriptStatuses]);
+
+  const analyzedAds = useMemo(
+    () => adRows.filter((ad) => ad.scriptStatus === 'complete'),
+    [adRows]
+  );
+  const pendingAds = useMemo(
+    () => adRows.filter((ad) => ad.scriptStatus !== 'complete'),
+    [adRows]
+  );
 
   const filteredAds = useMemo(() => {
-    // For now, show all - filtering by analyzed status would need script status fetch
+    if (activeTab === 'analyzed') return analyzedAds;
+    if (activeTab === 'pending') return pendingAds;
     return adRows;
-  }, [adRows, activeTab]);
+  }, [activeTab, adRows, analyzedAds, pendingAds]);
 
   const hasVideo = !!videoData?.source_url;
   const hasThumbnail = !hasVideo && !!(videoData?.thumbnail_url || selectedAd?.thumbnail);
@@ -472,7 +561,7 @@ export default function CreativeIntelligence({ store }) {
 
           {/* Ad List */}
           <div className="p-4 space-y-2">
-            {loadingAds ? (
+            {loadingAds || (activeTab !== 'all' && loadingScriptStatuses) ? (
               <div className="text-sm" style={{ color: colors.textSecondary }}>Loading ads...</div>
             ) : filteredAds.length === 0 ? (
               <div className="text-sm" style={{ color: colors.textSecondary }}>No ads found</div>
