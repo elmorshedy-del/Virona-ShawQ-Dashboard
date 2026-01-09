@@ -44,6 +44,7 @@ export default function CreativeIntelligence({ store }) {
   const [activeTab, setActiveTab] = useState('all'); // all, analyzed, pending
   const [videoData, setVideoData] = useState(null);
   const [scriptStatus, setScriptStatus] = useState(null);
+  const [adScriptStatuses, setAdScriptStatuses] = useState({});
   
   // Chat states
   const [chatMessages, setChatMessages] = useState([]);
@@ -136,6 +137,44 @@ export default function CreativeIntelligence({ store }) {
     return () => { mounted = false; };
   }, [selectedCampaign, selectedAccount, storeId]);
 
+  // ============================================================================  
+  // FETCH SCRIPT STATUS FOR ADS
+  // ============================================================================
+  useEffect(() => {
+    if (!ads.length) {
+      setAdScriptStatuses({});
+      return undefined;
+    }
+
+    let mounted = true;
+
+    const fetchStatuses = async () => {
+      try {
+        const results = await Promise.all(
+          ads.map(async (ad) => {
+            const res = await fetch(`${API_BASE}/creative-intelligence/script/${ad.id}?store=${storeId}`);
+            const data = await res.json();
+            return [ad.id, data];
+          })
+        );
+
+        if (mounted) {
+          setAdScriptStatuses(Object.fromEntries(results));
+        }
+      } catch (err) {
+        if (mounted) {
+          console.error('Failed to load script statuses:', err);
+        }
+      }
+    };
+
+    fetchStatuses();
+
+    return () => {
+      mounted = false;
+    };
+  }, [ads, storeId]);
+
   // ============================================================================
   // FETCH SETTINGS
   // ============================================================================
@@ -173,6 +212,10 @@ export default function CreativeIntelligence({ store }) {
       );
       const script = await scriptRes.json();
       setScriptStatus(script);
+      setAdScriptStatuses(prev => ({
+        ...prev,
+        [ad.id]: script
+      }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -210,6 +253,10 @@ export default function CreativeIntelligence({ store }) {
       
       if (data.success) {
         setScriptStatus({ exists: true, status: 'complete', script: data.script });
+        setAdScriptStatuses(prev => ({
+          ...prev,
+          [selectedAd.id]: { exists: true, status: 'complete', script: data.script }
+        }));
       } else {
         setScriptStatus({ status: 'failed', error: data.error });
       }
@@ -338,12 +385,20 @@ export default function CreativeIntelligence({ store }) {
       name: ad.name || 'Untitled',
       status: (ad.effective_status || ad.status || 'UNKNOWN').toUpperCase(),
       isActive: (ad.effective_status || ad.status || '').toUpperCase() === 'ACTIVE',
-      thumbnail: ad.thumbnail_url
+      thumbnail: ad.thumbnail_url,
+      scriptStatus: adScriptStatuses[ad.id]?.status
     }));
-  }, [ads]);
+  }, [ads, adScriptStatuses]);
 
   const filteredAds = useMemo(() => {
-    // For now, show all - filtering by analyzed status would need script status fetch
+    if (activeTab === 'analyzed') {
+      return adRows.filter(ad => ad.scriptStatus === 'complete');
+    }
+
+    if (activeTab === 'pending') {
+      return adRows.filter(ad => ad.scriptStatus !== 'complete');
+    }
+
     return adRows;
   }, [adRows, activeTab]);
 
