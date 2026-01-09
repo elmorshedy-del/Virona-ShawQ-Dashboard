@@ -121,6 +121,7 @@ router.post('/analyze-video', async (req, res) => {
   const { GoogleAIFileManager } = await import('@google/generative-ai/server');
   
   let tempFilePath = null;
+  let usage = null;
   
   try {
     const { store, adId, adName, campaignId, campaignName, sourceUrl, embedHtml, thumbnailUrl } = req.body;
@@ -140,7 +141,8 @@ router.post('/analyze-video', async (req, res) => {
       return res.json({ 
         success: true, 
         script: JSON.parse(existing.script),
-        cached: true 
+        cached: true,
+        usage: null
       });
     }
 
@@ -266,6 +268,7 @@ Return ONLY valid JSON array, no markdown:
           ]);
 
           const responseText = result.response.text();
+          usage = result.response.usageMetadata || null;
           
           // Parse JSON
           try {
@@ -333,6 +336,7 @@ Return as JSON object with these sections. No markdown.`
       ]);
 
       const responseText = result.response.text();
+      usage = result.response.usageMetadata || usage;
       
       try {
         const cleanJson = responseText.replace(/```json\n?|\n?```/g, '').trim();
@@ -365,7 +369,7 @@ Return as JSON object with these sections. No markdown.`
       WHERE store = ? AND ad_id = ?
     `).run(JSON.stringify(scriptData), videoUrl, thumbnailUrl, store, adId);
 
-    res.json({ success: true, script: scriptData, cached: false, analysisType });
+    res.json({ success: true, script: scriptData, cached: false, analysisType, usage });
 
   } catch (error) {
     console.error('[Gemini] Analysis error:', error);
@@ -386,7 +390,7 @@ Return as JSON object with these sections. No markdown.`
       `).run(error.message, store, adId);
     }
 
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, usage });
   }
 });
 
@@ -557,6 +561,7 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.flushHeaders();
 
       let fullResponse = '';
+      let usage = null;
 
       const stream = anthropic.messages.stream({
         model: modelId,
@@ -570,6 +575,10 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
         res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
       });
 
+      stream.on('finalMessage', (message) => {
+        usage = message?.usage || null;
+      });
+
       stream.on('end', () => {
         // Save assistant message
         db.prepare(`
@@ -581,7 +590,10 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
           UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
         `).run(convId);
 
-        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId })}\n\n`);
+        const usagePayload = usage
+          ? { ...usage, total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0) }
+          : null;
+        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, usage: usagePayload })}\n\n`);
         res.end();
       });
 
@@ -600,6 +612,9 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       });
 
       const assistantMessage = response.content[0].text;
+      const usage = response.usage
+        ? { ...response.usage, total_tokens: (response.usage.input_tokens || 0) + (response.usage.output_tokens || 0) }
+        : null;
 
       // Save assistant message
       db.prepare(`
@@ -614,7 +629,8 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.json({
         success: true,
         message: assistantMessage,
-        conversationId: convId
+        conversationId: convId,
+        usage
       });
     }
 
