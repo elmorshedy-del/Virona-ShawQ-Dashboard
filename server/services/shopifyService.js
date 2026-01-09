@@ -58,6 +58,8 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
               ? formatDateAsGmt3(createdAtDate)
               : (createdAtIso?.split('T')[0] || null);
 
+          const utmParams = extractUtmParams(order);
+
           orders.push({
             order_id: order.id.toString(),
             date: dateGmt3,
@@ -77,7 +79,12 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             payment_method: order.payment_gateway_names?.[0] || 'unknown',
             currency: order.currency || 'USD',
             order_created_at: createdAtUtc,
-            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
+            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null,
+            utm_campaign: utmParams.utm_campaign || null,
+            utm_source: utmParams.utm_source || null,
+            utm_medium: utmParams.utm_medium || null,
+            utm_content: utmParams.utm_content || null,
+            utm_term: utmParams.utm_term || null
           });
         }
       }
@@ -236,6 +243,50 @@ function getCountryName(code) {
   };
 
   return countries[code] || code;
+}
+
+function extractUtmParams(order) {
+  const attributes = Array.isArray(order.note_attributes) ? order.note_attributes : [];
+  const attributeMap = attributes.reduce((acc, item) => {
+    if (item?.name && typeof item.value === 'string') {
+      acc[item.name.toLowerCase()] = item.value;
+    }
+    return acc;
+  }, {});
+
+  const fromAttributes = {
+    utm_campaign: attributeMap.utm_campaign || null,
+    utm_source: attributeMap.utm_source || null,
+    utm_medium: attributeMap.utm_medium || null,
+    utm_content: attributeMap.utm_content || null,
+    utm_term: attributeMap.utm_term || null
+  };
+
+  const landingSite =
+    (typeof order.landing_site === 'string' && order.landing_site) ||
+    (typeof order.landing_site_ref === 'string' && order.landing_site_ref) ||
+    (typeof order.referring_site === 'string' && order.referring_site) ||
+    null;
+
+  if (!landingSite) {
+    return fromAttributes;
+  }
+
+  let url;
+  try {
+    url = new URL(landingSite, 'https://shopify.local');
+  } catch (error) {
+    return fromAttributes;
+  }
+
+  const params = url.searchParams;
+  return {
+    utm_campaign: params.get('utm_campaign') || fromAttributes.utm_campaign,
+    utm_source: params.get('utm_source') || fromAttributes.utm_source,
+    utm_medium: params.get('utm_medium') || fromAttributes.utm_medium,
+    utm_content: params.get('utm_content') || fromAttributes.utm_content,
+    utm_term: params.get('utm_term') || fromAttributes.utm_term
+  };
 }
 
 // Demo data removed - only real Shopify API data is used
