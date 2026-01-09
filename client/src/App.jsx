@@ -17,6 +17,7 @@ import AIBudget from './components/AIBudget';
 import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysis from './components/CreativeAnalysis.jsx';
+import CreativeIntelligence from './components/CreativeIntelligence';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
 
@@ -1325,7 +1326,10 @@ export default function App() {
         )}
 
         {activeTab === 4 && (
-          <CreativeAnalysis store={store} />
+          <>
+            <CreativeAnalysis store={store} />
+            <CreativeIntelligence store={currentStore} />
+          </>
         )}
 
         {activeTab === 5 && (

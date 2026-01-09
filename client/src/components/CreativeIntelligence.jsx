@@ -22,7 +22,8 @@ const colors = {
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
-export default function CreativePreview({ store }) {
+export default function CreativeIntelligence({ store }) {
+  const storeId = typeof store === 'string' ? store : store?.id;
   // Data states
   const [adAccounts, setAdAccounts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -62,10 +63,12 @@ export default function CreativePreview({ store }) {
   // FETCH AD ACCOUNTS
   // ============================================================================
   useEffect(() => {
+    if (!storeId) return undefined;
+
     let mounted = true;
     setLoadingAccounts(true);
     
-    fetch(`${API_BASE}/meta/adaccounts?store=${store.id}`)
+    fetch(`${API_BASE}/meta/adaccounts?store=${storeId}`)
       .then(res => res.json())
       .then(data => {
         if (!mounted) return;
@@ -77,7 +80,7 @@ export default function CreativePreview({ store }) {
       .finally(() => mounted && setLoadingAccounts(false));
 
     return () => { mounted = false; };
-  }, [store.id]);
+  }, [storeId]);
 
   // ============================================================================
   // FETCH CAMPAIGNS
@@ -92,7 +95,7 @@ export default function CreativePreview({ store }) {
     let mounted = true;
     setLoadingCampaigns(true);
     
-    fetch(`${API_BASE}/meta/campaigns?store=${store.id}&adAccountId=${selectedAccount}`)
+    fetch(`${API_BASE}/meta/campaigns?store=${storeId}&adAccountId=${selectedAccount}`)
       .then(res => res.json())
       .then(data => {
         if (!mounted) return;
@@ -107,7 +110,7 @@ export default function CreativePreview({ store }) {
       .finally(() => mounted && setLoadingCampaigns(false));
 
     return () => { mounted = false; };
-  }, [selectedAccount, store.id]);
+  }, [selectedAccount, storeId]);
 
   // ============================================================================
   // FETCH ADS
@@ -121,7 +124,7 @@ export default function CreativePreview({ store }) {
     let mounted = true;
     setLoadingAds(true);
     
-    fetch(`${API_BASE}/meta/campaigns/${selectedCampaign}/ads?store=${store.id}&adAccountId=${selectedAccount}`)
+    fetch(`${API_BASE}/meta/campaigns/${selectedCampaign}/ads?store=${storeId}&adAccountId=${selectedAccount}`)
       .then(res => res.json())
       .then(data => {
         if (!mounted) return;
@@ -131,17 +134,19 @@ export default function CreativePreview({ store }) {
       .finally(() => mounted && setLoadingAds(false));
 
     return () => { mounted = false; };
-  }, [selectedCampaign, selectedAccount, store.id]);
+  }, [selectedCampaign, selectedAccount, storeId]);
 
   // ============================================================================
   // FETCH SETTINGS
   // ============================================================================
   useEffect(() => {
-    fetch(`${API_BASE}/creative-intelligence/settings?store=${store.id}`)
+    if (!storeId) return;
+
+    fetch(`${API_BASE}/creative-intelligence/settings?store=${storeId}`)
       .then(res => res.json())
       .then(data => data.success && setSettings(data.settings))
       .catch(console.error);
-  }, [store.id]);
+  }, [storeId]);
 
   // ============================================================================
   // HANDLE AD SELECTION
@@ -157,14 +162,14 @@ export default function CreativePreview({ store }) {
     try {
       // Fetch video data
       const videoRes = await fetch(
-        `${API_BASE}/meta/ads/${ad.id}/video?store=${store.id}&adAccountId=${selectedAccount}`
+        `${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`
       );
       const video = await videoRes.json();
       setVideoData(video);
 
       // Check script status
       const scriptRes = await fetch(
-        `${API_BASE}/creative-intelligence/script/${ad.id}?store=${store.id}`
+        `${API_BASE}/creative-intelligence/script/${ad.id}?store=${storeId}`
       );
       const script = await scriptRes.json();
       setScriptStatus(script);
@@ -190,7 +195,7 @@ export default function CreativePreview({ store }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          store: store.id,
+          store: storeId,
           adId: selectedAd.id,
           adName: selectedAd.name,
           campaignId: selectedCampaign,
@@ -230,7 +235,7 @@ export default function CreativePreview({ store }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          store: store.id,
+          store: storeId,
           message: userMessage,
           adId: selectedAd?.id,
           conversationId
@@ -298,7 +303,7 @@ export default function CreativePreview({ store }) {
       await fetch(`${API_BASE}/creative-intelligence/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store: store.id, ...newSettings })
+        body: JSON.stringify({ store: storeId, ...newSettings })
       });
       setSettings(newSettings);
       setShowSettings(false);
