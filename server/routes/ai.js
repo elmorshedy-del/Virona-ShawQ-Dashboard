@@ -6,6 +6,7 @@ import {
   decideQuestionStream,
   analyzeQuestionStream,
   summarizeDataStream,
+  streamAnalyticsWithTools,
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
@@ -161,6 +162,54 @@ function getConversationHistory(conversationId, limit = 10) {
   } catch (e) {
     return [];
   }
+}
+
+const METRIC_KEYS = [
+  'spend',
+  'impressions',
+  'reach',
+  'clicks',
+  'inline_link_clicks',
+  'landing_page_views',
+  'add_to_cart',
+  'checkouts_initiated',
+  'conversions',
+  'conversion_value',
+  'outbound_clicks',
+  'unique_outbound_clicks',
+  'outbound_clicks_ctr',
+  'unique_outbound_clicks_ctr',
+  'cpm',
+  'cpc',
+  'ctr',
+  'frequency'
+];
+
+const DIMENSION_KEYS = [
+  'date',
+  'campaign_id',
+  'campaign_name',
+  'country',
+  'age',
+  'gender',
+  'publisher_platform',
+  'platform_position'
+];
+
+function getAvailableDataShape(store) {
+  const db = getDb();
+  const normalizedStore = (store || 'vironax').toLowerCase();
+  const dateCount = db
+    .prepare('SELECT COUNT(DISTINCT date) as count FROM meta_daily_metrics WHERE LOWER(store) = ?')
+    .get(normalizedStore);
+  const timeSeriesAvailable = (dateCount?.count || 0) > 1;
+  return {
+    timeSeriesAvailable,
+    timeKey: timeSeriesAvailable ? 'date' : null,
+    metricKeys: METRIC_KEYS,
+    dimensionKeys: DIMENSION_KEYS,
+    currency: normalizedStore === 'vironax' ? 'SAR' : 'USD'
+  };
 }
 
 // ============================================================================
@@ -371,6 +420,70 @@ router.post('/stream', async (req, res) => {
     res.end();
   } catch (error) {
     console.error(`[API] Stream error:`, error.message);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+// ============================================================================
+// ANALYTICS STREAM - Tooling + SSE for Visualization Dock
+// ============================================================================
+router.post('/analytics/stream', async (req, res) => {
+  try {
+    const { question, store, depth, mode, startDate, endDate } = req.body;
+
+    if (!question) {
+      return res.status(400).json({ success: false, error: 'Question required' });
+    }
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    // Set up SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    console.log(`\n========================================`);
+    console.log(`[API] POST /ai/analytics/stream`);
+    console.log(`[API] Mode: ${mode || 'decide'}`);
+    console.log(`[API] Question: "${(question || '').substring(0, 100)}..."`);
+    console.log(`[API] Store: ${store}`);
+    console.log(`[API] Depth: ${depth || 'balanced'}`);
+    console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
+    console.log(`========================================`);
+
+    const onDelta = (delta) => {
+      res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
+    };
+
+    const onToolCall = ({ name, payload }) => {
+      res.write(`data: ${JSON.stringify({ type: 'tool', name, payload })}\n\n`);
+    };
+
+    const result = await streamAnalyticsWithTools({
+      question,
+      store,
+      mode: mode || 'decide',
+      depth: depth || 'balanced',
+      startDate,
+      endDate,
+      onDelta,
+      onToolCall,
+      getAvailableDataShape: async () => getAvailableDataShape(store)
+    });
+
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      model: result.model,
+      reasoning: result.reasoning
+    })}\n\n`);
+
+    res.end();
+  } catch (error) {
+    console.error(`[API] Analytics stream error:`, error.message);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
   }

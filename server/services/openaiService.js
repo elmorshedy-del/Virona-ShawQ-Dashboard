@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { z } from 'zod';
 import { getDb } from '../db/database.js';
 
 // Import Meta Awareness feature module for reactivation data
@@ -42,6 +43,196 @@ const DEPTH_TO_EFFORT = {
   fast: 'low',
   balanced: 'medium',
   deep: 'high'
+};
+
+const visualizationSeriesSchema = z.object({
+  key: z.string(),
+  label: z.string().optional(),
+  kind: z.enum(['raw', 'ma']),
+  derivedFrom: z.string().optional(),
+  window: z.union([z.literal(7), z.literal(14), z.literal(30)]).optional()
+});
+
+const visualizationDockBaseSchema = z.object({
+  title: z.string(),
+  mode: z.enum(['auto', 'manual']),
+  autoReason: z.string().optional(),
+  chartType: z.enum(['line', 'bar', 'totals', 'blocked']),
+  xKey: z.string().optional(),
+  yFormat: z.enum(['number', 'currency', 'percent']).optional(),
+  series: z.array(visualizationSeriesSchema).optional(),
+  data: z.array(z.record(z.any())).optional(),
+  totals: z.record(z.union([z.number(), z.string()])).optional(),
+  controls: z
+    .object({
+      allowMetric: z.boolean(),
+      allowRange: z.boolean(),
+      allowGroupBy: z.boolean(),
+      allowMA: z.boolean()
+    })
+    .optional(),
+  ui: z
+    .object({
+      rangePreset: z.enum(['7d', '14d', '30d', 'custom']).optional(),
+      groupBy: z.enum(['day', 'week', 'month']).optional(),
+      metric: z.string().optional()
+    })
+    .optional()
+});
+
+const visualizationDockSetSchema = visualizationDockBaseSchema
+  .extend({ id: z.literal('primary') })
+  .strict();
+
+const visualizationDockUpdateSchema = visualizationDockSetSchema
+  .partial()
+  .extend({ id: z.literal('primary') })
+  .strict();
+
+const visualizationDockClearSchema = z.object({ id: z.literal('primary') }).strict();
+
+const isVisualizationSeriesValid = (payload) => {
+  const data = payload.data || [];
+  const series = payload.series || [];
+  if (!Array.isArray(data) || data.length === 0) return true;
+  const sample = data[0] || {};
+  return series
+    .filter((item) => item.kind === 'raw')
+    .every((item) => Object.prototype.hasOwnProperty.call(sample, item.key));
+};
+
+const visualizationToolParameters = {
+  getAvailableDataShape: {
+    type: 'object',
+    properties: {},
+    additionalProperties: false
+  },
+  setVisualizationDock: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'title', 'mode', 'chartType'],
+    properties: {
+      id: { type: 'string', enum: ['primary'] },
+      title: { type: 'string' },
+      mode: { type: 'string', enum: ['auto', 'manual'] },
+      autoReason: { type: 'string' },
+      chartType: { type: 'string', enum: ['line', 'bar', 'totals', 'blocked'] },
+      xKey: { type: 'string' },
+      yFormat: { type: 'string', enum: ['number', 'currency', 'percent'] },
+      series: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['key', 'kind'],
+          properties: {
+            key: { type: 'string' },
+            label: { type: 'string' },
+            kind: { type: 'string', enum: ['raw', 'ma'] },
+            derivedFrom: { type: 'string' },
+            window: { type: 'number', enum: [7, 14, 30] }
+          }
+        }
+      },
+      data: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: true
+        }
+      },
+      totals: {
+        type: 'object',
+        additionalProperties: { type: ['number', 'string'] }
+      },
+      controls: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          allowMetric: { type: 'boolean' },
+          allowRange: { type: 'boolean' },
+          allowGroupBy: { type: 'boolean' },
+          allowMA: { type: 'boolean' }
+        }
+      },
+      ui: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          rangePreset: { type: 'string', enum: ['7d', '14d', '30d', 'custom'] },
+          groupBy: { type: 'string', enum: ['day', 'week', 'month'] },
+          metric: { type: 'string' }
+        }
+      }
+    }
+  },
+  updateVisualizationDock: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id'],
+    properties: {
+      id: { type: 'string', enum: ['primary'] },
+      title: { type: 'string' },
+      mode: { type: 'string', enum: ['auto', 'manual'] },
+      autoReason: { type: 'string' },
+      chartType: { type: 'string', enum: ['line', 'bar', 'totals', 'blocked'] },
+      xKey: { type: 'string' },
+      yFormat: { type: 'string', enum: ['number', 'currency', 'percent'] },
+      series: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['key', 'kind'],
+          properties: {
+            key: { type: 'string' },
+            label: { type: 'string' },
+            kind: { type: 'string', enum: ['raw', 'ma'] },
+            derivedFrom: { type: 'string' },
+            window: { type: 'number', enum: [7, 14, 30] }
+          }
+        }
+      },
+      data: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: true
+        }
+      },
+      totals: {
+        type: 'object',
+        additionalProperties: { type: ['number', 'string'] }
+      },
+      controls: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          allowMetric: { type: 'boolean' },
+          allowRange: { type: 'boolean' },
+          allowGroupBy: { type: 'boolean' },
+          allowMA: { type: 'boolean' }
+        }
+      },
+      ui: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          rangePreset: { type: 'string', enum: ['7d', '14d', '30d', 'custom'] },
+          groupBy: { type: 'string', enum: ['day', 'week', 'month'] },
+          metric: { type: 'string' }
+        }
+      }
+    }
+  },
+  clearVisualizationDock: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id'],
+    properties: {
+      id: { type: 'string', enum: ['primary'] }
+    }
+  }
 };
 
 // ============================================================================
@@ -1119,6 +1310,25 @@ MODE: DEEP DIVE (Strategic Analysis)
 ${getDeepDiveFormat(question)}`;
 }
 
+function buildAnalyticsToolPrompt(store, mode, data, question = '') {
+  const basePrompt = buildSystemPrompt(store, mode, data, question);
+
+  return `${basePrompt}
+
+VISUALIZATION DOCK TOOLING:
+- Always call getAvailableDataShape FIRST before selecting or suggesting a chart.
+- If a visualization is useful, call setVisualizationDock EARLY, then continue explaining in text.
+- Subsequent changes should use updateVisualizationDock (id: "primary").
+- If the user requests a trend but timeSeriesAvailable is false, call setVisualizationDock with chartType "blocked" (and totals if available), then explain.
+- Do NOT invent time-series data or fields; use only keys returned in getAvailableDataShape.
+- series.key must exist in the data rows (except kind="ma", which is derived from derivedFrom).
+
+TOOL RULES:
+- Use setVisualizationDock to establish the dock.
+- Use updateVisualizationDock to refine or change fields without resetting the dock.
+- Use clearVisualizationDock to remove the dock when no visualization is needed.`;
+}
+
 // ============================================================================
 // API CALLS - GPT-5 Responses API + GPT-4 fallback
 // ============================================================================
@@ -1218,6 +1428,223 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
 
     return { model: fallback, reasoning: null };
   }
+}
+
+export async function streamAnalyticsWithTools({
+  question,
+  store,
+  mode = 'decide',
+  depth = 'balanced',
+  startDate = null,
+  endDate = null,
+  onDelta = () => {},
+  onToolCall = () => {},
+  getAvailableDataShape = async () => ({})
+}) {
+  const data = getRelevantData(store, question, startDate, endDate);
+  const normalizedMode = mode === 'summarize' || mode === 'analyze' ? mode : 'decide';
+  const systemPrompt = buildAnalyticsToolPrompt(store, normalizedMode, data, question);
+
+  const model = normalizedMode === 'analyze' ? MODELS.ASK : normalizedMode === 'summarize' ? MODELS.MINI : MODELS.STRATEGIST;
+  const temperature = MODE_TEMPERATURES[normalizedMode] ?? 0.5;
+  const maxTokens = normalizedMode === 'decide'
+    ? TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced
+    : normalizedMode === 'summarize'
+    ? TOKEN_LIMITS.mini
+    : TOKEN_LIMITS.nano;
+  const reasoningEffort = normalizedMode === 'decide' ? DEPTH_TO_EFFORT[depth] || 'medium' : null;
+
+  const tools = [
+    {
+      type: 'function',
+      name: 'getAvailableDataShape',
+      description: 'Return available analytics data shape including time-series availability and keys.',
+      parameters: visualizationToolParameters.getAvailableDataShape
+    },
+    {
+      type: 'function',
+      name: 'setVisualizationDock',
+      description: 'Set the primary visualization dock in the UI.',
+      parameters: visualizationToolParameters.setVisualizationDock
+    },
+    {
+      type: 'function',
+      name: 'updateVisualizationDock',
+      description: 'Update the existing visualization dock with partial fields.',
+      parameters: visualizationToolParameters.updateVisualizationDock
+    },
+    {
+      type: 'function',
+      name: 'clearVisualizationDock',
+      description: 'Clear the visualization dock.',
+      parameters: visualizationToolParameters.clearVisualizationDock
+    }
+  ];
+
+  let input = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: question }
+  ];
+  let previousResponseId = null;
+  let safetyCounter = 0;
+
+  while (safetyCounter < 6) {
+    const requestBody = {
+      model,
+      input,
+      tools,
+      tool_choice: 'auto',
+      max_output_tokens: maxTokens,
+      temperature,
+      stream: true
+    };
+
+    if (reasoningEffort && model.includes('5.1')) {
+      requestBody.reasoning = { effort: reasoningEffort };
+    }
+
+    if (previousResponseId) {
+      requestBody.previous_response_id = previousResponseId;
+    }
+
+    const stream = await client.responses.create(requestBody);
+    const toolCalls = [];
+    const toolCallArgs = new Map();
+    const completedToolIds = new Set();
+
+    for await (const event of stream) {
+      if (event.type === 'response.output_text.delta') {
+        onDelta(event.delta);
+      }
+
+      if (event.type === 'response.function_call_arguments.delta') {
+        const callId = event.call_id || event.tool_call_id || event.id;
+        if (!callId) continue;
+        const existing = toolCallArgs.get(callId) || { name: event.name || event.tool_name, arguments: '' };
+        existing.name = event.name || event.tool_name || existing.name;
+        existing.arguments += event.delta || '';
+        toolCallArgs.set(callId, existing);
+      }
+
+      if (event.type === 'response.function_call_arguments.done') {
+        const callId = event.call_id || event.tool_call_id || event.id;
+        if (!callId) continue;
+        const existing = toolCallArgs.get(callId);
+        if (!completedToolIds.has(callId)) {
+          toolCalls.push({
+            id: callId,
+            name: event.name || event.tool_name || existing?.name,
+            arguments: event.arguments || existing?.arguments || ''
+          });
+          completedToolIds.add(callId);
+        }
+      }
+
+      if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
+        const callId = event.item.id || event.item.call_id;
+        if (!callId || completedToolIds.has(callId)) continue;
+        toolCalls.push({
+          id: callId,
+          name: event.item.name,
+          arguments: event.item.arguments || ''
+        });
+        completedToolIds.add(callId);
+      }
+
+      if (event.type === 'response.completed' || event.type === 'response.done') {
+        previousResponseId = event.response?.id || event.response_id || previousResponseId;
+      }
+    }
+
+    if (toolCalls.length === 0) break;
+
+    const toolOutputs = [];
+
+    for (const toolCall of toolCalls) {
+      const name = toolCall.name;
+      let parsedArgs = {};
+      if (toolCall.arguments) {
+        try {
+          parsedArgs = JSON.parse(toolCall.arguments);
+        } catch (error) {
+          parsedArgs = {};
+        }
+      }
+
+      if (name === 'getAvailableDataShape') {
+        const shape = await getAvailableDataShape();
+        toolOutputs.push({
+          type: 'tool_output',
+          tool_call_id: toolCall.id,
+          output: JSON.stringify(shape)
+        });
+        continue;
+      }
+
+      if (name === 'setVisualizationDock') {
+        const validation = visualizationDockSetSchema.safeParse(parsedArgs);
+        if (validation.success && isVisualizationSeriesValid(validation.data)) {
+          onToolCall({ name, payload: validation.data });
+          toolOutputs.push({
+            type: 'tool_output',
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({ success: true })
+          });
+        } else {
+          toolOutputs.push({
+            type: 'tool_output',
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({ success: false, error: 'Invalid setVisualizationDock payload' })
+          });
+        }
+        continue;
+      }
+
+      if (name === 'updateVisualizationDock') {
+        const validation = visualizationDockUpdateSchema.safeParse(parsedArgs);
+        if (validation.success && isVisualizationSeriesValid(validation.data)) {
+          onToolCall({ name, payload: validation.data });
+          toolOutputs.push({
+            type: 'tool_output',
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({ success: true })
+          });
+        } else {
+          toolOutputs.push({
+            type: 'tool_output',
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({ success: false, error: 'Invalid updateVisualizationDock payload' })
+          });
+        }
+        continue;
+      }
+
+      if (name === 'clearVisualizationDock') {
+        const validation = visualizationDockClearSchema.safeParse(parsedArgs);
+        if (validation.success) {
+          onToolCall({ name, payload: validation.data });
+          toolOutputs.push({
+            type: 'tool_output',
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({ success: true })
+          });
+        } else {
+          toolOutputs.push({
+            type: 'tool_output',
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({ success: false, error: 'Invalid clearVisualizationDock payload' })
+          });
+        }
+        continue;
+      }
+    }
+
+    if (toolOutputs.length === 0) break;
+    input = toolOutputs;
+    safetyCounter += 1;
+  }
+
+  return { model, reasoning: reasoningEffort };
 }
 
 // ============================================================================

@@ -10,6 +10,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { z } from 'zod';
+import VisualizationDock, { buildCsv } from './VisualizationDock';
 
 // Import Meta Awareness feature module
 import {
@@ -18,6 +20,64 @@ import {
   REACTIVATION_PROMPTS,
   useReactivationCandidates
 } from '../features/meta-awareness';
+
+const seriesSchema = z.object({
+  key: z.string(),
+  label: z.string().optional(),
+  kind: z.enum(['raw', 'ma']),
+  derivedFrom: z.string().optional(),
+  window: z.union([z.literal(7), z.literal(14), z.literal(30)]).optional()
+});
+
+const visualizationDockBaseSchema = z.object({
+  title: z.string(),
+  mode: z.enum(['auto', 'manual']),
+  autoReason: z.string().optional(),
+  chartType: z.enum(['line', 'bar', 'totals', 'blocked']),
+  xKey: z.string().optional(),
+  yFormat: z.enum(['number', 'currency', 'percent']).optional(),
+  series: z.array(seriesSchema).optional(),
+  data: z.array(z.record(z.any())).optional(),
+  totals: z.record(z.union([z.number(), z.string()])).optional(),
+  controls: z
+    .object({
+      allowMetric: z.boolean(),
+      allowRange: z.boolean(),
+      allowGroupBy: z.boolean(),
+      allowMA: z.boolean()
+    })
+    .optional(),
+  ui: z
+    .object({
+      rangePreset: z.enum(['7d', '14d', '30d', 'custom']).optional(),
+      groupBy: z.enum(['day', 'week', 'month']).optional(),
+      metric: z.string().optional()
+    })
+    .optional()
+});
+
+const visualizationDockSetSchema = visualizationDockBaseSchema
+  .extend({ id: z.literal('primary') })
+  .strict();
+
+const visualizationDockUpdateSchema = visualizationDockSetSchema
+  .partial()
+  .extend({ id: z.literal('primary') })
+  .strict();
+
+const visualizationDockClearSchema = z
+  .object({ id: z.literal('primary') })
+  .strict();
+
+const isSeriesDataValid = (payload, existingDock) => {
+  const data = payload.data || existingDock?.data;
+  const series = payload.series || existingDock?.series || [];
+  if (!Array.isArray(data) || data.length === 0) return true;
+  const sample = data[0] || {};
+  return series
+    .filter((item) => item.kind === 'raw')
+    .every((item) => Object.prototype.hasOwnProperty.call(sample, item.key));
+};
 
 export default function AIAnalytics({ store, selectedStore, startDate, endDate }) {
   // Support both 'store' and 'selectedStore' props for backward compatibility
@@ -32,7 +92,14 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const [activeMode, setActiveMode] = useState('ask');
   const [insightMode, setInsightMode] = useState('balanced'); // 'instant', 'fast', 'balanced', 'max'
   const [showReactivation, setShowReactivation] = useState(true); // Show reactivation panel
+  const [dockState, setDockState] = useState(null);
+  const [dockPinned, setDockPinned] = useState(false);
+  const [dockCompareEnabled, setDockCompareEnabled] = useState(false);
+  const [dockCompareSnapshot, setDockCompareSnapshot] = useState(null);
+  const [dockReplaceArmed, setDockReplaceArmed] = useState(false);
+  const [dockLastUpdated, setDockLastUpdated] = useState(null);
   const messagesEndRef = useRef(null);
+  const lastModeRef = useRef(activeMode);
 
   // Use reactivation candidates hook
   const {
@@ -51,6 +118,17 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     const isAnyStreaming = messages.some(m => m.isStreaming);
     scrollToBottom(isAnyStreaming);
   }, [messages]);
+
+  useEffect(() => {
+    if (lastModeRef.current !== activeMode) {
+      if (!dockPinned) {
+        setDockState(null);
+        setDockCompareSnapshot(null);
+        setDockLastUpdated(null);
+      }
+      lastModeRef.current = activeMode;
+    }
+  }, [activeMode, dockPinned]);
 
   // Mode configurations with pillars
   // UPDATED: Added reactivation pillars to relevant modes
@@ -113,17 +191,105 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     { id: 'max', label: '🧬 Max Insight', description: 'Deep reasoning' }
   ];
 
-  const sendMessage = async () => {
-    if (!input.trim() || isLoading) return;
+  const updateDockLastRefreshed = () => {
+    setDockLastUpdated(new Date().toISOString());
+  };
+
+  const handleDockUpdate = (payload) => {
+    if (!payload) return;
+    setDockState((prev) => {
+      if (!prev) {
+        return { ...payload };
+      }
+      return {
+        ...prev,
+        ...payload,
+        series: payload.series ?? prev.series,
+        data: payload.data ?? prev.data,
+        totals: payload.totals ?? prev.totals,
+        controls: payload.controls ? { ...prev.controls, ...payload.controls } : prev.controls,
+        ui: payload.ui ? { ...prev.ui, ...payload.ui } : prev.ui
+      };
+    });
+    updateDockLastRefreshed();
+  };
+
+  const applyDockToolEvent = (name, payload) => {
+    if (name === 'clearVisualizationDock') {
+      const clearValidation = visualizationDockClearSchema.safeParse(payload);
+      if (!clearValidation.success) return;
+      setDockState(null);
+      setDockCompareSnapshot(null);
+      setDockLastUpdated(null);
+      return;
+    }
+
+    if (name === 'setVisualizationDock') {
+      const validation = visualizationDockSetSchema.safeParse(payload);
+      if (!validation.success) return;
+      if (!isSeriesDataValid(validation.data, dockState)) return;
+      if (dockCompareEnabled && dockState) {
+        setDockCompareSnapshot(dockState);
+      }
+      setDockState(validation.data);
+      setDockReplaceArmed(false);
+      updateDockLastRefreshed();
+      return;
+    }
+
+    if (name === 'updateVisualizationDock') {
+      if (dockReplaceArmed) return;
+      const validation = visualizationDockUpdateSchema.safeParse(payload);
+      if (!validation.success) return;
+      if (!isSeriesDataValid(validation.data, dockState)) return;
+      if (!dockState) return;
+      handleDockUpdate(validation.data);
+    }
+  };
+
+  const handleReplaceDock = () => {
+    if (dockCompareEnabled && dockState) {
+      setDockCompareSnapshot(dockState);
+    }
+    setDockState(null);
+    setDockReplaceArmed(true);
+    setDockLastUpdated(null);
+  };
+
+  const handleExportDock = () => {
+    if (!dockState) return;
+    let exportData = [];
+    if (dockState.chartType === 'totals' || dockState.chartType === 'blocked') {
+      exportData = Object.entries(dockState.totals || {}).map(([key, value]) => ({
+        metric: key,
+        value
+      }));
+    } else {
+      exportData = dockState.data || [];
+    }
+    const csvContent = buildCsv(exportData);
+    if (!csvContent) return;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${dockState.title || 'visualization'}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const sendMessage = async (overrideText) => {
+    const messageText = overrideText ?? input;
+    if (!messageText.trim() || isLoading) return;
 
     const userMessage = {
       role: 'user',
-      content: input,
+      content: messageText,
       timestamp: new Date().toISOString()
     };
 
     setMessages(prev => [...prev, userMessage]);
-    const currentInput = input;
+    const currentInput = messageText;
     setInput('');
     setIsLoading(true);
 
@@ -172,8 +338,8 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         requestBody.depth = depthMap[insightMode] || 'balanced';
       }
 
-      // Use streaming endpoint with SSE
-      const response = await fetch('/api/ai/stream', {
+      // Use streaming endpoint with SSE + tool calls
+      const response = await fetch('/api/ai/analytics/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -183,6 +349,10 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      if (!response.body) {
+        throw new Error('No response body for streaming.');
       }
 
       // Read the stream
@@ -215,6 +385,10 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                     ? { ...msg, content: fullContent }
                     : msg
                 ));
+              } else if (data.type === 'tool') {
+                if (data.name && data.payload) {
+                  applyDockToolEvent(data.name, data.payload);
+                }
               } else if (data.type === 'done') {
                 // Update metadata when complete
                 setMessages(prev => prev.map(msg => 
@@ -320,6 +494,28 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     if (activeMode === 'ask') {
       setActiveMode('deepdive');
     }
+  };
+
+  const handleExplainMissingData = () => {
+    sendMessage('Explain why daily trend data is unavailable and show totals instead.');
+  };
+
+  const handlePinToggle = () => {
+    setDockPinned((prev) => !prev);
+  };
+
+  const handleCompareToggle = () => {
+    setDockCompareEnabled((prev) => {
+      const next = !prev;
+      if (!next) {
+        setDockCompareSnapshot(null);
+      }
+      return next;
+    });
+  };
+
+  const handleDockUiUpdate = (payload) => {
+    applyDockToolEvent('updateVisualizationDock', payload);
   };
 
   const renderMessage = (message, index) => {
@@ -541,6 +737,20 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
             </div>
           </div>
         </div>
+
+        <VisualizationDock
+          dock={dockState}
+          pinned={dockPinned}
+          onPinToggle={handlePinToggle}
+          onReplace={handleReplaceDock}
+          onCompareToggle={handleCompareToggle}
+          compareEnabled={dockCompareEnabled}
+          compareSnapshot={dockCompareSnapshot}
+          onExport={handleExportDock}
+          onUpdateDock={handleDockUiUpdate}
+          onExplainMissingData={handleExplainMissingData}
+          lastRefreshed={dockLastUpdated}
+        />
 
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
