@@ -518,105 +518,146 @@ export default function CreativeIntelligence({ store }) {
           </div>
         </div>
 
-        {/* Right Panel - Video + Chat */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {!selectedAd ? (
-            <div className="flex-1 flex items-center justify-center" style={{ color: colors.textSecondary }}>
-              <div className="text-center">
-                <svg className="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                <div className="text-sm">Select an ad to preview</div>
+        {/* Right Panel - Ad Info + Chat Only */}
+<div className="flex-1 flex flex-col overflow-hidden">
+  {!selectedAd ? (
+    <div className="flex-1 flex items-center justify-center" style={{ color: colors.textSecondary }}>
+      <div className="text-center">
+        <div className="text-4xl mb-4">👈</div>
+        <div className="text-sm">Select an ad to analyze</div>
+      </div>
+    </div>
+  ) : (
+    <>
+      {/* Ad Info Header */}
+      <div className="p-4 border-b" style={{ borderColor: colors.border }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold" style={{ color: colors.text }}>{selectedAd.name}</h2>
+            <div className="text-sm" style={{ color: colors.textSecondary }}>
+              {campaigns.find(c => c.id === selectedCampaign)?.name}
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            {/* Status */}
+            {scriptStatus?.status === 'complete' ? (
+              <span className="flex items-center gap-2 text-sm" style={{ color: colors.success }}>
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: colors.success }} />
+                Analyzed
+              </span>
+            ) : scriptStatus?.status === 'processing' ? (
+              <span className="flex items-center gap-2 text-sm" style={{ color: colors.warning }}>
+                <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: colors.warning }} />
+                Analyzing...
+              </span>
+            ) : scriptStatus?.status === 'failed' ? (
+              <span className="text-sm" style={{ color: colors.error }}>Failed</span>
+            ) : null}
+
+            {/* Analyze Button */}
+            {scriptStatus?.status !== 'complete' && scriptStatus?.status !== 'processing' && (
+              <button
+                onClick={handleAnalyze}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-white"
+                style={{ backgroundColor: colors.accent }}
+              >
+                ✨ Analyze
+              </button>
+            )}
+
+            {/* Facebook Link */}
+            {videoData?.permalink_url && (
+              <button
+                onClick={() => window.open(videoData.permalink_url, '_blank')}
+                className="px-3 py-2 rounded-lg text-sm border hover:bg-gray-50"
+                style={{ borderColor: colors.border, color: colors.textSecondary }}
+              >
+                Open on FB
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Chat Section */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Chat Messages */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {chatMessages.length === 0 ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="text-center max-w-md">
+                <div className="text-4xl mb-4">💬</div>
+                <div className="font-medium mb-2" style={{ color: colors.text }}>Ask Claude about this ad</div>
+                <div className="text-sm mb-4" style={{ color: colors.textSecondary }}>
+                  Get insights on why it works, compare to other ads, or generate new variations.
+                </div>
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {['Why did this ad work?', 'Compare to my top performers', 'Give me 3 variations'].map(s => (
+                    <button
+                      key={s}
+                      onClick={() => setChatInput(s)}
+                      className="px-3 py-1.5 text-xs rounded-full border hover:bg-gray-50"
+                      style={{ borderColor: colors.border, color: colors.textSecondary }}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           ) : (
-            <>
-              {/* Video Section */}
-              <div className="p-6 border-b" style={{ borderColor: colors.border }}>
-                <div className="flex gap-6">
-                  {/* Video Player */}
-                  <div className="w-80 flex-shrink-0">
-                    <div className="aspect-[9/16] rounded-xl overflow-hidden bg-black">
-                      {loadingVideo ? (
-                        <div className="w-full h-full flex items-center justify-center text-white">Loading...</div>
-                      ) : hasVideo ? (
-                        <video
-                          ref={videoRef}
-                          src={videoData.source_url}
-                          controls
-                          className="w-full h-full object-contain"
-                        />
-                      ) : hasThumbnail ? (
-                        <img
-                          src={videoData?.thumbnail_url || selectedAd?.thumbnail}
-                          alt=""
-                          className="w-full h-full object-contain"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-gray-400">No preview</div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Ad Info & Actions */}
-                  <div className="flex-1">
-                    <h2 className="text-lg font-semibold mb-1" style={{ color: colors.text }}>{selectedAd.name}</h2>
-                    <div className="text-sm mb-4" style={{ color: colors.textSecondary }}>
-                      {campaigns.find(c => c.id === selectedCampaign)?.name || 'Unknown Campaign'}
-                    </div>
-
-                    {/* Script Status */}
-                    <div className="mb-4">
-                      {scriptStatus?.status === 'complete' ? (
-                        <div className="flex items-center gap-2 text-sm" style={{ color: colors.success }}>
-                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: colors.success }} />
-                          Analyzed
-                        </div>
-                      ) : scriptStatus?.status === 'processing' ? (
-                        <div className="flex items-center gap-2 text-sm" style={{ color: colors.warning }}>
-                          <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: colors.warning }} />
-                          Analyzing...
-                        </div>
-                      ) : scriptStatus?.status === 'failed' ? (
-                        <div className="flex items-center gap-2 text-sm" style={{ color: colors.error }}>
-                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: colors.error }} />
-                          Analysis failed: {scriptStatus.error}
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2 text-sm" style={{ color: colors.textSecondary }}>
-                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: colors.textSecondary }} />
-                          Not analyzed
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex gap-3">
-                      {scriptStatus?.status !== 'complete' && scriptStatus?.status !== 'processing' && (
-                        <button
-                          onClick={handleAnalyze}
-                          disabled={!videoData}
-                          className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
-                          style={{ backgroundColor: colors.accent }}
-                        >
-                          ✨ Analyze with AI
-                        </button>
-                      )}
-                      
-                      {videoData?.permalink_url && (
-                        <button
-                          onClick={() => window.open(videoData.permalink_url, '_blank')}
-                          className="px-4 py-2 rounded-lg text-sm font-medium border transition-colors hover:bg-gray-50"
-                          style={{ borderColor: colors.border, color: colors.text }}
-                        >
-                          Open on Facebook
-                        </button>
-                      )}
-                    </div>
-                  </div>
+            chatMessages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm ${
+                    msg.role === 'user' ? 'rounded-br-sm' : 'rounded-bl-sm'
+                  }`}
+                  style={{
+                    backgroundColor: msg.role === 'user' ? colors.accent : colors.bg,
+                    color: msg.role === 'user' ? 'white' : colors.text
+                  }}
+                >
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                  {msg.streaming && <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />}
                 </div>
               </div>
+            ))
+          )}
+          <div ref={chatEndRef} />
+        </div>
 
+        {/* Chat Input */}
+        <div className="p-4 border-t" style={{ borderColor: colors.border }}>
+          <form onSubmit={handleSendMessage} className="flex gap-3">
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Ask about this ad..."
+              disabled={chatLoading || scriptStatus?.status !== 'complete'}
+              className="flex-1 px-4 py-3 rounded-xl border text-sm focus:outline-none focus:ring-2 disabled:opacity-50"
+              style={{ borderColor: colors.border }}
+            />
+            <button
+              type="submit"
+              disabled={!chatInput.trim() || chatLoading || scriptStatus?.status !== 'complete'}
+              className="px-6 py-3 rounded-xl text-sm font-medium text-white disabled:opacity-50"
+              style={{ backgroundColor: colors.accent }}
+            >
+              {chatLoading ? '...' : 'Send'}
+            </button>
+          </form>
+          {scriptStatus?.status !== 'complete' && (
+            <div className="mt-2 text-xs" style={{ color: colors.textSecondary }}>
+              Analyze the ad first to enable chat
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  )}
+</div>
               {/* Chat Section */}
               <div className="flex-1 flex flex-col overflow-hidden">
                 {/* Chat Messages */}
