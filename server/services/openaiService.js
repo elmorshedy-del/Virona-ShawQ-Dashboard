@@ -10,22 +10,22 @@ import {
   getAccountStructure as getFeatureAccountStructure
 } from '../features/meta-awareness/index.js';
 
-// OpenAI Service - GPT-5 + GPT-4 fallback
+// OpenAI Service - GPT-4o models
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
 const MODELS = {
-  ASK: 'gpt-4o',           // Fast, direct answers - no fallback needed
-  NANO: 'gpt-5-nano',
-  MINI: 'gpt-5-mini',
-  STRATEGIST: 'gpt-5.1'
+  ASK: 'gpt-4o-mini',
+  NANO: 'gpt-4o-mini',
+  MINI: 'gpt-4o',
+  STRATEGIST: 'gpt-4o'
 };
 
 const FALLBACK_MODELS = {
   NANO: 'gpt-4o-mini',
-  MINI: 'gpt-4o',
-  STRATEGIST: 'gpt-4o'
+  MINI: 'gpt-4o-mini',
+  STRATEGIST: 'gpt-4o-mini'
 };
 
 const TOKEN_LIMITS = {
@@ -37,12 +37,122 @@ const TOKEN_LIMITS = {
   deep: 120000
 };
 
+const EXPLORE_MODEL = 'gpt-4o-mini';
+const CHART_DECISION_MODELS = {
+  analyze: 'gpt-4o-mini',
+  summarize: 'gpt-4o',
+  decide: 'gpt-4o'
+};
+
 const DEPTH_TO_EFFORT = {
   instant: 'none',
   fast: 'low',
   balanced: 'medium',
   deep: 'high'
 };
+
+const EXPLORE_SYSTEM_PROMPT = `You are a data visualization assistant. Your job is to interpret natural language queries and return a chart specification.
+
+AVAILABLE METRICS:
+- revenue (currency)
+- orders (number)
+- spend (currency)
+- impressions (number)
+- clicks (number)
+- roas (number, ratio)
+- aov (currency)
+- conversion_rate (percent)
+- add_to_cart (number)
+
+AVAILABLE DIMENSIONS:
+- date (for time series)
+- country
+- campaign_name
+- adset_name
+- platform
+- age
+- gender
+
+CHART TYPES:
+- line: use for trends over time (requires date dimension)
+- bar: use for categorical comparisons
+- area: use for cumulative trends over time
+- pie: use for showing share/proportion (max 6 segments)
+
+RULES:
+1. Always return valid JSON matching the schema below.
+2. Only use metrics and dimensions from the lists above.
+3. If the query is ambiguous, make a reasonable assumption.
+4. If the query asks for something impossible, return an error message.
+5. For pie charts, limit to top 6 categories; group rest as \"Other\".
+6. Default date range is 30 days if not specified.
+
+OUTPUT FORMAT:
+{
+  \"success\": true,
+  \"spec\": {
+    \"title\": \"Human readable title\",
+    \"metric\": \"metric_key\",
+    \"dimension\": \"dimension_key\",
+    \"chartType\": \"line|bar|area|pie|auto\",
+    \"dateRange\": \"7d|14d|30d|custom\",
+    \"customDateStart\": \"YYYY-MM-DD\",
+    \"customDateEnd\": \"YYYY-MM-DD\",
+    \"autoReason\": \"Brief explanation of why this chart type was chosen\"
+  }
+}
+
+OR if the query cannot be fulfilled:
+{
+  \"success\": false,
+  \"error\": \"Human readable explanation of why this can't be charted\"
+}`;
+
+const CHART_DECISION_PROMPT = `You have the ability to recommend a chart for a user question.
+Decide whether a chart would genuinely help understanding. If not, return showChart=false.
+
+AVAILABLE METRICS: revenue, orders, spend, impressions, clicks, roas, aov, conversion_rate, add_to_cart
+AVAILABLE DIMENSIONS: date, country, campaign_name, adset_name, platform, age, gender
+CHART TYPES: line, bar, area, pie
+
+RULES:
+- Use line/area for trends over time (date dimension).
+- Use bar for categorical comparisons.
+- Use pie for share/proportion (max 6 categories).
+- If the question is simple or factual, do not show a chart.
+- Default date range is 30d.
+
+OUTPUT JSON:
+{
+  \"showChart\": true|false,
+  \"spec\": {
+    \"title\": \"Chart title\",
+    \"note\": \"One sentence explaining why you're showing this chart\",
+    \"chartType\": \"line|bar|area|pie\",
+    \"metric\": \"metric_key\",
+    \"dimension\": \"dimension_key\",
+    \"dateRange\": \"7d|14d|30d\",
+    \"autoReason\": \"Brief explanation of why this chart type was chosen\"
+  }
+}`;
+
+function parseJsonResponse(content) {
+  if (!content) return null;
+  try {
+    return JSON.parse(content);
+  } catch (error) {
+    const start = content.indexOf('{');
+    const end = content.lastIndexOf('}');
+    if (start !== -1 && end !== -1) {
+      try {
+        return JSON.parse(content.slice(start, end + 1));
+      } catch (innerError) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
 
 // ============================================================================
 // OPTIMIZED DATA FETCHING - Full hierarchy with funnel metrics (120k token support)
@@ -1089,7 +1199,35 @@ RESPONSE STYLE:
 - Use clear structure with line breaks between sections
 - Use bullet points (•) for lists, not dashes
 - If comparing, show the delta/change (↑ or ↓ with %)
-- End with a clear takeaway or recommended action when relevant`;
+- End with a clear takeaway or recommended action when relevant
+
+CHART CAPABILITY:
+You have the ability to show charts using the show_chart tool. Use it when visualization genuinely helps understanding.
+
+WHEN TO SHOW A CHART:
+- Trends over time: "how's revenue this month?" → line chart helps see the shape
+- Comparisons: "which country performs best?" → bar chart makes ranking clear
+- Proportions: "what's the split between platforms?" → pie chart shows share
+- When the user explicitly asks: "show me", "chart", "visualize", "graph"
+- When explaining a change that's easier to see than describe
+
+WHEN NOT TO SHOW A CHART:
+- Simple factual answers: "what's my ROAS?" → just say "4.2"
+- Yes/no questions: "is revenue up?" → just say "yes, up 12%"
+- Strategic advice: "should I pause this campaign?" → judgment, not visualization
+- When you already showed a relevant chart in this conversation
+- When words alone are clearer
+
+THINK LIKE A HUMAN ANALYST:
+- A chart is evidence you're pulling up to support your point
+- If you can answer clearly in one sentence, don't add a chart
+- If you're about to say "as you can see in the data..." → that's when a chart earns its place
+- Never show a chart just to look thorough
+
+WHEN YOU SHOW A CHART:
+- Always include a note explaining why: "Showing 30-day revenue trend — notice the dip around Dec 20"
+- Keep talking around the chart, don't just dump it and stop
+- Reference the chart in your explanation: "As the chart shows..."`;
 
   // Mode-specific instructions
   if (mode === 'analyze') {
@@ -1120,7 +1258,7 @@ ${getDeepDiveFormat(question)}`;
 }
 
 // ============================================================================
-// API CALLS - GPT-5 Responses API + GPT-4 fallback
+// API CALLS - GPT-4o Responses API + fallback
 // ============================================================================
 
 async function callResponsesAPI(model, systemPrompt, userMessage, maxTokens, reasoningEffort = null) {
@@ -1298,6 +1436,43 @@ export async function summarizeDataStream(question, store, onDelta, history = []
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
   return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
+}
+
+// ============================================================================
+// EXPLORE MODE - Chart spec generation
+// ============================================================================
+
+export async function exploreQuery(query, store, currentFilters = {}) {
+  const userPrompt = `Query: ${query}\nCurrent Filters: ${JSON.stringify(currentFilters, null, 2)}`;
+  const response = await client.chat.completions.create({
+    model: EXPLORE_MODEL,
+    messages: [
+      { role: 'system', content: EXPLORE_SYSTEM_PROMPT },
+      { role: 'user', content: userPrompt }
+    ],
+    temperature: 0.2,
+    max_tokens: 800
+  });
+
+  const content = response.choices[0]?.message?.content;
+  const parsed = parseJsonResponse(content);
+  return parsed || { success: false, error: 'Invalid response from model' };
+}
+
+export async function getChartRecommendation(question, mode = 'summarize') {
+  const model = CHART_DECISION_MODELS[mode] || CHART_DECISION_MODELS.summarize;
+  const response = await client.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: CHART_DECISION_PROMPT },
+      { role: 'user', content: question }
+    ],
+    temperature: 0.3,
+    max_tokens: 500
+  });
+
+  const content = response.choices[0]?.message?.content;
+  return parseJsonResponse(content);
 }
 
 // ============================================================================
