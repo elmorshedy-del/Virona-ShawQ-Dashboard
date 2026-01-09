@@ -157,10 +157,33 @@ export default function CreativePreview({ store }) {
   }, [modalOpen, videoData]);
 
   useEffect(() => {
-    fetch(`${API_BASE}/test/yt-dlp`)
-      .then((res) => res.json())
-      .then(setYtdlpStatus)
-      .catch((err) => setYtdlpStatus({ installed: false, error: err.message }));
+    let isMounted = true;
+
+    fetch(`${API_BASE}/creative-intelligence/status`)
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
+        return data;
+      })
+      .then((data) => {
+        if (!isMounted) return;
+        const ytdlp = data?.ytdlp;
+        if (ytdlp?.installed) {
+          setYtdlpStatus(ytdlp);
+        } else {
+          setYtdlpStatus({ installed: false, error: ytdlp?.error || 'Not installed' });
+        }
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        setYtdlpStatus({ installed: false, error: err.message });
+      });
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const handleAdClick = async (ad) => {
