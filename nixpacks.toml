@@ -1,6 +1,9 @@
 [phases.setup]
 nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg"]
 
+[phases.install]
+cmds = ["npm install"]
+
 [phases.install.env]
 PYTHON = "python3"
 
