@@ -8,5 +8,8 @@ cmds = ["npm install"]
 [phases.install.env]
 PYTHON = "python3"
 
-[phases.build.env]
-PYTHON = "python3"
+[phases.build]
+cmds = []
+
+[start]
+cmd = "npm start"
