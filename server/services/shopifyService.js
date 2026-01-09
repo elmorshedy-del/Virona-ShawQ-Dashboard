@@ -39,6 +39,7 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
 
       if (data.orders) {
         for (const order of data.orders) {
+          const { utmParams, landingSite, referringSite } = extractUtmDetails(order);
           const countryCode =
             order.shipping_address?.country_code ||
             order.billing_address?.country_code ||
@@ -77,6 +78,13 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             payment_method: order.payment_gateway_names?.[0] || 'unknown',
             currency: order.currency || 'USD',
             order_created_at: createdAtUtc,
+            landing_site: landingSite,
+            referring_site: referringSite,
+            utm_source: utmParams.utm_source || null,
+            utm_medium: utmParams.utm_medium || null,
+            utm_campaign: utmParams.utm_campaign || null,
+            utm_content: utmParams.utm_content || null,
+            utm_term: utmParams.utm_term || null,
             createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
           });
         }
@@ -127,8 +135,9 @@ export async function syncShopifyOrders() {
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_orders
       (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount,
-       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at,
+       landing_site, referring_site, utm_source, utm_medium, utm_campaign, utm_content, utm_term)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let recordsInserted = 0;
@@ -152,7 +161,14 @@ export async function syncShopifyOrders() {
         order.fulfillment_status,
         order.payment_method,
         order.currency,
-        order.order_created_at
+        order.order_created_at,
+        order.landing_site,
+        order.referring_site,
+        order.utm_source,
+        order.utm_medium,
+        order.utm_campaign,
+        order.utm_content,
+        order.utm_term
       );
       recordsInserted++;
     }
@@ -236,6 +252,57 @@ function getCountryName(code) {
   };
 
   return countries[code] || code;
+}
+
+function extractUtmDetails(order) {
+  const landingSite = order.landing_site || order.landing_site_ref || null;
+  const referringSite = order.referring_site || order.referring_site_ref || null;
+  const noteAttributes = Array.isArray(order.note_attributes) ? order.note_attributes : [];
+  const utmFromNotes = {};
+
+  for (const attr of noteAttributes) {
+    const key = (attr?.name || attr?.key || '').toString().toLowerCase();
+    const value = attr?.value || null;
+    if (!key || !value) continue;
+    if (key.startsWith('utm_')) {
+      utmFromNotes[key] = value;
+    }
+  }
+
+  const utmFromLanding = parseUtmParams(landingSite);
+  const utmFromReferrer = parseUtmParams(referringSite);
+
+  return {
+    landingSite,
+    referringSite,
+    utmParams: {
+      utm_source: utmFromNotes.utm_source || utmFromLanding.utm_source || utmFromReferrer.utm_source || null,
+      utm_medium: utmFromNotes.utm_medium || utmFromLanding.utm_medium || utmFromReferrer.utm_medium || null,
+      utm_campaign: utmFromNotes.utm_campaign || utmFromLanding.utm_campaign || utmFromReferrer.utm_campaign || null,
+      utm_content: utmFromNotes.utm_content || utmFromLanding.utm_content || utmFromReferrer.utm_content || null,
+      utm_term: utmFromNotes.utm_term || utmFromLanding.utm_term || utmFromReferrer.utm_term || null
+    }
+  };
+}
+
+function parseUtmParams(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    return {};
+  }
+
+  try {
+    const url = new URL(rawUrl, 'https://example.com');
+    const params = url.searchParams;
+    return {
+      utm_source: params.get('utm_source'),
+      utm_medium: params.get('utm_medium'),
+      utm_campaign: params.get('utm_campaign'),
+      utm_content: params.get('utm_content'),
+      utm_term: params.get('utm_term')
+    };
+  } catch (error) {
+    return {};
+  }
 }
 
 // Demo data removed - only real Shopify API data is used
