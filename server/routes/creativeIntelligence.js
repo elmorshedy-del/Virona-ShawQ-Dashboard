@@ -255,6 +255,45 @@ Return ONLY valid JSON array, no markdown:
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============================================================================
+// GET SCRIPT STATUSES (BULK)
+// ============================================================================
+router.post('/scripts/status', (req, res) => {
+  try {
+    const { store = 'vironax', adIds = [] } = req.body || {};
+    if (!Array.isArray(adIds) || adIds.length === 0) {
+      return res.json({ success: true, statuses: {} });
+    }
+
+    const db = getDb();
+    const placeholders = adIds.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT ad_id, status, analyzed_at
+      FROM creative_scripts
+      WHERE store = ? AND ad_id IN (${placeholders})
+    `).all(store, ...adIds);
+
+    const statuses = {};
+    rows.forEach(row => {
+      statuses[row.ad_id] = {
+        exists: true,
+        status: row.status,
+        analyzedAt: row.analyzed_at
+      };
+    });
+
+    adIds.forEach(adId => {
+      if (!statuses[adId]) {
+        statuses[adId] = { exists: false };
+      }
+    });
+
+    res.json({ success: true, statuses });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============================================================================
 // GET SCRIPT STATUS
 // ============================================================================
