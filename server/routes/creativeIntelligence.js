@@ -238,25 +238,29 @@ router.post('/analyze-video', async (req, res) => {
                 mimeType: 'video/mp4'
               }
             },
-            `Analyze this video ad FRAME BY FRAME. Break down every distinct scene/moment.
+            `Analyze this video ad FRAME BY FRAME with FULL AUDIO ANALYSIS.
 
 For each scene, provide:
 - time: exact timestamp range (e.g., "0:00-0:02", "0:02-0:05")
 - visual: detailed description of what's shown
 - text: any text/copy on screen (exact wording if visible, null if none)
 - action: movement, transitions, animations
-- audio_cue: what audio/music might be playing (infer from visuals)
+- voiceover: exact transcription of any spoken words (include language, e.g., Arabic/English)
+- music: describe the music - genre, mood, tempo, energy level
+- sound_effects: any sound effects (whoosh, click, ding, etc.)
 - hook_element: what makes this moment attention-grabbing (null if not a hook)
 
 IMPORTANT: 
 - The first 3 seconds are CRITICAL - break those down in detail
+- TRANSCRIBE all spoken audio exactly as said (Arabic, English, etc.)
+- Note the music mood changes throughout
 - Note every text appearance and when it appears
 - Identify the hook, the value prop reveal, and the CTA
 - Be specific about timing
 
 Return ONLY valid JSON array, no markdown:
 [
-  {"time": "0:00-0:02", "visual": "...", "text": "...", "action": "...", "audio_cue": "...", "hook_element": "..."},
+  {"time": "0:00-0:02", "visual": "...", "text": "...", "action": "...", "voiceover": "...", "music": "...", "sound_effects": "...", "hook_element": "..."},
   ...
 ]`
           ]);
@@ -503,8 +507,11 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
             scriptData.frames.forEach((frame, i) => {
               adContext += `\n[${frame.time || `Frame ${i+1}`}]
   Visual: ${frame.visual || 'N/A'}
-  Text: ${frame.text || 'None'}
-  Action: ${frame.action || 'N/A'}
+  Text on screen: ${frame.text || 'None'}
+  Action/Movement: ${frame.action || 'N/A'}
+  Voiceover: ${frame.voiceover || 'None'}
+  Music: ${frame.music || 'N/A'}
+  Sound Effects: ${frame.sound_effects || 'None'}
   Hook Element: ${frame.hook_element || 'N/A'}
 `;
             });
