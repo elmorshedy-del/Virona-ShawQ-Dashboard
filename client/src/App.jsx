@@ -241,6 +241,7 @@ const STORES = {
   vironax: {
     id: 'vironax',
     name: 'Virona',
+    dropdownLabel: 'Virona Shop',
     tagline: "Men's Jewelry",
     currency: 'SAR',
     currencySymbol: 'SAR',
@@ -250,6 +251,7 @@ const STORES = {
   shawq: {
     id: 'shawq',
     name: 'Shawq',
+    dropdownLabel: 'Shawq.Co',
     tagline: 'Palestinian & Syrian Apparel',
     currency: 'USD',
     currencySymbol: '$',
@@ -1014,7 +1016,9 @@ export default function App() {
                 
                 {storeDropdownOpen && (
                   <div className="absolute top-full left-0 mt-1 w-64 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
-                    {Object.values(STORES).map(s => (
+                    {Object.values(STORES)
+                      .filter(s => s.id === currentStore)
+                      .map(s => (
                       <button
                         key={s.id}
                         onClick={() => {
@@ -1029,7 +1033,7 @@ export default function App() {
                         <div className="flex items-center gap-3">
                           {renderStoreAvatar(s.id)}
                           <div>
-                            <div className="font-semibold text-gray-900">{s.name}</div>
+                            <div className="font-semibold text-gray-900">{s.dropdownLabel || s.name}</div>
                             <div className="text-sm text-gray-500">
                               {s.tagline} • {s.ecommerce}
                             </div>
