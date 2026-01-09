@@ -255,6 +255,32 @@ Return ONLY valid JSON array, no markdown:
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============================================================================
+// LIST SCRIPT STATUSES
+// ============================================================================
+router.get('/scripts', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const campaignId = req.query.campaignId;
+    const db = getDb();
+
+    let scripts = [];
+    if (campaignId) {
+      scripts = db.prepare(`
+        SELECT ad_id, status FROM creative_scripts WHERE store = ? AND campaign_id = ?
+      `).all(store, campaignId);
+    } else {
+      scripts = db.prepare(`
+        SELECT ad_id, status FROM creative_scripts WHERE store = ?
+      `).all(store);
+    }
+
+    res.json({ scripts });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============================================================================
 // GET SCRIPT STATUS
 // ============================================================================

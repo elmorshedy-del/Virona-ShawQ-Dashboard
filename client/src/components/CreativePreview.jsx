@@ -12,6 +12,19 @@ const EMPTY_VIDEO = {
   message: 'No video found for this ad.'
 };
 
+const filterStoreAccounts = (accounts, storeId) => {
+  if (!Array.isArray(accounts)) return [];
+  if (storeId === 'vironax') {
+    const matches = accounts.filter((account) => /virona shop/i.test(account?.name || ''));
+    return matches.length > 0 ? matches : accounts;
+  }
+  if (storeId === 'shawq') {
+    const matches = accounts.filter((account) => /shawq\.co/i.test(account?.name || ''));
+    return matches.length > 0 ? matches : accounts;
+  }
+  return accounts;
+};
+
 export default function CreativePreview({ store }) {
   const [adAccounts, setAdAccounts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -50,9 +63,10 @@ export default function CreativePreview({ store }) {
       .then((data) => {
         if (!isMounted) return;
         const list = Array.isArray(data?.data) ? data.data : [];
-        setAdAccounts(list);
-        if (list.length > 0) {
-          setSelectedAccount(list[0].id);
+        const filtered = filterStoreAccounts(list, store.id);
+        setAdAccounts(filtered);
+        if (filtered.length > 0) {
+          setSelectedAccount(filtered[0].id);
         }
       })
       .catch((err) => {
