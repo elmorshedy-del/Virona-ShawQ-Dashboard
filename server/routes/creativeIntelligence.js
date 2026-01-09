@@ -166,8 +166,8 @@ router.post('/analyze-video', async (req, res) => {
         success: true, 
         script: JSON.parse(existing.script),
         cached: true,
-        tokenUsage: { gemini: null },
-        debug 
+        model: 'gemini-2.0-flash-exp',
+        usage: { gemini: null }
       });
     }
 
@@ -200,13 +200,14 @@ router.post('/analyze-video', async (req, res) => {
     }
 
     // Initialize Gemini
-    recordStep('gemini_init', { model: 'gemini-2.0-flash-exp', hasVideo });
+    const geminiModelId = 'gemini-2.0-flash-exp';
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     const fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    const model = genAI.getGenerativeModel({ model: geminiModelId });
 
     let script;
     let analysisType = 'thumbnail';
+    let geminiUsage = null;
 
     if (hasVideo) {
       // TRY TO DOWNLOAD AND UPLOAD VIDEO
@@ -308,6 +309,14 @@ Return ONLY valid JSON array, no markdown:
           ]);
           geminiUsage = result.response.usageMetadata || null;
 
+          geminiUsage = result.response?.usageMetadata
+            ? {
+                promptTokens: result.response.usageMetadata.promptTokenCount ?? null,
+                outputTokens: result.response.usageMetadata.candidatesTokenCount ?? null,
+                totalTokens: result.response.usageMetadata.totalTokenCount ?? null
+              }
+            : null;
+
           const responseText = result.response.text();
           
           // Parse JSON
@@ -382,6 +391,14 @@ Return as JSON object with these sections. No markdown.`
       ]);
       geminiUsage = result.response.usageMetadata || null;
 
+      geminiUsage = result.response?.usageMetadata
+        ? {
+            promptTokens: result.response.usageMetadata.promptTokenCount ?? null,
+            outputTokens: result.response.usageMetadata.candidatesTokenCount ?? null,
+            totalTokens: result.response.usageMetadata.totalTokenCount ?? null
+          }
+        : geminiUsage;
+
       const responseText = result.response.text();
       
       try {
@@ -423,8 +440,8 @@ Return as JSON object with these sections. No markdown.`
       script: scriptData,
       cached: false,
       analysisType,
-      tokenUsage: { gemini: geminiUsage },
-      debug
+      model: geminiModelId,
+      usage: { gemini: geminiUsage }
     });
 
   } catch (error) {
@@ -634,7 +651,8 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.flushHeaders();
 
       let fullResponse = '';
-      let finalUsage = null;
+      let usage = null;
+      let modelUsed = modelId;
 
       const stream = anthropic.messages.stream({
         model: modelId,
@@ -649,7 +667,8 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       });
 
       stream.on('finalMessage', (message) => {
-        finalUsage = message?.usage || null;
+        usage = message?.usage ?? null;
+        modelUsed = message?.model ?? modelId;
       });
 
       stream.on('end', () => {
@@ -663,13 +682,12 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
           UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
         `).run(convId);
 
-        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, usage: finalUsage, debug })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, usage, model: modelUsed })}\n\n`);
         res.end();
       });
 
       stream.on('error', (err) => {
-        recordStep('stream_error', { error: err.message });
-        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, debug })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, model: modelUsed })}\n\n`);
         res.end();
       });
 
@@ -698,8 +716,8 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
         success: true,
         message: assistantMessage,
         conversationId: convId,
-        usage: response.usage || null,
-        debug
+        usage: response.usage ?? null,
+        model: response.model ?? modelId
       });
     }
 
