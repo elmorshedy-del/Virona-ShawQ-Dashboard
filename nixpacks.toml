@@ -1,15 +1,11 @@
-[phases.setup]
-# Install Node.js 20 so npm is available, plus your existing tools
-nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg"]
-
-[phases.install]
-cmds = ["npm install"]
-
-[phases.install.env]
-PYTHON = "python3"
-
-[phases.build]
-cmds = []
-
-[start]
-cmd = "npm start"
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "npm start",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
