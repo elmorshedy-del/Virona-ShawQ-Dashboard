@@ -64,6 +64,9 @@ export default function CreativeIntelligence({ store }) {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+  const [debugInfo, setDebugInfo] = useState({ analyze: null, chat: null });
+  const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
+  const [transcript, setTranscript] = useState('');
   
   // Settings states
   const [showSettings, setShowSettings] = useState(false);
@@ -199,6 +202,9 @@ export default function CreativeIntelligence({ store }) {
     setScriptStatus(null);
     setChatMessages([]);
     setConversationId(null);
+    setDebugInfo({ analyze: null, chat: null });
+    setTokenUsage({ gemini: null, sonnet: null });
+    setTranscript('');
 
     try {
       // Fetch video data
@@ -232,6 +238,9 @@ export default function CreativeIntelligence({ store }) {
     if (!selectedAd || !videoData) return;
     
     setScriptStatus({ status: 'processing' });
+    setDebugInfo(prev => ({ ...prev, analyze: null }));
+    setTokenUsage(prev => ({ ...prev, gemini: null }));
+    setTranscript('');
 
     try {
       const campaign = campaigns.find(c => c.id === selectedCampaign);
@@ -252,17 +261,43 @@ export default function CreativeIntelligence({ store }) {
       });
 
       const data = await res.json();
+      const transcriptLines = Array.isArray(data?.script?.frames)
+        ? data.script.frames
+          .map(frame => {
+            if (!frame?.voiceover) return null;
+            const time = frame?.time ? `[${frame.time}] ` : '';
+            return `${time}${frame.voiceover}`;
+          })
+          .filter(Boolean)
+        : [];
       
-      if (data.success) {
+      setDebugInfo(prev => ({ ...prev, analyze: data?.debug || null }));
+      if (data?.tokenUsage?.gemini) {
+        setTokenUsage(prev => ({ ...prev, gemini: data.tokenUsage.gemini }));
+      }
+      if (transcriptLines.length > 0) {
+        setTranscript(transcriptLines.join('\n'));
+      } else if (data?.script) {
+        setTranscript('No voiceover transcript detected in the analysis.');
+      }
+
+      if (res.ok && data.success) {
         setScriptStatus({ exists: true, status: 'complete', script: data.script });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'complete' }));
       } else {
-        setScriptStatus({ status: 'failed', error: data.error });
+        setScriptStatus({ status: 'failed', error: data.error || 'Analysis failed' });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
       }
     } catch (err) {
       setScriptStatus({ status: 'failed', error: err.message });
       setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+      setDebugInfo(prev => ({
+        ...prev,
+        analyze: {
+          requestId: 'client_error',
+          steps: [{ step: 'client_exception', at: new Date().toISOString(), error: err.message }]
+        }
+      }));
     }
   };
 
@@ -277,6 +312,8 @@ export default function CreativeIntelligence({ store }) {
     setChatInput('');
     setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setChatLoading(true);
+    setDebugInfo(prev => ({ ...prev, chat: null }));
+    setTokenUsage(prev => ({ ...prev, sonnet: null }));
 
     try {
       const res = await fetch(`${API_BASE}/creative-intelligence/chat`, {
@@ -318,11 +355,18 @@ export default function CreativeIntelligence({ store }) {
                   });
                 } else if (data.type === 'done') {
                   setConversationId(data.conversationId);
+                  setDebugInfo(prev => ({ ...prev, chat: data?.debug || null }));
+                  if (data?.usage) {
+                    setTokenUsage(prev => ({ ...prev, sonnet: data.usage }));
+                  }
                   setChatMessages(prev => {
                     const updated = [...prev];
                     updated[updated.length - 1] = { role: 'assistant', content: assistantMessage };
                     return updated;
                   });
+                } else if (data.type === 'error') {
+                  setDebugInfo(prev => ({ ...prev, chat: data?.debug || null }));
+                  setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error || 'Chat failed'}` }]);
                 }
               } catch {}
             }
@@ -331,13 +375,28 @@ export default function CreativeIntelligence({ store }) {
       } else {
         // Non-streaming response
         const data = await res.json();
-        if (data.success) {
+        if (data?.usage) {
+          setTokenUsage(prev => ({ ...prev, sonnet: data.usage }));
+        }
+        if (data?.debug) {
+          setDebugInfo(prev => ({ ...prev, chat: data.debug }));
+        }
+        if (res.ok && data.success) {
           setChatMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
           setConversationId(data.conversationId);
+        } else if (data?.error) {
+          setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error}` }]);
         }
       }
     } catch (err) {
       setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+      setDebugInfo(prev => ({
+        ...prev,
+        chat: {
+          requestId: 'client_error',
+          steps: [{ step: 'client_exception', at: new Date().toISOString(), error: err.message }]
+        }
+      }));
     } finally {
       setChatLoading(false);
     }
@@ -400,6 +459,55 @@ export default function CreativeIntelligence({ store }) {
 
   const hasVideo = !!videoData?.source_url;
   const hasThumbnail = !hasVideo && !!(videoData?.thumbnail_url || selectedAd?.thumbnail);
+  const formatTokenUsage = useCallback((usage, type) => {
+    if (!usage) return 'No token data available.';
+    if (type === 'gemini') {
+      const prompt = usage.promptTokenCount ?? 'n/a';
+      const output = usage.candidatesTokenCount ?? usage.generatedTokenCount ?? 'n/a';
+      const total = usage.totalTokenCount ?? 'n/a';
+      return `Prompt: ${prompt} · Output: ${output} · Total: ${total}`;
+    }
+    const input = usage.input_tokens ?? 'n/a';
+    const output = usage.output_tokens ?? 'n/a';
+    const total = usage.total_tokens ?? 'n/a';
+    return `Input: ${input} · Output: ${output} · Total: ${total}`;
+  }, []);
+
+  const renderDebugSteps = useCallback((debug) => {
+    if (!debug) {
+      return <div className="text-[11px]" style={{ color: colors.textSecondary }}>No debug info yet.</div>;
+    }
+
+    const steps = Array.isArray(debug.steps) ? debug.steps : [];
+    return (
+      <div className="space-y-2">
+        <div className="text-[11px]" style={{ color: colors.textSecondary }}>
+          Request: {debug.requestId || 'unknown'} · Route: {debug.route || 'n/a'}
+        </div>
+        {steps.length === 0 ? (
+          <div className="text-[11px]" style={{ color: colors.textSecondary }}>No debug steps recorded.</div>
+        ) : (
+          <ol className="space-y-2">
+            {steps.map((step, index) => {
+              const entries = Object.entries(step)
+                .filter(([key]) => key !== 'step' && key !== 'at')
+                .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`);
+
+              return (
+                <li key={`${step.step}-${index}`} className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                  <div className="text-xs font-semibold text-gray-800">{step.step}</div>
+                  <div className="text-[11px] text-gray-500">{step.at}</div>
+                  {entries.length > 0 && (
+                    <div className="mt-1 text-[11px] text-gray-600">{entries.join(' · ')}</div>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </div>
+    );
+  }, []);
 
   // ============================================================================
   // RENDER
@@ -706,8 +814,38 @@ export default function CreativeIntelligence({ store }) {
           )}
         </div>
       </div>
-    
-             
+
+      {/* Debug + Tokens Panel */}
+      <div className="border-t bg-white">
+        <div className="p-4">
+          <div className="text-xs font-semibold uppercase mb-2" style={{ color: colors.textSecondary }}>
+            Debugging & Token Usage
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+              <div className="text-xs font-semibold text-gray-900 mb-2">Analyze Pathway</div>
+              <div className="text-[11px] text-gray-600 mb-2">
+                Gemini tokens: {formatTokenUsage(tokenUsage.gemini, 'gemini')}
+              </div>
+              {renderDebugSteps(debugInfo.analyze)}
+            </div>
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+              <div className="text-xs font-semibold text-gray-900 mb-2">Chat Pathway</div>
+              <div className="text-[11px] text-gray-600 mb-2">
+                Sonnet tokens: {formatTokenUsage(tokenUsage.sonnet, 'sonnet')}
+              </div>
+              {renderDebugSteps(debugInfo.chat)}
+            </div>
+          </div>
+          <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-3">
+            <div className="text-xs font-semibold text-gray-900 mb-2">Gemini Transcript</div>
+            <div className="text-[11px] whitespace-pre-wrap text-gray-600">
+              {transcript || 'Transcript will appear after a successful analysis.'}
+            </div>
+          </div>
+        </div>
+      </div>
+
             </>
           )}
         </div>
