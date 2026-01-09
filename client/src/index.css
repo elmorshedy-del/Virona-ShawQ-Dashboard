@@ -177,3 +177,69 @@ tbody td {
 .animate-slideLeft {
   animation: slideLeft 0.4s ease-out forwards;
 }
+
+@keyframes chartAppear {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chart-appear {
+  animation: chartAppear 300ms ease-out forwards;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes dockSlideIn {
+  from {
+    opacity: 0;
+    max-height: 0;
+    margin-bottom: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 300px;
+    margin-bottom: 16px;
+  }
+}
+
+@keyframes dockSlideOut {
+  from {
+    opacity: 1;
+    max-height: 300px;
+    margin-bottom: 16px;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+    margin-bottom: 0;
+  }
+}
+
+.dock-appear {
+  animation: dockSlideIn 300ms ease-out forwards;
+  overflow: hidden;
+}
+
+.dock-dismiss {
+  animation: dockSlideOut 200ms ease-in forwards;
+  overflow: hidden;
+}
