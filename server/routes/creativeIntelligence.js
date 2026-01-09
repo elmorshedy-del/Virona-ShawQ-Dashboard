@@ -140,7 +140,9 @@ router.post('/analyze-video', async (req, res) => {
       return res.json({ 
         success: true, 
         script: JSON.parse(existing.script),
-        cached: true 
+        cached: true,
+        model: 'gemini-2.0-flash-exp',
+        usage: { gemini: null }
       });
     }
 
@@ -170,12 +172,14 @@ router.post('/analyze-video', async (req, res) => {
     }
 
     // Initialize Gemini
+    const geminiModelId = 'gemini-2.0-flash-exp';
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     const fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    const model = genAI.getGenerativeModel({ model: geminiModelId });
 
     let script;
     let analysisType = 'thumbnail';
+    let geminiUsage = null;
 
     if (hasVideo) {
       // TRY TO DOWNLOAD AND UPLOAD VIDEO
@@ -265,6 +269,14 @@ Return ONLY valid JSON array, no markdown:
 ]`
           ]);
 
+          geminiUsage = result.response?.usageMetadata
+            ? {
+                promptTokens: result.response.usageMetadata.promptTokenCount ?? null,
+                outputTokens: result.response.usageMetadata.candidatesTokenCount ?? null,
+                totalTokens: result.response.usageMetadata.totalTokenCount ?? null
+              }
+            : null;
+
           const responseText = result.response.text();
           
           // Parse JSON
@@ -332,6 +344,14 @@ Return ONLY valid JSON array, no markdown:
 Return as JSON object with these sections. No markdown.`
       ]);
 
+      geminiUsage = result.response?.usageMetadata
+        ? {
+            promptTokens: result.response.usageMetadata.promptTokenCount ?? null,
+            outputTokens: result.response.usageMetadata.candidatesTokenCount ?? null,
+            totalTokens: result.response.usageMetadata.totalTokenCount ?? null
+          }
+        : geminiUsage;
+
       const responseText = result.response.text();
       
       try {
@@ -365,7 +385,14 @@ Return as JSON object with these sections. No markdown.`
       WHERE store = ? AND ad_id = ?
     `).run(JSON.stringify(scriptData), videoUrl, thumbnailUrl, store, adId);
 
-    res.json({ success: true, script: scriptData, cached: false, analysisType });
+    res.json({
+      success: true,
+      script: scriptData,
+      cached: false,
+      analysisType,
+      model: geminiModelId,
+      usage: { gemini: geminiUsage }
+    });
 
   } catch (error) {
     console.error('[Gemini] Analysis error:', error);
@@ -557,6 +584,8 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.flushHeaders();
 
       let fullResponse = '';
+      let usage = null;
+      let modelUsed = modelId;
 
       const stream = anthropic.messages.stream({
         model: modelId,
@@ -570,6 +599,11 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
         res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
       });
 
+      stream.on('finalMessage', (message) => {
+        usage = message?.usage ?? null;
+        modelUsed = message?.model ?? modelId;
+      });
+
       stream.on('end', () => {
         // Save assistant message
         db.prepare(`
@@ -581,12 +615,12 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
           UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
         `).run(convId);
 
-        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, usage, model: modelUsed })}\n\n`);
         res.end();
       });
 
       stream.on('error', (err) => {
-        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, model: modelUsed })}\n\n`);
         res.end();
       });
 
@@ -614,7 +648,9 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.json({
         success: true,
         message: assistantMessage,
-        conversationId: convId
+        conversationId: convId,
+        usage: response.usage ?? null,
+        model: response.model ?? modelId
       });
     }
 

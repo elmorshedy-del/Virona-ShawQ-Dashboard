@@ -32,6 +32,25 @@ const filterStoreAccounts = (accounts, storeId) => {
   return accounts;
 };
 
+const extractGeminiTranscript = (scriptData) => {
+  if (!scriptData || scriptData.analysisType !== 'video_frames' || !Array.isArray(scriptData.frames)) {
+    return '';
+  }
+  const seen = new Set();
+  const lines = [];
+  scriptData.frames.forEach((frame) => {
+    const voiceover = typeof frame?.voiceover === 'string' ? frame.voiceover.trim() : '';
+    if (!voiceover || voiceover.toLowerCase() === 'none' || voiceover.toLowerCase() === 'n/a') {
+      return;
+    }
+    if (!seen.has(voiceover)) {
+      seen.add(voiceover);
+      lines.push(voiceover);
+    }
+  });
+  return lines.join('\n');
+};
+
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
@@ -58,6 +77,9 @@ export default function CreativeIntelligence({ store }) {
   const [activeTab, setActiveTab] = useState('all'); // all, analyzed, pending
   const [videoData, setVideoData] = useState(null);
   const [scriptStatus, setScriptStatus] = useState(null);
+  const [debugEvents, setDebugEvents] = useState([]);
+  const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
+  const [geminiTranscript, setGeminiTranscript] = useState('');
   
   // Chat states
   const [chatMessages, setChatMessages] = useState([]);
@@ -72,6 +94,18 @@ export default function CreativeIntelligence({ store }) {
   // Refs
   const videoRef = useRef(null);
   const chatEndRef = useRef(null);
+
+  const pushDebugEvent = useCallback((entry) => {
+    const timestamp = new Date().toISOString();
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setDebugEvents((prev) => [{ id, timestamp, ...entry }, ...prev].slice(0, 20));
+  }, []);
+
+  useEffect(() => {
+    if (scriptStatus?.status === 'complete' && scriptStatus?.script) {
+      setGeminiTranscript(extractGeminiTranscript(scriptStatus.script));
+    }
+  }, [scriptStatus]);
 
   // ============================================================================
   // FETCH AD ACCOUNTS
@@ -199,6 +233,9 @@ export default function CreativeIntelligence({ store }) {
     setScriptStatus(null);
     setChatMessages([]);
     setConversationId(null);
+    setDebugEvents([]);
+    setTokenUsage({ gemini: null, sonnet: null });
+    setGeminiTranscript('');
 
     try {
       // Fetch video data
@@ -232,37 +269,99 @@ export default function CreativeIntelligence({ store }) {
     if (!selectedAd || !videoData) return;
     
     setScriptStatus({ status: 'processing' });
+    const startedAt = Date.now();
+    const payload = {
+      store: storeId,
+      adId: selectedAd.id,
+      adName: selectedAd.name,
+      campaignId: selectedCampaign,
+      campaignName: campaigns.find(c => c.id === selectedCampaign)?.name,
+      sourceUrl: videoData.source_url,
+      embedHtml: videoData.embed_html,
+      thumbnailUrl: videoData.thumbnail_url
+    };
+    const endpoint = `${API_BASE}/creative-intelligence/analyze-video`;
 
     try {
-      const campaign = campaigns.find(c => c.id === selectedCampaign);
-      
-      const res = await fetch(`${API_BASE}/creative-intelligence/analyze-video`, {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          store: storeId,
-          adId: selectedAd.id,
-          adName: selectedAd.name,
-          campaignId: selectedCampaign,
-          campaignName: campaign?.name,
-          sourceUrl: videoData.source_url,
-          embedHtml: videoData.embed_html,
-          thumbnailUrl: videoData.thumbnail_url
-        })
+        body: JSON.stringify(payload)
       });
 
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch (parseError) {
+        data = { error: 'Invalid JSON response', parseError: parseError.message };
+      }
+      const durationMs = Date.now() - startedAt;
       
-      if (data.success) {
+      if (res.ok && data.success) {
         setScriptStatus({ exists: true, status: 'complete', script: data.script });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'complete' }));
+        setTokenUsage(prev => ({ ...prev, gemini: data.usage?.gemini ?? null }));
+        setGeminiTranscript(extractGeminiTranscript(data.script));
+        pushDebugEvent({
+          action: 'Analyze',
+          status: 'success',
+          endpoint,
+          durationMs,
+          pathway: [
+            'Creative tab → API',
+            `${endpoint}`,
+            `Gemini: ${data.model || 'gemini-2.0-flash-exp'}`
+          ],
+          details: {
+            adId: selectedAd.id,
+            campaignId: selectedCampaign,
+            analysisType: data.analysisType,
+            cached: data.cached ?? false,
+            usage: data.usage?.gemini ?? null
+          }
+        });
       } else {
         setScriptStatus({ status: 'failed', error: data.error });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+        pushDebugEvent({
+          action: 'Analyze',
+          status: 'failed',
+          endpoint,
+          durationMs,
+          pathway: [
+            'Creative tab → API',
+            `${endpoint}`,
+            `Gemini: ${data?.model || 'gemini-2.0-flash-exp'}`
+          ],
+          details: {
+            adId: selectedAd.id,
+            campaignId: selectedCampaign,
+            statusCode: res.status,
+            error: data?.error || 'Unknown error',
+            payload
+          }
+        });
       }
     } catch (err) {
       setScriptStatus({ status: 'failed', error: err.message });
       setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+      pushDebugEvent({
+        action: 'Analyze',
+        status: 'failed',
+        endpoint,
+        durationMs: Date.now() - startedAt,
+        pathway: [
+          'Creative tab → API',
+          `${endpoint}`,
+          'Gemini: gemini-2.0-flash-exp'
+        ],
+        details: {
+          adId: selectedAd.id,
+          campaignId: selectedCampaign,
+          error: err.message,
+          payload
+        }
+      });
     }
   };
 
@@ -277,24 +376,57 @@ export default function CreativeIntelligence({ store }) {
     setChatInput('');
     setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setChatLoading(true);
+    const startedAt = Date.now();
+    const endpoint = `${API_BASE}/creative-intelligence/chat`;
+    const requestPayload = {
+      store: storeId,
+      message: userMessage,
+      adId: selectedAd?.id,
+      conversationId
+    };
 
     try {
-      const res = await fetch(`${API_BASE}/creative-intelligence/chat`, {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          store: storeId,
-          message: userMessage,
-          adId: selectedAd?.id,
-          conversationId
-        })
+        body: JSON.stringify(requestPayload)
       });
+
+      if (!res.ok) {
+        let errorData;
+        try {
+          errorData = await res.json();
+        } catch (parseError) {
+          errorData = { error: 'Invalid JSON response', parseError: parseError.message };
+        }
+        pushDebugEvent({
+          action: 'Chat',
+          status: 'failed',
+          endpoint,
+          durationMs: Date.now() - startedAt,
+          pathway: [
+            'Creative tab → API',
+            `${endpoint}`,
+            'Claude (Sonnet/Opus)'
+          ],
+          details: {
+            statusCode: res.status,
+            error: errorData?.error || 'Unknown error',
+            conversationId,
+            adId: selectedAd?.id,
+            messageLength: userMessage.length
+          }
+        });
+        throw new Error(errorData?.error || 'Chat request failed');
+      }
 
       if (settings?.streaming) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let assistantMessage = '';
+        let modelUsed = null;
+        let usage = null;
 
         setChatMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }]);
 
@@ -318,10 +450,46 @@ export default function CreativeIntelligence({ store }) {
                   });
                 } else if (data.type === 'done') {
                   setConversationId(data.conversationId);
+                  modelUsed = data.model || modelUsed;
+                  usage = data.usage || usage;
                   setChatMessages(prev => {
                     const updated = [...prev];
                     updated[updated.length - 1] = { role: 'assistant', content: assistantMessage };
                     return updated;
+                  });
+                  setTokenUsage(prev => ({ ...prev, sonnet: usage ?? null }));
+                  pushDebugEvent({
+                    action: 'Chat',
+                    status: 'success',
+                    endpoint,
+                    durationMs: Date.now() - startedAt,
+                    pathway: [
+                      'Creative tab → API',
+                      `${endpoint}`,
+                      `Claude: ${modelUsed || settings?.model || 'sonnet-4.5'}`
+                    ],
+                    details: {
+                      conversationId: data.conversationId,
+                      adId: selectedAd?.id,
+                      usage
+                    }
+                  });
+                } else if (data.type === 'error') {
+                  pushDebugEvent({
+                    action: 'Chat',
+                    status: 'failed',
+                    endpoint,
+                    durationMs: Date.now() - startedAt,
+                    pathway: [
+                      'Creative tab → API',
+                      `${endpoint}`,
+                      `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+                    ],
+                    details: {
+                      conversationId,
+                      adId: selectedAd?.id,
+                      error: data.error || 'Unknown streaming error'
+                    }
                   });
                 }
               } catch {}
@@ -334,10 +502,62 @@ export default function CreativeIntelligence({ store }) {
         if (data.success) {
           setChatMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
           setConversationId(data.conversationId);
+          setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
+          pushDebugEvent({
+            action: 'Chat',
+            status: 'success',
+            endpoint,
+            durationMs: Date.now() - startedAt,
+            pathway: [
+              'Creative tab → API',
+              `${endpoint}`,
+              `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+            ],
+            details: {
+              conversationId: data.conversationId,
+              adId: selectedAd?.id,
+              usage: data.usage ?? null
+            }
+          });
+        } else {
+          pushDebugEvent({
+            action: 'Chat',
+            status: 'failed',
+            endpoint,
+            durationMs: Date.now() - startedAt,
+            pathway: [
+              'Creative tab → API',
+              `${endpoint}`,
+              `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+            ],
+            details: {
+              conversationId,
+              adId: selectedAd?.id,
+              error: data.error || 'Unknown chat error'
+            }
+          });
+          setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error || 'Chat failed'}` }]);
         }
       }
     } catch (err) {
       setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+      pushDebugEvent({
+        action: 'Chat',
+        status: 'failed',
+        endpoint: `${API_BASE}/creative-intelligence/chat`,
+        durationMs: Date.now() - startedAt,
+        pathway: [
+          'Creative tab → API',
+          `${API_BASE}/creative-intelligence/chat`,
+          'Claude (Sonnet/Opus)'
+        ],
+        details: {
+          conversationId,
+          adId: selectedAd?.id,
+          error: err.message,
+          messageLength: userMessage.length
+        }
+      });
     } finally {
       setChatLoading(false);
     }
@@ -704,6 +924,82 @@ export default function CreativeIntelligence({ store }) {
               Analyze the ad first to enable chat
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Debug + Token Usage Panel */}
+      <div className="border-t p-4 space-y-4" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+        <div>
+          <div className="text-sm font-semibold" style={{ color: colors.text }}>Debugging & Token Usage</div>
+          <div className="text-xs" style={{ color: colors.textSecondary }}>
+            Connection pathways, failures, and token usage from Gemini + Sonnet.
+          </div>
+        </div>
+
+        <div className="grid gap-3 text-xs" style={{ color: colors.textSecondary }}>
+          <div>
+            <span className="font-semibold text-gray-700">Gemini tokens:</span>{' '}
+            {tokenUsage.gemini
+              ? `total ${tokenUsage.gemini.totalTokens ?? 'n/a'} (prompt ${tokenUsage.gemini.promptTokens ?? 'n/a'}, output ${tokenUsage.gemini.outputTokens ?? 'n/a'})`
+              : 'Not reported yet'}
+          </div>
+          <div>
+            <span className="font-semibold text-gray-700">Sonnet tokens:</span>{' '}
+            {tokenUsage.sonnet
+              ? `input ${tokenUsage.sonnet.input_tokens ?? 'n/a'}, output ${tokenUsage.sonnet.output_tokens ?? 'n/a'}`
+              : 'Not reported yet'}
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-gray-700">Connection log</div>
+          {debugEvents.length === 0 ? (
+            <div className="text-xs" style={{ color: colors.textSecondary }}>
+              No debug events yet. Run Analyze or send a chat prompt to populate this.
+            </div>
+          ) : (
+            <div className="max-h-48 overflow-y-auto space-y-2">
+              {debugEvents.map((event) => (
+                <div key={event.id} className="rounded-lg border p-2" style={{ borderColor: colors.border }}>
+                  <div className="flex items-center justify-between text-[11px] text-gray-500">
+                    <span>{new Date(event.timestamp).toLocaleString()}</span>
+                    <span className={event.status === 'failed' ? 'text-red-500' : 'text-green-600'}>
+                      {event.action} {event.status}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[11px] text-gray-600">
+                    <div><span className="font-semibold">Endpoint:</span> {event.endpoint}</div>
+                    {event.durationMs != null && (
+                      <div><span className="font-semibold">Duration:</span> {event.durationMs}ms</div>
+                    )}
+                    {event.pathway && (
+                      <div>
+                        <span className="font-semibold">Pathway:</span>
+                        <ul className="list-disc ml-4">
+                          {event.pathway.map((step, index) => (
+                            <li key={`${event.id}-path-${index}`}>{step}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {event.details && (
+                      <div className="mt-1 whitespace-pre-wrap">
+                        <span className="font-semibold">Details:</span>{' '}
+                        {JSON.stringify(event.details, null, 2)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-1">
+          <div className="text-xs font-semibold text-gray-700">Gemini transcript (extracted audio)</div>
+          <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-32 overflow-y-auto border rounded-lg p-2" style={{ borderColor: colors.border }}>
+            {geminiTranscript || 'No transcript extracted yet.'}
+          </div>
         </div>
       </div>
     
