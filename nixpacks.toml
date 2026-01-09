@@ -5,5 +5,8 @@ nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg"]
 [phases.install.env]
 PYTHON = "python3"
 
+[phases.install]
+cmds = ["npm install --omit=dev"]
+
 [phases.build.env]
 PYTHON = "python3"
