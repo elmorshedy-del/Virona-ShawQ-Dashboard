@@ -35,6 +35,9 @@ function NotificationRow({
     || notification?.metadata?.campaign
     || notification?.metadata?.campaign_id
     || notification?.metadata?.campaignId;
+  const showShopifyCampaignInline = notification.type === 'order'
+    && source === 'shopify'
+    && campaignName;
   const showCampaignDetails = notification.type === 'order' && campaignName
     && (notification.store === 'shawq' || (notification.store === 'vironax' && source === 'meta'));
 
@@ -59,10 +62,15 @@ function NotificationRow({
           {/* Message */}
           <p className={`text-sm ${!notification.is_read ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
             {formatNotificationMessage(notification)}
+            {showShopifyCampaignInline && (
+              <span className="ml-1 text-violet-800 italic">
+                came from campaign {campaignName}
+              </span>
+            )}
           </p>
 
           {/* Campaign source - smaller font */}
-          {showCampaignDetails && (
+          {showCampaignDetails && !showShopifyCampaignInline && (
             <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={campaignName}>
               🎯 Campaign: {campaignName}
             </p>

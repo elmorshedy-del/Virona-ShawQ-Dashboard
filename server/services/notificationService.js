@@ -127,6 +127,23 @@ export function createOrderNotifications(store, source, orders, options = {}) {
   
   const db = getDb();
   let created = 0;
+
+  const getShopifyAttributionMap = (orderList) => {
+    if (!isShopify) return new Map();
+    const orderIds = orderList.map(order => order.order_id).filter(Boolean);
+    if (!orderIds.length) return new Map();
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT order_id, campaign_id, campaign_name
+      FROM shopify_meta_attribution
+      WHERE store = ? AND order_id IN (${placeholders})
+    `).all(store, ...orderIds);
+
+    return new Map(rows.map(row => [row.order_id, row]));
+  };
+
+  const attributionMap = getShopifyAttributionMap(orders);
   
   // Get the latest notification timestamp to avoid duplicates
   const lastNotification = db.prepare(`
@@ -203,6 +220,47 @@ export function createOrderNotifications(store, source, orders, options = {}) {
       continue;
     }
 
+    if (isShopify) {
+      const attribution = attributionMap.get(order.order_id);
+      if (attribution?.campaign_name || attribution?.campaign_id) {
+        const country = normalizeCountry(order);
+        const value = parseFloat(order.order_total || order.total_price || order.revenue || order.value || 0);
+        const currency = order.currency || fallbackCurrency;
+        const displayCountry = country.label || country.code || 'Unknown';
+        const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
+        const message = `${displayCountry} • ${currency} ${value.toFixed(2)} • ${sourceLabel}`;
+        const eventKey = `shopify|${store}|${order.order_id}|${attribution.campaign_id || attribution.campaign_name || 'unknown-campaign'}`;
+
+        const exists = db.prepare(`
+          SELECT 1 FROM notifications WHERE store = ? AND source = ? AND event_key = ? LIMIT 1
+        `).get(store, source, eventKey);
+
+        if (!exists) {
+          createNotification({
+            store,
+            type: 'order',
+            message,
+            metadata: {
+              source,
+              country: displayCountry,
+              country_code: country.code,
+              currency,
+              value,
+              order_count: 1,
+              timestamp: orderDate.toISOString(),
+              campaign_name: attribution.campaign_name || null,
+              campaign_id: attribution.campaign_id || null,
+              order_id: order.order_id
+            },
+            eventKey
+          });
+          created++;
+        }
+
+        continue;
+      }
+    }
+
     const country = normalizeCountry(order);
     const value = parseFloat(order.order_total || order.total_price || order.revenue || order.value || 0);
     const currency = order.currency || fallbackCurrency;
@@ -243,6 +301,10 @@ export function createOrderNotifications(store, source, orders, options = {}) {
 
     if (order.campaign_id && !ordersByCountry[groupKey].campaign_id) {
       ordersByCountry[groupKey].campaign_id = order.campaign_id;
+    }
+
+    if (isShopify && order.order_id && !ordersByCountry[groupKey].order_id) {
+      ordersByCountry[groupKey].order_id = order.order_id;
     }
   }
 
@@ -305,7 +367,8 @@ export function createOrderNotifications(store, source, orders, options = {}) {
         value: data.total,
         order_count: data.count,
         timestamp: data.latest.toISOString(),
-        campaign_name: data.campaign_name || null
+        campaign_name: data.campaign_name || null,
+        order_id: data.order_id || null
       },
       timestamp: ingestionTimestamp,
       eventKey
