@@ -655,9 +655,7 @@ export default function CreativeIntelligence({ store }) {
           )}
         </div>
       </div>
-    </>
-  )}
-</div>
+    
               {/* Chat Section */}
               <div className="flex-1 flex flex-col overflow-hidden">
                 {/* Chat Messages */}
