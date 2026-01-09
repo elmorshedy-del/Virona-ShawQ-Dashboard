@@ -86,6 +86,9 @@ export default function CreativeIntelligence({ store }) {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+  const [debugInfo, setDebugInfo] = useState({ analyze: null, chat: null });
+  const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
+  const [transcript, setTranscript] = useState('');
   
   // Settings states
   const [showSettings, setShowSettings] = useState(false);
@@ -233,6 +236,9 @@ export default function CreativeIntelligence({ store }) {
     setScriptStatus(null);
     setChatMessages([]);
     setConversationId(null);
+    setDebugInfo({ analyze: null, chat: null });
+    setTokenUsage({ gemini: null, sonnet: null });
+    setTranscript('');
 
     try {
       // Fetch video data
@@ -318,7 +324,7 @@ export default function CreativeIntelligence({ store }) {
           }
         });
       } else {
-        setScriptStatus({ status: 'failed', error: data.error });
+        setScriptStatus({ status: 'failed', error: data.error || 'Analysis failed' });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
         pushDebugEvent({
           action: 'Analyze',
@@ -496,7 +502,13 @@ export default function CreativeIntelligence({ store }) {
       } else {
         // Non-streaming response
         const data = await res.json();
-        if (data.success) {
+        if (data?.usage) {
+          setTokenUsage(prev => ({ ...prev, sonnet: data.usage }));
+        }
+        if (data?.debug) {
+          setDebugInfo(prev => ({ ...prev, chat: data.debug }));
+        }
+        if (res.ok && data.success) {
           setChatMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
           setConversationId(data.conversationId);
           setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
@@ -617,6 +629,55 @@ export default function CreativeIntelligence({ store }) {
 
   const hasVideo = !!videoData?.source_url;
   const hasThumbnail = !hasVideo && !!(videoData?.thumbnail_url || selectedAd?.thumbnail);
+  const formatTokenUsage = useCallback((usage, type) => {
+    if (!usage) return 'No token data available.';
+    if (type === 'gemini') {
+      const prompt = usage.promptTokenCount ?? 'n/a';
+      const output = usage.candidatesTokenCount ?? usage.generatedTokenCount ?? 'n/a';
+      const total = usage.totalTokenCount ?? 'n/a';
+      return `Prompt: ${prompt} · Output: ${output} · Total: ${total}`;
+    }
+    const input = usage.input_tokens ?? 'n/a';
+    const output = usage.output_tokens ?? 'n/a';
+    const total = usage.total_tokens ?? 'n/a';
+    return `Input: ${input} · Output: ${output} · Total: ${total}`;
+  }, []);
+
+  const renderDebugSteps = useCallback((debug) => {
+    if (!debug) {
+      return <div className="text-[11px]" style={{ color: colors.textSecondary }}>No debug info yet.</div>;
+    }
+
+    const steps = Array.isArray(debug.steps) ? debug.steps : [];
+    return (
+      <div className="space-y-2">
+        <div className="text-[11px]" style={{ color: colors.textSecondary }}>
+          Request: {debug.requestId || 'unknown'} · Route: {debug.route || 'n/a'}
+        </div>
+        {steps.length === 0 ? (
+          <div className="text-[11px]" style={{ color: colors.textSecondary }}>No debug steps recorded.</div>
+        ) : (
+          <ol className="space-y-2">
+            {steps.map((step, index) => {
+              const entries = Object.entries(step)
+                .filter(([key]) => key !== 'step' && key !== 'at')
+                .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`);
+
+              return (
+                <li key={`${step.step}-${index}`} className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                  <div className="text-xs font-semibold text-gray-800">{step.step}</div>
+                  <div className="text-[11px] text-gray-500">{step.at}</div>
+                  {entries.length > 0 && (
+                    <div className="mt-1 text-[11px] text-gray-600">{entries.join(' · ')}</div>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </div>
+    );
+  }, []);
 
   // ============================================================================
   // RENDER
