@@ -39,6 +39,25 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
 
       if (data.orders) {
         for (const order of data.orders) {
+          const utmFromLanding = extractUtmParams(order.landing_site);
+          const utmFromReferrer = extractUtmParams(order.referring_site);
+          const utmFromNotes = extractUtmFromNotes(order.note_attributes);
+          const utmCampaign =
+            utmFromLanding.utm_campaign ||
+            utmFromNotes.utm_campaign ||
+            utmFromReferrer.utm_campaign ||
+            null;
+          const utmSource =
+            utmFromLanding.utm_source ||
+            utmFromNotes.utm_source ||
+            utmFromReferrer.utm_source ||
+            null;
+          const utmMedium =
+            utmFromLanding.utm_medium ||
+            utmFromNotes.utm_medium ||
+            utmFromReferrer.utm_medium ||
+            null;
+
           const countryCode =
             order.shipping_address?.country_code ||
             order.billing_address?.country_code ||
@@ -77,7 +96,12 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             payment_method: order.payment_gateway_names?.[0] || 'unknown',
             currency: order.currency || 'USD',
             order_created_at: createdAtUtc,
-            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
+            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null,
+            utm_campaign: utmCampaign,
+            utm_source: utmSource,
+            utm_medium: utmMedium,
+            landing_site: order.landing_site || null,
+            referring_site: order.referring_site || null
           });
         }
       }
@@ -99,6 +123,42 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
     console.error('Shopify API error:', error);
     throw error;
   }
+}
+
+function extractUtmParams(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    return {};
+  }
+
+  try {
+    const url = new URL(rawUrl, 'https://shopify.local');
+    const params = url.searchParams;
+    return {
+      utm_campaign: params.get('utm_campaign') || null,
+      utm_source: params.get('utm_source') || null,
+      utm_medium: params.get('utm_medium') || null
+    };
+  } catch (error) {
+    return {};
+  }
+}
+
+function extractUtmFromNotes(noteAttributes = []) {
+  if (!Array.isArray(noteAttributes)) {
+    return {};
+  }
+
+  const lookup = new Map(
+    noteAttributes
+      .filter(entry => entry && entry.name)
+      .map(entry => [entry.name.toLowerCase(), entry.value || ''])
+  );
+
+  return {
+    utm_campaign: lookup.get('utm_campaign') || null,
+    utm_source: lookup.get('utm_source') || null,
+    utm_medium: lookup.get('utm_medium') || null
+  };
 }
 
 export async function syncShopifyOrders() {
