@@ -1,6 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
+import { askGPT51 } from '../services/openaiService.js';
 
 const router = express.Router();
 
@@ -316,14 +317,8 @@ router.delete('/script/:adId', (req, res) => {
 // CLAUDE CHAT (STREAMING)
 // ============================================================================
 router.post('/chat', async (req, res) => {
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
-
   try {
-    const { store, message, adId, conversationId } = req.body;
-
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
-    }
+    const { store, message, adId, conversationId, reasoningEffort } = req.body;
 
     const db = getDb();
 
@@ -415,6 +410,35 @@ Extraction Method: ${scriptData.method || 'unknown'}
     db.prepare(`
       INSERT INTO creative_messages (conversation_id, role, content) VALUES (?, 'user', ?)
     `).run(convId, message);
+
+    if (settings.model === 'gpt-5.1') {
+      if (!process.env.OPENAI_API_KEY) {
+        return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+      }
+
+      const assistantMessage = await askGPT51(message, reasoningEffort);
+
+      db.prepare(`
+        INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+      `).run(convId, assistantMessage, settings.model);
+
+      db.prepare(`
+        UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+      `).run(convId);
+
+      return res.json({
+        success: true,
+        message: assistantMessage,
+        conversationId: convId,
+        model: 'gpt-5.1-chat-latest'
+      });
+    }
+
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+    }
 
     // Model mapping
     const modelMap = {
