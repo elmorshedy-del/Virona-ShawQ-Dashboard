@@ -420,6 +420,40 @@ router.get('/script/:adId', (req, res) => {
 });
 
 // ============================================================================
+// GET SCRIPTS FOR CAMPAIGN
+// ============================================================================
+router.get('/scripts', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { campaignId } = req.query;
+    const db = getDb();
+
+    const rows = campaignId
+      ? db.prepare(`
+          SELECT ad_id, status, analyzed_at
+          FROM creative_scripts
+          WHERE store = ? AND campaign_id = ?
+        `).all(store, campaignId)
+      : db.prepare(`
+          SELECT ad_id, status, analyzed_at
+          FROM creative_scripts
+          WHERE store = ?
+        `).all(store);
+
+    res.json({
+      success: true,
+      scripts: rows.map((row) => ({
+        ad_id: row.ad_id,
+        status: row.status,
+        analyzed_at: row.analyzed_at
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
 // DELETE/RESET SCRIPT (for re-analysis)
 // ============================================================================
 router.delete('/script/:adId', (req, res) => {

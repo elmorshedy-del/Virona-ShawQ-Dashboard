@@ -51,6 +51,29 @@ const extractGeminiTranscript = (scriptData) => {
   return lines.join('\n');
 };
 
+const extractGeminiFullTranscript = (scriptData) => {
+  if (!scriptData || scriptData.analysisType !== 'video_frames' || !Array.isArray(scriptData.frames)) {
+    return '';
+  }
+  const lines = [];
+  scriptData.frames.forEach((frame) => {
+    const timeLabel = frame?.time ? `[${frame.time}]` : '';
+    const voiceover = typeof frame?.voiceover === 'string' ? frame.voiceover.trim() : '';
+    const text = typeof frame?.text === 'string' ? frame.text.trim() : '';
+    const chunk = [];
+    if (voiceover && voiceover.toLowerCase() !== 'none' && voiceover.toLowerCase() !== 'n/a') {
+      chunk.push(`${timeLabel} Voiceover: ${voiceover}`.trim());
+    }
+    if (text && text.toLowerCase() !== 'none' && text.toLowerCase() !== 'n/a') {
+      chunk.push(`${timeLabel} On-screen text: ${text}`.trim());
+    }
+    if (chunk.length > 0) {
+      lines.push(chunk.join('\n'));
+    }
+  });
+  return lines.join('\n');
+};
+
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
@@ -80,6 +103,8 @@ export default function CreativeIntelligence({ store }) {
   const [debugEvents, setDebugEvents] = useState([]);
   const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
   const [geminiTranscript, setGeminiTranscript] = useState('');
+  const [geminiFullTranscript, setGeminiFullTranscript] = useState('');
+  const [debugOpen, setDebugOpen] = useState(false);
   
   // Chat states
   const [chatMessages, setChatMessages] = useState([]);
@@ -104,8 +129,31 @@ export default function CreativeIntelligence({ store }) {
   useEffect(() => {
     if (scriptStatus?.status === 'complete' && scriptStatus?.script) {
       setGeminiTranscript(extractGeminiTranscript(scriptStatus.script));
+      setGeminiFullTranscript(extractGeminiFullTranscript(scriptStatus.script));
     }
   }, [scriptStatus]);
+
+  useEffect(() => {
+    if (!selectedAd?.id || !storeId) return;
+    const key = `creative-debug-${storeId}-${selectedAd.id}`;
+    const stored = localStorage.getItem(key);
+    if (stored) {
+      try {
+        setDebugEvents(JSON.parse(stored));
+      } catch (err) {
+        console.warn('Failed to parse stored debug events:', err);
+        setDebugEvents([]);
+      }
+    } else {
+      setDebugEvents([]);
+    }
+  }, [selectedAd?.id, storeId]);
+
+  useEffect(() => {
+    if (!selectedAd?.id || !storeId) return;
+    const key = `creative-debug-${storeId}-${selectedAd.id}`;
+    localStorage.setItem(key, JSON.stringify(debugEvents));
+  }, [debugEvents, selectedAd?.id, storeId]);
 
   // ============================================================================
   // FETCH AD ACCOUNTS
@@ -233,9 +281,9 @@ export default function CreativeIntelligence({ store }) {
     setScriptStatus(null);
     setChatMessages([]);
     setConversationId(null);
-    setDebugEvents([]);
     setTokenUsage({ gemini: null, sonnet: null });
     setGeminiTranscript('');
+    setGeminiFullTranscript('');
 
     try {
       // Fetch video data
@@ -302,6 +350,7 @@ export default function CreativeIntelligence({ store }) {
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'complete' }));
         setTokenUsage(prev => ({ ...prev, gemini: data.usage?.gemini ?? null }));
         setGeminiTranscript(extractGeminiTranscript(data.script));
+        setGeminiFullTranscript(extractGeminiFullTranscript(data.script));
         pushDebugEvent({
           action: 'Analyze',
           status: 'success',
@@ -362,6 +411,24 @@ export default function CreativeIntelligence({ store }) {
           payload
         }
       });
+    }
+  };
+
+  const handleReanalyze = async () => {
+    if (!selectedAd) return;
+    const endpoint = `${API_BASE}/creative-intelligence/script/${selectedAd.id}?store=${storeId}`;
+    try {
+      await fetch(endpoint, { method: 'DELETE' });
+      setScriptStatus({ status: 'pending' });
+      setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'pending' }));
+      setChatMessages([]);
+      setConversationId(null);
+      setTokenUsage({ gemini: null, sonnet: null });
+      setGeminiTranscript('');
+      setGeminiFullTranscript('');
+      await handleAnalyze();
+    } catch (err) {
+      setError(err.message);
     }
   };
 
@@ -827,15 +894,26 @@ export default function CreativeIntelligence({ store }) {
             ) : null}
 
             {/* Analyze Button */}
-            {scriptStatus?.status !== 'complete' && scriptStatus?.status !== 'processing' && (
-              <button
-                onClick={handleAnalyze}
-                className="px-4 py-2 rounded-lg text-sm font-medium text-white"
-                style={{ backgroundColor: colors.accent }}
-              >
-                ✨ Analyze
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {scriptStatus?.status === 'complete' && (
+                <button
+                  onClick={handleReanalyze}
+                  className="px-4 py-2 rounded-lg text-sm font-medium border"
+                  style={{ borderColor: colors.border, color: colors.textSecondary }}
+                >
+                  🔄 Reanalyze
+                </button>
+              )}
+              {scriptStatus?.status !== 'complete' && scriptStatus?.status !== 'processing' && (
+                <button
+                  onClick={handleAnalyze}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-white"
+                  style={{ backgroundColor: colors.accent }}
+                >
+                  ✨ Analyze
+                </button>
+              )}
+            </div>
 
             {/* Facebook Link */}
             {videoData?.permalink_url && (
@@ -928,79 +1006,99 @@ export default function CreativeIntelligence({ store }) {
       </div>
 
       {/* Debug + Token Usage Panel */}
-      <div className="border-t p-4 space-y-4" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
-        <div>
-          <div className="text-sm font-semibold" style={{ color: colors.text }}>Debugging & Token Usage</div>
-          <div className="text-xs" style={{ color: colors.textSecondary }}>
-            Connection pathways, failures, and token usage from Gemini + Sonnet.
-          </div>
-        </div>
+      <div className="border-t" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+        <button
+          onClick={() => setDebugOpen((prev) => !prev)}
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold"
+          style={{ color: colors.text }}
+        >
+          <span>Debugging & Token Usage</span>
+          <span className="text-xs" style={{ color: colors.textSecondary }}>
+            {debugOpen ? 'Collapse' : 'Expand'}
+          </span>
+        </button>
 
-        <div className="grid gap-3 text-xs" style={{ color: colors.textSecondary }}>
-          <div>
-            <span className="font-semibold text-gray-700">Gemini tokens:</span>{' '}
-            {tokenUsage.gemini
-              ? `total ${tokenUsage.gemini.totalTokens ?? 'n/a'} (prompt ${tokenUsage.gemini.promptTokens ?? 'n/a'}, output ${tokenUsage.gemini.outputTokens ?? 'n/a'})`
-              : 'Not reported yet'}
-          </div>
-          <div>
-            <span className="font-semibold text-gray-700">Sonnet tokens:</span>{' '}
-            {tokenUsage.sonnet
-              ? `input ${tokenUsage.sonnet.input_tokens ?? 'n/a'}, output ${tokenUsage.sonnet.output_tokens ?? 'n/a'}`
-              : 'Not reported yet'}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-xs font-semibold text-gray-700">Connection log</div>
-          {debugEvents.length === 0 ? (
+        {debugOpen && (
+          <div className="p-4 space-y-4 max-h-72 overflow-y-auto">
             <div className="text-xs" style={{ color: colors.textSecondary }}>
-              No debug events yet. Run Analyze or send a chat prompt to populate this.
+              Connection pathways, failures, and token usage from Gemini + Sonnet.
             </div>
-          ) : (
-            <div className="max-h-48 overflow-y-auto space-y-2">
-              {debugEvents.map((event) => (
-                <div key={event.id} className="rounded-lg border p-2" style={{ borderColor: colors.border }}>
-                  <div className="flex items-center justify-between text-[11px] text-gray-500">
-                    <span>{new Date(event.timestamp).toLocaleString()}</span>
-                    <span className={event.status === 'failed' ? 'text-red-500' : 'text-green-600'}>
-                      {event.action} {event.status}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[11px] text-gray-600">
-                    <div><span className="font-semibold">Endpoint:</span> {event.endpoint}</div>
-                    {event.durationMs != null && (
-                      <div><span className="font-semibold">Duration:</span> {event.durationMs}ms</div>
-                    )}
-                    {event.pathway && (
-                      <div>
-                        <span className="font-semibold">Pathway:</span>
-                        <ul className="list-disc ml-4">
-                          {event.pathway.map((step, index) => (
-                            <li key={`${event.id}-path-${index}`}>{step}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {event.details && (
-                      <div className="mt-1 whitespace-pre-wrap">
-                        <span className="font-semibold">Details:</span>{' '}
-                        {JSON.stringify(event.details, null, 2)}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
 
-        <div className="space-y-1">
-          <div className="text-xs font-semibold text-gray-700">Gemini transcript (extracted audio)</div>
-          <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-32 overflow-y-auto border rounded-lg p-2" style={{ borderColor: colors.border }}>
-            {geminiTranscript || 'No transcript extracted yet.'}
+            <div className="grid gap-3 text-xs" style={{ color: colors.textSecondary }}>
+              <div>
+                <span className="font-semibold text-gray-700">Gemini tokens:</span>{' '}
+                {tokenUsage.gemini
+                  ? `total ${tokenUsage.gemini.totalTokens ?? 'n/a'} (prompt ${tokenUsage.gemini.promptTokens ?? 'n/a'}, output ${tokenUsage.gemini.outputTokens ?? 'n/a'})`
+                  : 'Not reported yet'}
+              </div>
+              <div>
+                <span className="font-semibold text-gray-700">Sonnet tokens:</span>{' '}
+                {tokenUsage.sonnet
+                  ? `input ${tokenUsage.sonnet.input_tokens ?? 'n/a'}, output ${tokenUsage.sonnet.output_tokens ?? 'n/a'}`
+                  : 'Not reported yet'}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-semibold text-gray-700">Connection log</div>
+              {debugEvents.length === 0 ? (
+                <div className="text-xs" style={{ color: colors.textSecondary }}>
+                  No debug events yet. Run Analyze or send a chat prompt to populate this.
+                </div>
+              ) : (
+                <div className="max-h-48 overflow-y-auto space-y-2">
+                  {debugEvents.map((event) => (
+                    <div key={event.id} className="rounded-lg border p-2" style={{ borderColor: colors.border }}>
+                      <div className="flex items-center justify-between text-[11px] text-gray-500">
+                        <span>{new Date(event.timestamp).toLocaleString()}</span>
+                        <span className={event.status === 'failed' ? 'text-red-500' : 'text-green-600'}>
+                          {event.action} {event.status}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-gray-600">
+                        <div><span className="font-semibold">Endpoint:</span> {event.endpoint}</div>
+                        {event.durationMs != null && (
+                          <div><span className="font-semibold">Duration:</span> {event.durationMs}ms</div>
+                        )}
+                        {event.pathway && (
+                          <div>
+                            <span className="font-semibold">Pathway:</span>
+                            <ul className="list-disc ml-4">
+                              {event.pathway.map((step, index) => (
+                                <li key={`${event.id}-path-${index}`}>{step}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {event.details && (
+                          <div className="mt-1 whitespace-pre-wrap">
+                            <span className="font-semibold">Details:</span>{' '}
+                            {JSON.stringify(event.details, null, 2)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <div className="text-xs font-semibold text-gray-700">Gemini transcript (extracted audio)</div>
+                <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-32 overflow-y-auto border rounded-lg p-2" style={{ borderColor: colors.border }}>
+                  {geminiTranscript || 'No transcript extracted yet.'}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-700">Gemini transcript (full audio + on-screen)</div>
+                <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-40 overflow-y-auto border rounded-lg p-2" style={{ borderColor: colors.border }}>
+                  {geminiFullTranscript || 'No transcript extracted yet.'}
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
             </>
