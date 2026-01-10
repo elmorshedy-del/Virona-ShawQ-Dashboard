@@ -5,7 +5,6 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import crypto from 'crypto';
 
 const execPromise = promisify(exec);
 const router = express.Router();
@@ -121,36 +120,13 @@ router.post('/analyze-video', async (req, res) => {
   const { GoogleGenerativeAI } = await import('@google/generative-ai');
   const { GoogleAIFileManager } = await import('@google/generative-ai/server');
   
-  const debug = {
-    requestId: crypto.randomUUID(),
-    route: '/api/creative-intelligence/analyze-video',
-    receivedAt: new Date().toISOString(),
-    steps: []
-  };
-  const recordStep = (step, details = {}) => {
-    debug.steps.push({ step, at: new Date().toISOString(), ...details });
-  };
-
   let tempFilePath = null;
-  let geminiUsage = null;
   
   try {
     const { store, adId, adName, campaignId, campaignName, sourceUrl, embedHtml, thumbnailUrl } = req.body;
 
-    recordStep('request_received', {
-      store,
-      adId,
-      adName,
-      campaignId,
-      campaignName,
-      hasSourceUrl: !!sourceUrl,
-      hasEmbedHtml: !!embedHtml,
-      hasThumbnailUrl: !!thumbnailUrl
-    });
-
     if (!process.env.GEMINI_API_KEY) {
-      recordStep('missing_env', { key: 'GEMINI_API_KEY' });
-      return res.status(500).json({ error: 'GEMINI_API_KEY not configured', debug });
+      return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
     }
 
     const db = getDb();
@@ -161,19 +137,14 @@ router.post('/analyze-video', async (req, res) => {
     `).get(store, adId);
 
     if (existing && existing.status === 'complete') {
-      recordStep('cache_hit', { status: existing.status });
       return res.json({ 
         success: true, 
         script: JSON.parse(existing.script),
-        cached: true,
-        model: 'gemini-2.0-flash-exp',
-        usage: { gemini: null },
-        debug 
+        cached: true 
       });
     }
 
     // Mark as processing
-    recordStep('db_status_update', { status: 'processing' });
     db.prepare(`
       INSERT INTO creative_scripts (store, ad_id, ad_name, campaign_id, campaign_name, status)
       VALUES (?, ?, ?, ?, ?, 'processing')
@@ -184,7 +155,6 @@ router.post('/analyze-video', async (req, res) => {
     let videoUrl = sourceUrl;
     if (!videoUrl && embedHtml) {
       videoUrl = await extractVideoUrl(embedHtml);
-      recordStep('video_url_extracted', { success: !!videoUrl });
     }
 
     // Determine what we're analyzing
@@ -192,20 +162,17 @@ router.post('/analyze-video', async (req, res) => {
     const mediaUrl = videoUrl || thumbnailUrl;
 
     if (!mediaUrl) {
-      recordStep('media_unavailable', { hasVideo, hasThumbnailUrl: !!thumbnailUrl });
       db.prepare(`
         UPDATE creative_scripts SET status = 'failed', error_message = 'No media URL available', updated_at = datetime('now')
         WHERE store = ? AND ad_id = ?
       `).run(store, adId);
-      return res.status(400).json({ error: 'No video or thumbnail URL available', debug });
+      return res.status(400).json({ error: 'No video or thumbnail URL available' });
     }
 
     // Initialize Gemini
-    const geminiModelId = 'gemini-2.0-flash-exp';
-    recordStep('gemini_init', { model: geminiModelId, hasVideo });
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     const fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: geminiModelId });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
 
     let script;
     let analysisType = 'thumbnail';
@@ -217,17 +184,14 @@ router.post('/analyze-video', async (req, res) => {
         tempFilePath = path.join(tempDir, `ad_${adId}_${Date.now()}.mp4`);
         
         console.log(`[Gemini] Downloading video for ad ${adId}...`);
-        recordStep('video_download_start', { tempFilePath });
         
         // Try direct download first, then yt-dlp
         let downloaded = false;
         try {
           await downloadVideo(videoUrl, tempFilePath);
           downloaded = fs.existsSync(tempFilePath) && fs.statSync(tempFilePath).size > 0;
-          recordStep('video_download_direct', { success: downloaded });
         } catch (e) {
           console.log('[Gemini] Direct download failed, trying yt-dlp...');
-          recordStep('video_download_direct_failed', { error: e.message });
         }
         
         if (!downloaded) {
@@ -237,27 +201,21 @@ router.post('/analyze-video', async (req, res) => {
           if (result && fs.existsSync(ytdlpPath)) {
             tempFilePath = ytdlpPath;
             downloaded = true;
-            recordStep('video_download_ytdlp', { success: true, path: ytdlpPath });
-          } else {
-            recordStep('video_download_ytdlp', { success: false });
           }
         }
 
         if (downloaded && fs.existsSync(tempFilePath)) {
           const fileSize = fs.statSync(tempFilePath).size;
           console.log(`[Gemini] Video downloaded: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
-          recordStep('video_downloaded', { fileSize });
 
           // Upload to Gemini File API
           console.log('[Gemini] Uploading to Gemini File API...');
-          recordStep('gemini_upload_start');
           const uploadResult = await fileManager.uploadFile(tempFilePath, {
             mimeType: 'video/mp4',
             displayName: `Ad ${adId} Video`
           });
 
           console.log(`[Gemini] Upload complete: ${uploadResult.file.name}`);
-          recordStep('gemini_upload_complete', { fileName: uploadResult.file.name });
 
           // Wait for processing
           let file = uploadResult.file;
@@ -267,12 +225,10 @@ router.post('/analyze-video', async (req, res) => {
           }
 
           if (file.state === 'FAILED') {
-            recordStep('gemini_file_processing_failed');
             throw new Error('Video processing failed');
           }
 
           console.log('[Gemini] Analyzing video frame-by-frame...');
-          recordStep('gemini_video_analysis_start', { fileUri: file.uri });
 
           // Analyze with frame-by-frame prompt
           const result = await model.generateContent([
@@ -308,13 +264,6 @@ Return ONLY valid JSON array, no markdown:
   ...
 ]`
           ]);
-          geminiUsage = result.response?.usageMetadata
-            ? {
-                promptTokens: result.response.usageMetadata.promptTokenCount ?? null,
-                outputTokens: result.response.usageMetadata.candidatesTokenCount ?? null,
-                totalTokens: result.response.usageMetadata.totalTokenCount ?? null
-              }
-            : null;
 
           const responseText = result.response.text();
           
@@ -324,12 +273,10 @@ Return ONLY valid JSON array, no markdown:
             script = JSON.parse(cleanJson);
             analysisType = 'video_frames';
             console.log(`[Gemini] Extracted ${Array.isArray(script) ? script.length : 0} frames`);
-            recordStep('gemini_video_parse_success', { frameCount: Array.isArray(script) ? script.length : 0 });
           } catch (parseErr) {
             console.error('[Gemini] JSON parse error:', parseErr.message);
             script = { raw: responseText, parseError: true, type: 'video' };
             analysisType = 'video_raw';
-            recordStep('gemini_video_parse_failed', { error: parseErr.message });
           }
 
           // Clean up uploaded file
@@ -337,15 +284,12 @@ Return ONLY valid JSON array, no markdown:
             await fileManager.deleteFile(file.name);
           } catch (e) {
             console.log('[Gemini] Could not delete uploaded file');
-            recordStep('gemini_file_delete_failed', { error: e.message });
           }
         } else {
-          recordStep('video_download_failed');
           throw new Error('Could not download video');
         }
       } catch (videoErr) {
         console.error('[Gemini] Video analysis failed, falling back to thumbnail:', videoErr.message);
-        recordStep('gemini_video_analysis_failed', { error: videoErr.message });
         // Fall through to thumbnail analysis
       }
     }
@@ -353,7 +297,6 @@ Return ONLY valid JSON array, no markdown:
     // FALLBACK: Thumbnail analysis if video failed or not available
     if (!script) {
       console.log('[Gemini] Analyzing thumbnail image...');
-      recordStep('gemini_thumbnail_analysis_start', { mediaUrl: thumbnailUrl || mediaUrl });
       
       const result = await model.generateContent([
         {
@@ -388,13 +331,6 @@ Return ONLY valid JSON array, no markdown:
 
 Return as JSON object with these sections. No markdown.`
       ]);
-      geminiUsage = result.response?.usageMetadata
-        ? {
-            promptTokens: result.response.usageMetadata.promptTokenCount ?? null,
-            outputTokens: result.response.usageMetadata.candidatesTokenCount ?? null,
-            totalTokens: result.response.usageMetadata.totalTokenCount ?? null
-          }
-        : geminiUsage;
 
       const responseText = result.response.text();
       
@@ -402,11 +338,9 @@ Return as JSON object with these sections. No markdown.`
         const cleanJson = responseText.replace(/```json\n?|\n?```/g, '').trim();
         script = JSON.parse(cleanJson);
         analysisType = 'thumbnail';
-        recordStep('gemini_thumbnail_parse_success');
       } catch (parseErr) {
         script = { raw: responseText, parseError: true, type: 'thumbnail' };
         analysisType = 'thumbnail_raw';
-        recordStep('gemini_thumbnail_parse_failed', { error: parseErr.message });
       }
     }
 
@@ -425,26 +359,16 @@ Return as JSON object with these sections. No markdown.`
       analyzedAt: new Date().toISOString()
     };
 
-    recordStep('db_status_update', { status: 'complete', analysisType });
     db.prepare(`
       UPDATE creative_scripts 
       SET script = ?, video_url = ?, thumbnail_url = ?, status = 'complete', analyzed_at = datetime('now'), updated_at = datetime('now')
       WHERE store = ? AND ad_id = ?
     `).run(JSON.stringify(scriptData), videoUrl, thumbnailUrl, store, adId);
 
-    res.json({
-      success: true,
-      script: scriptData,
-      cached: false,
-      analysisType,
-      model: geminiModelId,
-      usage: { gemini: geminiUsage },
-      debug
-    });
+    res.json({ success: true, script: scriptData, cached: false, analysisType });
 
   } catch (error) {
     console.error('[Gemini] Analysis error:', error);
-    recordStep('analysis_error', { error: error.message });
     
     // Clean up temp file on error
     if (tempFilePath && fs.existsSync(tempFilePath)) {
@@ -462,7 +386,7 @@ Return as JSON object with these sections. No markdown.`
       `).run(error.message, store, adId);
     }
 
-    res.status(500).json({ error: error.message, debug });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -517,26 +441,15 @@ router.delete('/script/:adId', (req, res) => {
 // ============================================================================
 router.post('/chat', async (req, res) => {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const debug = {
-    requestId: crypto.randomUUID(),
-    route: '/api/creative-intelligence/chat',
-    receivedAt: new Date().toISOString(),
-    steps: []
-  };
-  const recordStep = (step, details = {}) => {
-    debug.steps.push({ step, at: new Date().toISOString(), ...details });
-  };
 
   try {
     const { store, message, adId, conversationId } = req.body;
 
     if (!process.env.ANTHROPIC_API_KEY) {
-      recordStep('missing_env', { key: 'ANTHROPIC_API_KEY' });
-      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured', debug });
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
     }
 
     const db = getDb();
-    recordStep('request_received', { store, adId, hasConversationId: !!conversationId, messageLength: message?.length || 0 });
 
     // Get user settings
     let settings = db.prepare(`
@@ -554,7 +467,6 @@ router.post('/chat', async (req, res) => {
         capabilities: { analyze: true, clone: true, ideate: true, audit: true }
       };
     }
-    recordStep('settings_loaded', { model: settings.model, streaming: !!settings.streaming, tone: settings.tone });
 
     // Get or create conversation
     let convId = conversationId;
@@ -563,9 +475,7 @@ router.post('/chat', async (req, res) => {
         INSERT INTO creative_conversations (store, ad_id, title) VALUES (?, ?, ?)
       `).run(store, adId, message.slice(0, 50) + (message.length > 50 ? '...' : ''));
       convId = result.lastInsertRowid;
-      recordStep('conversation_created', { conversationId: convId });
     }
-    recordStep('conversation_ready', { conversationId: convId });
 
     // Get conversation history
     const history = db.prepare(`
@@ -623,7 +533,6 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       ...history.map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: message }
     ];
-    recordStep('prompt_built', { historyCount: history.length, contextLength: adContext.length });
 
     // Save user message
     db.prepare(`
@@ -639,7 +548,6 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
 
     // Initialize Claude
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    recordStep('anthropic_init', { modelId });
 
     if (settings.streaming) {
       // Streaming response
@@ -649,8 +557,6 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.flushHeaders();
 
       let fullResponse = '';
-      let finalUsage = null;
-      let modelUsed = modelId;
 
       const stream = anthropic.messages.stream({
         model: modelId,
@@ -664,11 +570,6 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
         res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
       });
 
-      stream.on('finalMessage', (message) => {
-        finalUsage = message?.usage || null;
-        modelUsed = message?.model || modelId;
-      });
-
       stream.on('end', () => {
         // Save assistant message
         db.prepare(`
@@ -680,13 +581,12 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
           UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
         `).run(convId);
 
-        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, usage: finalUsage, model: modelUsed, debug })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId })}\n\n`);
         res.end();
       });
 
       stream.on('error', (err) => {
-        recordStep('stream_error', { error: err.message });
-        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, model: modelUsed, debug })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
         res.end();
       });
 
@@ -714,17 +614,13 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.json({
         success: true,
         message: assistantMessage,
-        conversationId: convId,
-        usage: response.usage || null,
-        model: response.model || modelId,
-        debug
+        conversationId: convId
       });
     }
 
   } catch (error) {
     console.error('[Claude] Chat error:', error);
-    recordStep('chat_error', { error: error.message });
-    res.status(500).json({ error: error.message, debug });
+    res.status(500).json({ error: error.message });
   }
 });
 
