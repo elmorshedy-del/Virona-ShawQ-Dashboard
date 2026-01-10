@@ -32,21 +32,36 @@ const filterStoreAccounts = (accounts, storeId) => {
   return accounts;
 };
 
+const normalizeTranscriptValue = (value) => {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const lower = trimmed.toLowerCase();
+  if (lower === 'none' || lower === 'n/a' || lower === 'null') return '';
+  return trimmed;
+};
+
 const extractGeminiTranscript = (scriptData) => {
   if (!scriptData || scriptData.analysisType !== 'video_frames' || !Array.isArray(scriptData.frames)) {
     return '';
   }
-  const seen = new Set();
   const lines = [];
   scriptData.frames.forEach((frame) => {
-    const voiceover = typeof frame?.voiceover === 'string' ? frame.voiceover.trim() : '';
-    if (!voiceover || voiceover.toLowerCase() === 'none' || voiceover.toLowerCase() === 'n/a') {
+    const voiceover = normalizeTranscriptValue(frame?.voiceover);
+    const onscreenText = normalizeTranscriptValue(frame?.text);
+    if (!voiceover && !onscreenText) {
       return;
     }
-    if (!seen.has(voiceover)) {
-      seen.add(voiceover);
-      lines.push(voiceover);
+    const time = normalizeTranscriptValue(frame?.time);
+    const parts = [];
+    if (voiceover) {
+      parts.push(`Audio: ${voiceover}`);
     }
+    if (onscreenText) {
+      parts.push(`On-screen: ${onscreenText}`);
+    }
+    const prefix = time ? `[${time}] ` : '';
+    lines.push(`${prefix}${parts.join(' | ')}`);
   });
   return lines.join('\n');
 };
@@ -80,6 +95,7 @@ export default function CreativeIntelligence({ store }) {
   const [debugEvents, setDebugEvents] = useState([]);
   const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
   const [geminiTranscript, setGeminiTranscript] = useState('');
+  const [debugExpanded, setDebugExpanded] = useState(false);
   
   // Chat states
   const [chatMessages, setChatMessages] = useState([]);
@@ -94,6 +110,12 @@ export default function CreativeIntelligence({ store }) {
   // Refs
   const videoRef = useRef(null);
   const chatEndRef = useRef(null);
+  const debugStorageReadyRef = useRef(false);
+
+  const debugStorageKey = useMemo(() => {
+    if (!storeId || !selectedAd?.id) return null;
+    return `creative-debug-events:${storeId}:${selectedAd.id}`;
+  }, [storeId, selectedAd?.id]);
 
   const pushDebugEvent = useCallback((entry) => {
     const timestamp = new Date().toISOString();
@@ -106,6 +128,25 @@ export default function CreativeIntelligence({ store }) {
       setGeminiTranscript(extractGeminiTranscript(scriptStatus.script));
     }
   }, [scriptStatus]);
+
+  useEffect(() => {
+    if (!debugStorageKey) return;
+    debugStorageReadyRef.current = false;
+    try {
+      const stored = localStorage.getItem(debugStorageKey);
+      const parsed = stored ? JSON.parse(stored) : [];
+      setDebugEvents(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setDebugEvents([]);
+    } finally {
+      debugStorageReadyRef.current = true;
+    }
+  }, [debugStorageKey]);
+
+  useEffect(() => {
+    if (!debugStorageKey || !debugStorageReadyRef.current) return;
+    localStorage.setItem(debugStorageKey, JSON.stringify(debugEvents));
+  }, [debugEvents, debugStorageKey]);
 
   // ============================================================================
   // FETCH AD ACCOUNTS
@@ -233,9 +274,9 @@ export default function CreativeIntelligence({ store }) {
     setScriptStatus(null);
     setChatMessages([]);
     setConversationId(null);
-    setDebugEvents([]);
     setTokenUsage({ gemini: null, sonnet: null });
     setGeminiTranscript('');
+    setDebugExpanded(false);
 
     try {
       // Fetch video data
@@ -362,6 +403,22 @@ export default function CreativeIntelligence({ store }) {
           payload
         }
       });
+    }
+  };
+
+  const handleReanalyze = async () => {
+    if (!selectedAd || !videoData) return;
+    try {
+      await fetch(`${API_BASE}/creative-intelligence/script/${selectedAd.id}?store=${storeId}`, {
+        method: 'DELETE'
+      });
+      setScriptStatus({ status: 'processing' });
+      setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'processing' }));
+      setGeminiTranscript('');
+      setTokenUsage({ gemini: null, sonnet: null });
+      await handleAnalyze();
+    } catch (err) {
+      setError(err.message);
     }
   };
 
@@ -790,7 +847,7 @@ export default function CreativeIntelligence({ store }) {
         </div>
 
         {/* Right Panel - Ad Info + Chat Only */}
-<div className="flex-1 flex flex-col overflow-hidden">
+<div className="flex-1 flex flex-col overflow-hidden relative">
   {!selectedAd ? (
     <div className="flex-1 flex items-center justify-center" style={{ color: colors.textSecondary }}>
       <div className="text-center">
@@ -836,6 +893,15 @@ export default function CreativeIntelligence({ store }) {
                 ✨ Analyze
               </button>
             )}
+            {scriptStatus?.status === 'complete' && (
+              <button
+                onClick={handleReanalyze}
+                className="px-4 py-2 rounded-lg text-sm font-medium border"
+                style={{ borderColor: colors.border, color: colors.text }}
+              >
+                ♻️ Reanalyze
+              </button>
+            )}
 
             {/* Facebook Link */}
             {videoData?.permalink_url && (
@@ -852,7 +918,10 @@ export default function CreativeIntelligence({ store }) {
       </div>
 
       {/* Chat Section */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div
+        className="flex-1 flex flex-col overflow-hidden"
+        style={{ paddingBottom: debugExpanded ? '320px' : '48px' }}
+      >
         {/* Chat Messages */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {chatMessages.length === 0 ? (
@@ -928,79 +997,92 @@ export default function CreativeIntelligence({ store }) {
       </div>
 
       {/* Debug + Token Usage Panel */}
-      <div className="border-t p-4 space-y-4" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
-        <div>
-          <div className="text-sm font-semibold" style={{ color: colors.text }}>Debugging & Token Usage</div>
-          <div className="text-xs" style={{ color: colors.textSecondary }}>
-            Connection pathways, failures, and token usage from Gemini + Sonnet.
-          </div>
-        </div>
-
-        <div className="grid gap-3 text-xs" style={{ color: colors.textSecondary }}>
-          <div>
-            <span className="font-semibold text-gray-700">Gemini tokens:</span>{' '}
-            {tokenUsage.gemini
-              ? `total ${tokenUsage.gemini.totalTokens ?? 'n/a'} (prompt ${tokenUsage.gemini.promptTokens ?? 'n/a'}, output ${tokenUsage.gemini.outputTokens ?? 'n/a'})`
-              : 'Not reported yet'}
-          </div>
-          <div>
-            <span className="font-semibold text-gray-700">Sonnet tokens:</span>{' '}
-            {tokenUsage.sonnet
-              ? `input ${tokenUsage.sonnet.input_tokens ?? 'n/a'}, output ${tokenUsage.sonnet.output_tokens ?? 'n/a'}`
-              : 'Not reported yet'}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-xs font-semibold text-gray-700">Connection log</div>
-          {debugEvents.length === 0 ? (
-            <div className="text-xs" style={{ color: colors.textSecondary }}>
-              No debug events yet. Run Analyze or send a chat prompt to populate this.
+      <div className="absolute bottom-0 left-0 right-0 z-10">
+        <button
+          onClick={() => setDebugExpanded((prev) => !prev)}
+          className="w-full px-4 py-2 border-t flex items-center justify-between text-xs font-semibold"
+          style={{ borderColor: colors.border, backgroundColor: colors.card, color: colors.text }}
+        >
+          <span>Debugging & Token Usage</span>
+          <span className="text-xs" style={{ color: colors.textSecondary }}>
+            {debugExpanded ? 'Collapse' : 'Expand'}
+          </span>
+        </button>
+        {debugExpanded && (
+          <div className="border-t p-4 space-y-4 max-h-[45vh] overflow-y-auto" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+            <div>
+              <div className="text-xs" style={{ color: colors.textSecondary }}>
+                Connection pathways, failures, and token usage from Gemini + Sonnet.
+              </div>
             </div>
-          ) : (
-            <div className="max-h-48 overflow-y-auto space-y-2">
-              {debugEvents.map((event) => (
-                <div key={event.id} className="rounded-lg border p-2" style={{ borderColor: colors.border }}>
-                  <div className="flex items-center justify-between text-[11px] text-gray-500">
-                    <span>{new Date(event.timestamp).toLocaleString()}</span>
-                    <span className={event.status === 'failed' ? 'text-red-500' : 'text-green-600'}>
-                      {event.action} {event.status}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[11px] text-gray-600">
-                    <div><span className="font-semibold">Endpoint:</span> {event.endpoint}</div>
-                    {event.durationMs != null && (
-                      <div><span className="font-semibold">Duration:</span> {event.durationMs}ms</div>
-                    )}
-                    {event.pathway && (
-                      <div>
-                        <span className="font-semibold">Pathway:</span>
-                        <ul className="list-disc ml-4">
-                          {event.pathway.map((step, index) => (
-                            <li key={`${event.id}-path-${index}`}>{step}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {event.details && (
-                      <div className="mt-1 whitespace-pre-wrap">
-                        <span className="font-semibold">Details:</span>{' '}
-                        {JSON.stringify(event.details, null, 2)}
-                      </div>
-                    )}
-                  </div>
+
+            <div className="grid gap-3 text-xs" style={{ color: colors.textSecondary }}>
+              <div>
+                <span className="font-semibold text-gray-700">Gemini tokens:</span>{' '}
+                {tokenUsage.gemini
+                  ? `total ${tokenUsage.gemini.totalTokens ?? 'n/a'} (prompt ${tokenUsage.gemini.promptTokens ?? 'n/a'}, output ${tokenUsage.gemini.outputTokens ?? 'n/a'})`
+                  : 'Not reported yet'}
+              </div>
+              <div>
+                <span className="font-semibold text-gray-700">Sonnet tokens:</span>{' '}
+                {tokenUsage.sonnet
+                  ? `input ${tokenUsage.sonnet.input_tokens ?? 'n/a'}, output ${tokenUsage.sonnet.output_tokens ?? 'n/a'}`
+                  : 'Not reported yet'}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-semibold text-gray-700">Connection log</div>
+              {debugEvents.length === 0 ? (
+                <div className="text-xs" style={{ color: colors.textSecondary }}>
+                  No debug events yet. Run Analyze or send a chat prompt to populate this.
                 </div>
-              ))}
+              ) : (
+                <div className="max-h-48 overflow-y-auto space-y-2">
+                  {debugEvents.map((event) => (
+                    <div key={event.id} className="rounded-lg border p-2" style={{ borderColor: colors.border }}>
+                      <div className="flex items-center justify-between text-[11px] text-gray-500">
+                        <span>{new Date(event.timestamp).toLocaleString()}</span>
+                        <span className={event.status === 'failed' ? 'text-red-500' : 'text-green-600'}>
+                          {event.action} {event.status}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-gray-600">
+                        <div><span className="font-semibold">Endpoint:</span> {event.endpoint}</div>
+                        {event.durationMs != null && (
+                          <div><span className="font-semibold">Duration:</span> {event.durationMs}ms</div>
+                        )}
+                        {event.pathway && (
+                          <div>
+                            <span className="font-semibold">Pathway:</span>
+                            <ul className="list-disc ml-4">
+                              {event.pathway.map((step, index) => (
+                                <li key={`${event.id}-path-${index}`}>{step}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {event.details && (
+                          <div className="mt-1 whitespace-pre-wrap">
+                            <span className="font-semibold">Details:</span>{' '}
+                            {JSON.stringify(event.details, null, 2)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        <div className="space-y-1">
-          <div className="text-xs font-semibold text-gray-700">Gemini transcript (extracted audio)</div>
-          <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-32 overflow-y-auto border rounded-lg p-2" style={{ borderColor: colors.border }}>
-            {geminiTranscript || 'No transcript extracted yet.'}
+            <div className="space-y-1">
+              <div className="text-xs font-semibold text-gray-700">Gemini transcript (audio + on-screen text)</div>
+              <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-32 overflow-y-auto border rounded-lg p-2" style={{ borderColor: colors.border }}>
+                {geminiTranscript || 'No transcript extracted yet.'}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
             </>

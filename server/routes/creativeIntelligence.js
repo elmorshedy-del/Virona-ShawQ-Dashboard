@@ -391,6 +391,32 @@ Return as JSON object with these sections. No markdown.`
 });
 
 // ============================================================================
+// LIST SCRIPTS
+// ============================================================================
+router.get('/scripts', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { campaignId } = req.query;
+    const db = getDb();
+
+    let scripts;
+    if (campaignId) {
+      scripts = db.prepare(`
+        SELECT ad_id, status FROM creative_scripts WHERE store = ? AND campaign_id = ?
+      `).all(store, campaignId);
+    } else {
+      scripts = db.prepare(`
+        SELECT ad_id, status FROM creative_scripts WHERE store = ?
+      `).all(store);
+    }
+
+    res.json({ success: true, scripts });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
 // GET SCRIPT STATUS
 // ============================================================================
 router.get('/script/:adId', (req, res) => {
