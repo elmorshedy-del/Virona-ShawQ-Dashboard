@@ -1,6 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
+import { askGPT51 } from '../services/openaiService.js';
 
 const router = express.Router();
 
@@ -319,11 +320,7 @@ router.post('/chat', async (req, res) => {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
 
   try {
-    const { store, message, adId, conversationId } = req.body;
-
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
-    }
+    const { store, message, adId, conversationId, reasoning_effort } = req.body;
 
     const db = getDb();
 
@@ -338,6 +335,7 @@ router.post('/chat', async (req, res) => {
       `).run(store);
       settings = {
         model: 'sonnet-4.5',
+        reasoning_effort: 'high',
         streaming: 1,
         tone: 'balanced',
         capabilities: { analyze: true, clone: true, ideate: true, audit: true }
@@ -416,12 +414,43 @@ Extraction Method: ${scriptData.method || 'unknown'}
       INSERT INTO creative_messages (conversation_id, role, content) VALUES (?, 'user', ?)
     `).run(convId, message);
 
+    const modelSelection = settings.model || 'sonnet-4.5';
+    const effort = reasoning_effort || settings.reasoning_effort || 'high';
+
+    if (modelSelection === 'gpt-5.1') {
+      if (!process.env.OPENAI_API_KEY) {
+        return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+      }
+
+      const gptMessage = `${systemPrompt}\n\n${message}`;
+      const assistantMessage = await askGPT51(gptMessage, effort);
+
+      db.prepare(`
+        INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+      `).run(convId, assistantMessage, 'gpt-5.1');
+
+      db.prepare(`
+        UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+      `).run(convId);
+
+      return res.json({
+        success: true,
+        message: assistantMessage,
+        conversationId: convId,
+        model: 'gpt-5.1'
+      });
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+    }
+
     // Model mapping
     const modelMap = {
       'sonnet-4.5': 'claude-sonnet-4-20250514',
       'opus-4.5': 'claude-opus-4-20250514'
     };
-    const modelId = modelMap[settings.model] || 'claude-sonnet-4-20250514';
+    const modelId = modelMap[modelSelection] || 'claude-sonnet-4-20250514';
 
     // Initialize Claude
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -580,6 +609,7 @@ router.get('/settings', (req, res) => {
       settings = {
         store,
         model: 'sonnet-4.5',
+        reasoning_effort: 'high',
         streaming: 1,
         tone: 'balanced',
         custom_prompt: null,
@@ -589,6 +619,7 @@ router.get('/settings', (req, res) => {
       settings.capabilities = typeof settings.capabilities === 'string'
         ? JSON.parse(settings.capabilities)
         : settings.capabilities;
+      settings.reasoning_effort = settings.reasoning_effort || 'high';
     }
 
     res.json({ success: true, settings });
@@ -599,14 +630,15 @@ router.get('/settings', (req, res) => {
 
 router.put('/settings', (req, res) => {
   try {
-    const { store, model, streaming, tone, custom_prompt, capabilities } = req.body;
+    const { store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities } = req.body;
     const db = getDb();
 
     db.prepare(`
-      INSERT INTO ai_creative_settings (store, model, streaming, tone, custom_prompt, capabilities)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO ai_creative_settings (store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(store) DO UPDATE SET
         model = excluded.model,
+        reasoning_effort = excluded.reasoning_effort,
         streaming = excluded.streaming,
         tone = excluded.tone,
         custom_prompt = excluded.custom_prompt,
@@ -615,6 +647,7 @@ router.put('/settings', (req, res) => {
     `).run(
       store,
       model || 'sonnet-4.5',
+      reasoning_effort || 'high',
       streaming ? 1 : 0,
       tone || 'balanced',
       custom_prompt || null,

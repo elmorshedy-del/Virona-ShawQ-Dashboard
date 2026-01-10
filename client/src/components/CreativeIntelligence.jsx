@@ -445,11 +445,18 @@ export default function CreativeIntelligence({ store }) {
     setChatLoading(true);
     const startedAt = Date.now();
     const endpoint = `${API_BASE}/creative-intelligence/chat`;
+    const selectedModel = settings?.model || 'sonnet-4.5';
+    const isGPT51 = selectedModel === 'gpt-5.1';
+    const reasoningEffort = settings?.reasoning_effort || 'high';
+    const buildModelLabel = (model = null) => (
+      isGPT51 ? 'OpenAI GPT-5.1' : `Claude: ${model || selectedModel}`
+    );
     const requestPayload = {
       store: storeId,
       message: userMessage,
       adId: selectedAd?.id,
-      conversationId
+      conversationId,
+      reasoning_effort: reasoningEffort
     };
 
     try {
@@ -474,7 +481,7 @@ export default function CreativeIntelligence({ store }) {
           pathway: [
             'Creative tab → API',
             `${endpoint}`,
-            'Claude (Sonnet/Opus)'
+            buildModelLabel()
           ],
           details: {
             statusCode: res.status,
@@ -487,7 +494,7 @@ export default function CreativeIntelligence({ store }) {
         throw new Error(errorData?.error || 'Chat request failed');
       }
 
-      if (settings?.streaming) {
+      if (settings?.streaming && !isGPT51) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -578,7 +585,7 @@ export default function CreativeIntelligence({ store }) {
             pathway: [
               'Creative tab → API',
               `${endpoint}`,
-              `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+              buildModelLabel(data.model)
             ],
             details: {
               conversationId: data.conversationId,
@@ -595,7 +602,7 @@ export default function CreativeIntelligence({ store }) {
             pathway: [
               'Creative tab → API',
               `${endpoint}`,
-              `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+              buildModelLabel(data.model)
             ],
             details: {
               conversationId,
@@ -616,7 +623,7 @@ export default function CreativeIntelligence({ store }) {
         pathway: [
           'Creative tab → API',
           `${API_BASE}/creative-intelligence/chat`,
-          'Claude (Sonnet/Opus)'
+          buildModelLabel()
         ],
         details: {
           conversationId,
@@ -1132,6 +1139,7 @@ export default function CreativeIntelligence({ store }) {
 function SettingsModal({ settings, onSave, onClose }) {
   const [form, setForm] = useState({
     model: settings?.model || 'sonnet-4.5',
+    reasoning_effort: settings?.reasoning_effort || 'high',
     streaming: settings?.streaming ?? true,
     tone: settings?.tone || 'balanced',
     custom_prompt: settings?.custom_prompt || '',
@@ -1193,8 +1201,42 @@ function SettingsModal({ settings, onSave, onClose }) {
                   <div className="text-sm text-gray-500">Deeper reasoning, creative connections. Best for strategy sessions.</div>
                 </div>
               </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                form.model === 'gpt-5.1' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5.1"
+                  checked={form.model === 'gpt-5.1'}
+                  onChange={(e) => setForm(prev => ({ ...prev, model: e.target.value }))}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">OpenAI GPT-5.1 <span className="text-xs text-emerald-600 ml-1">Responses API</span></div>
+                  <div className="text-sm text-gray-500">OpenAI reasoning model for deep creative analysis.</div>
+                </div>
+              </label>
             </div>
           </div>
+
+          {form.model === 'gpt-5.1' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Reasoning Effort</label>
+              <select
+                value={form.reasoning_effort}
+                onChange={(e) => setForm(prev => ({ ...prev, reasoning_effort: e.target.value }))}
+                className="w-full px-3 py-2 text-sm rounded-lg border bg-white focus:outline-none focus:ring-2"
+                style={{ borderColor: colors.border }}
+              >
+                <option value="none">none</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
+          )}
 
           {/* Capabilities */}
           <div>
