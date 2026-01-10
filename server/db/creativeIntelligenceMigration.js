@@ -31,6 +31,7 @@ export function runCreativeIntelligenceMigration() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL UNIQUE,
       model TEXT DEFAULT 'sonnet-4.5',
+      reasoning_effort TEXT DEFAULT 'high',
       streaming INTEGER DEFAULT 1,
       tone TEXT DEFAULT 'balanced',
       custom_prompt TEXT,
@@ -39,6 +40,14 @@ export function runCreativeIntelligenceMigration() {
       updated_at TEXT DEFAULT (datetime('now'))
     )
   `);
+
+  try {
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN reasoning_effort TEXT DEFAULT 'high'`);
+  } catch (error) {
+    if (!`${error.message}`.includes('duplicate column')) {
+      console.warn('[Migration] Unable to add reasoning_effort column:', error.message);
+    }
+  }
 
   // Creative chat conversations (separate from main AI chat)
   db.exec(`

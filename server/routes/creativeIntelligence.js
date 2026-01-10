@@ -1,5 +1,6 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
+import { askGPT51 } from '../services/openaiService.js';
 import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
 
 const router = express.Router();
@@ -321,10 +322,6 @@ router.post('/chat', async (req, res) => {
   try {
     const { store, message, adId, conversationId } = req.body;
 
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
-    }
-
     const db = getDb();
 
     // Get user settings
@@ -338,10 +335,23 @@ router.post('/chat', async (req, res) => {
       `).run(store);
       settings = {
         model: 'sonnet-4.5',
+        reasoning_effort: 'high',
         streaming: 1,
         tone: 'balanced',
         capabilities: { analyze: true, clone: true, ideate: true, audit: true }
       };
+    } else if (!settings.reasoning_effort) {
+      settings.reasoning_effort = 'high';
+    }
+
+    const modelChoice = settings.model || 'sonnet-4.5';
+
+    if (modelChoice === 'gpt-5.1') {
+      if (!process.env.OPENAI_API_KEY) {
+        return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+      }
+    } else if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
     }
 
     // Get or create conversation
@@ -416,12 +426,35 @@ Extraction Method: ${scriptData.method || 'unknown'}
       INSERT INTO creative_messages (conversation_id, role, content) VALUES (?, 'user', ?)
     `).run(convId, message);
 
+    if (modelChoice === 'gpt-5.1') {
+      const historyText = messages
+        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+        .join('\n');
+      const prompt = `${systemPrompt}\n\n${historyText}`;
+      const assistantMessage = await askGPT51(prompt, settings.reasoning_effort || 'high');
+
+      db.prepare(`
+        INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+      `).run(convId, assistantMessage, modelChoice);
+
+      db.prepare(`
+        UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+      `).run(convId);
+
+      return res.json({
+        success: true,
+        message: assistantMessage,
+        conversationId: convId,
+        model: modelChoice
+      });
+    }
+
     // Model mapping
     const modelMap = {
       'sonnet-4.5': 'claude-sonnet-4-20250514',
       'opus-4.5': 'claude-opus-4-20250514'
     };
-    const modelId = modelMap[settings.model] || 'claude-sonnet-4-20250514';
+    const modelId = modelMap[modelChoice] || 'claude-sonnet-4-20250514';
 
     // Initialize Claude
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -451,7 +484,7 @@ Extraction Method: ${scriptData.method || 'unknown'}
         // Save assistant message
         db.prepare(`
           INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
-        `).run(convId, fullResponse, settings.model);
+        `).run(convId, fullResponse, modelChoice);
 
         // Update conversation timestamp
         db.prepare(`
@@ -481,7 +514,7 @@ Extraction Method: ${scriptData.method || 'unknown'}
       // Save assistant message
       db.prepare(`
         INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
-      `).run(convId, assistantMessage, settings.model);
+      `).run(convId, assistantMessage, modelChoice);
 
       // Update conversation timestamp
       db.prepare(`
@@ -491,7 +524,8 @@ Extraction Method: ${scriptData.method || 'unknown'}
       res.json({
         success: true,
         message: assistantMessage,
-        conversationId: convId
+        conversationId: convId,
+        model: modelChoice
       });
     }
 
@@ -580,6 +614,7 @@ router.get('/settings', (req, res) => {
       settings = {
         store,
         model: 'sonnet-4.5',
+        reasoning_effort: 'high',
         streaming: 1,
         tone: 'balanced',
         custom_prompt: null,
@@ -589,6 +624,9 @@ router.get('/settings', (req, res) => {
       settings.capabilities = typeof settings.capabilities === 'string'
         ? JSON.parse(settings.capabilities)
         : settings.capabilities;
+      if (!settings.reasoning_effort) {
+        settings.reasoning_effort = 'high';
+      }
     }
 
     res.json({ success: true, settings });
@@ -599,14 +637,15 @@ router.get('/settings', (req, res) => {
 
 router.put('/settings', (req, res) => {
   try {
-    const { store, model, streaming, tone, custom_prompt, capabilities } = req.body;
+    const { store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities } = req.body;
     const db = getDb();
 
     db.prepare(`
-      INSERT INTO ai_creative_settings (store, model, streaming, tone, custom_prompt, capabilities)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO ai_creative_settings (store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(store) DO UPDATE SET
         model = excluded.model,
+        reasoning_effort = excluded.reasoning_effort,
         streaming = excluded.streaming,
         tone = excluded.tone,
         custom_prompt = excluded.custom_prompt,
@@ -615,6 +654,7 @@ router.put('/settings', (req, res) => {
     `).run(
       store,
       model || 'sonnet-4.5',
+      reasoning_effort || 'high',
       streaming ? 1 : 0,
       tone || 'balanced',
       custom_prompt || null,
