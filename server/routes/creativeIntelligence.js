@@ -446,7 +446,7 @@ Extraction Method: ${scriptData.method || 'unknown'}
             reasoningEffort: effort,
             systemPrompt,
             messages,
-            maxOutputTokens: 1800,
+            maxOutputTokens: 3600,
             verbosity,
             onDelta: (text) => {
               fullResponse += text;
@@ -475,7 +475,7 @@ Extraction Method: ${scriptData.method || 'unknown'}
         reasoningEffort: effort,
         systemPrompt,
         messages,
-        maxOutputTokens: 1800,
+        maxOutputTokens: 3600,
         verbosity
       });
 
