@@ -1,12 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
 
-const execPromise = promisify(exec);
 const router = express.Router();
 
 // ============================================================================
@@ -60,70 +55,18 @@ When analyzing ads, focus on:
 }
 
 // ============================================================================
-// DOWNLOAD VIDEO FILE
-// ============================================================================
-async function downloadVideo(url, outputPath) {
-  const fetch = (await import('node-fetch')).default;
-  
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-  });
-  
-  if (!response.ok) {
-    throw new Error(`Failed to download: ${response.status}`);
-  }
-  
-  const buffer = await response.buffer();
-  fs.writeFileSync(outputPath, buffer);
-  return outputPath;
-}
-
-// ============================================================================
-// EXTRACT VIDEO URL WITH YT-DLP
-// ============================================================================
-async function extractVideoUrl(embedHtml) {
-  if (!embedHtml) return null;
-
-  const match = embedHtml.match(/href=([^&"]+)/);
-  if (!match) return null;
-
-  const fbUrl = decodeURIComponent(match[1]);
-
-  try {
-    const { stdout } = await execPromise(`yt-dlp -g "${fbUrl}" 2>/dev/null`, { timeout: 30000 });
-    return stdout.trim();
-  } catch (err) {
-    console.error('[yt-dlp] Extraction failed:', err.message);
-    return null;
-  }
-}
-
-// ============================================================================
-// DOWNLOAD VIDEO WITH YT-DLP (BETTER FOR FB VIDEOS)
-// ============================================================================
-async function downloadWithYtdlp(url, outputPath) {
-  try {
-    await execPromise(`yt-dlp -o "${outputPath}" --no-playlist "${url}"`, { timeout: 120000 });
-    return outputPath;
-  } catch (err) {
-    console.error('[yt-dlp] Download failed:', err.message);
-    return null;
-  }
-}
-
-// ============================================================================
-// GEMINI VIDEO ANALYSIS WITH FILE UPLOAD
+// GEMINI VIDEO ANALYSIS
 // ============================================================================
 router.post('/analyze-video', async (req, res) => {
   const { GoogleGenerativeAI } = await import('@google/generative-ai');
-  const { GoogleAIFileManager } = await import('@google/generative-ai/server');
-  
-  let tempFilePath = null;
   
   try {
     const { store, adId, adName, campaignId, campaignName, sourceUrl, embedHtml, thumbnailUrl } = req.body;
+
+    // Validate
+    if (!store || !adId) {
+      return res.status(400).json({ error: 'Missing store or adId' });
+    }
 
     if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
@@ -140,7 +83,8 @@ router.post('/analyze-video', async (req, res) => {
       return res.json({ 
         success: true, 
         script: JSON.parse(existing.script),
-        cached: true 
+        cached: true,
+        method: existing.extraction_method || 'unknown'
       });
     }
 
@@ -149,96 +93,30 @@ router.post('/analyze-video', async (req, res) => {
       INSERT INTO creative_scripts (store, ad_id, ad_name, campaign_id, campaign_name, status)
       VALUES (?, ?, ?, ?, ?, 'processing')
       ON CONFLICT(store, ad_id) DO UPDATE SET status = 'processing', updated_at = datetime('now')
-    `).run(store, adId, adName, campaignId, campaignName);
+    `).run(store, adId, adName || '', campaignId || '', campaignName || '');
 
-    // Get video URL
-    let videoUrl = sourceUrl;
-    if (!videoUrl && embedHtml) {
-      videoUrl = await extractVideoUrl(embedHtml);
-    }
+    // Extract and download media using the robust extractor
+    const media = await extractAndDownloadMedia({ sourceUrl, embedHtml, thumbnailUrl });
 
-    // Determine what we're analyzing
-    const hasVideo = !!videoUrl;
-    const mediaUrl = videoUrl || thumbnailUrl;
-
-    if (!mediaUrl) {
+    if (!media.success) {
       db.prepare(`
-        UPDATE creative_scripts SET status = 'failed', error_message = 'No media URL available', updated_at = datetime('now')
+        UPDATE creative_scripts 
+        SET status = 'failed', error_message = ?, updated_at = datetime('now')
         WHERE store = ? AND ad_id = ?
-      `).run(store, adId);
-      return res.status(400).json({ error: 'No video or thumbnail URL available' });
+      `).run(media.error, store, adId);
+      
+      return res.status(400).json({ error: media.error });
     }
+
+    console.log(`[Gemini] Media extracted via ${media.method}, type: ${media.type}`);
 
     // Initialize Gemini
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
 
-    let script;
-    let analysisType = 'thumbnail';
-
-    if (hasVideo) {
-      // TRY TO DOWNLOAD AND UPLOAD VIDEO
-      try {
-        const tempDir = os.tmpdir();
-        tempFilePath = path.join(tempDir, `ad_${adId}_${Date.now()}.mp4`);
-        
-        console.log(`[Gemini] Downloading video for ad ${adId}...`);
-        
-        // Try direct download first, then yt-dlp
-        let downloaded = false;
-        try {
-          await downloadVideo(videoUrl, tempFilePath);
-          downloaded = fs.existsSync(tempFilePath) && fs.statSync(tempFilePath).size > 0;
-        } catch (e) {
-          console.log('[Gemini] Direct download failed, trying yt-dlp...');
-        }
-        
-        if (!downloaded) {
-          // Try yt-dlp
-          const ytdlpPath = path.join(tempDir, `ad_${adId}_${Date.now()}_ytdlp.mp4`);
-          const result = await downloadWithYtdlp(videoUrl, ytdlpPath);
-          if (result && fs.existsSync(ytdlpPath)) {
-            tempFilePath = ytdlpPath;
-            downloaded = true;
-          }
-        }
-
-        if (downloaded && fs.existsSync(tempFilePath)) {
-          const fileSize = fs.statSync(tempFilePath).size;
-          console.log(`[Gemini] Video downloaded: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
-
-          // Upload to Gemini File API
-          console.log('[Gemini] Uploading to Gemini File API...');
-          const uploadResult = await fileManager.uploadFile(tempFilePath, {
-            mimeType: 'video/mp4',
-            displayName: `Ad ${adId} Video`
-          });
-
-          console.log(`[Gemini] Upload complete: ${uploadResult.file.name}`);
-
-          // Wait for processing
-          let file = uploadResult.file;
-          while (file.state === 'PROCESSING') {
-            await new Promise(r => setTimeout(r, 2000));
-            file = await fileManager.getFile(file.name);
-          }
-
-          if (file.state === 'FAILED') {
-            throw new Error('Video processing failed');
-          }
-
-          console.log('[Gemini] Analyzing video frame-by-frame...');
-
-          // Analyze with frame-by-frame prompt
-          const result = await model.generateContent([
-            {
-              fileData: {
-                fileUri: file.uri,
-                mimeType: 'video/mp4'
-              }
-            },
-            `Analyze this video ad FRAME BY FRAME with FULL AUDIO ANALYSIS.
+    // Build prompt based on media type
+    const prompt = media.type === 'video'
+      ? `Analyze this video ad FRAME BY FRAME with FULL AUDIO ANALYSIS.
 
 For each scene, provide:
 - time: exact timestamp range (e.g., "0:00-0:02", "0:02-0:05")
@@ -259,129 +137,93 @@ IMPORTANT:
 - Be specific about timing
 
 Return ONLY valid JSON array, no markdown:
-[
-  {"time": "0:00-0:02", "visual": "...", "text": "...", "action": "...", "voiceover": "...", "music": "...", "sound_effects": "...", "hook_element": "..."},
-  ...
-]`
-          ]);
+[{"time": "0:00-0:02", "visual": "...", "text": "...", "action": "...", "voiceover": "...", "music": "...", "sound_effects": "...", "hook_element": "..."}]`
+      : `Analyze this ad thumbnail. Return ONLY valid JSON, no markdown, no explanation:
+{
+  "visual": "what's shown",
+  "text": "any text visible or null",
+  "mood": "overall feeling",
+  "product_visible": true or false,
+  "hook_elements": ["what grabs attention"],
+  "colors": ["dominant colors"],
+  "cta": "call to action if visible or null"
+}`;
 
-          const responseText = result.response.text();
-          
-          // Parse JSON
-          try {
-            const cleanJson = responseText.replace(/```json\n?|\n?```/g, '').trim();
-            script = JSON.parse(cleanJson);
-            analysisType = 'video_frames';
-            console.log(`[Gemini] Extracted ${Array.isArray(script) ? script.length : 0} frames`);
-          } catch (parseErr) {
-            console.error('[Gemini] JSON parse error:', parseErr.message);
-            script = { raw: responseText, parseError: true, type: 'video' };
-            analysisType = 'video_raw';
-          }
-
-          // Clean up uploaded file
-          try {
-            await fileManager.deleteFile(file.name);
-          } catch (e) {
-            console.log('[Gemini] Could not delete uploaded file');
-          }
-        } else {
-          throw new Error('Could not download video');
+    // Call Gemini with inlineData (base64)
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          data: media.data,
+          mimeType: media.mimeType
         }
-      } catch (videoErr) {
-        console.error('[Gemini] Video analysis failed, falling back to thumbnail:', videoErr.message);
-        // Fall through to thumbnail analysis
-      }
+      },
+      prompt
+    ]);
+
+    const responseText = result.response.text();
+    
+    // Parse JSON from response
+    let script;
+    let analysisType = media.type === 'video' ? 'video_frames' : 'thumbnail';
+    
+    try {
+      const cleanJson = responseText
+        .replace(/```json\n?/g, '')
+        .replace(/```\n?/g, '')
+        .trim();
+      script = JSON.parse(cleanJson);
+    } catch (parseErr) {
+      console.error('[Gemini] JSON parse error:', parseErr.message);
+      console.error('[Gemini] Raw response:', responseText.substring(0, 500));
+      script = { raw: responseText, parseError: true };
+      analysisType = media.type === 'video' ? 'video_raw' : 'thumbnail_raw';
     }
 
-    // FALLBACK: Thumbnail analysis if video failed or not available
-    if (!script) {
-      console.log('[Gemini] Analyzing thumbnail image...');
-      
-      const result = await model.generateContent([
-        {
-          fileData: {
-            fileUri: thumbnailUrl || mediaUrl,
-            mimeType: 'image/jpeg'
-          }
-        },
-        `Analyze this ad image in detail:
-
-1. Visual Elements:
-   - Main subject/product
-   - Background and setting
-   - Colors and contrast
-   - Composition
-
-2. Text/Copy:
-   - All visible text (exact wording)
-   - Text placement and hierarchy
-   - Language used
-
-3. Marketing Elements:
-   - Hook/attention grabber
-   - Value proposition
-   - Call to action
-   - Social proof elements
-
-4. Target Audience Signals:
-   - Who is this ad targeting?
-   - Cultural/regional indicators
-   - Price/value positioning
-
-Return as JSON object with these sections. No markdown.`
-      ]);
-
-      const responseText = result.response.text();
-      
-      try {
-        const cleanJson = responseText.replace(/```json\n?|\n?```/g, '').trim();
-        script = JSON.parse(cleanJson);
-        analysisType = 'thumbnail';
-      } catch (parseErr) {
-        script = { raw: responseText, parseError: true, type: 'thumbnail' };
-        analysisType = 'thumbnail_raw';
-      }
-    }
-
-    // Clean up temp file
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try {
-        fs.unlinkSync(tempFilePath);
-      } catch (e) {}
-    }
-
-    // Store result
+    // Build script data structure
     const scriptData = {
       analysisType,
       frames: analysisType === 'video_frames' ? script : null,
-      thumbnail: analysisType !== 'video_frames' ? script : null,
+      thumbnail: analysisType.startsWith('thumbnail') ? script : null,
+      method: media.method,
       analyzedAt: new Date().toISOString()
     };
 
+    // Store result
     db.prepare(`
       UPDATE creative_scripts 
-      SET script = ?, video_url = ?, thumbnail_url = ?, status = 'complete', analyzed_at = datetime('now'), updated_at = datetime('now')
+      SET script = ?, 
+          video_url = ?, 
+          thumbnail_url = ?, 
+          status = 'complete', 
+          analyzed_at = datetime('now'), 
+          updated_at = datetime('now')
       WHERE store = ? AND ad_id = ?
-    `).run(JSON.stringify(scriptData), videoUrl, thumbnailUrl, store, adId);
+    `).run(
+      JSON.stringify(scriptData), 
+      sourceUrl || null, 
+      thumbnailUrl || null, 
+      store, 
+      adId
+    );
 
-    res.json({ success: true, script: scriptData, cached: false, analysisType });
+    res.json({ 
+      success: true, 
+      script: scriptData, 
+      cached: false,
+      method: media.method,
+      mediaType: media.type
+    });
 
   } catch (error) {
     console.error('[Gemini] Analysis error:', error);
     
-    // Clean up temp file on error
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try {
-        fs.unlinkSync(tempFilePath);
-      } catch (e) {}
-    }
-    
     const db = getDb();
     const { store, adId } = req.body;
+    
     if (store && adId) {
       db.prepare(`
-        UPDATE creative_scripts SET status = 'failed', error_message = ?, updated_at = datetime('now')
+        UPDATE creative_scripts 
+        SET status = 'failed', error_message = ?, updated_at = datetime('now')
         WHERE store = ? AND ad_id = ?
       `).run(error.message, store, adId);
     }
@@ -533,6 +375,7 @@ router.post('/chat', async (req, res) => {
 Ad Name: ${scriptRow.ad_name || adId}
 Campaign: ${scriptRow.campaign_name || 'Unknown'}
 Analysis Type: ${scriptData.analysisType || 'unknown'}
+Extraction Method: ${scriptData.method || 'unknown'}
 `;
 
         if (scriptData.analysisType === 'video_frames' && scriptData.frames) {
@@ -788,19 +631,30 @@ router.put('/settings', (req, res) => {
 // STATUS CHECK
 // ============================================================================
 router.get('/status', async (req, res) => {
-  let ytdlpVersion = null;
-  try {
-    const { stdout } = await execPromise('yt-dlp --version');
-    ytdlpVersion = stdout.trim();
-  } catch (e) {
-    ytdlpVersion = null;
-  }
+  const ytdlp = await getYtdlpStatus();
 
   res.json({
     gemini: !!process.env.GEMINI_API_KEY,
     anthropic: !!process.env.ANTHROPIC_API_KEY,
-    ytdlp: ytdlpVersion ? { installed: true, version: ytdlpVersion } : { installed: false }
+    ytdlp
   });
+});
+
+// ============================================================================
+// YT-DLP STATUS
+// ============================================================================
+router.get('/yt-dlp-status', async (req, res) => {
+  const status = await getYtdlpStatus();
+  res.json(status);
+});
+
+// ============================================================================
+// YT-DLP UPDATE
+// ============================================================================
+router.post('/yt-dlp-update', async (req, res) => {
+  const success = await updateYtdlp();
+  const status = await getYtdlpStatus();
+  res.json({ updated: success, ...status });
 });
 
 export default router;
