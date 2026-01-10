@@ -173,7 +173,7 @@ export default function CreativePreview({ store }) {
   useEffect(() => {
     let isMounted = true;
 
-    fetch(`${API_BASE}/creative-intelligence/status`)
+    fetch(`${API_BASE}/creative-intelligence/yt-dlp-status`)
       .then(async (res) => {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
