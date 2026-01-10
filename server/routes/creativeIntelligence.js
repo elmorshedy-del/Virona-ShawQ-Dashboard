@@ -1,7 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
-import { askGPT51 } from '../services/openaiService.js';
+import { askGPT51, askOpenAIChat } from '../services/openaiService.js';
 
 const router = express.Router();
 
@@ -416,6 +416,7 @@ Extraction Method: ${scriptData.method || 'unknown'}
 
     const modelSelection = settings.model || 'sonnet-4.5';
     const effort = reasoning_effort || settings.reasoning_effort || 'high';
+    const verbosity = req.body?.verbosity || settings.verbosity || 'medium';
 
     if (modelSelection === 'gpt-5.1') {
       if (!process.env.OPENAI_API_KEY) {
@@ -438,6 +439,35 @@ Extraction Method: ${scriptData.method || 'unknown'}
         message: assistantMessage,
         conversationId: convId,
         model: 'gpt-5.1'
+      });
+    }
+
+    if (modelSelection === 'gpt-5.2' || modelSelection === 'gpt-5.2-pro') {
+      if (!process.env.OPENAI_API_KEY) {
+        return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+      }
+
+      const assistantMessage = await askOpenAIChat({
+        model: modelSelection,
+        reasoningEffort: effort,
+        systemPrompt,
+        messages,
+        verbosity
+      });
+
+      db.prepare(`
+        INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+      `).run(convId, assistantMessage, modelSelection);
+
+      db.prepare(`
+        UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+      `).run(convId);
+
+      return res.json({
+        success: true,
+        message: assistantMessage,
+        conversationId: convId,
+        model: modelSelection
       });
     }
 
@@ -610,6 +640,7 @@ router.get('/settings', (req, res) => {
         store,
         model: 'sonnet-4.5',
         reasoning_effort: 'high',
+        verbosity: 'medium',
         streaming: 1,
         tone: 'balanced',
         custom_prompt: null,
@@ -620,6 +651,7 @@ router.get('/settings', (req, res) => {
         ? JSON.parse(settings.capabilities)
         : settings.capabilities;
       settings.reasoning_effort = settings.reasoning_effort || 'high';
+      settings.verbosity = settings.verbosity || 'medium';
     }
 
     res.json({ success: true, settings });
@@ -630,15 +662,16 @@ router.get('/settings', (req, res) => {
 
 router.put('/settings', (req, res) => {
   try {
-    const { store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities } = req.body;
+    const { store, model, reasoning_effort, verbosity, streaming, tone, custom_prompt, capabilities } = req.body;
     const db = getDb();
 
     db.prepare(`
-      INSERT INTO ai_creative_settings (store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO ai_creative_settings (store, model, reasoning_effort, verbosity, streaming, tone, custom_prompt, capabilities)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(store) DO UPDATE SET
         model = excluded.model,
         reasoning_effort = excluded.reasoning_effort,
+        verbosity = excluded.verbosity,
         streaming = excluded.streaming,
         tone = excluded.tone,
         custom_prompt = excluded.custom_prompt,
@@ -648,6 +681,7 @@ router.put('/settings', (req, res) => {
       store,
       model || 'sonnet-4.5',
       reasoning_effort || 'high',
+      verbosity || 'medium',
       streaming ? 1 : 0,
       tone || 'balanced',
       custom_prompt || null,
