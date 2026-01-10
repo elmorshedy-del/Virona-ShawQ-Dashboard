@@ -74,6 +74,21 @@ const extractGeminiFullTranscript = (scriptData) => {
   return lines.join('\n');
 };
 
+const OPENAI_EFFORT_OPTIONS = {
+  'gpt-5.1': ['medium'],
+  'gpt-5.2': ['none', 'medium', 'xhigh'],
+  'gpt-5.2-pro': ['none', 'medium', 'xhigh']
+};
+
+const OPENAI_MODELS = new Set(Object.keys(OPENAI_EFFORT_OPTIONS));
+
+const getSafeEffort = (model, effort) => {
+  const options = OPENAI_EFFORT_OPTIONS[model];
+  if (!options) return effort;
+  if (options.includes(effort)) return effort;
+  return options[0];
+};
+
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
@@ -446,17 +461,19 @@ export default function CreativeIntelligence({ store }) {
     const startedAt = Date.now();
     const endpoint = `${API_BASE}/creative-intelligence/chat`;
     const selectedModel = settings?.model || 'sonnet-4.5';
-    const isGPT51 = selectedModel === 'gpt-5.1';
-    const reasoningEffort = settings?.reasoning_effort || 'high';
+    const isOpenAIModel = OPENAI_MODELS.has(selectedModel);
+    const reasoningEffort = getSafeEffort(selectedModel, settings?.reasoning_effort || 'high');
+    const verbosity = settings?.verbosity || 'medium';
     const buildModelLabel = (model = null) => (
-      isGPT51 ? 'OpenAI GPT-5.1' : `Claude: ${model || selectedModel}`
+      isOpenAIModel ? `OpenAI ${model || selectedModel}` : `Claude: ${model || selectedModel}`
     );
     const requestPayload = {
       store: storeId,
       message: userMessage,
       adId: selectedAd?.id,
       conversationId,
-      reasoning_effort: reasoningEffort
+      reasoning_effort: reasoningEffort,
+      verbosity
     };
 
     try {
@@ -494,7 +511,7 @@ export default function CreativeIntelligence({ store }) {
         throw new Error(errorData?.error || 'Chat request failed');
       }
 
-      if (settings?.streaming && !isGPT51) {
+      if (settings?.streaming && !isOpenAIModel) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -1139,12 +1156,17 @@ export default function CreativeIntelligence({ store }) {
 function SettingsModal({ settings, onSave, onClose }) {
   const [form, setForm] = useState({
     model: settings?.model || 'sonnet-4.5',
-    reasoning_effort: settings?.reasoning_effort || 'high',
+    reasoning_effort: getSafeEffort(settings?.model || 'sonnet-4.5', settings?.reasoning_effort || 'high'),
+    verbosity: settings?.verbosity || 'medium',
     streaming: settings?.streaming ?? true,
     tone: settings?.tone || 'balanced',
     custom_prompt: settings?.custom_prompt || '',
     capabilities: settings?.capabilities || { analyze: true, clone: true, ideate: true, audit: true }
   });
+
+  const effortOptions = OPENAI_EFFORT_OPTIONS[form.model] || [];
+  const isOpenAIModel = OPENAI_MODELS.has(form.model);
+  const supportsVerbosity = form.model === 'gpt-5.2' || form.model === 'gpt-5.2-pro';
 
   const handleCapabilityToggle = (key) => {
     setForm(prev => ({
@@ -1176,7 +1198,11 @@ function SettingsModal({ settings, onSave, onClose }) {
                   name="model"
                   value="sonnet-4.5"
                   checked={form.model === 'sonnet-4.5'}
-                  onChange={(e) => setForm(prev => ({ ...prev, model: e.target.value }))}
+                  onChange={(e) => setForm(prev => ({
+                    ...prev,
+                    model: e.target.value,
+                    reasoning_effort: getSafeEffort(e.target.value, prev.reasoning_effort)
+                  }))}
                   className="mt-1"
                 />
                 <div>
@@ -1193,12 +1219,58 @@ function SettingsModal({ settings, onSave, onClose }) {
                   name="model"
                   value="opus-4.5"
                   checked={form.model === 'opus-4.5'}
-                  onChange={(e) => setForm(prev => ({ ...prev, model: e.target.value }))}
+                  onChange={(e) => setForm(prev => ({
+                    ...prev,
+                    model: e.target.value,
+                    reasoning_effort: getSafeEffort(e.target.value, prev.reasoning_effort)
+                  }))}
                   className="mt-1"
                 />
                 <div>
                   <div className="font-medium text-gray-900">Opus 4.5 <span className="text-xs text-amber-600 ml-1">Premium</span></div>
                   <div className="text-sm text-gray-500">Deeper reasoning, creative connections. Best for strategy sessions.</div>
+                </div>
+              </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                form.model === 'gpt-5.2' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5.2"
+                  checked={form.model === 'gpt-5.2'}
+                  onChange={(e) => setForm(prev => ({
+                    ...prev,
+                    model: e.target.value,
+                    reasoning_effort: getSafeEffort(e.target.value, prev.reasoning_effort)
+                  }))}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">OpenAI GPT-5.2 <span className="text-xs text-emerald-600 ml-1">Responses API</span></div>
+                  <div className="text-sm text-gray-500">Balanced reasoning with verbosity control for creative depth.</div>
+                </div>
+              </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                form.model === 'gpt-5.2-pro' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5.2-pro"
+                  checked={form.model === 'gpt-5.2-pro'}
+                  onChange={(e) => setForm(prev => ({
+                    ...prev,
+                    model: e.target.value,
+                    reasoning_effort: getSafeEffort(e.target.value, prev.reasoning_effort)
+                  }))}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">OpenAI GPT-5.2 Pro <span className="text-xs text-emerald-600 ml-1">Responses API</span></div>
+                  <div className="text-sm text-gray-500">Higher depth for strategic creative analysis.</div>
                 </div>
               </label>
 
@@ -1210,27 +1282,46 @@ function SettingsModal({ settings, onSave, onClose }) {
                   name="model"
                   value="gpt-5.1"
                   checked={form.model === 'gpt-5.1'}
-                  onChange={(e) => setForm(prev => ({ ...prev, model: e.target.value }))}
+                  onChange={(e) => setForm(prev => ({
+                    ...prev,
+                    model: e.target.value,
+                    reasoning_effort: getSafeEffort(e.target.value, prev.reasoning_effort)
+                  }))}
                   className="mt-1"
                 />
                 <div>
                   <div className="font-medium text-gray-900">OpenAI GPT-5.1 <span className="text-xs text-emerald-600 ml-1">Responses API</span></div>
-                  <div className="text-sm text-gray-500">OpenAI reasoning model for deep creative analysis.</div>
+                  <div className="text-sm text-gray-500">Legacy reasoning model for deep creative analysis.</div>
                 </div>
               </label>
             </div>
           </div>
 
-          {form.model === 'gpt-5.1' && (
+          {isOpenAIModel && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Reasoning Effort</label>
               <select
-                value={form.reasoning_effort}
+                value={getSafeEffort(form.model, form.reasoning_effort)}
                 onChange={(e) => setForm(prev => ({ ...prev, reasoning_effort: e.target.value }))}
                 className="w-full px-3 py-2 text-sm rounded-lg border bg-white focus:outline-none focus:ring-2"
                 style={{ borderColor: colors.border }}
               >
-                <option value="none">none</option>
+                {effortOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {supportsVerbosity && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Response Verbosity</label>
+              <select
+                value={form.verbosity}
+                onChange={(e) => setForm(prev => ({ ...prev, verbosity: e.target.value }))}
+                className="w-full px-3 py-2 text-sm rounded-lg border bg-white focus:outline-none focus:ring-2"
+                style={{ borderColor: colors.border }}
+              >
                 <option value="low">low</option>
                 <option value="medium">medium</option>
                 <option value="high">high</option>
