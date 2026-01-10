@@ -1,7 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
-import { askOpenAIChat } from '../services/openaiService.js';
+import { askOpenAIChat, streamOpenAIChat } from '../services/openaiService.js';
 
 const router = express.Router();
 
@@ -428,6 +428,46 @@ Extraction Method: ${scriptData.method || 'unknown'}
     if (openAIModel) {
       if (!process.env.OPENAI_API_KEY) {
         return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+      }
+
+      const shouldStreamOpenAI = ['gpt-5.2', 'gpt-5.2-pro'].includes(modelSelection);
+
+      if (shouldStreamOpenAI) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        let fullResponse = '';
+
+        try {
+          await streamOpenAIChat({
+            model: openAIModel,
+            reasoningEffort: effort,
+            systemPrompt,
+            messages,
+            maxOutputTokens: 900,
+            verbosity,
+            onDelta: (text) => {
+              fullResponse += text;
+              res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+            }
+          });
+        } catch (err) {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, model: modelSelection })}\n\n`);
+          return res.end();
+        }
+
+        db.prepare(`
+          INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+        `).run(convId, fullResponse, modelSelection);
+
+        db.prepare(`
+          UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+        `).run(convId);
+
+        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, model: modelSelection })}\n\n`);
+        return res.end();
       }
 
       const assistantMessage = await askOpenAIChat({
