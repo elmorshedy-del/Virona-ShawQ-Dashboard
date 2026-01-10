@@ -111,6 +111,7 @@ export default function CreativeIntelligence({ store }) {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+  const [gpt51ReasoningEffort, setGpt51ReasoningEffort] = useState('high');
   
   // Settings states
   const [showSettings, setShowSettings] = useState(false);
@@ -445,11 +446,20 @@ export default function CreativeIntelligence({ store }) {
     setChatLoading(true);
     const startedAt = Date.now();
     const endpoint = `${API_BASE}/creative-intelligence/chat`;
+    const selectedModel = settings?.model || 'sonnet-4.5';
+    const isGPT51 = selectedModel === 'gpt-5.1';
+    const pathwayLabel = isGPT51 ? 'OpenAI GPT-5.1' : 'Claude (Sonnet/Opus)';
+    const formatModelLabel = (model) => (
+      isGPT51
+        ? `OpenAI: ${model || 'gpt-5.1-chat-latest'}`
+        : `Claude: ${model || settings?.model || 'sonnet-4.5'}`
+    );
     const requestPayload = {
       store: storeId,
       message: userMessage,
       adId: selectedAd?.id,
-      conversationId
+      conversationId,
+      ...(isGPT51 ? { reasoningEffort: gpt51ReasoningEffort } : {})
     };
 
     try {
@@ -474,7 +484,7 @@ export default function CreativeIntelligence({ store }) {
           pathway: [
             'Creative tab → API',
             `${endpoint}`,
-            'Claude (Sonnet/Opus)'
+            pathwayLabel
           ],
           details: {
             statusCode: res.status,
@@ -487,7 +497,7 @@ export default function CreativeIntelligence({ store }) {
         throw new Error(errorData?.error || 'Chat request failed');
       }
 
-      if (settings?.streaming) {
+      if (settings?.streaming && !isGPT51) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -533,7 +543,7 @@ export default function CreativeIntelligence({ store }) {
                     pathway: [
                       'Creative tab → API',
                       `${endpoint}`,
-                      `Claude: ${modelUsed || settings?.model || 'sonnet-4.5'}`
+                      formatModelLabel(modelUsed)
                     ],
                     details: {
                       conversationId: data.conversationId,
@@ -550,7 +560,7 @@ export default function CreativeIntelligence({ store }) {
                     pathway: [
                       'Creative tab → API',
                       `${endpoint}`,
-                      `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+                      formatModelLabel(data.model)
                     ],
                     details: {
                       conversationId,
@@ -569,7 +579,9 @@ export default function CreativeIntelligence({ store }) {
         if (data.success) {
           setChatMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
           setConversationId(data.conversationId);
-          setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
+          if (!isGPT51) {
+            setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
+          }
           pushDebugEvent({
             action: 'Chat',
             status: 'success',
@@ -578,7 +590,7 @@ export default function CreativeIntelligence({ store }) {
             pathway: [
               'Creative tab → API',
               `${endpoint}`,
-              `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+              formatModelLabel(data.model)
             ],
             details: {
               conversationId: data.conversationId,
@@ -595,7 +607,7 @@ export default function CreativeIntelligence({ store }) {
             pathway: [
               'Creative tab → API',
               `${endpoint}`,
-              `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+              formatModelLabel(data.model)
             ],
             details: {
               conversationId,
@@ -616,7 +628,7 @@ export default function CreativeIntelligence({ store }) {
         pathway: [
           'Creative tab → API',
           `${API_BASE}/creative-intelligence/chat`,
-          'Claude (Sonnet/Opus)'
+          pathwayLabel
         ],
         details: {
           conversationId,
@@ -1111,6 +1123,8 @@ export default function CreativeIntelligence({ store }) {
         <SettingsModal
           settings={settings}
           onSave={handleSaveSettings}
+          reasoningEffort={gpt51ReasoningEffort}
+          onReasoningEffortChange={setGpt51ReasoningEffort}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -1129,14 +1143,23 @@ export default function CreativeIntelligence({ store }) {
 // ============================================================================
 // SETTINGS MODAL COMPONENT
 // ============================================================================
-function SettingsModal({ settings, onSave, onClose }) {
+function SettingsModal({ settings, onSave, onClose, reasoningEffort, onReasoningEffortChange }) {
   const [form, setForm] = useState({
     model: settings?.model || 'sonnet-4.5',
     streaming: settings?.streaming ?? true,
     tone: settings?.tone || 'balanced',
     custom_prompt: settings?.custom_prompt || '',
-    capabilities: settings?.capabilities || { analyze: true, clone: true, ideate: true, audit: true }
+    capabilities: settings?.capabilities || { analyze: true, clone: true, ideate: true, audit: true },
+    reasoningEffort: reasoningEffort || 'high'
   });
+
+  const handleSave = () => {
+    const { reasoningEffort: effort, ...settingsPayload } = form;
+    if (onReasoningEffortChange) {
+      onReasoningEffortChange(effort);
+    }
+    onSave(settingsPayload);
+  };
 
   const handleCapabilityToggle = (key) => {
     setForm(prev => ({
@@ -1193,8 +1216,41 @@ function SettingsModal({ settings, onSave, onClose }) {
                   <div className="text-sm text-gray-500">Deeper reasoning, creative connections. Best for strategy sessions.</div>
                 </div>
               </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                form.model === 'gpt-5.1' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5.1"
+                  checked={form.model === 'gpt-5.1'}
+                  onChange={(e) => setForm(prev => ({ ...prev, model: e.target.value }))}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">OpenAI GPT-5.1 <span className="text-xs text-emerald-600 ml-1">Responses API</span></div>
+                  <div className="text-sm text-gray-500">Reasoning-focused answers with adjustable effort.</div>
+                </div>
+              </label>
             </div>
           </div>
+
+          {form.model === 'gpt-5.1' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Reasoning Effort</label>
+              <select
+                value={form.reasoningEffort}
+                onChange={(e) => setForm(prev => ({ ...prev, reasoningEffort: e.target.value }))}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="none">none</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
+          )}
 
           {/* Capabilities */}
           <div>
@@ -1293,7 +1349,7 @@ function SettingsModal({ settings, onSave, onClose }) {
 
         <div className="p-6 border-t border-gray-200">
           <button
-            onClick={() => onSave(form)}
+            onClick={handleSave}
             className="w-full py-3 rounded-xl text-sm font-medium text-white bg-indigo-500 hover:bg-indigo-600 transition-colors"
           >
             Save Preferences
