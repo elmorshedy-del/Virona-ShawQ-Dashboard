@@ -451,6 +451,14 @@ export default function CreativeIntelligence({ store }) {
       adId: selectedAd?.id,
       conversationId
     };
+    const useStreaming = settings?.streaming && settings?.model !== 'gpt-5.1';
+    const requestModelLabel = settings?.model === 'gpt-5.1'
+      ? 'OpenAI GPT-5.1'
+      : 'Claude (Sonnet/Opus)';
+    const formatModelLabel = (modelValue) => {
+      if (modelValue === 'gpt-5.1') return 'OpenAI GPT-5.1';
+      return `Claude: ${modelValue || settings?.model || 'sonnet-4.5'}`;
+    };
 
     try {
       const res = await fetch(endpoint, {
@@ -474,7 +482,7 @@ export default function CreativeIntelligence({ store }) {
           pathway: [
             'Creative tab → API',
             `${endpoint}`,
-            'Claude (Sonnet/Opus)'
+            requestModelLabel
           ],
           details: {
             statusCode: res.status,
@@ -487,7 +495,7 @@ export default function CreativeIntelligence({ store }) {
         throw new Error(errorData?.error || 'Chat request failed');
       }
 
-      if (settings?.streaming) {
+      if (useStreaming) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -533,7 +541,7 @@ export default function CreativeIntelligence({ store }) {
                     pathway: [
                       'Creative tab → API',
                       `${endpoint}`,
-                      `Claude: ${modelUsed || settings?.model || 'sonnet-4.5'}`
+                      formatModelLabel(modelUsed || settings?.model)
                     ],
                     details: {
                       conversationId: data.conversationId,
@@ -550,7 +558,7 @@ export default function CreativeIntelligence({ store }) {
                     pathway: [
                       'Creative tab → API',
                       `${endpoint}`,
-                      `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+                      formatModelLabel(data.model || settings?.model)
                     ],
                     details: {
                       conversationId,
@@ -578,7 +586,7 @@ export default function CreativeIntelligence({ store }) {
             pathway: [
               'Creative tab → API',
               `${endpoint}`,
-              `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+              formatModelLabel(data.model || settings?.model)
             ],
             details: {
               conversationId: data.conversationId,
@@ -595,7 +603,7 @@ export default function CreativeIntelligence({ store }) {
             pathway: [
               'Creative tab → API',
               `${endpoint}`,
-              `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+              formatModelLabel(data.model || settings?.model)
             ],
             details: {
               conversationId,
@@ -616,7 +624,7 @@ export default function CreativeIntelligence({ store }) {
         pathway: [
           'Creative tab → API',
           `${API_BASE}/creative-intelligence/chat`,
-          'Claude (Sonnet/Opus)'
+          requestModelLabel
         ],
         details: {
           conversationId,
@@ -1132,6 +1140,7 @@ export default function CreativeIntelligence({ store }) {
 function SettingsModal({ settings, onSave, onClose }) {
   const [form, setForm] = useState({
     model: settings?.model || 'sonnet-4.5',
+    reasoning_effort: settings?.reasoning_effort || 'high',
     streaming: settings?.streaming ?? true,
     tone: settings?.tone || 'balanced',
     custom_prompt: settings?.custom_prompt || '',
@@ -1193,7 +1202,40 @@ function SettingsModal({ settings, onSave, onClose }) {
                   <div className="text-sm text-gray-500">Deeper reasoning, creative connections. Best for strategy sessions.</div>
                 </div>
               </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                form.model === 'gpt-5.1' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5.1"
+                  checked={form.model === 'gpt-5.1'}
+                  onChange={(e) => setForm(prev => ({ ...prev, model: e.target.value }))}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">OpenAI GPT-5.1 <span className="text-xs text-sky-600 ml-1">Responses API</span></div>
+                  <div className="text-sm text-gray-500">Deep reasoning with adjustable effort for complex creative strategy.</div>
+                </div>
+              </label>
             </div>
+
+            {form.model === 'gpt-5.1' && (
+              <div className="mt-4">
+                <label className="block text-xs font-semibold text-gray-700 mb-2">Reasoning Effort</label>
+                <select
+                  value={form.reasoning_effort}
+                  onChange={(e) => setForm(prev => ({ ...prev, reasoning_effort: e.target.value }))}
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="none">none</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+              </div>
+            )}
           </div>
 
           {/* Capabilities */}
