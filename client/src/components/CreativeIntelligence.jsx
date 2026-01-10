@@ -448,6 +448,8 @@ export default function CreativeIntelligence({ store }) {
     const selectedModel = settings?.model || 'sonnet-4.5';
     const openAiModels = new Set(['gpt-5.1', 'gpt-5.2', 'gpt-5.2-pro']);
     const isOpenAI = openAiModels.has(selectedModel);
+    const isOpenAIStream = ['gpt-5.2', 'gpt-5.2-pro'].includes(selectedModel);
+    const shouldStream = settings?.streaming && (isOpenAIStream || !isOpenAI);
     const reasoningEffort = settings?.reasoning_effort || 'medium';
     const buildModelLabel = (model = null) => (
       isOpenAI ? `OpenAI ${model || selectedModel}` : `Claude: ${model || selectedModel}`
@@ -495,7 +497,7 @@ export default function CreativeIntelligence({ store }) {
         throw new Error(errorData?.error || 'Chat request failed');
       }
 
-      if (settings?.streaming && !isOpenAI) {
+      if (shouldStream) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -532,7 +534,9 @@ export default function CreativeIntelligence({ store }) {
                     updated[updated.length - 1] = { role: 'assistant', content: assistantMessage };
                     return updated;
                   });
-                  setTokenUsage(prev => ({ ...prev, sonnet: usage ?? null }));
+                  if (!isOpenAIStream) {
+                    setTokenUsage(prev => ({ ...prev, sonnet: usage ?? null }));
+                  }
                   pushDebugEvent({
                     action: 'Chat',
                     status: 'success',
@@ -541,7 +545,9 @@ export default function CreativeIntelligence({ store }) {
                     pathway: [
                       'Creative tab → API',
                       `${endpoint}`,
-                      `Claude: ${modelUsed || settings?.model || 'sonnet-4.5'}`
+                      isOpenAIStream
+                        ? `OpenAI ${modelUsed || selectedModel}`
+                        : `Claude: ${modelUsed || settings?.model || 'sonnet-4.5'}`
                     ],
                     details: {
                       conversationId: data.conversationId,
@@ -558,7 +564,9 @@ export default function CreativeIntelligence({ store }) {
                     pathway: [
                       'Creative tab → API',
                       `${endpoint}`,
-                      `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+                      isOpenAIStream
+                        ? `OpenAI ${data.model || selectedModel}`
+                        : `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
                     ],
                     details: {
                       conversationId,
