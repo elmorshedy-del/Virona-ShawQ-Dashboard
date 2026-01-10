@@ -422,8 +422,8 @@ Extraction Method: ${scriptData.method || 'unknown'}
         return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
       }
 
-      const gptMessage = `${systemPrompt}\n\n${message}`;
-      const assistantMessage = await askGPT51(gptMessage, effort);
+      const gptMessages = [{ role: 'system', content: systemPrompt }, ...messages];
+      const assistantMessage = await askGPT51(gptMessages, effort);
 
       db.prepare(`
         INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
