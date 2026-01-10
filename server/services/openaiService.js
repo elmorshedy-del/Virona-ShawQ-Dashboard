@@ -26,7 +26,7 @@ export async function askOpenAIChat({
   reasoningEffort,
   systemPrompt,
   messages,
-  maxOutputTokens = 900,
+  maxOutputTokens = 1800,
   verbosity = 'medium'
 }) {
   const allowed = EFFORT_OPTIONS_BY_MODEL[model] || ['medium'];
@@ -57,7 +57,7 @@ export async function streamOpenAIChat({
   reasoningEffort,
   systemPrompt,
   messages,
-  maxOutputTokens = 900,
+  maxOutputTokens = 1800,
   verbosity = 'medium',
   onDelta
 }) {
