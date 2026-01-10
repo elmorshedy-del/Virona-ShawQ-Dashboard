@@ -1,7 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
-import { askOpenAIChat } from '../services/openaiService.js';
+import { askOpenAIChat, streamOpenAIChat } from '../services/openaiService.js';
 
 const router = express.Router();
 
@@ -428,6 +428,54 @@ Extraction Method: ${scriptData.method || 'unknown'}
     if (openAIModel) {
       if (!process.env.OPENAI_API_KEY) {
         return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+      }
+
+      const openAiStreamModels = new Set(['gpt-5.2', 'gpt-5.2-pro']);
+      const shouldStreamOpenAI = settings.streaming && openAiStreamModels.has(modelSelection);
+
+      if (shouldStreamOpenAI) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        let fullResponse = '';
+
+        try {
+          const { usage } = await streamOpenAIChat({
+            model: openAIModel,
+            reasoningEffort: effort,
+            systemPrompt,
+            messages,
+            maxOutputTokens: 900,
+            verbosity,
+            onDelta: (delta) => {
+              fullResponse += delta;
+              res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
+            }
+          });
+
+          db.prepare(`
+            INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+          `).run(convId, fullResponse, modelSelection);
+
+          db.prepare(`
+            UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+          `).run(convId);
+
+          res.write(`data: ${JSON.stringify({
+            type: 'done',
+            conversationId: convId,
+            model: modelSelection,
+            usage: usage || null
+          })}\n\n`);
+          res.end();
+        } catch (err) {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
+          res.end();
+        }
+
+        return;
       }
 
       const assistantMessage = await askOpenAIChat({

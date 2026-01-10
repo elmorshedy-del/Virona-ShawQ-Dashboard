@@ -447,7 +447,9 @@ export default function CreativeIntelligence({ store }) {
     const endpoint = `${API_BASE}/creative-intelligence/chat`;
     const selectedModel = settings?.model || 'sonnet-4.5';
     const openAiModels = new Set(['gpt-5.1', 'gpt-5.2', 'gpt-5.2-pro']);
+    const openAiStreamModels = new Set(['gpt-5.2', 'gpt-5.2-pro']);
     const isOpenAI = openAiModels.has(selectedModel);
+    const shouldStreamOpenAI = settings?.streaming && openAiStreamModels.has(selectedModel);
     const reasoningEffort = settings?.reasoning_effort || 'medium';
     const buildModelLabel = (model = null) => (
       isOpenAI ? `OpenAI ${model || selectedModel}` : `Claude: ${model || selectedModel}`
@@ -495,7 +497,7 @@ export default function CreativeIntelligence({ store }) {
         throw new Error(errorData?.error || 'Chat request failed');
       }
 
-      if (settings?.streaming && !isOpenAI) {
+      if (settings?.streaming && (!isOpenAI || shouldStreamOpenAI)) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -541,7 +543,7 @@ export default function CreativeIntelligence({ store }) {
                     pathway: [
                       'Creative tab → API',
                       `${endpoint}`,
-                      `Claude: ${modelUsed || settings?.model || 'sonnet-4.5'}`
+                      buildModelLabel(modelUsed)
                     ],
                     details: {
                       conversationId: data.conversationId,
@@ -558,7 +560,7 @@ export default function CreativeIntelligence({ store }) {
                     pathway: [
                       'Creative tab → API',
                       `${endpoint}`,
-                      `Claude: ${data.model || settings?.model || 'sonnet-4.5'}`
+                      buildModelLabel(data.model)
                     ],
                     details: {
                       conversationId,
