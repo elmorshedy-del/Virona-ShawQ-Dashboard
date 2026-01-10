@@ -1,7 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
-import { askGPT51 } from '../services/openaiService.js';
+import { askOpenAIChat } from '../services/openaiService.js';
 
 const router = express.Router();
 
@@ -335,8 +335,9 @@ router.post('/chat', async (req, res) => {
       `).run(store);
       settings = {
         model: 'sonnet-4.5',
-        reasoning_effort: 'high',
+        reasoning_effort: 'medium',
         streaming: 1,
+        verbosity: 'medium',
         tone: 'balanced',
         capabilities: { analyze: true, clone: true, ideate: true, audit: true }
       };
@@ -415,19 +416,32 @@ Extraction Method: ${scriptData.method || 'unknown'}
     `).run(convId, message);
 
     const modelSelection = settings.model || 'sonnet-4.5';
-    const effort = reasoning_effort || settings.reasoning_effort || 'high';
+    const effort = reasoning_effort || settings.reasoning_effort || 'medium';
+    const verbosity = settings.verbosity || 'medium';
+    const openAIModelMap = {
+      'gpt-5.2': 'gpt-5.2',
+      'gpt-5.2-pro': 'gpt-5.2-pro',
+      'gpt-5.1': 'gpt-5.1-chat-latest'
+    };
+    const openAIModel = openAIModelMap[modelSelection];
 
-    if (modelSelection === 'gpt-5.1') {
+    if (openAIModel) {
       if (!process.env.OPENAI_API_KEY) {
         return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
       }
 
-      const gptMessages = [{ role: 'system', content: systemPrompt }, ...messages];
-      const assistantMessage = await askGPT51(gptMessages, effort);
+      const assistantMessage = await askOpenAIChat({
+        model: openAIModel,
+        reasoningEffort: effort,
+        systemPrompt,
+        messages,
+        maxOutputTokens: 900,
+        verbosity
+      });
 
       db.prepare(`
         INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
-      `).run(convId, assistantMessage, 'gpt-5.1');
+      `).run(convId, assistantMessage, modelSelection);
 
       db.prepare(`
         UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
@@ -437,7 +451,7 @@ Extraction Method: ${scriptData.method || 'unknown'}
         success: true,
         message: assistantMessage,
         conversationId: convId,
-        model: 'gpt-5.1'
+        model: modelSelection
       });
     }
 
@@ -609,8 +623,9 @@ router.get('/settings', (req, res) => {
       settings = {
         store,
         model: 'sonnet-4.5',
-        reasoning_effort: 'high',
+        reasoning_effort: 'medium',
         streaming: 1,
+        verbosity: 'medium',
         tone: 'balanced',
         custom_prompt: null,
         capabilities: { analyze: true, clone: true, ideate: true, audit: true }
@@ -619,7 +634,8 @@ router.get('/settings', (req, res) => {
       settings.capabilities = typeof settings.capabilities === 'string'
         ? JSON.parse(settings.capabilities)
         : settings.capabilities;
-      settings.reasoning_effort = settings.reasoning_effort || 'high';
+      settings.reasoning_effort = settings.reasoning_effort || 'medium';
+      settings.verbosity = settings.verbosity || 'medium';
     }
 
     res.json({ success: true, settings });
@@ -630,12 +646,12 @@ router.get('/settings', (req, res) => {
 
 router.put('/settings', (req, res) => {
   try {
-    const { store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities } = req.body;
+    const { store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities, verbosity } = req.body;
     const db = getDb();
 
     db.prepare(`
-      INSERT INTO ai_creative_settings (store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO ai_creative_settings (store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities, verbosity)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(store) DO UPDATE SET
         model = excluded.model,
         reasoning_effort = excluded.reasoning_effort,
@@ -643,15 +659,17 @@ router.put('/settings', (req, res) => {
         tone = excluded.tone,
         custom_prompt = excluded.custom_prompt,
         capabilities = excluded.capabilities,
+        verbosity = excluded.verbosity,
         updated_at = datetime('now')
     `).run(
       store,
       model || 'sonnet-4.5',
-      reasoning_effort || 'high',
+      reasoning_effort || 'medium',
       streaming ? 1 : 0,
       tone || 'balanced',
       custom_prompt || null,
-      JSON.stringify(capabilities || { analyze: true, clone: true, ideate: true, audit: true })
+      JSON.stringify(capabilities || { analyze: true, clone: true, ideate: true, audit: true }),
+      verbosity || 'medium'
     );
 
     res.json({ success: true });

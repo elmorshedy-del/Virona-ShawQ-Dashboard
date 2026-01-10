@@ -446,10 +446,11 @@ export default function CreativeIntelligence({ store }) {
     const startedAt = Date.now();
     const endpoint = `${API_BASE}/creative-intelligence/chat`;
     const selectedModel = settings?.model || 'sonnet-4.5';
-    const isGPT51 = selectedModel === 'gpt-5.1';
-    const reasoningEffort = settings?.reasoning_effort || 'high';
+    const openAiModels = new Set(['gpt-5.1', 'gpt-5.2', 'gpt-5.2-pro']);
+    const isOpenAI = openAiModels.has(selectedModel);
+    const reasoningEffort = settings?.reasoning_effort || 'medium';
     const buildModelLabel = (model = null) => (
-      isGPT51 ? 'OpenAI GPT-5.1' : `Claude: ${model || selectedModel}`
+      isOpenAI ? `OpenAI ${model || selectedModel}` : `Claude: ${model || selectedModel}`
     );
     const requestPayload = {
       store: storeId,
@@ -494,7 +495,7 @@ export default function CreativeIntelligence({ store }) {
         throw new Error(errorData?.error || 'Chat request failed');
       }
 
-      if (settings?.streaming && !isGPT51) {
+      if (settings?.streaming && !isOpenAI) {
         // Handle streaming response
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -1139,17 +1140,38 @@ export default function CreativeIntelligence({ store }) {
 function SettingsModal({ settings, onSave, onClose }) {
   const [form, setForm] = useState({
     model: settings?.model || 'sonnet-4.5',
-    reasoning_effort: settings?.reasoning_effort || 'high',
+    reasoning_effort: settings?.reasoning_effort || 'medium',
     streaming: settings?.streaming ?? true,
     tone: settings?.tone || 'balanced',
     custom_prompt: settings?.custom_prompt || '',
-    capabilities: settings?.capabilities || { analyze: true, clone: true, ideate: true, audit: true }
+    capabilities: settings?.capabilities || { analyze: true, clone: true, ideate: true, audit: true },
+    verbosity: settings?.verbosity || 'medium'
   });
 
   const handleCapabilityToggle = (key) => {
     setForm(prev => ({
       ...prev,
       capabilities: { ...prev.capabilities, [key]: !prev.capabilities[key] }
+    }));
+  };
+
+  const openAiEffortOptions = {
+    'gpt-5.2': ['none', 'medium', 'xhigh'],
+    'gpt-5.2-pro': ['none', 'medium', 'xhigh'],
+    'gpt-5.1': ['medium']
+  };
+
+  const isOpenAiModel = ['gpt-5.2', 'gpt-5.2-pro', 'gpt-5.1'].includes(form.model);
+  const showVerbosity = ['gpt-5.2', 'gpt-5.2-pro'].includes(form.model);
+  const allowedEfforts = openAiEffortOptions[form.model] || ['medium'];
+
+  const updateModel = (value) => {
+    setForm(prev => ({
+      ...prev,
+      model: value,
+      reasoning_effort: openAiEffortOptions[value]?.includes(prev.reasoning_effort)
+        ? prev.reasoning_effort
+        : (openAiEffortOptions[value]?.[0] || prev.reasoning_effort)
     }));
   };
 
@@ -1210,7 +1232,7 @@ function SettingsModal({ settings, onSave, onClose }) {
                   name="model"
                   value="gpt-5.1"
                   checked={form.model === 'gpt-5.1'}
-                  onChange={(e) => setForm(prev => ({ ...prev, model: e.target.value }))}
+                  onChange={(e) => updateModel(e.target.value)}
                   className="mt-1"
                 />
                 <div>
@@ -1218,10 +1240,44 @@ function SettingsModal({ settings, onSave, onClose }) {
                   <div className="text-sm text-gray-500">OpenAI reasoning model for deep creative analysis.</div>
                 </div>
               </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                form.model === 'gpt-5.2' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5.2"
+                  checked={form.model === 'gpt-5.2'}
+                  onChange={(e) => updateModel(e.target.value)}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">OpenAI GPT-5.2 <span className="text-xs text-emerald-600 ml-1">Responses API</span></div>
+                  <div className="text-sm text-gray-500">Balanced reasoning with flexible effort controls.</div>
+                </div>
+              </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                form.model === 'gpt-5.2-pro' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5.2-pro"
+                  checked={form.model === 'gpt-5.2-pro'}
+                  onChange={(e) => updateModel(e.target.value)}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">OpenAI GPT-5.2 Pro <span className="text-xs text-emerald-600 ml-1">Responses API</span></div>
+                  <div className="text-sm text-gray-500">Highest reasoning headroom for deep creative strategy.</div>
+                </div>
+              </label>
             </div>
           </div>
 
-          {form.model === 'gpt-5.1' && (
+          {isOpenAiModel && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Reasoning Effort</label>
               <select
@@ -1230,7 +1286,22 @@ function SettingsModal({ settings, onSave, onClose }) {
                 className="w-full px-3 py-2 text-sm rounded-lg border bg-white focus:outline-none focus:ring-2"
                 style={{ borderColor: colors.border }}
               >
-                <option value="none">none</option>
+                {allowedEfforts.map((effort) => (
+                  <option key={effort} value={effort}>{effort}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {showVerbosity && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Response Verbosity</label>
+              <select
+                value={form.verbosity}
+                onChange={(e) => setForm(prev => ({ ...prev, verbosity: e.target.value }))}
+                className="w-full px-3 py-2 text-sm rounded-lg border bg-white focus:outline-none focus:ring-2"
+                style={{ borderColor: colors.border }}
+              >
                 <option value="low">low</option>
                 <option value="medium">medium</option>
                 <option value="high">high</option>

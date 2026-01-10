@@ -31,11 +31,12 @@ export function runCreativeIntelligenceMigration() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL UNIQUE,
       model TEXT DEFAULT 'sonnet-4.5',
-      reasoning_effort TEXT DEFAULT 'high',
+      reasoning_effort TEXT DEFAULT 'medium',
       streaming INTEGER DEFAULT 1,
       tone TEXT DEFAULT 'balanced',
       custom_prompt TEXT,
       capabilities JSON DEFAULT '{"analyze":true,"clone":true,"ideate":true,"audit":true}',
+      verbosity TEXT DEFAULT 'medium',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     )
@@ -44,7 +45,12 @@ export function runCreativeIntelligenceMigration() {
   const settingsColumns = db.prepare(`PRAGMA table_info(ai_creative_settings)`).all();
   const hasReasoningEffort = settingsColumns.some(column => column.name === 'reasoning_effort');
   if (!hasReasoningEffort) {
-    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN reasoning_effort TEXT DEFAULT 'high'`);
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN reasoning_effort TEXT DEFAULT 'medium'`);
+  }
+
+  const hasVerbosity = settingsColumns.some(column => column.name === 'verbosity');
+  if (!hasVerbosity) {
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN verbosity TEXT DEFAULT 'medium'`);
   }
 
   // Creative chat conversations (separate from main AI chat)

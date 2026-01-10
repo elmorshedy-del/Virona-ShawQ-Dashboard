@@ -15,15 +15,38 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-export async function askGPT51(messages, effort = 'high') {
-  const allowed = new Set(['none', 'low', 'medium', 'high']);
-  const safeEffort = allowed.has(effort) ? effort : 'high';
+const EFFORT_OPTIONS_BY_MODEL = {
+  'gpt-5.2': ['none', 'medium', 'xhigh'],
+  'gpt-5.2-pro': ['none', 'medium', 'xhigh'],
+  'gpt-5.1-chat-latest': ['medium']
+};
+
+export async function askOpenAIChat({
+  model,
+  reasoningEffort,
+  systemPrompt,
+  messages,
+  maxOutputTokens = 900,
+  verbosity = 'medium'
+}) {
+  const allowed = EFFORT_OPTIONS_BY_MODEL[model] || ['medium'];
+  if (reasoningEffort && !allowed.includes(reasoningEffort)) {
+    throw new Error(
+      `Unsupported reasoningEffort "${reasoningEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
+    );
+  }
+
+  const input = [
+    ...(systemPrompt ? [{ role: 'developer', content: systemPrompt }] : []),
+    ...messages.map((message) => ({ role: message.role, content: message.content }))
+  ];
 
   const resp = await client.responses.create({
-    model: 'gpt-5.1-chat-latest',
-    reasoning: { effort: safeEffort },
-    input: messages,
-    max_output_tokens: 900
+    model,
+    reasoning: reasoningEffort ? { effort: reasoningEffort } : undefined,
+    input,
+    max_output_tokens: maxOutputTokens,
+    text: { verbosity }
   });
 
   return resp.output_text;
