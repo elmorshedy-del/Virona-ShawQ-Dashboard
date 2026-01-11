@@ -264,7 +264,18 @@ export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
   const [storeLoaded, setStoreLoaded] = useState(false);
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const saved = localStorage.getItem('activeTab');
+      const parsed = Number(saved);
+      if (Number.isInteger(parsed) && parsed >= 0 && parsed < TABS.length) {
+        return parsed;
+      }
+    } catch (e) {
+      console.error('Error reading localStorage:', e);
+    }
+    return 0;
+  });
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -431,6 +442,15 @@ export default function App() {
       console.error('Error writing localStorage:', e);
     }
   }, [includeInactive, storeLoaded]);
+
+  useEffect(() => {
+    if (!storeLoaded) return;
+    try {
+      localStorage.setItem('activeTab', String(activeTab));
+    } catch (e) {
+      console.error('Error writing localStorage:', e);
+    }
+  }, [activeTab, storeLoaded]);
 
   useEffect(() => {
     const newStore = STORES[currentStore];
