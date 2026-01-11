@@ -86,6 +86,39 @@ const getFirstPositiveMetric = (...values) => {
 const getVisitsProxy = ({ landingPageViews, outboundClicks, inlineLinkClicks }) =>
   getFirstPositiveMetric(landingPageViews, outboundClicks, inlineLinkClicks);
 
+const formatPercent = (value, digits = 1) => {
+  if (!Number.isFinite(value)) return '—';
+  return `${(value * 100).toFixed(digits)}%`;
+};
+
+const formatDelta = (current, previous) => {
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) {
+    return { text: '—', tone: 'muted' };
+  }
+  if (previous === 0) {
+    if (current === 0) return { text: '→ 0%', tone: 'flat' };
+    return { text: '↑ new', tone: 'up' };
+  }
+  const change = ((current - previous) / Math.abs(previous)) * 100;
+  if (Math.abs(change) < 0.5) return { text: '→ 0%', tone: 'flat' };
+  return {
+    text: `${change > 0 ? '↑' : '↓'} ${Math.abs(change).toFixed(1)}%`,
+    tone: change > 0 ? 'up' : 'down'
+  };
+};
+
+const formatPeerDelta = (current, average) => {
+  if (!Number.isFinite(current) || !Number.isFinite(average) || average === 0) {
+    return { text: '—', tone: 'muted' };
+  }
+  const change = ((current - average) / Math.abs(average)) * 100;
+  if (Math.abs(change) < 0.5) return { text: '→ 0%', tone: 'flat' };
+  return {
+    text: `${change > 0 ? '↑' : '↓'} ${Math.abs(change).toFixed(1)}%`,
+    tone: change > 0 ? 'up' : 'down'
+  };
+};
+
 const hashStringToSeed = (value) => {
   const str = String(value ?? '');
   let hash = 2166136261;
@@ -324,6 +357,19 @@ export default function App() {
   const [adManagerBreakdown, setAdManagerBreakdown] = useState('none'); // 'none', 'country', 'age', 'gender', 'age_gender', 'placement'
   const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
   const [expandedAdsets, setExpandedAdsets] = useState(new Set());
+  const [creativeSummary, setCreativeSummary] = useState({
+    today: null,
+    week: null,
+    loading: false,
+    error: null,
+    lastUpdated: null
+  });
+  const creativeSummaryToneClasses = {
+    up: 'text-emerald-700 bg-emerald-50 border-emerald-100',
+    down: 'text-rose-700 bg-rose-50 border-rose-100',
+    flat: 'text-slate-600 bg-slate-100 border-slate-200',
+    muted: 'text-slate-400 bg-slate-50 border-slate-100'
+  };
 
   // Funnel diagnostics state
   const [funnelDiagnostics, setFunnelDiagnostics] = useState(null);
@@ -1541,6 +1587,248 @@ function DashboardTab({
     if (creativeCampaignOptions.length === 0) return null;
     return creativeCampaignOptions.find(c => c.id === selectedCreativeCampaignId) || creativeCampaignOptions[0];
   }, [creativeCampaignOptions, selectedCreativeCampaignId]);
+
+  const buildCreativeSummary = useCallback((currentAds, previousAds) => {
+    if (currentAds.length === 0 && previousAds.length === 0) {
+      return null;
+    }
+
+    const sumMetrics = (ads) => ads.reduce((acc, ad) => {
+      const impressions = toNumber(ad.impressions);
+      const clicks = toNumber(ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks);
+      const lpv = toNumber(ad.landing_page_views ?? ad.lpv);
+      const outboundClicks = toNumber(ad.outbound_clicks);
+      const purchases = toNumber(ad.conversions ?? ad.purchases);
+      const atc = toNumber(ad.atc ?? ad.add_to_cart);
+      const visits = getVisitsProxy({
+        landingPageViews: lpv,
+        outboundClicks,
+        inlineLinkClicks: clicks
+      });
+
+      return {
+        impressions: acc.impressions + impressions,
+        clicks: acc.clicks + clicks,
+        lpv: acc.lpv + lpv,
+        atc: acc.atc + atc,
+        purchases: acc.purchases + purchases,
+        visits: acc.visits + visits
+      };
+    }, {
+      impressions: 0,
+      clicks: 0,
+      lpv: 0,
+      atc: 0,
+      purchases: 0,
+      visits: 0
+    });
+
+    const currentTotals = sumMetrics(currentAds);
+    const previousTotals = sumMetrics(previousAds);
+
+    const currentRates = {
+      ctr: currentTotals.impressions > 0 ? currentTotals.clicks / currentTotals.impressions : 0,
+      lpvRate: currentTotals.clicks > 0 ? currentTotals.lpv / currentTotals.clicks : 0,
+      atcRate: currentTotals.lpv > 0 ? currentTotals.atc / currentTotals.lpv : 0,
+      purchaseRate: currentTotals.visits > 0 ? currentTotals.purchases / currentTotals.visits : 0
+    };
+
+    const previousRates = {
+      ctr: previousTotals.impressions > 0 ? previousTotals.clicks / previousTotals.impressions : 0,
+      lpvRate: previousTotals.clicks > 0 ? previousTotals.lpv / previousTotals.clicks : 0,
+      atcRate: previousTotals.lpv > 0 ? previousTotals.atc / previousTotals.lpv : 0,
+      purchaseRate: previousTotals.visits > 0 ? previousTotals.purchases / previousTotals.visits : 0
+    };
+
+    const adsWithRates = currentAds
+      .map((ad) => {
+        const clicks = toNumber(ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks);
+        const lpv = toNumber(ad.landing_page_views ?? ad.lpv);
+        const outboundClicks = toNumber(ad.outbound_clicks);
+        const visits = getVisitsProxy({
+          landingPageViews: lpv,
+          outboundClicks,
+          inlineLinkClicks: clicks
+        });
+        const purchases = toNumber(ad.conversions ?? ad.purchases);
+        const rate = visits > 0 ? purchases / visits : 0;
+        return {
+          name: ad.ad_name || ad.name || 'Creative',
+          rate,
+          visits
+        };
+      })
+      .filter(ad => ad.visits > 0);
+
+    const averageRate = adsWithRates.length > 0
+      ? adsWithRates.reduce((sum, ad) => sum + ad.rate, 0) / adsWithRates.length
+      : 0;
+
+    const topAd = adsWithRates.length > 0
+      ? adsWithRates.reduce((best, ad) => (ad.rate > best.rate ? ad : best), adsWithRates[0])
+      : null;
+    const bottomAd = adsWithRates.length > 0
+      ? adsWithRates.reduce((worst, ad) => (ad.rate < worst.rate ? ad : worst), adsWithRates[0])
+      : null;
+
+    return {
+      rates: currentRates,
+      deltas: {
+        ctr: formatDelta(currentRates.ctr, previousRates.ctr),
+        lpv: formatDelta(currentRates.lpvRate, previousRates.lpvRate),
+        atc: formatDelta(currentRates.atcRate, previousRates.atcRate),
+        purchase: formatDelta(currentRates.purchaseRate, previousRates.purchaseRate)
+      },
+      insights: {
+        averageRate,
+        topAd: topAd
+          ? { ...topAd, delta: formatPeerDelta(topAd.rate, averageRate) }
+          : null,
+        bottomAd: bottomAd
+          ? { ...bottomAd, delta: formatPeerDelta(bottomAd.rate, averageRate) }
+          : null
+      }
+    };
+  }, []);
+
+  const loadCreativeSummary = useCallback(async () => {
+    if (!storeLoaded) return;
+
+    const getRangeDate = (offsetDays) => getLocalDateString(new Date(Date.now() - offsetDays * 24 * 60 * 60 * 1000));
+    const todayDate = getRangeDate(0);
+    const yesterdayDate = getRangeDate(1);
+    const weekStart = getRangeDate(6);
+    const priorWeekStart = getRangeDate(13);
+    const priorWeekEnd = getRangeDate(7);
+
+    const fetchAdsForRange = async (startDate, endDate) => {
+      const params = new URLSearchParams({ store: currentStore, startDate, endDate });
+      if (includeInactive) {
+        params.set('includeInactive', 'true');
+      }
+      if (selectedCreativeCampaignId) {
+        params.set('campaignId', selectedCreativeCampaignId);
+      }
+      const data = await fetchJson(`${API_BASE}/analytics/meta-ad-manager?${params}`, { data: [] });
+      const hierarchy = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      return hierarchy.flatMap((campaign) =>
+        (campaign.adsets || []).flatMap((adset) => (adset?.ads || []))
+      );
+    };
+
+    setCreativeSummary(prev => ({ ...prev, loading: true, error: null }));
+
+    try {
+      const [todayAds, yesterdayAds, weekAds, priorWeekAds] = await Promise.all([
+        fetchAdsForRange(todayDate, todayDate),
+        fetchAdsForRange(yesterdayDate, yesterdayDate),
+        fetchAdsForRange(weekStart, todayDate),
+        fetchAdsForRange(priorWeekStart, priorWeekEnd)
+      ]);
+
+      setCreativeSummary({
+        today: buildCreativeSummary(todayAds, yesterdayAds),
+        week: buildCreativeSummary(weekAds, priorWeekAds),
+        loading: false,
+        error: null,
+        lastUpdated: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error loading creative summary:', error);
+      setCreativeSummary(prev => ({
+        ...prev,
+        loading: false,
+        error: 'Unable to load creative summary.'
+      }));
+    }
+  }, [buildCreativeSummary, currentStore, includeInactive, selectedCreativeCampaignId, storeLoaded]);
+
+  useEffect(() => {
+    if (storeLoaded) {
+      loadCreativeSummary();
+    }
+  }, [loadCreativeSummary, storeLoaded]);
+
+  const formatCreativeName = (name) => {
+    const clean = String(name || '').trim();
+    if (!clean) return 'Creative';
+    if (clean.length <= 24) return clean;
+    return `${clean.slice(0, 22)}…`;
+  };
+
+  const renderCreativeSummaryCard = (title, summary) => {
+    if (!summary) {
+      return (
+        <div className="rounded-lg border border-dashed border-slate-200 bg-white p-4 text-sm text-slate-400">
+          No creative data yet.
+        </div>
+      );
+    }
+
+    const funnelItems = [
+      { label: 'CTR', delta: summary.deltas.ctr },
+      { label: 'LPV', delta: summary.deltas.lpv },
+      { label: 'ATC', delta: summary.deltas.atc },
+      { label: 'Purchase', delta: summary.deltas.purchase }
+    ];
+
+    return (
+      <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-semibold text-slate-900">{title}</div>
+          <div className="text-xs text-slate-500">
+            CVR {formatPercent(summary.rates.purchaseRate)}
+          </div>
+        </div>
+        <div className="mt-3 text-xs text-slate-500">Funnel movement</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {funnelItems.map((item) => (
+            <span
+              key={item.label}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ${
+                creativeSummaryToneClasses[item.delta.tone] || creativeSummaryToneClasses.muted
+              }`}
+            >
+              {item.label} {item.delta.text}
+            </span>
+          ))}
+        </div>
+        <div className="mt-3 text-xs text-slate-500">Creative contrast</div>
+        <div className="mt-2 grid gap-2 text-xs text-slate-600">
+          {summary.insights.topAd ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-slate-900">Top</span>
+              <span className="truncate max-w-[14rem]">{formatCreativeName(summary.insights.topAd.name)}</span>
+              <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ${
+                creativeSummaryToneClasses[summary.insights.topAd.delta.tone] || creativeSummaryToneClasses.muted
+              }`}>
+                {summary.insights.topAd.delta.text}
+              </span>
+              <span className="text-[11px] text-slate-400">
+                {formatPercent(summary.insights.topAd.rate)}
+              </span>
+            </div>
+          ) : (
+            <div className="text-slate-400">Not enough conversion data to compare creatives.</div>
+          )}
+          {summary.insights.bottomAd ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-slate-900">Lagging</span>
+              <span className="truncate max-w-[14rem]">{formatCreativeName(summary.insights.bottomAd.name)}</span>
+              <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ${
+                creativeSummaryToneClasses[summary.insights.bottomAd.delta.tone] || creativeSummaryToneClasses.muted
+              }`}>
+                {summary.insights.bottomAd.delta.text}
+              </span>
+              <span className="text-[11px] text-slate-400">
+                {formatPercent(summary.insights.bottomAd.rate)}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
 
   const creativeAds = useMemo(() => {
     if (!selectedCreativeCampaign) return [];
@@ -2961,6 +3249,51 @@ function DashboardTab({
                     {selectedCreativeCampaign.name}
                   </span>
                 </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-50 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Creative funnel summary
+                </div>
+                <p className="text-sm text-slate-600">
+                  Short insights on funnel shifts today vs yesterday, and this week vs last week.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Powered by GPT-5.2
+                </span>
+                <button
+                  onClick={loadCreativeSummary}
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+                >
+                  {creativeSummary.loading ? 'Refreshing…' : 'Refresh summary'}
+                </button>
+              </div>
+            </div>
+            {creativeSummary.error && (
+              <div className="mt-3 text-xs font-semibold text-rose-600">
+                {creativeSummary.error}
+              </div>
+            )}
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              {renderCreativeSummaryCard('Today', creativeSummary.today)}
+              {renderCreativeSummaryCard('This week', creativeSummary.week)}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span>Not scheduled automatically.</span>
+              <span>Run end of day or tap Refresh.</span>
+              {creativeSummary.lastUpdated && (
+                <span>
+                  Updated {new Date(creativeSummary.lastUpdated).toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </span>
               )}
             </div>
           </div>
