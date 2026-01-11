@@ -562,6 +562,8 @@ const useSmoothScroll = (containerRef, enabled) => {
   const targetScrollRef = useRef(0);
   const animatingRef = useRef(false);
   const isUserScrolledUpRef = useRef(false);
+  const cancelScrollRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
   
   const checkIfAtBottom = useCallback(() => {
     const container = containerRef.current;
@@ -580,6 +582,7 @@ const useSmoothScroll = (containerRef, enabled) => {
     }
     
     targetScrollRef.current = container.scrollHeight;
+    cancelScrollRef.current = false;
     
     if (animatingRef.current) return;
     animatingRef.current = true;
@@ -590,7 +593,12 @@ const useSmoothScroll = (containerRef, enabled) => {
         animatingRef.current = false;
         return;
       }
-      
+
+      if (cancelScrollRef.current) {
+        animatingRef.current = false;
+        return;
+      }
+
       const current = container.scrollTop;
       const target = container.scrollHeight; // Always chase latest
       const distance = target - current;
@@ -611,8 +619,27 @@ const useSmoothScroll = (containerRef, enabled) => {
   }, [containerRef]);
   
   const handleUserScroll = useCallback(() => {
-    isUserScrolledUpRef.current = !checkIfAtBottom();
-  }, [checkIfAtBottom]);
+    const container = containerRef.current;
+    if (!container) return;
+    const currentTop = container.scrollTop;
+    const lastTop = lastScrollTopRef.current;
+    lastScrollTopRef.current = currentTop;
+
+    if (!enabled) {
+      return;
+    }
+
+    if (currentTop < lastTop - 2) {
+      isUserScrolledUpRef.current = true;
+      cancelScrollRef.current = true;
+      return;
+    }
+
+    if (checkIfAtBottom()) {
+      isUserScrolledUpRef.current = false;
+      cancelScrollRef.current = false;
+    }
+  }, [checkIfAtBottom, containerRef, enabled]);
   
   const isUserScrolledUp = useCallback(() => {
     return isUserScrolledUpRef.current;
@@ -774,11 +801,10 @@ export default function CreativeIntelligence({ store }) {
   // Smooth scroll to bottom when streaming completes
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
-    if (lastMessage && !lastMessage.streaming && !settings?.autoScroll) {
-      // Streaming just finished, do one smooth scroll
+    if (lastMessage && !lastMessage.streaming && settings?.autoScroll && !isUserScrolledUp()) {
       setTimeout(() => scrollToBottom(true), 100);
     }
-  }, [chatMessages, settings?.autoScroll, scrollToBottom]);
+  }, [chatMessages, settings?.autoScroll, scrollToBottom, isUserScrolledUp]);
 
   useEffect(() => {
     if (!storageKey) return;
