@@ -745,7 +745,7 @@ export default function CreativeIntelligence({ store }) {
 
   // Handle scroll events to detect user scrolling up
   useEffect(() => {
-    if (settings?.autoScroll === false) {
+    if (!settings?.autoScroll) {
       setShowScrollButton(false);
       return;
     }
