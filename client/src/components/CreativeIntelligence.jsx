@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const API_BASE = '/api';
 
@@ -24,6 +26,16 @@ const colors = {
   warningLight: '#FEF3C7',
   error: '#EF4444',
   errorLight: '#FEE2E2'
+};
+
+const EMPTY_VIDEO = {
+  video_id: null,
+  source_url: null,
+  embed_html: null,
+  thumbnail_url: null,
+  length: null,
+  permalink_url: null,
+  message: 'No video found for this ad.'
 };
 
 // ============================================================================
@@ -121,6 +133,50 @@ const injectGlobalStyles = () => {
     .ci-input-glow:focus {
       box-shadow: 0 0 0 3px rgba(99,102,241,0.1), 0 0 20px rgba(99,102,241,0.08);
       border-color: rgba(99,102,241,0.4);
+    }
+
+    .ci-markdown > *:first-child {
+      margin-top: 0;
+    }
+
+    .ci-markdown > *:last-child {
+      margin-bottom: 0;
+    }
+
+    .ci-markdown p {
+      margin: 0 0 0.75em 0;
+    }
+
+    .ci-markdown ul,
+    .ci-markdown ol {
+      margin: 0.25em 0 0.75em 1.25em;
+      padding: 0;
+    }
+
+    .ci-markdown li {
+      margin: 0.25em 0;
+    }
+
+    .ci-markdown h1,
+    .ci-markdown h2,
+    .ci-markdown h3,
+    .ci-markdown h4 {
+      margin: 0.6em 0 0.4em;
+      font-weight: 600;
+    }
+
+    .ci-markdown code {
+      background: rgba(148,163,184,0.2);
+      padding: 0.1em 0.3em;
+      border-radius: 6px;
+      font-size: 0.9em;
+    }
+
+    .ci-markdown pre {
+      background: rgba(15,23,42,0.06);
+      padding: 0.75em;
+      border-radius: 12px;
+      overflow-x: auto;
     }
     
     .ci-hover-lift {
@@ -285,10 +341,19 @@ const ChatMessage = ({ message }) => {
         }}
       >
         {!isUser && !message.streaming && <CopyButton text={message.content} />}
-        <div className="whitespace-pre-wrap">
-          {message.content}
-          {message.streaming && <span className="ci-cursor" />}
-        </div>
+        {isUser ? (
+          <div className="whitespace-pre-wrap">
+            {message.content}
+            {message.streaming && <span className="ci-cursor" />}
+          </div>
+        ) : (
+          <div className="ci-markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
+              {message.content}
+            </ReactMarkdown>
+            {message.streaming && <span className="ci-cursor" />}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -381,6 +446,15 @@ export default function CreativeIntelligence({ store }) {
   const [debugOpen, setDebugOpen] = useState(false);
   const [showParticles, setShowParticles] = useState(false);
   const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
+
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [previewAd, setPreviewAd] = useState(null);
+  const [previewVideoData, setPreviewVideoData] = useState(null);
+  const [previewVideoLoading, setPreviewVideoLoading] = useState(false);
+  const [previewVideoError, setPreviewVideoError] = useState('');
+  const [previewMediaDimensions, setPreviewMediaDimensions] = useState({ width: null, height: null });
+  const previewVideoRef = useRef(null);
+  const previewImageRef = useRef(null);
   
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
@@ -566,6 +640,36 @@ export default function CreativeIntelligence({ store }) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let assistantMsg = '';
+        let buffer = '';
+        let flushTimer = null;
+        let lastFlush = 0;
+        const targetWords = 14;
+        const minFlushInterval = 160;
+
+        const flushBuffer = (force = false) => {
+          if (!buffer) return;
+          const now = Date.now();
+          if (!force && now - lastFlush < minFlushInterval) {
+            return;
+          }
+          assistantMsg += buffer;
+          buffer = '';
+          lastFlush = now;
+          setChatMessages(prev => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: 'assistant', content: assistantMsg, streaming: true };
+            return updated;
+          });
+        };
+
+        const scheduleFlush = () => {
+          if (flushTimer) return;
+          const delay = Math.max(0, minFlushInterval - (Date.now() - lastFlush));
+          flushTimer = setTimeout(() => {
+            flushTimer = null;
+            flushBuffer(true);
+          }, delay);
+        };
 
         setChatMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }]);
 
@@ -579,13 +683,18 @@ export default function CreativeIntelligence({ store }) {
               try {
                 const data = JSON.parse(line.slice(6));
                 if (data.type === 'delta') {
-                  assistantMsg += data.text;
-                  setChatMessages(prev => {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = { role: 'assistant', content: assistantMsg, streaming: true };
-                    return updated;
-                  });
+                  buffer += data.text;
+                  const wordCount = buffer.trim().split(/\s+/).filter(Boolean).length;
+                  const hasBoundary = /[.!?:;\n]/.test(buffer);
+                  if (wordCount >= targetWords || hasBoundary) {
+                    scheduleFlush();
+                  }
                 } else if (data.type === 'done') {
+                  if (flushTimer) {
+                    clearTimeout(flushTimer);
+                    flushTimer = null;
+                  }
+                  flushBuffer(true);
                   setConversationId(data.conversationId);
                   if (!isOpenAI) setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
                   setChatMessages(prev => {
@@ -598,6 +707,11 @@ export default function CreativeIntelligence({ store }) {
             }
           }
         }
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        flushBuffer(true);
       } else {
         const data = await res.json();
         if (data.success) {
@@ -631,6 +745,67 @@ export default function CreativeIntelligence({ store }) {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
 
+  useEffect(() => {
+    if (previewModalOpen && previewVideoRef.current) {
+      previewVideoRef.current.play().catch(() => undefined);
+    }
+  }, [previewModalOpen, previewVideoData]);
+
+  const previewModalMaxWidth = useMemo(() => {
+    const width = previewMediaDimensions.width;
+    const height = previewMediaDimensions.height;
+    if (!width || !height) {
+      return 'min(420px, 92vw)';
+    }
+    return width >= height ? 'min(960px, 92vw)' : 'min(420px, 92vw)';
+  }, [previewMediaDimensions]);
+
+  const handlePreviewVideoMetadata = () => {
+    const video = previewVideoRef.current;
+    if (!video) return;
+    if (video.videoWidth && video.videoHeight) {
+      setPreviewMediaDimensions({ width: video.videoWidth, height: video.videoHeight });
+    }
+  };
+
+  const handlePreviewImageLoad = () => {
+    const image = previewImageRef.current;
+    if (!image) return;
+    if (image.naturalWidth && image.naturalHeight) {
+      setPreviewMediaDimensions({ width: image.naturalWidth, height: image.naturalHeight });
+    }
+  };
+
+  const handlePreviewAdClick = async (ad) => {
+    setPreviewAd(ad);
+    setPreviewModalOpen(true);
+    setPreviewVideoLoading(true);
+    setPreviewVideoError('');
+    setPreviewVideoData(null);
+    setPreviewMediaDimensions({ width: null, height: null });
+
+    try {
+      const res = await fetch(`${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to load video');
+      }
+      setPreviewVideoData(data || EMPTY_VIDEO);
+    } catch (err) {
+      setPreviewVideoError(err?.message || 'Failed to load video');
+      setPreviewVideoData(EMPTY_VIDEO);
+    } finally {
+      setPreviewVideoLoading(false);
+    }
+  };
+
+  const closePreviewModal = () => {
+    setPreviewModalOpen(false);
+    setPreviewAd(null);
+    setPreviewVideoData(null);
+    setPreviewVideoError('');
+  };
+
   // Derived data
   const campaignRows = useMemo(() => campaigns.map(c => ({
     id: c.id,
@@ -655,6 +830,18 @@ export default function CreativeIntelligence({ store }) {
     if (activeTab === 'analyzed') return adRows.filter(ad => scriptStatuses[ad.id] === 'complete');
     return adRows.filter(ad => scriptStatuses[ad.id] !== 'complete');
   }, [adRows, activeTab, scriptStatuses]);
+
+  const previewHasVideo = !!previewVideoData?.source_url;
+  const previewHasEmbed = !previewHasVideo && !!previewVideoData?.embed_html;
+  const previewDisplayThumbnail = previewVideoData?.thumbnail_url || previewAd?.thumbnail || null;
+  const previewHasThumbnail = !previewHasVideo && !previewHasEmbed && !!previewDisplayThumbnail;
+  const previewShowNoVideo = !previewVideoLoading && !previewHasVideo && !previewHasEmbed && !previewHasThumbnail;
+  const previewShowPermissionFallback = previewVideoData?.playable === false && previewHasThumbnail;
+  const previewFallbackMessage =
+    previewVideoData?.message ||
+    (previewVideoData?.reason === 'NO_VIDEO_PERMISSION'
+      ? "Can't access this video's preview."
+      : 'No video found for this ad.');
 
   // ============================================================================
   // RENDER
@@ -768,9 +955,37 @@ export default function CreativeIntelligence({ store }) {
                 >
                   <div className="flex items-center gap-3">
                     {ad.thumbnail ? (
-                      <img src={ad.thumbnail} alt="" className="w-11 h-11 rounded-xl object-cover" style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }} />
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={(event) => { event.stopPropagation(); handlePreviewAdClick(ad); }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            handlePreviewAdClick(ad);
+                          }
+                        }}
+                        className="w-11 h-11 rounded-xl overflow-hidden"
+                        style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}
+                      >
+                        <img src={ad.thumbnail} alt="" className="w-full h-full object-cover" />
+                      </div>
                     ) : (
-                      <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ backgroundColor: colors.bgSubtle }}>
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={(event) => { event.stopPropagation(); handlePreviewAdClick(ad); }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            handlePreviewAdClick(ad);
+                          }
+                        }}
+                        className="w-11 h-11 rounded-xl flex items-center justify-center"
+                        style={{ backgroundColor: colors.bgSubtle }}
+                      >
                         <svg className="w-5 h-5" fill="none" stroke={colors.textMuted} viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                         </svg>
@@ -916,6 +1131,92 @@ export default function CreativeIntelligence({ store }) {
           )}
         </div>
       </div>
+
+      {/* Preview Modal */}
+      {previewModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
+          <div
+            className="bg-white rounded-xl shadow-xl w-full max-h-[92vh] flex flex-col"
+            style={{ maxWidth: previewModalMaxWidth }}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+              <div className="text-sm font-semibold text-gray-800 truncate">
+                {previewAd?.name || 'Ad Preview'}
+              </div>
+              <button onClick={closePreviewModal} className="text-gray-500 hover:text-gray-700">
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4">
+              <div className="flex items-center justify-center">
+                {previewVideoLoading && (
+                  <div className="text-sm text-gray-500">Loading media...</div>
+                )}
+
+                {!previewVideoLoading && previewVideoError && (
+                  <div className="text-sm text-red-600">{previewVideoError}</div>
+                )}
+
+                {!previewVideoLoading && previewHasVideo && (
+                  <video
+                    ref={previewVideoRef}
+                    src={previewVideoData.source_url}
+                    autoPlay
+                    controls
+                    onLoadedMetadata={handlePreviewVideoMetadata}
+                    className="w-full h-auto max-h-[85vh] object-contain"
+                  />
+                )}
+
+                {!previewVideoLoading && previewHasEmbed && (
+                  <div
+                    className="w-full flex justify-center"
+                    dangerouslySetInnerHTML={{ __html: previewVideoData.embed_html }}
+                  />
+                )}
+
+                {!previewVideoLoading && !previewHasVideo && previewHasThumbnail && (
+                  <div className="text-center">
+                    <img
+                      ref={previewImageRef}
+                      src={previewDisplayThumbnail}
+                      alt="Ad thumbnail"
+                      onLoad={handlePreviewImageLoad}
+                      className="w-full h-auto max-h-[85vh] object-contain"
+                    />
+                    <p className="mt-3 text-sm text-gray-600">
+                      {previewShowPermissionFallback ? "Can't play this video here." : 'Playable video source unavailable.'}
+                    </p>
+                    {previewVideoData?.permalink_url && (
+                      <button
+                        onClick={() => window.open(previewVideoData.permalink_url, '_blank')}
+                        className="mt-3 px-3 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg"
+                      >
+                        Open on Facebook
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {!previewVideoLoading && previewShowNoVideo && (
+                  <div className="text-sm text-gray-600 text-center">
+                    <p>{previewFallbackMessage}</p>
+                    {previewVideoData?.permalink_url && (
+                      <button
+                        onClick={() => window.open(previewVideoData.permalink_url, '_blank')}
+                        className="mt-3 px-3 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg"
+                      >
+                        Open on Facebook
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Settings Modal */}
       {showSettings && <SettingsModal settings={settings} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />}

@@ -1327,8 +1327,8 @@ export default function App() {
 
         {activeTab === 4 && (
           <>
-            <CreativeAnalysis store={store} />
             <CreativeIntelligence store={currentStore} />
+            <CreativeAnalysis store={store} />
           </>
         )}
 
