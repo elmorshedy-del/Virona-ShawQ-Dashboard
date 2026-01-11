@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 const API_BASE = '/api';
 
 // ============================================================================
-// PREMIUM DESIGN TOKENS - Warm, comforting palette
+// PREMIUM DESIGN TOKENS
 // ============================================================================
 const colors = {
   bg: '#F8FAFC',
@@ -39,7 +39,52 @@ const EMPTY_VIDEO = {
 };
 
 // ============================================================================
-// GLOBAL STYLES - Injected once
+// TRANSCRIPT EXTRACTION HELPERS
+// ============================================================================
+const extractGeminiTranscript = (scriptData) => {
+  if (!scriptData || scriptData.analysisType !== 'video_frames' || !Array.isArray(scriptData.frames)) {
+    return '';
+  }
+  const seen = new Set();
+  const lines = [];
+  scriptData.frames.forEach((frame) => {
+    const voiceover = typeof frame?.voiceover === 'string' ? frame.voiceover.trim() : '';
+    if (!voiceover || voiceover.toLowerCase() === 'none' || voiceover.toLowerCase() === 'n/a') {
+      return;
+    }
+    if (!seen.has(voiceover)) {
+      seen.add(voiceover);
+      lines.push(voiceover);
+    }
+  });
+  return lines.join('\n');
+};
+
+const extractGeminiFullTranscript = (scriptData) => {
+  if (!scriptData || scriptData.analysisType !== 'video_frames' || !Array.isArray(scriptData.frames)) {
+    return '';
+  }
+  const lines = [];
+  scriptData.frames.forEach((frame) => {
+    const timeLabel = frame?.time ? `[${frame.time}]` : '';
+    const voiceover = typeof frame?.voiceover === 'string' ? frame.voiceover.trim() : '';
+    const text = typeof frame?.text === 'string' ? frame.text.trim() : '';
+    const chunk = [];
+    if (voiceover && voiceover.toLowerCase() !== 'none' && voiceover.toLowerCase() !== 'n/a') {
+      chunk.push(`${timeLabel} Voiceover: ${voiceover}`.trim());
+    }
+    if (text && text.toLowerCase() !== 'none' && text.toLowerCase() !== 'n/a') {
+      chunk.push(`${timeLabel} On-screen text: ${text}`.trim());
+    }
+    if (chunk.length > 0) {
+      lines.push(chunk.join('\n'));
+    }
+  });
+  return lines.join('\n');
+};
+
+// ============================================================================
+// GLOBAL STYLES
 // ============================================================================
 const injectGlobalStyles = () => {
   if (document.getElementById('creative-intelligence-styles')) return;
@@ -90,6 +135,27 @@ const injectGlobalStyles = () => {
     
     .ci-msg-enter {
       animation: msgSlide 0.35s cubic-bezier(0.16,1,0.3,1) forwards;
+    }
+    
+    /* Sentence fade-in animation */
+    @keyframes sentenceFade {
+      from { 
+        opacity: 0; 
+        transform: translateY(4px);
+      }
+      to { 
+        opacity: 1; 
+        transform: translateY(0);
+      }
+    }
+    
+    .ci-sentence {
+      display: inline;
+      animation: sentenceFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards;
+    }
+    
+    .ci-sentence-pending {
+      opacity: 0;
     }
     
     @keyframes cursorPulse {
@@ -186,6 +252,30 @@ const injectGlobalStyles = () => {
     .ci-hover-lift:hover {
       transform: translateY(-1px);
       box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+    
+    /* Fixed height chat container */
+    .ci-chat-container {
+      display: flex;
+      flex-direction: column;
+      min-height: 0; /* Critical for flex child to allow shrinking */
+      flex: 1;
+    }
+    
+    .ci-chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0; /* Critical for flex child */
+    }
+    
+    /* Scroll to bottom button */
+    @keyframes bounceIn {
+      0% { transform: translateX(-50%) scale(0.8); opacity: 0; }
+      100% { transform: translateX(-50%) scale(1); opacity: 1; }
+    }
+    
+    .ci-scroll-btn {
+      animation: bounceIn 0.2s ease-out forwards;
     }
     
     .ci-root ::-webkit-scrollbar {
@@ -323,10 +413,50 @@ const EmptyState = () => (
 );
 
 // ============================================================================
-// CHAT MESSAGE
+// CHAT MESSAGE - With sentence fade-in for streaming
 // ============================================================================
-const ChatMessage = ({ message }) => {
+const ChatMessage = ({ message, isStreaming }) => {
   const isUser = message.role === 'user';
+  
+  // Split content into sentences for fade-in effect during streaming
+  const renderContent = () => {
+    if (isUser) {
+      return <div className="whitespace-pre-wrap">{message.content}</div>;
+    }
+    
+    // For completed messages, use markdown
+    if (!message.streaming) {
+      return (
+        <div className="ci-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
+            {message.content}
+          </ReactMarkdown>
+        </div>
+      );
+    }
+    
+    // For streaming messages, split by sentences and fade each in
+    const sentences = message.sentences || [];
+    const pendingText = message.pendingText || '';
+    
+    return (
+      <div className="ci-markdown">
+        {sentences.map((sentence, idx) => (
+          <span key={idx} className="ci-sentence">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{
+              p: ({ children }) => <span>{children} </span>
+            }}>
+              {sentence}
+            </ReactMarkdown>
+          </span>
+        ))}
+        {pendingText && (
+          <span className="opacity-50">{pendingText}</span>
+        )}
+        <span className="ci-cursor" />
+      </div>
+    );
+  };
   
   return (
     <div className={`ci-msg-wrap ci-msg-enter flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
@@ -341,19 +471,7 @@ const ChatMessage = ({ message }) => {
         }}
       >
         {!isUser && !message.streaming && <CopyButton text={message.content} />}
-        {isUser ? (
-          <div className="whitespace-pre-wrap">
-            {message.content}
-            {message.streaming && <span className="ci-cursor" />}
-          </div>
-        ) : (
-          <div className="ci-markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
-              {message.content}
-            </ReactMarkdown>
-            {message.streaming && <span className="ci-cursor" />}
-          </div>
-        )}
+        {renderContent()}
       </div>
     </div>
   );
@@ -388,6 +506,26 @@ const SuggestionChips = ({ onSelect, disabled }) => {
 };
 
 // ============================================================================
+// SCROLL TO BOTTOM BUTTON
+// ============================================================================
+const ScrollToBottomButton = ({ onClick, visible }) => {
+  if (!visible) return null;
+  
+  return (
+    <button
+      onClick={onClick}
+      className="ci-scroll-btn absolute bottom-20 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-white shadow-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors flex items-center gap-2"
+      style={{ zIndex: 10 }}
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+      </svg>
+      New messages
+    </button>
+  );
+};
+
+// ============================================================================
 // HELPERS
 // ============================================================================
 const filterStoreAccounts = (accounts, storeId) => {
@@ -403,25 +541,95 @@ const filterStoreAccounts = (accounts, storeId) => {
   return accounts;
 };
 
-const extractGeminiTranscript = (scriptData) => {
-  if (!scriptData || scriptData.analysisType !== 'video_frames' || !Array.isArray(scriptData.frames)) return '';
-  const seen = new Set();
-  const lines = [];
-  scriptData.frames.forEach(f => {
-    const v = typeof f?.voiceover === 'string' ? f.voiceover.trim() : '';
-    if (v && v.toLowerCase() !== 'none' && v.toLowerCase() !== 'n/a' && !seen.has(v)) {
-      seen.add(v);
-      lines.push(v);
-    }
-  });
-  return lines.join('\n');
-};
-
 const getSelectedAdStorageKey = (storeId) => (storeId ? `creative-intelligence:${storeId}:selected-ad` : null);
 
 const getChatStorageKey = (storeId, adId) => (
   storeId && adId ? `creative-intelligence:${storeId}:chat:${adId}` : null
 );
+
+// Sentence boundary detection
+const splitIntoSentences = (text) => {
+  // Split on sentence-ending punctuation followed by space or end
+  const regex = /[^.!?\n]+[.!?\n]+\s*/g;
+  const matches = text.match(regex) || [];
+  return matches;
+};
+
+// ============================================================================
+// SMOOTH SCROLL HOOK - Using requestAnimationFrame + lerp
+// ============================================================================
+const useSmoothScroll = (containerRef, enabled) => {
+  const targetScrollRef = useRef(0);
+  const animatingRef = useRef(false);
+  const isUserScrolledUpRef = useRef(false);
+  
+  const checkIfAtBottom = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return true;
+    const threshold = 100;
+    return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+  }, [containerRef]);
+  
+  const scrollToBottom = useCallback((smooth = true) => {
+    const container = containerRef.current;
+    if (!container) return;
+    
+    if (!smooth) {
+      container.scrollTop = container.scrollHeight;
+      return;
+    }
+    
+    targetScrollRef.current = container.scrollHeight;
+    
+    if (animatingRef.current) return;
+    animatingRef.current = true;
+    
+    const animate = () => {
+      const container = containerRef.current;
+      if (!container) {
+        animatingRef.current = false;
+        return;
+      }
+      
+      const current = container.scrollTop;
+      const target = container.scrollHeight; // Always chase latest
+      const distance = target - current;
+      
+      // Lerp - move 12% of remaining distance each frame
+      const step = distance * 0.12;
+      
+      if (Math.abs(distance) > 1) {
+        container.scrollTop = current + step;
+        requestAnimationFrame(animate);
+      } else {
+        container.scrollTop = target;
+        animatingRef.current = false;
+      }
+    };
+    
+    requestAnimationFrame(animate);
+  }, [containerRef]);
+  
+  const handleUserScroll = useCallback(() => {
+    isUserScrolledUpRef.current = !checkIfAtBottom();
+  }, [checkIfAtBottom]);
+  
+  const isUserScrolledUp = useCallback(() => {
+    return isUserScrolledUpRef.current;
+  }, []);
+  
+  const resetUserScroll = useCallback(() => {
+    isUserScrolledUpRef.current = false;
+  }, []);
+  
+  return {
+    scrollToBottom,
+    checkIfAtBottom,
+    handleUserScroll,
+    isUserScrolledUp,
+    resetUserScroll
+  };
+};
 
 // ============================================================================
 // MAIN COMPONENT
@@ -453,6 +661,10 @@ export default function CreativeIntelligence({ store }) {
   const [debugOpen, setDebugOpen] = useState(false);
   const [showParticles, setShowParticles] = useState(false);
   const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [debugEvents, setDebugEvents] = useState([]);
+  const [geminiTranscript, setGeminiTranscript] = useState('');
+  const [geminiFullTranscript, setGeminiFullTranscript] = useState('');
 
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewAd, setPreviewAd] = useState(null);
@@ -474,7 +686,99 @@ export default function CreativeIntelligence({ store }) {
   const [restoredState, setRestoredState] = useState(null);
   
   const chatEndRef = useRef(null);
+  const chatContainerRef = useRef(null);
   const hasRestoredSelection = useRef(false);
+  
+  // Debug event logger
+  const pushDebugEvent = useCallback((entry) => {
+    const timestamp = new Date().toISOString();
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setDebugEvents((prev) => [{ id, timestamp, ...entry }, ...prev].slice(0, 20));
+  }, []);
+
+  // Extract transcripts when script status changes
+  useEffect(() => {
+    if (scriptStatus?.status === 'complete' && scriptStatus?.script) {
+      setGeminiTranscript(extractGeminiTranscript(scriptStatus.script));
+      setGeminiFullTranscript(extractGeminiFullTranscript(scriptStatus.script));
+    }
+  }, [scriptStatus]);
+
+  // Load debug events from localStorage
+  useEffect(() => {
+    if (!selectedAd?.id || !storeId) return;
+    const key = `creative-debug-${storeId}-${selectedAd.id}`;
+    const stored = localStorage.getItem(key);
+    if (stored) {
+      try {
+        setDebugEvents(JSON.parse(stored));
+      } catch (err) {
+        console.warn('Failed to parse stored debug events:', err);
+        setDebugEvents([]);
+      }
+    } else {
+      setDebugEvents([]);
+    }
+  }, [selectedAd?.id, storeId]);
+
+  // Save debug events to localStorage
+  useEffect(() => {
+    if (!selectedAd?.id || !storeId) return;
+    const key = `creative-debug-${storeId}-${selectedAd.id}`;
+    localStorage.setItem(key, JSON.stringify(debugEvents));
+  }, [debugEvents, selectedAd?.id, storeId]);
+  
+  // Smooth scroll hook
+  const { 
+    scrollToBottom, 
+    checkIfAtBottom, 
+    handleUserScroll, 
+    isUserScrolledUp,
+    resetUserScroll 
+  } = useSmoothScroll(chatContainerRef, settings?.autoScroll ?? true);
+
+  // Handle scroll events to detect user scrolling up
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+    
+    const onScroll = () => {
+      handleUserScroll();
+      // Show scroll button if user scrolled up during streaming
+      if (chatLoading && isUserScrolledUp()) {
+        setShowScrollButton(true);
+      } else if (checkIfAtBottom()) {
+        setShowScrollButton(false);
+      }
+    };
+    
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => container.removeEventListener('scroll', onScroll);
+  }, [handleUserScroll, isUserScrolledUp, checkIfAtBottom, chatLoading]);
+
+  // Auto-scroll logic
+  useEffect(() => {
+    if (!settings?.autoScroll) return;
+    if (isUserScrolledUp()) return;
+    
+    // Only scroll if at bottom or new message from user
+    const lastMessage = chatMessages[chatMessages.length - 1];
+    if (lastMessage?.role === 'user') {
+      resetUserScroll();
+      scrollToBottom(true);
+    } else if (lastMessage?.streaming && checkIfAtBottom()) {
+      scrollToBottom(true);
+    }
+  }, [chatMessages, settings?.autoScroll, scrollToBottom, checkIfAtBottom, isUserScrolledUp, resetUserScroll]);
+
+  // Smooth scroll to bottom when streaming completes
+  useEffect(() => {
+    const lastMessage = chatMessages[chatMessages.length - 1];
+    if (lastMessage && !lastMessage.streaming && !settings?.autoScroll) {
+      // Streaming just finished, do one smooth scroll
+      setTimeout(() => scrollToBottom(true), 100);
+    }
+  }, [chatMessages, settings?.autoScroll, scrollToBottom]);
 
   useEffect(() => {
     if (!storageKey) return;
@@ -507,15 +811,15 @@ export default function CreativeIntelligence({ store }) {
   }, [storageKey, selectedAccount, selectedCampaign, selectedAd?.id, conversationId]);
 
   const hydrateChatForAd = useCallback((adId) => {
-    const storageKey = getChatStorageKey(storeId, adId);
-    if (!storageKey) {
+    const key = getChatStorageKey(storeId, adId);
+    if (!key) {
       setChatMessages([]);
       setConversationId(null);
       return;
     }
 
     try {
-      const saved = localStorage.getItem(storageKey);
+      const saved = localStorage.getItem(key);
       if (!saved) {
         setChatMessages([]);
         setConversationId(null);
@@ -552,7 +856,6 @@ export default function CreativeIntelligence({ store }) {
     }
   }, []);
 
-  // Handle ad selection
   const handleSelectAd = useCallback(async (ad, options = {}) => {
     const { resetChat = true, restoreConversationId = null } = options;
     setSelectedAd(ad);
@@ -606,10 +909,10 @@ export default function CreativeIntelligence({ store }) {
 
   useEffect(() => {
     if (!storeId) return;
-    const storageKey = getSelectedAdStorageKey(storeId);
-    if (!storageKey) return;
+    const key = getSelectedAdStorageKey(storeId);
+    if (!key) return;
     try {
-      const saved = localStorage.getItem(storageKey);
+      const saved = localStorage.getItem(key);
       setSavedSelectedAdId(saved);
     } catch (error) {
       console.error('Error reading localStorage:', error);
@@ -676,7 +979,12 @@ export default function CreativeIntelligence({ store }) {
     if (!storeId) return;
     fetch(`${API_BASE}/creative-intelligence/settings?store=${storeId}`)
       .then(res => res.json())
-      .then(data => data.success && setSettings(data.settings))
+      .then(data => {
+        if (data.success) {
+          // Ensure autoScroll has a default
+          setSettings({ autoScroll: true, ...data.settings });
+        }
+      })
       .catch(console.error);
   }, [storeId]);
 
@@ -690,13 +998,13 @@ export default function CreativeIntelligence({ store }) {
 
   useEffect(() => {
     if (!storeId) return;
-    const storageKey = getSelectedAdStorageKey(storeId);
-    if (!storageKey) return;
+    const key = getSelectedAdStorageKey(storeId);
+    if (!key) return;
     try {
       if (selectedAd?.id) {
-        localStorage.setItem(storageKey, selectedAd.id);
+        localStorage.setItem(key, selectedAd.id);
       } else {
-        localStorage.removeItem(storageKey);
+        localStorage.removeItem(key);
       }
     } catch (error) {
       console.error('Error writing localStorage:', error);
@@ -707,6 +1015,8 @@ export default function CreativeIntelligence({ store }) {
   const handleAnalyze = async () => {
     if (!selectedAd || !videoData) return;
     setScriptStatus({ status: 'processing' });
+    const startedAt = Date.now();
+    const endpoint = `${API_BASE}/creative-intelligence/analyze-video`;
 
     const payload = {
       store: storeId,
@@ -720,25 +1030,86 @@ export default function CreativeIntelligence({ store }) {
     };
 
     try {
-      const res = await fetch(`${API_BASE}/creative-intelligence/analyze-video`, {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch (parseError) {
+        data = { error: 'Invalid JSON response', parseError: parseError.message };
+      }
+      const durationMs = Date.now() - startedAt;
 
       if (res.ok && data.success) {
         setScriptStatus({ exists: true, status: 'complete', script: data.script });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'complete' }));
         setTokenUsage(prev => ({ ...prev, gemini: data.usage?.gemini ?? null }));
+        setGeminiTranscript(extractGeminiTranscript(data.script));
+        setGeminiFullTranscript(extractGeminiFullTranscript(data.script));
         setShowParticles(true);
+        pushDebugEvent({
+          action: 'Analyze',
+          status: 'success',
+          endpoint,
+          durationMs,
+          pathway: [
+            'Creative tab → API',
+            `${endpoint}`,
+            `Gemini: ${data.model || 'gemini-2.0-flash-exp'}`
+          ],
+          details: {
+            adId: selectedAd.id,
+            campaignId: selectedCampaign,
+            analysisType: data.analysisType,
+            cached: data.cached ?? false,
+            usage: data.usage?.gemini ?? null
+          }
+        });
       } else {
         setScriptStatus({ status: 'failed', error: data.error });
         setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+        pushDebugEvent({
+          action: 'Analyze',
+          status: 'failed',
+          endpoint,
+          durationMs,
+          pathway: [
+            'Creative tab → API',
+            `${endpoint}`,
+            `Gemini: ${data?.model || 'gemini-2.0-flash-exp'}`
+          ],
+          details: {
+            adId: selectedAd.id,
+            campaignId: selectedCampaign,
+            statusCode: res.status,
+            error: data?.error || 'Unknown error',
+            payload
+          }
+        });
       }
     } catch (err) {
       setScriptStatus({ status: 'failed', error: err.message });
       setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'failed' }));
+      pushDebugEvent({
+        action: 'Analyze',
+        status: 'failed',
+        endpoint,
+        durationMs: Date.now() - startedAt,
+        pathway: [
+          'Creative tab → API',
+          `${endpoint}`,
+          'Gemini: gemini-2.0-flash-exp'
+        ],
+        details: {
+          adId: selectedAd.id,
+          campaignId: selectedCampaign,
+          error: err.message,
+          payload
+        }
+      });
     }
   };
 
@@ -749,10 +1120,13 @@ export default function CreativeIntelligence({ store }) {
     setScriptStatuses(prev => ({ ...prev, [selectedAd.id]: 'pending' }));
     setChatMessages([]);
     setConversationId(null);
+    setTokenUsage({ gemini: null, sonnet: null });
+    setGeminiTranscript('');
+    setGeminiFullTranscript('');
     await handleAnalyze();
   };
 
-  // Send chat message
+  // Send chat message with sentence-based streaming
   const handleSendMessage = async (msgText) => {
     const userMessage = (msgText || chatInput).trim();
     if (!userMessage || chatLoading) return;
@@ -760,64 +1134,80 @@ export default function CreativeIntelligence({ store }) {
     setChatInput('');
     setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setChatLoading(true);
+    resetUserScroll();
+    setShowScrollButton(false);
 
+    const startedAt = Date.now();
+    const endpoint = `${API_BASE}/creative-intelligence/chat`;
     const selectedModel = settings?.model || 'sonnet-4.5';
     const openAiModels = new Set(['gpt-5.1', 'gpt-5.2', 'gpt-5.2-pro']);
     const openAiStreamingModels = new Set(['gpt-5.2', 'gpt-5.2-pro']);
     const isOpenAI = openAiModels.has(selectedModel);
     const shouldStream = (settings?.streaming && !isOpenAI) || openAiStreamingModels.has(selectedModel);
+    const reasoningEffort = settings?.reasoning_effort || 'medium';
+    const buildModelLabel = (model = null) => (
+      isOpenAI ? `OpenAI ${model || selectedModel}` : `Claude: ${model || selectedModel}`
+    );
+    const requestPayload = {
+      store: storeId,
+      message: userMessage,
+      adId: selectedAd?.id,
+      conversationId,
+      reasoning_effort: reasoningEffort
+    };
 
     try {
-      const res = await fetch(`${API_BASE}/creative-intelligence/chat`, {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          store: storeId,
-          message: userMessage,
-          adId: selectedAd?.id,
-          conversationId,
-          reasoning_effort: settings?.reasoning_effort || 'medium'
-        })
+        body: JSON.stringify(requestPayload)
       });
 
-      if (!res.ok) throw new Error((await res.json())?.error || 'Chat failed');
+      if (!res.ok) {
+        let errorData;
+        try {
+          errorData = await res.json();
+        } catch (parseError) {
+          errorData = { error: 'Invalid JSON response', parseError: parseError.message };
+        }
+        pushDebugEvent({
+          action: 'Chat',
+          status: 'failed',
+          endpoint,
+          durationMs: Date.now() - startedAt,
+          pathway: [
+            'Creative tab → API',
+            `${endpoint}`,
+            buildModelLabel()
+          ],
+          details: {
+            statusCode: res.status,
+            error: errorData?.error || 'Unknown error',
+            conversationId,
+            adId: selectedAd?.id,
+            messageLength: userMessage.length
+          }
+        });
+        throw new Error(errorData?.error || 'Chat request failed');
+      }
 
       if (shouldStream) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let assistantMsg = '';
-        let buffer = '';
-        let flushTimer = null;
-        let lastFlush = 0;
-        const targetWords = 14;
-        const minFlushInterval = 160;
+        let fullContent = '';
+        let sentences = [];
+        let pendingText = '';
+        let modelUsed = null;
+        let usage = null;
 
-        const flushBuffer = (force = false) => {
-          if (!buffer) return;
-          const now = Date.now();
-          if (!force && now - lastFlush < minFlushInterval) {
-            return;
-          }
-          assistantMsg += buffer;
-          buffer = '';
-          lastFlush = now;
-          setChatMessages(prev => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: assistantMsg, streaming: true };
-            return updated;
-          });
-        };
-
-        const scheduleFlush = () => {
-          if (flushTimer) return;
-          const delay = Math.max(0, minFlushInterval - (Date.now() - lastFlush));
-          flushTimer = setTimeout(() => {
-            flushTimer = null;
-            flushBuffer(true);
-          }, delay);
-        };
-
-        setChatMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }]);
+        // Add streaming message
+        setChatMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: '', 
+          streaming: true,
+          sentences: [],
+          pendingText: ''
+        }]);
 
         while (true) {
           const { done, value } = await reader.read();
@@ -829,47 +1219,161 @@ export default function CreativeIntelligence({ store }) {
               try {
                 const data = JSON.parse(line.slice(6));
                 if (data.type === 'delta') {
-                  buffer += data.text;
-                  const wordCount = buffer.trim().split(/\s+/).filter(Boolean).length;
-                  const hasBoundary = /[.!?:;\n]/.test(buffer);
-                  if (wordCount >= targetWords || hasBoundary) {
-                    scheduleFlush();
+                  fullContent += data.text;
+                  pendingText += data.text;
+                  
+                  // Check for sentence boundaries
+                  const sentenceEnders = /([.!?]\s+|\n\n)/g;
+                  let match;
+                  let lastIndex = 0;
+                  
+                  while ((match = sentenceEnders.exec(pendingText)) !== null) {
+                    const sentence = pendingText.slice(lastIndex, match.index + match[0].length);
+                    if (sentence.trim()) {
+                      sentences.push(sentence);
+                    }
+                    lastIndex = match.index + match[0].length;
                   }
-                } else if (data.type === 'done') {
-                  if (flushTimer) {
-                    clearTimeout(flushTimer);
-                    flushTimer = null;
-                  }
-                  flushBuffer(true);
-                  setConversationId(data.conversationId);
-                  if (!isOpenAI) setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
+                  
+                  // Keep remaining text as pending
+                  pendingText = pendingText.slice(lastIndex);
+                  
                   setChatMessages(prev => {
                     const updated = [...prev];
-                    updated[updated.length - 1] = { role: 'assistant', content: assistantMsg };
+                    updated[updated.length - 1] = { 
+                      role: 'assistant', 
+                      content: fullContent,
+                      streaming: true,
+                      sentences: [...sentences],
+                      pendingText
+                    };
                     return updated;
+                  });
+                  
+                } else if (data.type === 'done') {
+                  // Add any remaining pending text as final sentence
+                  if (pendingText.trim()) {
+                    sentences.push(pendingText);
+                  }
+                  
+                  setConversationId(data.conversationId);
+                  modelUsed = data.model || modelUsed;
+                  usage = data.usage || usage;
+                  
+                  if (!isOpenAI) setTokenUsage(prev => ({ ...prev, sonnet: usage ?? null }));
+                  
+                  setChatMessages(prev => {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = { 
+                      role: 'assistant', 
+                      content: fullContent,
+                      streaming: false
+                    };
+                    return updated;
+                  });
+                  
+                  pushDebugEvent({
+                    action: 'Chat',
+                    status: 'success',
+                    endpoint,
+                    durationMs: Date.now() - startedAt,
+                    pathway: [
+                      'Creative tab → API',
+                      `${endpoint}`,
+                      buildModelLabel(modelUsed)
+                    ],
+                    details: {
+                      conversationId: data.conversationId,
+                      adId: selectedAd?.id,
+                      usage
+                    }
+                  });
+                } else if (data.type === 'error') {
+                  pushDebugEvent({
+                    action: 'Chat',
+                    status: 'failed',
+                    endpoint,
+                    durationMs: Date.now() - startedAt,
+                    pathway: [
+                      'Creative tab → API',
+                      `${endpoint}`,
+                      buildModelLabel(data.model)
+                    ],
+                    details: {
+                      conversationId,
+                      adId: selectedAd?.id,
+                      error: data.error || 'Unknown streaming error'
+                    }
                   });
                 }
               } catch {}
             }
           }
         }
-        if (flushTimer) {
-          clearTimeout(flushTimer);
-          flushTimer = null;
-        }
-        flushBuffer(true);
       } else {
         const data = await res.json();
         if (data.success) {
           setChatMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
           setConversationId(data.conversationId);
           setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
+          pushDebugEvent({
+            action: 'Chat',
+            status: 'success',
+            endpoint,
+            durationMs: Date.now() - startedAt,
+            pathway: [
+              'Creative tab → API',
+              `${endpoint}`,
+              buildModelLabel(data.model)
+            ],
+            details: {
+              conversationId: data.conversationId,
+              adId: selectedAd?.id,
+              usage: data.usage ?? null
+            }
+          });
+        } else {
+          pushDebugEvent({
+            action: 'Chat',
+            status: 'failed',
+            endpoint,
+            durationMs: Date.now() - startedAt,
+            pathway: [
+              'Creative tab → API',
+              `${endpoint}`,
+              buildModelLabel(data.model)
+            ],
+            details: {
+              conversationId,
+              adId: selectedAd?.id,
+              error: data.error || 'Unknown chat error'
+            }
+          });
+          setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error || 'Chat failed'}` }]);
         }
       }
     } catch (err) {
       setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+      pushDebugEvent({
+        action: 'Chat',
+        status: 'failed',
+        endpoint,
+        durationMs: Date.now() - startedAt,
+        pathway: [
+          'Creative tab → API',
+          `${endpoint}`,
+          buildModelLabel()
+        ],
+        details: {
+          conversationId,
+          adId: selectedAd?.id,
+          error: err.message,
+          messageLength: userMessage.length
+        }
+      });
     } finally {
       setChatLoading(false);
+      setShowScrollButton(false);
     }
   };
 
@@ -888,8 +1392,6 @@ export default function CreativeIntelligence({ store }) {
       console.error('Save settings failed:', err);
     }
   };
-
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
 
   useEffect(() => {
     if (previewModalOpen && previewVideoRef.current) {
@@ -950,7 +1452,16 @@ export default function CreativeIntelligence({ store }) {
     setPreviewAd(null);
     setPreviewVideoData(null);
     setPreviewVideoError('');
+    setPreviewMediaDimensions({ width: null, height: null });
   };
+
+  const previewHasVideo = !!(previewVideoData?.source_url);
+  const previewHasEmbed = !previewHasVideo && !!(previewVideoData?.embed_html);
+  const previewHasThumbnail = !previewHasVideo && !!(previewVideoData?.thumbnail_url || previewAd?.thumbnail);
+  const previewDisplayThumbnail = previewVideoData?.thumbnail_url || previewAd?.thumbnail;
+  const previewShowPermissionFallback = !previewHasVideo && !previewHasEmbed && previewHasThumbnail && previewVideoData?.source_url === null;
+  const previewShowNoVideo = !previewHasVideo && !previewHasEmbed && !previewHasThumbnail;
+  const previewFallbackMessage = previewVideoData?.message || 'No video found for this ad.';
 
   // Derived data
   const campaignRows = useMemo(() => campaigns.map(c => ({
@@ -976,18 +1487,6 @@ export default function CreativeIntelligence({ store }) {
     if (activeTab === 'analyzed') return adRows.filter(ad => scriptStatuses[ad.id] === 'complete');
     return adRows.filter(ad => scriptStatuses[ad.id] !== 'complete');
   }, [adRows, activeTab, scriptStatuses]);
-
-  const previewHasVideo = !!previewVideoData?.source_url;
-  const previewHasEmbed = !previewHasVideo && !!previewVideoData?.embed_html;
-  const previewDisplayThumbnail = previewVideoData?.thumbnail_url || previewAd?.thumbnail || null;
-  const previewHasThumbnail = !previewHasVideo && !previewHasEmbed && !!previewDisplayThumbnail;
-  const previewShowNoVideo = !previewVideoLoading && !previewHasVideo && !previewHasEmbed && !previewHasThumbnail;
-  const previewShowPermissionFallback = previewVideoData?.playable === false && previewHasThumbnail;
-  const previewFallbackMessage =
-    previewVideoData?.message ||
-    (previewVideoData?.reason === 'NO_VIDEO_PERMISSION'
-      ? "Can't access this video's preview."
-      : 'No video found for this ad.');
 
   // ============================================================================
   // RENDER
@@ -1020,9 +1519,9 @@ export default function CreativeIntelligence({ store }) {
         </div>
       </div>
 
-      <div className="flex h-[calc(100vh-73px)]">
+      <div className="flex" style={{ height: 'calc(100vh - 73px)' }}>
         {/* Left Panel */}
-        <div className="w-80 border-r overflow-y-auto" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+        <div className="w-80 border-r overflow-y-auto flex-shrink-0" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
           {/* Campaigns */}
           <div className="p-5 border-b" style={{ borderColor: colors.borderLight }}>
             <div className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>Campaigns</div>
@@ -1112,7 +1611,7 @@ export default function CreativeIntelligence({ store }) {
                             handlePreviewAdClick(ad);
                           }
                         }}
-                        className="w-11 h-11 rounded-xl overflow-hidden"
+                        className="w-11 h-11 rounded-xl overflow-hidden flex-shrink-0"
                         style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}
                       >
                         <img src={ad.thumbnail} alt="" className="w-full h-full object-cover" />
@@ -1129,7 +1628,7 @@ export default function CreativeIntelligence({ store }) {
                             handlePreviewAdClick(ad);
                           }
                         }}
-                        className="w-11 h-11 rounded-xl flex items-center justify-center"
+                        className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
                         style={{ backgroundColor: colors.bgSubtle }}
                       >
                         <svg className="w-5 h-5" fill="none" stroke={colors.textMuted} viewBox="0 0 24 24">
@@ -1154,12 +1653,12 @@ export default function CreativeIntelligence({ store }) {
           </div>
         </div>
 
-        {/* Right Panel */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Right Panel - Fixed height, no page scroll */}
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {!selectedAd ? <EmptyState /> : (
             <>
               {/* Ad Header */}
-              <div className="px-6 py-4 border-b" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+              <div className="px-6 py-4 border-b flex-shrink-0" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-lg font-semibold" style={{ color: colors.text, letterSpacing: '-0.02em' }}>{selectedAd.name}</h2>
@@ -1208,17 +1707,26 @@ export default function CreativeIntelligence({ store }) {
                 </div>
               </div>
 
-              {/* Chat with Aura */}
+              {/* Chat with Aura - Fixed height container */}
               <div
-                className={`flex-1 flex flex-col overflow-hidden m-6 rounded-2xl border transition-all duration-300 ${chatLoading ? 'ci-aura-active' : 'ci-shadow-glow'}`}
-                style={{ borderColor: chatLoading ? 'rgba(139,92,246,0.2)' : 'rgba(139,92,246,0.08)', backgroundColor: colors.card, position: 'relative' }}
+                className={`ci-chat-container m-6 rounded-2xl border transition-all duration-300 ${chatLoading ? 'ci-aura-active' : 'ci-shadow-glow'}`}
+                style={{ 
+                  borderColor: chatLoading ? 'rgba(139,92,246,0.2)' : 'rgba(139,92,246,0.08)', 
+                  backgroundColor: colors.card, 
+                  position: 'relative',
+                  flex: '1 1 0%',
+                  minHeight: 0
+                }}
               >
                 <ParticleExplosion active={showParticles} onDone={() => setShowParticles(false)} />
                 
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-6">
+                {/* Messages - Scrollable container */}
+                <div 
+                  ref={chatContainerRef}
+                  className="ci-chat-messages p-6"
+                >
                   {chatMessages.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center">
+                    <div className="h-full flex flex-col items-center justify-center" style={{ minHeight: '300px' }}>
                       <div className="text-center max-w-md">
                         <div className="text-5xl mb-6">💬</div>
                         <h3 className="text-lg font-semibold mb-2" style={{ color: colors.text }}>Ask Claude about this ad</h3>
@@ -1228,14 +1736,26 @@ export default function CreativeIntelligence({ store }) {
                     </div>
                   ) : (
                     <div>
-                      {chatMessages.map((msg, i) => <ChatMessage key={i} message={msg} />)}
+                      {chatMessages.map((msg, i) => (
+                        <ChatMessage key={i} message={msg} isStreaming={msg.streaming} />
+                      ))}
                       <div ref={chatEndRef} />
                     </div>
                   )}
                 </div>
+                
+                {/* Scroll to bottom button */}
+                <ScrollToBottomButton 
+                  visible={showScrollButton} 
+                  onClick={() => {
+                    setShowScrollButton(false);
+                    resetUserScroll();
+                    scrollToBottom(true);
+                  }} 
+                />
 
                 {/* Input */}
-                <div className="p-4 border-t" style={{ borderColor: colors.borderLight }}>
+                <div className="p-4 border-t flex-shrink-0" style={{ borderColor: colors.borderLight }}>
                   <form onSubmit={handleFormSubmit} className="flex gap-3">
                     <input
                       type="text"
@@ -1258,17 +1778,87 @@ export default function CreativeIntelligence({ store }) {
                 </div>
               </div>
 
-              {/* Debug */}
-              <div className="mx-6 mb-6 rounded-2xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+              {/* Debug - Collapsible */}
+              <div className="mx-6 mb-6 rounded-2xl border overflow-hidden flex-shrink-0" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
                 <button onClick={() => setDebugOpen(!debugOpen)} className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium hover:bg-gray-50 transition-colors" style={{ color: colors.text }}>
-                  <span>Debug & Tokens</span>
-                  <span className="text-xs" style={{ color: colors.textMuted }}>{debugOpen ? '▼' : '▶'}</span>
+                  <span>Debugging & Token Usage</span>
+                  <span className="text-xs" style={{ color: colors.textMuted }}>{debugOpen ? 'Collapse' : 'Expand'}</span>
                 </button>
                 {debugOpen && (
-                  <div className="p-5 pt-0 text-xs" style={{ color: colors.textSecondary }}>
-                    <div className="space-y-1">
-                      <div><span className="font-semibold" style={{ color: colors.text }}>Gemini:</span> {tokenUsage.gemini ? `${tokenUsage.gemini.totalTokens || 'n/a'} tokens` : 'Not reported'}</div>
-                      <div><span className="font-semibold" style={{ color: colors.text }}>Claude:</span> {tokenUsage.sonnet ? `${(tokenUsage.sonnet.input_tokens || 0) + (tokenUsage.sonnet.output_tokens || 0)} tokens` : 'Not reported'}</div>
+                  <div className="p-4 space-y-4 max-h-72 overflow-y-auto">
+                    <div className="text-xs" style={{ color: colors.textSecondary }}>
+                      Connection pathways, failures, and token usage from Gemini + Sonnet.
+                    </div>
+                    <div className="grid gap-3 text-xs" style={{ color: colors.textSecondary }}>
+                      <div>
+                        <span className="font-semibold text-gray-700">Gemini tokens:</span>{' '}
+                        {tokenUsage.gemini
+                          ? `total ${tokenUsage.gemini.totalTokens ?? 'n/a'} (prompt ${tokenUsage.gemini.promptTokens ?? 'n/a'}, output ${tokenUsage.gemini.outputTokens ?? 'n/a'})`
+                          : 'Not reported yet'}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-gray-700">Sonnet tokens:</span>{' '}
+                        {tokenUsage.sonnet
+                          ? `input ${tokenUsage.sonnet.input_tokens ?? 'n/a'}, output ${tokenUsage.sonnet.output_tokens ?? 'n/a'}`
+                          : 'Not reported yet'}
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-gray-700">Connection log</div>
+                      {debugEvents.length === 0 ? (
+                        <div className="text-xs" style={{ color: colors.textSecondary }}>
+                          No debug events yet. Run Analyze or send a chat prompt to populate this.
+                        </div>
+                      ) : (
+                        <div className="max-h-48 overflow-y-auto space-y-2">
+                          {debugEvents.map((event) => (
+                            <div key={event.id} className="rounded-lg border p-2" style={{ borderColor: colors.border }}>
+                              <div className="flex items-center justify-between text-[11px] text-gray-500">
+                                <span>{new Date(event.timestamp).toLocaleString()}</span>
+                                <span className={event.status === 'failed' ? 'text-red-500' : 'text-green-600'}>
+                                  {event.action} {event.status}
+                                </span>
+                              </div>
+                              <div className="mt-1 text-[11px] text-gray-600">
+                                <div><span className="font-semibold">Endpoint:</span> {event.endpoint}</div>
+                                {event.durationMs != null && (
+                                  <div><span className="font-semibold">Duration:</span> {event.durationMs}ms</div>
+                                )}
+                                {event.pathway && (
+                                  <div>
+                                    <span className="font-semibold">Pathway:</span>
+                                    <ul className="list-disc ml-4">
+                                      {event.pathway.map((step, index) => (
+                                        <li key={`${event.id}-path-${index}`}>{step}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                                {event.details && (
+                                  <div className="mt-1 whitespace-pre-wrap">
+                                    <span className="font-semibold">Details:</span>{' '}
+                                    {JSON.stringify(event.details, null, 2)}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs font-semibold text-gray-700">Gemini transcript (extracted audio)</div>
+                        <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-32 overflow-y-auto border rounded-lg p-2" style={{ borderColor: colors.border }}>
+                          {geminiTranscript || 'No transcript extracted yet.'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-gray-700">Gemini transcript (full audio + on-screen)</div>
+                        <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-40 overflow-y-auto border rounded-lg p-2" style={{ borderColor: colors.border }}>
+                          {geminiFullTranscript || 'No transcript extracted yet.'}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1379,13 +1969,14 @@ export default function CreativeIntelligence({ store }) {
 }
 
 // ============================================================================
-// SETTINGS MODAL
+// SETTINGS MODAL - With auto-scroll toggle
 // ============================================================================
 function SettingsModal({ settings, onSave, onClose }) {
   const [form, setForm] = useState({
     model: settings?.model || 'sonnet-4.5',
     reasoning_effort: settings?.reasoning_effort || 'medium',
     streaming: settings?.streaming ?? true,
+    autoScroll: settings?.autoScroll ?? true,
     capabilities: settings?.capabilities || { analyze: true, clone: true, ideate: true, audit: true }
   });
 
@@ -1493,6 +2084,15 @@ function SettingsModal({ settings, onSave, onClose }) {
               <div className="text-sm" style={{ color: colors.textSecondary }}>See responses as they generate</div>
             </div>
             <input type="checkbox" checked={form.streaming} onChange={(e) => setForm(prev => ({ ...prev, streaming: e.target.checked }))} className="w-5 h-5 accent-indigo-500" />
+          </label>
+
+          {/* Auto-scroll Toggle */}
+          <label className="flex items-center justify-between p-4 rounded-2xl border cursor-pointer hover:bg-gray-50" style={{ borderColor: colors.border }}>
+            <div>
+              <div className="font-medium" style={{ color: colors.text }}>Auto-scroll</div>
+              <div className="text-sm" style={{ color: colors.textSecondary }}>Automatically scroll as response streams in</div>
+            </div>
+            <input type="checkbox" checked={form.autoScroll} onChange={(e) => setForm(prev => ({ ...prev, autoScroll: e.target.checked }))} className="w-5 h-5 accent-indigo-500" />
           </label>
         </div>
 
