@@ -562,6 +562,12 @@ const useSmoothScroll = (containerRef, enabled) => {
   const targetScrollRef = useRef(0);
   const animatingRef = useRef(false);
   const isUserScrolledUpRef = useRef(false);
+  const enabledRef = useRef(enabled);
+  const lastScrollTopRef = useRef(0);
+
+  useEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
   
   const checkIfAtBottom = useCallback(() => {
     const container = containerRef.current;
@@ -571,6 +577,7 @@ const useSmoothScroll = (containerRef, enabled) => {
   }, [containerRef]);
   
   const scrollToBottom = useCallback((smooth = true) => {
+    if (!enabledRef.current) return;
     const container = containerRef.current;
     if (!container) return;
     
@@ -611,7 +618,15 @@ const useSmoothScroll = (containerRef, enabled) => {
   }, [containerRef]);
   
   const handleUserScroll = useCallback(() => {
-    isUserScrolledUpRef.current = !checkIfAtBottom();
+    const container = containerRef.current;
+    if (!container) return;
+    const currentTop = container.scrollTop;
+    if (currentTop < lastScrollTopRef.current) {
+      isUserScrolledUpRef.current = true;
+    } else if (checkIfAtBottom()) {
+      isUserScrolledUpRef.current = false;
+    }
+    lastScrollTopRef.current = currentTop;
   }, [checkIfAtBottom]);
   
   const isUserScrolledUp = useCallback(() => {
@@ -743,6 +758,10 @@ export default function CreativeIntelligence({ store }) {
     if (!container) return;
     
     const onScroll = () => {
+      if (!settings?.autoScroll) {
+        setShowScrollButton(false);
+        return;
+      }
       handleUserScroll();
       // Show scroll button if user scrolled up during streaming
       if (chatLoading && isUserScrolledUp()) {
@@ -774,7 +793,8 @@ export default function CreativeIntelligence({ store }) {
   // Smooth scroll to bottom when streaming completes
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
-    if (lastMessage && !lastMessage.streaming && !settings?.autoScroll) {
+    if (!settings?.autoScroll) return;
+    if (lastMessage && !lastMessage.streaming) {
       // Streaming just finished, do one smooth scroll
       setTimeout(() => scrollToBottom(true), 100);
     }
