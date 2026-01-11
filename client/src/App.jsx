@@ -1475,6 +1475,19 @@ function DashboardTab({
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'country'
   const [creativeSummaryGeneratedAt, setCreativeSummaryGeneratedAt] = useState(null);
+  const [creativeSummaryRange, setCreativeSummaryRange] = useState(() => (
+    dateRange?.startDate && dateRange?.endDate
+      ? { type: 'custom', start: dateRange.startDate, end: dateRange.endDate }
+      : { type: 'days', value: 7 }
+  ));
+  const [creativeSummaryCustomRange, setCreativeSummaryCustomRange] = useState(() => ({
+    start: dateRange?.startDate || '',
+    end: dateRange?.endDate || ''
+  }));
+  const [showCreativeSummaryCustomPicker, setShowCreativeSummaryCustomPicker] = useState(false);
+  const [creativeSummaryData, setCreativeSummaryData] = useState([]);
+  const [creativeSummaryPreviousData, setCreativeSummaryPreviousData] = useState([]);
+  const [creativeSummaryLoading, setCreativeSummaryLoading] = useState(false);
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
   const countryTrendQuickOptions = [
@@ -1543,6 +1556,95 @@ function DashboardTab({
     return creativeCampaignOptions.find(c => c.id === selectedCreativeCampaignId) || creativeCampaignOptions[0];
   }, [creativeCampaignOptions, selectedCreativeCampaignId]);
 
+  useEffect(() => {
+    if (dateRange?.startDate && dateRange?.endDate) {
+      setCreativeSummaryRange({ type: 'custom', start: dateRange.startDate, end: dateRange.endDate });
+      setCreativeSummaryCustomRange({ start: dateRange.startDate, end: dateRange.endDate });
+    }
+  }, [dateRange?.startDate, dateRange?.endDate]);
+
+  const resolveCreativeSummaryRange = useCallback((range) => {
+    if (!range) return null;
+    if (range.type === 'custom') {
+      if (!range.start || !range.end) return null;
+      return { startDate: range.start, endDate: range.end };
+    }
+    if (range.type === 'yesterday') {
+      const yesterday = getLocalDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      return { startDate: yesterday, endDate: yesterday };
+    }
+    const totalDays = Math.max(1, Number(range.value) || 1);
+    const endDate = getLocalDateString();
+    const startDate = getLocalDateString(new Date(Date.now() - (totalDays - 1) * 24 * 60 * 60 * 1000));
+    return { startDate, endDate };
+  }, []);
+
+  const getPreviousCreativeSummaryRange = useCallback((startDate, endDate) => {
+    if (!startDate || !endDate) return null;
+    const start = new Date(`${startDate}T00:00:00`);
+    const end = new Date(`${endDate}T00:00:00`);
+    const diffDays = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const prevEnd = new Date(start.getTime() - 24 * 60 * 60 * 1000);
+    const prevStart = new Date(prevEnd.getTime() - (diffDays - 1) * 24 * 60 * 60 * 1000);
+    return {
+      startDate: getLocalDateString(prevStart),
+      endDate: getLocalDateString(prevEnd)
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!store?.id) return;
+    const resolvedRange = resolveCreativeSummaryRange(creativeSummaryRange);
+    if (!resolvedRange?.startDate || !resolvedRange?.endDate) return;
+    const previousRange = getPreviousCreativeSummaryRange(resolvedRange.startDate, resolvedRange.endDate);
+    if (!previousRange?.startDate || !previousRange?.endDate) return;
+
+    const params = new URLSearchParams({
+      store: store.id,
+      startDate: resolvedRange.startDate,
+      endDate: resolvedRange.endDate
+    });
+    const previousParams = new URLSearchParams({
+      store: store.id,
+      startDate: previousRange.startDate,
+      endDate: previousRange.endDate
+    });
+
+    if (includeInactive) {
+      params.set('includeInactive', 'true');
+      previousParams.set('includeInactive', 'true');
+    }
+
+    let isActive = true;
+    setCreativeSummaryLoading(true);
+
+    Promise.all([
+      fetchJson(`${API_BASE}/analytics/meta-ad-manager?${params}`, []),
+      fetchJson(`${API_BASE}/analytics/meta-ad-manager?${previousParams}`, [])
+    ])
+      .then(([currentData, previousData]) => {
+        if (!isActive) return;
+        const normalize = (data) => (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+        setCreativeSummaryData(normalize(currentData));
+        setCreativeSummaryPreviousData(normalize(previousData));
+      })
+      .finally(() => {
+        if (isActive) {
+          setCreativeSummaryLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [
+    store?.id,
+    includeInactive,
+    creativeSummaryRange,
+    resolveCreativeSummaryRange,
+    getPreviousCreativeSummaryRange
+  ]);
+
   const creativeAds = useMemo(() => {
     if (!selectedCreativeCampaign) return [];
     const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
@@ -1550,6 +1652,7 @@ function DashboardTab({
       const purchases = ad.conversions ?? ad.purchases ?? 0;
       const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
       const impressions = ad.impressions || 0;
+      const reach = ad.reach || 0;
       const rawClicks = toNumber(ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0);
       const rawLpv = toNumber(ad.landing_page_views ?? ad.lpv);
       const lpvRatio = toNumber(ad.landing_page_view_per_link_click);
@@ -1558,6 +1661,7 @@ function DashboardTab({
       const clicks = rawClicks;
       const outboundClicks = toNumber(ad.outbound_clicks ?? 0);
       const atc = ad.atc ?? ad.add_to_cart ?? 0;
+      const checkout = ad.checkout ?? ad.checkouts_initiated ?? 0;
       const spend = ad.spend || 0;
       const aov = purchases > 0 ? revenue / purchases : null;
       const roas = spend > 0 ? revenue / spend : null;
@@ -1578,11 +1682,13 @@ function DashboardTab({
         clicks,
         lpv,
         atc,
+        checkout,
         purchases,
         aov,
         roas,
         spend,
         revenue,
+        reach,
         visits: safeVisits,
         effectivePurchases,
         countries,
@@ -1627,23 +1733,27 @@ function DashboardTab({
         groups.set(key, {
           key,
           name: ad.name,
-        impressions: 0,
-        clicks: 0,
-        lpv: 0,
-        atc: 0,
-        purchases: 0,
-        revenue: 0,
-        spend: 0,
-        visits: 0,
-        effectivePurchases: 0
-      });
+          impressions: 0,
+          reach: 0,
+          clicks: 0,
+          lpv: 0,
+          atc: 0,
+          checkout: 0,
+          purchases: 0,
+          revenue: 0,
+          spend: 0,
+          visits: 0,
+          effectivePurchases: 0
+        });
       }
 
       const group = groups.get(key);
       group.impressions += ad.impressions || 0;
+      group.reach += ad.reach || 0;
       group.clicks += ad.clicks || 0;
       group.lpv += ad.lpv || 0;
       group.atc += ad.atc || 0;
+      group.checkout += ad.checkout || 0;
       group.purchases += ad.purchases || 0;
       group.revenue += ad.revenue || 0;
       group.spend += ad.spend || 0;
@@ -1731,9 +1841,11 @@ function DashboardTab({
             country: ad.country || 'ALL',
             spend: ad.spend || 0,
             impressions: ad.impressions || 0,
+            reach: ad.reach || 0,
             clicks: ad.clicks ?? 0,
             lpv: ad.lpv || 0,
             add_to_cart: ad.atc || 0,
+            checkout: ad.checkout || 0,
             conversions: ad.purchases || 0,
             conversion_value: ad.revenue || 0
           }];
@@ -1745,6 +1857,7 @@ function DashboardTab({
         const purchases = countryEntry.conversions ?? countryEntry.purchases ?? 0;
         const revenue = countryEntry.conversion_value ?? countryEntry.purchase_value ?? 0;
         const impressions = countryEntry.impressions || 0;
+        const reach = countryEntry.reach || 0;
         const rawClicks = toNumber(countryEntry.inline_link_clicks ?? countryEntry.link_clicks ?? countryEntry.clicks ?? countryEntry.click ?? 0);
         const rawLpv = toNumber(countryEntry.landing_page_views ?? countryEntry.lpv);
         const lpvRatio = toNumber(countryEntry.landing_page_view_per_link_click);
@@ -1753,6 +1866,7 @@ function DashboardTab({
         const clicks = rawClicks;
         const outboundClicks = toNumber(countryEntry.outbound_clicks ?? 0);
         const atc = countryEntry.add_to_cart ?? countryEntry.atc ?? 0;
+        const checkout = countryEntry.checkout ?? countryEntry.checkouts_initiated ?? 0;
         const spend = countryEntry.spend || 0;
         const aov = purchases > 0 ? revenue / purchases : null;
         const roas = spend > 0 ? revenue / spend : null;
@@ -1787,11 +1901,13 @@ function DashboardTab({
           key: `${ad.key}-${code}-${idx}`,
           name: ad.name,
           impressions,
+          reach,
           clicks,
           ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
           lpv,
           atc,
           atcRate: lpv > 0 ? (atc / lpv) * 100 : null,
+          checkout,
           purchases,
           visits: safeVisits,
           effectivePurchases,
@@ -1817,6 +1933,109 @@ function DashboardTab({
 
     return sections.sort((a, b) => (b.totalPurchases || 0) - (a.totalPurchases || 0));
   }, [creativeAds, creativeSortConfig, creativeBaselineCvr]);
+
+  const buildCreativeSummaryRowsFromAds = (ads = []) => {
+    if (!Array.isArray(ads) || ads.length === 0) return [];
+    const groups = new Map();
+
+    ads.forEach((ad, idx) => {
+      const name = ad.ad_name || ad.name || 'Creative';
+      const key = (name || '').trim().toLowerCase() || ad.ad_id || ad.id || `creative-${idx}`;
+      const purchases = ad.conversions ?? ad.purchases ?? 0;
+      const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
+      const impressions = ad.impressions || 0;
+      const reach = ad.reach || 0;
+      const rawClicks = toNumber(ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0);
+      const rawLpv = toNumber(ad.landing_page_views ?? ad.lpv);
+      const lpvRatio = toNumber(ad.landing_page_view_per_link_click);
+      const lpvFromRatio = lpvRatio > 0 && rawClicks > 0 ? lpvRatio * rawClicks : 0;
+      const lpv = rawLpv > 0 ? rawLpv : lpvFromRatio;
+      const clicks = rawClicks;
+      const outboundClicks = toNumber(ad.outbound_clicks ?? 0);
+      const atc = ad.atc ?? ad.add_to_cart ?? 0;
+      const checkout = ad.checkout ?? ad.checkouts_initiated ?? 0;
+      const spend = ad.spend || 0;
+      const visits = getVisitsProxy({
+        landingPageViews: lpv,
+        outboundClicks,
+        inlineLinkClicks: clicks
+      });
+      const safeVisits = Number.isFinite(visits) && visits > 0 ? visits : 0;
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          name,
+          impressions: 0,
+          reach: 0,
+          clicks: 0,
+          lpv: 0,
+          atc: 0,
+          checkout: 0,
+          purchases: 0,
+          revenue: 0,
+          spend: 0,
+          visits: 0
+        });
+      }
+
+      const group = groups.get(key);
+      group.impressions += impressions;
+      group.reach += reach;
+      group.clicks += clicks;
+      group.lpv += lpv;
+      group.atc += atc;
+      group.checkout += checkout;
+      group.purchases += purchases;
+      group.revenue += revenue;
+      group.spend += spend;
+      group.visits += safeVisits;
+    });
+
+    return Array.from(groups.values()).map(row => ({
+      ...row,
+      ctr: row.impressions > 0 ? (row.clicks / row.impressions) * 100 : null,
+      frequency: row.reach > 0 ? row.impressions / row.reach : null,
+      atcRate: row.lpv > 0 ? (row.atc / row.lpv) * 100 : null,
+      checkoutRate: row.atc > 0 ? (row.checkout / row.atc) * 100 : null,
+      cvr: row.visits > 0 ? (row.purchases / row.visits) * 100 : null,
+      roas: row.spend > 0 ? row.revenue / row.spend : null
+    }));
+  };
+
+  const creativeSummaryCampaign = useMemo(() => {
+    if (!Array.isArray(creativeSummaryData) || creativeSummaryData.length === 0) return null;
+    return creativeSummaryData.find(c => (c.campaign_id || c.campaignId) === selectedCreativeCampaignId)
+      || creativeSummaryData[0];
+  }, [creativeSummaryData, selectedCreativeCampaignId]);
+
+  const creativeSummaryPreviousCampaign = useMemo(() => {
+    if (!Array.isArray(creativeSummaryPreviousData) || creativeSummaryPreviousData.length === 0) return null;
+    return creativeSummaryPreviousData.find(c => (c.campaign_id || c.campaignId) === selectedCreativeCampaignId)
+      || creativeSummaryPreviousData[0];
+  }, [creativeSummaryPreviousData, selectedCreativeCampaignId]);
+
+  const creativeSummaryRows = useMemo(() => {
+    const ads = Array.isArray(creativeSummaryCampaign?.adsets)
+      ? creativeSummaryCampaign.adsets.flatMap(adset => adset?.ads || [])
+      : [];
+    return buildCreativeSummaryRowsFromAds(ads);
+  }, [creativeSummaryCampaign]);
+
+  const creativeSummaryPreviousRows = useMemo(() => {
+    const ads = Array.isArray(creativeSummaryPreviousCampaign?.adsets)
+      ? creativeSummaryPreviousCampaign.adsets.flatMap(adset => adset?.ads || [])
+      : [];
+    return buildCreativeSummaryRowsFromAds(ads);
+  }, [creativeSummaryPreviousCampaign]);
+
+  const creativeSummaryTopSpenders = useMemo(() => (
+    [...creativeSummaryRows].sort((a, b) => (b.spend || 0) - (a.spend || 0)).slice(0, 5)
+  ), [creativeSummaryRows]);
+
+  const creativeSummaryPreviousMap = useMemo(() => (
+    new Map(creativeSummaryPreviousRows.map(row => [row.key, row]))
+  ), [creativeSummaryPreviousRows]);
 
   const creativeFunnelSummary = useMemo(() => {
     if (creativeRows.length === 0) return null;
@@ -2343,6 +2562,52 @@ function DashboardTab({
   const formatTimeLabel = (value) => {
     if (!value) return null;
     return value.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatFixed = (value, decimals = 2) => {
+    if (!Number.isFinite(value)) return '—';
+    return value.toFixed(decimals);
+  };
+
+  const calcMetricDelta = (value, base) =>
+    Number.isFinite(value) && Number.isFinite(base) && base !== 0
+      ? ((value - base) / base) * 100
+      : null;
+
+  const getCreativeSummaryRangeLabel = () => {
+    if (creativeSummaryRange.type === 'custom') {
+      if (creativeSummaryRange.start && creativeSummaryRange.end) {
+        return `${creativeSummaryRange.start} to ${creativeSummaryRange.end}`;
+      }
+      return 'Custom';
+    }
+    if (creativeSummaryRange.type === 'yesterday') return 'Yesterday';
+    if (creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 1) return 'Today';
+    if (creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 2) return 'Today & Yesterday';
+    if (creativeSummaryRange.type === 'days') return `${creativeSummaryRange.value}D`;
+    return 'Period';
+  };
+
+  const renderCreativeSummaryValue = (value, format) => {
+    if (!Number.isFinite(value)) return '—';
+    if (format === 'currency') return renderMetric(value, 'currency');
+    if (format === 'percent') return renderPercent(value, 2);
+    if (format === 'frequency') return formatFixed(value, 2);
+    return formatFixed(value, 2);
+  };
+
+  const renderCreativeSummaryDelta = (delta) => {
+    if (!Number.isFinite(delta)) {
+      return <span className="text-xs text-gray-400">—</span>;
+    }
+    const Icon = delta >= 0 ? TrendingUp : TrendingDown;
+    const classes = delta >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700';
+    return (
+      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${classes}`}>
+        <Icon className="h-3 w-3" />
+        {formatDeltaPercent(delta)}
+      </span>
+    );
   };
 
   const creativeSummaryCards = useMemo(() => {
@@ -3106,8 +3371,9 @@ function DashboardTab({
                   Creative funnel summary
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600">
-                  <span className="font-semibold text-gray-900">Powered by GPT‑5.2</span>
-                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Not auto-triggered</span>
+                  <span className="font-semibold text-gray-900">Powered by GPT‑5.1</span>
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Prompt: “Briefly analyze changes and provide insight”</span>
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">Not auto-triggered</span>
                   <span className="text-xs text-gray-500">Run end of day or tap generate.</span>
                 </div>
               </div>
@@ -3121,6 +3387,206 @@ function DashboardTab({
                 </button>
                 {creativeSummaryGeneratedAt && (
                   <span>Updated {formatTimeLabel(creativeSummaryGeneratedAt)}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Top 5 spenders funnel table
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    CTR, frequency, ATC rate, checkout rate, and CVR vs previous bucket.
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500">
+                  Period: <span className="font-semibold text-gray-700">{getCreativeSummaryRangeLabel()}</span>
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+                <span className="text-gray-500">Period:</span>
+                <button
+                  onClick={() => { setCreativeSummaryRange({ type: 'days', value: 1 }); setShowCreativeSummaryCustomPicker(false); }}
+                  className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                    creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 1
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  Today
+                </button>
+                <button
+                  onClick={() => { setCreativeSummaryRange({ type: 'yesterday', value: 1 }); setShowCreativeSummaryCustomPicker(false); }}
+                  className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                    creativeSummaryRange.type === 'yesterday'
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  Yesterday
+                </button>
+                <button
+                  onClick={() => { setCreativeSummaryRange({ type: 'days', value: 2 }); setShowCreativeSummaryCustomPicker(false); }}
+                  className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                    creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 2
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  Today & Yesterday
+                </button>
+                {[3, 7, 14, 30].map(days => (
+                  <button
+                    key={days}
+                    onClick={() => { setCreativeSummaryRange({ type: 'days', value: days }); setShowCreativeSummaryCustomPicker(false); }}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'days' && creativeSummaryRange.value === days
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    {days}D
+                  </button>
+                ))}
+                <button
+                  onClick={() => setShowCreativeSummaryCustomPicker((prev) => !prev)}
+                  className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                    creativeSummaryRange.type === 'custom'
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  Custom
+                </button>
+              </div>
+
+              {showCreativeSummaryCustomPicker && (
+                <div className="mt-3 flex flex-wrap items-end gap-2 text-xs text-gray-600">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">Start</label>
+                    <input
+                      type="date"
+                      value={creativeSummaryCustomRange.start}
+                      onChange={(e) => setCreativeSummaryCustomRange(prev => ({ ...prev, start: e.target.value }))}
+                      max={creativeSummaryCustomRange.end || getLocalDateString()}
+                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">End</label>
+                    <input
+                      type="date"
+                      value={creativeSummaryCustomRange.end}
+                      onChange={(e) => setCreativeSummaryCustomRange(prev => ({ ...prev, end: e.target.value }))}
+                      min={creativeSummaryCustomRange.start}
+                      max={getLocalDateString()}
+                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (creativeSummaryCustomRange.start && creativeSummaryCustomRange.end) {
+                        setCreativeSummaryRange({
+                          type: 'custom',
+                          start: creativeSummaryCustomRange.start,
+                          end: creativeSummaryCustomRange.end
+                        });
+                        setShowCreativeSummaryCustomPicker(false);
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold hover:bg-gray-800"
+                  >
+                    Apply
+                  </button>
+                </div>
+              )}
+
+              <div className="mt-4 overflow-x-auto">
+                {creativeSummaryLoading ? (
+                  <div className="text-sm text-gray-500">Loading creative funnel table...</div>
+                ) : creativeSummaryTopSpenders.length > 0 ? (
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="text-xs uppercase tracking-wide text-gray-500 bg-gray-50">
+                        <th className="px-3 py-2 text-left">Creative</th>
+                        <th className="px-3 py-2 text-right">Spend</th>
+                        <th className="px-3 py-2 text-right">CTR</th>
+                        <th className="px-3 py-2 text-right">Frequency</th>
+                        <th className="px-3 py-2 text-right">ATC Rate</th>
+                        <th className="px-3 py-2 text-right">Checkout Rate</th>
+                        <th className="px-3 py-2 text-right">CVR</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {creativeSummaryTopSpenders.map((row) => {
+                        const previous = creativeSummaryPreviousMap.get(row.key);
+                        const ctrDelta = calcMetricDelta(row.ctr, previous?.ctr);
+                        const frequencyDelta = calcMetricDelta(row.frequency, previous?.frequency);
+                        const atcDelta = calcMetricDelta(row.atcRate, previous?.atcRate);
+                        const checkoutDelta = calcMetricDelta(row.checkoutRate, previous?.checkoutRate);
+                        const cvrDelta = calcMetricDelta(row.cvr, previous?.cvr);
+
+                        return (
+                          <tr key={row.key} className="hover:bg-gray-50">
+                            <td className="px-3 py-2 text-gray-900 font-semibold max-w-xs truncate" title={row.name}>
+                              {row.name}
+                            </td>
+                            <td className="px-3 py-2 text-right text-gray-700">
+                              {renderCreativeSummaryValue(row.spend, 'currency')}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="font-semibold text-gray-900">
+                                  {renderCreativeSummaryValue(row.ctr, 'percent')}
+                                </span>
+                                {renderCreativeSummaryDelta(ctrDelta)}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="font-semibold text-gray-900">
+                                  {renderCreativeSummaryValue(row.frequency, 'frequency')}
+                                </span>
+                                {renderCreativeSummaryDelta(frequencyDelta)}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="font-semibold text-gray-900">
+                                  {renderCreativeSummaryValue(row.atcRate, 'percent')}
+                                </span>
+                                {renderCreativeSummaryDelta(atcDelta)}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="font-semibold text-gray-900">
+                                  {renderCreativeSummaryValue(row.checkoutRate, 'percent')}
+                                </span>
+                                {renderCreativeSummaryDelta(checkoutDelta)}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="font-semibold text-gray-900">
+                                  {renderCreativeSummaryValue(row.cvr, 'percent')}
+                                </span>
+                                {renderCreativeSummaryDelta(cvrDelta)}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="text-sm text-gray-500">
+                    No creative funnel data available for this period.
+                  </div>
                 )}
               </div>
             </div>
