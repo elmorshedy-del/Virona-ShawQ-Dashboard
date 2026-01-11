@@ -266,13 +266,15 @@ export default function App() {
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(() => {
     try {
-      const savedTab = localStorage.getItem('activeTab');
-      const parsed = Number(savedTab);
-      return Number.isInteger(parsed) ? parsed : 0;
+      const saved = localStorage.getItem('activeTab');
+      const parsed = Number(saved);
+      if (Number.isInteger(parsed) && parsed >= 0 && parsed < TABS.length) {
+        return parsed;
+      }
     } catch (e) {
       console.error('Error reading localStorage:', e);
-      return 0;
     }
+    return 0;
   });
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
@@ -442,12 +444,13 @@ export default function App() {
   }, [includeInactive, storeLoaded]);
 
   useEffect(() => {
+    if (!storeLoaded) return;
     try {
       localStorage.setItem('activeTab', String(activeTab));
     } catch (e) {
       console.error('Error writing localStorage:', e);
     }
-  }, [activeTab]);
+  }, [activeTab, storeLoaded]);
 
   useEffect(() => {
     const newStore = STORES[currentStore];

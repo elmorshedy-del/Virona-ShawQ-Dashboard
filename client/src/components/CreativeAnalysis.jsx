@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import CreativePreview from './CreativePreview.jsx';
 import MetaDebug from './MetaDebug.jsx';
 
@@ -8,7 +8,40 @@ const ANALYSIS_TABS = [
 ];
 
 export default function CreativeAnalysis({ store }) {
-  const [activeTab, setActiveTab] = useState('creative-preview');
+  const storageKey = `creative-analysis-tab:${store?.id || 'default'}`;
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (ANALYSIS_TABS.some((tab) => tab.id === saved)) {
+        return saved;
+      }
+    } catch (error) {
+      console.error('Error reading localStorage:', error);
+    }
+    return 'creative-preview';
+  });
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (ANALYSIS_TABS.some((tab) => tab.id === saved)) {
+        setActiveTab(saved);
+        return;
+      }
+    } catch (error) {
+      console.error('Error reading localStorage:', error);
+    }
+    setActiveTab('creative-preview');
+  }, [storageKey]);
+
+  const handleTabChange = (tabId) => {
+    setActiveTab(tabId);
+    try {
+      localStorage.setItem(storageKey, tabId);
+    } catch (error) {
+      console.error('Error writing localStorage:', error);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -16,7 +49,7 @@ export default function CreativeAnalysis({ store }) {
         {ANALYSIS_TABS.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => handleTabChange(tab.id)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
               activeTab === tab.id
                 ? 'bg-gray-900 text-white'
