@@ -20,6 +20,7 @@ import {
   getCitiesByCountry,
   getMetaAdManagerHierarchy,
   getFunnelDiagnostics,
+  getCreativeFunnelSummary,
   getReactivationCandidates,
   getAllMetaObjects
 } from '../services/analyticsService.js';
@@ -212,6 +213,24 @@ router.get('/funnel-diagnostics', (req, res) => {
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Analytics] Funnel diagnostics error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Creative funnel summary for top spenders
+router.get('/creative-funnel-summary', (req, res) => {
+  try {
+    const { store, startDate, endDate, campaignId, includeInactive, limit } = req.query;
+    const data = getCreativeFunnelSummary(store || 'vironax', {
+      startDate,
+      endDate,
+      campaignId,
+      includeInactive,
+      limit
+    });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Analytics] Creative funnel summary error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
