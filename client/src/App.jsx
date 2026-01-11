@@ -1475,6 +1475,11 @@ function DashboardTab({
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'country'
   const [creativeSummaryGeneratedAt, setCreativeSummaryGeneratedAt] = useState(null);
+  const [creativeSummaryText, setCreativeSummaryText] = useState('');
+  const [creativeSummaryLoading, setCreativeSummaryLoading] = useState(false);
+  const [creativeFunnelPeriod, setCreativeFunnelPeriod] = useState('7d');
+  const [creativeFunnelTableData, setCreativeFunnelTableData] = useState(null);
+  const [creativeFunnelLoading, setCreativeFunnelLoading] = useState(false);
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
   const countryTrendQuickOptions = [
@@ -2334,6 +2339,24 @@ function DashboardTab({
     return value;
   };
 
+  const renderFunnelValue = (value, format) => {
+    if (!Number.isFinite(value)) return '—';
+    if (format === 'percent') return renderPercent(value, 2);
+    return value.toFixed(2);
+  };
+
+  const renderFunnelDelta = (delta) => {
+    if (!Number.isFinite(delta)) return '—';
+    const isPositive = delta >= 0;
+    const classes = isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700';
+    return (
+      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${classes}`}>
+        {isPositive ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+        {formatDeltaPercent(delta)}
+      </span>
+    );
+  };
+
   const formatDeltaPercent = (value) => {
     if (!Number.isFinite(value)) return '—';
     const rounded = Math.abs(value) >= 100 ? 0 : 1;
@@ -2344,6 +2367,35 @@ function DashboardTab({
     if (!value) return null;
     return value.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   };
+
+  const resolveCreativeFunnelRange = useCallback(() => {
+    const today = getLocalDateString();
+    const yesterday = getLocalDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
+
+    switch (creativeFunnelPeriod) {
+      case 'today':
+        return { startDate: today, endDate: today };
+      case 'yesterday':
+        return { startDate: yesterday, endDate: yesterday };
+      case 'today_yesterday':
+        return { startDate: yesterday, endDate: today };
+      case '3d':
+        return { startDate: getLocalDateString(new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)), endDate: today };
+      case '7d':
+        return { startDate: getLocalDateString(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)), endDate: today };
+      case '14d':
+        return { startDate: getLocalDateString(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000)), endDate: today };
+      case '30d':
+        return { startDate: getLocalDateString(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000)), endDate: today };
+      case 'custom':
+        if (dateRange?.type === 'custom' && dateRange?.start && dateRange?.end) {
+          return { startDate: dateRange.start, endDate: dateRange.end };
+        }
+        return { startDate: today, endDate: today };
+      default:
+        return { startDate: today, endDate: today };
+    }
+  }, [creativeFunnelPeriod, dateRange]);
 
   const creativeSummaryCards = useMemo(() => {
     if (!creativeFunnelSummary) return null;
@@ -2413,6 +2465,126 @@ function DashboardTab({
       }
     };
   }, [creativeFunnelSummary]);
+
+  useEffect(() => {
+    if (!store?.id) return;
+    const { startDate, endDate } = resolveCreativeFunnelRange();
+    if (!startDate || !endDate) return;
+
+    const fetchCreativeFunnelSummary = async () => {
+      setCreativeFunnelLoading(true);
+      try {
+        const params = new URLSearchParams({
+          store: store.id,
+          startDate,
+          endDate
+        });
+        if (includeInactive) params.set('includeInactive', 'true');
+        if (selectedCreativeCampaignId) params.set('campaignId', selectedCreativeCampaignId);
+
+        const res = await fetch(`${API_BASE}/analytics/creative-funnel-summary?${params}`);
+        const json = await res.json();
+        setCreativeFunnelTableData(json);
+      } catch (error) {
+        console.error('Error loading creative funnel summary:', error);
+        setCreativeFunnelTableData(null);
+      } finally {
+        setCreativeFunnelLoading(false);
+      }
+    };
+
+    fetchCreativeFunnelSummary();
+  }, [store?.id, resolveCreativeFunnelRange, includeInactive, selectedCreativeCampaignId]);
+
+  const handleCreativeSummaryGenerate = async () => {
+    if (!store?.id) return;
+    const { startDate, endDate } = resolveCreativeFunnelRange();
+    setCreativeSummaryLoading(true);
+    setCreativeSummaryText('');
+    try {
+      const res = await fetch(`${API_BASE}/ai/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: 'Briefly analyze changes and provide insight',
+          store: store.id,
+          depth: 'balanced',
+          startDate,
+          endDate
+        })
+      });
+      const json = await res.json();
+      if (json?.success) {
+        setCreativeSummaryText(json.answer || '');
+      } else {
+        setCreativeSummaryText('Unable to generate insights right now.');
+      }
+      setCreativeSummaryGeneratedAt(new Date());
+    } catch (error) {
+      console.error('Error generating creative summary:', error);
+      setCreativeSummaryText('Unable to generate insights right now.');
+    } finally {
+      setCreativeSummaryLoading(false);
+    }
+  };
+
+  const getCreativeFunnelMetrics = (payload = {}) => {
+    const impressions = toNumber(payload.impressions);
+    const reach = toNumber(payload.reach);
+    const clicks = toNumber(payload.clicks);
+    const lpv = toNumber(payload.lpv);
+    const atc = toNumber(payload.atc);
+    const checkout = toNumber(payload.checkout);
+    const purchases = toNumber(payload.conversions);
+    const visits = getVisitsProxy({
+      landingPageViews: lpv,
+      outboundClicks: payload.outbound_clicks,
+      inlineLinkClicks: payload.inline_link_clicks
+    });
+
+    return {
+      ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
+      frequency: reach > 0 ? impressions / reach : null,
+      atcRate: lpv > 0 ? (atc / lpv) * 100 : null,
+      checkoutRate: atc > 0 ? (checkout / atc) * 100 : null,
+      cvr: visits > 0 ? (purchases / visits) * 100 : null
+    };
+  };
+
+  const creativeFunnelTableRows = useMemo(() => {
+    const rows = creativeFunnelTableData?.rows || [];
+    const calcDelta = (curr, prev) =>
+      Number.isFinite(curr) && Number.isFinite(prev) && prev !== 0
+        ? ((curr - prev) / prev) * 100
+        : null;
+
+    return rows.map((row) => {
+      const currentMetrics = getCreativeFunnelMetrics(row.current);
+      const previousMetrics = getCreativeFunnelMetrics(row.previous || {});
+      return {
+        key: row.key || row.name,
+        name: row.name || 'Creative',
+        spend: toNumber(row.current?.spend),
+        metrics: {
+          ctr: { value: currentMetrics.ctr, delta: calcDelta(currentMetrics.ctr, previousMetrics.ctr), format: 'percent' },
+          frequency: { value: currentMetrics.frequency, delta: calcDelta(currentMetrics.frequency, previousMetrics.frequency), format: 'number' },
+          atcRate: { value: currentMetrics.atcRate, delta: calcDelta(currentMetrics.atcRate, previousMetrics.atcRate), format: 'percent' },
+          checkoutRate: { value: currentMetrics.checkoutRate, delta: calcDelta(currentMetrics.checkoutRate, previousMetrics.checkoutRate), format: 'percent' },
+          cvr: { value: currentMetrics.cvr, delta: calcDelta(currentMetrics.cvr, previousMetrics.cvr), format: 'percent' }
+        }
+      };
+    });
+  }, [creativeFunnelTableData]);
+
+  const creativeFunnelRangeLabel = useMemo(() => {
+    const current = creativeFunnelTableData?.currentRange;
+    const previous = creativeFunnelTableData?.previousRange;
+    if (!current?.startDate || !current?.endDate) return null;
+    return {
+      current: `${current.startDate} → ${current.endDate}`,
+      previous: previous?.startDate && previous?.endDate ? `${previous.startDate} → ${previous.endDate}` : null
+    };
+  }, [creativeFunnelTableData]);
 
   const creativeDataStrengthStyles = {
     LOW: 'bg-gray-100 text-gray-600',
@@ -3106,7 +3278,7 @@ function DashboardTab({
                   Creative funnel summary
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600">
-                  <span className="font-semibold text-gray-900">Powered by GPT‑5.2</span>
+                  <span className="font-semibold text-gray-900">Powered by GPT‑5.1</span>
                   <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Not auto-triggered</span>
                   <span className="text-xs text-gray-500">Run end of day or tap generate.</span>
                 </div>
@@ -3114,10 +3286,11 @@ function DashboardTab({
               <div className="flex items-center gap-2 text-xs text-gray-500">
                 <button
                   type="button"
-                  onClick={() => setCreativeSummaryGeneratedAt(new Date())}
-                  className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-800"
+                  onClick={handleCreativeSummaryGenerate}
+                  disabled={creativeSummaryLoading}
+                  className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-800 disabled:bg-gray-400"
                 >
-                  Generate summary
+                  {creativeSummaryLoading ? 'Generating...' : 'Generate summary'}
                 </button>
                 {creativeSummaryGeneratedAt && (
                   <span>Updated {formatTimeLabel(creativeSummaryGeneratedAt)}</span>
@@ -3183,6 +3356,101 @@ function DashboardTab({
                 No creative funnel summary available yet. Load a campaign to compare ads.
               </div>
             )}
+
+            {creativeSummaryText && (
+              <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4 text-sm text-gray-700 whitespace-pre-line">
+                {creativeSummaryText}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-6 rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Top 5 spender funnel</div>
+                <div className="text-sm text-gray-600">CTR, frequency, ATC rate, checkout rate, and CVR vs prior bucket.</div>
+                {creativeFunnelRangeLabel && (
+                  <div className="mt-1 text-xs text-gray-500">
+                    Current: {creativeFunnelRangeLabel.current}
+                    {creativeFunnelRangeLabel.previous && (
+                      <span className="ml-2">Previous: {creativeFunnelRangeLabel.previous}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                <span className="font-semibold text-gray-700">Period:</span>
+                {[
+                  { label: 'Today', value: 'today' },
+                  { label: 'Yesterday', value: 'yesterday' },
+                  { label: 'Today & Yesterday', value: 'today_yesterday' },
+                  { label: '3D', value: '3d' },
+                  { label: '7D', value: '7d' },
+                  { label: '14D', value: '14d' },
+                  { label: '30D', value: '30d' },
+                  { label: 'Custom', value: 'custom' }
+                ].map(option => (
+                  <button
+                    key={option.value}
+                    onClick={() => setCreativeFunnelPeriod(option.value)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                      creativeFunnelPeriod === option.value
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4 overflow-x-auto">
+              {creativeFunnelLoading ? (
+                <div className="text-sm text-gray-500">Loading creative funnel summary…</div>
+              ) : creativeFunnelTableRows.length > 0 ? (
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-xs uppercase text-gray-500 tracking-wide bg-gray-50">
+                      <th className="px-4 py-3 text-left">Creative</th>
+                      <th className="px-4 py-3 text-right">Spend</th>
+                      <th className="px-4 py-3 text-right">CTR</th>
+                      <th className="px-4 py-3 text-right">Frequency</th>
+                      <th className="px-4 py-3 text-right">ATC Rate</th>
+                      <th className="px-4 py-3 text-right">Checkout Rate</th>
+                      <th className="px-4 py-3 text-right">CVR</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {creativeFunnelTableRows.map((row) => (
+                      <tr key={row.key} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 text-sm font-semibold text-gray-900 max-w-xs truncate" title={row.name}>
+                          {row.name}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-700">
+                          {renderMetric(row.spend, 'currency')}
+                        </td>
+                        {['ctr', 'frequency', 'atcRate', 'checkoutRate', 'cvr'].map(metricKey => {
+                          const metric = row.metrics[metricKey];
+                          return (
+                            <td key={metricKey} className="px-4 py-3 text-right text-sm">
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="text-sm font-semibold text-gray-900">
+                                  {renderFunnelValue(metric.value, metric.format)}
+                                </span>
+                                {renderFunnelDelta(metric.delta)}
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="text-sm text-gray-500">No creative funnel data available for this period.</div>
+              )}
+            </div>
           </div>
 
           {creativeCampaignOptions.length > 0 ? (

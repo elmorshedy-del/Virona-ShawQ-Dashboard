@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/database.js';
+import { getCreativeFunnelSummary } from './analyticsService.js';
 
 // Import Meta Awareness feature module for reactivation data
 import {
@@ -568,6 +569,7 @@ function getRelevantData(store, question, startDate = null, endDate = null) {
 
   // Always fetch current store with full hierarchy and funnel data
   data[currentStore] = getStoreData(db, currentStore, today, yesterday, periodStart, periodEnd);
+  data.creativeFunnelSummary = getCreativeFunnelSummary(currentStore, { startDate: periodStart, endDate: periodEnd });
 
   // Include reactivation candidates if mentioned
   if (mentionsReactivation) {
