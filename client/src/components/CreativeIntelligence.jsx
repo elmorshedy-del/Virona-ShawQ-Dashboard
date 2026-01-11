@@ -566,11 +566,12 @@ const useSmoothScroll = (containerRef, enabled) => {
   const checkIfAtBottom = useCallback(() => {
     const container = containerRef.current;
     if (!container) return true;
-    const threshold = 100;
+    const threshold = 8;
     return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
   }, [containerRef]);
   
   const scrollToBottom = useCallback((smooth = true) => {
+    if (!enabled) return;
     const container = containerRef.current;
     if (!container) return;
     
@@ -587,6 +588,10 @@ const useSmoothScroll = (containerRef, enabled) => {
     const animate = () => {
       const container = containerRef.current;
       if (!container) {
+        animatingRef.current = false;
+        return;
+      }
+      if (!enabled || isUserScrolledUpRef.current) {
         animatingRef.current = false;
         return;
       }
@@ -608,11 +613,12 @@ const useSmoothScroll = (containerRef, enabled) => {
     };
     
     requestAnimationFrame(animate);
-  }, [containerRef]);
+  }, [containerRef, enabled]);
   
   const handleUserScroll = useCallback(() => {
+    if (!enabled) return;
     isUserScrolledUpRef.current = !checkIfAtBottom();
-  }, [checkIfAtBottom]);
+  }, [checkIfAtBottom, enabled]);
   
   const isUserScrolledUp = useCallback(() => {
     return isUserScrolledUpRef.current;
@@ -739,6 +745,10 @@ export default function CreativeIntelligence({ store }) {
 
   // Handle scroll events to detect user scrolling up
   useEffect(() => {
+    if (!settings?.autoScroll) {
+      setShowScrollButton(false);
+      return;
+    }
     const container = chatContainerRef.current;
     if (!container) return;
     
@@ -754,7 +764,7 @@ export default function CreativeIntelligence({ store }) {
     
     container.addEventListener('scroll', onScroll, { passive: true });
     return () => container.removeEventListener('scroll', onScroll);
-  }, [handleUserScroll, isUserScrolledUp, checkIfAtBottom, chatLoading]);
+  }, [handleUserScroll, isUserScrolledUp, checkIfAtBottom, chatLoading, settings?.autoScroll]);
 
   // Auto-scroll logic
   useEffect(() => {
@@ -773,12 +783,13 @@ export default function CreativeIntelligence({ store }) {
 
   // Smooth scroll to bottom when streaming completes
   useEffect(() => {
+    if (!settings?.autoScroll) return;
+    if (isUserScrolledUp()) return;
     const lastMessage = chatMessages[chatMessages.length - 1];
-    if (lastMessage && !lastMessage.streaming && !settings?.autoScroll) {
-      // Streaming just finished, do one smooth scroll
+    if (lastMessage && !lastMessage.streaming) {
       setTimeout(() => scrollToBottom(true), 100);
     }
-  }, [chatMessages, settings?.autoScroll, scrollToBottom]);
+  }, [chatMessages, settings?.autoScroll, scrollToBottom, isUserScrolledUp]);
 
   useEffect(() => {
     if (!storageKey) return;
