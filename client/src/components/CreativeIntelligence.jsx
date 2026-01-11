@@ -536,6 +536,54 @@ export default function CreativeIntelligence({ store }) {
     }
   }, [storeId]);
 
+  const loadConversation = useCallback(async (conversationToLoad) => {
+    if (!conversationToLoad) return;
+    try {
+      const res = await fetch(`${API_BASE}/creative-intelligence/conversations/${conversationToLoad}`);
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+      setChatMessages(Array.isArray(data?.messages) ? data.messages : []);
+      setConversationId(data?.conversation?.id ?? conversationToLoad);
+    } catch (err) {
+      console.error('Error loading conversation:', err);
+      setError(err?.message || 'Failed to load conversation');
+    }
+  }, []);
+
+  // Handle ad selection
+  const handleSelectAd = useCallback(async (ad, options = {}) => {
+    const { resetChat = true, restoreConversationId = null } = options;
+    setSelectedAd(ad);
+    setLoadingVideo(true);
+    setVideoData(null);
+    setScriptStatus(null);
+    setTokenUsage({ gemini: null, sonnet: null });
+
+    if (resetChat || !restoreConversationId) {
+      hydrateChatForAd(ad?.id);
+    }
+    if (restoreConversationId) {
+      await loadConversation(restoreConversationId);
+    }
+
+    try {
+      const videoRes = await fetch(`${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`);
+      const video = await videoRes.json();
+      setVideoData(video);
+
+      const scriptRes = await fetch(`${API_BASE}/creative-intelligence/script/${ad.id}?store=${storeId}`);
+      const script = await scriptRes.json();
+      setScriptStatus(script);
+      setScriptStatuses(prev => ({ ...prev, [ad.id]: script?.status || 'pending' }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoadingVideo(false);
+    }
+  }, [hydrateChatForAd, loadConversation, selectedAccount, storeId]);
+
   // Fetch ad accounts
   useEffect(() => {
     if (!storeId) return;
@@ -631,34 +679,6 @@ export default function CreativeIntelligence({ store }) {
       .then(data => data.success && setSettings(data.settings))
       .catch(console.error);
   }, [storeId]);
-
-  // Handle ad selection
-  const handleSelectAd = useCallback(async (ad) => {
-    setSelectedAd(ad);
-    setLoadingVideo(true);
-    setVideoData(null);
-    setScriptStatus(null);
-    hydrateChatForAd(ad?.id);
-    setTokenUsage({ gemini: null, sonnet: null });
-
-    try {
-      const videoRes = await fetch(`${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`);
-      const video = await videoRes.json();
-      setVideoData(video);
-
-      const scriptRes = await fetch(`${API_BASE}/creative-intelligence/script/${ad.id}?store=${storeId}`);
-      const script = await scriptRes.json();
-      setScriptStatus(script);
-      setScriptStatuses(prev => ({ ...prev, [ad.id]: script?.status || 'pending' }));
-      if (!resetChat && restoreConversationId) {
-        await loadConversation(restoreConversationId);
-      }
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoadingVideo(false);
-    }
-  }, [hydrateChatForAd, selectedAccount, storeId]);
 
   useEffect(() => {
     if (!savedSelectedAdId || selectedAd) return;
