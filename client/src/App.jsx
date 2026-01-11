@@ -1347,8 +1347,10 @@ export default function App() {
 
         {activeTab === 4 && (
           <>
-            <CreativeAnalysis store={store} />
             <CreativeIntelligence store={currentStore} />
+            <div className="px-6 pb-6">
+              <CreativeAnalysis store={store} />
+            </div>
           </>
         )}
 
