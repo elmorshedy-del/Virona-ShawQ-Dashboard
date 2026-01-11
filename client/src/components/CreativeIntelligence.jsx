@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const API_BASE = '/api';
+const CREATIVE_INTELLIGENCE_STATE_KEY = 'creative-intelligence.state';
+
+const safelyParseJson = (value, fallback = null) => {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+};
 
 // ============================================================================
 // PREMIUM DESIGN TOKENS - Warm, comforting palette
@@ -359,6 +369,7 @@ export default function CreativeIntelligence({ store }) {
   useEffect(() => { injectGlobalStyles(); }, []);
   
   const storeId = typeof store === 'string' ? store : store?.id;
+  const storageKey = storeId ? `${CREATIVE_INTELLIGENCE_STATE_KEY}:${storeId}` : null;
   
   const [adAccounts, setAdAccounts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -391,6 +402,18 @@ export default function CreativeIntelligence({ store }) {
   const [settings, setSettings] = useState(null);
   
   const chatEndRef = useRef(null);
+  const persistedSelectionRef = useRef(null);
+  const hasRestoredSelectionRef = useRef(false);
+  const pendingConversationRestoreRef = useRef(false);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    persistedSelectionRef.current = safelyParseJson(
+      window.localStorage.getItem(storageKey),
+      null
+    );
+    hasRestoredSelectionRef.current = false;
+  }, [storageKey]);
 
   // Fetch ad accounts
   useEffect(() => {
@@ -402,7 +425,11 @@ export default function CreativeIntelligence({ store }) {
         const list = Array.isArray(data?.data) ? data.data : [];
         const filtered = filterStoreAccounts(list, storeId);
         setAdAccounts(filtered);
-        if (filtered.length > 0) setSelectedAccount(filtered[0].id);
+        if (filtered.length > 0) {
+          const savedAccount = persistedSelectionRef.current?.selectedAccount;
+          const match = savedAccount && filtered.some(account => account.id === savedAccount);
+          setSelectedAccount(match ? savedAccount : filtered[0].id);
+        }
       })
       .catch(err => setError(err.message))
       .finally(() => setLoadingAccounts(false));
@@ -418,7 +445,9 @@ export default function CreativeIntelligence({ store }) {
         const list = Array.isArray(data?.data) ? data.data : [];
         setCampaigns(list);
         const active = list.find(c => (c?.effective_status || c?.status || '').toUpperCase() === 'ACTIVE');
-        setSelectedCampaign(active?.id || list[0]?.id || '');
+        const savedCampaign = persistedSelectionRef.current?.selectedCampaign;
+        const match = savedCampaign && list.some(campaign => campaign.id === savedCampaign);
+        setSelectedCampaign(match ? savedCampaign : (active?.id || list[0]?.id || ''));
       })
       .catch(err => setError(err.message))
       .finally(() => setLoadingCampaigns(false));
@@ -430,7 +459,21 @@ export default function CreativeIntelligence({ store }) {
     setLoadingAds(true);
     fetch(`${API_BASE}/meta/campaigns/${selectedCampaign}/ads?store=${storeId}&adAccountId=${selectedAccount}`)
       .then(res => res.json())
-      .then(data => setAds(Array.isArray(data?.data) ? data.data : []))
+      .then(data => {
+        const list = Array.isArray(data?.data) ? data.data : [];
+        setAds(list);
+        if (hasRestoredSelectionRef.current) return;
+        const savedAdId = persistedSelectionRef.current?.selectedAdId;
+        if (!savedAdId) return;
+        const match = list.find(ad => ad.id === savedAdId);
+        if (match) {
+          hasRestoredSelectionRef.current = true;
+          handleSelectAd(match, {
+            preserveChat: true,
+            restoreConversationId: persistedSelectionRef.current?.conversationId || null
+          });
+        }
+      })
       .catch(err => setError(err.message))
       .finally(() => setLoadingAds(false));
   }, [selectedCampaign, selectedAccount, storeId]);
@@ -458,14 +501,22 @@ export default function CreativeIntelligence({ store }) {
   }, [storeId]);
 
   // Handle ad selection
-  const handleSelectAd = async (ad) => {
+  const handleSelectAd = async (ad, options = {}) => {
+    const { preserveChat = false, restoreConversationId = null } = options;
     setSelectedAd(ad);
     setLoadingVideo(true);
     setVideoData(null);
     setScriptStatus(null);
-    setChatMessages([]);
-    setConversationId(null);
     setTokenUsage({ gemini: null, sonnet: null });
+    if (preserveChat) {
+      if (restoreConversationId) {
+        pendingConversationRestoreRef.current = true;
+        setConversationId(restoreConversationId);
+      }
+    } else {
+      setChatMessages([]);
+      setConversationId(null);
+    }
 
     try {
       const videoRes = await fetch(`${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`);
@@ -629,7 +680,37 @@ export default function CreativeIntelligence({ store }) {
     }
   };
 
+  useEffect(() => {
+    if (!pendingConversationRestoreRef.current || !conversationId) return;
+    pendingConversationRestoreRef.current = false;
+    fetch(`${API_BASE}/creative-intelligence/conversations/${conversationId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (!data?.success || !Array.isArray(data?.messages)) return;
+        setChatMessages(
+          data.messages.map(message => ({
+            role: message.role,
+            content: message.content
+          }))
+        );
+      })
+      .catch(() => undefined);
+  }, [conversationId]);
+
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
+
+  useEffect(() => {
+    if (!storageKey || typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        selectedAccount,
+        selectedCampaign,
+        selectedAdId: selectedAd?.id || null,
+        conversationId: conversationId || null
+      })
+    );
+  }, [storageKey, selectedAccount, selectedCampaign, selectedAd?.id, conversationId]);
 
   // Derived data
   const campaignRows = useMemo(() => campaigns.map(c => ({
