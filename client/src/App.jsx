@@ -264,7 +264,18 @@ export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
   const [storeLoaded, setStoreLoaded] = useState(false);
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window === 'undefined') return 0;
+    try {
+      const saved = localStorage.getItem('activeTabIndex');
+      const parsed = Number.parseInt(saved ?? '', 10);
+      if (Number.isNaN(parsed)) return 0;
+      return parsed >= 0 && parsed < TABS.length ? parsed : 0;
+    } catch (e) {
+      console.error('Error reading activeTabIndex:', e);
+      return 0;
+    }
+  });
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -412,6 +423,15 @@ export default function App() {
     }
     setStoreLoaded(true);
   }, []);
+
+  // Save active tab selection
+  useEffect(() => {
+    try {
+      localStorage.setItem('activeTabIndex', String(activeTab));
+    } catch (e) {
+      console.error('Error saving activeTabIndex:', e);
+    }
+  }, [activeTab]);
 
   // Save store selection to localStorage whenever it changes
   useEffect(() => {
