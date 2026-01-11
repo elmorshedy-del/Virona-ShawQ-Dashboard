@@ -8,7 +8,7 @@ import {
 import {
   RefreshCw, TrendingUp, TrendingDown, Plus, Trash2,
   ChevronDown, ChevronUp, ArrowUpDown, Calendar,
-  Bell, X, AlertCircle, CheckCircle2
+  Bell, X, AlertCircle, CheckCircle2, Sparkles
 } from 'lucide-react';
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 import NotificationCenter from './components/NotificationCenter';
@@ -1474,6 +1474,7 @@ function DashboardTab({
   const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'country'
+  const [creativeSummaryGeneratedAt, setCreativeSummaryGeneratedAt] = useState(null);
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
   const countryTrendQuickOptions = [
@@ -1816,6 +1817,58 @@ function DashboardTab({
 
     return sections.sort((a, b) => (b.totalPurchases || 0) - (a.totalPurchases || 0));
   }, [creativeAds, creativeSortConfig, creativeBaselineCvr]);
+
+  const creativeFunnelSummary = useMemo(() => {
+    if (creativeRows.length === 0) return null;
+
+    const totals = creativeRows.reduce((acc, row) => ({
+      impressions: acc.impressions + (row.impressions || 0),
+      clicks: acc.clicks + (row.clicks || 0),
+      lpv: acc.lpv + (row.lpv || 0),
+      atc: acc.atc + (row.atc || 0),
+      purchases: acc.purchases + (row.purchases || 0),
+      visits: acc.visits + (row.visits || 0),
+      spend: acc.spend + (row.spend || 0),
+      revenue: acc.revenue + (row.revenue || 0)
+    }), {
+      impressions: 0,
+      clicks: 0,
+      lpv: 0,
+      atc: 0,
+      purchases: 0,
+      visits: 0,
+      spend: 0,
+      revenue: 0
+    });
+
+    const baseline = {
+      ctr: totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : null,
+      atcRate: totals.lpv > 0 ? (totals.atc / totals.lpv) * 100 : null,
+      cvr: totals.visits > 0 ? (totals.purchases / totals.visits) * 100 : null,
+      roas: totals.spend > 0 ? totals.revenue / totals.spend : null
+    };
+
+    const byPurchases = [...creativeRows].sort((a, b) => (b.purchases || 0) - (a.purchases || 0));
+    const leader = byPurchases[0];
+    const runnerUp = byPurchases[1] || null;
+    const laggard = byPurchases[byPurchases.length - 1];
+
+    const getRowMetrics = (row) => ({
+      ctr: row?.ctr ?? null,
+      atcRate: row?.atcRate ?? null,
+      cvr: row?.visits > 0 ? (row.purchases / row.visits) * 100 : null,
+      roas: row?.roas ?? null
+    });
+
+    return {
+      baseline,
+      leader,
+      runnerUp,
+      laggard,
+      leaderMetrics: getRowMetrics(leader),
+      laggardMetrics: getRowMetrics(laggard)
+    };
+  }, [creativeRows, creativeSummaryGeneratedAt]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -2280,6 +2333,86 @@ function DashboardTab({
 
     return value;
   };
+
+  const formatDeltaPercent = (value) => {
+    if (!Number.isFinite(value)) return '—';
+    const rounded = Math.abs(value) >= 100 ? 0 : 1;
+    return `${value > 0 ? '+' : ''}${value.toFixed(rounded)}%`;
+  };
+
+  const formatTimeLabel = (value) => {
+    if (!value) return null;
+    return value.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const creativeSummaryCards = useMemo(() => {
+    if (!creativeFunnelSummary) return null;
+
+    const { baseline, leader, runnerUp, laggard, leaderMetrics, laggardMetrics } = creativeFunnelSummary;
+    const delta = (value, base) =>
+      Number.isFinite(value) && Number.isFinite(base) && base !== 0
+        ? ((value - base) / base) * 100
+        : null;
+
+    const leaderVsSecond = runnerUp && runnerUp.purchases
+      ? leader.purchases / Math.max(runnerUp.purchases, 1)
+      : null;
+
+    return {
+      today: {
+        title: 'Today',
+        subtitle: 'Funnel change',
+        body: `${leader?.name || 'Top creative'} leads the funnel with ${leader?.purchases || 0} purchases` +
+          (leaderVsSecond ? ` (${leaderVsSecond.toFixed(1)}× vs #2).` : '.'),
+        metrics: [
+          {
+            label: 'CTR',
+            value: leaderMetrics.ctr,
+            delta: delta(leaderMetrics.ctr, baseline.ctr),
+            format: 'percent'
+          },
+          {
+            label: 'ATC rate',
+            value: leaderMetrics.atcRate,
+            delta: delta(leaderMetrics.atcRate, baseline.atcRate),
+            format: 'percent'
+          },
+          {
+            label: 'CVR',
+            value: leaderMetrics.cvr,
+            delta: delta(leaderMetrics.cvr, baseline.cvr),
+            format: 'percent'
+          }
+        ]
+      },
+      week: {
+        title: 'This week',
+        subtitle: 'Funnel drag',
+        body: `${laggard?.name || 'Lowest creative'} is lagging the funnel` +
+          (laggard?.purchases ? ` with ${laggard.purchases} purchases.` : '.'),
+        metrics: [
+          {
+            label: 'CTR',
+            value: laggardMetrics.ctr,
+            delta: delta(laggardMetrics.ctr, baseline.ctr),
+            format: 'percent'
+          },
+          {
+            label: 'CVR',
+            value: laggardMetrics.cvr,
+            delta: delta(laggardMetrics.cvr, baseline.cvr),
+            format: 'percent'
+          },
+          {
+            label: 'ROAS',
+            value: laggardMetrics.roas,
+            delta: delta(laggardMetrics.roas, baseline.roas),
+            format: 'roas'
+          }
+        ]
+      }
+    };
+  }, [creativeFunnelSummary]);
 
   const creativeDataStrengthStyles = {
     LOW: 'bg-gray-100 text-gray-600',
@@ -2963,6 +3096,93 @@ function DashboardTab({
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-gray-100 bg-gradient-to-br from-slate-50 via-white to-white p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+                  Creative funnel summary
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600">
+                  <span className="font-semibold text-gray-900">Powered by GPT‑5.2</span>
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Not auto-triggered</span>
+                  <span className="text-xs text-gray-500">Run end of day or tap generate.</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                <button
+                  type="button"
+                  onClick={() => setCreativeSummaryGeneratedAt(new Date())}
+                  className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-800"
+                >
+                  Generate summary
+                </button>
+                {creativeSummaryGeneratedAt && (
+                  <span>Updated {formatTimeLabel(creativeSummaryGeneratedAt)}</span>
+                )}
+              </div>
+            </div>
+
+            {creativeSummaryCards ? (
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                {[creativeSummaryCards.today, creativeSummaryCards.week].map((card) => (
+                  <div
+                    key={card.title}
+                    className="rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{card.title}</div>
+                        <div className="text-sm font-semibold text-gray-900">{card.subtitle}</div>
+                      </div>
+                      <span className="rounded-full border border-gray-200 px-2 py-0.5 text-[11px] font-semibold text-gray-600">
+                        Creative vs avg
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-gray-600">{card.body}</p>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {card.metrics.map((metric) => {
+                        const isPositive = Number.isFinite(metric.delta) ? metric.delta >= 0 : null;
+                        const pillClasses = Number.isFinite(metric.delta)
+                          ? (isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700')
+                          : 'bg-gray-100 text-gray-500';
+                        return (
+                          <div
+                            key={metric.label}
+                            className={`flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${pillClasses}`}
+                          >
+                            <span className="text-gray-700">{metric.label}</span>
+                            <span className="text-gray-900">
+                              {renderMetric(metric.value, metric.format, metric.format === 'percent' ? 2 : 2)}
+                            </span>
+                            <span className="flex items-center gap-1 text-[11px]">
+                              {Number.isFinite(metric.delta)
+                                ? (
+                                  <>
+                                    {metric.delta >= 0 ? (
+                                      <TrendingUp className="h-3 w-3" />
+                                    ) : (
+                                      <TrendingDown className="h-3 w-3" />
+                                    )}
+                                    {formatDeltaPercent(metric.delta)}
+                                  </>
+                                )
+                                : '—'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 text-sm text-gray-500">
+                No creative funnel summary available yet. Load a campaign to compare ads.
+              </div>
+            )}
           </div>
 
           {creativeCampaignOptions.length > 0 ? (
