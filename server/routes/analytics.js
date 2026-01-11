@@ -19,6 +19,7 @@ import {
   getOrdersByDayOfWeek,
   getCitiesByCountry,
   getMetaAdManagerHierarchy,
+  getCreativeFunnelSummary,
   getFunnelDiagnostics,
   getReactivationCandidates,
   getAllMetaObjects
@@ -198,6 +199,16 @@ router.get('/meta-ad-manager', (req, res) => {
   try {
     const store = req.query.store || 'vironax';
     res.json(getMetaAdManagerHierarchy(store, req.query));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Creative funnel summary endpoint (top spenders)
+router.get('/creative-funnel-summary', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    res.json(getCreativeFunnelSummary(store, req.query));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

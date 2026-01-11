@@ -1978,3 +1978,88 @@ export function getFunnelDiagnostics(store, params) {
     period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
   };
 }
+
+// ============================================================================
+// CREATIVE FUNNEL SUMMARY (TOP SPENDERS)
+// ============================================================================
+export function getCreativeFunnelSummary(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const previousRange = params.compareStartDate && params.compareEndDate
+    ? { startDate: params.compareStartDate, endDate: params.compareEndDate }
+    : getPreviousDateRange(startDate, endDate);
+  const statusFilter = buildStatusFilter(params);
+  const campaignFilter = buildCampaignFilter(params);
+
+  const currentParams = [store, startDate, endDate];
+  if (campaignFilter.value) currentParams.push(campaignFilter.value);
+
+  const currentQuery = `
+    SELECT
+      LOWER(ad_name) as ad_key,
+      MIN(ad_name) as ad_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as revenue
+    FROM meta_ad_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter.clause}${statusFilter}
+    GROUP BY ad_key
+    ORDER BY spend DESC
+    LIMIT 5
+  `;
+
+  const currentRows = db.prepare(currentQuery).all(...currentParams);
+  const adKeys = currentRows.map(row => row.ad_key).filter(Boolean);
+
+  let previousRows = [];
+  if (adKeys.length > 0) {
+    const placeholders = adKeys.map(() => '?').join(',');
+    const previousParams = [store, previousRange.startDate, previousRange.endDate];
+    if (campaignFilter.value) previousParams.push(campaignFilter.value);
+    previousParams.push(...adKeys);
+
+    const previousQuery = `
+      SELECT
+        LOWER(ad_name) as ad_key,
+        MIN(ad_name) as ad_name,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(outbound_clicks) as outbound_clicks,
+        SUM(landing_page_views) as lpv,
+        SUM(add_to_cart) as atc,
+        SUM(checkouts_initiated) as checkout,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as revenue
+      FROM meta_ad_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter.clause}${statusFilter}
+        AND LOWER(ad_name) IN (${placeholders})
+      GROUP BY ad_key
+    `;
+
+    previousRows = db.prepare(previousQuery).all(...previousParams);
+  }
+
+  const previousMap = new Map(previousRows.map(row => [row.ad_key, row]));
+
+  return {
+    currentRange: { startDate, endDate },
+    previousRange,
+    rows: currentRows.map(row => ({
+      key: row.ad_key,
+      name: row.ad_name,
+      current: row,
+      previous: previousMap.get(row.ad_key) || null
+    }))
+  };
+}
