@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import CreativePreview from './CreativePreview.jsx';
 import MetaDebug from './MetaDebug.jsx';
 
