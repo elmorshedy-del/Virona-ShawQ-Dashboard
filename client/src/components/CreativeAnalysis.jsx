@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import CreativePreview from './CreativePreview.jsx';
 import MetaDebug from './MetaDebug.jsx';
 
@@ -8,7 +8,25 @@ const ANALYSIS_TABS = [
 ];
 
 export default function CreativeAnalysis({ store }) {
-  const [activeTab, setActiveTab] = useState('creative-preview');
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window === 'undefined') return 'creative-preview';
+    try {
+      const saved = localStorage.getItem('creativeAnalysisActiveTab');
+      const allowed = ANALYSIS_TABS.map((tab) => tab.id);
+      if (allowed.includes(saved)) return saved;
+    } catch (e) {
+      console.error('Error reading creativeAnalysisActiveTab:', e);
+    }
+    return 'creative-preview';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('creativeAnalysisActiveTab', activeTab);
+    } catch (e) {
+      console.error('Error saving creativeAnalysisActiveTab:', e);
+    }
+  }, [activeTab]);
 
   return (
     <div className="space-y-6">

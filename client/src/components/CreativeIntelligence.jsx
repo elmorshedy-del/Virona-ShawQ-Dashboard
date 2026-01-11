@@ -359,6 +359,12 @@ export default function CreativeIntelligence({ store }) {
   useEffect(() => { injectGlobalStyles(); }, []);
   
   const storeId = typeof store === 'string' ? store : store?.id;
+  const persistedStateRef = useRef(null);
+  const getStateStorageKey = useCallback(() => `creativeIntelligenceState:${storeId}`, [storeId]);
+  const getChatStorageKey = useCallback(
+    (adId) => `creativeIntelligenceChat:${storeId}:${adId}`,
+    [storeId]
+  );
   
   const [adAccounts, setAdAccounts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -375,7 +381,18 @@ export default function CreativeIntelligence({ store }) {
   
   const [error, setError] = useState('');
   const [showInactiveCampaigns, setShowInactiveCampaigns] = useState(false);
-  const [activeTab, setActiveTab] = useState('all');
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window === 'undefined' || !storeId) return 'all';
+    try {
+      const saved = localStorage.getItem(`creativeIntelligenceState:${storeId}`);
+      const parsed = saved ? JSON.parse(saved) : null;
+      const nextTab = parsed?.activeTab;
+      return nextTab === 'analyzed' || nextTab === 'pending' ? nextTab : 'all';
+    } catch (err) {
+      console.error('Error reading creative intelligence tab:', err);
+      return 'all';
+    }
+  });
   const [videoData, setVideoData] = useState(null);
   const [scriptStatus, setScriptStatus] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -392,6 +409,23 @@ export default function CreativeIntelligence({ store }) {
   
   const chatEndRef = useRef(null);
 
+  useEffect(() => {
+    if (!storeId) return;
+    try {
+      const saved = localStorage.getItem(getStateStorageKey());
+      persistedStateRef.current = saved ? JSON.parse(saved) : null;
+      const persistedTab = persistedStateRef.current?.activeTab;
+      if (persistedTab === 'analyzed' || persistedTab === 'pending') {
+        setActiveTab(persistedTab);
+      } else {
+        setActiveTab('all');
+      }
+    } catch (err) {
+      console.error('Error reading creative intelligence state:', err);
+      persistedStateRef.current = null;
+    }
+  }, [storeId, getStateStorageKey]);
+
   // Fetch ad accounts
   useEffect(() => {
     if (!storeId) return;
@@ -402,7 +436,9 @@ export default function CreativeIntelligence({ store }) {
         const list = Array.isArray(data?.data) ? data.data : [];
         const filtered = filterStoreAccounts(list, storeId);
         setAdAccounts(filtered);
-        if (filtered.length > 0) setSelectedAccount(filtered[0].id);
+        const persistedAccount = persistedStateRef.current?.selectedAccount;
+        const nextAccount = filtered.find(acc => acc.id === persistedAccount)?.id || filtered[0]?.id || '';
+        if (nextAccount) setSelectedAccount(nextAccount);
       })
       .catch(err => setError(err.message))
       .finally(() => setLoadingAccounts(false));
@@ -417,8 +453,10 @@ export default function CreativeIntelligence({ store }) {
       .then(data => {
         const list = Array.isArray(data?.data) ? data.data : [];
         setCampaigns(list);
+        const persistedCampaign = persistedStateRef.current?.selectedCampaign;
+        const persistedMatch = list.find(c => c.id === persistedCampaign);
         const active = list.find(c => (c?.effective_status || c?.status || '').toUpperCase() === 'ACTIVE');
-        setSelectedCampaign(active?.id || list[0]?.id || '');
+        setSelectedCampaign(persistedMatch?.id || active?.id || list[0]?.id || '');
       })
       .catch(err => setError(err.message))
       .finally(() => setLoadingCampaigns(false));
@@ -434,6 +472,14 @@ export default function CreativeIntelligence({ store }) {
       .catch(err => setError(err.message))
       .finally(() => setLoadingAds(false));
   }, [selectedCampaign, selectedAccount, storeId]);
+
+  useEffect(() => {
+    if (!storeId || ads.length === 0) return;
+    const persistedAdId = persistedStateRef.current?.selectedAdId;
+    if (!persistedAdId || selectedAd?.id === persistedAdId) return;
+    const match = ads.find(ad => ad.id === persistedAdId);
+    if (match) handleSelectAd(match, { preserveChat: true });
+  }, [ads, selectedAd?.id, storeId]);
 
   // Fetch script statuses
   useEffect(() => {
@@ -458,13 +504,15 @@ export default function CreativeIntelligence({ store }) {
   }, [storeId]);
 
   // Handle ad selection
-  const handleSelectAd = async (ad) => {
+  const handleSelectAd = async (ad, { preserveChat = false } = {}) => {
     setSelectedAd(ad);
     setLoadingVideo(true);
     setVideoData(null);
     setScriptStatus(null);
-    setChatMessages([]);
-    setConversationId(null);
+    if (!preserveChat) {
+      setChatMessages([]);
+      setConversationId(null);
+    }
     setTokenUsage({ gemini: null, sonnet: null });
 
     try {
@@ -630,6 +678,58 @@ export default function CreativeIntelligence({ store }) {
   };
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
+
+  useEffect(() => {
+    if (!storeId || !selectedAd?.id) {
+      setChatMessages([]);
+      setConversationId(null);
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(getChatStorageKey(selectedAd.id));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setChatMessages(Array.isArray(parsed?.messages) ? parsed.messages : []);
+        setConversationId(parsed?.conversationId ?? null);
+      } else {
+        setChatMessages([]);
+        setConversationId(null);
+      }
+    } catch (err) {
+      console.error('Error restoring chat:', err);
+      setChatMessages([]);
+      setConversationId(null);
+    }
+  }, [storeId, selectedAd?.id, getChatStorageKey]);
+
+  useEffect(() => {
+    if (!storeId || !selectedAd?.id) return;
+    try {
+      localStorage.setItem(
+        getChatStorageKey(selectedAd.id),
+        JSON.stringify({ messages: chatMessages, conversationId })
+      );
+    } catch (err) {
+      console.error('Error saving chat:', err);
+    }
+  }, [storeId, selectedAd?.id, chatMessages, conversationId, getChatStorageKey]);
+
+  useEffect(() => {
+    if (!storeId) return;
+    try {
+      localStorage.setItem(
+        getStateStorageKey(),
+        JSON.stringify({
+          selectedAccount,
+          selectedCampaign,
+          selectedAdId: selectedAd?.id ?? null,
+          activeTab
+        })
+      );
+    } catch (err) {
+      console.error('Error saving creative intelligence state:', err);
+    }
+  }, [storeId, selectedAccount, selectedCampaign, selectedAd?.id, activeTab, getStateStorageKey]);
 
   // Derived data
   const campaignRows = useMemo(() => campaigns.map(c => ({
