@@ -1474,6 +1474,7 @@ function DashboardTab({
   const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'country'
+  const [creativeSummaryUpdatedAt, setCreativeSummaryUpdatedAt] = useState(null);
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
   const countryTrendQuickOptions = [
@@ -1816,6 +1817,76 @@ function DashboardTab({
 
     return sections.sort((a, b) => (b.totalPurchases || 0) - (a.totalPurchases || 0));
   }, [creativeAds, creativeSortConfig, creativeBaselineCvr]);
+
+  const creativeFunnelSummary = useMemo(() => {
+    if (creativeRows.length < 2) return null;
+
+    const rowsByPurchases = [...creativeRows].sort((a, b) => (b.purchases || 0) - (a.purchases || 0));
+    const top = rowsByPurchases[0];
+    const runner = rowsByPurchases[1];
+
+    const getMedian = (values) => {
+      const cleaned = values.filter(Number.isFinite).sort((a, b) => a - b);
+      if (cleaned.length === 0) return null;
+      const mid = Math.floor(cleaned.length / 2);
+      return cleaned.length % 2 === 0
+        ? (cleaned[mid - 1] + cleaned[mid]) / 2
+        : cleaned[mid];
+    };
+
+    const getAverage = (values) => {
+      const cleaned = values.filter(Number.isFinite);
+      if (cleaned.length === 0) return null;
+      return cleaned.reduce((sum, val) => sum + val, 0) / cleaned.length;
+    };
+
+    const percentDiff = (current, baseline) => {
+      if (!Number.isFinite(current) || !Number.isFinite(baseline) || baseline === 0) return null;
+      return ((current - baseline) / baseline) * 100;
+    };
+
+    const formatDelta = (value, decimals = 1) => {
+      if (!Number.isFinite(value)) return '—';
+      const arrow = value >= 0 ? '↑' : '↓';
+      return `${arrow} ${Math.abs(value).toFixed(decimals)}%`;
+    };
+
+    const toCvr = (row) =>
+      row?.visits > 0 ? (Math.min(row.effectivePurchases, row.visits) / row.visits) * 100 : null;
+
+    const ctrMedian = getMedian(creativeRows.map(row => row.ctr));
+    const atcMedian = getMedian(creativeRows.map(row => row.atcRate));
+    const cvrMedian = getMedian(creativeRows.map(toCvr));
+
+    const todaySummary = [
+      `Top creative ${top.name} leads the funnel: CTR ${formatDelta(percentDiff(top.ctr, ctrMedian))},`,
+      `ATC ${formatDelta(percentDiff(top.atcRate, atcMedian))},`,
+      `CVR ${formatDelta(percentDiff(toCvr(top), cvrMedian))} vs median.`,
+      runner
+        ? `${runner.name} trails by ${formatDelta(percentDiff(runner.purchases || 0, top.purchases || 0), 0)} purchases.`
+        : 'Runner-up data is limited today.'
+    ].join(' ');
+
+    const pairCount = Math.min(3, Math.floor(rowsByPurchases.length / 2));
+    const topGroup = rowsByPurchases.slice(0, pairCount);
+    const bottomGroup = rowsByPurchases.slice(-pairCount);
+
+    const topCtr = getAverage(topGroup.map(row => row.ctr));
+    const bottomCtr = getAverage(bottomGroup.map(row => row.ctr));
+    const topAtc = getAverage(topGroup.map(row => row.atcRate));
+    const bottomAtc = getAverage(bottomGroup.map(row => row.atcRate));
+    const topCvr = getAverage(topGroup.map(toCvr));
+    const bottomCvr = getAverage(bottomGroup.map(toCvr));
+
+    const weekSummary = [
+      `Top ${pairCount} creatives outperform bottom ${pairCount}:`,
+      `CTR ${formatDelta(percentDiff(topCtr, bottomCtr))},`,
+      `ATC ${formatDelta(percentDiff(topAtc, bottomAtc))},`,
+      `CVR ${formatDelta(percentDiff(topCvr, bottomCvr))}.`
+    ].join(' ');
+
+    return { todaySummary, weekSummary };
+  }, [creativeRows]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -2928,8 +2999,29 @@ function DashboardTab({
               <p className="text-sm text-gray-500">
                 Ranked by purchases with AOV and ROAS for each creative.
               </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1 font-semibold text-gray-600">
+                  Powered by GPT-5.2
+                </span>
+                <span className="text-gray-400">•</span>
+                <span>Trigger: end of day or manual button</span>
+                {creativeSummaryUpdatedAt && (
+                  <>
+                    <span className="text-gray-400">•</span>
+                    <span>Updated {creativeSummaryUpdatedAt.toLocaleTimeString()}</span>
+                  </>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setCreativeSummaryUpdatedAt(new Date())}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-sm transition hover:border-gray-300 hover:bg-gray-50"
+              >
+                Generate summary
+                <span className="text-[10px] uppercase tracking-wide text-gray-400">AI</span>
+              </button>
               <div className="flex items-center gap-2 text-sm text-gray-600">
                 <span className="font-semibold text-gray-700">Creative view:</span>
                 <button
@@ -2999,6 +3091,35 @@ function DashboardTab({
           ) : (
             <div className="text-sm text-gray-500">
               No creatives available. Switch to Meta Ad Manager view to load campaign data.
+            </div>
+          )}
+        </div>
+
+        <div className="border-b border-gray-100 bg-gradient-to-br from-white via-white to-gray-50/70 px-6 py-4">
+          {creativeFunnelSummary ? (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-indigo-500">Today</span>
+                  <span className="text-xs font-medium text-gray-400">Funnel change</span>
+                </div>
+                <p className="mt-3 text-sm text-gray-700 leading-relaxed">
+                  {creativeFunnelSummary.todaySummary}
+                </p>
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-emerald-500">This week</span>
+                  <span className="text-xs font-medium text-gray-400">Creative comparison</span>
+                </div>
+                <p className="mt-3 text-sm text-gray-700 leading-relaxed">
+                  {creativeFunnelSummary.weekSummary}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-gray-200 bg-white p-4 text-sm text-gray-500">
+              Add more creatives to see GPT-5.2 funnel summaries.
             </div>
           )}
         </div>
