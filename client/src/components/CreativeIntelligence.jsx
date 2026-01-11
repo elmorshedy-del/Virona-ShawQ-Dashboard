@@ -633,12 +633,21 @@ export default function CreativeIntelligence({ store }) {
   }, [storeId]);
 
   // Handle ad selection
-  const handleSelectAd = useCallback(async (ad) => {
+  const handleSelectAd = useCallback(async (ad, options = {}) => {
+    const { resetChat = false, restoreConversationId = null } = options;
     setSelectedAd(ad);
     setLoadingVideo(true);
     setVideoData(null);
     setScriptStatus(null);
-    hydrateChatForAd(ad?.id);
+    if (resetChat) {
+      setChatMessages([]);
+      setConversationId(null);
+    } else {
+      hydrateChatForAd(ad?.id);
+      if (restoreConversationId) {
+        setConversationId(restoreConversationId);
+      }
+    }
     setTokenUsage({ gemini: null, sonnet: null });
 
     try {
@@ -650,9 +659,6 @@ export default function CreativeIntelligence({ store }) {
       const script = await scriptRes.json();
       setScriptStatus(script);
       setScriptStatuses(prev => ({ ...prev, [ad.id]: script?.status || 'pending' }));
-      if (!resetChat && restoreConversationId) {
-        await loadConversation(restoreConversationId);
-      }
     } catch (err) {
       setError(err.message);
     } finally {
