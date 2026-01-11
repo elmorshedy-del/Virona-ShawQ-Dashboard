@@ -1978,3 +1978,98 @@ export function getFunnelDiagnostics(store, params) {
     period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
   };
 }
+
+// ============================================================================
+// CREATIVE FUNNEL SUMMARY (Top spenders with period comparisons)
+// ============================================================================
+export function getCreativeFunnelSummary(store, params = {}) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const previousRange = getPreviousDateRange(startDate, endDate);
+  const { clause: campaignClause, value: campaignValue } = buildCampaignFilter(params);
+  const statusFilter = buildStatusFilter(params);
+
+  const baseQuery = `
+    SELECT
+      LOWER(TRIM(ad_name)) as creative_key,
+      MAX(ad_name) as creative_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue
+    FROM meta_ad_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignClause}${statusFilter}
+    GROUP BY creative_key
+    ORDER BY spend DESC
+  `;
+
+  const buildParams = (range) => {
+    const queryParams = [store, range.startDate, range.endDate];
+    if (campaignValue) queryParams.push(campaignValue);
+    return queryParams;
+  };
+
+  const currentRows = db.prepare(baseQuery).all(...buildParams({ startDate, endDate }));
+  const previousRows = db.prepare(baseQuery).all(...buildParams(previousRange));
+  const previousMap = new Map(previousRows.map((row) => [row.creative_key, row]));
+
+  const calculateMetrics = (row) => {
+    if (!row) {
+      return {
+        spend: 0,
+        revenue: 0,
+        ctr: null,
+        frequency: null,
+        atcRate: null,
+        checkoutRate: null,
+        cvr: null,
+        roas: null
+      };
+    }
+
+    const spend = row.spend || 0;
+    const impressions = row.impressions || 0;
+    const reach = row.reach || 0;
+    const clicks = row.clicks || 0;
+    const lpv = row.lpv || 0;
+    const atc = row.atc || 0;
+    const checkout = row.checkout || 0;
+    const purchases = row.purchases || 0;
+    const revenue = row.revenue || 0;
+
+    return {
+      spend,
+      revenue,
+      ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
+      frequency: reach > 0 ? impressions / reach : null,
+      atcRate: lpv > 0 ? (atc / lpv) * 100 : null,
+      checkoutRate: atc > 0 ? (checkout / atc) * 100 : null,
+      cvr: clicks > 0 ? (purchases / clicks) * 100 : null,
+      roas: spend > 0 ? revenue / spend : null
+    };
+  };
+
+  const rows = currentRows
+    .filter((row) => row.creative_key)
+    .slice(0, 5)
+    .map((row) => {
+      const previous = previousMap.get(row.creative_key);
+      return {
+        key: row.creative_key,
+        name: row.creative_name || 'Creative',
+        current: calculateMetrics(row),
+        previous: calculateMetrics(previous)
+      };
+    });
+
+  return {
+    range: { startDate, endDate },
+    previousRange,
+    rows
+  };
+}

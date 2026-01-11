@@ -1475,6 +1475,18 @@ function DashboardTab({
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'country'
   const [creativeSummaryGeneratedAt, setCreativeSummaryGeneratedAt] = useState(null);
+  const [creativeFunnelTable, setCreativeFunnelTable] = useState({
+    rows: [],
+    range: null,
+    previousRange: null,
+    loading: false,
+    error: null
+  });
+  const [creativeSummaryText, setCreativeSummaryText] = useState('');
+  const [creativeSummaryStreamingText, setCreativeSummaryStreamingText] = useState('');
+  const [creativeSummaryModel, setCreativeSummaryModel] = useState(null);
+  const [creativeSummaryLoading, setCreativeSummaryLoading] = useState(false);
+  const [creativeSummaryError, setCreativeSummaryError] = useState(null);
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
   const countryTrendQuickOptions = [
@@ -1869,6 +1881,82 @@ function DashboardTab({
       laggardMetrics: getRowMetrics(laggard)
     };
   }, [creativeRows, creativeSummaryGeneratedAt]);
+
+  useEffect(() => {
+    if (!storeLoaded || !currentStore || !selectedCreativeCampaignId) {
+      setCreativeFunnelTable({
+        rows: [],
+        range: null,
+        previousRange: null,
+        loading: false,
+        error: null
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const fetchCreativeFunnelSummary = async () => {
+      setCreativeFunnelTable((prev) => ({ ...prev, loading: true, error: null }));
+      setCreativeSummaryText('');
+      setCreativeSummaryStreamingText('');
+      setCreativeSummaryModel(null);
+      setCreativeSummaryError(null);
+      setCreativeSummaryGeneratedAt(null);
+
+      try {
+        const params = new URLSearchParams({
+          store: currentStore,
+          campaignId: selectedCreativeCampaignId
+        });
+
+        if (includeInactive) {
+          params.set('includeInactive', 'true');
+        }
+
+        if (dateRange.type === 'custom') {
+          params.set('startDate', dateRange.start);
+          params.set('endDate', dateRange.end);
+        } else if (dateRange.type === 'yesterday') {
+          params.set('yesterday', '1');
+        } else if (dateRange.type === 'days') {
+          params.set('days', dateRange.value);
+        } else if (dateRange.type === 'weeks') {
+          params.set('weeks', dateRange.value);
+        } else if (dateRange.type === 'months') {
+          params.set('months', dateRange.value);
+        }
+
+        const res = await fetch(`${API_BASE}/analytics/creative-funnel-summary?${params}`, {
+          signal: controller.signal
+        });
+        const json = await res.json();
+
+        if (!res.ok || !json.success) {
+          throw new Error(json.error || 'Failed to load creative funnel summary');
+        }
+
+        setCreativeFunnelTable({
+          rows: json.data?.rows || [],
+          range: json.data?.range || null,
+          previousRange: json.data?.previousRange || null,
+          loading: false,
+          error: null
+        });
+      } catch (error) {
+        if (error.name === 'AbortError') return;
+        setCreativeFunnelTable((prev) => ({
+          ...prev,
+          loading: false,
+          error: error.message
+        }));
+      }
+    };
+
+    fetchCreativeFunnelSummary();
+
+    return () => controller.abort();
+  }, [storeLoaded, currentStore, selectedCreativeCampaignId, dateRange, includeInactive]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -2322,6 +2410,11 @@ function DashboardTab({
     return Number.isFinite(num) ? `${num.toFixed(decimals)}×` : '—';
   };
 
+  const renderRatio = (value, decimals = 2) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num.toFixed(decimals) : '—';
+  };
+
   // Helper: Render metric with null handling
   const renderMetric = (value, formatter = 'number', decimals = 0) => {
     if (value === null || value === undefined || !Number.isFinite(value)) return '—';
@@ -2330,6 +2423,7 @@ function DashboardTab({
     if (formatter === 'percent') return renderPercent(value, decimals);
     if (formatter === 'number') return formatNumber(value);
     if (formatter === 'roas') return renderRoas(value);
+    if (formatter === 'ratio') return renderRatio(value, decimals);
 
     return value;
   };
@@ -2343,6 +2437,50 @@ function DashboardTab({
   const formatTimeLabel = (value) => {
     if (!value) return null;
     return value.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatRangeLabel = (range) => {
+    if (!range?.startDate || !range?.endDate) return '—';
+    const formatShort = (dateValue) => {
+      const date = new Date(dateValue);
+      if (Number.isNaN(date.getTime())) return dateValue;
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    };
+    if (range.startDate === range.endDate) return formatShort(range.startDate);
+    return `${formatShort(range.startDate)} - ${formatShort(range.endDate)}`;
+  };
+
+  const getDeltaPercent = (current, previous) => {
+    if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) return null;
+    return ((current - previous) / previous) * 100;
+  };
+
+  const buildCreativeSummaryPrompt = () => {
+    const basePrompt = 'Briefly analyze changes and provide insight.';
+    if (!creativeFunnelTable?.rows?.length) {
+      return basePrompt;
+    }
+
+    const rangeLabel = formatRangeLabel(creativeFunnelTable.range);
+    const previousLabel = formatRangeLabel(creativeFunnelTable.previousRange);
+    const formatValue = (value, suffix = '', decimals = 2) =>
+      Number.isFinite(value) ? `${value.toFixed(decimals)}${suffix}` : 'n/a';
+    const formatMoney = (value) =>
+      Number.isFinite(value) ? formatCurrency(value, 0) : 'n/a';
+
+    const lines = creativeFunnelTable.rows.map((row, index) => {
+      const current = row.current || {};
+      const previous = row.previous || {};
+      return `${index + 1}. ${row.name} | CTR ${formatValue(current.ctr, '%')} (prev ${formatValue(previous.ctr, '%')}) | `
+        + `Frequency ${formatValue(current.frequency, '', 2)} (prev ${formatValue(previous.frequency, '', 2)}) | `
+        + `ATC ${formatValue(current.atcRate, '%')} (prev ${formatValue(previous.atcRate, '%')}) | `
+        + `Checkout ${formatValue(current.checkoutRate, '%')} (prev ${formatValue(previous.checkoutRate, '%')}) | `
+        + `CVR ${formatValue(current.cvr, '%')} (prev ${formatValue(previous.cvr, '%')}) | `
+        + `Revenue ${formatMoney(current.revenue)} (prev ${formatMoney(previous.revenue)}) | `
+        + `ROAS ${formatValue(current.roas, 'x')} (prev ${formatValue(previous.roas, 'x')})`;
+    });
+
+    return `${basePrompt}\n\nPeriod: ${rangeLabel} (previous: ${previousLabel}).\nTop 5 spender metrics:\n${lines.join('\n')}`;
   };
 
   const creativeSummaryCards = useMemo(() => {
@@ -2414,6 +2552,77 @@ function DashboardTab({
     };
   }, [creativeFunnelSummary]);
 
+  const handleCreativeSummaryGenerate = async () => {
+    if (creativeSummaryLoading) return;
+
+    setCreativeSummaryLoading(true);
+    setCreativeSummaryText('');
+    setCreativeSummaryStreamingText('');
+    setCreativeSummaryModel(null);
+    setCreativeSummaryError(null);
+
+    try {
+      const question = buildCreativeSummaryPrompt();
+      const payload = {
+        question,
+        store: store.id,
+        mode: 'decide',
+        depth: 'balanced'
+      };
+
+      if (creativeFunnelTable?.range?.startDate && creativeFunnelTable?.range?.endDate) {
+        payload.startDate = creativeFunnelTable.range.startDate;
+        payload.endDate = creativeFunnelTable.range.endDate;
+      }
+
+      const response = await fetch(`${API_BASE}/ai/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error('Failed to stream creative summary');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === 'delta') {
+              fullText += data.text;
+              setCreativeSummaryStreamingText(fullText);
+            } else if (data.type === 'done') {
+              setCreativeSummaryModel(data.model);
+              setCreativeSummaryText(fullText);
+              setCreativeSummaryStreamingText('');
+              setCreativeSummaryGeneratedAt(new Date());
+            } else if (data.type === 'error') {
+              setCreativeSummaryError(data.error);
+            }
+          } catch (error) {
+            setCreativeSummaryError(error.message);
+          }
+        }
+      }
+    } catch (error) {
+      setCreativeSummaryError(error.message);
+    } finally {
+      setCreativeSummaryLoading(false);
+    }
+  };
+
   const creativeDataStrengthStyles = {
     LOW: 'bg-gray-100 text-gray-600',
     MED: 'bg-amber-100 text-amber-700',
@@ -2426,6 +2635,38 @@ function DashboardTab({
     NEUTRAL: 'bg-gray-100 text-gray-600',
     LOSER: 'bg-rose-100 text-rose-700',
     DEAD: 'bg-rose-200 text-rose-800'
+  };
+
+  const renderCreativeDeltaPill = (delta) => {
+    if (!Number.isFinite(delta)) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500">
+          —
+        </span>
+      );
+    }
+
+    const isPositive = delta >= 0;
+    const pillClasses = isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700';
+
+    return (
+      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${pillClasses}`}>
+        {isPositive ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+        {formatDeltaPercent(delta)}
+      </span>
+    );
+  };
+
+  const renderCreativeMetricCell = ({ value, previous, format = 'number', decimals = 2 }) => {
+    const delta = getDeltaPercent(value, previous);
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <span className="text-sm font-semibold text-gray-900">
+          {renderMetric(value, format, decimals)}
+        </span>
+        {renderCreativeDeltaPill(delta)}
+      </div>
+    );
   };
 
   // SECTION 1 rows based on metaView
@@ -3106,7 +3347,7 @@ function DashboardTab({
                   Creative funnel summary
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600">
-                  <span className="font-semibold text-gray-900">Powered by GPT‑5.2</span>
+                  <span className="font-semibold text-gray-900">Powered by GPT‑5.1</span>
                   <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Not auto-triggered</span>
                   <span className="text-xs text-gray-500">Run end of day or tap generate.</span>
                 </div>
@@ -3114,10 +3355,11 @@ function DashboardTab({
               <div className="flex items-center gap-2 text-xs text-gray-500">
                 <button
                   type="button"
-                  onClick={() => setCreativeSummaryGeneratedAt(new Date())}
-                  className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-800"
+                  onClick={handleCreativeSummaryGenerate}
+                  disabled={creativeSummaryLoading}
+                  className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-800 disabled:bg-gray-400"
                 >
-                  Generate summary
+                  {creativeSummaryLoading ? 'Generating…' : 'Generate summary'}
                 </button>
                 {creativeSummaryGeneratedAt && (
                   <span>Updated {formatTimeLabel(creativeSummaryGeneratedAt)}</span>
@@ -3183,6 +3425,142 @@ function DashboardTab({
                 No creative funnel summary available yet. Load a campaign to compare ads.
               </div>
             )}
+
+            <div className="mt-4 rounded-xl border border-gray-100 bg-white/90 p-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Top 5 spender funnel table</div>
+                  <p className="text-xs text-gray-500">
+                    CTR, frequency, ATC rate, checkout rate, CVR, revenue, and ROAS compared to the previous period.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 font-semibold text-gray-600">
+                    {formatRangeLabel(creativeFunnelTable.range)}
+                  </span>
+                  <span>vs {formatRangeLabel(creativeFunnelTable.previousRange)}</span>
+                </div>
+              </div>
+
+              {creativeFunnelTable.loading ? (
+                <div className="mt-3 text-sm text-gray-500">Loading creative funnel deltas…</div>
+              ) : creativeFunnelTable.error ? (
+                <div className="mt-3 text-sm text-rose-600">{creativeFunnelTable.error}</div>
+              ) : creativeFunnelTable.rows.length > 0 ? (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="min-w-full text-left">
+                    <thead>
+                      <tr className="text-xs uppercase tracking-wide text-gray-500 border-b">
+                        <th className="px-3 py-2">#</th>
+                        <th className="px-3 py-2">Creative</th>
+                        <th className="px-3 py-2 text-right">Spend</th>
+                        <th className="px-3 py-2 text-right">CTR</th>
+                        <th className="px-3 py-2 text-right">Frequency</th>
+                        <th className="px-3 py-2 text-right">ATC rate</th>
+                        <th className="px-3 py-2 text-right">Checkout rate</th>
+                        <th className="px-3 py-2 text-right">CVR</th>
+                        <th className="px-3 py-2 text-right">Revenue</th>
+                        <th className="px-3 py-2 text-right">ROAS</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 text-sm">
+                      {creativeFunnelTable.rows.map((row, index) => (
+                        <tr key={row.key}>
+                          <td className="px-3 py-2 text-gray-500">{index + 1}</td>
+                          <td className="px-3 py-2 font-semibold text-gray-900 max-w-xs truncate" title={row.name}>
+                            {row.name}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {renderCreativeMetricCell({
+                              value: row.current?.spend,
+                              previous: row.previous?.spend,
+                              format: 'currency',
+                              decimals: 0
+                            })}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {renderCreativeMetricCell({
+                              value: row.current?.ctr,
+                              previous: row.previous?.ctr,
+                              format: 'percent',
+                              decimals: 2
+                            })}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {renderCreativeMetricCell({
+                              value: row.current?.frequency,
+                              previous: row.previous?.frequency,
+                              format: 'ratio',
+                              decimals: 2
+                            })}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {renderCreativeMetricCell({
+                              value: row.current?.atcRate,
+                              previous: row.previous?.atcRate,
+                              format: 'percent',
+                              decimals: 2
+                            })}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {renderCreativeMetricCell({
+                              value: row.current?.checkoutRate,
+                              previous: row.previous?.checkoutRate,
+                              format: 'percent',
+                              decimals: 2
+                            })}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {renderCreativeMetricCell({
+                              value: row.current?.cvr,
+                              previous: row.previous?.cvr,
+                              format: 'percent',
+                              decimals: 2
+                            })}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {renderCreativeMetricCell({
+                              value: row.current?.revenue,
+                              previous: row.previous?.revenue,
+                              format: 'currency',
+                              decimals: 0
+                            })}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {renderCreativeMetricCell({
+                              value: row.current?.roas,
+                              previous: row.previous?.roas,
+                              format: 'roas',
+                              decimals: 2
+                            })}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="mt-3 text-sm text-gray-500">No creative funnel data available for this period.</div>
+              )}
+            </div>
+
+            <div className="mt-4 rounded-xl border border-gray-100 bg-white/90 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold text-gray-900">Creative insight summary</div>
+                {creativeSummaryModel && (
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+                    {creativeSummaryModel}
+                  </span>
+                )}
+              </div>
+              {creativeSummaryError ? (
+                <div className="mt-2 text-sm text-rose-600">{creativeSummaryError}</div>
+              ) : (
+                <p className="mt-2 text-sm text-gray-600 whitespace-pre-line">
+                  {creativeSummaryStreamingText || creativeSummaryText || 'Generate a summary to see GPT-5.1 insights.'}
+                </p>
+              )}
+            </div>
           </div>
 
           {creativeCampaignOptions.length > 0 ? (
