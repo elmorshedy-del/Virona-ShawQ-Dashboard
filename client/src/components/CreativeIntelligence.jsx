@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 const API_BASE = '/api';
+
+const EMPTY_PREVIEW_VIDEO = {
+  video_id: null,
+  source_url: null,
+  embed_html: null,
+  thumbnail_url: null,
+  length: null,
+  permalink_url: null,
+  message: 'No video found for this ad.'
+};
 
 // ============================================================================
 // PREMIUM DESIGN TOKENS - Warm, comforting palette
@@ -285,10 +296,33 @@ const ChatMessage = ({ message }) => {
         }}
       >
         {!isUser && !message.streaming && <CopyButton text={message.content} />}
-        <div className="whitespace-pre-wrap">
-          {message.content}
-          {message.streaming && <span className="ci-cursor" />}
-        </div>
+        {isUser ? (
+          <div className="whitespace-pre-wrap">
+            {message.content}
+            {message.streaming && <span className="ci-cursor" />}
+          </div>
+        ) : (
+          <div className="ci-markdown">
+            <ReactMarkdown
+              components={{
+                p: ({ children }) => <p className="my-2 leading-relaxed">{children}</p>,
+                strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                em: ({ children }) => <em className="italic">{children}</em>,
+                h1: ({ children }) => <h1 className="text-lg font-semibold mt-4 mb-2">{children}</h1>,
+                h2: ({ children }) => <h2 className="text-base font-semibold mt-4 mb-2">{children}</h2>,
+                h3: ({ children }) => <h3 className="text-sm font-semibold mt-3 mb-2">{children}</h3>,
+                ul: ({ children }) => <ul className="my-2 ml-4 list-disc">{children}</ul>,
+                ol: ({ children }) => <ol className="my-2 ml-4 list-decimal">{children}</ol>,
+                li: ({ children }) => <li className="my-1">{children}</li>,
+                hr: () => <hr className="my-4 border-gray-300/70" />,
+                code: ({ children }) => <code className="bg-gray-200/70 px-1 py-0.5 rounded text-xs">{children}</code>
+              }}
+            >
+              {message.content || ''}
+            </ReactMarkdown>
+            {message.streaming && message.content && <span className="ci-cursor" />}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -387,6 +421,15 @@ export default function CreativeIntelligence({ store }) {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [previewAd, setPreviewAd] = useState(null);
+  const [previewVideoData, setPreviewVideoData] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const [previewMediaDimensions, setPreviewMediaDimensions] = useState({ width: null, height: null });
+  const previewVideoRef = useRef(null);
+  const previewImageRef = useRef(null);
   
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState(null);
@@ -424,6 +467,12 @@ export default function CreativeIntelligence({ store }) {
       console.error('Error writing localStorage:', err);
     }
   }, [storageKey, selectedAccount, selectedCampaign, selectedAd?.id, conversationId]);
+
+  useEffect(() => {
+    if (previewModalOpen && previewVideoRef.current) {
+      previewVideoRef.current.play().catch(() => undefined);
+    }
+  }, [previewModalOpen, previewVideoData]);
 
   // Fetch ad accounts
   useEffect(() => {
@@ -595,6 +644,53 @@ export default function CreativeIntelligence({ store }) {
     }
   };
 
+  const handlePreviewOpen = async (ad) => {
+    setPreviewAd(ad);
+    setPreviewModalOpen(true);
+    setPreviewLoading(true);
+    setPreviewError('');
+    setPreviewVideoData(null);
+    setPreviewMediaDimensions({ width: null, height: null });
+
+    try {
+      const res = await fetch(`${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to load video');
+      }
+      setPreviewVideoData(data || EMPTY_PREVIEW_VIDEO);
+    } catch (err) {
+      setPreviewError(err?.message || 'Failed to load video');
+      setPreviewVideoData(EMPTY_PREVIEW_VIDEO);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handlePreviewClose = () => {
+    setPreviewModalOpen(false);
+    setPreviewAd(null);
+    setPreviewVideoData(null);
+    setPreviewError('');
+    setPreviewMediaDimensions({ width: null, height: null });
+  };
+
+  const handlePreviewVideoMetadata = () => {
+    const video = previewVideoRef.current;
+    if (!video) return;
+    if (video.videoWidth && video.videoHeight) {
+      setPreviewMediaDimensions({ width: video.videoWidth, height: video.videoHeight });
+    }
+  };
+
+  const handlePreviewImageLoad = () => {
+    const image = previewImageRef.current;
+    if (!image) return;
+    if (image.naturalWidth && image.naturalHeight) {
+      setPreviewMediaDimensions({ width: image.naturalWidth, height: image.naturalHeight });
+    }
+  };
+
   const handleReanalyze = async () => {
     if (!selectedAd) return;
     await fetch(`${API_BASE}/creative-intelligence/script/${selectedAd.id}?store=${storeId}`, { method: 'DELETE' });
@@ -639,6 +735,55 @@ export default function CreativeIntelligence({ store }) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let assistantMsg = '';
+        let buffer = '';
+        let lastFlushAt = 0;
+        let flushTimeout = null;
+        let streamFinished = false;
+
+        const minFlushIntervalMs = 160;
+        const minWordsPerChunk = 10;
+        const maxWordsPerChunk = 18;
+
+        const countWords = (text) => {
+          const trimmed = text.trim();
+          if (!trimmed) return 0;
+          return trimmed.split(/\s+/).length;
+        };
+
+        const shouldFlushChunk = (pending) => {
+          if (!pending) return false;
+          if (/[.!?:;\n]\s*$/.test(pending)) return true;
+          const words = countWords(pending);
+          if (words >= maxWordsPerChunk) return true;
+          return words >= minWordsPerChunk && /\s$/.test(pending);
+        };
+
+        const updateStreamingMessage = (content, streaming = true) => {
+          setChatMessages(prev => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: 'assistant', content, streaming };
+            return updated;
+          });
+        };
+
+        const flushBuffer = (force = false) => {
+          if (!buffer) return;
+          const now = Date.now();
+          const elapsed = now - lastFlushAt;
+          if (!force && elapsed < minFlushIntervalMs) {
+            if (!flushTimeout) {
+              flushTimeout = setTimeout(() => {
+                flushTimeout = null;
+                flushBuffer();
+              }, minFlushIntervalMs - elapsed);
+            }
+            return;
+          }
+          assistantMsg += buffer;
+          buffer = '';
+          lastFlushAt = Date.now();
+          updateStreamingMessage(assistantMsg, true);
+        };
 
         setChatMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }]);
 
@@ -652,24 +797,32 @@ export default function CreativeIntelligence({ store }) {
               try {
                 const data = JSON.parse(line.slice(6));
                 if (data.type === 'delta') {
-                  assistantMsg += data.text;
-                  setChatMessages(prev => {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = { role: 'assistant', content: assistantMsg, streaming: true };
-                    return updated;
-                  });
+                  buffer += data.text;
+                  if (shouldFlushChunk(buffer)) {
+                    flushBuffer();
+                  }
                 } else if (data.type === 'done') {
+                  streamFinished = true;
+                  if (flushTimeout) {
+                    clearTimeout(flushTimeout);
+                    flushTimeout = null;
+                  }
+                  flushBuffer(true);
                   setConversationId(data.conversationId);
                   if (!isOpenAI) setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
-                  setChatMessages(prev => {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = { role: 'assistant', content: assistantMsg };
-                    return updated;
-                  });
+                  updateStreamingMessage(assistantMsg, false);
                 }
               } catch {}
             }
           }
+        }
+        if (!streamFinished) {
+          if (flushTimeout) {
+            clearTimeout(flushTimeout);
+            flushTimeout = null;
+          }
+          flushBuffer(true);
+          updateStreamingMessage(assistantMsg, false);
         }
       } else {
         const data = await res.json();
@@ -722,6 +875,27 @@ export default function CreativeIntelligence({ store }) {
     isActive: (ad.effective_status || ad.status || '').toUpperCase() === 'ACTIVE',
     thumbnail: ad.thumbnail_url
   })), [ads]);
+
+  const previewHasVideo = !!previewVideoData?.source_url;
+  const previewHasEmbed = !previewHasVideo && !!previewVideoData?.embed_html;
+  const previewDisplayThumbnail = previewVideoData?.thumbnail_url || previewAd?.thumbnail || null;
+  const previewHasThumbnail = !previewHasVideo && !previewHasEmbed && !!previewDisplayThumbnail;
+  const previewShowNoVideo = !previewLoading && !previewHasVideo && !previewHasEmbed && !previewHasThumbnail;
+  const previewShowPermissionFallback = previewVideoData?.playable === false && previewHasThumbnail;
+  const previewFallbackMessage =
+    previewVideoData?.message ||
+    (previewVideoData?.reason === 'NO_VIDEO_PERMISSION'
+      ? "Can't access this video's preview."
+      : 'No video found for this ad.');
+
+  const previewModalMaxWidth = useMemo(() => {
+    const width = previewMediaDimensions.width;
+    const height = previewMediaDimensions.height;
+    if (!width || !height) {
+      return 'min(420px, 92vw)';
+    }
+    return width >= height ? 'min(960px, 92vw)' : 'min(420px, 92vw)';
+  }, [previewMediaDimensions]);
 
   const filteredAds = useMemo(() => {
     if (activeTab === 'all') return adRows;
@@ -841,7 +1015,18 @@ export default function CreativeIntelligence({ store }) {
                 >
                   <div className="flex items-center gap-3">
                     {ad.thumbnail ? (
-                      <img src={ad.thumbnail} alt="" className="w-11 h-11 rounded-xl object-cover" style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }} />
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handlePreviewOpen(ad);
+                        }}
+                        className="w-11 h-11 rounded-xl overflow-hidden"
+                        aria-label={`Preview ${ad.name}`}
+                        style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}
+                      >
+                        <img src={ad.thumbnail} alt="" className="w-full h-full object-cover" />
+                      </button>
                     ) : (
                       <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ backgroundColor: colors.bgSubtle }}>
                         <svg className="w-5 h-5" fill="none" stroke={colors.textMuted} viewBox="0 0 24 24">
@@ -989,6 +1174,94 @@ export default function CreativeIntelligence({ store }) {
           )}
         </div>
       </div>
+
+      {previewModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
+          <div
+            className="bg-white rounded-xl shadow-xl w-full max-h-[92vh] flex flex-col"
+            style={{ maxWidth: previewModalMaxWidth }}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+              <div className="text-sm font-semibold text-gray-800 truncate">
+                {previewAd?.name || 'Ad Preview'}
+              </div>
+              <button
+                onClick={handlePreviewClose}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4">
+              <div className="flex items-center justify-center">
+                {previewLoading && (
+                  <div className="text-sm text-gray-500">Loading media...</div>
+                )}
+
+                {!previewLoading && previewError && (
+                  <div className="text-sm text-red-600">{previewError}</div>
+                )}
+
+                {!previewLoading && previewHasVideo && (
+                  <video
+                    ref={previewVideoRef}
+                    src={previewVideoData.source_url}
+                    autoPlay
+                    controls
+                    onLoadedMetadata={handlePreviewVideoMetadata}
+                    className="w-full h-auto max-h-[85vh] object-contain"
+                  />
+                )}
+
+                {!previewLoading && previewHasEmbed && (
+                  <div
+                    className="w-full flex justify-center"
+                    dangerouslySetInnerHTML={{ __html: previewVideoData.embed_html }}
+                  />
+                )}
+
+                {!previewLoading && !previewHasVideo && previewHasThumbnail && (
+                  <div className="text-center">
+                    <img
+                      ref={previewImageRef}
+                      src={previewDisplayThumbnail}
+                      alt="Ad thumbnail"
+                      onLoad={handlePreviewImageLoad}
+                      className="w-full h-auto max-h-[85vh] object-contain"
+                    />
+                    <p className="mt-3 text-sm text-gray-600">
+                      {previewShowPermissionFallback ? "Can't play this video here." : 'Playable video source unavailable.'}
+                    </p>
+                    {previewVideoData?.permalink_url && (
+                      <button
+                        onClick={() => window.open(previewVideoData.permalink_url, '_blank')}
+                        className="mt-3 px-3 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg"
+                      >
+                        Open on Facebook
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {!previewLoading && previewShowNoVideo && (
+                  <div className="text-sm text-gray-600 text-center">
+                    <p>{previewFallbackMessage}</p>
+                    {previewVideoData?.permalink_url && (
+                      <button
+                        onClick={() => window.open(previewVideoData.permalink_url, '_blank')}
+                        className="mt-3 px-3 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg"
+                      >
+                        Open on Facebook
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Settings Modal */}
       {showSettings && <SettingsModal settings={settings} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />}
