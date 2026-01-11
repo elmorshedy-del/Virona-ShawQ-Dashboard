@@ -259,12 +259,21 @@ const STORES = {
 };
 
 const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const ACTIVE_TAB_STORAGE_KEY = 'virona-dashboard.activeTab';
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
   const [storeLoaded, setStoreLoaded] = useState(false);
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window === 'undefined') return 0;
+    const storedTab = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+    const parsed = Number.parseInt(storedTab, 10);
+    if (Number.isNaN(parsed) || parsed < 0 || parsed >= TABS.length) {
+      return 0;
+    }
+    return parsed;
+  });
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -306,6 +315,11 @@ export default function App() {
   const [campaignTrends, setCampaignTrends] = useState([]);
   const [campaignTrendsDataSource, setCampaignTrendsDataSource] = useState('');
   const [countriesDataSource, setCountriesDataSource] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, String(activeTab));
+  }, [activeTab]);
 
   // Unified analytics section state (must be before useEffect hooks that use them)
   const [analyticsMode, setAnalyticsMode] = useState('meta-ad-manager'); // 'countries' | 'meta-ad-manager'
