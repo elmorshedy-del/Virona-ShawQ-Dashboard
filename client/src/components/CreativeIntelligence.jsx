@@ -359,6 +359,7 @@ export default function CreativeIntelligence({ store }) {
   useEffect(() => { injectGlobalStyles(); }, []);
   
   const storeId = typeof store === 'string' ? store : store?.id;
+  const storageKey = storeId ? `creativeIntelligenceState:${storeId}` : null;
   
   const [adAccounts, setAdAccounts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -389,8 +390,40 @@ export default function CreativeIntelligence({ store }) {
   
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState(null);
+  const [restoredState, setRestoredState] = useState(null);
   
   const chatEndRef = useRef(null);
+  const hasRestoredSelection = useRef(false);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    try {
+      const saved = localStorage.getItem(storageKey);
+      setRestoredState(saved ? JSON.parse(saved) : null);
+    } catch (err) {
+      console.error('Error reading localStorage:', err);
+      setRestoredState(null);
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    hasRestoredSelection.current = false;
+  }, [storeId]);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    try {
+      const payload = {
+        selectedAccount,
+        selectedCampaign,
+        selectedAdId: selectedAd?.id || null,
+        conversationId
+      };
+      localStorage.setItem(storageKey, JSON.stringify(payload));
+    } catch (err) {
+      console.error('Error writing localStorage:', err);
+    }
+  }, [storageKey, selectedAccount, selectedCampaign, selectedAd?.id, conversationId]);
 
   // Fetch ad accounts
   useEffect(() => {
@@ -402,11 +435,15 @@ export default function CreativeIntelligence({ store }) {
         const list = Array.isArray(data?.data) ? data.data : [];
         const filtered = filterStoreAccounts(list, storeId);
         setAdAccounts(filtered);
-        if (filtered.length > 0) setSelectedAccount(filtered[0].id);
+        const preferred = restoredState?.selectedAccount;
+        const nextAccount = preferred && filtered.some(acc => acc.id === preferred)
+          ? preferred
+          : filtered[0]?.id || '';
+        if (nextAccount) setSelectedAccount(nextAccount);
       })
       .catch(err => setError(err.message))
       .finally(() => setLoadingAccounts(false));
-  }, [storeId]);
+  }, [storeId, restoredState]);
 
   // Fetch campaigns
   useEffect(() => {
@@ -417,12 +454,14 @@ export default function CreativeIntelligence({ store }) {
       .then(data => {
         const list = Array.isArray(data?.data) ? data.data : [];
         setCampaigns(list);
+        const preferred = restoredState?.selectedCampaign;
+        const preferredCampaign = preferred && list.find(c => c.id === preferred);
         const active = list.find(c => (c?.effective_status || c?.status || '').toUpperCase() === 'ACTIVE');
-        setSelectedCampaign(active?.id || list[0]?.id || '');
+        setSelectedCampaign(preferredCampaign?.id || active?.id || list[0]?.id || '');
       })
       .catch(err => setError(err.message))
       .finally(() => setLoadingCampaigns(false));
-  }, [selectedAccount, storeId]);
+  }, [selectedAccount, storeId, restoredState]);
 
   // Fetch ads
   useEffect(() => {
@@ -430,10 +469,23 @@ export default function CreativeIntelligence({ store }) {
     setLoadingAds(true);
     fetch(`${API_BASE}/meta/campaigns/${selectedCampaign}/ads?store=${storeId}&adAccountId=${selectedAccount}`)
       .then(res => res.json())
-      .then(data => setAds(Array.isArray(data?.data) ? data.data : []))
+      .then(data => {
+        const list = Array.isArray(data?.data) ? data.data : [];
+        setAds(list);
+        if (!hasRestoredSelection.current && restoredState?.selectedAdId) {
+          const nextAd = list.find(ad => ad.id === restoredState.selectedAdId);
+          if (nextAd) {
+            hasRestoredSelection.current = true;
+            handleSelectAd(nextAd, {
+              resetChat: false,
+              restoreConversationId: restoredState.conversationId
+            });
+          }
+        }
+      })
       .catch(err => setError(err.message))
       .finally(() => setLoadingAds(false));
-  }, [selectedCampaign, selectedAccount, storeId]);
+  }, [selectedCampaign, selectedAccount, storeId, restoredState, handleSelectAd]);
 
   // Fetch script statuses
   useEffect(() => {
@@ -458,14 +510,32 @@ export default function CreativeIntelligence({ store }) {
   }, [storeId]);
 
   // Handle ad selection
-  const handleSelectAd = async (ad) => {
+  const loadConversation = useCallback(async (nextConversationId) => {
+    if (!nextConversationId) return;
+    try {
+      const res = await fetch(`${API_BASE}/creative-intelligence/conversations/${nextConversationId}`);
+      if (!res.ok) throw new Error('Failed to load conversation');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.messages)) {
+        setChatMessages(data.messages.map(msg => ({ role: msg.role, content: msg.content })));
+        setConversationId(nextConversationId);
+      }
+    } catch (err) {
+      console.error('Conversation restore failed:', err);
+    }
+  }, []);
+
+  const handleSelectAd = useCallback(async (ad, options = {}) => {
+    const { resetChat = true, restoreConversationId } = options;
     setSelectedAd(ad);
     setLoadingVideo(true);
     setVideoData(null);
     setScriptStatus(null);
-    setChatMessages([]);
-    setConversationId(null);
-    setTokenUsage({ gemini: null, sonnet: null });
+    if (resetChat) {
+      setChatMessages([]);
+      setConversationId(null);
+      setTokenUsage({ gemini: null, sonnet: null });
+    }
 
     try {
       const videoRes = await fetch(`${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`);
@@ -476,12 +546,15 @@ export default function CreativeIntelligence({ store }) {
       const script = await scriptRes.json();
       setScriptStatus(script);
       setScriptStatuses(prev => ({ ...prev, [ad.id]: script?.status || 'pending' }));
+      if (!resetChat && restoreConversationId) {
+        await loadConversation(restoreConversationId);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
       setLoadingVideo(false);
     }
-  };
+  }, [loadConversation, selectedAccount, storeId]);
 
   // Analyze ad
   const handleAnalyze = async () => {
