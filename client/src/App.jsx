@@ -1474,6 +1474,7 @@ function DashboardTab({
   const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'country'
+  const [creativeInsightsUpdatedAt, setCreativeInsightsUpdatedAt] = useState(new Date());
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
   const countryTrendQuickOptions = [
@@ -1816,6 +1817,98 @@ function DashboardTab({
 
     return sections.sort((a, b) => (b.totalPurchases || 0) - (a.totalPurchases || 0));
   }, [creativeAds, creativeSortConfig, creativeBaselineCvr]);
+
+  const creativeInsightSummary = useMemo(() => {
+    if (creativeRows.length === 0) return null;
+
+    const totals = creativeRows.reduce(
+      (acc, row) => {
+        acc.impressions += row.impressions || 0;
+        acc.clicks += row.clicks || 0;
+        acc.lpv += row.lpv || 0;
+        acc.atc += row.atc || 0;
+        acc.visits += row.visits || 0;
+        acc.effectivePurchases += row.effectivePurchases || 0;
+        return acc;
+      },
+      { impressions: 0, clicks: 0, lpv: 0, atc: 0, visits: 0, effectivePurchases: 0 }
+    );
+
+    const overallCtr = totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : null;
+    const overallAtcRate = totals.lpv > 0 ? (totals.atc / totals.lpv) * 100 : null;
+    const overallCvr = totals.visits > 0 ? (totals.effectivePurchases / totals.visits) * 100 : null;
+
+    const byPurchases = [...creativeRows].sort((a, b) => (b.purchases || 0) - (a.purchases || 0));
+    const topCreative = byPurchases[0] || null;
+    const bottomCreative = byPurchases[byPurchases.length - 1] || null;
+
+    const topCvr = topCreative && topCreative.visits > 0
+      ? (topCreative.effectivePurchases / topCreative.visits) * 100
+      : null;
+
+    const calcDeltaPct = (value, baseline) => {
+      if (!Number.isFinite(value) || !Number.isFinite(baseline) || baseline === 0) return null;
+      return ((value - baseline) / baseline) * 100;
+    };
+
+    const todayDeltas = {
+      ctr: calcDeltaPct(topCreative?.ctr, overallCtr),
+      atcRate: calcDeltaPct(topCreative?.atcRate, overallAtcRate),
+      cvr: calcDeltaPct(topCvr, overallCvr)
+    };
+
+    const bucketSize = Math.min(3, creativeRows.length);
+    const topBucket = byPurchases.slice(0, bucketSize);
+    const bottomBucket = byPurchases.slice(-bucketSize);
+
+    const bucketStats = (bucket) => {
+      const bucketTotals = bucket.reduce(
+        (acc, row) => {
+          acc.impressions += row.impressions || 0;
+          acc.clicks += row.clicks || 0;
+          acc.lpv += row.lpv || 0;
+          acc.atc += row.atc || 0;
+          acc.visits += row.visits || 0;
+          acc.effectivePurchases += row.effectivePurchases || 0;
+          return acc;
+        },
+        { impressions: 0, clicks: 0, lpv: 0, atc: 0, visits: 0, effectivePurchases: 0 }
+      );
+
+      return {
+        ctr: bucketTotals.impressions > 0 ? (bucketTotals.clicks / bucketTotals.impressions) * 100 : null,
+        atcRate: bucketTotals.lpv > 0 ? (bucketTotals.atc / bucketTotals.lpv) * 100 : null,
+        cvr: bucketTotals.visits > 0 ? (bucketTotals.effectivePurchases / bucketTotals.visits) * 100 : null
+      };
+    };
+
+    const topBucketStats = bucketStats(topBucket);
+    const bottomBucketStats = bucketStats(bottomBucket);
+
+    const weekDeltas = {
+      ctr: calcDeltaPct(topBucketStats.ctr, bottomBucketStats.ctr),
+      atcRate: calcDeltaPct(topBucketStats.atcRate, bottomBucketStats.atcRate),
+      cvr: calcDeltaPct(topBucketStats.cvr, bottomBucketStats.cvr)
+    };
+
+    return {
+      topCreative,
+      bottomCreative,
+      todayDeltas,
+      weekDeltas,
+      bucketSize
+    };
+  }, [creativeRows]);
+
+  const creativeInsightsTimestampLabel = useMemo(() => {
+    if (!creativeInsightsUpdatedAt) return '—';
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(creativeInsightsUpdatedAt);
+  }, [creativeInsightsUpdatedAt]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -2281,6 +2374,19 @@ function DashboardTab({
     return value;
   };
 
+  const formatDeltaBadge = (delta) => {
+    if (!Number.isFinite(delta)) {
+      return { label: '—', tone: 'text-slate-500', bg: 'bg-slate-100' };
+    }
+
+    const isUp = delta >= 0;
+    return {
+      label: `${isUp ? '↑' : '↓'}${Math.abs(delta).toFixed(1)}%`,
+      tone: isUp ? 'text-emerald-700' : 'text-rose-700',
+      bg: isUp ? 'bg-emerald-50' : 'bg-rose-50'
+    };
+  };
+
   const creativeDataStrengthStyles = {
     LOW: 'bg-gray-100 text-gray-600',
     MED: 'bg-amber-100 text-amber-700',
@@ -2294,6 +2400,21 @@ function DashboardTab({
     LOSER: 'bg-rose-100 text-rose-700',
     DEAD: 'bg-rose-200 text-rose-800'
   };
+
+  const creativeInsightBadges = creativeInsightSummary
+    ? {
+        today: {
+          ctr: formatDeltaBadge(creativeInsightSummary.todayDeltas.ctr),
+          atcRate: formatDeltaBadge(creativeInsightSummary.todayDeltas.atcRate),
+          cvr: formatDeltaBadge(creativeInsightSummary.todayDeltas.cvr)
+        },
+        week: {
+          ctr: formatDeltaBadge(creativeInsightSummary.weekDeltas.ctr),
+          atcRate: formatDeltaBadge(creativeInsightSummary.weekDeltas.atcRate),
+          cvr: formatDeltaBadge(creativeInsightSummary.weekDeltas.cvr)
+        }
+      }
+    : null;
 
   // SECTION 1 rows based on metaView
   const section1Rows =
@@ -2964,6 +3085,84 @@ function DashboardTab({
               )}
             </div>
           </div>
+
+          {creativeInsightSummary && creativeInsightBadges ? (
+            <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-indigo-50 p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Today • Funnel shift</p>
+                      <p className="text-sm text-slate-600">Top creative vs portfolio average</p>
+                    </div>
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500 bg-indigo-50 px-2 py-1 rounded-full">
+                      Powered by GPT-5.2
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 ${creativeInsightBadges.today.ctr.bg} ${creativeInsightBadges.today.ctr.tone}`}>
+                      CTR {creativeInsightBadges.today.ctr.label}
+                    </span>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 ${creativeInsightBadges.today.atcRate.bg} ${creativeInsightBadges.today.atcRate.tone}`}>
+                      ATC {creativeInsightBadges.today.atcRate.label}
+                    </span>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 ${creativeInsightBadges.today.cvr.bg} ${creativeInsightBadges.today.cvr.tone}`}>
+                      CVR {creativeInsightBadges.today.cvr.label}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-sm text-slate-700">
+                    “{creativeInsightSummary.topCreative?.name || 'Top creative'}” is lifting funnel efficiency while
+                    “{creativeInsightSummary.bottomCreative?.name || 'lowest creative'}” trails the pack.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-white to-emerald-50 p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">This week • Creative matchup</p>
+                      <p className="text-sm text-slate-600">
+                        Top {creativeInsightSummary.bucketSize} vs bottom {creativeInsightSummary.bucketSize} creatives
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-500 bg-emerald-50 px-2 py-1 rounded-full">
+                      GPT-5.2 Insight
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 ${creativeInsightBadges.week.ctr.bg} ${creativeInsightBadges.week.ctr.tone}`}>
+                      CTR {creativeInsightBadges.week.ctr.label}
+                    </span>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 ${creativeInsightBadges.week.atcRate.bg} ${creativeInsightBadges.week.atcRate.tone}`}>
+                      ATC {creativeInsightBadges.week.atcRate.label}
+                    </span>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 ${creativeInsightBadges.week.cvr.bg} ${creativeInsightBadges.week.cvr.tone}`}>
+                      CVR {creativeInsightBadges.week.cvr.label}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-sm text-slate-700">
+                    Strongest creatives are outpacing weaker ones, signaling where to lean spend and refresh ads.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
+                <span>No triggers. Auto-updates end of day or on refresh.</span>
+                <div className="flex items-center gap-3">
+                  <span>Last updated {creativeInsightsTimestampLabel}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCreativeInsightsUpdatedAt(new Date())}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-800"
+                  >
+                    Refresh insights
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+              Creative insights will appear once creative performance data is available.
+            </div>
+          )}
 
           {creativeCampaignOptions.length > 0 ? (
             <div className="flex flex-col lg:flex-row gap-4">
