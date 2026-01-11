@@ -1978,3 +1978,146 @@ export function getFunnelDiagnostics(store, params) {
     period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
   };
 }
+
+export function getCreativeFunnelSummary(store, params) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const { startDate: prevStartDate, endDate: prevEndDate } = getPreviousDateRange(startDate, endDate);
+  const limit = Number(params.limit) || 5;
+  const statusFilter = buildStatusFilter(params);
+  const campaignFilter = buildCampaignFilter(params);
+
+  const baseQuery = `
+    SELECT
+      ad_id,
+      ad_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue
+    FROM meta_ad_metrics
+    WHERE store = ? AND date BETWEEN ? AND ?${campaignFilter.clause}${statusFilter}
+    GROUP BY ad_id
+  `;
+
+  const queryParams = [store, startDate, endDate];
+  if (campaignFilter.value) queryParams.push(campaignFilter.value);
+
+  const topAds = db.prepare(`${baseQuery} ORDER BY spend DESC LIMIT ${limit}`).all(...queryParams);
+
+  if (!topAds || topAds.length === 0) {
+    return {
+      rows: [],
+      period: { startDate, endDate, prevStartDate, prevEndDate }
+    };
+  }
+
+  const adIds = topAds.map((ad) => ad.ad_id).filter(Boolean);
+  if (adIds.length === 0) {
+    return {
+      rows: [],
+      period: { startDate, endDate, prevStartDate, prevEndDate }
+    };
+  }
+
+  const placeholders = adIds.map(() => '?').join(',');
+  const prevQuery = `
+    SELECT
+      ad_id,
+      ad_name,
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
+      SUM(landing_page_views) as lpv,
+      SUM(add_to_cart) as atc,
+      SUM(checkouts_initiated) as checkout,
+      SUM(conversions) as purchases,
+      SUM(conversion_value) as revenue
+    FROM meta_ad_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND ad_id IN (${placeholders})${statusFilter}
+    GROUP BY ad_id
+  `;
+
+  const previousRows = db.prepare(prevQuery).all(store, prevStartDate, prevEndDate, ...adIds);
+  const previousById = new Map(previousRows.map((row) => [row.ad_id, row]));
+
+  const resolveVisits = (row) => {
+    const lpv = row?.lpv || 0;
+    const outboundClicks = row?.outbound_clicks || 0;
+    const inlineClicks = row?.inline_link_clicks || 0;
+    if (lpv > 0) return lpv;
+    if (outboundClicks > 0) return outboundClicks;
+    return inlineClicks;
+  };
+
+  const calcMetrics = (row) => {
+    if (!row) return null;
+    const impressions = row.impressions || 0;
+    const reach = row.reach || 0;
+    const clicks = row.clicks || 0;
+    const lpv = row.lpv || 0;
+    const atc = row.atc || 0;
+    const checkout = row.checkout || 0;
+    const purchases = row.purchases || 0;
+    const spend = row.spend || 0;
+    const revenue = row.revenue || 0;
+    const visits = resolveVisits(row);
+
+    return {
+      ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
+      frequency: reach > 0 ? impressions / reach : null,
+      atcRate: lpv > 0 ? (atc / lpv) * 100 : null,
+      checkoutRate: atc > 0 ? (checkout / atc) * 100 : null,
+      cvr: visits > 0 ? (purchases / visits) * 100 : null,
+      roas: spend > 0 ? revenue / spend : null,
+      spend,
+      revenue
+    };
+  };
+
+  const calcChange = (current, previous) => {
+    if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) return null;
+    return ((current - previous) / previous) * 100;
+  };
+
+  const rows = topAds.map((ad) => {
+    const currentMetrics = calcMetrics(ad);
+    const previousMetrics = calcMetrics(previousById.get(ad.ad_id));
+
+    const changes = currentMetrics && previousMetrics
+      ? {
+          ctr: calcChange(currentMetrics.ctr, previousMetrics.ctr),
+          frequency: calcChange(currentMetrics.frequency, previousMetrics.frequency),
+          atcRate: calcChange(currentMetrics.atcRate, previousMetrics.atcRate),
+          checkoutRate: calcChange(currentMetrics.checkoutRate, previousMetrics.checkoutRate),
+          cvr: calcChange(currentMetrics.cvr, previousMetrics.cvr),
+          roas: calcChange(currentMetrics.roas, previousMetrics.roas),
+          revenue: calcChange(currentMetrics.revenue, previousMetrics.revenue)
+        }
+      : {};
+
+    return {
+      adId: ad.ad_id,
+      adName: ad.ad_name || 'Creative',
+      spend: ad.spend || 0,
+      current: currentMetrics,
+      previous: previousMetrics,
+      changes
+    };
+  });
+
+  return {
+    rows,
+    period: { startDate, endDate, prevStartDate, prevEndDate }
+  };
+}
