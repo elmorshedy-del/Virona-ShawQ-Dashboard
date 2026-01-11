@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import CreativePreview from './CreativePreview.jsx';
 
 const API_BASE = '/api';
+const EMPTY_VIDEO = {
+  video_id: null,
+  source_url: null,
+  embed_html: null,
+  thumbnail_url: null,
+  length: null,
+  permalink_url: null,
+  message: 'No video found for this ad.'
+};
 
 // ============================================================================
 // PREMIUM DESIGN TOKENS - Warm, comforting palette
@@ -271,6 +283,19 @@ const EmptyState = () => (
 // ============================================================================
 const ChatMessage = ({ message }) => {
   const isUser = message.role === 'user';
+  const markdownComponents = {
+    p: ({ children }) => <p className="my-2 leading-relaxed">{children}</p>,
+    strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+    em: ({ children }) => <em className="italic">{children}</em>,
+    h1: ({ children }) => <h1 className="text-lg font-semibold mt-3 mb-2">{children}</h1>,
+    h2: ({ children }) => <h2 className="text-base font-semibold mt-3 mb-2">{children}</h2>,
+    h3: ({ children }) => <h3 className="text-sm font-semibold mt-2 mb-2">{children}</h3>,
+    ul: ({ children }) => <ul className="my-2 ml-4 list-disc">{children}</ul>,
+    ol: ({ children }) => <ol className="my-2 ml-4 list-decimal">{children}</ol>,
+    li: ({ children }) => <li className="my-1">{children}</li>,
+    code: ({ children }) => <code className="bg-black/5 px-1 py-0.5 rounded text-sm">{children}</code>,
+    hr: () => <hr className="my-3 border-black/10" />
+  };
   
   return (
     <div className={`ci-msg-wrap ci-msg-enter flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
@@ -285,8 +310,14 @@ const ChatMessage = ({ message }) => {
         }}
       >
         {!isUser && !message.streaming && <CopyButton text={message.content} />}
-        <div className="whitespace-pre-wrap">
-          {message.content}
+        <div className="whitespace-pre-wrap break-words">
+          {isUser ? (
+            message.content
+          ) : (
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {message.content || ''}
+            </ReactMarkdown>
+          )}
           {message.streaming && <span className="ci-cursor" />}
         </div>
       </div>
@@ -379,6 +410,7 @@ export default function CreativeIntelligence({ store }) {
   const [videoData, setVideoData] = useState(null);
   const [scriptStatus, setScriptStatus] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [creativePreviewOpen, setCreativePreviewOpen] = useState(false);
   const [showParticles, setShowParticles] = useState(false);
   const [tokenUsage, setTokenUsage] = useState({ gemini: null, sonnet: null });
   
@@ -386,11 +418,23 @@ export default function CreativeIntelligence({ store }) {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [conversationId, setConversationId] = useState(null);
-  
+
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState(null);
-  
+
+  const [previewAd, setPreviewAd] = useState(null);
+  const [previewVideoData, setPreviewVideoData] = useState(null);
+  const [previewVideoLoading, setPreviewVideoLoading] = useState(false);
+  const [previewVideoError, setPreviewVideoError] = useState('');
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [previewMediaDimensions, setPreviewMediaDimensions] = useState({ width: null, height: null });
+  const previewVideoRef = useRef(null);
+  const previewImageRef = useRef(null);
+
   const chatEndRef = useRef(null);
+  const streamBufferRef = useRef('');
+  const streamTimerRef = useRef(null);
+  const lastStreamFlushRef = useRef(0);
 
   // Fetch ad accounts
   useEffect(() => {
@@ -457,6 +501,21 @@ export default function CreativeIntelligence({ store }) {
       .catch(console.error);
   }, [storeId]);
 
+  useEffect(() => {
+    if (previewModalOpen && previewVideoRef.current) {
+      previewVideoRef.current.play().catch(() => undefined);
+    }
+  }, [previewModalOpen, previewVideoData]);
+
+  useEffect(() => {
+    return () => {
+      if (streamTimerRef.current) {
+        clearTimeout(streamTimerRef.current);
+        streamTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // Handle ad selection
   const handleSelectAd = async (ad) => {
     setSelectedAd(ad);
@@ -481,6 +540,36 @@ export default function CreativeIntelligence({ store }) {
     } finally {
       setLoadingVideo(false);
     }
+  };
+
+  const handlePreviewAd = async (ad) => {
+    setPreviewAd(ad);
+    setPreviewModalOpen(true);
+    setPreviewVideoLoading(true);
+    setPreviewVideoError('');
+    setPreviewVideoData(null);
+    setPreviewMediaDimensions({ width: null, height: null });
+
+    try {
+      const res = await fetch(`${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to load video');
+      }
+      setPreviewVideoData(data || EMPTY_VIDEO);
+    } catch (err) {
+      setPreviewVideoError(err?.message || 'Failed to load video');
+      setPreviewVideoData(EMPTY_VIDEO);
+    } finally {
+      setPreviewVideoLoading(false);
+    }
+  };
+
+  const closePreviewModal = () => {
+    setPreviewModalOpen(false);
+    setPreviewAd(null);
+    setPreviewVideoData(null);
+    setPreviewVideoError('');
   };
 
   // Analyze ad
@@ -566,6 +655,47 @@ export default function CreativeIntelligence({ store }) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let assistantMsg = '';
+        let sseBuffer = '';
+        const minFlushIntervalMs = 160;
+        const minWordsPerChunk = 12;
+
+        streamBufferRef.current = '';
+        lastStreamFlushRef.current = 0;
+        if (streamTimerRef.current) {
+          clearTimeout(streamTimerRef.current);
+          streamTimerRef.current = null;
+        }
+
+        const shouldFlushBuffer = (buffer) => {
+          if (!buffer.trim()) return false;
+          if (/[.!?:;\n]$/.test(buffer.trimEnd())) return true;
+          const words = buffer.trim().split(/\s+/).filter(Boolean);
+          return words.length >= minWordsPerChunk;
+        };
+
+        const flushBuffer = (force = false) => {
+          if (!streamBufferRef.current) return;
+          if (!force && !shouldFlushBuffer(streamBufferRef.current)) return;
+          assistantMsg += streamBufferRef.current;
+          streamBufferRef.current = '';
+          lastStreamFlushRef.current = Date.now();
+          setChatMessages(prev => {
+            const updated = [...prev];
+            if (updated.length === 0) return updated;
+            updated[updated.length - 1] = { role: 'assistant', content: assistantMsg, streaming: true };
+            return updated;
+          });
+        };
+
+        const scheduleFlush = (force = false) => {
+          if (streamTimerRef.current) return;
+          const now = Date.now();
+          const delay = force ? 0 : Math.max(0, minFlushIntervalMs - (now - lastStreamFlushRef.current));
+          streamTimerRef.current = setTimeout(() => {
+            streamTimerRef.current = null;
+            flushBuffer(force);
+          }, delay);
+        };
 
         setChatMessages(prev => [...prev, { role: 'assistant', content: '', streaming: true }]);
 
@@ -573,19 +703,21 @@ export default function CreativeIntelligence({ store }) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = decoder.decode(value);
-          for (const line of chunk.split('\n')) {
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split('\n');
+          sseBuffer = lines.pop() || '';
+
+          for (const line of lines) {
             if (line.startsWith('data: ')) {
               try {
                 const data = JSON.parse(line.slice(6));
                 if (data.type === 'delta') {
-                  assistantMsg += data.text;
-                  setChatMessages(prev => {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = { role: 'assistant', content: assistantMsg, streaming: true };
-                    return updated;
-                  });
+                  streamBufferRef.current += data.text;
+                  if (shouldFlushBuffer(streamBufferRef.current)) {
+                    scheduleFlush();
+                  }
                 } else if (data.type === 'done') {
+                  scheduleFlush(true);
                   setConversationId(data.conversationId);
                   if (!isOpenAI) setTokenUsage(prev => ({ ...prev, sonnet: data.usage ?? null }));
                   setChatMessages(prev => {
@@ -598,6 +730,20 @@ export default function CreativeIntelligence({ store }) {
             }
           }
         }
+        if (streamTimerRef.current) {
+          clearTimeout(streamTimerRef.current);
+          streamTimerRef.current = null;
+        }
+        if (streamBufferRef.current) {
+          assistantMsg += streamBufferRef.current;
+          streamBufferRef.current = '';
+        }
+        setChatMessages(prev => {
+          const updated = [...prev];
+          if (updated.length === 0) return updated;
+          updated[updated.length - 1] = { role: 'assistant', content: assistantMsg };
+          return updated;
+        });
       } else {
         const data = await res.json();
         if (data.success) {
@@ -656,6 +802,45 @@ export default function CreativeIntelligence({ store }) {
     return adRows.filter(ad => scriptStatuses[ad.id] !== 'complete');
   }, [adRows, activeTab, scriptStatuses]);
 
+  const previewHasVideo = !!previewVideoData?.source_url;
+  const previewHasEmbed = !previewHasVideo && !!previewVideoData?.embed_html;
+  const previewDisplayThumbnail = previewVideoData?.thumbnail_url || previewAd?.thumbnail || null;
+  const previewHasThumbnail = !previewHasVideo && !previewHasEmbed && !!previewDisplayThumbnail;
+  const previewShowNoVideo = !previewVideoLoading && !previewHasVideo && !previewHasEmbed && !previewHasThumbnail;
+  const previewShowPermissionFallback = previewVideoData?.playable === false && previewHasThumbnail;
+  const previewFallbackMessage =
+    previewVideoData?.message ||
+    (previewVideoData?.reason === 'NO_VIDEO_PERMISSION'
+      ? "Can't access this video's preview."
+      : 'No video found for this ad.');
+
+  const previewModalMaxWidth = useMemo(() => {
+    const width = previewMediaDimensions.width;
+    const height = previewMediaDimensions.height;
+    if (!width || !height) {
+      return 'min(420px, 92vw)';
+    }
+    return width >= height ? 'min(960px, 92vw)' : 'min(420px, 92vw)';
+  }, [previewMediaDimensions]);
+
+  const handlePreviewVideoMetadata = () => {
+    const video = previewVideoRef.current;
+    if (!video) return;
+    if (video.videoWidth && video.videoHeight) {
+      setPreviewMediaDimensions({ width: video.videoWidth, height: video.videoHeight });
+    }
+  };
+
+  const handlePreviewImageLoad = () => {
+    const image = previewImageRef.current;
+    if (!image) return;
+    if (image.naturalWidth && image.naturalHeight) {
+      setPreviewMediaDimensions({ width: image.naturalWidth, height: image.naturalHeight });
+    }
+  };
+
+  const previewStore = typeof store === 'string' ? { id: store } : store;
+
   // ============================================================================
   // RENDER
   // ============================================================================
@@ -687,235 +872,367 @@ export default function CreativeIntelligence({ store }) {
         </div>
       </div>
 
-      <div className="flex h-[calc(100vh-73px)]">
-        {/* Left Panel */}
-        <div className="w-80 border-r overflow-y-auto" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
-          {/* Campaigns */}
-          <div className="p-5 border-b" style={{ borderColor: colors.borderLight }}>
-            <div className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>Campaigns</div>
-            {loadingCampaigns ? (
-              <div className="space-y-2">{[1,2,3].map(i => <div key={i} className="h-10 rounded-xl bg-gray-100 animate-pulse" />)}</div>
-            ) : (
-              <div className="space-y-1">
-                {activeCampaigns.map(c => (
-                  <button
-                    key={c.id}
-                    onClick={() => setSelectedCampaign(c.id)}
-                    className={`w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all ${selectedCampaign === c.id ? 'ci-shadow-soft' : 'hover:bg-gray-50'}`}
-                    style={{
-                      backgroundColor: selectedCampaign === c.id ? colors.accentLight : undefined,
-                      color: selectedCampaign === c.id ? colors.accent : colors.text,
-                      fontWeight: selectedCampaign === c.id ? 500 : 400
-                    }}
-                  >
-                    <div className="truncate">{c.name}</div>
-                  </button>
-                ))}
-                {inactiveCampaigns.length > 0 && (
-                  <button onClick={() => setShowInactiveCampaigns(!showInactiveCampaigns)} className="w-full text-left px-4 py-2.5 text-xs font-medium" style={{ color: colors.textMuted }}>
-                    {showInactiveCampaigns ? '▼' : '▶'} Inactive ({inactiveCampaigns.length})
-                  </button>
-                )}
-                {showInactiveCampaigns && inactiveCampaigns.map(c => (
-                  <button
-                    key={c.id}
-                    onClick={() => setSelectedCampaign(c.id)}
-                    className={`w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all ${selectedCampaign === c.id ? 'ci-shadow-soft' : 'hover:bg-gray-50'}`}
-                    style={{
-                      backgroundColor: selectedCampaign === c.id ? colors.accentLight : undefined,
-                      color: selectedCampaign === c.id ? colors.accent : colors.textSecondary
-                    }}
-                  >
-                    <div className="truncate">{c.name}</div>
-                  </button>
-                ))}
+      <div className="flex h-[calc(100vh-73px)] flex-col">
+        <div className="flex-1 flex gap-6 p-6 overflow-hidden">
+          {/* Chat Panel */}
+          <div className="flex-[2] flex flex-col overflow-hidden">
+            {!selectedAd ? (
+              <div className="flex-1 flex items-center justify-center rounded-2xl border" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                <EmptyState />
               </div>
-            )}
-          </div>
-
-          {/* Tabs */}
-          <div className="px-5 pt-5">
-            <div className="flex gap-1 p-1 rounded-xl" style={{ backgroundColor: colors.bgSubtle }}>
-              {['all', 'analyzed', 'pending'].map(tab => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={`flex-1 px-3 py-2 text-xs font-medium rounded-lg transition-all ${activeTab === tab ? 'ci-shadow-soft' : ''}`}
-                  style={{ backgroundColor: activeTab === tab ? colors.card : 'transparent', color: activeTab === tab ? colors.text : colors.textMuted }}
-                >
-                  {tab === 'all' ? 'All Ads' : tab === 'analyzed' ? 'Analyzed' : 'Not Analyzed'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Ad List */}
-          <div className="p-5 space-y-2">
-            {loadingAds ? (
-              <div className="space-y-2">{[1,2,3,4].map(i => <div key={i} className="h-16 rounded-2xl bg-gray-100 animate-pulse" />)}</div>
-            ) : filteredAds.length === 0 ? (
-              <div className="text-sm text-center py-8" style={{ color: colors.textMuted }}>No ads found</div>
             ) : (
-              filteredAds.map(ad => (
-                <button
-                  key={ad.id}
-                  onClick={() => handleSelectAd(ad)}
-                  className={`w-full text-left p-3.5 rounded-2xl border transition-all ci-hover-lift ${selectedAd?.id === ad.id ? 'ci-shadow-soft' : ''}`}
-                  style={{
-                    borderColor: selectedAd?.id === ad.id ? colors.accent : colors.border,
-                    backgroundColor: selectedAd?.id === ad.id ? colors.accentLight : colors.card
-                  }}
-                >
-                  <div className="flex items-center gap-3">
-                    {ad.thumbnail ? (
-                      <img src={ad.thumbnail} alt="" className="w-11 h-11 rounded-xl object-cover" style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }} />
-                    ) : (
-                      <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ backgroundColor: colors.bgSubtle }}>
-                        <svg className="w-5 h-5" fill="none" stroke={colors.textMuted} viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate" style={{ color: colors.text }}>{ad.name}</div>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ad.isActive ? colors.success : colors.textMuted }} />
-                        <span className="text-xs" style={{ color: colors.textMuted }}>{ad.status}</span>
-                        {scriptStatuses[ad.id] === 'complete' && (
-                          <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ backgroundColor: colors.successLight, color: colors.success }}>Analyzed</span>
+              <>
+                {/* Ad Header */}
+                <div className="px-6 py-4 border rounded-2xl mb-5" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold" style={{ color: colors.text, letterSpacing: '-0.02em' }}>{selectedAd.name}</h2>
+                      <div className="text-sm mt-0.5" style={{ color: colors.textSecondary }}>{campaigns.find(c => c.id === selectedCampaign)?.name}</div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {scriptStatus?.status === 'complete' && (
+                        <span className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium" style={{ backgroundColor: colors.successLight, color: colors.success }}>
+                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: colors.success }} />Analyzed
+                        </span>
+                      )}
+                      {scriptStatus?.status === 'processing' && (
+                        <span className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium" style={{ backgroundColor: colors.warningLight, color: colors.warning }}>
+                          <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: colors.warning }} />Analyzing...
+                        </span>
+                      )}
+                      {scriptStatus?.status === 'failed' && (
+                        <span className="px-3 py-1.5 rounded-full text-sm font-medium" style={{ backgroundColor: colors.errorLight, color: colors.error }}>Failed</span>
+                      )}
+                      <div className="flex items-center gap-2">
+                        {scriptStatus?.status === 'complete' && (
+                          <button onClick={handleReanalyze} className="px-4 py-2 rounded-xl text-sm font-medium border ci-hover-lift" style={{ borderColor: colors.border, color: colors.textSecondary, backgroundColor: colors.card }}>
+                            🔄 Reanalyze
+                          </button>
+                        )}
+                        {scriptStatus?.status !== 'complete' && scriptStatus?.status !== 'processing' && (
+                          <button
+                            onClick={handleAnalyze}
+                            className="px-4 py-2 rounded-xl text-sm font-medium text-white ci-hover-lift"
+                            style={{ background: `linear-gradient(135deg, ${colors.purple}, ${colors.accent})`, boxShadow: '0 2px 8px rgba(99,102,241,0.3)' }}
+                          >
+                            ✨ Analyze
+                          </button>
                         )}
                       </div>
+                      {videoData?.permalink_url && (
+                        <button
+                          onClick={() => window.open(videoData.permalink_url, '_blank')}
+                          className="px-4 py-2 rounded-xl text-sm border ci-hover-lift"
+                          style={{ borderColor: colors.border, color: colors.textSecondary, backgroundColor: colors.card }}
+                        >
+                          Open on FB
+                        </button>
+                      )}
                     </div>
                   </div>
-                </button>
-              ))
+                </div>
+
+                {/* Chat with Aura */}
+                <div
+                  className={`flex-1 flex flex-col overflow-hidden rounded-2xl border transition-all duration-300 ${chatLoading ? 'ci-aura-active' : 'ci-shadow-glow'}`}
+                  style={{ borderColor: chatLoading ? 'rgba(139,92,246,0.2)' : 'rgba(139,92,246,0.08)', backgroundColor: colors.card, position: 'relative' }}
+                >
+                  <ParticleExplosion active={showParticles} onDone={() => setShowParticles(false)} />
+
+                  {/* Messages */}
+                  <div className="flex-1 overflow-y-auto p-6">
+                    {chatMessages.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center">
+                        <div className="text-center max-w-md">
+                          <div className="text-5xl mb-6">💬</div>
+                          <h3 className="text-lg font-semibold mb-2" style={{ color: colors.text }}>Ask Claude about this ad</h3>
+                          <p className="text-sm mb-6" style={{ color: colors.textSecondary }}>Get insights on why it works, compare to other ads, or generate new variations</p>
+                          <SuggestionChips onSelect={handleSendMessage} disabled={scriptStatus?.status !== 'complete' || chatLoading} />
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        {chatMessages.map((msg, i) => <ChatMessage key={i} message={msg} />)}
+                        <div ref={chatEndRef} />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Input */}
+                  <div className="p-4 border-t" style={{ borderColor: colors.borderLight }}>
+                    <form onSubmit={handleFormSubmit} className="flex gap-3">
+                      <input
+                        type="text"
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        placeholder={scriptStatus?.status === 'complete' ? "Ask about this ad..." : "Analyze the ad first..."}
+                        disabled={chatLoading || scriptStatus?.status !== 'complete'}
+                        className="ci-input-glow flex-1 px-5 py-3.5 rounded-xl border text-sm focus:outline-none disabled:opacity-50 transition-all"
+                        style={{ borderColor: colors.border, backgroundColor: colors.card, color: colors.text }}
+                      />
+                      <button
+                        type="submit"
+                        disabled={!chatInput.trim() || chatLoading || scriptStatus?.status !== 'complete'}
+                        className="px-6 py-3.5 rounded-xl text-sm font-medium text-white disabled:opacity-50 transition-all"
+                        style={{ background: `linear-gradient(135deg, ${colors.purple}, ${colors.accent})`, boxShadow: chatInput.trim() && !chatLoading ? '0 2px 12px rgba(99,102,241,0.3)' : 'none' }}
+                      >
+                        {chatLoading ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" /> : 'Send'}
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </>
             )}
+          </div>
+
+          {/* Ads Panel */}
+          <div className="w-80 flex flex-col overflow-hidden rounded-2xl border" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+            <div className="flex-1 overflow-y-auto">
+              {/* Campaigns */}
+              <div className="p-5 border-b" style={{ borderColor: colors.borderLight }}>
+                <div className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>Campaigns</div>
+                {loadingCampaigns ? (
+                  <div className="space-y-2">{[1,2,3].map(i => <div key={i} className="h-10 rounded-xl bg-gray-100 animate-pulse" />)}</div>
+                ) : (
+                  <div className="space-y-1">
+                    {activeCampaigns.map(c => (
+                      <button
+                        key={c.id}
+                        onClick={() => setSelectedCampaign(c.id)}
+                        className={`w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all ${selectedCampaign === c.id ? 'ci-shadow-soft' : 'hover:bg-gray-50'}`}
+                        style={{
+                          backgroundColor: selectedCampaign === c.id ? colors.accentLight : undefined,
+                          color: selectedCampaign === c.id ? colors.accent : colors.text,
+                          fontWeight: selectedCampaign === c.id ? 500 : 400
+                        }}
+                      >
+                        <div className="truncate">{c.name}</div>
+                      </button>
+                    ))}
+                    {inactiveCampaigns.length > 0 && (
+                      <button onClick={() => setShowInactiveCampaigns(!showInactiveCampaigns)} className="w-full text-left px-4 py-2.5 text-xs font-medium" style={{ color: colors.textMuted }}>
+                        {showInactiveCampaigns ? '▼' : '▶'} Inactive ({inactiveCampaigns.length})
+                      </button>
+                    )}
+                    {showInactiveCampaigns && inactiveCampaigns.map(c => (
+                      <button
+                        key={c.id}
+                        onClick={() => setSelectedCampaign(c.id)}
+                        className={`w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all ${selectedCampaign === c.id ? 'ci-shadow-soft' : 'hover:bg-gray-50'}`}
+                        style={{
+                          backgroundColor: selectedCampaign === c.id ? colors.accentLight : undefined,
+                          color: selectedCampaign === c.id ? colors.accent : colors.textSecondary
+                        }}
+                      >
+                        <div className="truncate">{c.name}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Tabs */}
+              <div className="px-5 pt-5">
+                <div className="flex gap-1 p-1 rounded-xl" style={{ backgroundColor: colors.bgSubtle }}>
+                  {['all', 'analyzed', 'pending'].map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setActiveTab(tab)}
+                      className={`flex-1 px-3 py-2 text-xs font-medium rounded-lg transition-all ${activeTab === tab ? 'ci-shadow-soft' : ''}`}
+                      style={{ backgroundColor: activeTab === tab ? colors.card : 'transparent', color: activeTab === tab ? colors.text : colors.textMuted }}
+                    >
+                      {tab === 'all' ? 'All Ads' : tab === 'analyzed' ? 'Analyzed' : 'Not Analyzed'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Ad List */}
+              <div className="p-5 space-y-2">
+                {loadingAds ? (
+                  <div className="space-y-2">{[1,2,3,4].map(i => <div key={i} className="h-16 rounded-2xl bg-gray-100 animate-pulse" />)}</div>
+                ) : filteredAds.length === 0 ? (
+                  <div className="text-sm text-center py-8" style={{ color: colors.textMuted }}>No ads found</div>
+                ) : (
+                  filteredAds.map(ad => (
+                    <button
+                      key={ad.id}
+                      onClick={() => handleSelectAd(ad)}
+                      className={`w-full text-left p-3.5 rounded-2xl border transition-all ci-hover-lift ${selectedAd?.id === ad.id ? 'ci-shadow-soft' : ''}`}
+                      style={{
+                        borderColor: selectedAd?.id === ad.id ? colors.accent : colors.border,
+                        backgroundColor: selectedAd?.id === ad.id ? colors.accentLight : colors.card
+                      }}
+                    >
+                      <div className="flex items-center gap-3">
+                        {ad.thumbnail ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handlePreviewAd(ad);
+                            }}
+                            className="relative"
+                          >
+                            <img src={ad.thumbnail} alt="" className="w-11 h-11 rounded-xl object-cover" style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }} />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handlePreviewAd(ad);
+                            }}
+                            className="w-11 h-11 rounded-xl flex items-center justify-center"
+                            style={{ backgroundColor: colors.bgSubtle }}
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke={colors.textMuted} viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          </button>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium truncate" style={{ color: colors.text }}>{ad.name}</div>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ad.isActive ? colors.success : colors.textMuted }} />
+                            <span className="text-xs" style={{ color: colors.textMuted }}>{ad.status}</span>
+                            {scriptStatuses[ad.id] === 'complete' && (
+                              <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ backgroundColor: colors.successLight, color: colors.success }}>Analyzed</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Right Panel */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {!selectedAd ? <EmptyState /> : (
-            <>
-              {/* Ad Header */}
-              <div className="px-6 py-4 border-b" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-lg font-semibold" style={{ color: colors.text, letterSpacing: '-0.02em' }}>{selectedAd.name}</h2>
-                    <div className="text-sm mt-0.5" style={{ color: colors.textSecondary }}>{campaigns.find(c => c.id === selectedCampaign)?.name}</div>
+        {/* Debug */}
+        {selectedAd && (
+          <div className="px-6 pb-6">
+            <div className="rounded-2xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+              <button onClick={() => setDebugOpen(!debugOpen)} className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium hover:bg-gray-50 transition-colors" style={{ color: colors.text }}>
+                <span>Debug & Tokens</span>
+                <span className="text-xs" style={{ color: colors.textMuted }}>{debugOpen ? '▼' : '▶'}</span>
+              </button>
+              {debugOpen && (
+                <div className="p-5 pt-0 text-xs" style={{ color: colors.textSecondary }}>
+                  <div className="space-y-1">
+                    <div><span className="font-semibold" style={{ color: colors.text }}>Gemini:</span> {tokenUsage.gemini ? `${tokenUsage.gemini.totalTokens || 'n/a'} tokens` : 'Not reported'}</div>
+                    <div><span className="font-semibold" style={{ color: colors.text }}>Claude:</span> {tokenUsage.sonnet ? `${(tokenUsage.sonnet.input_tokens || 0) + (tokenUsage.sonnet.output_tokens || 0)} tokens` : 'Not reported'}</div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    {scriptStatus?.status === 'complete' && (
-                      <span className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium" style={{ backgroundColor: colors.successLight, color: colors.success }}>
-                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: colors.success }} />Analyzed
-                      </span>
-                    )}
-                    {scriptStatus?.status === 'processing' && (
-                      <span className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium" style={{ backgroundColor: colors.warningLight, color: colors.warning }}>
-                        <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: colors.warning }} />Analyzing...
-                      </span>
-                    )}
-                    {scriptStatus?.status === 'failed' && (
-                      <span className="px-3 py-1.5 rounded-full text-sm font-medium" style={{ backgroundColor: colors.errorLight, color: colors.error }}>Failed</span>
-                    )}
-                    <div className="flex items-center gap-2">
-                      {scriptStatus?.status === 'complete' && (
-                        <button onClick={handleReanalyze} className="px-4 py-2 rounded-xl text-sm font-medium border ci-hover-lift" style={{ borderColor: colors.border, color: colors.textSecondary, backgroundColor: colors.card }}>
-                          🔄 Reanalyze
-                        </button>
-                      )}
-                      {scriptStatus?.status !== 'complete' && scriptStatus?.status !== 'processing' && (
-                        <button
-                          onClick={handleAnalyze}
-                          className="px-4 py-2 rounded-xl text-sm font-medium text-white ci-hover-lift"
-                          style={{ background: `linear-gradient(135deg, ${colors.purple}, ${colors.accent})`, boxShadow: '0 2px 8px rgba(99,102,241,0.3)' }}
-                        >
-                          ✨ Analyze
-                        </button>
-                      )}
-                    </div>
-                    {videoData?.permalink_url && (
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Creative Preview */}
+        <div className="px-6 pb-10">
+          <div className="rounded-2xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+            <button onClick={() => setCreativePreviewOpen(!creativePreviewOpen)} className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium hover:bg-gray-50 transition-colors" style={{ color: colors.text }}>
+              <span>Creative Preview</span>
+              <span className="text-xs" style={{ color: colors.textMuted }}>{creativePreviewOpen ? '▼' : '▶'}</span>
+            </button>
+            {creativePreviewOpen && previewStore && (
+              <div className="p-5 pt-0">
+                <CreativePreview store={previewStore} />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {previewModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
+          <div
+            className="bg-white rounded-xl shadow-xl w-full max-h-[92vh] flex flex-col"
+            style={{ maxWidth: previewModalMaxWidth }}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+              <div className="text-sm font-semibold text-gray-800 truncate">
+                {previewAd?.name || 'Ad Preview'}
+              </div>
+              <button
+                onClick={closePreviewModal}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4">
+              <div className="flex items-center justify-center">
+                {previewVideoLoading && (
+                  <div className="text-sm text-gray-500">Loading media...</div>
+                )}
+
+                {!previewVideoLoading && previewVideoError && (
+                  <div className="text-sm text-red-600">{previewVideoError}</div>
+                )}
+
+                {!previewVideoLoading && previewHasVideo && (
+                  <video
+                    ref={previewVideoRef}
+                    src={previewVideoData.source_url}
+                    autoPlay
+                    controls
+                    onLoadedMetadata={handlePreviewVideoMetadata}
+                    className="w-full h-auto max-h-[85vh] object-contain"
+                  />
+                )}
+
+                {!previewVideoLoading && previewHasEmbed && (
+                  <div
+                    className="w-full flex justify-center"
+                    dangerouslySetInnerHTML={{ __html: previewVideoData.embed_html }}
+                  />
+                )}
+
+                {!previewVideoLoading && !previewHasVideo && previewHasThumbnail && (
+                  <div className="text-center">
+                    <img
+                      ref={previewImageRef}
+                      src={previewDisplayThumbnail}
+                      alt="Ad thumbnail"
+                      onLoad={handlePreviewImageLoad}
+                      className="w-full h-auto max-h-[85vh] object-contain"
+                    />
+                    <p className="mt-3 text-sm text-gray-600">
+                      {previewShowPermissionFallback ? "Can't play this video here." : 'Playable video source unavailable.'}
+                    </p>
+                    {previewVideoData?.permalink_url && (
                       <button
-                        onClick={() => window.open(videoData.permalink_url, '_blank')}
-                        className="px-4 py-2 rounded-xl text-sm border ci-hover-lift"
-                        style={{ borderColor: colors.border, color: colors.textSecondary, backgroundColor: colors.card }}
+                        onClick={() => window.open(previewVideoData.permalink_url, '_blank')}
+                        className="mt-3 px-3 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg"
                       >
-                        Open on FB
+                        Open on Facebook
                       </button>
                     )}
                   </div>
-                </div>
-              </div>
+                )}
 
-              {/* Chat with Aura */}
-              <div
-                className={`flex-1 flex flex-col overflow-hidden m-6 rounded-2xl border transition-all duration-300 ${chatLoading ? 'ci-aura-active' : 'ci-shadow-glow'}`}
-                style={{ borderColor: chatLoading ? 'rgba(139,92,246,0.2)' : 'rgba(139,92,246,0.08)', backgroundColor: colors.card, position: 'relative' }}
-              >
-                <ParticleExplosion active={showParticles} onDone={() => setShowParticles(false)} />
-                
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-6">
-                  {chatMessages.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center">
-                      <div className="text-center max-w-md">
-                        <div className="text-5xl mb-6">💬</div>
-                        <h3 className="text-lg font-semibold mb-2" style={{ color: colors.text }}>Ask Claude about this ad</h3>
-                        <p className="text-sm mb-6" style={{ color: colors.textSecondary }}>Get insights on why it works, compare to other ads, or generate new variations</p>
-                        <SuggestionChips onSelect={handleSendMessage} disabled={scriptStatus?.status !== 'complete' || chatLoading} />
-                      </div>
-                    </div>
-                  ) : (
-                    <div>
-                      {chatMessages.map((msg, i) => <ChatMessage key={i} message={msg} />)}
-                      <div ref={chatEndRef} />
-                    </div>
-                  )}
-                </div>
-
-                {/* Input */}
-                <div className="p-4 border-t" style={{ borderColor: colors.borderLight }}>
-                  <form onSubmit={handleFormSubmit} className="flex gap-3">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder={scriptStatus?.status === 'complete' ? "Ask about this ad..." : "Analyze the ad first..."}
-                      disabled={chatLoading || scriptStatus?.status !== 'complete'}
-                      className="ci-input-glow flex-1 px-5 py-3.5 rounded-xl border text-sm focus:outline-none disabled:opacity-50 transition-all"
-                      style={{ borderColor: colors.border, backgroundColor: colors.card, color: colors.text }}
-                    />
-                    <button
-                      type="submit"
-                      disabled={!chatInput.trim() || chatLoading || scriptStatus?.status !== 'complete'}
-                      className="px-6 py-3.5 rounded-xl text-sm font-medium text-white disabled:opacity-50 transition-all"
-                      style={{ background: `linear-gradient(135deg, ${colors.purple}, ${colors.accent})`, boxShadow: chatInput.trim() && !chatLoading ? '0 2px 12px rgba(99,102,241,0.3)' : 'none' }}
-                    >
-                      {chatLoading ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" /> : 'Send'}
-                    </button>
-                  </form>
-                </div>
-              </div>
-
-              {/* Debug */}
-              <div className="mx-6 mb-6 rounded-2xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
-                <button onClick={() => setDebugOpen(!debugOpen)} className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium hover:bg-gray-50 transition-colors" style={{ color: colors.text }}>
-                  <span>Debug & Tokens</span>
-                  <span className="text-xs" style={{ color: colors.textMuted }}>{debugOpen ? '▼' : '▶'}</span>
-                </button>
-                {debugOpen && (
-                  <div className="p-5 pt-0 text-xs" style={{ color: colors.textSecondary }}>
-                    <div className="space-y-1">
-                      <div><span className="font-semibold" style={{ color: colors.text }}>Gemini:</span> {tokenUsage.gemini ? `${tokenUsage.gemini.totalTokens || 'n/a'} tokens` : 'Not reported'}</div>
-                      <div><span className="font-semibold" style={{ color: colors.text }}>Claude:</span> {tokenUsage.sonnet ? `${(tokenUsage.sonnet.input_tokens || 0) + (tokenUsage.sonnet.output_tokens || 0)} tokens` : 'Not reported'}</div>
-                    </div>
+                {!previewVideoLoading && previewShowNoVideo && (
+                  <div className="text-sm text-gray-600 text-center">
+                    <p>{previewFallbackMessage}</p>
+                    {previewVideoData?.permalink_url && (
+                      <button
+                        onClick={() => window.open(previewVideoData.permalink_url, '_blank')}
+                        className="mt-3 px-3 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg"
+                      >
+                        Open on Facebook
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
-            </>
-          )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Settings Modal */}
       {showSettings && <SettingsModal settings={settings} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />}
