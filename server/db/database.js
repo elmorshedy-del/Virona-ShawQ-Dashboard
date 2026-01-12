@@ -173,6 +173,30 @@ export function initDb() {
     )
   `);
 
+  // Shopify -> Meta attribution (campaign mapping per order)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_meta_attribution (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      order_id TEXT NOT NULL,
+      campaign_id TEXT,
+      campaign_name TEXT,
+      adset_id TEXT,
+      ad_id TEXT,
+      event_time TEXT,
+      currency TEXT,
+      value REAL DEFAULT 0,
+      source TEXT DEFAULT 'meta',
+      raw_payload TEXT,
+      notified_at TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, order_id)
+    )
+  `);
+
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_meta_attr_store_order ON shopify_meta_attribution(store, order_id)`);
+
   // Manual orders - with store column
   db.exec(`
     CREATE TABLE IF NOT EXISTS manual_orders (
