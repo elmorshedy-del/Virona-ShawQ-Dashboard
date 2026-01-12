@@ -66,7 +66,7 @@ const dimensions = {
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
-export default function CreativeStudio() {
+export default function CreativeStudio({ store }) {
   // Active tab
   const [activeTab, setActiveTab] = useState('editor');
 
@@ -121,11 +121,11 @@ export default function CreativeStudio() {
 
       {/* Content */}
       <div className="max-w-[1800px] mx-auto">
-        {activeTab === 'editor' && <AdEditor />}
-        {activeTab === 'video' && <VideoResizer />}
-        {activeTab === 'spy' && <CompetitorSpy />}
-        {activeTab === 'generate' && <AIGenerate />}
-        {activeTab === 'analyze' && <AnalyzeTools />}
+        {activeTab === 'editor' && <AdEditor store={store} />}
+        {activeTab === 'video' && <VideoResizer store={store} />}
+        {activeTab === 'spy' && <CompetitorSpy store={store} />}
+        {activeTab === 'generate' && <AIGenerate store={store} />}
+        {activeTab === 'analyze' && <AnalyzeTools store={store} />}
       </div>
     </div>
   );
@@ -134,7 +134,7 @@ export default function CreativeStudio() {
 // ============================================================================
 // AD EDITOR (Google-style)
 // ============================================================================
-function AdEditor() {
+function AdEditor({ store }) {
   const [format, setFormat] = useState('post');
   const [layout, setLayout] = useState('centered');
   const [image, setImage] = useState(null);
@@ -182,7 +182,7 @@ function AdEditor() {
     setExtractingStyle(true);
     try {
       const base64 = image.split(',')[1];
-      const response = await fetch(`${API_BASE}/creative-studio/extract-style`, {
+      const response = await fetch(`${API_BASE}/creative-studio/extract-style?store=${encodeURIComponent(store || 'vironax')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image_url: image })
@@ -667,7 +667,7 @@ function AdEditor() {
 // ============================================================================
 // VIDEO RESIZER
 // ============================================================================
-function VideoResizer() {
+function VideoResizer({ store }) {
   const [video, setVideo] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -690,7 +690,7 @@ function VideoResizer() {
       const formData = new FormData();
       formData.append('video', file);
 
-      const response = await fetch(`${API_BASE}/creative-studio/video/upload`, {
+      const response = await fetch(`${API_BASE}/creative-studio/video/upload?store=${encodeURIComponent(store || 'vironax')}`, {
         method: 'POST',
         body: formData
       });
@@ -710,7 +710,7 @@ function VideoResizer() {
 
     setProcessing(true);
     try {
-      const response = await fetch(`${API_BASE}/creative-studio/video/resize`, {
+      const response = await fetch(`${API_BASE}/creative-studio/video/resize?store=${encodeURIComponent(store || 'vironax')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -870,7 +870,7 @@ function VideoResizer() {
 // ============================================================================
 // COMPETITOR SPY
 // ============================================================================
-function CompetitorSpy() {
+function CompetitorSpy({ store }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [country, setCountry] = useState('SA');
   const [loading, setLoading] = useState(false);
@@ -882,12 +882,13 @@ function CompetitorSpy() {
 
   // Load countries
   useEffect(() => {
-    fetch(`${API_BASE}/creative-studio/competitor/countries`)
+    if (!store) return;
+    fetch(`${API_BASE}/creative-studio/competitor/countries?store=${encodeURIComponent(store || 'vironax')}`)
       .then(res => res.json())
       .then(data => {
         if (data.success) setCountries(data.countries);
       });
-  }, []);
+  }, [store]);
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
@@ -899,7 +900,7 @@ function CompetitorSpy() {
 
     try {
       const response = await fetch(
-        `${API_BASE}/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}`
+        `${API_BASE}/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&store=${encodeURIComponent(store || 'vironax')}`
       );
       const data = await response.json();
       if (data.success) {
@@ -917,7 +918,7 @@ function CompetitorSpy() {
     setAnalysis(null);
 
     try {
-      const response = await fetch(`${API_BASE}/creative-studio/competitor/analyze`, {
+      const response = await fetch(`${API_BASE}/creative-studio/competitor/analyze?store=${encodeURIComponent(store || 'vironax')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1103,7 +1104,7 @@ function CompetitorSpy() {
 // ============================================================================
 // AI GENERATE (Hooks, Scripts, Brief, Localizer)
 // ============================================================================
-function AIGenerate() {
+function AIGenerate({ store }) {
   const [activeGen, setActiveGen] = useState('hooks');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -1170,7 +1171,7 @@ function AIGenerate() {
           break;
       }
 
-      const response = await fetch(`${API_BASE}/creative-studio${endpoint}`, {
+      const response = await fetch(`${API_BASE}/creative-studio${endpoint}?store=${encodeURIComponent(store || 'vironax')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -1525,10 +1526,12 @@ function AIGenerate() {
 // ============================================================================
 // ANALYZE TOOLS (Fatigue, Audit, Thumbnail Predictor)
 // ============================================================================
-function AnalyzeTools() {
+function AnalyzeTools({ store }) {
   const [activeTool, setActiveTool] = useState('fatigue');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const [metaConnected, setMetaConnected] = useState(false);
+  const [checkingMeta, setCheckingMeta] = useState(true);
 
   // For thumbnail predictor
   const [images, setImages] = useState([]);
@@ -1539,6 +1542,30 @@ function AnalyzeTools() {
     { id: 'audit', label: 'Account Audit', icon: <CheckCircle size={18} /> },
     { id: 'thumbnail', label: 'Thumbnail A/B', icon: <Eye size={18} /> }
   ];
+
+  useEffect(() => {
+    const checkMetaStatus = async () => {
+      setCheckingMeta(true);
+      try {
+        const response = await fetch(
+          `${API_BASE}/creative-studio/meta-status?store=${encodeURIComponent(store || 'vironax')}`
+        );
+        const data = await response.json();
+        setMetaConnected(Boolean(data.connected));
+      } catch (error) {
+        console.error('Meta status check failed:', error);
+        setMetaConnected(false);
+      }
+      setCheckingMeta(false);
+    };
+
+    if (store) {
+      checkMetaStatus();
+    } else {
+      setCheckingMeta(false);
+      setMetaConnected(false);
+    }
+  }, [store]);
 
   const handleImageUpload = (e) => {
     const files = Array.from(e.target.files).slice(0, 4);
@@ -1559,7 +1586,7 @@ function AnalyzeTools() {
       const formData = new FormData();
       images.forEach(img => formData.append('images', img.file));
 
-      const response = await fetch(`${API_BASE}/creative-studio/predict/thumbnails`, {
+      const response = await fetch(`${API_BASE}/creative-studio/predict/thumbnails?store=${encodeURIComponent(store || 'vironax')}`, {
         method: 'POST',
         body: formData
       });
@@ -1580,7 +1607,7 @@ function AnalyzeTools() {
 
     try {
       // In real implementation, this would pull data from your Meta connection
-      const response = await fetch(`${API_BASE}/creative-studio/audit`, {
+      const response = await fetch(`${API_BASE}/creative-studio/audit?store=${encodeURIComponent(store || 'vironax')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1598,6 +1625,30 @@ function AnalyzeTools() {
       }
     } catch (error) {
       console.error('Audit failed:', error);
+    }
+    setLoading(false);
+  };
+
+  const handleAnalyzeFatigue = async () => {
+    setLoading(true);
+    setResult(null);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/creative-studio/fatigue/analyze?store=${encodeURIComponent(store || 'vironax')}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        }
+      );
+
+      const data = await response.json();
+      if (data.success) {
+        setResult({ fatigue: data });
+      }
+    } catch (error) {
+      console.error('Fatigue analysis failed:', error);
     }
     setLoading(false);
   };
@@ -1810,21 +1861,77 @@ function AnalyzeTools() {
       {/* Fatigue Detector */}
       {activeTool === 'fatigue' && (
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div className="text-center py-8">
-            <TrendingUp size={48} className="mx-auto mb-4 text-violet-500" />
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">Creative Fatigue Detector</h3>
-            <p className="text-gray-500 mb-6">Connect your Meta account to scan for fatigued creatives</p>
-            <button
-              disabled
-              className="px-8 py-3 bg-gray-100 text-gray-400 rounded-xl font-medium inline-flex items-center gap-2 cursor-not-allowed"
-            >
-              <TrendingUp size={18} />
-              Connect Meta Account First
-            </button>
-            <p className="text-xs text-gray-400 mt-4">
-              This feature requires Meta API access configured in the dashboard
-            </p>
-          </div>
+          {checkingMeta ? (
+            <div className="text-center py-8">
+              <RefreshCw size={32} className="animate-spin mx-auto mb-4 text-violet-500" />
+              <p className="text-gray-600">Checking Meta connection...</p>
+            </div>
+          ) : metaConnected ? (
+            <div>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-xl font-semibold text-gray-900">Creative Fatigue Detector</h3>
+                  <p className="text-gray-500">Scan for fatigued creatives using your Meta data</p>
+                </div>
+                <button
+                  onClick={handleAnalyzeFatigue}
+                  disabled={loading}
+                  className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium inline-flex items-center gap-2 hover:from-violet-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                >
+                  {loading ? (
+                    <>
+                      <RefreshCw size={18} className="animate-spin" />
+                      Analyzing...
+                    </>
+                  ) : (
+                    <>
+                      <TrendingUp size={18} />
+                      Analyze Fatigue
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {result?.fatigue ? (
+                <div className="mt-6 space-y-4">
+                  <div className="p-4 bg-gray-50 rounded-xl">
+                    <p className="text-sm text-gray-500">Overall Recommendation</p>
+                    <p className="text-lg font-semibold text-gray-900">{result.fatigue.overall_recommendation}</p>
+                    <div className="mt-2 text-sm text-gray-600">
+                      Average Score: {result.fatigue.summary?.average_score || 0}/100
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {result.fatigue.ads?.map(ad => (
+                      <div key={ad.ad_id} className="p-4 rounded-lg border border-gray-200">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <h4 className="font-semibold text-gray-900">{ad.ad_name}</h4>
+                            <p className="text-sm text-gray-500">Fatigue Score: {ad.fatigue_score}</p>
+                          </div>
+                          <span className="text-xs uppercase tracking-wide px-2 py-1 rounded-full bg-gray-100 text-gray-700">
+                            {ad.status}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-600 mt-2">{ad.recommendation}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-4 text-sm text-gray-500">Run analysis to see fatigue insights for your top ads.</p>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-8">
+              <TrendingUp size={48} className="mx-auto mb-4 text-gray-300" />
+              <p className="text-gray-700 font-medium">No Meta data found for this store.</p>
+              <p className="text-sm text-gray-400 mt-1">
+                Sync your Meta account from the main dashboard first.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
