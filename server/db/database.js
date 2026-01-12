@@ -101,6 +101,30 @@ export function initDb() {
     )
   `);
 
+  // Meta OAuth tokens + status (used for Ad Library)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_tokens (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      access_token TEXT,
+      token_type TEXT,
+      scopes TEXT,
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      last_api_status TEXT,
+      last_api_status_at TEXT,
+      last_fbtrace_id TEXT,
+      last_request_params TEXT
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);
