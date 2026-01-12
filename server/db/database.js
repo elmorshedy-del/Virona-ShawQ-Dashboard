@@ -101,6 +101,34 @@ export function initDb() {
     )
   `);
 
+  // Creative funnel summaries
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      report_type TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      verbosity TEXT NOT NULL DEFAULT 'low',
+      content TEXT NOT NULL,
+      generated_at TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, mode, report_type)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summary_settings (
+      store TEXT PRIMARY KEY,
+      auto_generate INTEGER DEFAULT 1,
+      analyze_prompt TEXT,
+      summarize_prompt TEXT,
+      analyze_verbosity TEXT DEFAULT 'low',
+      summarize_verbosity TEXT DEFAULT 'low',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);

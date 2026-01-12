@@ -1343,10 +1343,26 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
 }
 
 // Streaming versions for Analyze and Summarize
-export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
+export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null, options = {}) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
-  
+  const modelOverride = options.model;
+  const reasoningEffort = options.reasoningEffort;
+
+  if (modelOverride === MODELS.STRATEGIST || modelOverride === 'gpt-5.1') {
+    const maxTokens = TOKEN_LIMITS.balanced;
+    return await streamWithFallback(
+      MODELS.STRATEGIST,
+      FALLBACK_MODELS.STRATEGIST,
+      systemPrompt,
+      question,
+      maxTokens,
+      reasoningEffort || 'medium',
+      onDelta,
+      MODE_TEMPERATURES.analyze
+    );
+  }
+
   // Use GPT-4o directly for Ask mode - faster streaming
   console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
   const response = await client.chat.completions.create({
@@ -1368,10 +1384,36 @@ export async function analyzeQuestionStream(question, store, onDelta, history = 
   return { model: MODELS.ASK, reasoning: null };
 }
 
-export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
+export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null, options = {}) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
-  return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
+  const modelOverride = options.model;
+  const reasoningEffort = options.reasoningEffort;
+
+  if (modelOverride === MODELS.STRATEGIST || modelOverride === 'gpt-5.1') {
+    const maxTokens = TOKEN_LIMITS.balanced;
+    return await streamWithFallback(
+      MODELS.STRATEGIST,
+      FALLBACK_MODELS.STRATEGIST,
+      systemPrompt,
+      question,
+      maxTokens,
+      reasoningEffort || 'medium',
+      onDelta,
+      MODE_TEMPERATURES.summarize
+    );
+  }
+
+  return await streamWithFallback(
+    MODELS.MINI,
+    FALLBACK_MODELS.MINI,
+    systemPrompt,
+    question,
+    TOKEN_LIMITS.mini,
+    null,
+    onDelta,
+    MODE_TEMPERATURES.summarize
+  );
 }
 
 // ============================================================================

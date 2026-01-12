@@ -309,7 +309,7 @@ router.post('/decide', async (req, res) => {
 // ============================================================================
 router.post('/stream', async (req, res) => {
   try {
-    const { question, store, depth, mode, conversationId, reportType, startDate, endDate } = req.body;
+    const { question, store, depth, mode, conversationId, reportType, startDate, endDate, model, reasoningEffort } = req.body;
 
     // Daily summary mode doesn't need a question
     if (mode !== 'daily-summary' && !question) {
@@ -353,9 +353,9 @@ router.post('/stream', async (req, res) => {
       // Daily summary uses GPT-5.1 deep - always for both stores
       result = await dailySummaryStream(reportType || 'am', onDelta);
     } else if (activeMode === 'analyze') {
-      result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
+      result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate, { model, reasoningEffort });
     } else if (activeMode === 'summarize') {
-      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
+      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate, { model, reasoningEffort });
     } else {
       result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
     }
