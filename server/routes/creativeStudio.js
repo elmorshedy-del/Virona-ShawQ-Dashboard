@@ -11,7 +11,6 @@ import { getDb } from '../db/database.js';
 const router = express.Router();
 const db = getDb();
 
-const db = require('../db/database').getDb();
 
 // ============================================================================
 // CREATIVES CRUD
