@@ -2,9 +2,83 @@
 // Facebook Ad Library API Integration
 
 import axios from 'axios';
+import { getMetaAccessToken, updateMetaApiStatus } from './metaAuthService.js';
 
 const FB_API_VERSION = 'v21.0';
 const FB_API_BASE = `https://graph.facebook.com/${FB_API_VERSION}`;
+const MAX_RETRIES = 2;
+const RETRY_BACKOFF_MS = 1000;
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function sanitizeParams(params) {
+  if (!params) return {};
+  const { access_token: _accessToken, ...rest } = params;
+  return rest;
+}
+
+function shouldRetryOAuth(error) {
+  const metaError = error.response?.data?.error;
+  return metaError?.type === 'OAuthException' && metaError?.code === 1;
+}
+
+function extractFbTraceId(error) {
+  return error.response?.data?.error?.fbtrace_id
+    || error.response?.headers?.['x-fb-trace-id']
+    || null;
+}
+
+async function requestAdLibrary({ params, requestLabel, path = '/ads_archive' }) {
+  const { token, expired } = getMetaAccessToken();
+
+  if (!token) {
+    const errorMessage = expired
+      ? 'Meta user token expired. Reconnect to continue.'
+      : 'Meta user token not connected. Connect Meta to continue.';
+    const error = new Error(errorMessage);
+    error.code = 'META_AUTH_MISSING';
+    throw error;
+  }
+
+  const requestParams = { ...params, access_token: token };
+  const safeParams = sanitizeParams(requestParams);
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    try {
+      const response = await axios.get(`${FB_API_BASE}${path}`, {
+        params: requestParams,
+        timeout: 30000
+      });
+
+      updateMetaApiStatus({ status: response.status, fbtraceId: null });
+      return response;
+    } catch (error) {
+      const status = error.response?.status ?? 500;
+      const fbtraceId = extractFbTraceId(error);
+
+      updateMetaApiStatus({ status, fbtraceId });
+
+      console.error('[Meta Ad Library] Request failed', {
+        requestLabel,
+        status,
+        fbtrace_id: fbtraceId,
+        params: safeParams,
+        message: error.response?.data?.error?.message || error.message
+      });
+
+      if (shouldRetryOAuth(error) && attempt < MAX_RETRIES) {
+        await delay(RETRY_BACKOFF_MS * Math.pow(2, attempt));
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error('Failed to reach Meta Ad Library');
+}
 
 // ============================================================================
 // SEARCH ADS BY BRAND NAME
@@ -16,16 +90,10 @@ async function searchByBrand(brandName, options = {}) {
     activeOnly = true
   } = options;
 
-  const accessToken = process.env.META_ACCESS_TOKEN;
-
-  if (!accessToken) {
-    throw new Error('META_ACCESS_TOKEN not configured');
-  }
-
   try {
-    const response = await axios.get(`${FB_API_BASE}/ads_archive`, {
+    const response = await requestAdLibrary({
+      requestLabel: 'searchByBrand',
       params: {
-        access_token: accessToken,
         search_terms: brandName,
         ad_reached_countries: JSON.stringify([country]),
         ad_active_status: activeOnly ? 'ACTIVE' : 'ALL',
@@ -48,8 +116,7 @@ async function searchByBrand(brandName, options = {}) {
           'spend'
         ].join(','),
         limit
-      },
-      timeout: 30000
+      }
     });
 
     if (!response.data || !response.data.data) {
@@ -77,6 +144,9 @@ async function searchByBrand(brandName, options = {}) {
   } catch (error) {
     console.error('FB Ad Library API error:', error.response?.data || error.message);
 
+    if (error.code === 'META_AUTH_MISSING') {
+      throw error;
+    }
     if (error.response?.status === 400) {
       throw new Error('Invalid search parameters');
     }
@@ -98,16 +168,10 @@ async function searchByPageId(pageId, options = {}) {
     activeOnly = true
   } = options;
 
-  const accessToken = process.env.META_ACCESS_TOKEN;
-
-  if (!accessToken) {
-    throw new Error('META_ACCESS_TOKEN not configured');
-  }
-
   try {
-    const response = await axios.get(`${FB_API_BASE}/ads_archive`, {
+    const response = await requestAdLibrary({
+      requestLabel: 'searchByPageId',
       params: {
-        access_token: accessToken,
         search_page_ids: JSON.stringify([pageId]),
         ad_reached_countries: JSON.stringify([country]),
         ad_active_status: activeOnly ? 'ACTIVE' : 'ALL',
@@ -121,8 +185,7 @@ async function searchByPageId(pageId, options = {}) {
           'publisher_platforms'
         ].join(','),
         limit
-      },
-      timeout: 30000
+      }
     });
 
     if (!response.data || !response.data.data) {
@@ -149,12 +212,11 @@ async function searchByPageId(pageId, options = {}) {
 // GET AD DETAILS
 // ============================================================================
 async function getAdDetails(adArchiveId) {
-  const accessToken = process.env.META_ACCESS_TOKEN;
-
   try {
-    const response = await axios.get(`${FB_API_BASE}/${adArchiveId}`, {
+    const response = await requestAdLibrary({
+      requestLabel: 'getAdDetails',
+      path: `/${adArchiveId}`,
       params: {
-        access_token: accessToken,
         fields: [
           'id',
           'ad_creative_bodies',
@@ -175,8 +237,7 @@ async function getAdDetails(adArchiveId) {
           'region_distribution',
           'spend'
         ].join(',')
-      },
-      timeout: 30000
+      }
     });
 
     return response.data;
