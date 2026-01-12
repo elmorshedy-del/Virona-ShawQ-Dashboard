@@ -10,6 +10,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import VisualizationDock from './VisualizationDock';
 
 // Import Meta Awareness feature module
 import {
@@ -32,7 +33,15 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const [activeMode, setActiveMode] = useState('ask');
   const [insightMode, setInsightMode] = useState('balanced'); // 'instant', 'fast', 'balanced', 'max'
   const [showReactivation, setShowReactivation] = useState(true); // Show reactivation panel
+  const [dockByMode, setDockByMode] = useState({ ask: null, analyze: null, deepdive: null });
+  const [pinnedDock, setPinnedDock] = useState(null);
+  const [isDockPinned, setIsDockPinned] = useState(false);
+  const [replaceOnNext, setReplaceOnNext] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareDock, setCompareDock] = useState(null);
+  const [dockVisible, setDockVisible] = useState(false);
   const messagesEndRef = useRef(null);
+  const dockAnimationRef = useRef(null);
 
   // Use reactivation candidates hook
   const {
@@ -45,12 +54,209 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     messagesEndRef.current?.scrollIntoView({ behavior: instant ? "instant" : "smooth" });
   };
 
+  const getCurrentDock = () => (isDockPinned ? pinnedDock : dockByMode[activeMode]);
+
+  const validateDockPayload = (payload, isUpdate = false) => {
+    if (!payload || typeof payload !== 'object') return false;
+    if (payload.id && payload.id !== 'primary') return false;
+    if (!isUpdate) {
+      if (!payload.title || !payload.mode || !payload.chartType) return false;
+    }
+    if (payload.mode && !['auto', 'manual'].includes(payload.mode)) return false;
+    if (payload.chartType && !['line', 'bar', 'totals', 'blocked'].includes(payload.chartType)) return false;
+    if (payload.series && !Array.isArray(payload.series)) return false;
+    if (payload.series) {
+      for (const series of payload.series) {
+        if (!series || typeof series !== 'object') return false;
+        if (!series.key || !series.label || !series.kind) return false;
+        if (!['raw', 'ma'].includes(series.kind)) return false;
+        if (series.kind === 'ma' && (!series.derivedFrom || ![7, 14, 30].includes(series.window))) return false;
+      }
+    }
+    if (payload.data && !Array.isArray(payload.data)) return false;
+    if (payload.series && payload.data) {
+      for (const series of payload.series) {
+        if (series.kind === 'ma') continue;
+        const missing = payload.data.some((row) => row && typeof row === 'object' && !(series.key in row));
+        if (missing) return false;
+      }
+    }
+    return true;
+  };
+
+  const setDockForActiveMode = (nextDock) => {
+    if (isDockPinned) {
+      setPinnedDock(nextDock);
+    } else {
+      setDockByMode((prev) => ({ ...prev, [activeMode]: nextDock }));
+    }
+    if (dockAnimationRef.current) {
+      clearTimeout(dockAnimationRef.current);
+    }
+    if (nextDock) {
+      setDockVisible(false);
+      dockAnimationRef.current = setTimeout(() => setDockVisible(true), 20);
+    } else {
+      setDockVisible(false);
+    }
+  };
+
+  const updateDockForActiveMode = (update) => {
+    if (isDockPinned) {
+      setPinnedDock((prev) => (prev ? { ...prev, ...update } : prev));
+    } else {
+      setDockByMode((prev) => ({
+        ...prev,
+        [activeMode]: prev[activeMode] ? { ...prev[activeMode], ...update } : prev[activeMode]
+      }));
+    }
+  };
+
+  const handleDockToolEvent = (name, payload) => {
+    const dockCurrency = activeStore === 'vironax' ? 'SAR' : activeStore ? 'USD' : null;
+    const refreshedAt = new Date().toLocaleTimeString();
+    if (name === 'setVisualizationDock') {
+      if (!validateDockPayload(payload)) return;
+      const currentDock = getCurrentDock();
+      if (compareMode && currentDock) {
+        setCompareDock(currentDock);
+      }
+      setDockForActiveMode({ ...payload, currency: dockCurrency, lastRefreshed: refreshedAt });
+      setReplaceOnNext(false);
+      return;
+    }
+
+    if (name === 'updateVisualizationDock') {
+      if (!validateDockPayload(payload, true)) return;
+      if (replaceOnNext) return;
+      const currentDock = getCurrentDock();
+      if (!currentDock) {
+        setDockForActiveMode({ id: 'primary', ...payload, currency: dockCurrency, lastRefreshed: refreshedAt });
+        return;
+      }
+      if (compareMode) {
+        setCompareDock(currentDock);
+      }
+      updateDockForActiveMode({ ...payload, currency: dockCurrency, lastRefreshed: refreshedAt });
+      return;
+    }
+
+    if (name === 'clearVisualizationDock') {
+      if (!payload || payload.id !== 'primary') return;
+      setDockForActiveMode(null);
+      setCompareDock(null);
+      setCompareMode(false);
+      setReplaceOnNext(false);
+    }
+  };
+
+  const handleTogglePin = () => {
+    if (isDockPinned) {
+      setIsDockPinned(false);
+      if (pinnedDock) {
+        setDockByMode((prev) => ({ ...prev, [activeMode]: pinnedDock }));
+      }
+      setPinnedDock(null);
+    } else {
+      const currentDock = getCurrentDock();
+      if (currentDock) {
+        setPinnedDock(currentDock);
+        setIsDockPinned(true);
+      }
+    }
+  };
+
+  const handleReplace = () => {
+    setReplaceOnNext(true);
+    setDockForActiveMode(null);
+    setCompareDock(null);
+    setCompareMode(false);
+  };
+
+  const handleToggleCompare = () => {
+    const currentDock = getCurrentDock();
+    if (!currentDock) return;
+    if (!compareMode) {
+      setCompareDock(currentDock);
+      setCompareMode(true);
+    } else {
+      setCompareMode(false);
+      setCompareDock(null);
+    }
+  };
+
+  const handleExport = () => {
+    const currentDock = getCurrentDock();
+    if (!currentDock) return;
+    const rows = Array.isArray(currentDock.data) ? currentDock.data : [];
+    const totals = currentDock.totals || null;
+    let csvContent = '';
+
+    if (rows.length > 0) {
+      const headers = Object.keys(rows[0]);
+      csvContent += `${headers.join(',')}\n`;
+      rows.forEach((row) => {
+        const line = headers.map((header) => JSON.stringify(row?.[header] ?? '')).join(',');
+        csvContent += `${line}\n`;
+      });
+    } else if (totals) {
+      csvContent += `metric,value\n`;
+      Object.entries(totals).forEach(([key, value]) => {
+        csvContent += `${key},${JSON.stringify(value ?? '')}\n`;
+      });
+    }
+
+    if (!csvContent) return;
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${currentDock.title || 'visualization'}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleShowTotals = () => {
+    const currentDock = getCurrentDock();
+    if (!currentDock) return;
+    setDockForActiveMode({ ...currentDock, chartType: 'totals' });
+  };
+
+  const handleExplainMissing = () => {
+    if (isLoading) return;
+    sendMessage('Explain what data is missing for the requested trend and what I can do about it.');
+  };
+
+  const handleUpdateUi = (uiUpdate) => {
+    const currentDock = getCurrentDock();
+    if (!currentDock) return;
+    const nextUi = { ...(currentDock.ui || {}), ...uiUpdate };
+    updateDockForActiveMode({ ui: nextUi });
+  };
+
   // Scroll to bottom when messages change (including during streaming)
   useEffect(() => {
     // Use instant scroll during streaming for smoother UX
     const isAnyStreaming = messages.some(m => m.isStreaming);
     scrollToBottom(isAnyStreaming);
   }, [messages]);
+
+  useEffect(() => {
+    if (!isDockPinned) {
+      setDockVisible(!!dockByMode[activeMode]);
+    }
+    setCompareMode(false);
+    setCompareDock(null);
+  }, [activeMode, isDockPinned, dockByMode]);
+
+  useEffect(() => {
+    return () => {
+      if (dockAnimationRef.current) {
+        clearTimeout(dockAnimationRef.current);
+      }
+    };
+  }, []);
 
   // Mode configurations with pillars
   // UPDATED: Added reactivation pillars to relevant modes
@@ -113,18 +319,21 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     { id: 'max', label: '🧬 Max Insight', description: 'Deep reasoning' }
   ];
 
-  const sendMessage = async () => {
-    if (!input.trim() || isLoading) return;
+  const sendMessage = async (overrideInput) => {
+    const messageText = (overrideInput ?? input).trim();
+    if (!messageText || isLoading) return;
 
     const userMessage = {
       role: 'user',
-      content: input,
+      content: messageText,
       timestamp: new Date().toISOString()
     };
 
     setMessages(prev => [...prev, userMessage]);
-    const currentInput = input;
-    setInput('');
+    const currentInput = messageText;
+    if (overrideInput === undefined) {
+      setInput('');
+    }
     setIsLoading(true);
 
     // Create placeholder assistant message for streaming
@@ -173,7 +382,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       }
 
       // Use streaming endpoint with SSE
-      const response = await fetch('/api/ai/stream', {
+      const response = await fetch('/api/ai/analytics/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -215,6 +424,10 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                     ? { ...msg, content: fullContent }
                     : msg
                 ));
+              } else if (data.type === 'tool') {
+                if (data.name && data.payload) {
+                  handleDockToolEvent(data.name, data.payload);
+                }
               } else if (data.type === 'done') {
                 // Update metadata when complete
                 setMessages(prev => prev.map(msg => 
@@ -400,6 +613,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   };
 
   const currentMode = modes[activeMode];
+  const currentDock = getCurrentDock();
 
   return (
     <div className="flex h-[calc(100vh-200px)] gap-4">
@@ -541,6 +755,23 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
             </div>
           </div>
         </div>
+
+        {currentDock && (
+          <VisualizationDock
+            dock={currentDock}
+            compareDock={compareDock}
+            compareMode={compareMode}
+            pinned={isDockPinned}
+            onTogglePin={handleTogglePin}
+            onReplace={handleReplace}
+            onToggleCompare={handleToggleCompare}
+            onExport={handleExport}
+            onShowTotals={handleShowTotals}
+            onExplainMissing={handleExplainMissing}
+            onUpdateUi={handleUpdateUi}
+            isVisible={dockVisible}
+          />
+        )}
 
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
