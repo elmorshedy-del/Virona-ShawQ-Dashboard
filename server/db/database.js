@@ -101,6 +101,35 @@ export function initDb() {
     )
   `);
 
+  // Creative funnel summary settings
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_summary_settings (
+      store TEXT PRIMARY KEY,
+      prompt TEXT,
+      mode TEXT DEFAULT 'analyze',
+      verbosity TEXT DEFAULT 'low',
+      auto_enabled INTEGER DEFAULT 1,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Creative funnel summaries
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      summary_type TEXT NOT NULL,
+      prompt TEXT,
+      verbosity TEXT,
+      content TEXT NOT NULL,
+      start_date TEXT,
+      end_date TEXT,
+      generated_at TEXT NOT NULL,
+      auto_generated INTEGER DEFAULT 0,
+      dismissed_at TEXT
+    )
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);

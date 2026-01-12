@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
+import cron from 'node-cron';
 
 import { initDb, getDb } from './db/database.js';
 import analyticsRouter from './routes/analytics.js';
@@ -23,6 +24,10 @@ import { syncMetaData } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
+import {
+  runCreativeSummaryAutoGeneration,
+  maybeTriggerCreativeSummaryBySpendReset
+} from './services/creativeSummaryService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -114,6 +119,10 @@ async function backgroundSync() {
       syncSallaOrders()
     ]);
     cleanupOldNotifications();
+    await Promise.all([
+      maybeTriggerCreativeSummaryBySpendReset('vironax'),
+      maybeTriggerCreativeSummaryBySpendReset('shawq')
+    ]);
     console.log('[Sync] Background sync complete');
   } catch (error) {
     console.error('[Sync] Background sync error:', error);
@@ -208,6 +217,19 @@ setInterval(whatifSync, 24 * 60 * 60 * 1000);
 // Fetches yesterday's final TRY→USD rate
 setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
 setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
+
+// Creative funnel summary auto-generation (GMT+3)
+cron.schedule('59 23 * * *', () => {
+  runCreativeSummaryAutoGeneration({ type: 'daily', timeZone: 'Europe/Istanbul' })
+    .then(() => console.log('[Summary] Daily creative funnel summary generated'))
+    .catch((error) => console.error('[Summary] Daily creative funnel summary error:', error));
+}, { timezone: 'Europe/Istanbul' });
+
+cron.schedule('59 23 * * 0', () => {
+  runCreativeSummaryAutoGeneration({ type: 'weekly', timeZone: 'Europe/Istanbul' })
+    .then(() => console.log('[Summary] Weekly creative funnel summary generated'))
+    .catch((error) => console.error('[Summary] Weekly creative funnel summary error:', error));
+}, { timezone: 'Europe/Istanbul' });
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
