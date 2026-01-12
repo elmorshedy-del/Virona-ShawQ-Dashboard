@@ -33,6 +33,7 @@ function withUnsignedPreset(options = {}) {
     };
   }
   return options;
+  return hasExplicitConfig;
 }
 
 // ============================================================================
