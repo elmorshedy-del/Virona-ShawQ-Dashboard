@@ -940,6 +940,19 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState(null);
   const [countries, setCountries] = useState({});
+  const [metaStatus, setMetaStatus] = useState({
+    connected: false,
+    expired: false,
+    expires_at: null,
+    scopes: [],
+    last_api_status: null,
+    last_api_at: null,
+    last_fbtrace_id: null,
+    token: null,
+    token_masked: null
+  });
+  const [metaStatusLoading, setMetaStatusLoading] = useState(true);
+  const [copySuccess, setCopySuccess] = useState(false);
 
   // Load countries
   useEffect(() => {
@@ -949,6 +962,34 @@ function CompetitorSpy({ store, onGenerateBrief }) {
         if (data.success) setCountries(data.countries);
       });
   }, [store]);
+
+  const fetchMetaStatus = useCallback(async () => {
+    setMetaStatusLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/auth/meta/status`);
+      const data = await response.json();
+      setMetaStatus(data);
+    } catch (error) {
+      console.error('Meta status fetch failed:', error);
+      setMetaStatus(prev => ({ ...prev, connected: false }));
+    } finally {
+      setMetaStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMetaStatus();
+  }, [fetchMetaStatus]);
+
+  useEffect(() => {
+    const handler = (event) => {
+      if (event?.data?.type === 'meta-oauth') {
+        fetchMetaStatus();
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [fetchMetaStatus]);
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
@@ -971,6 +1012,62 @@ function CompetitorSpy({ store, onGenerateBrief }) {
     }
     setLoading(false);
   };
+
+  const handleConnect = () => {
+    const popup = window.open(
+      `${API_BASE}/auth/meta/start`,
+      'meta-oauth',
+      'width=600,height=720'
+    );
+    if (!popup) {
+      window.location.href = `${API_BASE}/auth/meta/start`;
+      return;
+    }
+
+    const pollTimer = window.setInterval(() => {
+      if (popup.closed) {
+        window.clearInterval(pollTimer);
+        fetchMetaStatus();
+      }
+    }, 1000);
+  };
+
+  const handleDisconnect = async () => {
+    try {
+      await fetch(`${API_BASE}/auth/meta/disconnect`, { method: 'DELETE' });
+      fetchMetaStatus();
+    } catch (error) {
+      console.error('Meta disconnect failed:', error);
+    }
+  };
+
+  const handleCopyToken = async () => {
+    if (!metaStatus?.token) return;
+    try {
+      await navigator.clipboard.writeText(metaStatus.token);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 1500);
+    } catch (error) {
+      console.error('Token copy failed:', error);
+    }
+  };
+
+  const formatDate = (value) => {
+    if (!value) return 'Unknown';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return 'Unknown';
+    return parsed.toLocaleString();
+  };
+
+  const tokenDisplay = metaStatus?.token_masked
+    || (metaStatus?.token ? `${metaStatus.token.slice(0, 6)}…${metaStatus.token.slice(-4)}` : '—');
+  const statusLabel = metaStatusLoading
+    ? 'Checking...'
+    : metaStatus.connected
+      ? 'Connected'
+      : metaStatus.expired
+        ? 'Expired'
+        : 'Not connected';
 
   const handleAnalyze = async (ad) => {
     setSelectedAd(ad);
@@ -1004,6 +1101,74 @@ function CompetitorSpy({ store, onGenerateBrief }) {
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Competitor Spy</h2>
         <p className="text-gray-500">Search Facebook Ad Library and get AI-powered breakdowns</p>
+      </div>
+
+      <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 mb-6">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Meta Connection</h3>
+            <p className="text-sm text-gray-500">Connect a user token to unlock Ad Library search.</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleConnect}
+              className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 transition-all"
+            >
+              {metaStatus.connected ? 'Reconnect' : 'Connect'}
+            </button>
+            <button
+              onClick={handleDisconnect}
+              disabled={!metaStatus.connected && !metaStatus.token}
+              className="px-4 py-2 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              Disconnect
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600">
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex h-2.5 w-2.5 rounded-full ${
+              metaStatus.connected ? 'bg-green-500' : 'bg-gray-300'
+            }`} />
+            <span className="font-medium text-gray-700">Status:</span>
+            <span>{statusLabel}</span>
+          </div>
+          <div>
+            <span className="font-medium text-gray-700">Expires at:</span>
+            <span className="ml-2">{formatDate(metaStatus.expires_at)}</span>
+          </div>
+          <div>
+            <span className="font-medium text-gray-700">Scopes:</span>
+            <span className="ml-2">{metaStatus.scopes?.length ? metaStatus.scopes.join(', ') : '—'}</span>
+          </div>
+          <div>
+            <span className="font-medium text-gray-700">Last API status:</span>
+            <span className="ml-2">
+              {metaStatus.last_api_status ? `${metaStatus.last_api_status} (${formatDate(metaStatus.last_api_at)})` : '—'}
+            </span>
+          </div>
+          <div>
+            <span className="font-medium text-gray-700">Last fbtrace_id:</span>
+            <span className="ml-2">
+              {metaStatus.last_api_status && metaStatus.last_api_status >= 400 && metaStatus.last_fbtrace_id
+                ? metaStatus.last_fbtrace_id
+                : '—'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-gray-700">Token:</span>
+            <span className="font-mono text-xs text-gray-500">{tokenDisplay}</span>
+            <button
+              type="button"
+              onClick={handleCopyToken}
+              className="ml-auto inline-flex items-center gap-1 px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50"
+            >
+              {copySuccess ? <Check size={12} /> : <Copy size={12} />}
+              {copySuccess ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Search Bar */}

@@ -89,11 +89,34 @@ export function runMigration() {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_tokens (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      access_token TEXT NOT NULL,
+      token_type TEXT,
+      expires_at TEXT,
+      scope TEXT,
+      last_api_status INTEGER,
+      last_api_at TEXT,
+      last_fbtrace_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_studio_creatives_type ON studio_creatives(type);
     CREATE INDEX IF NOT EXISTS idx_competitor_analyses_brand ON competitor_analyses(brand_name);
     CREATE INDEX IF NOT EXISTS idx_generated_content_type ON generated_content(type);
     CREATE INDEX IF NOT EXISTS idx_creative_fatigue_status ON creative_fatigue(status);
     CREATE INDEX IF NOT EXISTS idx_creative_fatigue_ad_id ON creative_fatigue(ad_id);
+    CREATE INDEX IF NOT EXISTS idx_meta_oauth_states_created_at ON meta_oauth_states(created_at);
   `);
 
   console.log('✅ Creative Studio tables ready');
