@@ -19,6 +19,10 @@ if (hasExplicitConfig) {
   cloudinary.config({ secure: true });
 }
 
+function isConfigured() {
+  return hasExplicitConfig;
+}
+
 // ============================================================================
 // VIDEO UPLOAD
 // ============================================================================
@@ -296,6 +300,7 @@ function getDownloadUrl(publicId, resourceType = 'video', format = 'mp4') {
 }
 
 export {
+  isConfigured,
   uploadVideo,
   uploadImage,
   extractFrames,

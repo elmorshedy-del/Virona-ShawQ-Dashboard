@@ -676,12 +676,14 @@ function VideoResizer({ store }) {
   const [versions, setVersions] = useState(null);
   const [smartCrop, setSmartCrop] = useState(true);
   const [videoInfo, setVideoInfo] = useState(null);
+  const [error, setError] = useState(null);
   const fileInputRef = useRef(null);
 
   const handleVideoUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    setError(null);
     setVideo(file);
     setVideoUrl(URL.createObjectURL(file));
     setVersions(null);
@@ -697,11 +699,16 @@ function VideoResizer({ store }) {
       });
 
       const data = await response.json();
-      if (data.success) {
+      if (response.ok && data.success) {
         setVideoInfo(data);
+      } else {
+        setVideoInfo(null);
+        setError(data?.error || 'Video upload failed. Please try again.');
       }
     } catch (error) {
       console.error('Video upload failed:', error);
+      setVideoInfo(null);
+      setError('Video upload failed. Please try again.');
     }
     setUploading(false);
   };
@@ -709,6 +716,7 @@ function VideoResizer({ store }) {
   const handleResize = async () => {
     if (!videoInfo?.video_id) return;
 
+    setError(null);
     setProcessing(true);
     try {
       const response = await fetch(withStore('/creative-studio/video/resize', store), {
@@ -721,11 +729,14 @@ function VideoResizer({ store }) {
       });
 
       const data = await response.json();
-      if (data.success) {
+      if (response.ok && data.success) {
         setVersions(data.versions);
+      } else {
+        setError(data?.error || 'Video resize failed. Please try again.');
       }
     } catch (error) {
       console.error('Video resize failed:', error);
+      setError('Video resize failed. Please try again.');
     }
     setProcessing(false);
   };
@@ -776,6 +787,12 @@ function VideoResizer({ store }) {
                   <span>{(videoInfo.size / 1024 / 1024).toFixed(1)}MB</span>
                 </div>
               )}
+            </div>
+          )}
+
+          {error && (
+            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {error}
             </div>
           )}
 
