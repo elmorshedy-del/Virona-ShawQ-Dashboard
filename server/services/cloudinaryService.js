@@ -188,6 +188,13 @@ async function resizeVideo(publicId, options = {}) {
       format: 'mp4'
     });
 
+    const download_url = cloudinary.url(publicId, {
+      resource_type: 'video',
+      transformation,
+      format: 'mp4',
+      flags: 'attachment'
+    });
+
     // Generate thumbnail for preview
     const thumbnail = cloudinary.url(publicId, {
       resource_type: 'video',
@@ -200,6 +207,7 @@ async function resizeVideo(publicId, options = {}) {
 
     versions[dim.name] = {
       url,
+      download_url,
       thumbnail,
       width: dim.width,
       height: dim.height,

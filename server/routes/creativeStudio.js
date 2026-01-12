@@ -6,6 +6,7 @@ import * as cloudinary from '../services/cloudinaryService.js';
 import * as fbAdLibrary from '../services/fbAdLibraryService.js';
 import * as fatigueService from '../services/fatigueService.js';
 import * as auditorService from '../services/auditorService.js';
+import { extractAndDownloadVideoFromUrl } from '../utils/videoExtractor.js';
 import { getDb } from '../db/database.js';
 
 const router = express.Router();
@@ -173,17 +174,29 @@ router.get('/competitor/countries', (req, res) => {
 // Analyze competitor ad
 router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
   try {
-    let imageBase64;
+    let analysis;
+    let analysisMediaType = 'image';
 
-    if (req.file) {
-      imageBase64 = req.file.buffer.toString('base64');
-    } else if (req.body.image_url) {
-      imageBase64 = await cloudinary.fetchAsBase64(req.body.image_url);
+    if (req.body.snapshot_url) {
+      const videoResult = await extractAndDownloadVideoFromUrl(req.body.snapshot_url);
+      if (!videoResult.success) {
+        return res.status(400).json({ success: false, error: videoResult.error });
+      }
+      analysisMediaType = 'video';
+      analysis = await geminiVision.analyzeCompetitorVideo(videoResult.data);
     } else {
-      return res.status(400).json({ success: false, error: 'No image provided' });
-    }
+      let imageBase64;
 
-    const analysis = await geminiVision.analyzeCompetitorAd(imageBase64);
+      if (req.file) {
+        imageBase64 = req.file.buffer.toString('base64');
+      } else if (req.body.image_url) {
+        imageBase64 = await cloudinary.fetchAsBase64(req.body.image_url);
+      } else {
+        return res.status(400).json({ success: false, error: 'No image provided' });
+      }
+
+      analysis = await geminiVision.analyzeCompetitorAd(imageBase64);
+    }
 
     // Save to database
     const stmt = db.prepare(`
@@ -193,7 +206,7 @@ router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
 
     const result = stmt.run(
       req.body.brand_name || 'Unknown',
-      req.body.source_url || null,
+      req.body.source_url || req.body.snapshot_url || null,
       req.body.source_type || 'screenshot',
       req.body.image_url || null,
       JSON.stringify(analysis)
@@ -202,7 +215,8 @@ router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
     res.json({
       success: true,
       analysis,
-      analysis_id: result.lastInsertRowid
+      analysis_id: result.lastInsertRowid,
+      media_type: analysisMediaType
     });
   } catch (error) {
     console.error('Competitor analysis error:', error);
@@ -569,9 +583,8 @@ router.post('/image/resize', upload.single('image'), async (req, res) => {
       result = await cloudinary.uploadImage(req.file.buffer);
     } else if (req.body.image_url) {
       // Upload from URL
-      result = await cloudinary.uploadImage(
-        await cloudinary.fetchAsBase64(req.body.image_url)
-      );
+      const base64 = await cloudinary.fetchAsBase64(req.body.image_url);
+      result = await cloudinary.uploadImage(Buffer.from(base64, 'base64'));
     } else {
       return res.status(400).json({ success: false, error: 'No image provided' });
     }

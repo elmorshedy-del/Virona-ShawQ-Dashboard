@@ -88,6 +88,45 @@ async function extractWithYtdlp(embedHtml, retryCount = 0) {
   }
 }
 
+async function extractWithYtdlpUrl(url, retryCount = 0) {
+  if (!url) return null;
+
+  log('info', 'ytdlp', 'Attempting extraction from URL', { url: url.substring(0, 100), retry: retryCount });
+
+  try {
+    const commands = [
+      `yt-dlp -g --no-warnings "${url}"`,
+      `yt-dlp -g -f "best[ext=mp4]" --no-warnings "${url}"`,
+      `yt-dlp -g --extractor-args "facebook:format=dash" --no-warnings "${url}"`
+    ];
+
+    for (const cmd of commands) {
+      try {
+        const { stdout } = await execPromise(cmd, { timeout: CONFIG.ytdlp.timeout });
+        const extractedUrl = stdout.trim().split('\n')[0];
+
+        if (extractedUrl && extractedUrl.startsWith('http')) {
+          log('info', 'ytdlp', 'Extraction successful', { url: extractedUrl.substring(0, 100) });
+          return extractedUrl;
+        }
+      } catch (cmdErr) {
+        continue;
+      }
+    }
+
+    throw new Error('All yt-dlp commands failed');
+  } catch (err) {
+    log('warn', 'ytdlp', 'Extraction failed', { error: err.message, retry: retryCount });
+
+    if (retryCount < CONFIG.ytdlp.retries) {
+      await sleep(1000);
+      return extractWithYtdlpUrl(url, retryCount + 1);
+    }
+
+    return null;
+  }
+}
+
 // ============================================================================
 // PUPPETEER EXTRACTION (FALLBACK)
 // ============================================================================
@@ -287,7 +326,7 @@ async function downloadThumbnail(url) {
 // MAIN EXTRACTION FUNCTION
 // ============================================================================
 export async function extractAndDownloadMedia(options) {
-  const { sourceUrl, embedHtml, thumbnailUrl } = options;
+  const { sourceUrl, embedHtml, thumbnailUrl, allowThumbnail = true } = options;
   
   log('info', 'extract', 'Starting media extraction', {
     hasSourceUrl: !!sourceUrl,
@@ -347,7 +386,7 @@ export async function extractAndDownloadMedia(options) {
   }
 
   // ATTEMPT 4: Thumbnail fallback
-  if (thumbnailUrl) {
+  if (allowThumbnail && thumbnailUrl) {
     log('info', 'extract', 'Falling back to thumbnail');
     const buffer = await downloadThumbnail(thumbnailUrl);
     if (buffer) {
@@ -367,6 +406,31 @@ export async function extractAndDownloadMedia(options) {
     success: false,
     error: 'Could not extract video or thumbnail'
   };
+}
+
+export async function extractAndDownloadVideoFromUrl(url) {
+  if (!url) {
+    return { success: false, error: 'Missing source URL' };
+  }
+
+  log('info', 'extract', 'Starting URL video extraction', { url: url.substring(0, 100) });
+
+  const ytdlpUrl = await extractWithYtdlpUrl(url);
+  if (ytdlpUrl) {
+    const buffer = await downloadVideo(ytdlpUrl);
+    if (buffer) {
+      return {
+        success: true,
+        type: 'video',
+        method: 'ytdlp',
+        data: buffer.toString('base64'),
+        mimeType: 'video/mp4'
+      };
+    }
+  }
+
+  log('error', 'extract', 'URL extraction failed');
+  return { success: false, error: 'Could not extract video from URL' };
 }
 
 // ============================================================================
