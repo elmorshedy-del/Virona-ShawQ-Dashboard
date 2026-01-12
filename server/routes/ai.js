@@ -12,6 +12,16 @@ import {
   runQuery
 } from '../services/openaiService.js';
 import { getDb } from '../db/database.js';
+import {
+  DEFAULT_PROMPT,
+  DEFAULT_VERBOSITY,
+  DEFAULT_MODE,
+  ensureSettings,
+  updateSettings,
+  getSummaries,
+  saveSummary,
+  clearSummary
+} from '../services/creativeFunnelSummaryService.js';
 
 const router = express.Router();
 
@@ -373,6 +383,89 @@ router.post('/stream', async (req, res) => {
     console.error(`[API] Stream error:`, error.message);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
+  }
+});
+
+// ============================================================================
+// CREATIVE FUNNEL SUMMARY INSIGHTS (stored summaries + settings)
+// ============================================================================
+router.get('/creative-funnel-summary', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const settings = ensureSettings(store);
+    const summaries = getSummaries(store);
+    res.json({
+      success: true,
+      settings: {
+        prompt: settings.prompt || DEFAULT_PROMPT,
+        auto_enabled: settings.auto_enabled ?? 1,
+        verbosity: settings.verbosity || DEFAULT_VERBOSITY,
+        mode: settings.mode || DEFAULT_MODE
+      },
+      summaries
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch('/creative-funnel-summary/settings', (req, res) => {
+  try {
+    const { store, prompt, auto_enabled, verbosity, mode } = req.body || {};
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+    const settings = updateSettings(store, { prompt, auto_enabled, verbosity, mode });
+    res.json({ success: true, settings });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-funnel-summary', (req, res) => {
+  try {
+    const {
+      store,
+      mode,
+      prompt,
+      verbosity,
+      content,
+      periodStart,
+      periodEnd,
+      periodType,
+      source
+    } = req.body || {};
+
+    if (!store || !mode || !content) {
+      return res.status(400).json({ success: false, error: 'Store, mode, and content required' });
+    }
+
+    saveSummary({
+      store,
+      mode,
+      prompt: (prompt || DEFAULT_PROMPT).trim(),
+      verbosity: verbosity || DEFAULT_VERBOSITY,
+      content,
+      periodStart: periodStart || null,
+      periodEnd: periodEnd || null,
+      periodType: periodType || 'custom',
+      source: source || 'manual'
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete('/creative-funnel-summary', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const mode = req.query.mode || DEFAULT_MODE;
+    clearSummary(store, mode);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

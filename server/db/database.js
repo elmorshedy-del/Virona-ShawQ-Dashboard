@@ -556,6 +556,38 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_conversations_store ON ai_conversations(store)`);
 
+  // Creative funnel summary insights
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      prompt TEXT,
+      verbosity TEXT,
+      content TEXT,
+      period_start TEXT,
+      period_end TEXT,
+      period_type TEXT,
+      source TEXT,
+      generated_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summary_settings (
+      store TEXT PRIMARY KEY,
+      prompt TEXT,
+      auto_enabled INTEGER DEFAULT 1,
+      verbosity TEXT DEFAULT 'low',
+      mode TEXT DEFAULT 'analyze',
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_creative_funnel_summaries_store ON creative_funnel_summaries(store)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_creative_funnel_summaries_store_mode ON creative_funnel_summaries(store, mode)`);
+
   console.log('✅ Database initialized');
   return db;
 }
