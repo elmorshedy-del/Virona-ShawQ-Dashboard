@@ -479,6 +479,13 @@ router.post('/improve', upload.single('image'), async (req, res) => {
 // Upload video
 router.post('/video/upload', upload.single('video'), async (req, res) => {
   try {
+    if (!cloudinary.isConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME with either CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET or CLOUDINARY_UNSIGNED_UPLOAD_PRESET.'
+      });
+    }
+
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No video provided' });
     }
@@ -497,13 +504,27 @@ router.post('/video/upload', upload.single('video'), async (req, res) => {
     });
   } catch (error) {
     console.error('Video upload error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    const message = error?.message || 'Video upload failed';
+    if (message.includes('Invalid Signature')) {
+      return res.status(401).json({
+        success: false,
+        error: 'Cloudinary signature rejected. Verify CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET, or use CLOUDINARY_UNSIGNED_UPLOAD_PRESET.'
+      });
+    }
+    res.status(error?.http_code || 500).json({ success: false, error: message });
   }
 });
 
 // Resize video to multiple dimensions
 router.post('/video/resize', async (req, res) => {
   try {
+    if (!cloudinary.isConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME with either CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET or CLOUDINARY_UNSIGNED_UPLOAD_PRESET.'
+      });
+    }
+
     const { video_id, smart_crop = true } = req.body;
 
     if (!video_id) {
