@@ -26,6 +26,13 @@ import {
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
 import { getShopifyConnectionStatus } from '../services/shopifyService.js';
+import {
+  getCreativeFunnelSummarySettings,
+  updateCreativeFunnelSummarySettings,
+  getCreativeFunnelSummaries,
+  saveCreativeFunnelSummary,
+  clearCreativeFunnelSummary
+} from '../services/creativeFunnelSummaryService.js';
 
 const router = express.Router();
 
@@ -50,6 +57,66 @@ router.post('/meta/sync-now', async (req, res) => {
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Creative funnel summary endpoints
+router.get('/creative-funnel-summary', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const summaries = getCreativeFunnelSummaries(store);
+    res.json({ success: true, summaries });
+  } catch (error) {
+    console.error('[Analytics] Creative funnel summary fetch error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-funnel-summary', (req, res) => {
+  try {
+    const { store, mode, reportType, prompt, verbosity, content, generatedAt } = req.body || {};
+    if (!store || !mode || !reportType || !prompt || !content || !generatedAt) {
+      return res.status(400).json({ success: false, error: 'Missing required fields' });
+    }
+    saveCreativeFunnelSummary({ store, mode, reportType, prompt, verbosity, content, generatedAt });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Analytics] Creative funnel summary save error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete('/creative-funnel-summary', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const mode = req.query.mode || null;
+    const deleted = clearCreativeFunnelSummary(store, mode);
+    res.json({ success: true, deleted });
+  } catch (error) {
+    console.error('[Analytics] Creative funnel summary clear error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/creative-funnel-summary/settings', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const settings = getCreativeFunnelSummarySettings(store);
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('[Analytics] Creative funnel summary settings error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put('/creative-funnel-summary/settings', (req, res) => {
+  try {
+    const store = req.query.store || req.body?.store || 'vironax';
+    const settings = updateCreativeFunnelSummarySettings(store, req.body || {});
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('[Analytics] Creative funnel summary settings update error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

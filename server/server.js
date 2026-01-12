@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
+import cron from 'node-cron';
 
 import { initDb, getDb } from './db/database.js';
 import analyticsRouter from './routes/analytics.js';
@@ -23,6 +24,10 @@ import { syncMetaData } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
+import {
+  runScheduledCreativeFunnelSummaries,
+  checkSpendResetAndGenerate
+} from './services/creativeFunnelSummaryService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -208,6 +213,22 @@ setInterval(whatifSync, 24 * 60 * 60 * 1000);
 // Fetches yesterday's final TRY→USD rate
 setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
 setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
+
+// Creative funnel summaries (GMT+3)
+cron.schedule('59 23 * * *', () => {
+  runScheduledCreativeFunnelSummaries('daily')
+    .catch(err => console.error('[Creative Summary] Daily generation error:', err));
+}, { timezone: 'Europe/Istanbul' });
+
+cron.schedule('59 23 * * 0', () => {
+  runScheduledCreativeFunnelSummaries('weekly')
+    .catch(err => console.error('[Creative Summary] Weekly generation error:', err));
+}, { timezone: 'Europe/Istanbul' });
+
+setInterval(() => {
+  checkSpendResetAndGenerate()
+    .catch(err => console.error('[Creative Summary] Spend reset check error:', err));
+}, 60 * 60 * 1000);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
