@@ -13,6 +13,24 @@ const db = getDb();
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ============================================================================
+// META STATUS
+// ============================================================================
+
+router.get('/meta-status', async (req, res) => {
+  const store = req.query.store || 'vironax';
+  const db = getDb();
+
+  const hasData = db.prepare(`
+    SELECT COUNT(*) as count FROM meta_daily_metrics WHERE store = ?
+  `).get(store);
+
+  res.json({
+    connected: hasData.count > 0,
+    store
+  });
+});
+
 
 // ============================================================================
 // CREATIVES CRUD
@@ -555,7 +573,52 @@ router.post('/image/resize', upload.single('image'), async (req, res) => {
 
 router.post('/fatigue/analyze', async (req, res) => {
   try {
-    const { ads } = req.body;
+    const store = req.query.store || 'vironax';
+    let { ads } = req.body;
+
+    if (!ads || !Array.isArray(ads) || ads.length === 0) {
+      const rows = db.prepare(`
+        SELECT campaign_id, campaign_name, date, ctr, frequency, impressions, spend
+        FROM meta_daily_metrics
+        WHERE store = ?
+          AND country = 'ALL'
+          AND age = ''
+          AND gender = ''
+          AND publisher_platform = ''
+          AND platform_position = ''
+        ORDER BY date ASC
+      `).all(store);
+
+      const campaigns = new Map();
+      for (const row of rows) {
+        if (!campaigns.has(row.campaign_id)) {
+          campaigns.set(row.campaign_id, []);
+        }
+        campaigns.get(row.campaign_id).push(row);
+      }
+
+      ads = Array.from(campaigns.entries()).map(([campaignId, metrics]) => {
+        const sorted = metrics.sort((a, b) => a.date.localeCompare(b.date));
+        const firstSlice = sorted.slice(0, 3);
+        const lastSlice = sorted.slice(-3);
+        const average = (items, key) => {
+          if (!items.length) return 0;
+          return items.reduce((sum, item) => sum + (item[key] || 0), 0) / items.length;
+        };
+
+        return {
+          ad_id: campaignId,
+          ad_name: sorted[0]?.campaign_name || 'Unknown Campaign',
+          creative_url: null,
+          current_ctr: average(lastSlice, 'ctr'),
+          baseline_ctr: average(firstSlice, 'ctr'),
+          frequency: average(lastSlice, 'frequency'),
+          start_date: sorted[0]?.date,
+          impressions: metrics.reduce((sum, item) => sum + (item.impressions || 0), 0),
+          spend: metrics.reduce((sum, item) => sum + (item.spend || 0), 0)
+        };
+      });
+    }
 
     if (!ads || !Array.isArray(ads) || ads.length === 0) {
       return res.status(400).json({ success: false, error: 'Ads data required' });
