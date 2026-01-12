@@ -13,6 +13,29 @@ const db = getDb();
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ============================================================================
+// META CONNECTION STATUS
+// ============================================================================
+
+router.get('/meta-status', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const db = getDb();
+
+    const hasData = db.prepare(`
+      SELECT COUNT(*) as count FROM meta_daily_metrics WHERE store = ?
+    `).get(store);
+
+    res.json({
+      connected: hasData.count > 0,
+      store
+    });
+  } catch (error) {
+    console.error('Meta status error:', error);
+    res.status(500).json({ connected: false, error: error.message });
+  }
+});
+
 
 // ============================================================================
 // CREATIVES CRUD
@@ -555,10 +578,67 @@ router.post('/image/resize', upload.single('image'), async (req, res) => {
 
 router.post('/fatigue/analyze', async (req, res) => {
   try {
-    const { ads } = req.body;
+    const store = req.query.store || 'vironax';
+    let { ads } = req.body;
 
     if (!ads || !Array.isArray(ads) || ads.length === 0) {
-      return res.status(400).json({ success: false, error: 'Ads data required' });
+      const rows = db.prepare(`
+        SELECT campaign_id, campaign_name, date, ctr, frequency, impressions, spend
+        FROM meta_daily_metrics
+        WHERE store = ?
+        ORDER BY date ASC
+      `).all(store);
+
+      if (rows.length === 0) {
+        return res.status(400).json({ success: false, error: 'Ads data required' });
+      }
+
+      const averages = (values) => {
+        if (!values || values.length === 0) return 0;
+        return values.reduce((sum, value) => sum + (value || 0), 0) / values.length;
+      };
+
+      const adsByCampaign = new Map();
+
+      rows.forEach(row => {
+        if (!adsByCampaign.has(row.campaign_id)) {
+          adsByCampaign.set(row.campaign_id, {
+            ad_id: row.campaign_id,
+            ad_name: row.campaign_name,
+            creative_url: null,
+            dates: [],
+            ctrs: [],
+            frequencies: [],
+            impressions: 0,
+            spend: 0
+          });
+        }
+
+        const entry = adsByCampaign.get(row.campaign_id);
+        entry.dates.push(row.date);
+        entry.ctrs.push(row.ctr || 0);
+        entry.frequencies.push(row.frequency || 0);
+        entry.impressions += row.impressions || 0;
+        entry.spend += row.spend || 0;
+      });
+
+      ads = Array.from(adsByCampaign.values()).map(entry => {
+        const baseline_ctr = averages(entry.ctrs.slice(0, 3));
+        const current_ctr = averages(entry.ctrs.slice(-3));
+        const frequency = averages(entry.frequencies.slice(-3));
+
+        return {
+          ad_id: entry.ad_id,
+          ad_name: entry.ad_name,
+          creative_url: entry.creative_url,
+          current_ctr,
+          baseline_ctr,
+          frequency,
+          start_date: entry.dates[0],
+          impressions: entry.impressions,
+          spend: entry.spend
+        };
+      });
     }
 
     const results = fatigueService.calculateFatigueForAds(ads);
