@@ -1513,7 +1513,7 @@ function AIGenerate({ store, prefillBrief, onPrefillApplied }) {
                       onClick={() => {
                         const text = hook.hook || '';
                         if (navigator.clipboard?.writeText) {
-                          navigator.clipboard.writeText(text).catch(() => {});
+                          navigator.clipboard.writeText(text).catch(err => console.error('Failed to copy hook to clipboard:', err));
                         }
                         setCopiedHookIndex(idx);
                         setTimeout(() => setCopiedHookIndex(null), 1500);
