@@ -11,6 +11,8 @@ import { getDb } from '../db/database.js';
 const router = express.Router();
 const db = getDb();
 
+const upload = multer({ storage: multer.memoryStorage() });
+
 
 // ============================================================================
 // CREATIVES CRUD
