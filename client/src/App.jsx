@@ -61,6 +61,9 @@ const getLocalDateString = (date = new Date()) => {
   return localDate.toISOString().split('T')[0];
 };
 
+const getIstanbulDateString = (date = new Date()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(date);
+
 const EPSILON = 1e-6;
 const K_PRIOR = 50;
 const CREATIVE_SAMPLES = 2000;
@@ -85,6 +88,11 @@ const getFirstPositiveMetric = (...values) => {
 
 const getVisitsProxy = ({ landingPageViews, outboundClicks, inlineLinkClicks }) =>
   getFirstPositiveMetric(landingPageViews, outboundClicks, inlineLinkClicks);
+
+const CREATIVE_FUNNEL_SUMMARY_PROMPTS = {
+  analyze: 'Without ad-hoc reasoning and rigorous thinking analyze these ads numbers and provide rigorous insights. Interpret the funnel numbers → diagnose what changed + why → give prioritized actions/tests. Keep verbosity low.',
+  summarize: 'Show what changed and organize data in a readable meaningful way, to be comprehended at a glance. Keep verbosity low.'
+};
 
 const hashStringToSeed = (value) => {
   const str = String(value ?? '');
@@ -1488,6 +1496,24 @@ function DashboardTab({
   const [creativeSummaryData, setCreativeSummaryData] = useState([]);
   const [creativeSummaryPreviousData, setCreativeSummaryPreviousData] = useState([]);
   const [creativeSummaryLoading, setCreativeSummaryLoading] = useState(false);
+  const [creativeSummaryRefreshTick, setCreativeSummaryRefreshTick] = useState(0);
+  const [creativeInsightPanelOpen, setCreativeInsightPanelOpen] = useState(true);
+  const [creativeInsightMode, setCreativeInsightMode] = useState('analyze');
+  const [creativeInsightPrompts, setCreativeInsightPrompts] = useState(() => ({
+    analyze: CREATIVE_FUNNEL_SUMMARY_PROMPTS.analyze,
+    summarize: CREATIVE_FUNNEL_SUMMARY_PROMPTS.summarize
+  }));
+  const [creativeInsightVerbosity, setCreativeInsightVerbosity] = useState(() => ({
+    analyze: 'low',
+    summarize: 'low'
+  }));
+  const [creativeInsightAutoEnabled, setCreativeInsightAutoEnabled] = useState(true);
+  const [creativeInsightSummary, setCreativeInsightSummary] = useState(null);
+  const [creativeInsightLoading, setCreativeInsightLoading] = useState(false);
+  const [creativeInsightStreamingText, setCreativeInsightStreamingText] = useState('');
+  const [creativeInsightError, setCreativeInsightError] = useState('');
+  const [showCreativeSummaryTable, setShowCreativeSummaryTable] = useState(true);
+  const [showCreativeFunnelSummary, setShowCreativeFunnelSummary] = useState(true);
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
   const countryTrendQuickOptions = [
@@ -1563,6 +1589,16 @@ function DashboardTab({
     }
   }, [dateRange?.startDate, dateRange?.endDate]);
 
+  useEffect(() => {
+    if (creativeSummaryRange?.type === 'days' && creativeSummaryRange?.value === 1) {
+      const interval = setInterval(() => {
+        setCreativeSummaryRefreshTick(prev => prev + 1);
+      }, 60 * 60 * 1000);
+      return () => clearInterval(interval);
+    }
+    return undefined;
+  }, [creativeSummaryRange?.type, creativeSummaryRange?.value]);
+
   const resolveCreativeSummaryRange = useCallback((range) => {
     if (!range) return null;
     if (range.type === 'custom') {
@@ -1570,12 +1606,12 @@ function DashboardTab({
       return { startDate: range.start, endDate: range.end };
     }
     if (range.type === 'yesterday') {
-      const yesterday = getLocalDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      const yesterday = getIstanbulDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
       return { startDate: yesterday, endDate: yesterday };
     }
     const totalDays = Math.max(1, Number(range.value) || 1);
-    const endDate = getLocalDateString();
-    const startDate = getLocalDateString(new Date(Date.now() - (totalDays - 1) * 24 * 60 * 60 * 1000));
+    const endDate = getIstanbulDateString();
+    const startDate = getIstanbulDateString(new Date(Date.now() - (totalDays - 1) * 24 * 60 * 60 * 1000));
     return { startDate, endDate };
   }, []);
 
@@ -1587,9 +1623,49 @@ function DashboardTab({
     const prevEnd = new Date(start.getTime() - 24 * 60 * 60 * 1000);
     const prevStart = new Date(prevEnd.getTime() - (diffDays - 1) * 24 * 60 * 60 * 1000);
     return {
-      startDate: getLocalDateString(prevStart),
-      endDate: getLocalDateString(prevEnd)
+      startDate: getIstanbulDateString(prevStart),
+      endDate: getIstanbulDateString(prevEnd)
     };
+  }, []);
+
+  const readSsePayload = useCallback(async (response, onDelta) => {
+    if (!response?.body) {
+      throw new Error('No response body');
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let donePayload = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6);
+        try {
+          const data = JSON.parse(raw);
+          if (data.type === 'delta') {
+            onDelta?.(data.text || '');
+          } else if (data.type === 'done') {
+            donePayload = data;
+          } else if (data.type === 'error') {
+            throw new Error(data.error || 'Unknown error');
+          }
+        } catch (error) {
+          if (error?.message) {
+            throw error;
+          }
+        }
+      }
+    }
+
+    return donePayload;
   }, []);
 
   useEffect(() => {
@@ -1642,7 +1718,165 @@ function DashboardTab({
     includeInactive,
     creativeSummaryRange,
     resolveCreativeSummaryRange,
-    getPreviousCreativeSummaryRange
+    getPreviousCreativeSummaryRange,
+    creativeSummaryRefreshTick
+  ]);
+
+  const syncCreativeInsightSettings = useCallback(async ({ action: actionOverride = null, updates = null } = {}) => {
+    if (!store?.id) return null;
+    const action = actionOverride || (updates ? 'update-settings' : 'get');
+    const payload = {
+      store: store.id,
+      mode: 'creative-funnel-summary',
+      action,
+      summarySettings: updates || undefined,
+      summaryMode: creativeInsightMode
+    };
+
+    const response = await fetch(`${API_BASE}/ai/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const donePayload = await readSsePayload(response);
+    return donePayload;
+  }, [creativeInsightMode, readSsePayload, store?.id]);
+
+  const loadCreativeInsightSummary = useCallback(async () => {
+    if (!store?.id) return;
+    setCreativeInsightLoading(true);
+    setCreativeInsightError('');
+
+    try {
+      const payload = await syncCreativeInsightSettings();
+      if (payload?.settings) {
+        setCreativeInsightAutoEnabled(payload.settings.autoEnabled);
+        setCreativeInsightPrompts({
+          analyze: payload.settings.analyzePrompt || CREATIVE_FUNNEL_SUMMARY_PROMPTS.analyze,
+          summarize: payload.settings.summarizePrompt || CREATIVE_FUNNEL_SUMMARY_PROMPTS.summarize
+        });
+        setCreativeInsightVerbosity({
+          analyze: payload.settings.analyzeVerbosity || 'low',
+          summarize: payload.settings.summarizeVerbosity || 'low'
+        });
+      }
+      setCreativeInsightSummary(payload?.summary || null);
+    } catch (error) {
+      setCreativeInsightError(error.message || 'Failed to load summary.');
+    } finally {
+      setCreativeInsightLoading(false);
+    }
+  }, [store?.id, syncCreativeInsightSettings]);
+
+  useEffect(() => {
+    loadCreativeInsightSummary();
+  }, [creativeInsightMode, loadCreativeInsightSummary]);
+
+  const handleCreativeInsightGenerate = useCallback(async () => {
+    if (!store?.id || creativeInsightLoading) return;
+    const prompt = creativeInsightPrompts[creativeInsightMode] || '';
+    if (!prompt.trim()) {
+      setCreativeInsightError('Prompt is required.');
+      return;
+    }
+
+    const resolvedRange = resolveCreativeSummaryRange(creativeSummaryRange);
+    const startDate = resolvedRange?.startDate || null;
+    const endDate = resolvedRange?.endDate || null;
+
+    setCreativeInsightLoading(true);
+    setCreativeInsightError('');
+    setCreativeInsightStreamingText('');
+    setCreativeInsightSummary(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/ai/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          store: store.id,
+          mode: creativeInsightMode,
+          question: prompt.trim(),
+          summaryType: 'creative-funnel',
+          verbosity: creativeInsightVerbosity[creativeInsightMode] || 'low',
+          startDate,
+          endDate,
+          summarySettings: {
+            autoEnabled: creativeInsightAutoEnabled,
+            analyzePrompt: creativeInsightPrompts.analyze,
+            summarizePrompt: creativeInsightPrompts.summarize,
+            analyzeVerbosity: creativeInsightVerbosity.analyze,
+            summarizeVerbosity: creativeInsightVerbosity.summarize
+          }
+        })
+      });
+
+      let fullText = '';
+      const donePayload = await readSsePayload(response, (delta) => {
+        fullText += delta;
+        setCreativeInsightStreamingText(fullText);
+      });
+
+      setCreativeInsightStreamingText('');
+      setCreativeInsightSummary({
+        content: fullText,
+        model: donePayload?.model || null,
+        generated_at: new Date().toISOString(),
+        prompt,
+        verbosity: creativeInsightVerbosity[creativeInsightMode] || 'low',
+        mode: creativeInsightMode
+      });
+    } catch (error) {
+      setCreativeInsightError(error.message || 'Failed to generate summary.');
+    } finally {
+      setCreativeInsightLoading(false);
+    }
+  }, [
+    creativeInsightAutoEnabled,
+    creativeInsightLoading,
+    creativeInsightMode,
+    creativeInsightPrompts,
+    creativeInsightVerbosity,
+    creativeSummaryRange,
+    readSsePayload,
+    resolveCreativeSummaryRange,
+    store?.id
+  ]);
+
+  const handleCreativeInsightDismiss = useCallback(async () => {
+    if (!store?.id) return;
+    try {
+      await syncCreativeInsightSettings({ action: 'dismiss' });
+    } catch (error) {
+      setCreativeInsightError(error.message || 'Failed to dismiss summary.');
+    } finally {
+      setCreativeInsightStreamingText('');
+      setCreativeInsightSummary(null);
+    }
+  }, [store?.id, syncCreativeInsightSettings]);
+
+  const handleCreativeInsightSaveSettings = useCallback(async () => {
+    if (!store?.id) return;
+    try {
+      await syncCreativeInsightSettings({
+        updates: {
+          autoEnabled: creativeInsightAutoEnabled,
+          analyzePrompt: creativeInsightPrompts.analyze,
+          summarizePrompt: creativeInsightPrompts.summarize,
+          analyzeVerbosity: creativeInsightVerbosity.analyze,
+          summarizeVerbosity: creativeInsightVerbosity.summarize
+        }
+      });
+    } catch (error) {
+      setCreativeInsightError(error.message || 'Failed to save settings.');
+    }
+  }, [
+    creativeInsightAutoEnabled,
+    creativeInsightPrompts,
+    creativeInsightVerbosity,
+    store?.id,
+    syncCreativeInsightSettings
   ]);
 
   const creativeAds = useMemo(() => {
@@ -2564,15 +2798,31 @@ function DashboardTab({
     return value.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   };
 
+  const formatSummaryTimestamp = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
   const formatFixed = (value, decimals = 2) => {
     if (!Number.isFinite(value)) return '—';
     return value.toFixed(decimals);
   };
 
-  const calcMetricDelta = (value, base) =>
-    Number.isFinite(value) && Number.isFinite(base) && base !== 0
-      ? ((value - base) / base) * 100
-      : null;
+  const calcMetricDelta = (value, base, unit) => {
+    if (!Number.isFinite(value) || !Number.isFinite(base)) return null;
+    const delta = value - base;
+    if (value === 0 || base === 0) {
+      return { value: delta, format: 'absolute', unit };
+    }
+    return { value: (delta / base) * 100, format: 'percent', unit };
+  };
 
   const getCreativeSummaryRangeLabel = () => {
     if (creativeSummaryRange.type === 'custom') {
@@ -2593,19 +2843,47 @@ function DashboardTab({
     if (format === 'currency') return renderMetric(value, 'currency');
     if (format === 'percent') return renderPercent(value, 2);
     if (format === 'frequency') return formatFixed(value, 2);
+    if (format === 'number') return renderNumber(value);
     return formatFixed(value, 2);
   };
 
+  const formatDeltaAbsolute = (value, unit) => {
+    if (!Number.isFinite(value)) return '—';
+    const sign = value > 0 ? '+' : value < 0 ? '-' : '';
+    const absValue = Math.abs(value);
+
+    if (unit === 'percent') {
+      return `${sign}${absValue.toFixed(2)}%`;
+    }
+    if (unit === 'frequency') {
+      return `${sign}${absValue.toFixed(2)}`;
+    }
+    if (unit === 'roas') {
+      return `${sign}${absValue.toFixed(2)}`;
+    }
+    if (unit === 'currency') {
+      return `${sign}${formatCurrency(absValue, 0)}`;
+    }
+    return `${sign}${formatNumber(absValue)}`;
+  };
+
   const renderCreativeSummaryDelta = (delta) => {
-    if (!Number.isFinite(delta)) {
+    if (!delta || !Number.isFinite(delta.value)) {
       return <span className="text-xs text-gray-400">—</span>;
     }
-    const Icon = delta >= 0 ? TrendingUp : TrendingDown;
-    const classes = delta >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700';
+    const isZero = delta.value === 0;
+    const isPositive = delta.value > 0;
+    const Icon = isPositive ? TrendingUp : TrendingDown;
+    const classes = isZero
+      ? 'bg-gray-100 text-gray-500'
+      : (isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700');
+    const label = delta.format === 'percent'
+      ? formatDeltaPercent(delta.value)
+      : formatDeltaAbsolute(delta.value, delta.unit);
     return (
       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${classes}`}>
-        <Icon className="h-3 w-3" />
-        {formatDeltaPercent(delta)}
+        {!isZero && <Icon className="h-3 w-3" />}
+        {label}
       </span>
     );
   };
@@ -2614,10 +2892,7 @@ function DashboardTab({
     if (!creativeFunnelSummary) return null;
 
     const { baseline, leader, runnerUp, laggard, leaderMetrics, laggardMetrics } = creativeFunnelSummary;
-    const delta = (value, base) =>
-      Number.isFinite(value) && Number.isFinite(base) && base !== 0
-        ? ((value - base) / base) * 100
-        : null;
+    const delta = (value, base, unit) => calcMetricDelta(value, base, unit);
 
     const leaderVsSecond = runnerUp && runnerUp.purchases
       ? leader.purchases / Math.max(runnerUp.purchases, 1)
@@ -2633,19 +2908,19 @@ function DashboardTab({
           {
             label: 'CTR',
             value: leaderMetrics.ctr,
-            delta: delta(leaderMetrics.ctr, baseline.ctr),
+            delta: delta(leaderMetrics.ctr, baseline.ctr, 'percent'),
             format: 'percent'
           },
           {
             label: 'ATC rate',
             value: leaderMetrics.atcRate,
-            delta: delta(leaderMetrics.atcRate, baseline.atcRate),
+            delta: delta(leaderMetrics.atcRate, baseline.atcRate, 'percent'),
             format: 'percent'
           },
           {
             label: 'CVR',
             value: leaderMetrics.cvr,
-            delta: delta(leaderMetrics.cvr, baseline.cvr),
+            delta: delta(leaderMetrics.cvr, baseline.cvr, 'percent'),
             format: 'percent'
           }
         ]
@@ -2659,19 +2934,19 @@ function DashboardTab({
           {
             label: 'CTR',
             value: laggardMetrics.ctr,
-            delta: delta(laggardMetrics.ctr, baseline.ctr),
+            delta: delta(laggardMetrics.ctr, baseline.ctr, 'percent'),
             format: 'percent'
           },
           {
             label: 'CVR',
             value: laggardMetrics.cvr,
-            delta: delta(laggardMetrics.cvr, baseline.cvr),
+            delta: delta(laggardMetrics.cvr, baseline.cvr, 'percent'),
             format: 'percent'
           },
           {
             label: 'ROAS',
             value: laggardMetrics.roas,
-            delta: delta(laggardMetrics.roas, baseline.roas),
+            delta: delta(laggardMetrics.roas, baseline.roas, 'roas'),
             format: 'roas'
           }
         ]
@@ -3363,294 +3638,6 @@ function DashboardTab({
             </div>
           </div>
 
-          <div className="mt-4 rounded-xl border border-gray-100 bg-gradient-to-br from-slate-50 via-white to-white p-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                  <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
-                  Creative funnel summary
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600">
-                  <span className="font-semibold text-gray-900">Powered by GPT‑5.1</span>
-                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Prompt: “Briefly analyze changes and provide insight”</span>
-                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">Not auto-triggered</span>
-                  <span className="text-xs text-gray-500">Run end of day or tap generate.</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <button
-                  type="button"
-                  onClick={() => setCreativeSummaryGeneratedAt(new Date())}
-                  className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-800"
-                >
-                  Generate summary
-                </button>
-                {creativeSummaryGeneratedAt && (
-                  <span>Updated {formatTimeLabel(creativeSummaryGeneratedAt)}</span>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                    Top 5 spenders funnel table
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    CTR, frequency, ATC rate, checkout rate, and CVR vs previous bucket.
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500">
-                  Period: <span className="font-semibold text-gray-700">{getCreativeSummaryRangeLabel()}</span>
-                </div>
-              </div>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
-                <span className="text-gray-500">Period:</span>
-                <button
-                  onClick={() => { setCreativeSummaryRange({ type: 'days', value: 1 }); setShowCreativeSummaryCustomPicker(false); }}
-                  className={`px-3 py-1.5 rounded-lg border transition-colors ${
-                    creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 1
-                      ? 'bg-indigo-600 text-white border-indigo-600'
-                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  Today
-                </button>
-                <button
-                  onClick={() => { setCreativeSummaryRange({ type: 'yesterday', value: 1 }); setShowCreativeSummaryCustomPicker(false); }}
-                  className={`px-3 py-1.5 rounded-lg border transition-colors ${
-                    creativeSummaryRange.type === 'yesterday'
-                      ? 'bg-indigo-600 text-white border-indigo-600'
-                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  Yesterday
-                </button>
-                <button
-                  onClick={() => { setCreativeSummaryRange({ type: 'days', value: 2 }); setShowCreativeSummaryCustomPicker(false); }}
-                  className={`px-3 py-1.5 rounded-lg border transition-colors ${
-                    creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 2
-                      ? 'bg-indigo-600 text-white border-indigo-600'
-                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  Today & Yesterday
-                </button>
-                {[3, 7, 14, 30].map(days => (
-                  <button
-                    key={days}
-                    onClick={() => { setCreativeSummaryRange({ type: 'days', value: days }); setShowCreativeSummaryCustomPicker(false); }}
-                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
-                      creativeSummaryRange.type === 'days' && creativeSummaryRange.value === days
-                        ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                    }`}
-                  >
-                    {days}D
-                  </button>
-                ))}
-                <button
-                  onClick={() => setShowCreativeSummaryCustomPicker((prev) => !prev)}
-                  className={`px-3 py-1.5 rounded-lg border transition-colors ${
-                    creativeSummaryRange.type === 'custom'
-                      ? 'bg-indigo-600 text-white border-indigo-600'
-                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  Custom
-                </button>
-              </div>
-
-              {showCreativeSummaryCustomPicker && (
-                <div className="mt-3 flex flex-wrap items-end gap-2 text-xs text-gray-600">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">Start</label>
-                    <input
-                      type="date"
-                      value={creativeSummaryCustomRange.start}
-                      onChange={(e) => setCreativeSummaryCustomRange(prev => ({ ...prev, start: e.target.value }))}
-                      max={creativeSummaryCustomRange.end || getLocalDateString()}
-                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">End</label>
-                    <input
-                      type="date"
-                      value={creativeSummaryCustomRange.end}
-                      onChange={(e) => setCreativeSummaryCustomRange(prev => ({ ...prev, end: e.target.value }))}
-                      min={creativeSummaryCustomRange.start}
-                      max={getLocalDateString()}
-                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (creativeSummaryCustomRange.start && creativeSummaryCustomRange.end) {
-                        setCreativeSummaryRange({
-                          type: 'custom',
-                          start: creativeSummaryCustomRange.start,
-                          end: creativeSummaryCustomRange.end
-                        });
-                        setShowCreativeSummaryCustomPicker(false);
-                      }
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold hover:bg-gray-800"
-                  >
-                    Apply
-                  </button>
-                </div>
-              )}
-
-              <div className="mt-4 overflow-x-auto">
-                {creativeSummaryLoading ? (
-                  <div className="text-sm text-gray-500">Loading creative funnel table...</div>
-                ) : creativeSummaryTopSpenders.length > 0 ? (
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="text-xs uppercase tracking-wide text-gray-500 bg-gray-50">
-                        <th className="px-3 py-2 text-left">Creative</th>
-                        <th className="px-3 py-2 text-right">Spend</th>
-                        <th className="px-3 py-2 text-right">CTR</th>
-                        <th className="px-3 py-2 text-right">Frequency</th>
-                        <th className="px-3 py-2 text-right">ATC Rate</th>
-                        <th className="px-3 py-2 text-right">Checkout Rate</th>
-                        <th className="px-3 py-2 text-right">CVR</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {creativeSummaryTopSpenders.map((row) => {
-                        const previous = creativeSummaryPreviousMap.get(row.key);
-                        const ctrDelta = calcMetricDelta(row.ctr, previous?.ctr);
-                        const frequencyDelta = calcMetricDelta(row.frequency, previous?.frequency);
-                        const atcDelta = calcMetricDelta(row.atcRate, previous?.atcRate);
-                        const checkoutDelta = calcMetricDelta(row.checkoutRate, previous?.checkoutRate);
-                        const cvrDelta = calcMetricDelta(row.cvr, previous?.cvr);
-
-                        return (
-                          <tr key={row.key} className="hover:bg-gray-50">
-                            <td className="px-3 py-2 text-gray-900 font-semibold max-w-xs truncate" title={row.name}>
-                              {row.name}
-                            </td>
-                            <td className="px-3 py-2 text-right text-gray-700">
-                              {renderCreativeSummaryValue(row.spend, 'currency')}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <div className="flex flex-col items-end gap-1">
-                                <span className="font-semibold text-gray-900">
-                                  {renderCreativeSummaryValue(row.ctr, 'percent')}
-                                </span>
-                                {renderCreativeSummaryDelta(ctrDelta)}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <div className="flex flex-col items-end gap-1">
-                                <span className="font-semibold text-gray-900">
-                                  {renderCreativeSummaryValue(row.frequency, 'frequency')}
-                                </span>
-                                {renderCreativeSummaryDelta(frequencyDelta)}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <div className="flex flex-col items-end gap-1">
-                                <span className="font-semibold text-gray-900">
-                                  {renderCreativeSummaryValue(row.atcRate, 'percent')}
-                                </span>
-                                {renderCreativeSummaryDelta(atcDelta)}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <div className="flex flex-col items-end gap-1">
-                                <span className="font-semibold text-gray-900">
-                                  {renderCreativeSummaryValue(row.checkoutRate, 'percent')}
-                                </span>
-                                {renderCreativeSummaryDelta(checkoutDelta)}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <div className="flex flex-col items-end gap-1">
-                                <span className="font-semibold text-gray-900">
-                                  {renderCreativeSummaryValue(row.cvr, 'percent')}
-                                </span>
-                                {renderCreativeSummaryDelta(cvrDelta)}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="text-sm text-gray-500">
-                    No creative funnel data available for this period.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {creativeSummaryCards ? (
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                {[creativeSummaryCards.today, creativeSummaryCards.week].map((card) => (
-                  <div
-                    key={card.title}
-                    className="rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{card.title}</div>
-                        <div className="text-sm font-semibold text-gray-900">{card.subtitle}</div>
-                      </div>
-                      <span className="rounded-full border border-gray-200 px-2 py-0.5 text-[11px] font-semibold text-gray-600">
-                        Creative vs avg
-                      </span>
-                    </div>
-                    <p className="mt-2 text-sm text-gray-600">{card.body}</p>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {card.metrics.map((metric) => {
-                        const isPositive = Number.isFinite(metric.delta) ? metric.delta >= 0 : null;
-                        const pillClasses = Number.isFinite(metric.delta)
-                          ? (isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700')
-                          : 'bg-gray-100 text-gray-500';
-                        return (
-                          <div
-                            key={metric.label}
-                            className={`flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${pillClasses}`}
-                          >
-                            <span className="text-gray-700">{metric.label}</span>
-                            <span className="text-gray-900">
-                              {renderMetric(metric.value, metric.format, metric.format === 'percent' ? 2 : 2)}
-                            </span>
-                            <span className="flex items-center gap-1 text-[11px]">
-                              {Number.isFinite(metric.delta)
-                                ? (
-                                  <>
-                                    {metric.delta >= 0 ? (
-                                      <TrendingUp className="h-3 w-3" />
-                                    ) : (
-                                      <TrendingDown className="h-3 w-3" />
-                                    )}
-                                    {formatDeltaPercent(metric.delta)}
-                                  </>
-                                )
-                                : '—'}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="mt-4 text-sm text-gray-500">
-                No creative funnel summary available yet. Load a campaign to compare ads.
-              </div>
-            )}
-          </div>
-
           {creativeCampaignOptions.length > 0 ? (
             <div className="flex flex-col lg:flex-row gap-4">
               <div className="lg:w-64">
@@ -3999,6 +3986,508 @@ function DashboardTab({
                 : 'No creatives found for this campaign.'}
             </div>
           )}
+        </div>
+
+        <div className="p-6 pt-0">
+          <div className="rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setShowCreativeSummaryTable(prev => !prev)}
+              className="flex w-full items-center justify-between text-left"
+            >
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Top 5 spenders funnel table
+                </div>
+                <div className="text-xs text-gray-500">
+                  CTR, frequency, LPV, ATC rate, purchases, checkout rate, and CVR vs previous bucket.
+                </div>
+              </div>
+              <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${showCreativeSummaryTable ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showCreativeSummaryTable && (
+              <>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-xs text-gray-500">
+                    Period: <span className="font-semibold text-gray-700">{getCreativeSummaryRangeLabel()}</span>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+                  <span className="text-gray-500">Period:</span>
+                  <button
+                    onClick={() => { setCreativeSummaryRange({ type: 'days', value: 1 }); setShowCreativeSummaryCustomPicker(false); }}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 1
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Today
+                  </button>
+                  <button
+                    onClick={() => { setCreativeSummaryRange({ type: 'yesterday', value: 1 }); setShowCreativeSummaryCustomPicker(false); }}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'yesterday'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Yesterday
+                  </button>
+                  <button
+                    onClick={() => { setCreativeSummaryRange({ type: 'days', value: 2 }); setShowCreativeSummaryCustomPicker(false); }}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 2
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Today & Yesterday
+                  </button>
+                  {[3, 7, 14, 30].map(days => (
+                    <button
+                      key={days}
+                      onClick={() => { setCreativeSummaryRange({ type: 'days', value: days }); setShowCreativeSummaryCustomPicker(false); }}
+                      className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                        creativeSummaryRange.type === 'days' && creativeSummaryRange.value === days
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      {days}D
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setShowCreativeSummaryCustomPicker((prev) => !prev)}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'custom'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Custom
+                  </button>
+                </div>
+
+                {showCreativeSummaryCustomPicker && (
+                  <div className="mt-3 flex flex-wrap items-end gap-2 text-xs text-gray-600">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-500 mb-1">Start</label>
+                      <input
+                        type="date"
+                        value={creativeSummaryCustomRange.start}
+                        onChange={(e) => setCreativeSummaryCustomRange(prev => ({ ...prev, start: e.target.value }))}
+                        max={creativeSummaryCustomRange.end || getIstanbulDateString()}
+                        className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-500 mb-1">End</label>
+                      <input
+                        type="date"
+                        value={creativeSummaryCustomRange.end}
+                        onChange={(e) => setCreativeSummaryCustomRange(prev => ({ ...prev, end: e.target.value }))}
+                        min={creativeSummaryCustomRange.start}
+                        max={getIstanbulDateString()}
+                        className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (creativeSummaryCustomRange.start && creativeSummaryCustomRange.end) {
+                          setCreativeSummaryRange({
+                            type: 'custom',
+                            start: creativeSummaryCustomRange.start,
+                            end: creativeSummaryCustomRange.end
+                          });
+                          setShowCreativeSummaryCustomPicker(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold hover:bg-gray-800"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                )}
+
+                <div className="mt-4 overflow-x-auto">
+                  {creativeSummaryLoading ? (
+                    <div className="text-sm text-gray-500">Loading creative funnel table...</div>
+                  ) : creativeSummaryTopSpenders.length > 0 ? (
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="text-xs uppercase tracking-wide text-gray-500 bg-gray-50">
+                          <th className="px-3 py-2 text-left">Creative</th>
+                          <th className="px-3 py-2 text-right">Spend</th>
+                          <th className="px-3 py-2 text-right">CTR</th>
+                          <th className="px-3 py-2 text-right">Frequency</th>
+                          <th className="px-3 py-2 text-right">LPV</th>
+                          <th className="px-3 py-2 text-right">ATC Rate</th>
+                          <th className="px-3 py-2 text-right">Purchases</th>
+                          <th className="px-3 py-2 text-right">Checkout Rate</th>
+                          <th className="px-3 py-2 text-right">CVR</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {creativeSummaryTopSpenders.map((row) => {
+                          const previous = creativeSummaryPreviousMap.get(row.key);
+                          const ctrDelta = calcMetricDelta(row.ctr, previous?.ctr, 'percent');
+                          const frequencyDelta = calcMetricDelta(row.frequency, previous?.frequency, 'frequency');
+                          const lpvDelta = calcMetricDelta(row.lpv, previous?.lpv, 'number');
+                          const atcDelta = calcMetricDelta(row.atcRate, previous?.atcRate, 'percent');
+                          const purchasesDelta = calcMetricDelta(row.purchases, previous?.purchases, 'number');
+                          const checkoutDelta = calcMetricDelta(row.checkoutRate, previous?.checkoutRate, 'percent');
+                          const cvrDelta = calcMetricDelta(row.cvr, previous?.cvr, 'percent');
+
+                          return (
+                            <tr key={row.key} className="hover:bg-gray-50">
+                              <td className="px-3 py-2 text-gray-900 font-semibold max-w-xs truncate" title={row.name}>
+                                {row.name}
+                              </td>
+                              <td className="px-3 py-2 text-right text-gray-700">
+                                {renderCreativeSummaryValue(row.spend, 'currency')}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.ctr, 'percent')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(ctrDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.frequency, 'frequency')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(frequencyDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.lpv, 'number')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(lpvDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.atcRate, 'percent')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(atcDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.purchases, 'number')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(purchasesDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.checkoutRate, 'percent')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(checkoutDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.cvr, 'percent')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(cvrDelta)}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="text-sm text-gray-500">
+                      No creative funnel data available for this period.
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="p-6 pt-0">
+          <div className="rounded-xl border border-gray-100 bg-gradient-to-br from-slate-50 via-white to-white p-4">
+            <button
+              type="button"
+              onClick={() => setShowCreativeFunnelSummary(prev => !prev)}
+              className="flex w-full items-center justify-between text-left"
+            >
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+                Creative funnel summary
+              </div>
+              <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${showCreativeFunnelSummary ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showCreativeFunnelSummary && (
+              <>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600">
+                  <span className="font-semibold text-gray-900">Powered by GPT‑5.1</span>
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Prompt: “Briefly analyze changes and provide insight”</span>
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">Not auto-triggered</span>
+                  <span className="text-xs text-gray-500">Run end of day or tap generate.</span>
+                </div>
+
+                <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
+                  <button
+                    type="button"
+                    onClick={() => setCreativeSummaryGeneratedAt(new Date())}
+                    className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-800"
+                  >
+                    Generate summary
+                  </button>
+                  {creativeSummaryGeneratedAt && (
+                    <span>Updated {formatTimeLabel(creativeSummaryGeneratedAt)}</span>
+                  )}
+                </div>
+
+                {creativeSummaryCards ? (
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    {[creativeSummaryCards.today, creativeSummaryCards.week].map((card) => (
+                      <div
+                        key={card.title}
+                        className="rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{card.title}</div>
+                            <div className="text-sm font-semibold text-gray-900">{card.subtitle}</div>
+                          </div>
+                          <span className="rounded-full border border-gray-200 px-2 py-0.5 text-[11px] font-semibold text-gray-600">
+                            Creative vs avg
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-gray-600">{card.body}</p>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                      {card.metrics.map((metric) => {
+                        const deltaValue = metric.delta?.value;
+                        const isZero = Number.isFinite(deltaValue) && deltaValue === 0;
+                        const isPositive = Number.isFinite(deltaValue) ? deltaValue > 0 : null;
+                        const pillClasses = Number.isFinite(deltaValue)
+                          ? (isZero ? 'bg-gray-100 text-gray-500' : (isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'))
+                          : 'bg-gray-100 text-gray-500';
+                        const deltaLabel = metric.delta?.format === 'percent'
+                          ? formatDeltaPercent(deltaValue)
+                          : formatDeltaAbsolute(deltaValue, metric.delta?.unit);
+                        return (
+                          <div
+                            key={metric.label}
+                            className={`flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${pillClasses}`}
+                          >
+                            <span className="text-gray-700">{metric.label}</span>
+                            <span className="text-gray-900">
+                              {renderMetric(metric.value, metric.format, metric.format === 'percent' ? 2 : 2)}
+                            </span>
+                            <span className="flex items-center gap-1 text-[11px]">
+                              {Number.isFinite(deltaValue)
+                                ? (
+                                  <>
+                                    {!isZero && (
+                                      isPositive ? (
+                                        <TrendingUp className="h-3 w-3" />
+                                      ) : (
+                                        <TrendingDown className="h-3 w-3" />
+                                      )
+                                    )}
+                                    {deltaLabel}
+                                  </>
+                                )
+                                : '—'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-4 text-sm text-gray-500">
+                    No creative funnel summary available yet. Load a campaign to compare ads.
+                  </div>
+                )}
+
+                <div className="mt-4 rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setCreativeInsightPanelOpen(prev => !prev)}
+                    className="flex w-full items-center justify-between text-left"
+                  >
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Creative funnel AI summary
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        GPT‑5.1 medium effort • auto end of day/week or manual
+                      </div>
+                    </div>
+                    <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${creativeInsightPanelOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {creativeInsightPanelOpen && (
+                    <div className="mt-4 space-y-4">
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+                        <span className="text-gray-500">Mode:</span>
+                        {['analyze', 'summarize'].map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => setCreativeInsightMode(mode)}
+                            className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                              creativeInsightMode === mode
+                                ? 'bg-indigo-600 text-white border-indigo-600'
+                                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                            }`}
+                          >
+                            {mode === 'analyze' ? 'Analyze' : 'Summarize'}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Prompt (editable)
+                        </div>
+                        <textarea
+                          rows={3}
+                          value={creativeInsightPrompts[creativeInsightMode] || ''}
+                          onChange={(e) => setCreativeInsightPrompts(prev => ({
+                            ...prev,
+                            [creativeInsightMode]: e.target.value
+                          }))}
+                          className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                        <span className="font-semibold text-gray-500">Verbosity:</span>
+                        {['low', 'medium'].map((level) => (
+                          <button
+                            key={level}
+                            type="button"
+                            onClick={() => setCreativeInsightVerbosity(prev => ({
+                              ...prev,
+                              [creativeInsightMode]: level
+                            }))}
+                            className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                              creativeInsightVerbosity[creativeInsightMode] === level
+                                ? 'bg-gray-900 text-white border-gray-900'
+                                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                            }`}
+                          >
+                            {level}
+                          </button>
+                        ))}
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-gray-500">Auto-generate</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = !creativeInsightAutoEnabled;
+                              setCreativeInsightAutoEnabled(next);
+                              syncCreativeInsightSettings({
+                                updates: {
+                                  autoEnabled: next,
+                                  analyzePrompt: creativeInsightPrompts.analyze,
+                                  summarizePrompt: creativeInsightPrompts.summarize,
+                                  analyzeVerbosity: creativeInsightVerbosity.analyze,
+                                  summarizeVerbosity: creativeInsightVerbosity.summarize
+                                }
+                              }).catch((error) => {
+                                setCreativeInsightError(error.message || 'Failed to update auto setting.');
+                              });
+                            }}
+                            className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
+                              creativeInsightAutoEnabled ? 'bg-emerald-500' : 'bg-gray-300'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                creativeInsightAutoEnabled ? 'translate-x-5' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                        <button
+                          type="button"
+                          onClick={handleCreativeInsightSaveSettings}
+                          className="inline-flex items-center gap-2 rounded-full border border-gray-200 px-4 py-1.5 font-semibold text-gray-600 hover:bg-gray-50"
+                        >
+                          Save settings
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCreativeInsightGenerate}
+                          disabled={creativeInsightLoading}
+                          className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 font-semibold text-white shadow-sm transition ${
+                            creativeInsightLoading ? 'bg-indigo-300' : 'bg-indigo-600 hover:bg-indigo-500'
+                          }`}
+                        >
+                          {creativeInsightLoading ? 'Generating…' : 'Generate summary'}
+                        </button>
+                        {creativeInsightSummary?.generated_at && (
+                          <span>
+                            Updated {formatSummaryTimestamp(creativeInsightSummary.generated_at)}
+                          </span>
+                        )}
+                        {(creativeInsightSummary || creativeInsightStreamingText) && (
+                          <button
+                            type="button"
+                            onClick={handleCreativeInsightDismiss}
+                            className="ml-auto inline-flex items-center gap-1 rounded-full border border-gray-200 px-3 py-1 text-[11px] font-semibold text-gray-500 hover:bg-gray-50"
+                          >
+                            <X className="h-3 w-3" />
+                            Dismiss
+                          </button>
+                        )}
+                      </div>
+
+                      {creativeInsightError && (
+                        <div className="text-xs text-rose-600">{creativeInsightError}</div>
+                      )}
+
+                      <div className="rounded-lg border border-gray-100 bg-white px-4 py-3 text-sm text-gray-700 shadow-sm">
+                        {creativeInsightLoading && !creativeInsightStreamingText && (
+                          <div className="text-sm text-gray-500">Generating AI summary…</div>
+                        )}
+                        {creativeInsightStreamingText && (
+                          <div className="whitespace-pre-wrap">{creativeInsightStreamingText}</div>
+                        )}
+                        {!creativeInsightStreamingText && creativeInsightSummary?.content && (
+                          <div className="whitespace-pre-wrap">{creativeInsightSummary.content}</div>
+                        )}
+                        {!creativeInsightLoading && !creativeInsightStreamingText && !creativeInsightSummary?.content && (
+                          <div className="text-sm text-gray-500">
+                            No AI summary yet. Generate one manually or wait for end-of-day/week auto runs.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
