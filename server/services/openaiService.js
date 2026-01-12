@@ -1343,35 +1343,89 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
 }
 
 // Streaming versions for Analyze and Summarize
-export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
+export async function analyzeQuestionStream(
+  question,
+  store,
+  onDelta,
+  history = [],
+  startDate = null,
+  endDate = null,
+  options = {}
+) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
-  
-  // Use GPT-4o directly for Ask mode - faster streaming
-  console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
-  const response = await client.chat.completions.create({
-    model: MODELS.ASK,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: question }
-    ],
-    max_tokens: TOKEN_LIMITS.nano,
-    temperature: MODE_TEMPERATURES.analyze,
-    stream: true
+  const {
+    model = MODELS.ASK,
+    reasoningEffort = null,
+    verbosity = 'medium',
+    maxOutputTokens = TOKEN_LIMITS.nano
+  } = options;
+
+  await streamOpenAIChat({
+    model,
+    reasoningEffort,
+    systemPrompt,
+    messages: [{ role: 'user', content: question }],
+    maxOutputTokens,
+    verbosity,
+    onDelta
   });
 
-  for await (const chunk of response) {
-    const delta = chunk.choices[0]?.delta?.content;
-    if (delta) onDelta(delta);
-  }
-
-  return { model: MODELS.ASK, reasoning: null };
+  return { model, reasoning: reasoningEffort };
 }
 
-export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
+export async function summarizeDataStream(
+  question,
+  store,
+  onDelta,
+  history = [],
+  startDate = null,
+  endDate = null,
+  options = {}
+) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
-  return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
+  const {
+    model = MODELS.MINI,
+    reasoningEffort = null,
+    verbosity = 'medium',
+    maxOutputTokens = TOKEN_LIMITS.mini
+  } = options;
+
+  await streamOpenAIChat({
+    model,
+    reasoningEffort,
+    systemPrompt,
+    messages: [{ role: 'user', content: question }],
+    maxOutputTokens,
+    verbosity,
+    onDelta
+  });
+
+  return { model, reasoning: reasoningEffort };
+}
+
+export async function generateCreativeSummary({
+  question,
+  store,
+  mode = 'analyze',
+  verbosity = 'low',
+  reasoningEffort = 'medium',
+  startDate = null,
+  endDate = null
+}) {
+  const data = getRelevantData(store, question, startDate, endDate);
+  const systemPrompt = buildSystemPrompt(store, mode, data, question);
+  const text = await askOpenAIChat({
+    model: MODELS.STRATEGIST,
+    reasoningEffort,
+    systemPrompt,
+    messages: [{ role: 'user', content: question }],
+    maxOutputTokens: TOKEN_LIMITS.balanced,
+    verbosity
+  });
+
+  return { text, model: MODELS.STRATEGIST, reasoning: reasoningEffort };
 }
 
 // ============================================================================

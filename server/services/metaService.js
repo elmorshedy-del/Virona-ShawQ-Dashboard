@@ -429,14 +429,13 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
   // Define fields based on level
   // Include inline_link_clicks and cost_per_inline_link_click for proper Link Clicks and CPC metrics
   const baseFields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click,outbound_clicks,unique_outbound_clicks,outbound_clicks_ctr,unique_outbound_clicks_ctr';
-  const lpvField = ',landing_page_views';
   let fields = baseFields;
   if (level === 'campaign') {
     fields = `campaign_name,campaign_id,${baseFields}`;
   } else if (level === 'adset') {
-    fields = `campaign_name,campaign_id,adset_name,adset_id,${baseFields}${lpvField}`;
+    fields = `campaign_name,campaign_id,adset_name,adset_id,${baseFields}`;
   } else if (level === 'ad') {
-    fields = `campaign_name,campaign_id,adset_name,adset_id,ad_name,ad_id,${baseFields}${lpvField}`;
+    fields = `campaign_name,campaign_id,adset_name,adset_id,ad_name,ad_id,${baseFields}`;
   }
 
   const baseParams = `level=${level}&` +
@@ -478,24 +477,17 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
   };
 
   const fallbackFields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click';
-  const invalidLandingPageViewsMessage = 'landing_page_views is not valid for fields param';
 
   let rows;
   try {
     rows = await fetchAllRows(fields);
   } catch (error) {
     const message = error?.message || '';
-    const isInvalidLpvField =
-      message.includes(invalidLandingPageViewsMessage) ||
-      message.includes(invalidLandingPageViewsMessage.toLowerCase());
-    const retryFields = isInvalidLpvField ? fields.replace(lpvField, '') : fallbackFields;
-    const retryReason = isInvalidLpvField ? 'landing_page_views not allowed' : 'fallback fields';
-
     console.warn(`[Meta] ${level} fetch failed with primary fields: ${message}`);
-    console.warn(`[Meta] Retrying ${level} fetch (${retryReason}).`);
+    console.warn(`[Meta] Retrying ${level} fetch (fallback fields).`);
 
     try {
-      rows = await fetchAllRows(retryFields);
+      rows = await fetchAllRows(fallbackFields);
     } catch (retryError) {
       console.error(`[Meta] ${level} fetch failed after retry: ${retryError?.message || retryError}`);
       return 0;
@@ -587,8 +579,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       // Parse specific funnel steps
       const purchases = getActionValue(row.actions, 'purchase') || getActionValue(row.actions, 'offsite_conversion.fb_pixel_purchase');
       const revenue = getActionValue(row.action_values, 'purchase') || getActionValue(row.action_values, 'offsite_conversion.fb_pixel_purchase');
-      const lpvFromField = getMetricValue(row.landing_page_views);
-      const lpv = lpvFromField > 0 ? lpvFromField : getActionValue(row.actions, 'landing_page_view');
+      const lpv = getActionValue(row.actions, 'landing_page_view');
       const atc = getActionValue(row.actions, 'add_to_cart');
       const checkout = getActionValue(row.actions, 'initiate_checkout');
 
