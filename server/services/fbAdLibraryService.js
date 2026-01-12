@@ -1,7 +1,7 @@
 // server/services/fbAdLibraryService.js
 // Facebook Ad Library API Integration
 
-const axios = require('axios');
+import axios from 'axios';
 
 const FB_API_VERSION = 'v21.0';
 const FB_API_BASE = `https://graph.facebook.com/${FB_API_VERSION}`;
@@ -268,7 +268,7 @@ async function searchMultipleBrands(brandNames, options = {}) {
   return results;
 }
 
-module.exports = {
+export {
   searchByBrand,
   searchByPageId,
   getAdDetails,

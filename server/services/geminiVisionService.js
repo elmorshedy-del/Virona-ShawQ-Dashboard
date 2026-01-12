@@ -1,7 +1,7 @@
 // server/services/geminiVisionService.js
 // Handles all Gemini API calls for Creative Studio
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
@@ -559,7 +559,7 @@ Return ONLY valid JSON with no markdown:
   }
 }
 
-module.exports = {
+export {
   extractStyle,
   analyzeCompetitorAd,
   generateHooks,

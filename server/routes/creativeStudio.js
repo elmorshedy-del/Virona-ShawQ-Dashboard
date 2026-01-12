@@ -1,39 +1,16 @@
-// server/routes/creativeStudio.js
-// All Creative Studio API endpoints
+import express from 'express';
+import multer from 'multer';
+import path from 'path';
+import * as geminiVision from '../services/geminiVisionService.js';
+import * as cloudinary from '../services/cloudinaryService.js';
+import * as fbAdLibrary from '../services/fbAdLibraryService.js';
+import * as fatigueService from '../services/fatigueService.js';
+import * as auditorService from '../services/auditorService.js';
+import { getDb } from '../db/database.js';
 
-const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
+const db = getDb();
 
-// Configure multer for file uploads
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB max for videos
-  },
-  fileFilter: (req, file, cb) => {
-    const allowedImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-    const allowedVideoTypes = ['video/mp4', 'video/quicktime', 'video/webm', 'video/mov'];
-    const allowedTypes = [...allowedImageTypes, ...allowedVideoTypes];
-
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type'), false);
-    }
-  }
-});
-
-// Services
-const geminiVision = require('../services/geminiVisionService');
-const cloudinary = require('../services/cloudinaryService');
-const fbAdLibrary = require('../services/fbAdLibraryService');
-const fatigueService = require('../services/fatigueService');
-const auditorService = require('../services/auditorService');
-
-// Database
 const db = require('../db/database').getDb();
 
 // ============================================================================
@@ -811,4 +788,4 @@ router.get('/history', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

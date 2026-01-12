@@ -1,8 +1,8 @@
 // server/db/creativeStudioMigration.js
 // Run this migration to add Creative Studio tables
 
-const Database = require('better-sqlite3');
-const path = require('path');
+
+
 
 function runMigration(db) {
   console.log('Running Creative Studio migration...');
@@ -109,12 +109,6 @@ function runMigration(db) {
 }
 
 // Export for use in database.js
-module.exports = { runMigration };
+export { runMigration };
 
 // Allow running directly
-if (require.main === module) {
-  const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/dashboard.db');
-  const db = new Database(dbPath);
-  runMigration(db);
-  db.close();
-}

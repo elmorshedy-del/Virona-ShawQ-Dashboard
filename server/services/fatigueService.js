@@ -232,7 +232,7 @@ function getReplacementSuggestions(fatiguedAd, winningPatterns = []) {
   return suggestions;
 }
 
-module.exports = {
+export {
   calculateFatigue,
   calculateFatigueForAds,
   getReplacementSuggestions

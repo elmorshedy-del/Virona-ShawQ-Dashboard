@@ -1,9 +1,9 @@
 // server/services/cloudinaryService.js
 // Handles video and image processing via Cloudinary
 
-const cloudinary = require('cloudinary').v2;
-const axios = require('axios');
-const stream = require('stream');
+import { v2 as cloudinary } from 'cloudinary';
+import axios from 'axios';
+import stream from 'stream';
 
 // Configure Cloudinary
 cloudinary.config({
@@ -288,7 +288,7 @@ function getDownloadUrl(publicId, resourceType = 'video', format = 'mp4') {
   });
 }
 
-module.exports = {
+export {
   uploadVideo,
   uploadImage,
   extractFrames,

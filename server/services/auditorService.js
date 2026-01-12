@@ -14,7 +14,7 @@
  * 7. Fatigued Creatives (up to -15 points)
  */
 
-const fatigueService = require('./fatigueService');
+import * as fatigueService from './fatigueService.js';
 
 // ============================================================================
 // MAIN AUDIT FUNCTION
@@ -486,7 +486,7 @@ function generateAuditReport(audit) {
   return lines.join('\n');
 }
 
-module.exports = {
+export {
   runFullAudit,
   generateAuditReport
 };
