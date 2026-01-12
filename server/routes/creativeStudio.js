@@ -479,6 +479,13 @@ router.post('/improve', upload.single('image'), async (req, res) => {
 // Upload video
 router.post('/video/upload', upload.single('video'), async (req, res) => {
   try {
+    if (!cloudinary.isConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.'
+      });
+    }
+
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No video provided' });
     }
@@ -504,6 +511,13 @@ router.post('/video/upload', upload.single('video'), async (req, res) => {
 // Resize video to multiple dimensions
 router.post('/video/resize', async (req, res) => {
   try {
+    if (!cloudinary.isConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.'
+      });
+    }
+
     const { video_id, smart_crop = true } = req.body;
 
     if (!video_id) {
