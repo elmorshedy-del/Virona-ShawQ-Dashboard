@@ -55,6 +55,32 @@ export function initDb() {
     )
   `);
 
+  // Meta OAuth tokens (Ad Library access)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_auth_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL UNIQUE,
+      access_token TEXT NOT NULL,
+      token_type TEXT,
+      expires_at TEXT,
+      scopes TEXT,
+      last_api_status TEXT,
+      last_api_at TEXT,
+      last_api_error TEXT,
+      last_fbtrace_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      used_at DATETIME
+    )
+  `);
+
   // Add columns if they don't exist (for existing databases)
   try {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN age TEXT DEFAULT ''`);
