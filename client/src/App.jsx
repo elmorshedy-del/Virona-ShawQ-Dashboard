@@ -1384,7 +1384,7 @@ export default function App() {
         )}
 
         {activeTab === 5 && (
-          <CreativeStudio />
+          <CreativeStudio store={currentStore} />
         )}
       </div>
 
