@@ -44,7 +44,6 @@ async function uploadVideo(buffer, options = {}) {
     const uploadStream = cloudinary.uploader.upload_stream(
       withUnsignedPreset({
         resource_type: 'video',
-        folder: 'creative-studio/videos',
         ...options
       }),
       (error, result) => {
@@ -137,78 +136,33 @@ async function getVideoDuration(publicId) {
 // RESIZE VIDEO TO MULTIPLE DIMENSIONS
 // ============================================================================
 async function resizeVideo(publicId, options = {}) {
-  const {
-    dimensions = [
-      { name: 'feed_square', ratio: '1:1', width: 1080, height: 1080 },
-      { name: 'feed_portrait', ratio: '4:5', width: 1080, height: 1350 },
-      { name: 'story_reel', ratio: '9:16', width: 1080, height: 1920 },
-      { name: 'landscape', ratio: '16:9', width: 1920, height: 1080 },
-      { name: 'fb_link', ratio: '1.91:1', width: 1200, height: 628 }
-    ],
-    focal_points = null,
-    smart_crop = false
-  } = options;
+  const { smart_crop = true } = options;
+  const dimensions = [
+    { name: 'feed_square', ratio: '1:1', width: 1080, height: 1080 },
+    { name: 'feed_portrait', ratio: '4:5', width: 1080, height: 1350 },
+    { name: 'story_reel', ratio: '9:16', width: 1080, height: 1920 },
+    { name: 'landscape', ratio: '16:9', width: 1920, height: 1080 },
+    { name: 'fb_link', ratio: '1.91:1', width: 1200, height: 628 }
+  ];
 
   const versions = {};
 
   for (const dim of dimensions) {
-    let transformation = [];
+    const transformation = smart_crop
+      ? `c_fill,w_${dim.width},h_${dim.height},g_auto`
+      : `c_fill,w_${dim.width},h_${dim.height},g_center`;
 
-    if (smart_crop && focal_points && focal_points.length > 0) {
-      // Calculate average focal point
-      const avgX = focal_points.reduce((sum, fp) => sum + (fp.center_point?.x || 0.5), 0) / focal_points.length;
-      const avgY = focal_points.reduce((sum, fp) => sum + (fp.center_point?.y || 0.5), 0) / focal_points.length;
-
-      transformation = [
-        {
-          width: dim.width,
-          height: dim.height,
-          crop: 'fill',
-          gravity: 'xy_center',
-          x: Math.round(avgX * dim.width),
-          y: Math.round(avgY * dim.height)
-        }
-      ];
-    } else {
-      // Standard center crop
-      transformation = [
-        {
-          width: dim.width,
-          height: dim.height,
-          crop: 'fill',
-          gravity: 'auto'
-        }
-      ];
-    }
-
-    // Generate URL for this dimension
-    const url = cloudinary.url(publicId, {
-      resource_type: 'video',
-      transformation,
-      format: 'mp4'
-    });
-
-    const download_url = cloudinary.url(publicId, {
-      resource_type: 'video',
-      transformation,
-      format: 'mp4',
-      flags: 'attachment'
-    });
-
-    // Generate thumbnail for preview
-    const thumbnail = cloudinary.url(publicId, {
-      resource_type: 'video',
-      transformation: [
-        ...transformation,
-        { start_offset: 0 }
-      ],
-      format: 'jpg'
-    });
+    const baseUrl = cloudinary.url(publicId, { resource_type: 'video' });
+    const url = baseUrl.replace('/upload/', `/upload/${transformation}/`);
+    const thumbnail = baseUrl
+      .replace('/upload/', `/upload/${transformation},so_0/`)
+      .replace(/\.\w+$/, '.jpg');
+    const downloadUrl = baseUrl.replace('/upload/', `/upload/${transformation},fl_attachment/`);
 
     versions[dim.name] = {
       url,
-      download_url,
       thumbnail,
+      downloadUrl,
       width: dim.width,
       height: dim.height,
       ratio: dim.ratio,
