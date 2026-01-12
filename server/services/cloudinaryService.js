@@ -11,8 +11,10 @@ const cloudinaryConfig = {
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 };
+const unsignedUploadPreset = process.env.CLOUDINARY_UNSIGNED_UPLOAD_PRESET;
 
 const hasExplicitConfig = Object.values(cloudinaryConfig).every(Boolean);
+const hasUnsignedConfig = Boolean(cloudinaryConfig.cloud_name && unsignedUploadPreset);
 if (hasExplicitConfig) {
   cloudinary.config({ ...cloudinaryConfig, secure: true });
 } else {
@@ -20,6 +22,17 @@ if (hasExplicitConfig) {
 }
 
 function isConfigured() {
+  return hasExplicitConfig || hasUnsignedConfig;
+}
+
+function withUnsignedPreset(options = {}) {
+  if (!hasExplicitConfig && hasUnsignedConfig) {
+    return {
+      ...options,
+      upload_preset: unsignedUploadPreset
+    };
+  }
+  return options;
   return hasExplicitConfig;
 }
 
@@ -29,11 +42,11 @@ function isConfigured() {
 async function uploadVideo(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
-      {
+      withUnsignedPreset({
         resource_type: 'video',
         folder: 'creative-studio/videos',
         ...options
-      },
+      }),
       (error, result) => {
         if (error) reject(error);
         else resolve(result);
@@ -52,11 +65,11 @@ async function uploadVideo(buffer, options = {}) {
 async function uploadImage(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
-      {
+      withUnsignedPreset({
         resource_type: 'image',
         folder: 'creative-studio/images',
         ...options
-      },
+      }),
       (error, result) => {
         if (error) reject(error);
         else resolve(result);
