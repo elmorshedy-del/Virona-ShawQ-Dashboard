@@ -1,10 +1,10 @@
 // server/db/creativeStudioMigration.js
 // Run this migration to add Creative Studio tables
 
+import { getDb } from './database.js';
 
-
-
-function runMigration(db) {
+export function runMigration() {
+  const db = getDb(); {
   console.log('Running Creative Studio migration...');
 
   // Saved creatives from Ad Editor
@@ -109,6 +109,5 @@ function runMigration(db) {
 }
 
 // Export for use in database.js
-export { runMigration };
 
 // Allow running directly
