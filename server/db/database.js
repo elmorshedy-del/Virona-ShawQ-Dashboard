@@ -374,6 +374,35 @@ export function initDb() {
     )
   `);
 
+  // Meta OAuth tokens - stores encrypted user access token for Ad Library
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_auth_tokens (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      access_token_encrypted TEXT,
+      access_token_iv TEXT,
+      access_token_tag TEXT,
+      is_encrypted INTEGER DEFAULT 0,
+      token_type TEXT,
+      scopes TEXT,
+      expires_at TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_api_status TEXT,
+      last_api_error TEXT,
+      last_api_at TEXT,
+      last_fbtrace_id TEXT
+    )
+  `);
+
+  // OAuth state storage for CSRF protection
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      return_to TEXT
+    )
+  `);
+
   // Add status columns to meta_daily_metrics if they don't exist
   try {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN status TEXT DEFAULT 'UNKNOWN'`);

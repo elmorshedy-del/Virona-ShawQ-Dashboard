@@ -2,9 +2,61 @@
 // Facebook Ad Library API Integration
 
 import axios from 'axios';
+import { getMetaAccessToken, recordMetaApiStatus } from './metaAuthService.js';
 
 const FB_API_VERSION = 'v21.0';
 const FB_API_BASE = `https://graph.facebook.com/${FB_API_VERSION}`;
+const RETRYABLE_OAUTH_CODE = 1;
+const MAX_RETRIES = 3;
+const BASE_BACKOFF_MS = 500;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRetryableOAuth(error) {
+  const err = error?.response?.data?.error;
+  return err?.type === 'OAuthException' && err?.code === RETRYABLE_OAUTH_CODE;
+}
+
+function sanitizeParams(params) {
+  const sanitized = { ...params };
+  delete sanitized.access_token;
+  return sanitized;
+}
+
+async function requestWithRetry(url, params, contextLabel) {
+  let attempt = 0;
+  while (attempt <= MAX_RETRIES) {
+    try {
+      const response = await axios.get(url, { params, timeout: 30000 });
+      recordMetaApiStatus({ status: 'success' });
+      return response;
+    } catch (error) {
+      const retryable = isRetryableOAuth(error);
+      const fbtraceId = error?.response?.data?.error?.fbtrace_id;
+      if (!retryable || attempt === MAX_RETRIES) {
+        recordMetaApiStatus({
+          status: 'failed',
+          error: error?.response?.data?.error?.message || error.message,
+          fbtraceId
+        });
+        console.error(`[FB Ad Library] ${contextLabel} failed`, {
+          fbtrace_id: fbtraceId,
+          params: sanitizeParams(params),
+          error: error?.response?.data || error.message
+        });
+        throw error;
+      }
+
+      const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt);
+      await sleep(backoff);
+      attempt += 1;
+    }
+  }
+
+  throw new Error('Ad Library request failed after retries');
+}
 
 // ============================================================================
 // SEARCH ADS BY BRAND NAME
@@ -16,41 +68,40 @@ async function searchByBrand(brandName, options = {}) {
     activeOnly = true
   } = options;
 
-  const accessToken = process.env.META_ACCESS_TOKEN;
+  const accessToken = getMetaAccessToken();
 
   if (!accessToken) {
-    throw new Error('META_ACCESS_TOKEN not configured');
+    throw new Error('Meta user token not configured');
   }
 
   try {
-    const response = await axios.get(`${FB_API_BASE}/ads_archive`, {
-      params: {
-        access_token: accessToken,
-        search_terms: brandName,
-        ad_reached_countries: JSON.stringify([country]),
-        ad_active_status: activeOnly ? 'ACTIVE' : 'ALL',
-        ad_type: 'ALL',
-        fields: [
-          'id',
-          'ad_creative_bodies',
-          'ad_creative_link_captions',
-          'ad_creative_link_descriptions',
-          'ad_creative_link_titles',
-          'ad_delivery_start_time',
-          'ad_delivery_stop_time',
-          'ad_snapshot_url',
-          'bylines',
-          'currency',
-          'impressions',
-          'page_id',
-          'page_name',
-          'publisher_platforms',
-          'spend'
-        ].join(','),
-        limit
-      },
-      timeout: 30000
-    });
+    const params = {
+      access_token: accessToken,
+      search_terms: brandName,
+      ad_reached_countries: JSON.stringify([country]),
+      ad_active_status: activeOnly ? 'ACTIVE' : 'ALL',
+      ad_type: 'ALL',
+      fields: [
+        'id',
+        'ad_creative_bodies',
+        'ad_creative_link_captions',
+        'ad_creative_link_descriptions',
+        'ad_creative_link_titles',
+        'ad_delivery_start_time',
+        'ad_delivery_stop_time',
+        'ad_snapshot_url',
+        'bylines',
+        'currency',
+        'impressions',
+        'page_id',
+        'page_name',
+        'publisher_platforms',
+        'spend'
+      ].join(','),
+      limit
+    };
+
+    const response = await requestWithRetry(`${FB_API_BASE}/ads_archive`, params, 'searchByBrand');
 
     if (!response.data || !response.data.data) {
       return [];
@@ -98,32 +149,31 @@ async function searchByPageId(pageId, options = {}) {
     activeOnly = true
   } = options;
 
-  const accessToken = process.env.META_ACCESS_TOKEN;
+  const accessToken = getMetaAccessToken();
 
   if (!accessToken) {
-    throw new Error('META_ACCESS_TOKEN not configured');
+    throw new Error('Meta user token not configured');
   }
 
   try {
-    const response = await axios.get(`${FB_API_BASE}/ads_archive`, {
-      params: {
-        access_token: accessToken,
-        search_page_ids: JSON.stringify([pageId]),
-        ad_reached_countries: JSON.stringify([country]),
-        ad_active_status: activeOnly ? 'ACTIVE' : 'ALL',
-        fields: [
-          'id',
-          'ad_creative_bodies',
-          'ad_creative_link_titles',
-          'ad_delivery_start_time',
-          'ad_snapshot_url',
-          'page_name',
-          'publisher_platforms'
-        ].join(','),
-        limit
-      },
-      timeout: 30000
-    });
+    const params = {
+      access_token: accessToken,
+      search_page_ids: JSON.stringify([pageId]),
+      ad_reached_countries: JSON.stringify([country]),
+      ad_active_status: activeOnly ? 'ACTIVE' : 'ALL',
+      fields: [
+        'id',
+        'ad_creative_bodies',
+        'ad_creative_link_titles',
+        'ad_delivery_start_time',
+        'ad_snapshot_url',
+        'page_name',
+        'publisher_platforms'
+      ].join(','),
+      limit
+    };
+
+    const response = await requestWithRetry(`${FB_API_BASE}/ads_archive`, params, 'searchByPageId');
 
     if (!response.data || !response.data.data) {
       return [];
@@ -149,35 +199,34 @@ async function searchByPageId(pageId, options = {}) {
 // GET AD DETAILS
 // ============================================================================
 async function getAdDetails(adArchiveId) {
-  const accessToken = process.env.META_ACCESS_TOKEN;
+  const accessToken = getMetaAccessToken();
 
   try {
-    const response = await axios.get(`${FB_API_BASE}/${adArchiveId}`, {
-      params: {
-        access_token: accessToken,
-        fields: [
-          'id',
-          'ad_creative_bodies',
-          'ad_creative_link_captions',
-          'ad_creative_link_descriptions',
-          'ad_creative_link_titles',
-          'ad_delivery_start_time',
-          'ad_delivery_stop_time',
-          'ad_snapshot_url',
-          'bylines',
-          'currency',
-          'demographic_distribution',
-          'impressions',
-          'page_id',
-          'page_name',
-          'potential_reach',
-          'publisher_platforms',
-          'region_distribution',
-          'spend'
-        ].join(',')
-      },
-      timeout: 30000
-    });
+    const params = {
+      access_token: accessToken,
+      fields: [
+        'id',
+        'ad_creative_bodies',
+        'ad_creative_link_captions',
+        'ad_creative_link_descriptions',
+        'ad_creative_link_titles',
+        'ad_delivery_start_time',
+        'ad_delivery_stop_time',
+        'ad_snapshot_url',
+        'bylines',
+        'currency',
+        'demographic_distribution',
+        'impressions',
+        'page_id',
+        'page_name',
+        'potential_reach',
+        'publisher_platforms',
+        'region_distribution',
+        'spend'
+      ].join(',')
+    };
+
+    const response = await requestWithRetry(`${FB_API_BASE}/${adArchiveId}`, params, 'getAdDetails');
 
     return response.data;
 
