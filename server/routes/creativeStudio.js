@@ -13,6 +13,26 @@ const db = getDb();
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Meta connection status for Creative Studio
+router.get('/meta-status', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const db = getDb();
+
+    const hasData = db.prepare(`
+      SELECT COUNT(*) as count FROM meta_daily_metrics WHERE store = ?
+    `).get(store);
+
+    res.json({
+      connected: hasData.count > 0,
+      store
+    });
+  } catch (error) {
+    console.error('Meta status error:', error);
+    res.status(500).json({ connected: false, error: error.message });
+  }
+});
+
 
 // ============================================================================
 // CREATIVES CRUD
@@ -555,7 +575,57 @@ router.post('/image/resize', upload.single('image'), async (req, res) => {
 
 router.post('/fatigue/analyze', async (req, res) => {
   try {
-    const { ads } = req.body;
+    const store = req.query.store || 'vironax';
+    let { ads } = req.body;
+
+    if (!ads || !Array.isArray(ads) || ads.length === 0) {
+      const dailyRows = db.prepare(`
+        SELECT campaign_id, campaign_name, date, ctr, frequency, impressions, spend
+        FROM meta_daily_metrics
+        WHERE store = ?
+        ORDER BY campaign_id, date
+      `).all(store);
+
+      if (dailyRows.length === 0) {
+        return res.status(400).json({ success: false, error: 'Ads data required' });
+      }
+
+      const grouped = new Map();
+      for (const row of dailyRows) {
+        if (!grouped.has(row.campaign_id)) {
+          grouped.set(row.campaign_id, {
+            ad_id: row.campaign_id,
+            ad_name: row.campaign_name,
+            creative_url: null,
+            rows: []
+          });
+        }
+        grouped.get(row.campaign_id).rows.push(row);
+      }
+
+      const average = (items, key) => {
+        if (!items.length) return 0;
+        const total = items.reduce((sum, item) => sum + (item[key] || 0), 0);
+        return total / items.length;
+      };
+
+      ads = Array.from(grouped.values()).map((group) => {
+        const rows = group.rows;
+        const baselineRows = rows.slice(0, 3);
+        const currentRows = rows.slice(-3);
+        return {
+          ad_id: group.ad_id,
+          ad_name: group.ad_name,
+          creative_url: group.creative_url,
+          current_ctr: average(currentRows, 'ctr'),
+          baseline_ctr: average(baselineRows, 'ctr'),
+          frequency: average(rows, 'frequency'),
+          start_date: rows[0]?.date,
+          impressions: rows.reduce((sum, r) => sum + (r.impressions || 0), 0),
+          spend: rows.reduce((sum, r) => sum + (r.spend || 0), 0)
+        };
+      }).filter(ad => ad.start_date);
+    }
 
     if (!ads || !Array.isArray(ads) || ads.length === 0) {
       return res.status(400).json({ success: false, error: 'Ads data required' });
