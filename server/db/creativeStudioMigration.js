@@ -1,13 +1,10 @@
 // server/db/creativeStudioMigration.js
-// Run this migration to add Creative Studio tables
-
 import { getDb } from './database.js';
 
 export function runMigration() {
-  const db = getDb(); {
+  const db = getDb();
   console.log('Running Creative Studio migration...');
 
-  // Saved creatives from Ad Editor
   db.exec(`
     CREATE TABLE IF NOT EXISTS studio_creatives (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,7 +22,6 @@ export function runMigration() {
     )
   `);
 
-  // Saved brand styles / templates
   db.exec(`
     CREATE TABLE IF NOT EXISTS studio_templates (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +33,6 @@ export function runMigration() {
     )
   `);
 
-  // Competitor analyses
   db.exec(`
     CREATE TABLE IF NOT EXISTS competitor_analyses (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +45,6 @@ export function runMigration() {
     )
   `);
 
-  // Generated content (hooks, scripts, briefs)
   db.exec(`
     CREATE TABLE IF NOT EXISTS generated_content (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +57,6 @@ export function runMigration() {
     )
   `);
 
-  // Fatigue tracking
   db.exec(`
     CREATE TABLE IF NOT EXISTS creative_fatigue (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +75,6 @@ export function runMigration() {
     )
   `);
 
-  // Account audit results
   db.exec(`
     CREATE TABLE IF NOT EXISTS account_audits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,7 +88,6 @@ export function runMigration() {
     )
   `);
 
-  // Create indexes
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_studio_creatives_type ON studio_creatives(type);
     CREATE INDEX IF NOT EXISTS idx_competitor_analyses_brand ON competitor_analyses(brand_name);
@@ -105,9 +96,5 @@ export function runMigration() {
     CREATE INDEX IF NOT EXISTS idx_creative_fatigue_ad_id ON creative_fatigue(ad_id);
   `);
 
-  console.log('Creative Studio migration completed!');
+  console.log('✅ Creative Studio tables ready');
 }
-
-// Export for use in database.js
-
-// Allow running directly
