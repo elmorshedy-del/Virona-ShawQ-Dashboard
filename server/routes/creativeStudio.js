@@ -121,6 +121,24 @@ router.post('/extract-style', upload.single('image'), async (req, res) => {
 });
 
 // ============================================================================
+// META CONNECTION STATUS
+// ============================================================================
+
+router.get('/meta-status', async (req, res) => {
+  const store = req.query.store || 'vironax';
+  const db = getDb();
+
+  const hasData = db.prepare(`
+    SELECT COUNT(*) as count FROM meta_daily_metrics WHERE store = ?
+  `).get(store);
+
+  res.json({
+    connected: hasData.count > 0,
+    store
+  });
+});
+
+// ============================================================================
 // COMPETITOR SPY
 // ============================================================================
 
@@ -555,10 +573,58 @@ router.post('/image/resize', upload.single('image'), async (req, res) => {
 
 router.post('/fatigue/analyze', async (req, res) => {
   try {
-    const { ads } = req.body;
+    const store = req.query.store || 'vironax';
+    let { ads } = req.body;
 
-    if (!ads || !Array.isArray(ads) || ads.length === 0) {
-      return res.status(400).json({ success: false, error: 'Ads data required' });
+    if (!Array.isArray(ads) || ads.length === 0) {
+      const rows = db.prepare(`
+        SELECT campaign_id, campaign_name, date, ctr, frequency, impressions, spend
+        FROM meta_daily_metrics
+        WHERE store = ?
+        ORDER BY campaign_id, date
+      `).all(store);
+
+      if (rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'No Meta data found for this store.' });
+      }
+
+      const campaigns = new Map();
+      rows.forEach((row) => {
+        if (!campaigns.has(row.campaign_id)) {
+          campaigns.set(row.campaign_id, {
+            ad_id: row.campaign_id,
+            ad_name: row.campaign_name,
+            start_date: row.date,
+            rows: [],
+            impressions: 0,
+            spend: 0
+          });
+        }
+        const campaign = campaigns.get(row.campaign_id);
+        campaign.rows.push(row);
+        campaign.impressions += row.impressions || 0;
+        campaign.spend += row.spend || 0;
+      });
+
+      ads = Array.from(campaigns.values()).map((campaign) => {
+        const baselineRows = campaign.rows.slice(0, 3);
+        const baselineCtr = baselineRows.length
+          ? baselineRows.reduce((sum, row) => sum + (row.ctr || 0), 0) / baselineRows.length
+          : 0;
+        const currentRow = campaign.rows[campaign.rows.length - 1];
+
+        return {
+          ad_id: campaign.ad_id,
+          ad_name: campaign.ad_name,
+          creative_url: null,
+          current_ctr: currentRow?.ctr || 0,
+          baseline_ctr: baselineCtr,
+          frequency: currentRow?.frequency || 0,
+          start_date: campaign.start_date,
+          impressions: campaign.impressions,
+          spend: campaign.spend
+        };
+      });
     }
 
     const results = fatigueService.calculateFatigueForAds(ads);
