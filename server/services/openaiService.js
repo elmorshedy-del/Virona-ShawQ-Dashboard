@@ -1342,6 +1342,43 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
   return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta, MODE_TEMPERATURES.decide);
 }
 
+export async function generateCreativeFunnelSummary({
+  store,
+  mode,
+  prompt,
+  verbosity = 'low',
+  startDate = null,
+  endDate = null,
+  onDelta = null
+}) {
+  const data = getRelevantData(store, prompt, startDate, endDate);
+  const systemPrompt = buildSystemPrompt(store, mode, data, prompt);
+  const messages = [{ role: 'user', content: prompt }];
+
+  if (onDelta) {
+    await streamOpenAIChat({
+      model: MODELS.STRATEGIST,
+      reasoningEffort: 'medium',
+      systemPrompt,
+      messages,
+      maxOutputTokens: TOKEN_LIMITS.fast,
+      verbosity,
+      onDelta
+    });
+    return { model: MODELS.STRATEGIST, reasoning: 'medium' };
+  }
+
+  const text = await askOpenAIChat({
+    model: MODELS.STRATEGIST,
+    reasoningEffort: 'medium',
+    systemPrompt,
+    messages,
+    maxOutputTokens: TOKEN_LIMITS.fast,
+    verbosity
+  });
+  return { text, model: MODELS.STRATEGIST, reasoning: 'medium' };
+}
+
 // Streaming versions for Analyze and Summarize
 export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
   const data = getRelevantData(store, question, startDate, endDate);

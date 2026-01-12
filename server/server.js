@@ -23,6 +23,7 @@ import { syncMetaData } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
+import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,6 +50,9 @@ runWhatIfMigration();
 
 // Run Creative Intelligence migration
 runCreativeIntelligenceMigration();
+
+// Schedule creative funnel summaries (daily/weekly + spend reset checks)
+scheduleCreativeFunnelSummaryJobs();
 
 // One-time Salla cleanup (safe - won't crash if tables don't exist)
 try {

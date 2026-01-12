@@ -6,11 +6,19 @@ import {
   decideQuestionStream,
   analyzeQuestionStream,
   summarizeDataStream,
+  generateCreativeFunnelSummary,
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
   runQuery
 } from '../services/openaiService.js';
+import {
+  dismissCreativeFunnelSummary,
+  getCreativeFunnelSummarySettings,
+  getLatestCreativeFunnelSummary,
+  saveCreativeFunnelSummary,
+  updateCreativeFunnelSummarySettings
+} from '../services/creativeFunnelSummaryService.js';
 import { getDb } from '../db/database.js';
 
 const router = express.Router();
@@ -309,10 +317,27 @@ router.post('/decide', async (req, res) => {
 // ============================================================================
 router.post('/stream', async (req, res) => {
   try {
-    const { question, store, depth, mode, conversationId, reportType, startDate, endDate } = req.body;
+    const {
+      question,
+      store,
+      depth,
+      mode,
+      conversationId,
+      reportType,
+      startDate,
+      endDate,
+      verbosity,
+      summaryType,
+      summarySettings,
+      action,
+      summaryMode
+    } = req.body;
+
+    const activeMode = mode || 'decide';
+    const allowEmptyQuestion = ['daily-summary', 'creative-funnel-summary'].includes(activeMode);
 
     // Daily summary mode doesn't need a question
-    if (mode !== 'daily-summary' && !question) {
+    if (!allowEmptyQuestion && !question) {
       return res.status(400).json({ success: false, error: 'Question required' });
     }
 
@@ -327,7 +352,29 @@ router.post('/stream', async (req, res) => {
     res.flushHeaders();
 
     const history = conversationId ? getConversationHistory(conversationId) : [];
-    const activeMode = mode || 'decide';
+    const effectiveSummaryMode = summaryMode || activeMode;
+
+    if (activeMode === 'creative-funnel-summary') {
+      if (action === 'dismiss') {
+        dismissCreativeFunnelSummary(store, summaryMode || 'analyze');
+        res.write(`data: ${JSON.stringify({ type: 'done', summary: null })}\n\n`);
+        res.end();
+        return;
+      }
+
+      if (action === 'update-settings') {
+        const settings = updateCreativeFunnelSummarySettings(store, summarySettings || {});
+        res.write(`data: ${JSON.stringify({ type: 'done', settings })}\n\n`);
+        res.end();
+        return;
+      }
+
+      const settings = getCreativeFunnelSummarySettings(store);
+      const summary = getLatestCreativeFunnelSummary(store, effectiveSummaryMode);
+      res.write(`data: ${JSON.stringify({ type: 'done', summary, settings })}\n\n`);
+      res.end();
+      return;
+    }
 
     console.log(`\n========================================`);
     console.log(`[API] POST /ai/stream`);
@@ -345,13 +392,28 @@ router.post('/stream', async (req, res) => {
     console.log(`========================================`);
 
     let result;
+    let fullText = '';
     const onDelta = (delta) => {
+      fullText += delta;
       res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
     };
 
     if (activeMode === 'daily-summary') {
       // Daily summary uses GPT-5.1 deep - always for both stores
       result = await dailySummaryStream(reportType || 'am', onDelta);
+    } else if (summaryType === 'creative-funnel' && (activeMode === 'analyze' || activeMode === 'summarize')) {
+      if (summarySettings) {
+        updateCreativeFunnelSummarySettings(store, summarySettings);
+      }
+      result = await generateCreativeFunnelSummary({
+        store,
+        mode: activeMode,
+        prompt: question,
+        verbosity: verbosity || 'low',
+        startDate,
+        endDate,
+        onDelta
+      });
     } else if (activeMode === 'analyze') {
       result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
     } else if (activeMode === 'summarize') {
@@ -361,6 +423,30 @@ router.post('/stream', async (req, res) => {
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
+
+    if (summaryType === 'creative-funnel' && (activeMode === 'analyze' || activeMode === 'summarize')) {
+      const summaryId = saveCreativeFunnelSummary({
+        store,
+        mode: activeMode,
+        prompt: question,
+        verbosity: verbosity || 'low',
+        content: fullText,
+        model: result.model,
+        startDate,
+        endDate,
+        source: 'manual',
+        period: startDate && endDate && startDate === endDate ? 'daily' : 'custom'
+      });
+
+      res.write(`data: ${JSON.stringify({
+        type: 'done',
+        model: result.model,
+        reasoning: result.reasoning,
+        summaryId
+      })}\n\n`);
+      res.end();
+      return;
+    }
 
     res.write(`data: ${JSON.stringify({
       type: 'done',
