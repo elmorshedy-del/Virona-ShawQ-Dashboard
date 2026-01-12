@@ -5,7 +5,7 @@ import { generateCreativeFunnelSummary } from './openaiService.js';
 const ISTANBUL_TIMEZONE = 'Europe/Istanbul';
 
 const DEFAULT_PROMPTS = {
-  analyze: 'Without ad-hoc reasoning and rigorous thinking anaylze these ads numbers and provide rigorous insights. Interpret the funnel numbers → diagnose what changed + why → give prioritized actions/tests. Keep verbosity low.',
+  analyze: 'Without ad-hoc reasoning and rigorous thinking analyze these ads numbers and provide rigorous insights. Interpret the funnel numbers → diagnose what changed + why → give prioritized actions/tests. Keep verbosity low.',
   summarize: 'Show what changed and organize data in a readable meaningful way, to be comprehended at a glance. Keep verbosity low.'
 };
 
