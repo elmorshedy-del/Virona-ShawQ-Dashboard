@@ -127,6 +127,87 @@ Return ONLY valid JSON with no markdown:
 }
 
 // ============================================================================
+// COMPETITOR VIDEO ANALYSIS - Deep breakdown of competitor creative
+// ============================================================================
+async function analyzeCompetitorVideo(videoBase64) {
+  const prompt = `You are an expert media buyer analyzing a competitor's VIDEO ad creative.
+Provide a detailed breakdown that would help someone replicate its success.
+
+Return ONLY valid JSON with no markdown:
+{
+  "visual_style": {
+    "colors": ["#hex1", "#hex2", "#hex3"],
+    "layout_type": "single-product|lifestyle|ugc|graphic|split-screen",
+    "imagery_style": "lifestyle|product-only|ugc|illustration|mixed",
+    "text_placement": "top|center|bottom|overlay|minimal",
+    "visual_hierarchy": "image-first|text-first|balanced"
+  },
+  "hook_structure": {
+    "type": "problem-agitate-solve|curiosity-gap|social-proof|fomo|direct-benefit|storytelling",
+    "headline_pattern": "describe the headline formula used",
+    "attention_grabber": "what makes someone stop scrolling",
+    "emotional_trigger": "fear|desire|curiosity|urgency|belonging"
+  },
+  "offer_framing": {
+    "discount_type": "percentage|fixed-amount|bundle|free-shipping|none",
+    "urgency_tactics": ["list of urgency elements"],
+    "social_proof_elements": ["reviews|testimonials|user-count|media-mentions"],
+    "guarantee": "money-back|satisfaction|none",
+    "value_proposition": "main benefit promised"
+  },
+  "cta_patterns": {
+    "text": "exact CTA text",
+    "style": "button|link|text-only",
+    "color": "#hex",
+    "placement": "bottom|floating|multiple"
+  },
+  "target_audience_signals": {
+    "demographics": "age range, gender signals",
+    "pain_points_addressed": ["list of problems solved"],
+    "lifestyle_indicators": ["interests and behaviors implied"],
+    "income_level": "budget|mid-range|premium|luxury"
+  },
+  "production_quality": {
+    "level": "low|medium|high|professional",
+    "estimated_cost": "under-100|100-500|500-2000|2000+",
+    "tools_likely_used": ["canva|photoshop|professional-shoot|ugc"]
+  },
+  "what_makes_it_work": [
+    "reason 1",
+    "reason 2",
+    "reason 3"
+  ],
+  "weaknesses": [
+    "potential improvement 1",
+    "potential improvement 2"
+  ],
+  "replicable_elements": [
+    "element you can copy",
+    "element you can adapt"
+  ],
+  "creative_brief": {
+    "objective": "what this ad is trying to achieve",
+    "key_message": "core message in one sentence",
+    "tone": "professional|casual|urgent|playful|luxurious",
+    "must_have_elements": ["list of essential elements"]
+  }
+}`;
+
+  try {
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { mimeType: 'video/mp4', data: videoBase64 } }
+    ]);
+
+    const text = result.response.text();
+    return JSON.parse(text.replace(/```json|```/g, '').trim());
+  } catch (error) {
+    console.error('Competitor video analysis error:', error);
+    throw new Error('Failed to analyze competitor video');
+  }
+}
+
+// ============================================================================
 // HOOK GENERATION - Generate scroll-stopping hooks
 // ============================================================================
 async function generateHooks({ product_name, product_description, target_audience, tone = 'professional', count = 20 }) {
@@ -562,6 +643,7 @@ Return ONLY valid JSON with no markdown:
 export {
   extractStyle,
   analyzeCompetitorAd,
+  analyzeCompetitorVideo,
   generateHooks,
   generateUGCScript,
   localizeAdCopy,

@@ -1,7 +1,7 @@
 // client/src/components/CreativeStudio.jsx
 // Main Creative Studio Component - Google-style Ad Editor
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, forwardRef } from 'react';
 import {
   Type, Image as ImageIcon, Download, Layout, Palette, Move,
   Maximize, Smartphone, Monitor, Check, Undo, Upload, Wand2,
@@ -70,6 +70,7 @@ const dimensions = {
 export default function CreativeStudio({ store }) {
   // Active tab
   const [activeTab, setActiveTab] = useState('editor');
+  const [pendingBrief, setPendingBrief] = useState(null);
 
   // Tabs configuration
   const tabs = [
@@ -124,8 +125,22 @@ export default function CreativeStudio({ store }) {
       <div className="max-w-[1800px] mx-auto">
         {activeTab === 'editor' && <AdEditor store={store} />}
         {activeTab === 'video' && <VideoResizer store={store} />}
-        {activeTab === 'spy' && <CompetitorSpy store={store} />}
-        {activeTab === 'generate' && <AIGenerate store={store} />}
+        {activeTab === 'spy' && (
+          <CompetitorSpy
+            store={store}
+            onGenerateBrief={(brief) => {
+              setPendingBrief(brief);
+              setActiveTab('generate');
+            }}
+          />
+        )}
+        {activeTab === 'generate' && (
+          <AIGenerate
+            store={store}
+            prefillBrief={pendingBrief}
+            onPrefillApplied={() => setPendingBrief(null)}
+          />
+        )}
         {activeTab === 'analyze' && <AnalyzeTools store={store} />}
       </div>
     </div>
@@ -135,6 +150,142 @@ export default function CreativeStudio({ store }) {
 // ============================================================================
 // AD EDITOR (Google-style)
 // ============================================================================
+const AdCanvas = forwardRef(function AdCanvas(
+  { dims, content, layout, image, scale, className = '' },
+  ref
+) {
+  return (
+    <div
+      ref={ref}
+      className={`relative overflow-hidden ${className}`}
+      style={{
+        width: dims.width * scale,
+        height: dims.height * scale,
+        backgroundColor: content.bgColor
+      }}
+    >
+      {/* Background Image */}
+      {image && (
+        <div className="absolute inset-0">
+          <img
+            src={image}
+            alt="Background"
+            className="w-full h-full object-cover"
+            crossOrigin="anonymous"
+          />
+          {content.overlayOpacity > 0 && layout !== 'framed' && (
+            <div
+              className="absolute inset-0 bg-black"
+              style={{ opacity: content.overlayOpacity / 100 }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Layout: Centered */}
+      {layout === 'centered' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center">
+          <h2
+            className="text-4xl font-semibold mb-2 tracking-wide"
+            style={{
+              fontFamily: fonts[content.fontStyle],
+              color: content.textColor,
+              textShadow: image ? '0 2px 10px rgba(0,0,0,0.3)' : 'none',
+              fontSize: `${Math.max(24, dims.width * scale * 0.06)}px`
+            }}
+          >
+            {content.headline}
+          </h2>
+          <p
+            className="text-sm uppercase tracking-widest opacity-80 mb-6"
+            style={{
+              fontFamily: fonts.modern,
+              color: content.textColor,
+              fontSize: `${Math.max(10, dims.width * scale * 0.025)}px`
+            }}
+          >
+            {content.subhead}
+          </p>
+          <div
+            className="px-6 py-2 border text-sm tracking-widest uppercase font-medium"
+            style={{
+              borderColor: content.textColor,
+              color: content.textColor,
+              fontFamily: fonts.modern,
+              fontSize: `${Math.max(10, dims.width * scale * 0.022)}px`
+            }}
+          >
+            {content.cta}
+          </div>
+        </div>
+      )}
+
+      {/* Layout: Split */}
+      {layout === 'split' && (
+        <div className="w-full h-full flex flex-col">
+          <div className="h-2/3 relative overflow-hidden">
+            {image ? (
+              <img src={image} className="w-full h-full object-cover" crossOrigin="anonymous" alt="Product" />
+            ) : (
+              <div className="w-full h-full bg-gray-200" />
+            )}
+          </div>
+          <div
+            className="h-1/3 flex flex-col items-center justify-center p-4 text-center"
+            style={{ backgroundColor: content.accentColor }}
+          >
+            <h2
+              className="text-2xl mb-1"
+              style={{ fontFamily: fonts[content.fontStyle], color: '#ffffff' }}
+            >
+              {content.headline}
+            </h2>
+            <p
+              className="text-xs uppercase tracking-widest opacity-80 mb-3"
+              style={{ fontFamily: fonts.modern, color: '#ffffff' }}
+            >
+              {content.subhead}
+            </p>
+            <div className="px-4 py-1.5 bg-white text-black text-xs font-bold uppercase tracking-widest">
+              {content.cta}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Layout: Framed */}
+      {layout === 'framed' && (
+        <div className="w-full h-full p-4 bg-white flex flex-col">
+          <div className="flex-1 relative overflow-hidden border border-gray-100">
+            {image ? (
+              <img src={image} className="w-full h-full object-cover" crossOrigin="anonymous" alt="Product" />
+            ) : (
+              <div className="w-full h-full bg-gray-100" />
+            )}
+          </div>
+          <div className="py-4 bg-white text-center">
+            <h2
+              className="text-xl mb-1 text-gray-900"
+              style={{ fontFamily: fonts[content.fontStyle] }}
+            >
+              {content.headline}
+            </h2>
+            <p
+              className="text-xs text-gray-500 uppercase tracking-widest mb-2"
+              style={{ fontFamily: fonts.modern }}
+            >
+              {content.subhead}
+            </p>
+            <div className="text-xs border-b-2 border-gray-900 pb-0.5 inline-block uppercase tracking-wider font-semibold">
+              {content.cta}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
 function AdEditor({ store }) {
   const [format, setFormat] = useState('post');
   const [layout, setLayout] = useState('centered');
@@ -155,6 +306,7 @@ function AdEditor({ store }) {
   const [extractingStyle, setExtractingStyle] = useState(false);
   const [savedCreatives, setSavedCreatives] = useState([]);
   const adRef = useRef(null);
+  const exportRef = useRef(null);
   const fileInputRef = useRef(null);
 
   // Load Google Fonts
@@ -225,14 +377,14 @@ function AdEditor({ store }) {
 
   // Export image
   const handleDownload = async () => {
-    if (!adRef.current) return;
+    if (!exportRef.current) return;
 
     setDownloading(true);
     try {
       // Dynamic import html2canvas
       const html2canvas = (await import('html2canvas')).default;
 
-      const canvas = await html2canvas(adRef.current, {
+      const canvas = await html2canvas(exportRef.current, {
         useCORS: true,
         scale: 2,
         backgroundColor: null,
@@ -526,140 +678,32 @@ function AdEditor({ store }) {
           </div>
 
           {/* The Ad Container */}
-          <div
+          <AdCanvas
             ref={adRef}
-            className="shadow-2xl transition-all duration-500 relative overflow-hidden"
-            style={{
-              width: dims.width * scale,
-              height: dims.height * scale,
-              backgroundColor: content.bgColor
-            }}
-          >
-            {/* Background Image */}
-            {image && (
-              <div className="absolute inset-0">
-                <img
-                  src={image}
-                  alt="Background"
-                  className="w-full h-full object-cover"
-                  crossOrigin="anonymous"
-                />
-                {content.overlayOpacity > 0 && layout !== 'framed' && (
-                  <div
-                    className="absolute inset-0 bg-black"
-                    style={{ opacity: content.overlayOpacity / 100 }}
-                  />
-                )}
-              </div>
-            )}
-
-            {/* Layout: Centered */}
-            {layout === 'centered' && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center">
-                <h2
-                  className="text-4xl font-semibold mb-2 tracking-wide"
-                  style={{
-                    fontFamily: fonts[content.fontStyle],
-                    color: content.textColor,
-                    textShadow: image ? '0 2px 10px rgba(0,0,0,0.3)' : 'none',
-                    fontSize: `${Math.max(24, dims.width * scale * 0.06)}px`
-                  }}
-                >
-                  {content.headline}
-                </h2>
-                <p
-                  className="text-sm uppercase tracking-widest opacity-80 mb-6"
-                  style={{
-                    fontFamily: fonts.modern,
-                    color: content.textColor,
-                    fontSize: `${Math.max(10, dims.width * scale * 0.025)}px`
-                  }}
-                >
-                  {content.subhead}
-                </p>
-                <div
-                  className="px-6 py-2 border text-sm tracking-widest uppercase font-medium"
-                  style={{
-                    borderColor: content.textColor,
-                    color: content.textColor,
-                    fontFamily: fonts.modern,
-                    fontSize: `${Math.max(10, dims.width * scale * 0.022)}px`
-                  }}
-                >
-                  {content.cta}
-                </div>
-              </div>
-            )}
-
-            {/* Layout: Split */}
-            {layout === 'split' && (
-              <div className="w-full h-full flex flex-col">
-                <div className="h-2/3 relative overflow-hidden">
-                  {image ? (
-                    <img src={image} className="w-full h-full object-cover" crossOrigin="anonymous" alt="Product" />
-                  ) : (
-                    <div className="w-full h-full bg-gray-200" />
-                  )}
-                </div>
-                <div
-                  className="h-1/3 flex flex-col items-center justify-center p-4 text-center"
-                  style={{ backgroundColor: content.accentColor }}
-                >
-                  <h2
-                    className="text-2xl mb-1"
-                    style={{ fontFamily: fonts[content.fontStyle], color: '#ffffff' }}
-                  >
-                    {content.headline}
-                  </h2>
-                  <p
-                    className="text-xs uppercase tracking-widest opacity-80 mb-3"
-                    style={{ fontFamily: fonts.modern, color: '#ffffff' }}
-                  >
-                    {content.subhead}
-                  </p>
-                  <div className="px-4 py-1.5 bg-white text-black text-xs font-bold uppercase tracking-widest">
-                    {content.cta}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Layout: Framed */}
-            {layout === 'framed' && (
-              <div className="w-full h-full p-4 bg-white flex flex-col">
-                <div className="flex-1 relative overflow-hidden border border-gray-100">
-                  {image ? (
-                    <img src={image} className="w-full h-full object-cover" crossOrigin="anonymous" alt="Product" />
-                  ) : (
-                    <div className="w-full h-full bg-gray-100" />
-                  )}
-                </div>
-                <div className="py-4 bg-white text-center">
-                  <h2
-                    className="text-xl mb-1 text-gray-900"
-                    style={{ fontFamily: fonts[content.fontStyle] }}
-                  >
-                    {content.headline}
-                  </h2>
-                  <p
-                    className="text-xs text-gray-500 uppercase tracking-widest mb-2"
-                    style={{ fontFamily: fonts.modern }}
-                  >
-                    {content.subhead}
-                  </p>
-                  <div className="text-xs border-b-2 border-gray-900 pb-0.5 inline-block uppercase tracking-wider font-semibold">
-                    {content.cta}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+            dims={dims}
+            content={content}
+            layout={layout}
+            image={image}
+            scale={scale}
+            className="shadow-2xl transition-all duration-500"
+          />
 
           {/* Dimension Badge */}
           <div className="absolute -bottom-8 right-0 text-xs text-gray-400">
             Scaled {Math.round(scale * 100)}%
           </div>
         </div>
+      </div>
+      <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
+        <AdCanvas
+          ref={exportRef}
+          dims={dims}
+          content={content}
+          layout={layout}
+          image={image}
+          scale={1}
+          className="shadow-none"
+        />
       </div>
     </div>
   );
@@ -868,9 +912,8 @@ function VideoResizer({ store }) {
                     </div>
                   </div>
                   <a
-                    href={version.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    href={version.download_url || version.url}
+                    download
                     className="px-3 py-1.5 bg-violet-100 text-violet-700 text-xs font-medium rounded-lg hover:bg-violet-200 transition-all"
                   >
                     Download
@@ -888,7 +931,7 @@ function VideoResizer({ store }) {
 // ============================================================================
 // COMPETITOR SPY
 // ============================================================================
-function CompetitorSpy({ store }) {
+function CompetitorSpy({ store, onGenerateBrief }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [country, setCountry] = useState('SA');
   const [loading, setLoading] = useState(false);
@@ -939,7 +982,7 @@ function CompetitorSpy({ store }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image_url: ad.snapshot_url,
+          snapshot_url: ad.snapshot_url,
           brand_name: ad.page_name,
           source_url: ad.snapshot_url,
           source_type: 'ad_library'
@@ -1010,15 +1053,13 @@ function CompetitorSpy({ store }) {
                     selectedAd?.id === ad.id ? 'border-violet-500' : 'border-gray-100'
                   }`}
                 >
-                  <div className="aspect-square bg-gray-100 relative">
-                    <iframe
-                      src={ad.snapshot_url}
-                      className="w-full h-full pointer-events-none"
-                      title={ad.page_name}
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-                    <div className="absolute bottom-2 left-2 right-2">
-                      <p className="text-white text-xs font-medium truncate">{ad.page_name}</p>
+                  <div className="aspect-square bg-gray-100 relative flex items-center justify-center">
+                    <div className="text-center text-gray-400">
+                      <Video size={32} className="mx-auto mb-2 opacity-60" />
+                      <p className="text-xs">Video ad preview</p>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-2 px-2">
+                      <p className="text-gray-700 text-xs font-medium truncate">{ad.page_name}</p>
                     </div>
                   </div>
                   <div className="p-3">
@@ -1027,6 +1068,18 @@ function CompetitorSpy({ store }) {
                       {ad.platforms?.slice(0, 2).map(p => (
                         <span key={p} className="px-1.5 py-0.5 bg-gray-100 rounded">{p}</span>
                       ))}
+                      {ad.snapshot_url && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(ad.snapshot_url, '_blank', 'noopener,noreferrer');
+                          }}
+                          className="ml-auto text-[10px] text-violet-600 hover:text-violet-700"
+                        >
+                          Open Ad
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1107,7 +1160,19 @@ function CompetitorSpy({ store }) {
                 </ul>
               </div>
 
-              <button className="w-full mt-4 py-2 bg-violet-100 text-violet-700 rounded-lg font-medium text-sm hover:bg-violet-200 transition-all">
+              <button
+                className="w-full mt-4 py-2 bg-violet-100 text-violet-700 rounded-lg font-medium text-sm hover:bg-violet-200 transition-all"
+                onClick={() => {
+                  if (!analysis || !selectedAd || !onGenerateBrief) return;
+                  onGenerateBrief({
+                    product_name: selectedAd.page_name || '',
+                    product_description: analysis.creative_brief?.key_message || '',
+                    target_audience: analysis.target_audience_signals?.demographics || '',
+                    objective: analysis.creative_brief?.objective || '',
+                    budget_level: 'medium'
+                  });
+                }}
+              >
                 Generate My Version
               </button>
             </div>
@@ -1121,10 +1186,11 @@ function CompetitorSpy({ store }) {
 // ============================================================================
 // AI GENERATE (Hooks, Scripts, Brief, Localizer)
 // ============================================================================
-function AIGenerate({ store }) {
+function AIGenerate({ store, prefillBrief, onPrefillApplied }) {
   const [activeGen, setActiveGen] = useState('hooks');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const [copiedHookIndex, setCopiedHookIndex] = useState(null);
 
   // Form states
   const [hookForm, setHookForm] = useState({
@@ -1154,6 +1220,16 @@ function AIGenerate({ store }) {
     objective: '',
     budget_level: 'medium'
   });
+
+  useEffect(() => {
+    if (!prefillBrief) return;
+    setActiveGen('brief');
+    setBriefForm(prev => ({
+      ...prev,
+      ...prefillBrief
+    }));
+    onPrefillApplied?.();
+  }, [prefillBrief, onPrefillApplied]);
 
   const generators = [
     { id: 'hooks', label: 'Hooks', icon: <Zap size={18} /> },
@@ -1432,8 +1508,18 @@ function AIGenerate({ store }) {
                   <div className="flex items-center gap-2 mt-2">
                     <span className="text-xs px-2 py-0.5 bg-violet-100 text-violet-700 rounded">{hook.framework}</span>
                     <span className="text-xs text-gray-400">{hook.best_for}</span>
-                    <button className="ml-auto text-gray-400 hover:text-gray-600">
-                      <Copy size={14} />
+                    <button
+                      className="ml-auto text-gray-400 hover:text-gray-600"
+                      onClick={() => {
+                        const text = hook.hook || '';
+                        if (navigator.clipboard?.writeText) {
+                          navigator.clipboard.writeText(text).catch(() => {});
+                        }
+                        setCopiedHookIndex(idx);
+                        setTimeout(() => setCopiedHookIndex(null), 1500);
+                      }}
+                    >
+                      {copiedHookIndex === idx ? <Check size={14} /> : <Copy size={14} />}
                     </button>
                   </div>
                 </div>
