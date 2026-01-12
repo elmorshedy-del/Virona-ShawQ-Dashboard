@@ -15,8 +15,10 @@ import aibudgetRouter from './routes/aibudget.js';
 import metaRouter from './routes/meta.js';
 import exchangeRateRoutes from './routes/exchangeRate.js';
 import creativeIntelligenceRouter from './routes/creativeIntelligence.js';
+import creativeStudioRouter from './routes/creativeStudio.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
+import { runMigration as runCreativeStudioMigration } from './db/creativeStudioMigration.js';
 import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
 import { syncMetaData } from './services/metaService.js';
@@ -50,6 +52,7 @@ runWhatIfMigration();
 
 // Run Creative Intelligence migration
 runCreativeIntelligenceMigration();
+runCreativeStudioMigration();
 
 // Schedule creative funnel summaries (daily/weekly + spend reset checks)
 scheduleCreativeFunnelSummaryJobs();
@@ -99,6 +102,7 @@ app.use('/api/aibudget', aibudgetRouter);
 app.use('/api/meta', metaRouter);
 app.use('/api/exchange-rates', exchangeRateRoutes);
 app.use('/api/creative-intelligence', creativeIntelligenceRouter);
+app.use('/api/creative-studio', creativeStudioRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');

@@ -18,6 +18,7 @@ import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysis from './components/CreativeAnalysis.jsx';
 import CreativeIntelligence from './components/CreativeIntelligence';
+import CreativeStudio from './components/CreativeStudio';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
 
@@ -266,7 +267,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1360,17 +1361,17 @@ export default function App() {
           </>
         )}
 
-        {activeTab === 5 && (
+        {activeTab === 6 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 6 && (
+        {activeTab === 7 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 7 && (
+        {activeTab === 8 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1378,8 +1379,12 @@ export default function App() {
           />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === 9 && (
           <ExchangeRateDebug />
+        )}
+
+        {activeTab === 5 && (
+          <CreativeStudio />
         )}
       </div>
 
