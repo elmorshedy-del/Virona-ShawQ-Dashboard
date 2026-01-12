@@ -587,8 +587,9 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       // Parse specific funnel steps
       const purchases = getActionValue(row.actions, 'purchase') || getActionValue(row.actions, 'offsite_conversion.fb_pixel_purchase');
       const revenue = getActionValue(row.action_values, 'purchase') || getActionValue(row.action_values, 'offsite_conversion.fb_pixel_purchase');
+      const lpvFromAction = getActionValue(row.actions, 'landing_page_view');
       const lpvFromField = getMetricValue(row.landing_page_views);
-      const lpv = lpvFromField > 0 ? lpvFromField : getActionValue(row.actions, 'landing_page_view');
+      const lpv = lpvFromAction > 0 ? lpvFromAction : lpvFromField;
       const atc = getActionValue(row.actions, 'add_to_cart');
       const checkout = getActionValue(row.actions, 'initiate_checkout');
 

@@ -23,6 +23,7 @@ import { syncMetaData } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
+import { startCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -208,6 +209,9 @@ setInterval(whatifSync, 24 * 60 * 60 * 1000);
 // Fetches yesterday's final TRY→USD rate
 setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
 setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
+
+// Creative funnel summary auto-generation (daily/weekly + spend reset check)
+startCreativeFunnelSummaryJobs();
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
