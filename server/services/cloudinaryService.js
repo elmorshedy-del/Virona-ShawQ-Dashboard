@@ -6,11 +6,20 @@ import axios from 'axios';
 import stream from 'stream';
 
 // Configure Cloudinary
-cloudinary.config({
+const cloudinaryConfig = {
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true
+};
+
+const hasExplicitConfig = Boolean(
+  cloudinaryConfig.cloud_name &&
+  cloudinaryConfig.api_key &&
+  cloudinaryConfig.api_secret
+);
+
+cloudinary.config(hasExplicitConfig ? cloudinaryConfig : { secure: true });
 
 // ============================================================================
 // VIDEO UPLOAD
