@@ -717,6 +717,7 @@ function VideoResizer({ store }) {
   const [videoUrl, setVideoUrl] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [downloadingVersion, setDownloadingVersion] = useState(null);
   const [versions, setVersions] = useState(null);
   const [smartCrop, setSmartCrop] = useState(true);
   const [videoInfo, setVideoInfo] = useState(null);
@@ -724,16 +725,33 @@ function VideoResizer({ store }) {
   const [previewVersion, setPreviewVersion] = useState(null);
   const fileInputRef = useRef(null);
 
-  const handleDownload = async (version) => {
-    const filename = `${version.name}_${version.width}x${version.height}.mp4`;
-    const downloadUrl = `${API_BASE}/creative-studio/video/download?url=${encodeURIComponent(version.downloadUrl)}&filename=${encodeURIComponent(filename)}`;
-
+  const triggerDownload = (url, filename) => {
     const link = document.createElement('a');
-    link.href = downloadUrl;
+    link.href = url;
     link.download = filename;
+    link.rel = 'noreferrer';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  const handleDownload = async (version) => {
+    const filename = `${version.name}_${version.width}x${version.height}.mp4`;
+    setDownloadingVersion(version.name);
+    try {
+      const response = await fetch(version.url);
+      if (!response.ok) throw new Error('Download failed');
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      triggerDownload(blobUrl, filename);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    } catch (error) {
+      console.error('Download failed:', error);
+      const downloadUrl = `${API_BASE}/creative-studio/video/download?url=${encodeURIComponent(version.url)}&filename=${encodeURIComponent(filename)}`;
+      triggerDownload(downloadUrl, filename);
+    } finally {
+      setDownloadingVersion(null);
+    }
   };
 
   const handleVideoUpload = async (e) => {
@@ -799,19 +817,23 @@ function VideoResizer({ store }) {
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Video Resizer</h2>
-        <p className="text-gray-500">Upload a video and get all Meta ad dimensions with AI smart crop</p>
-      </div>
+    <div className="min-h-[calc(100vh-56px)] bg-gradient-to-br from-slate-50 via-white to-violet-50/70 py-10 px-6">
+      <div className="max-w-6xl mx-auto">
+        <div className="mb-8">
+          <div className="inline-flex items-center gap-2 rounded-full bg-violet-100/70 px-4 py-1 text-xs font-semibold uppercase tracking-wide text-violet-700">
+            AI Video Studio
+          </div>
+          <h2 className="text-3xl font-bold text-gray-900 mt-3">Video Resizer</h2>
+          <p className="text-gray-500 mt-2">Upload a video and get all Meta ad dimensions with AI smart crop</p>
+        </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Upload Section */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <Upload size={18} />
-            Upload Video
-          </h3>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Upload Section */}
+          <div className="bg-white/90 backdrop-blur rounded-3xl p-6 shadow-lg shadow-violet-100/50 border border-gray-100 transition-all hover:-translate-y-1 hover:shadow-xl">
+            <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+              <Upload size={18} />
+              Upload Video
+            </h3>
 
           <input
             ref={fileInputRef}
@@ -824,7 +846,7 @@ function VideoResizer({ store }) {
           {!videoUrl ? (
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full h-48 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:border-violet-400 hover:bg-violet-50 transition-all"
+              className="w-full h-48 border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-gray-400 hover:border-violet-400 hover:bg-violet-50 transition-all"
             >
               <Film size={32} className="mb-2" />
               <span>Click to upload video</span>
@@ -835,7 +857,7 @@ function VideoResizer({ store }) {
               <video
                 src={videoUrl}
                 controls
-                className="w-full rounded-lg bg-black"
+                className="w-full rounded-2xl bg-black shadow-md"
               />
               {videoInfo && (
                 <div className="flex items-center gap-4 text-sm text-gray-500">
@@ -854,7 +876,7 @@ function VideoResizer({ store }) {
           )}
 
           {/* Smart Crop Toggle */}
-          <label className="flex items-center justify-between mt-4 p-3 bg-gray-50 rounded-lg cursor-pointer">
+          <label className="flex items-center justify-between mt-4 p-3 bg-gray-50 rounded-xl cursor-pointer border border-gray-100">
             <div>
               <span className="font-medium text-gray-900">AI Smart Crop</span>
               <p className="text-xs text-gray-500">Detect faces & products for optimal cropping</p>
@@ -871,7 +893,7 @@ function VideoResizer({ store }) {
           <button
             onClick={handleResize}
             disabled={!videoInfo || processing || uploading}
-            className="w-full mt-4 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 hover:from-violet-700 hover:to-purple-700 transition-all disabled:opacity-50"
+            className="w-full mt-4 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 hover:from-violet-700 hover:to-purple-700 transition-all disabled:opacity-50 shadow-md shadow-violet-200/60"
           >
             {uploading ? (
               <>
@@ -890,61 +912,69 @@ function VideoResizer({ store }) {
               </>
             )}
           </button>
-        </div>
+          </div>
 
-        {/* Results Section */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <Layers size={18} />
-            Output Versions
-          </h3>
+          {/* Results Section */}
+          <div className="bg-white/90 backdrop-blur rounded-3xl p-6 shadow-lg shadow-violet-100/50 border border-gray-100 transition-all hover:-translate-y-1 hover:shadow-xl">
+            <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+              <Layers size={18} />
+              Output Versions
+            </h3>
 
-          {!versions ? (
-            <div className="h-48 flex items-center justify-center text-gray-400">
-              <div className="text-center">
-                <Layers size={32} className="mx-auto mb-2 opacity-50" />
-                <p>Upload and process a video to see results</p>
+            {!versions ? (
+              <div className="h-48 flex items-center justify-center text-gray-400">
+                <div className="text-center">
+                  <Layers size={32} className="mx-auto mb-2 opacity-50" />
+                  <p>Upload and process a video to see results</p>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {Object.entries(versions).map(([key, version]) => (
-                <div
-                  key={key}
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer transition-all"
-                  onClick={() => setPreviewVersion(version)}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="relative">
-                      <img
-                        src={version.thumbnail}
-                        alt={version.name}
-                        className="w-16 h-10 object-cover rounded bg-gray-200"
-                      />
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded opacity-0 hover:opacity-100 transition-opacity">
-                        <Play size={16} className="text-white" />
+            ) : (
+              <div className="space-y-3">
+                {Object.entries(versions).map(([key, version]) => (
+                  <div
+                    key={key}
+                    className="group flex items-center justify-between p-3 bg-gray-50 rounded-xl hover:bg-gray-100 cursor-pointer transition-all"
+                    onClick={() => setPreviewVersion(version)}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="relative">
+                        <img
+                          src={version.thumbnail}
+                          alt={version.name}
+                          className="w-16 h-10 object-cover rounded-lg bg-gray-200"
+                          loading="lazy"
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Play size={16} className="text-white" />
+                        </div>
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-900 text-sm">{version.name.replace('_', ' ')}</p>
+                        <p className="text-xs text-gray-500">{version.width}×{version.height} ({version.ratio})</p>
                       </div>
                     </div>
-                    <div>
-                      <p className="font-medium text-gray-900 text-sm">{version.name.replace('_', ' ')}</p>
-                      <p className="text-xs text-gray-500">{version.width}×{version.height} ({version.ratio})</p>
-                    </div>
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleDownload(version);
+                      }}
+                      className="px-3 py-1.5 bg-violet-100 text-violet-700 text-xs font-medium rounded-lg hover:bg-violet-200 transition-all flex items-center gap-2"
+                    >
+                      {downloadingVersion === version.name ? (
+                        <>
+                          <RefreshCw size={12} className="animate-spin" />
+                          Downloading
+                        </>
+                      ) : (
+                        'Download'
+                      )}
+                    </button>
                   </div>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleDownload(version);
-                    }}
-                    className="px-3 py-1.5 bg-violet-100 text-violet-700 text-xs font-medium rounded-lg hover:bg-violet-200 transition-all"
-                  >
-                    Download
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
 
       {previewVersion && (
         <div
@@ -987,15 +1017,25 @@ function VideoResizer({ store }) {
               </button>
               <button
                 onClick={() => handleDownload(previewVersion)}
-                className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 flex items-center gap-2"
+                className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 flex items-center gap-2 shadow-md shadow-violet-200/60"
               >
-                <Download size={16} />
-                Download
+                {downloadingVersion === previewVersion.name ? (
+                  <>
+                    <RefreshCw size={16} className="animate-spin" />
+                    Downloading
+                  </>
+                ) : (
+                  <>
+                    <Download size={16} />
+                    Download
+                  </>
+                )}
               </button>
             </div>
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
