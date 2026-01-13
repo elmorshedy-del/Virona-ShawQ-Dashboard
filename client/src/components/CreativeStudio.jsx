@@ -174,6 +174,8 @@ function AdEditor({ store }) {
   const [isMagicLoading, setIsMagicLoading] = useState(false);
   const [critique, setCritique] = useState(null);
   const [isCritiqueLoading, setIsCritiqueLoading] = useState(false);
+  const [colorRecommendations, setColorRecommendations] = useState([]);
+  const [colorRecommendationLoading, setColorRecommendationLoading] = useState(false);
 
   const adRef = useRef(null);
 
@@ -193,6 +195,33 @@ function AdEditor({ store }) {
       document.body.removeChild(script);
     };
   }, []);
+
+  const getImageInlineData = async () => {
+    if (!image) return null;
+
+    if (image.startsWith('data:image')) {
+      return {
+        data: image.split(',')[1],
+        mimeType: image.split(';')[0].split(':')[1]
+      };
+    }
+
+    const response = await fetch(image, { mode: 'cors' });
+    if (!response.ok) {
+      throw new Error('Unable to load image for Gemini analysis.');
+    }
+    const blob = await response.blob();
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to read image data.'));
+      reader.readAsDataURL(blob);
+    });
+    return {
+      data: dataUrl.split(',')[1],
+      mimeType: dataUrl.split(';')[0].split(':')[1]
+    };
+  };
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
@@ -392,6 +421,60 @@ function AdEditor({ store }) {
       alert("Voiceover generation failed. Please try again.");
     } finally {
       setIsAudioLoading(false);
+    }
+  };
+
+  const recommendTextColors = async () => {
+    setColorRecommendationLoading(true);
+    try {
+      const inlineData = await getImageInlineData();
+      if (!inlineData) {
+        alert('Please upload an image to get color recommendations.');
+        return;
+      }
+
+      const prompt = `Analyze this ad image and recommend 3-5 text colors for on-creative readability and premium tone.
+Return JSON with a "recommendations" array of objects:
+{ "recommendations": [ { "color": "#FFFFFF", "reason": "High contrast on dark background" } ] }.
+Only include hex colors and short reasons.`;
+
+      const payload = {
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inlineData }
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              recommendations: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    color: { type: "STRING" },
+                    reason: { type: "STRING" }
+                  },
+                  required: ["color", "reason"]
+                }
+              }
+            },
+            required: ["recommendations"]
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+      setColorRecommendations(result.recommendations || []);
+    } catch (error) {
+      console.error("Color recommendation failed:", error);
+      alert('Color recommendation failed. Please try again.');
+    } finally {
+      setColorRecommendationLoading(false);
     }
   };
 
@@ -803,12 +886,34 @@ function AdEditor({ store }) {
             )}
             <div className="flex justify-between items-center">
               <span className="text-xs font-medium text-neutral-500">Colors</span>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
                 {['#ffffff', '#000000', '#f5f5dc', content.accentColor].map((c, i) => (
                   <button key={i} onClick={() => updateContent('textColor', c)} className={`w-5 h-5 rounded-full border border-neutral-200 shadow-sm ${content.textColor === c ? 'ring-1 ring-offset-1 ring-black' : ''}`} style={{ backgroundColor: c }} />
                 ))}
+                <button
+                  onClick={recommendTextColors}
+                  disabled={colorRecommendationLoading}
+                  className="text-[9px] uppercase tracking-widest font-semibold text-neutral-500 border border-neutral-200 px-2 py-1 rounded hover:text-black hover:border-neutral-400 transition-colors"
+                >
+                  {colorRecommendationLoading ? 'Thinking...' : 'Recommend'}
+                </button>
               </div>
             </div>
+            {colorRecommendations.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {colorRecommendations.map((rec, index) => (
+                  <button
+                    key={`${rec.color}-${index}`}
+                    onClick={() => updateContent('textColor', rec.color)}
+                    className="flex items-center gap-1 rounded-full border border-neutral-200 px-2 py-1 text-[9px] uppercase tracking-widest text-neutral-500 hover:text-black hover:border-neutral-400 transition-colors"
+                    title={rec.reason}
+                  >
+                    <span className="w-3 h-3 rounded-full border border-neutral-200" style={{ backgroundColor: rec.color }} />
+                    {rec.color}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
