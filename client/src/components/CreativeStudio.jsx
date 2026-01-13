@@ -174,6 +174,9 @@ function AdEditor({ store }) {
   const [isMagicLoading, setIsMagicLoading] = useState(false);
   const [critique, setCritique] = useState(null);
   const [isCritiqueLoading, setIsCritiqueLoading] = useState(false);
+  const [isColorLoading, setIsColorLoading] = useState(false);
+  const [colorRecommendations, setColorRecommendations] = useState([]);
+  const [colorRecommendationError, setColorRecommendationError] = useState(null);
 
   const adRef = useRef(null);
 
@@ -197,6 +200,8 @@ function AdEditor({ store }) {
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
+      setColorRecommendations([]);
+      setColorRecommendationError(null);
       const reader = new FileReader();
       reader.onloadend = () => {
         setImage(reader.result);
@@ -429,6 +434,62 @@ function AdEditor({ store }) {
       console.error("Strategy failed:", error);
     } finally {
       setIsStrategyLoading(false);
+    }
+  };
+
+  const recommendTextColors = async () => {
+    if (!image || !image.startsWith('data:image')) {
+      alert("Upload an image to get Gemini color recommendations.");
+      return;
+    }
+
+    setIsColorLoading(true);
+    setColorRecommendationError(null);
+    try {
+      const imageBase64 = image.split(',')[1];
+      const imageMime = image.split(';')[0].split(':')[1];
+      const prompt = `You are a luxury-performance creative director.
+      Analyze the ad image and recommend 3-5 text overlay colors for readability and premium tone.
+      Return JSON with an array "colors", each with "hex" and "reason".
+      Use valid hex values.`;
+
+      const payload = {
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: imageMime, data: imageBase64 } }
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              colors: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    hex: { type: "STRING" },
+                    reason: { type: "STRING" }
+                  },
+                  required: ["hex"]
+                }
+              }
+            },
+            required: ["colors"]
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+      setColorRecommendations(Array.isArray(result.colors) ? result.colors : []);
+    } catch (error) {
+      console.error("Color recommendation failed:", error);
+      setColorRecommendationError("Gemini could not recommend colors. Please try again.");
+    } finally {
+      setIsColorLoading(false);
     }
   };
 
@@ -803,12 +864,37 @@ function AdEditor({ store }) {
             )}
             <div className="flex justify-between items-center">
               <span className="text-xs font-medium text-neutral-500">Colors</span>
-              <div className="flex gap-2">
-                {['#ffffff', '#000000', '#f5f5dc', content.accentColor].map((c, i) => (
-                  <button key={i} onClick={() => updateContent('textColor', c)} className={`w-5 h-5 rounded-full border border-neutral-200 shadow-sm ${content.textColor === c ? 'ring-1 ring-offset-1 ring-black' : ''}`} style={{ backgroundColor: c }} />
-                ))}
+              <div className="flex items-center gap-2">
+                <div className="flex gap-2">
+                  {['#ffffff', '#000000', '#f5f5dc', content.accentColor].map((c, i) => (
+                    <button key={i} onClick={() => updateContent('textColor', c)} className={`w-5 h-5 rounded-full border border-neutral-200 shadow-sm ${content.textColor === c ? 'ring-1 ring-offset-1 ring-black' : ''}`} style={{ backgroundColor: c }} />
+                  ))}
+                </div>
+                <button
+                  onClick={recommendTextColors}
+                  disabled={isColorLoading}
+                  className="text-[10px] uppercase tracking-widest text-purple-600 hover:text-purple-800"
+                >
+                  {isColorLoading ? 'Thinking...' : 'Recommend'}
+                </button>
               </div>
             </div>
+            {colorRecommendationError && (
+              <div className="text-[10px] text-red-500">{colorRecommendationError}</div>
+            )}
+            {colorRecommendations.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {colorRecommendations.map((rec, i) => (
+                  <button
+                    key={`${rec.hex}-${i}`}
+                    onClick={() => updateContent('textColor', rec.hex)}
+                    className={`w-6 h-6 rounded-full border border-neutral-200 shadow-sm ${content.textColor === rec.hex ? 'ring-1 ring-offset-1 ring-black' : ''}`}
+                    style={{ backgroundColor: rec.hex }}
+                    title={rec.reason || 'Gemini recommendation'}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
