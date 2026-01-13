@@ -146,6 +146,35 @@ router.post('/extract-style', upload.single('image'), async (req, res) => {
 });
 
 // ============================================================================
+// GEMINI PROXY (Ad Studio Editor)
+// ============================================================================
+
+router.post('/gemini', async (req, res) => {
+  try {
+    const { model = 'gemini-2.5-flash-preview-09-2025', payload } = req.body || {};
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: 'GEMINI_API_KEY is not configured.' });
+    }
+
+    if (!payload) {
+      return res.status(400).json({ error: 'Missing payload.' });
+    }
+
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      payload,
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+
+    return res.json(response.data);
+  } catch (error) {
+    console.error('Gemini proxy error:', error.response?.data || error.message);
+    return res.status(500).json({ error: error.response?.data || error.message });
+  }
+});
+
+// ============================================================================
 // COMPETITOR SPY
 // ============================================================================
 

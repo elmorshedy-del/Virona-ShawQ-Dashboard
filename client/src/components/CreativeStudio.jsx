@@ -6,9 +6,10 @@ import {
   Type, Image as ImageIcon, Download, Layout, Palette, Move,
   Maximize, Smartphone, Monitor, Check, Undo, Upload, Wand2,
   Search, FileText, Video, Sparkles, Copy, RefreshCw, ChevronDown,
-  Zap, Target, TrendingUp, AlertTriangle, CheckCircle, X, 
+  Zap, Target, TrendingUp, AlertTriangle, CheckCircle, X,
   Play, Pause, SkipForward, Clock, Languages, Globe, Settings,
-  Camera, Film, Layers, Eye, Save, Trash2, Plus, ArrowRight
+  Camera, Film, Layers, Eye, Save, Trash2, Plus, ArrowRight,
+  Loader2, MessageSquare, Mic, Calendar, Briefcase, Send, Activity, Star
 } from 'lucide-react';
 
 const API_BASE = '/api';
@@ -287,167 +288,628 @@ const AdCanvas = forwardRef(function AdCanvas(
 });
 
 function AdEditor({ store }) {
-  const [format, setFormat] = useState('post');
-  const [layout, setLayout] = useState('centered');
-  const [image, setImage] = useState(null);
+  const adEditorFonts = {
+    classic: "'Playfair Display', serif",
+    modern: "'Montserrat', sans-serif",
+    minimal: "'Lato', sans-serif"
+  };
+
+  const DEFAULT_IMAGE = "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?q=80&w=1000&auto=format&fit=crop";
+
+  const addWavHeader = (pcmData, sampleRate = 24000, numChannels = 1, bitDepth = 16) => {
+    const byteRate = sampleRate * numChannels * (bitDepth / 8);
+    const blockAlign = numChannels * (bitDepth / 8);
+    const dataSize = pcmData.byteLength;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    const writeString = (dataView, offset, string) => {
+      for (let i = 0; i < string.length; i += 1) {
+        dataView.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitDepth, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    const pcmArray = new Uint8Array(pcmData);
+    const bufferArray = new Uint8Array(buffer);
+    bufferArray.set(pcmArray, 44);
+
+    return buffer;
+  };
+
+  const [format, setFormat] = useState('square');
+  const [image, setImage] = useState(DEFAULT_IMAGE);
   const [content, setContent] = useState({
-    headline: 'NEW COLLECTION',
-    subhead: 'Spring / Summer 2026',
+    headline: 'NEW SEASON',
+    subhead: 'Spring / Summer Collection 2026',
     cta: 'SHOP NOW',
+    showOverlay: true,
     overlayOpacity: 30,
     textColor: '#ffffff',
     accentColor: '#000000',
-    bgColor: '#1a1a1a',
-    fontStyle: 'modern',
-    textAlign: 'center',
-    showLogo: false
+    fontStyle: 'classic',
+    layout: 'centered'
   });
-  const [downloading, setDownloading] = useState(false);
-  const [extractingStyle, setExtractingStyle] = useState(false);
-  const [savedCreatives, setSavedCreatives] = useState([]);
-  const adRef = useRef(null);
-  const exportRef = useRef(null);
-  const fileInputRef = useRef(null);
 
-  // Load Google Fonts
+  const [downloading, setDownloading] = useState(false);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+
+  const [caption, setCaption] = useState('');
+  const [isCaptionLoading, setIsCaptionLoading] = useState(false);
+  const [strategy, setStrategy] = useState(null);
+  const [isStrategyLoading, setIsStrategyLoading] = useState(false);
+
+  const [audioUrl, setAudioUrl] = useState(null);
+  const [isAudioLoading, setIsAudioLoading] = useState(false);
+
+  const [magicCommand, setMagicCommand] = useState('');
+  const [isMagicLoading, setIsMagicLoading] = useState(false);
+  const [critique, setCritique] = useState(null);
+  const [isCritiqueLoading, setIsCritiqueLoading] = useState(false);
+
+  const adRef = useRef(null);
+
   useEffect(() => {
     const link = document.createElement('link');
-    link.href = "https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@300;400;500;600&family=Montserrat:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap";
-    link.rel = "stylesheet";
+    link.href = 'https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Montserrat:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap';
+    link.rel = 'stylesheet';
     document.head.appendChild(link);
-    return () => document.head.removeChild(link);
+
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    script.async = true;
+    document.body.appendChild(script);
+
+    return () => {
+      document.head.removeChild(link);
+      document.body.removeChild(script);
+    };
   }, []);
 
-  // Handle image upload
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => setImage(reader.result);
+      reader.onloadend = () => {
+        setImage(reader.result);
+      };
       reader.readAsDataURL(file);
     }
   };
 
-  // Extract style from reference image
-  const handleExtractStyle = async () => {
-    if (!image) return;
-
-    setExtractingStyle(true);
-    try {
-      const base64 = image.split(',')[1];
-      const response = await fetch(withStore('/creative-studio/extract-style', store), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_url: image })
-      });
-
-      const data = await response.json();
-      if (data.success && data.style) {
-        setContent(prev => ({
-          ...prev,
-          textColor: data.style.colors?.text || prev.textColor,
-          accentColor: data.style.colors?.accent || prev.accentColor,
-          bgColor: data.style.colors?.background || prev.bgColor,
-          fontStyle: data.style.fontCategory === 'serif' ? 'classic' : 'modern',
-          overlayOpacity: data.style.overlayOpacity || prev.overlayOpacity
-        }));
-      }
-    } catch (error) {
-      console.error('Style extraction failed:', error);
-    }
-    setExtractingStyle(false);
-  };
-
-  // Apply preset
-  const applyPreset = (presetKey) => {
-    const p = presets[presetKey];
-    setContent(prev => ({
-      ...prev,
-      textColor: p.textColor,
-      bgColor: p.bgColor,
-      accentColor: p.accentColor,
-      overlayOpacity: p.overlayOpacity
-    }));
-  };
-
-  // Update content helper
   const updateContent = (key, value) => {
     setContent(prev => ({ ...prev, [key]: value }));
   };
 
-  // Export image
   const handleDownload = async () => {
-    if (!exportRef.current) return;
-
+    if (!window.html2canvas || !adRef.current) return;
     setDownloading(true);
     try {
-      // Dynamic import html2canvas
-      const html2canvas = (await import('html2canvas')).default;
-
-      const canvas = await html2canvas(exportRef.current, {
+      const canvas = await window.html2canvas(adRef.current, {
         useCORS: true,
         scale: 2,
-        backgroundColor: null,
-        logging: false
+        backgroundColor: null
       });
-
       const link = document.createElement('a');
-      link.download = `creative-${format}-${Date.now()}.png`;
+      link.download = `virona-ad-${Date.now()}.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     } catch (err) {
-      console.error("Export failed:", err);
-      alert("Export failed. Try uploading your own image.");
+      console.error('Export failed:', err);
+      alert('Could not export image. Try uploading your own image!');
     }
     setDownloading(false);
   };
 
-  // Get current dimensions
-  const dims = dimensions[format];
-  const scale = Math.min(1, 500 / dims.width, 600 / dims.height);
+  const callGemini = async (payload, model = 'gemini-2.5-flash-preview-09-2025') => {
+    const response = await fetch(`${API_BASE}/creative-studio/gemini`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, payload })
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message || data.error);
+    return data;
+  };
+
+  const generateAdConcept = async () => {
+    setIsAiLoading(true);
+    try {
+      let imageBase64 = null;
+      let imageMime = null;
+      if (image.startsWith('data:image')) {
+        imageBase64 = image.split(',')[1];
+        imageMime = image.split(';')[0].split(':')[1];
+      }
+
+      const prompt = `You are a creative director for Virona (high-fashion).
+      Generate ad copy based on the image and this vibe: "${aiPrompt || 'Luxury, Editorial, Timeless'}".
+      If no image is attached, assume a high-fashion generic context.
+      Return JSON.`;
+
+      const payload = {
+        contents: [{
+          parts: [
+            { text: prompt },
+            ...(imageBase64 ? [{ inlineData: { mimeType: imageMime, data: imageBase64 } }] : [])
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              headline: { type: 'STRING' },
+              subhead: { type: 'STRING' },
+              cta: { type: 'STRING' },
+              accentColor: { type: 'STRING' },
+              textColor: { type: 'STRING' }
+            }
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+
+      setContent(prev => ({
+        ...prev,
+        headline: result.headline,
+        subhead: result.subhead,
+        cta: result.cta,
+        accentColor: result.accentColor,
+        textColor: result.textColor
+      }));
+    } catch (error) {
+      console.error('AI Generation failed:', error);
+      alert('AI Generation failed. Please try again.');
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
+  const translateContent = async (langName) => {
+    setIsAiLoading(true);
+    try {
+      const prompt = `Translate this fashion ad copy to ${langName}. Keep the tone luxurious.
+      Input JSON: ${JSON.stringify({ headline: content.headline, subhead: content.subhead, cta: content.cta })}.
+      Return JSON with same keys.`;
+
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              headline: { type: 'STRING' },
+              subhead: { type: 'STRING' },
+              cta: { type: 'STRING' }
+            }
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+
+      setContent(prev => ({ ...prev, ...result }));
+    } catch (error) {
+      console.error('Translation failed:', error);
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
+  const generateCaption = async () => {
+    setIsCaptionLoading(true);
+    try {
+      const prompt = `Write a short, engaging Instagram caption for a luxury fashion brand post.
+      Ad Headline: "${content.headline}"
+      Ad Subhead: "${content.subhead}"
+      Vibe: High-fashion, elegant, minimal.
+      Include 5-7 relevant hashtags.
+      Do not use emojis unless they are very minimal (like ✨ or 🤍).`;
+
+      const payload = { contents: [{ parts: [{ text: prompt }] }] };
+      const data = await callGemini(payload);
+      setCaption(data.candidates[0].content.parts[0].text);
+    } catch (error) {
+      console.error('Caption failed:', error);
+    } finally {
+      setIsCaptionLoading(false);
+    }
+  };
+
+  const generateVoiceover = async () => {
+    setIsAudioLoading(true);
+    try {
+      const textToSay = `Virona. ${content.headline}. ${content.subhead}. ${content.cta}.`;
+
+      const payload = {
+        contents: [{ parts: [{ text: textToSay }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: 'Kore'
+              }
+            }
+          }
+        }
+      };
+
+      const data = await callGemini(payload, 'gemini-2.5-flash-preview-tts');
+
+      const base64Audio = data.candidates[0].content.parts[0].inlineData.data;
+      const binaryString = window.atob(base64Audio);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i += 1) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const wavBuffer = addWavHeader(bytes.buffer, 24000);
+      const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+      setAudioUrl(url);
+    } catch (error) {
+      console.error('TTS failed:', error);
+      alert('Voiceover generation failed. Please try again.');
+    } finally {
+      setIsAudioLoading(false);
+    }
+  };
+
+  const generateStrategy = async () => {
+    setIsStrategyLoading(true);
+    try {
+      const prompt = `Create a 3-phase mini launch strategy for this fashion ad.
+      Product: ${content.headline} - ${content.subhead}.
+      Format as JSON list with keys: phase, title, concept.
+      Phases: Teaser, Launch, Sustain.
+      Keep concepts one sentence, very high-fashion and mysterious.`;
+
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                phase: { type: 'STRING' },
+                title: { type: 'STRING' },
+                concept: { type: 'STRING' }
+              }
+            }
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+      setStrategy(result);
+    } catch (error) {
+      console.error('Strategy failed:', error);
+    } finally {
+      setIsStrategyLoading(false);
+    }
+  };
+
+  const handleMagicEdit = async () => {
+    if (!magicCommand.trim()) return;
+    setIsMagicLoading(true);
+    try {
+      const prompt = `You are a state manager for a fashion ad editor.
+      Current State JSON: ${JSON.stringify(content)}.
+      User Instruction: "${magicCommand}".
+      Available layouts: 'centered', 'split', 'framed'.
+      Available fontStyles: 'classic' (serif), 'modern' (sans), 'minimal' (thin).
+
+      Return a JSON object with ONLY the keys that need to change to satisfy the instruction.
+      For example, if user says "Make it dark mode", return { "textColor": "#ffffff", "accentColor": "#000000" } (if split layout) or similar.
+      Do not change text content unless explicitly asked.`;
+
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              headline: { type: 'STRING' },
+              subhead: { type: 'STRING' },
+              cta: { type: 'STRING' },
+              showOverlay: { type: 'BOOLEAN' },
+              overlayOpacity: { type: 'NUMBER' },
+              textColor: { type: 'STRING' },
+              accentColor: { type: 'STRING' },
+              fontStyle: { type: 'STRING' },
+              layout: { type: 'STRING' }
+            }
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const changes = JSON.parse(data.candidates[0].content.parts[0].text);
+      setContent(prev => ({ ...prev, ...changes }));
+      setMagicCommand('');
+    } catch (error) {
+      console.error('Magic Edit failed:', error);
+      alert('Could not process command.');
+    } finally {
+      setIsMagicLoading(false);
+    }
+  };
+
+  const generateCritique = async () => {
+    setIsCritiqueLoading(true);
+    try {
+      let imageBase64 = null;
+      let imageMime = null;
+      if (image.startsWith('data:image')) {
+        imageBase64 = image.split(',')[1];
+        imageMime = image.split(';')[0].split(':')[1];
+      }
+
+      const prompt = `Analyze this fashion ad design.
+      Headline: "${content.headline}".
+      Subhead: "${content.subhead}".
+      Layout: ${content.layout}.
+      Colors: Text ${content.textColor}, Accent ${content.accentColor}.
+
+      Rate "Luxury" (0-100) and "Impact" (0-100).
+      Provide a 1-sentence constructive critique on how to improve it.
+      Return JSON.`;
+
+      const payload = {
+        contents: [{
+          parts: [
+            { text: prompt },
+            ...(imageBase64 ? [{ inlineData: { mimeType: imageMime, data: imageBase64 } }] : [])
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              luxuryScore: { type: 'NUMBER' },
+              impactScore: { type: 'NUMBER' },
+              feedback: { type: 'STRING' }
+            }
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+      setCritique(result);
+    } catch (error) {
+      console.error('Critique failed:', error);
+    } finally {
+      setIsCritiqueLoading(false);
+    }
+  };
+
+  const getDimensions = () => {
+    switch (format) {
+      case 'story':
+        return { width: 360, height: 640 };
+      case 'landscape':
+        return { width: 600, height: 338 };
+      case 'square':
+      default:
+        return { width: 500, height: 500 };
+    }
+  };
+  const dims = getDimensions();
+
+  const renderLayout = () => {
+    const commonTextStyles = {
+      fontFamily: adEditorFonts[content.fontStyle],
+      color: content.textColor,
+      textShadow: content.showOverlay ? '0 2px 10px rgba(0,0,0,0.3)' : 'none'
+    };
+
+    const CTA = (
+      <div
+        className="mt-6 px-6 py-2.5 text-sm tracking-widest uppercase font-medium border transition-colors inline-block cursor-default"
+        style={{ borderColor: content.textColor, color: content.textColor, fontFamily: adEditorFonts.modern }}
+      >
+        {content.cta}
+      </div>
+    );
+
+    const BackgroundLayer = () => (
+      <div className="absolute inset-0 w-full h-full overflow-hidden">
+        <img src={image} alt="Bg" className="w-full h-full object-cover" crossOrigin="anonymous" />
+        {content.showOverlay && (
+          <div
+            className="absolute inset-0 bg-black transition-opacity"
+            style={{ opacity: content.overlayOpacity / 100 }}
+          />
+        )}
+      </div>
+    );
+
+    switch (content.layout) {
+      case 'split':
+        return (
+          <div className="w-full h-full flex flex-col bg-white">
+            <div className="h-2/3 relative overflow-hidden">
+              <img src={image} className="w-full h-full object-cover" crossOrigin="anonymous" alt="Product" />
+            </div>
+            <div
+              className="h-1/3 flex flex-col items-center justify-center p-6 text-center"
+              style={{ backgroundColor: content.accentColor }}
+            >
+              <h2
+                className="text-3xl mb-2"
+                style={{ fontFamily: adEditorFonts[content.fontStyle], color: '#fff' }}
+              >
+                {content.headline}
+              </h2>
+              <p
+                className="text-xs uppercase tracking-widest opacity-90"
+                style={{ fontFamily: adEditorFonts.modern, color: '#fff' }}
+              >
+                {content.subhead}
+              </p>
+              <div className="mt-4 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest">
+                {content.cta}
+              </div>
+            </div>
+          </div>
+        );
+      case 'framed':
+        return (
+          <div className="w-full h-full p-6 relative bg-white flex items-center justify-center">
+            <div className="relative w-full h-full border border-gray-200 flex flex-col">
+              <div className="flex-1 relative overflow-hidden">
+                <img src={image} className="w-full h-full object-cover" crossOrigin="anonymous" alt="Product" />
+                {content.showOverlay && <div className="absolute inset-0 bg-black/20" />}
+              </div>
+              <div className="h-auto py-6 bg-white flex flex-col items-center justify-center text-center z-10">
+                <h2
+                  className="text-2xl mb-1 text-black"
+                  style={{ fontFamily: adEditorFonts[content.fontStyle] }}
+                >
+                  {content.headline}
+                </h2>
+                <p
+                  className="text-xs text-gray-500 uppercase tracking-widest mb-3"
+                  style={{ fontFamily: adEditorFonts.modern }}
+                >
+                  {content.subhead}
+                </p>
+                <div className="text-xs border-b border-black pb-0.5 uppercase tracking-wider font-semibold">
+                  {content.cta}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      case 'centered':
+      default:
+        return (
+          <div className="w-full h-full relative flex flex-col items-center justify-center text-center p-8">
+            <BackgroundLayer />
+            <div className="relative z-10 max-w-md">
+              <p className="mb-3 text-xs md:text-sm uppercase tracking-[0.2em]" style={commonTextStyles}>
+                {content.subhead}
+              </p>
+              <h1
+                className="text-4xl md:text-5xl lg:text-6xl mb-4 leading-tight"
+                style={{ ...commonTextStyles, fontStyle: 'italic' }}
+              >
+                {content.headline}
+              </h1>
+              {CTA}
+            </div>
+          </div>
+        );
+    }
+  };
 
   return (
-    <div className="flex h-[calc(100vh-56px)]">
-      {/* Left Panel - Controls */}
-      <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto">
-        <div className="p-4 space-y-6">
-          {/* Format Selection */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              Format
-            </label>
-            <div className="grid grid-cols-5 gap-2">
-              {Object.entries(dimensions).map(([key, dim]) => (
+    <div className="min-h-screen bg-neutral-100 text-neutral-800 font-sans flex flex-col md:flex-row">
+      <div className="w-full md:w-96 bg-white border-r border-neutral-200 h-screen overflow-y-auto shadow-xl z-20 flex flex-col scrollbar-thin scrollbar-thumb-neutral-200">
+        <div className="p-6 border-b border-neutral-100 bg-white sticky top-0 z-10">
+          <h1 className="text-xl font-serif italic font-bold tracking-wide text-black">
+            Virona <span className="text-neutral-400 not-italic font-sans text-xs ml-2 font-normal">AD STUDIO</span>
+          </h1>
+        </div>
+
+        <div className="p-6 space-y-8 flex-1">
+          <div className="bg-gradient-to-br from-indigo-50 to-purple-50 p-4 rounded-lg border border-indigo-100 shadow-sm space-y-3">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-indigo-800">
+              <Sparkles size={14} className="text-indigo-600" /> AI Creative Director
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Vibe: e.g. Minimalist, Bold..."
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                className="flex-1 text-xs p-2 border border-indigo-200 rounded focus:border-indigo-400 outline-none bg-white"
+              />
+            </div>
+            <button
+              onClick={generateAdConcept}
+              disabled={isAiLoading}
+              className="w-full py-2 bg-indigo-600 text-white text-xs font-bold uppercase tracking-widest rounded hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"
+            >
+              {isAiLoading ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+              {isAiLoading ? 'Designing...' : 'Magic Auto-Fill'}
+            </button>
+
+            <div className="pt-2 border-t border-indigo-100 mt-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Or ask: 'Make it dark mode', 'Change layout'..."
+                  value={magicCommand}
+                  onChange={(e) => setMagicCommand(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleMagicEdit()}
+                  className="flex-1 text-xs p-2 border border-indigo-200 rounded focus:border-indigo-400 outline-none bg-white placeholder:text-indigo-300"
+                />
                 <button
-                  key={key}
-                  onClick={() => setFormat(key)}
-                  className={`flex flex-col items-center p-2 rounded-lg border-2 transition-all ${
-                    format === key
-                      ? 'border-violet-500 bg-violet-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
+                  onClick={handleMagicEdit}
+                  disabled={isMagicLoading || !magicCommand}
+                  className="p-2 bg-white border border-indigo-200 text-indigo-600 rounded hover:bg-indigo-50 disabled:opacity-50"
                 >
-                  <span className="text-lg">{dim.icon}</span>
-                  <span className="text-[10px] text-gray-500 mt-1">{dim.ratio}</span>
+                  {isMagicLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
                 </button>
-              ))}
+              </div>
             </div>
           </div>
 
-          {/* Layout Selection */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              Layout
-            </label>
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { id: 'square', icon: <Layout size={16} />, label: 'Post' },
+                { id: 'story', icon: <Smartphone size={16} />, label: 'Story' },
+                { id: 'landscape', icon: <Monitor size={16} />, label: 'Banner' }
+              ].map((fmt) => (
+                <button
+                  key={fmt.id}
+                  onClick={() => setFormat(fmt.id)}
+                  className={`flex flex-col items-center justify-center p-2 rounded border transition-all ${
+                    format === fmt.id ? 'border-black bg-neutral-50 text-black' : 'border-neutral-200 text-neutral-500'
+                  }`}
+                >
+                  {fmt.icon}
+                  <span className="text-[10px] mt-1 font-medium">{fmt.label}</span>
+                </button>
+              ))}
+            </div>
             <div className="flex gap-2">
               {['centered', 'split', 'framed'].map(l => (
                 <button
                   key={l}
-                  onClick={() => setLayout(l)}
-                  className={`flex-1 py-2 text-xs uppercase tracking-wide rounded-lg border-2 font-medium transition-all ${
-                    layout === l
-                      ? 'bg-gray-900 text-white border-gray-900'
-                      : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                  onClick={() => updateContent('layout', l)}
+                  className={`flex-1 py-1.5 text-[10px] uppercase tracking-wide border ${
+                    content.layout === l ? 'bg-black text-white border-black' : 'bg-white text-neutral-600 border-neutral-200'
                   }`}
                 >
                   {l}
@@ -456,262 +918,236 @@ function AdEditor({ store }) {
             </div>
           </div>
 
-          {/* Image Upload */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              Background Image
-            </label>
-            <div className="relative">
+          <div className="space-y-4 border-t border-neutral-100 pt-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-neutral-400">
+                <Type size={14} /> Content & Audio
+              </div>
+              <div className="flex gap-1">
+                {['EN', 'FR', 'IT'].map(lang => (
+                  <button
+                    key={lang}
+                    onClick={() => translateContent(lang)}
+                    className="text-[10px] font-bold text-neutral-400 hover:text-black px-1.5 py-0.5 rounded transition-colors"
+                  >
+                    {lang}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-3">
               <input
-                ref={fileInputRef}
+                type="text"
+                value={content.headline}
+                onChange={(e) => updateContent('headline', e.target.value)}
+                className="w-full p-2 border border-neutral-300 rounded focus:border-black outline-none font-serif text-lg"
+                placeholder="Headline"
+              />
+              <input
+                type="text"
+                value={content.subhead}
+                onChange={(e) => updateContent('subhead', e.target.value)}
+                className="w-full p-2 border border-neutral-300 rounded focus:border-black outline-none text-sm"
+                placeholder="Subhead"
+              />
+              <input
+                type="text"
+                value={content.cta}
+                onChange={(e) => updateContent('cta', e.target.value)}
+                className="w-full p-2 border border-neutral-300 rounded focus:border-black outline-none text-sm font-medium uppercase"
+                placeholder="CTA"
+              />
+            </div>
+
+            <div className="bg-neutral-50 p-3 rounded border border-neutral-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={generateVoiceover}
+                  disabled={isAudioLoading}
+                  className="w-8 h-8 flex items-center justify-center bg-black text-white rounded-full hover:bg-neutral-800 transition-colors"
+                >
+                  {isAudioLoading ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />}
+                </button>
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-neutral-700">Voiceover</span>
+                  <span className="text-[10px] text-neutral-400">Preview with "Kore"</span>
+                </div>
+              </div>
+              {audioUrl && (
+                <audio controls src={audioUrl} className="h-8 w-24" style={{ height: '30px' }} />
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-4 border-t border-neutral-100 pt-6">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-neutral-400">
+              <Briefcase size={14} /> Marketing Kit
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-white p-3 rounded border border-neutral-200 shadow-sm">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-[10px] font-bold uppercase text-neutral-500 flex items-center gap-1">
+                    <MessageSquare size={10} /> Social
+                  </span>
+                  <button
+                    onClick={generateCaption}
+                    disabled={isCaptionLoading}
+                    className="text-blue-600 hover:text-blue-800"
+                  >
+                    <Sparkles size={12} />
+                  </button>
+                </div>
+                {caption ? (
+                  <div className="text-[10px] text-neutral-600 leading-snug h-16 overflow-y-auto scrollbar-none border-t pt-2 border-neutral-100">
+                    {caption}
+                  </div>
+                ) : (
+                  <div className="h-16 flex items-center justify-center text-[9px] text-neutral-300 italic">
+                    Generate a caption...
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white p-3 rounded border border-neutral-200 shadow-sm relative overflow-hidden">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-[10px] font-bold uppercase text-neutral-500 flex items-center gap-1">
+                    <Activity size={10} /> Critique
+                  </span>
+                  <button
+                    onClick={generateCritique}
+                    disabled={isCritiqueLoading}
+                    className="text-orange-600 hover:text-orange-800"
+                  >
+                    <Star size={12} />
+                  </button>
+                </div>
+                {critique ? (
+                  <div className="text-[9px] h-16 overflow-y-auto scrollbar-none space-y-2 border-t pt-2 border-neutral-100">
+                    <div className="flex justify-between">
+                      <span className="font-bold text-neutral-800">Luxury: {critique.luxuryScore}/100</span>
+                      <span className="font-bold text-neutral-800">Impact: {critique.impactScore}/100</span>
+                    </div>
+                    <p className="text-neutral-500 italic leading-snug">{critique.feedback}</p>
+                  </div>
+                ) : (
+                  <div className="h-16 flex items-center justify-center text-[9px] text-neutral-300 italic">
+                    Get AI Design Review...
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white p-3 rounded border border-neutral-200 shadow-sm">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-[10px] font-bold uppercase text-neutral-500 flex items-center gap-1">
+                  <Calendar size={10} /> Rollout Plan
+                </span>
+                <button
+                  onClick={generateStrategy}
+                  disabled={isStrategyLoading}
+                  className="text-purple-600 hover:text-purple-800"
+                >
+                  <Sparkles size={12} />
+                </button>
+              </div>
+              {strategy ? (
+                <div className="text-[9px] overflow-y-auto scrollbar-none space-y-1 border-t pt-2 border-neutral-100">
+                  {strategy.map((s, i) => (
+                    <div key={i}>
+                      <span className="font-bold text-neutral-800">{s.phase}:</span>{' '}
+                      <span className="text-neutral-500">{s.concept}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[9px] text-neutral-300 italic">
+                  Generate a 3-phase launch strategy...
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-4 border-t border-neutral-100 pt-6">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-neutral-400">
+              <ImageIcon size={14} /> Visuals
+            </div>
+            <div className="relative group">
+              <input
                 type="file"
                 accept="image/*"
                 onChange={handleImageUpload}
-                className="hidden"
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
               />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="w-full h-24 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:border-violet-400 hover:bg-violet-50 transition-all"
-              >
-                {image ? (
-                  <img src={image} alt="Preview" className="h-full w-full object-cover rounded-lg" />
-                ) : (
-                  <>
-                    <Upload size={24} className="mb-1" />
-                    <span className="text-xs">Click to upload</span>
-                  </>
-                )}
-              </button>
-              {image && (
-                <button
-                  onClick={handleExtractStyle}
-                  disabled={extractingStyle}
-                  className="absolute bottom-2 right-2 px-2 py-1 bg-violet-600 text-white text-xs rounded-lg flex items-center gap-1 hover:bg-violet-700 disabled:opacity-50"
-                >
-                  <Wand2 size={12} />
-                  {extractingStyle ? 'Extracting...' : 'Extract Style'}
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Style Presets */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              Style Presets
-            </label>
-            <div className="grid grid-cols-4 gap-2">
-              {Object.entries(presets).map(([key, preset]) => (
-                <button
-                  key={key}
-                  onClick={() => applyPreset(key)}
-                  className="flex flex-col items-center p-2 rounded-lg border border-gray-200 hover:border-violet-400 transition-all group"
-                >
-                  <div
-                    className="w-8 h-8 rounded-full border-2 border-white shadow-sm"
-                    style={{ background: `linear-gradient(135deg, ${preset.bgColor}, ${preset.accentColor})` }}
-                  />
-                  <span className="text-[10px] text-gray-500 mt-1 group-hover:text-violet-600">{preset.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Content Inputs */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              Content
-            </label>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Headline</label>
-                <input
-                  type="text"
-                  value={content.headline}
-                  onChange={(e) => updateContent('headline', e.target.value)}
-                  className="w-full p-2 border border-gray-200 rounded-lg focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none text-sm"
-                  placeholder="Main headline"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Subtext</label>
-                <input
-                  type="text"
-                  value={content.subhead}
-                  onChange={(e) => updateContent('subhead', e.target.value)}
-                  className="w-full p-2 border border-gray-200 rounded-lg focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none text-sm"
-                  placeholder="Supporting text"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Button Text</label>
-                <input
-                  type="text"
-                  value={content.cta}
-                  onChange={(e) => updateContent('cta', e.target.value)}
-                  className="w-full p-2 border border-gray-200 rounded-lg focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none text-sm uppercase"
-                  placeholder="Call to action"
-                />
+              <div className="w-full h-24 border-2 border-dashed border-neutral-300 rounded flex flex-col items-center justify-center text-neutral-400 group-hover:border-neutral-400 group-hover:bg-neutral-50 transition-colors">
+                <ImageIcon className="mb-2" size={16} />
+                <span className="text-[10px] uppercase font-medium">Upload Image</span>
               </div>
             </div>
-          </div>
-
-          {/* Typography */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              Typography
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { key: 'classic', label: 'Serif' },
-                { key: 'modern', label: 'Sans' },
-                { key: 'minimal', label: 'Clean' }
-              ].map(f => (
-                <button
-                  key={f.key}
-                  onClick={() => updateContent('fontStyle', f.key)}
-                  className={`py-2 text-xs border rounded-lg transition-all ${
-                    content.fontStyle === f.key
-                      ? 'border-gray-900 bg-gray-100 font-medium'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                  style={{ fontFamily: fonts[f.key] }}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Colors */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              Colors
-            </label>
-            <div className="space-y-3">
+            {content.layout !== 'framed' && (
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-600">Text Color</span>
-                <div className="flex gap-2">
-                  {['#ffffff', '#000000', '#d4af37', '#f5f5dc'].map(c => (
-                    <button
-                      key={c}
-                      onClick={() => updateContent('textColor', c)}
-                      className={`w-6 h-6 rounded-full border-2 shadow-sm transition-all ${
-                        content.textColor === c ? 'ring-2 ring-violet-500 ring-offset-1' : 'border-gray-200'
-                      }`}
-                      style={{ backgroundColor: c }}
-                    />
-                  ))}
-                  <input
-                    type="color"
-                    value={content.textColor}
-                    onChange={(e) => updateContent('textColor', e.target.value)}
-                    className="w-6 h-6 rounded cursor-pointer"
-                  />
-                </div>
+                <span className="text-xs font-medium text-neutral-500">Overlay</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="80"
+                  value={content.overlayOpacity}
+                  onChange={(e) => updateContent('overlayOpacity', e.target.value)}
+                  className="w-24 h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-black"
+                />
               </div>
-
-              {layout !== 'framed' && (
-                <div className="space-y-2">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-gray-600">Overlay Darkness</span>
-                    <span className="text-gray-400">{content.overlayOpacity}%</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="80"
-                    value={content.overlayOpacity}
-                    onChange={(e) => updateContent('overlayOpacity', parseInt(e.target.value))}
-                    className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-violet-600"
+            )}
+            <div className="flex justify-between items-center">
+              <span className="text-xs font-medium text-neutral-500">Colors</span>
+              <div className="flex gap-2">
+                {['#ffffff', '#000000', '#f5f5dc', content.accentColor].map((c, i) => (
+                  <button
+                    key={i}
+                    onClick={() => updateContent('textColor', c)}
+                    className={`w-5 h-5 rounded-full border border-neutral-200 shadow-sm ${
+                      content.textColor === c ? 'ring-1 ring-offset-1 ring-black' : ''
+                    }`}
+                    style={{ backgroundColor: c }}
                   />
-                </div>
-              )}
-
-              {layout === 'split' && (
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-600">Accent Color</span>
-                  <div className="flex gap-2">
-                    {['#000000', '#1a1a2e', '#7c3aed', '#0ea5e9'].map(c => (
-                      <button
-                        key={c}
-                        onClick={() => updateContent('accentColor', c)}
-                        className={`w-6 h-6 rounded-full border-2 shadow-sm transition-all ${
-                          content.accentColor === c ? 'ring-2 ring-violet-500 ring-offset-1' : 'border-gray-200'
-                        }`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
+                ))}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Export Button */}
-        <div className="p-4 border-t border-gray-200 bg-gray-50 sticky bottom-0">
+        <div className="p-6 border-t border-neutral-200 bg-neutral-50 sticky bottom-0">
           <button
             onClick={handleDownload}
             disabled={downloading}
-            className="w-full py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 hover:from-violet-700 hover:to-purple-700 transition-all disabled:opacity-50"
+            className="w-full py-3 bg-black text-white hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2 uppercase tracking-widest text-sm font-medium"
           >
-            {downloading ? (
-              <RefreshCw size={18} className="animate-spin" />
-            ) : (
-              <Download size={18} />
-            )}
-            {downloading ? 'Exporting...' : 'Export Creative'}
+            {downloading ? <span>Processing...</span> : <><Download size={18} /> Export Ad</>}
           </button>
-          <p className="text-[10px] text-gray-400 text-center mt-2">
-            {dims.width} × {dims.height}px • {dims.label}
-          </p>
         </div>
       </div>
 
-      {/* Right Panel - Preview */}
-      <div className="flex-1 bg-gray-100 flex items-center justify-center p-8 overflow-auto">
-        <div className="relative">
-          {/* Preview Label */}
-          <div className="absolute -top-8 left-0 text-xs font-mono text-gray-400 uppercase tracking-wider">
-            Live Preview • {dims.label} ({dims.ratio})
-          </div>
-
-          {/* The Ad Container */}
-          <AdCanvas
-            ref={adRef}
-            dims={dims}
-            content={content}
-            layout={layout}
-            image={image}
-            scale={scale}
-            className="shadow-2xl transition-all duration-500"
-          />
-
-          {/* Dimension Badge */}
-          <div className="absolute -bottom-8 right-0 text-xs text-gray-400">
-            Scaled {Math.round(scale * 100)}%
-          </div>
+      <div className="flex-1 bg-neutral-200 flex items-center justify-center p-8 overflow-hidden relative">
+        <div className="absolute top-4 left-4 text-xs font-mono text-neutral-500 opacity-50 pointer-events-none uppercase">
+          Live Preview Canvas
         </div>
-      </div>
-      <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
-        <AdCanvas
-          ref={exportRef}
-          dims={dims}
-          content={content}
-          layout={layout}
-          image={image}
-          scale={1}
-          className="shadow-none"
-        />
+        <div
+          className="shadow-2xl transition-all duration-500 ease-in-out bg-white relative"
+          ref={adRef}
+          style={{
+            width: `${dims.width}px`,
+            height: `${dims.height}px`,
+            transform: 'scale(min(1, calc(100vw - 450px) / 600))',
+            transformOrigin: 'center center'
+          }}
+        >
+          {renderLayout()}
+        </div>
       </div>
     </div>
   );
 }
 
-// ============================================================================
-// VIDEO RESIZER
-// ============================================================================
 function VideoResizer({ store }) {
   const [video, setVideo] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
