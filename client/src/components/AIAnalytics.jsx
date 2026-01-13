@@ -8,8 +8,10 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import { Send, Loader2, Sparkles, Calendar, Brain, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { z } from 'zod';
+import VisualizationDock from './VisualizationDock';
 
 // Import Meta Awareness feature module
 import {
@@ -18,6 +20,55 @@ import {
   REACTIVATION_PROMPTS,
   useReactivationCandidates
 } from '../features/meta-awareness';
+
+const visualizationSeriesSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  kind: z.enum(['raw', 'ma']),
+  derivedFrom: z.string().optional(),
+  window: z.union([z.literal(7), z.literal(14), z.literal(30)]).optional()
+}).superRefine((value, ctx) => {
+  if (value.kind === 'ma') {
+    if (!value.derivedFrom) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'MA series requires derivedFrom' });
+    }
+    if (!value.window) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'MA series requires window' });
+    }
+  }
+});
+
+const visualizationDockSchema = z.object({
+  id: z.literal('primary'),
+  title: z.string(),
+  mode: z.enum(['auto', 'manual']),
+  autoReason: z.string().optional(),
+  chartType: z.enum(['line', 'bar', 'totals', 'blocked']),
+  xKey: z.string().optional(),
+  yFormat: z.enum(['number', 'currency', 'percent']).optional(),
+  series: z.array(visualizationSeriesSchema).optional(),
+  data: z.array(z.record(z.any())).optional(),
+  totals: z.record(z.union([z.number(), z.string()])).optional(),
+  controls: z.object({
+    allowMetric: z.boolean(),
+    allowRange: z.boolean(),
+    allowGroupBy: z.boolean(),
+    allowMA: z.boolean()
+  }).optional(),
+  ui: z.object({
+    rangePreset: z.enum(['7d', '14d', '30d', 'custom']).optional(),
+    groupBy: z.enum(['day', 'week', 'month']).optional(),
+    metric: z.string().optional()
+  }).optional()
+});
+
+const visualizationDockUpdateSchema = visualizationDockSchema.partial().extend({
+  id: z.literal('primary')
+});
+
+const visualizationDockClearSchema = z.object({
+  id: z.literal('primary')
+});
 
 export default function AIAnalytics({ store, selectedStore, startDate, endDate }) {
   // Support both 'store' and 'selectedStore' props for backward compatibility
@@ -32,6 +83,11 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const [activeMode, setActiveMode] = useState('ask');
   const [insightMode, setInsightMode] = useState('balanced'); // 'instant', 'fast', 'balanced', 'max'
   const [showReactivation, setShowReactivation] = useState(true); // Show reactivation panel
+  const [dockState, setDockState] = useState(null);
+  const [previousDockState, setPreviousDockState] = useState(null);
+  const [isDockPinned, setIsDockPinned] = useState(false);
+  const [isCompareEnabled, setIsCompareEnabled] = useState(false);
+  const [replacePending, setReplacePending] = useState(false);
   const messagesEndRef = useRef(null);
 
   // Use reactivation candidates hook
@@ -51,6 +107,15 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     const isAnyStreaming = messages.some(m => m.isStreaming);
     scrollToBottom(isAnyStreaming);
   }, [messages]);
+
+  useEffect(() => {
+    if (!isDockPinned) {
+      setDockState(null);
+      setPreviousDockState(null);
+      setIsCompareEnabled(false);
+      setReplacePending(false);
+    }
+  }, [activeMode, isDockPinned]);
 
   // Mode configurations with pillars
   // UPDATED: Added reactivation pillars to relevant modes
@@ -113,17 +178,79 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     { id: 'max', label: '🧬 Max Insight', description: 'Deep reasoning' }
   ];
 
-  const sendMessage = async () => {
-    if (!input.trim() || isLoading) return;
+  const hasValidSeriesKeys = (payload) => {
+    if (!payload?.series || !payload?.data || payload.data.length === 0) {
+      return true;
+    }
+    const dataKeys = new Set(Object.keys(payload.data[0] || {}));
+    return payload.series.every(series => {
+      if (series.kind === 'ma') return true;
+      return dataKeys.has(series.key);
+    });
+  };
+
+  const handleDockSet = (payload) => {
+    setDockState(prev => {
+      if (prev) {
+        setPreviousDockState(prev);
+      }
+      return payload;
+    });
+    setReplacePending(false);
+  };
+
+  const handleDockUpdate = (payload) => {
+    if (replacePending) return;
+    setDockState(prev => {
+      if (!prev) return prev;
+      return { ...prev, ...payload };
+    });
+  };
+
+  const handleDockClear = () => {
+    setDockState(null);
+    setPreviousDockState(null);
+    setIsCompareEnabled(false);
+    setReplacePending(false);
+  };
+
+  const handleToolEvent = (name, payload) => {
+    if (name === 'setVisualizationDock') {
+      const parsed = visualizationDockSchema.safeParse(payload);
+      if (!parsed.success || !hasValidSeriesKeys(parsed.data)) {
+        console.warn('Invalid setVisualizationDock payload', parsed.error);
+        return;
+      }
+      handleDockSet(parsed.data);
+    } else if (name === 'updateVisualizationDock') {
+      const parsed = visualizationDockUpdateSchema.safeParse(payload);
+      if (!parsed.success || !hasValidSeriesKeys(parsed.data)) {
+        console.warn('Invalid updateVisualizationDock payload', parsed.error);
+        return;
+      }
+      handleDockUpdate(parsed.data);
+    } else if (name === 'clearVisualizationDock') {
+      const parsed = visualizationDockClearSchema.safeParse(payload);
+      if (!parsed.success) {
+        console.warn('Invalid clearVisualizationDock payload', parsed.error);
+        return;
+      }
+      handleDockClear();
+    }
+  };
+
+  const sendMessage = async (overrideMessage) => {
+    const messageText = typeof overrideMessage === 'string' ? overrideMessage : input;
+    if (!messageText.trim() || isLoading) return;
 
     const userMessage = {
       role: 'user',
-      content: input,
+      content: messageText,
       timestamp: new Date().toISOString()
     };
 
     setMessages(prev => [...prev, userMessage]);
-    const currentInput = input;
+    const currentInput = messageText;
     setInput('');
     setIsLoading(true);
 
@@ -173,7 +300,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
       }
 
       // Use streaming endpoint with SSE
-      const response = await fetch('/api/ai/stream', {
+      const response = await fetch('/api/ai/analytics/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -215,6 +342,8 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
                     ? { ...msg, content: fullContent }
                     : msg
                 ));
+              } else if (data.type === 'tool') {
+                handleToolEvent(data.name, data.payload);
               } else if (data.type === 'done') {
                 // Update metadata when complete
                 setMessages(prev => prev.map(msg => 
@@ -266,6 +395,35 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleExplainMissingData = () => {
+    sendMessage('Explain missing data in the chart request and what data is available instead.');
+  };
+
+  const handleShowTotals = () => {
+    setDockState(prev => {
+      if (!prev) return prev;
+      return { ...prev, chartType: 'totals' };
+    });
+  };
+
+  const handleReplaceDock = () => {
+    setDockState(null);
+    setReplacePending(true);
+    setIsCompareEnabled(false);
+  };
+
+  const handleToggleCompare = () => {
+    if (!previousDockState) return;
+    setIsCompareEnabled(prev => !prev);
+  };
+
+  const handleDockUiUpdate = (nextUi) => {
+    setDockState(prev => {
+      if (!prev) return prev;
+      return { ...prev, ui: { ...(prev.ui || {}), ...nextUi } };
+    });
   };
 
   const handleKeyPress = (e) => {
@@ -541,6 +699,24 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
             </div>
           </div>
         </div>
+
+        {/* Visualization Dock */}
+        {dockState && (
+          <div className="px-4 pt-4">
+            <VisualizationDock
+              dock={dockState}
+              previousDock={previousDockState}
+              pinned={isDockPinned}
+              compareEnabled={isCompareEnabled}
+              onTogglePin={() => setIsDockPinned(prev => !prev)}
+              onReplace={handleReplaceDock}
+              onToggleCompare={handleToggleCompare}
+              onShowTotals={handleShowTotals}
+              onExplainMissingData={handleExplainMissingData}
+              onUpdateUi={handleDockUiUpdate}
+            />
+          </div>
+        )}
 
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">

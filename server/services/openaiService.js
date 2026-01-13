@@ -530,7 +530,7 @@ function getReactivationCandidates(db, storeName) {
   }
 }
 
-function getRelevantData(store, question, startDate = null, endDate = null) {
+export function getRelevantData(store, question, startDate = null, endDate = null) {
   const db = getDb();
   const q = question.toLowerCase();
 
@@ -1041,7 +1041,7 @@ function getDeepDiveFormat(question) {
 // PROMPT BUILDING
 // ============================================================================
 
-function buildSystemPrompt(store, mode, data, question = '') {
+export function buildSystemPrompt(store, mode, data, question = '') {
   const hasOtherStore = data.vironax && data.shawq;
   const hasReactivationData = data.reactivationCandidates &&
     ((data.reactivationCandidates.campaigns?.length > 0) ||
