@@ -174,6 +174,9 @@ function AdEditor({ store }) {
   const [isMagicLoading, setIsMagicLoading] = useState(false);
   const [critique, setCritique] = useState(null);
   const [isCritiqueLoading, setIsCritiqueLoading] = useState(false);
+  const [colorRecommendations, setColorRecommendations] = useState([]);
+  const [colorRecommendationNote, setColorRecommendationNote] = useState('');
+  const [isColorRecommending, setIsColorRecommending] = useState(false);
 
   const adRef = useRef(null);
 
@@ -227,6 +230,79 @@ function AdEditor({ store }) {
       alert("Could not export image. Try uploading your own image!");
     }
     setDownloading(false);
+  };
+
+  const resolveImageInlineData = async () => {
+    if (!image) return null;
+    if (image.startsWith('data:image')) {
+      const [prefix, data] = image.split(',');
+      const mimeType = prefix.split(';')[0].split(':')[1];
+      return { mimeType, data };
+    }
+
+    try {
+      const response = await fetch(image);
+      const blob = await response.blob();
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      const [prefix, data] = base64.split(',');
+      const mimeType = prefix.split(';')[0].split(':')[1];
+      return { mimeType, data };
+    } catch (error) {
+      console.error('Failed to fetch image for Gemini:', error);
+      return null;
+    }
+  };
+
+  const recommendColors = async () => {
+    setIsColorRecommending(true);
+    try {
+      const inlineData = await resolveImageInlineData();
+      const prompt = `You are a luxury-performance creative director.\nAnalyze the ad image and recommend 3 text + accent color pairs for on-creative readability and premium tone.\nReturn JSON only with this shape:\n{\n  \"recommendations\": [\n    {\"textColor\": \"#ffffff\", \"accentColor\": \"#000000\", \"reason\": \"Short reason\"}\n  ],\n  \"note\": \"Optional 1-sentence guidance\"\n}`;
+
+      const payload = {
+        contents: [{
+          parts: [
+            { text: prompt },
+            ...(inlineData ? [{ inlineData }] : [])
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              recommendations: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    textColor: { type: "STRING" },
+                    accentColor: { type: "STRING" },
+                    reason: { type: "STRING" }
+                  }
+                }
+              },
+              note: { type: "STRING" }
+            }
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+      setColorRecommendations(result.recommendations || []);
+      setColorRecommendationNote(result.note || '');
+    } catch (error) {
+      console.error("Color recommendation failed:", error);
+      alert("Could not generate color recommendations.");
+    } finally {
+      setIsColorRecommending(false);
+    }
   };
 
   const callGemini = async (payload, model = "gemini-2.5-flash-preview-09-2025") => {
@@ -809,6 +885,41 @@ function AdEditor({ store }) {
                 ))}
               </div>
             </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-widest text-neutral-400">Recommended</span>
+              <button
+                onClick={recommendColors}
+                disabled={isColorRecommending}
+                className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 hover:text-black transition-colors flex items-center gap-1"
+              >
+                {isColorRecommending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                Recommend
+              </button>
+            </div>
+            {colorRecommendations.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  {colorRecommendations.map((rec, idx) => (
+                    <button
+                      key={`${rec.textColor}-${rec.accentColor}-${idx}`}
+                      onClick={() => {
+                        updateContent('textColor', rec.textColor);
+                        updateContent('accentColor', rec.accentColor);
+                      }}
+                      title={rec.reason}
+                      className="flex items-center gap-2 rounded-full border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 hover:border-neutral-400"
+                    >
+                      <span className="w-4 h-4 rounded-full border border-neutral-200" style={{ backgroundColor: rec.textColor }} />
+                      <span className="w-4 h-4 rounded-full border border-neutral-200" style={{ backgroundColor: rec.accentColor }} />
+                      <span className="uppercase tracking-widest">Apply</span>
+                    </button>
+                  ))}
+                </div>
+                {colorRecommendationNote && (
+                  <p className="text-[10px] text-neutral-400">{colorRecommendationNote}</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
