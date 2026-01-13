@@ -1,7 +1,8 @@
 import { getDb } from '../db/database.js';
-import { getCountryInfo } from '../utils/countryData.js';
+import { getAllCountries, getCountryInfo } from '../utils/countryData.js';
 
 const DEFAULT_NOTIFICATION_LIMIT = 50;
+const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 // Check if Salla is active for VironaX
 function isSallaActive() {
@@ -29,6 +30,143 @@ function shouldCreateOrderNotification(store, source) {
   }
   
   return false;
+}
+
+function getOrderDateKey(order) {
+  if (typeof order?.date === 'string' && ISO_DATE_REGEX.test(order.date)) {
+    return order.date;
+  }
+
+  const rawTimestamp = order?.order_created_at || order?.created_at || order?.createdAt || order?.timestamp;
+  if (!rawTimestamp) {
+    return null;
+  }
+
+  const parsed = new Date(rawTimestamp);
+  if (isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString().slice(0, 10);
+}
+
+function normalizeCountryCode(order) {
+  const rawCountryCode = (order?.country_code || order?.country || '').toString().trim();
+  if (!rawCountryCode) {
+    return null;
+  }
+
+  const upper = rawCountryCode.toUpperCase();
+  if (/^[A-Z]{2}$/.test(upper)) {
+    return upper;
+  }
+
+  const info = getCountryInfo(rawCountryCode);
+  if (info?.code && /^[A-Z]{2}$/.test(info.code)) {
+    return info.code;
+  }
+
+  const normalized = rawCountryCode.toLowerCase();
+  const nameMatch = getAllCountries().find(country => country.name?.toLowerCase() === normalized);
+  if (nameMatch?.code) {
+    return nameMatch.code;
+  }
+
+  return null;
+}
+
+function buildMetaCampaignIndex(db, store, orders) {
+  const cache = new Map();
+
+  if (store !== 'shawq') {
+    return cache;
+  }
+
+  const uniqueKeys = new Set();
+  for (const order of orders) {
+    const dateKey = getOrderDateKey(order);
+    const countryCode = normalizeCountryCode(order);
+    if (!dateKey || !countryCode) {
+      continue;
+    }
+    uniqueKeys.add(`${dateKey}|${countryCode}`);
+  }
+
+  if (uniqueKeys.size === 0) {
+    return cache;
+  }
+
+  const stmt = db.prepare(`
+    SELECT campaign_name, SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
+    FROM meta_daily_metrics
+    WHERE store = ? AND date = ? AND country = ?
+    GROUP BY campaign_name
+  `);
+
+  const fallbackStmt = db.prepare(`
+    SELECT campaign_name, SUM(conversions) as conversions, SUM(conversion_value) as conversion_value
+    FROM meta_daily_metrics
+    WHERE store = ? AND date = ? AND country = 'ALL'
+    GROUP BY campaign_name
+  `);
+
+  for (const key of uniqueKeys) {
+    const [dateKey, countryCode] = key.split('|');
+    let rows = [];
+
+    try {
+      rows = stmt.all(store, dateKey, countryCode);
+      if ((!rows || rows.length === 0) && countryCode !== 'ALL') {
+        rows = fallbackStmt.all(store, dateKey);
+      }
+    } catch (error) {
+      console.warn('[Notification] Failed to load Meta campaign matches:', error.message);
+      rows = [];
+    }
+
+    const campaigns = (rows || [])
+      .filter(row => (row.conversions || 0) > 0 && (row.conversion_value || 0) > 0)
+      .map(row => ({
+        campaign_name: row.campaign_name,
+        conversions: row.conversions || 0,
+        conversion_value: row.conversion_value || 0,
+        aov: row.conversions ? row.conversion_value / row.conversions : 0
+      }))
+      .filter(row => row.campaign_name && row.aov > 0);
+
+    cache.set(key, campaigns);
+  }
+
+  return cache;
+}
+
+function findBestCampaignMatch(campaigns, orderTotal) {
+  if (!Array.isArray(campaigns) || campaigns.length === 0) {
+    return null;
+  }
+
+  const orderValue = typeof orderTotal === 'number' ? orderTotal : parseFloat(orderTotal || 0);
+  if (!orderValue || Number.isNaN(orderValue)) {
+    return null;
+  }
+
+  let best = null;
+  let bestDiff = Number.POSITIVE_INFINITY;
+
+  for (const campaign of campaigns) {
+    const diff = Math.abs(orderValue - campaign.aov);
+    if (diff < bestDiff) {
+      best = campaign;
+      bestDiff = diff;
+      continue;
+    }
+
+    if (diff === bestDiff && best && (campaign.conversions || 0) > (best.conversions || 0)) {
+      best = campaign;
+    }
+  }
+
+  return best?.campaign_name || null;
 }
 
 // Create a notification
@@ -126,6 +264,9 @@ export function createOrderNotifications(store, source, orders, options = {}) {
   }
   
   const db = getDb();
+  const metaCampaignIndex = (store === 'shawq' && source === 'shopify')
+    ? buildMetaCampaignIndex(db, store, orders)
+    : new Map();
   let created = 0;
   
   // Get the latest notification timestamp to avoid duplicates
@@ -206,11 +347,17 @@ export function createOrderNotifications(store, source, orders, options = {}) {
     const country = normalizeCountry(order);
     const value = parseFloat(order.order_total || order.total_price || order.revenue || order.value || 0);
     const currency = order.currency || fallbackCurrency;
+    const dateKey = getOrderDateKey(order);
+    const countryCode = normalizeCountryCode(order) || country.code;
+    const campaignKey = (dateKey && countryCode) ? `${dateKey}|${countryCode}` : null;
+    const matchedCampaign = (store === 'shawq' && source === 'shopify' && campaignKey)
+      ? findBestCampaignMatch(metaCampaignIndex.get(campaignKey), value)
+      : null;
 
     const countryKey = country.code || country.label || 'Unknown';
 
     // Include campaign_name in the key for Meta orders to track per-campaign
-    const campaignName = order.campaign_name || null;
+    const campaignName = order.campaign_name || matchedCampaign || null;
     const groupKey = campaignName ? `${countryKey}|${campaignName}` : countryKey;
 
     if (!ordersByCountry[groupKey]) {
