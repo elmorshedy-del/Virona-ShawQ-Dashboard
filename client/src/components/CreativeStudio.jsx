@@ -721,7 +721,20 @@ function VideoResizer({ store }) {
   const [smartCrop, setSmartCrop] = useState(true);
   const [videoInfo, setVideoInfo] = useState(null);
   const [error, setError] = useState(null);
+  const [previewVersion, setPreviewVersion] = useState(null);
   const fileInputRef = useRef(null);
+
+  const handleDownload = async (version) => {
+    const filename = `${version.name}_${version.width}x${version.height}.mp4`;
+    const downloadUrl = `${API_BASE}/creative-studio/video/download?url=${encodeURIComponent(version.downloadUrl)}&filename=${encodeURIComponent(filename)}`;
+
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const handleVideoUpload = async (e) => {
     const file = e.target.files[0];
@@ -898,32 +911,91 @@ function VideoResizer({ store }) {
               {Object.entries(versions).map(([key, version]) => (
                 <div
                   key={key}
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer transition-all"
+                  onClick={() => setPreviewVersion(version)}
                 >
                   <div className="flex items-center gap-3">
-                    <img
-                      src={version.thumbnail}
-                      alt={version.name}
-                      className="w-16 h-10 object-cover rounded bg-gray-200"
-                    />
+                    <div className="relative">
+                      <img
+                        src={version.thumbnail}
+                        alt={version.name}
+                        className="w-16 h-10 object-cover rounded bg-gray-200"
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded opacity-0 hover:opacity-100 transition-opacity">
+                        <Play size={16} className="text-white" />
+                      </div>
+                    </div>
                     <div>
                       <p className="font-medium text-gray-900 text-sm">{version.name.replace('_', ' ')}</p>
                       <p className="text-xs text-gray-500">{version.width}×{version.height} ({version.ratio})</p>
                     </div>
                   </div>
-                  <a
-                    href={version.download_url || version.url}
-                    download
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleDownload(version);
+                    }}
                     className="px-3 py-1.5 bg-violet-100 text-violet-700 text-xs font-medium rounded-lg hover:bg-violet-200 transition-all"
                   >
                     Download
-                  </a>
+                  </button>
                 </div>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {previewVersion && (
+        <div
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+          onClick={() => setPreviewVersion(null)}
+        >
+          <div
+            className="bg-white rounded-2xl overflow-hidden max-w-2xl w-full"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="p-4 border-b flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold">{previewVersion.name.replace('_', ' ')}</h3>
+                <p className="text-sm text-gray-500">{previewVersion.width}×{previewVersion.height}</p>
+              </div>
+              <button
+                onClick={() => setPreviewVersion(null)}
+                className="p-2 hover:bg-gray-100 rounded-full"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="bg-black flex items-center justify-center" style={{ maxHeight: '70vh' }}>
+              <video
+                src={previewVersion.url}
+                controls
+                autoPlay
+                className="max-h-[70vh]"
+                style={{
+                  aspectRatio: `${previewVersion.width}/${previewVersion.height}`
+                }}
+              />
+            </div>
+            <div className="p-4 flex justify-end gap-3">
+              <button
+                onClick={() => setPreviewVersion(null)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => handleDownload(previewVersion)}
+                className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 flex items-center gap-2"
+              >
+                <Download size={16} />
+                Download
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
