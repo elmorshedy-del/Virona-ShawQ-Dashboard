@@ -82,7 +82,7 @@ export default function CreativeStudio({ store }) {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-violet-50">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-[1800px] mx-auto px-4">
@@ -724,13 +724,55 @@ function VideoResizer({ store }) {
   const [previewVersion, setPreviewVersion] = useState(null);
   const fileInputRef = useRef(null);
 
-  const handleDownload = async (version) => {
-    const filename = `${version.name}_${version.width}x${version.height}.mp4`;
-    const downloadUrl = `${API_BASE}/creative-studio/video/download?url=${encodeURIComponent(version.downloadUrl)}&filename=${encodeURIComponent(filename)}`;
+  const resolveVersionUrl = (version) => (
+    version?.url ||
+    version?.downloadUrl ||
+    version?.download_url ||
+    version?.source_url ||
+    null
+  );
 
+  const resolveThumbnailUrl = (version) => {
+    const directThumb = version?.thumbnail || version?.thumbnail_url || version?.thumbnailUrl;
+    if (directThumb) return directThumb;
+
+    const baseUrl = resolveVersionUrl(version);
+    if (!baseUrl) return null;
+
+    const [path, query] = baseUrl.split('?');
+    const thumbnailPath = path
+      .replace('/upload/', '/upload/so_0/')
+      .replace(/\.\w+$/, '.jpg');
+    return query ? `${thumbnailPath}?${query}` : thumbnailPath;
+  };
+
+  const triggerDownload = async (version) => {
+    const filename = `${version.name}_${version.width}x${version.height}.mp4`;
+    const directUrl = resolveVersionUrl(version);
+    if (!directUrl) return;
+
+    try {
+      const response = await fetch(directUrl, { mode: 'cors' });
+      if (!response.ok) throw new Error('Download failed');
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+      return;
+    } catch (error) {
+      console.warn('Direct download failed, falling back to proxy.', error);
+    }
+
+    const proxyUrl = `${API_BASE}/creative-studio/video/download?url=${encodeURIComponent(directUrl)}&filename=${encodeURIComponent(filename)}`;
     const link = document.createElement('a');
-    link.href = downloadUrl;
+    link.href = proxyUrl;
     link.download = filename;
+    link.target = '_blank';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -800,14 +842,14 @@ function VideoResizer({ store }) {
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <div className="mb-6">
+      <div className="mb-6 rounded-3xl border border-white/60 bg-gradient-to-br from-white via-violet-50/40 to-white p-6 shadow-sm">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Video Resizer</h2>
         <p className="text-gray-500">Upload a video and get all Meta ad dimensions with AI smart crop</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Upload Section */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 transition-all duration-300 hover:shadow-lg hover:-translate-y-0.5">
           <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <Upload size={18} />
             Upload Video
@@ -824,7 +866,7 @@ function VideoResizer({ store }) {
           {!videoUrl ? (
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full h-48 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:border-violet-400 hover:bg-violet-50 transition-all"
+              className="w-full h-48 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:border-violet-400 hover:bg-violet-50 transition-all duration-300"
             >
               <Film size={32} className="mb-2" />
               <span>Click to upload video</span>
@@ -854,7 +896,7 @@ function VideoResizer({ store }) {
           )}
 
           {/* Smart Crop Toggle */}
-          <label className="flex items-center justify-between mt-4 p-3 bg-gray-50 rounded-lg cursor-pointer">
+          <label className="flex items-center justify-between mt-4 p-3 bg-gray-50 rounded-lg cursor-pointer transition-all duration-300 hover:bg-gray-100">
             <div>
               <span className="font-medium text-gray-900">AI Smart Crop</span>
               <p className="text-xs text-gray-500">Detect faces & products for optimal cropping</p>
@@ -871,7 +913,7 @@ function VideoResizer({ store }) {
           <button
             onClick={handleResize}
             disabled={!videoInfo || processing || uploading}
-            className="w-full mt-4 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 hover:from-violet-700 hover:to-purple-700 transition-all disabled:opacity-50"
+            className="w-full mt-4 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 transition-all duration-300 hover:from-violet-700 hover:to-purple-700 hover:shadow-lg disabled:opacity-50"
           >
             {uploading ? (
               <>
@@ -893,7 +935,7 @@ function VideoResizer({ store }) {
         </div>
 
         {/* Results Section */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 transition-all duration-300 hover:shadow-lg hover:-translate-y-0.5">
           <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <Layers size={18} />
             Output Versions
@@ -911,17 +953,23 @@ function VideoResizer({ store }) {
               {Object.entries(versions).map(([key, version]) => (
                 <div
                   key={key}
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer transition-all"
+                  className="group flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-white hover:shadow-sm cursor-pointer transition-all duration-300"
                   onClick={() => setPreviewVersion(version)}
                 >
                   <div className="flex items-center gap-3">
                     <div className="relative">
-                      <img
-                        src={version.thumbnail}
-                        alt={version.name}
-                        className="w-16 h-10 object-cover rounded bg-gray-200"
-                      />
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded opacity-0 hover:opacity-100 transition-opacity">
+                      {resolveThumbnailUrl(version) ? (
+                        <img
+                          src={resolveThumbnailUrl(version)}
+                          alt={version.name}
+                          className="w-16 h-10 object-cover rounded bg-gray-200"
+                        />
+                      ) : (
+                        <div className="w-16 h-10 rounded bg-gradient-to-br from-violet-200 to-purple-200 flex items-center justify-center">
+                          <Film size={16} className="text-violet-700" />
+                        </div>
+                      )}
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                         <Play size={16} className="text-white" />
                       </div>
                     </div>
@@ -933,9 +981,9 @@ function VideoResizer({ store }) {
                   <button
                     onClick={(event) => {
                       event.stopPropagation();
-                      handleDownload(version);
+                      triggerDownload(version);
                     }}
-                    className="px-3 py-1.5 bg-violet-100 text-violet-700 text-xs font-medium rounded-lg hover:bg-violet-200 transition-all"
+                    className="px-3 py-1.5 bg-violet-100 text-violet-700 text-xs font-medium rounded-lg transition-all duration-300 hover:bg-violet-200 hover:shadow-sm"
                   >
                     Download
                   </button>
@@ -986,8 +1034,8 @@ function VideoResizer({ store }) {
                 Close
               </button>
               <button
-                onClick={() => handleDownload(previewVersion)}
-                className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 flex items-center gap-2"
+                onClick={() => triggerDownload(previewVersion)}
+                className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 flex items-center gap-2 transition-all duration-300 hover:shadow-lg"
               >
                 <Download size={16} />
                 Download
