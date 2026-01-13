@@ -153,11 +153,16 @@ async function resizeVideo(publicId, options = {}) {
       ? `c_fill,w_${dim.width},h_${dim.height},g_auto`
       : `c_fill,w_${dim.width},h_${dim.height},g_center`;
 
-    const baseUrl = cloudinary.url(publicId, { resource_type: 'video' });
+    const baseUrl = cloudinary.url(publicId, {
+      resource_type: 'video',
+      format: 'mp4'
+    });
     const url = baseUrl.replace('/upload/', `/upload/${transformation}/`);
-    const thumbnail = baseUrl
-      .replace('/upload/', `/upload/${transformation},so_0/`)
-      .replace(/\.\w+$/, '.jpg');
+    const thumbnail = cloudinary.url(publicId, {
+      resource_type: 'video',
+      format: 'jpg',
+      transformation: `${transformation},so_0`
+    });
     const downloadUrl = baseUrl.replace('/upload/', `/upload/${transformation},fl_attachment/`);
 
     versions[dim.name] = {
