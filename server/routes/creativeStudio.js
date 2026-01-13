@@ -1,4 +1,5 @@
 import express from 'express';
+import axios from 'axios';
 import multer from 'multer';
 import path from 'path';
 import * as geminiVision from '../services/geminiVisionService.js';
@@ -545,29 +546,37 @@ router.post('/video/resize', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Video ID required' });
     }
 
-    let focal_points = null;
+    const versions = await cloudinary.resizeVideo(video_id, { smart_crop });
 
-    if (smart_crop) {
-      // Extract frames and detect subjects
-      const frames = await cloudinary.extractFrames(video_id, 5);
-      if (frames.length > 0) {
-        focal_points = await geminiVision.detectSubjects(frames);
-      }
-    }
-
-    const versions = await cloudinary.resizeVideo(video_id, {
-      focal_points,
-      smart_crop
-    });
-
-    res.json({
-      success: true,
-      versions,
-      smart_crop_applied: smart_crop && focal_points !== null
-    });
+    res.json({ success: true, versions });
   } catch (error) {
     console.error('Video resize error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Proxy download for Safari compatibility
+router.get('/video/download', async (req, res) => {
+  try {
+    const { url, filename } = req.query;
+
+    if (!url) {
+      return res.status(400).json({ error: 'URL required' });
+    }
+
+    const response = await axios({
+      method: 'GET',
+      url,
+      responseType: 'stream'
+    });
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename || 'video.mp4'}"`);
+
+    response.data.pipe(res);
+  } catch (error) {
+    console.error('Download proxy error:', error);
+    res.status(500).json({ error: 'Download failed' });
   }
 });
 
