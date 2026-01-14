@@ -21,6 +21,7 @@ import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
 import { runMigration as runCreativeStudioMigration } from './db/creativeStudioMigration.js';
 import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
+import { runMigration as runCompetitorSpyMigration } from './db/competitorSpyMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
 import { syncMetaData } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
@@ -54,6 +55,7 @@ runWhatIfMigration();
 // Run Creative Intelligence migration
 runCreativeIntelligenceMigration();
 runCreativeStudioMigration();
+runCompetitorSpyMigration();
 
 // Schedule creative funnel summaries (daily/weekly + spend reset checks)
 scheduleCreativeFunnelSummaryJobs();

@@ -9,7 +9,8 @@ import {
   Zap, Target, TrendingUp, AlertTriangle, CheckCircle, X,
   Play, Pause, SkipForward, Clock, Languages, Globe, Settings,
   Camera, Film, Layers, Eye, Save, Trash2, Plus, ArrowRight,
-  Loader2, Mic, MessageSquare, Calendar, Briefcase, Send, Activity, Star
+  Loader2, Mic, MessageSquare, Calendar, Briefcase, Send, Activity, Star,
+  HelpCircle, Bookmark, ChevronLeft
 } from 'lucide-react';
 
 const API_BASE = '/api';
@@ -1698,418 +1699,647 @@ function VideoResizer({ store }) {
 // ============================================================================
 // COMPETITOR SPY
 // ============================================================================
+// COMPETITOR SPY (Apify-powered with modern UI)
+// ============================================================================
 function CompetitorSpy({ store, onGenerateBrief }) {
+  const [activeTab, setActiveTab] = useState('search');
   const [searchQuery, setSearchQuery] = useState('');
-  const [country, setCountry] = useState('SA');
+  const [country, setCountry] = useState('ALL');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
+  const [cacheInfo, setCacheInfo] = useState(null);
+  const [countries, setCountries] = useState({});
   const [selectedAd, setSelectedAd] = useState(null);
+  const [showAdModal, setShowAdModal] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState(null);
-  const [countries, setCountries] = useState({});
-  const [metaStatus, setMetaStatus] = useState(null);
-  const [metaLoading, setMetaLoading] = useState(true);
-  const [tokenCopied, setTokenCopied] = useState(false);
+  const [swipeFiles, setSwipeFiles] = useState([]);
+  const [showCreateBoard, setShowCreateBoard] = useState(false);
+  const [newBoardName, setNewBoardName] = useState('');
+  const [newBoardColor, setNewBoardColor] = useState('#6366f1');
+  const [newBoardIcon, setNewBoardIcon] = useState('📁');
+  const [selectedSwipeFile, setSelectedSwipeFile] = useState(null);
+  const [swipeFileAds, setSwipeFileAds] = useState([]);
+  const [trackedBrands, setTrackedBrands] = useState([]);
+  const [showAddBrand, setShowAddBrand] = useState(false);
+  const [newBrandName, setNewBrandName] = useState('');
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [adToSave, setAdToSave] = useState(null);
+  const [showWelcome, setShowWelcome] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
-  // Load countries
+  const BOARD_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#0ea5e9', '#6b7280'];
+  const BOARD_ICONS = ['📁', '💡', '🎯', '🔥', '⭐', '💎', '🚀', '🎨', '📊', '🏆'];
+
   useEffect(() => {
     fetch(withStore('/creative-studio/competitor/countries', store))
       .then(res => res.json())
-      .then(data => {
-        if (data.success) setCountries(data.countries);
-      });
+      .then(data => { if (data.success) setCountries(data.countries); });
   }, [store]);
 
-  const fetchMetaStatus = useCallback(async () => {
-    try {
-      setMetaLoading(true);
-      const response = await fetch('/api/auth/meta/status');
-      const data = await response.json();
-      setMetaStatus(data);
-    } catch (error) {
-      console.error('Meta auth status failed:', error);
-      setMetaStatus({ connected: false });
-    } finally {
-      setMetaLoading(false);
-    }
-  }, []);
+  useEffect(() => { loadSwipeFiles(); }, [store]);
+  useEffect(() => { loadTrackedBrands(); }, [store]);
 
   useEffect(() => {
-    fetchMetaStatus();
-  }, [fetchMetaStatus]);
+    fetch(withStore('/creative-studio/onboarding/competitor_spy/welcome', store))
+      .then(res => res.json())
+      .then(data => { if (data.should_show) setShowWelcome(true); });
+  }, [store]);
 
-  const handleConnect = () => {
-    window.location.assign('/api/auth/meta/start');
-  };
-
-  const handleDisconnect = async () => {
+  const loadSwipeFiles = async () => {
     try {
-      await fetch('/api/auth/meta/disconnect', { method: 'POST' });
-      await fetchMetaStatus();
-    } catch (error) {
-      console.error('Meta disconnect failed:', error);
-    }
+      const res = await fetch(withStore('/creative-studio/competitor/swipe-files', store));
+      const data = await res.json();
+      if (data.success) setSwipeFiles(data.swipe_files);
+    } catch (e) { console.error('Failed to load swipe files:', e); }
   };
 
-  const handleCopyToken = async () => {
-    if (!metaStatus?.token) return;
+  const loadTrackedBrands = async () => {
     try {
-      await navigator.clipboard.writeText(metaStatus.token);
-      setTokenCopied(true);
-      setTimeout(() => setTokenCopied(false), 1500);
-    } catch (error) {
-      console.error('Copy token failed:', error);
-    }
+      const res = await fetch(withStore('/creative-studio/competitor/tracked-brands', store));
+      const data = await res.json();
+      if (data.success) setTrackedBrands(data.tracked_brands);
+    } catch (e) { console.error('Failed to load tracked brands:', e); }
   };
 
-  const formatDate = (value) => {
-    if (!value) return 'Unknown';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return 'Unknown';
-    return date.toLocaleString();
-  };
-
-  const handleSearch = async () => {
+  const handleSearch = async (forceRefresh = false) => {
     if (!searchQuery.trim()) return;
-
     setLoading(true);
     setResults([]);
-    setSelectedAd(null);
-    setAnalysis(null);
-
+    setCacheInfo(null);
     try {
-      const response = await fetch(
-        withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}`, store)
-      );
+      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}`, store);
+      const response = await fetch(url);
       const data = await response.json();
       if (data.success) {
         setResults(data.ads);
+        setCacheInfo(data.cache_info);
       }
-    } catch (error) {
-      console.error('Search failed:', error);
-    }
+    } catch (error) { console.error('Search failed:', error); }
     setLoading(false);
   };
 
-  const handleAnalyze = async (ad) => {
+  const handleViewAd = (ad) => {
     setSelectedAd(ad);
-    setAnalyzing(true);
-    setAnalysis(null);
+    setAnalysis(ad.analysis || null);
+    setShowAdModal(true);
+  };
 
+  const handleAnalyze = async () => {
+    if (!selectedAd) return;
+    if (selectedAd.analysis) { setAnalysis(selectedAd.analysis); return; }
+    setAnalyzing(true);
     try {
       const response = await fetch(withStore('/creative-studio/competitor/analyze', store), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          snapshot_url: ad.snapshot_url,
-          brand_name: ad.page_name,
-          source_url: ad.snapshot_url,
-          source_type: 'ad_library'
+          ad_id: selectedAd.ad_id,
+          image_url: selectedAd.cloudinary_image_url || selectedAd.original_image_url,
+          snapshot_url: selectedAd.cloudinary_video_url || selectedAd.original_video_url,
+          brand_name: selectedAd.page_name
         })
       });
-
       const data = await response.json();
       if (data.success) {
         setAnalysis(data.analysis);
+        setResults(prev => prev.map(ad => ad.ad_id === selectedAd.ad_id ? { ...ad, analysis: data.analysis } : ad));
+        setSelectedAd(prev => ({ ...prev, analysis: data.analysis }));
       }
-    } catch (error) {
-      console.error('Analysis failed:', error);
-    }
+    } catch (error) { console.error('Analysis failed:', error); }
     setAnalyzing(false);
+  };
+
+  const handleSaveToBoard = (ad) => { setAdToSave(ad); setShowSaveModal(true); };
+
+  const confirmSaveToBoard = async (swipeFileId) => {
+    if (!adToSave) return;
+    try {
+      await fetch(withStore(`/creative-studio/competitor/swipe-files/${swipeFileId}/ads`, store), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ad_id: adToSave.ad_id })
+      });
+      loadSwipeFiles();
+      setShowSaveModal(false);
+      setAdToSave(null);
+    } catch (e) { console.error('Failed to save ad:', e); }
+  };
+
+  const createSwipeFile = async () => {
+    if (!newBoardName.trim()) return;
+    try {
+      await fetch(withStore('/creative-studio/competitor/swipe-files', store), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newBoardName, color: newBoardColor, icon: newBoardIcon })
+      });
+      loadSwipeFiles();
+      setShowCreateBoard(false);
+      setNewBoardName('');
+    } catch (e) { console.error('Failed to create board:', e); }
+  };
+
+  const loadSwipeFileAds = async (swipeFile) => {
+    setSelectedSwipeFile(swipeFile);
+    try {
+      const res = await fetch(withStore(`/creative-studio/competitor/swipe-files/${swipeFile.id}/ads`, store));
+      const data = await res.json();
+      if (data.success) setSwipeFileAds(data.ads);
+    } catch (e) { console.error('Failed to load swipe file ads:', e); }
+  };
+
+  const addTrackedBrand = async () => {
+    if (!newBrandName.trim()) return;
+    try {
+      await fetch(withStore('/creative-studio/competitor/tracked-brands', store), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brand_name: newBrandName, country })
+      });
+      loadTrackedBrands();
+      setShowAddBrand(false);
+      setNewBrandName('');
+    } catch (e) { console.error('Failed to add tracked brand:', e); }
+  };
+
+  const checkTrackedBrand = async (brandId) => {
+    try {
+      await fetch(withStore(`/creative-studio/competitor/tracked-brands/${brandId}/check`, store), { method: 'POST' });
+      loadTrackedBrands();
+    } catch (e) { console.error('Failed to check brand:', e); }
+  };
+
+  const dismissWelcome = async () => {
+    setShowWelcome(false);
+    try {
+      await fetch(withStore('/creative-studio/onboarding/competitor_spy/welcome/dismiss', store), { method: 'POST' });
+    } catch (e) { console.error('Failed to dismiss welcome:', e); }
+  };
+
+  const handleGenerateBrief = () => {
+    if (!analysis || !selectedAd || !onGenerateBrief) return;
+    onGenerateBrief({
+      product_name: selectedAd.page_name || '',
+      product_description: analysis.creative_brief?.key_message || '',
+      target_audience: analysis.target_audience_signals?.demographics || '',
+      objective: analysis.creative_brief?.objective || '',
+      budget_level: 'medium'
+    });
+    setShowAdModal(false);
+  };
+
+  const formatCacheTime = (info) => {
+    if (!info?.hours_remaining) return '';
+    const hours = Math.floor(info.hours_remaining);
+    const mins = Math.round((info.hours_remaining - hours) * 60);
+    return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+  };
+
+  const getDaysRunning = (startDate) => {
+    if (!startDate) return null;
+    const start = new Date(startDate);
+    const now = new Date();
+    return Math.floor((now - start) / (1000 * 60 * 60 * 24));
   };
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Competitor Spy</h2>
-        <p className="text-gray-500">Search Facebook Ad Library and get AI-powered breakdowns</p>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-1">Competitor Spy</h2>
+          <p className="text-gray-500">Stop guessing. Start learning from what's already working.</p>
+        </div>
+        <button onClick={() => setShowHelp(true)} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all">
+          <HelpCircle size={20} />
+        </button>
       </div>
 
-      {/* Meta Connection Panel */}
-      <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 mb-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Meta Connection</h3>
-            <p className="text-sm text-gray-500">Connect a user token to power Ad Library searches.</p>
-          </div>
-          <div className="flex items-center gap-3">
-            {metaLoading ? (
-              <span className="text-sm text-gray-400">Checking status...</span>
-            ) : metaStatus?.connected ? (
-              <span className="inline-flex items-center gap-2 text-sm font-medium text-green-700 bg-green-50 px-3 py-1 rounded-full">
-                <CheckCircle size={16} /> Connected
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-2 text-sm font-medium text-amber-700 bg-amber-50 px-3 py-1 rounded-full">
-                <AlertTriangle size={16} /> Not connected
-              </span>
-            )}
-
-            {metaStatus?.connected ? (
-              <>
-                <button
-                  onClick={handleConnect}
-                  className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 transition-all"
-                >
-                  Reconnect
-                </button>
-                <button
-                  onClick={handleDisconnect}
-                  className="px-4 py-2 rounded-lg border border-gray-200 text-gray-600 text-sm font-medium hover:bg-gray-50 transition-all"
-                >
-                  Disconnect
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={handleConnect}
-                className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 transition-all"
-              >
-                Connect
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600">
-          <div className="space-y-2">
-            <div>
-              <span className="text-gray-500">Expires at:</span>{' '}
-              <span className="font-medium text-gray-800">{formatDate(metaStatus?.expires_at)}</span>
-            </div>
-            <div>
-              <span className="text-gray-500">Scopes:</span>{' '}
-              {metaStatus?.scopes?.length ? (
-                <span className="font-medium text-gray-800">{metaStatus.scopes.join(', ')}</span>
-              ) : (
-                <span className="text-gray-400">Unknown</span>
-              )}
-            </div>
-            <div>
-              <span className="text-gray-500">Last API call:</span>{' '}
-              <span className={`font-medium ${metaStatus?.last_api_status === 'failed' ? 'text-red-600' : 'text-green-600'}`}>
-                {metaStatus?.last_api_status || 'Unknown'}
-              </span>
-            </div>
-            {metaStatus?.last_api_status === 'failed' && metaStatus?.last_fbtrace_id && (
-              <div>
-                <span className="text-gray-500">Last fbtrace_id:</span>{' '}
-                <span className="font-medium text-gray-800">{metaStatus.last_fbtrace_id}</span>
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center gap-3">
-              <div className="flex-1">
-                <span className="text-gray-500">Token:</span>{' '}
-                <span className="font-mono text-xs text-gray-800">
-                  {metaStatus?.token_masked || 'Not available'}
-                </span>
-              </div>
-              <button
-                onClick={handleCopyToken}
-                disabled={!metaStatus?.token}
-                className="inline-flex items-center gap-1 px-3 py-1 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-              >
-                <Copy size={14} />
-                {tokenCopied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-            {metaStatus?.last_api_at && (
-              <div>
-                <span className="text-gray-500">Last API time:</span>{' '}
-                <span className="font-medium text-gray-800">{formatDate(metaStatus.last_api_at)}</span>
-              </div>
-            )}
-            {metaStatus?.last_api_error && metaStatus?.last_api_status === 'failed' && (
-              <div className="text-xs text-red-500">
-                {metaStatus.last_api_error}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Search Bar */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-6">
-        <div className="flex gap-3">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="Enter brand or page name..."
-              className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none"
-            />
-          </div>
-          <select
-            value={country}
-            onChange={(e) => setCountry(e.target.value)}
-            className="px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white"
-          >
-            {Object.entries(countries).map(([code, name]) => (
-              <option key={code} value={code}>{name}</option>
-            ))}
-          </select>
+      <div className="flex gap-2 mb-6">
+        {[
+          { id: 'search', label: 'Search & Discover', icon: <Search size={16} /> },
+          { id: 'swipe', label: 'My Swipe Files', icon: <Bookmark size={16} /> },
+          { id: 'tracked', label: 'Tracked Brands', icon: <Eye size={16} /> }
+        ].map(tab => (
           <button
-            onClick={handleSearch}
-            disabled={loading || !searchQuery.trim()}
-            className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:from-violet-700 hover:to-purple-700 transition-all disabled:opacity-50"
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all ${
+              activeTab === tab.id
+                ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg shadow-violet-200'
+                : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+            }`}
           >
-            {loading ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
-            Search
+            {tab.icon}
+            {tab.label}
+            {tab.id === 'swipe' && swipeFiles.length > 0 && (
+              <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab.id ? 'bg-white/20' : 'bg-violet-100 text-violet-700'}`}>
+                {swipeFiles.length}
+              </span>
+            )}
           </button>
-        </div>
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Results Grid */}
-        <div className="lg:col-span-2">
+      {activeTab === 'search' && (
+        <>
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-6">
+            <div className="flex gap-3">
+              <div className="flex-1 relative">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  placeholder="Enter brand or page name..."
+                  className="w-full pl-12 pr-4 py-3.5 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all"
+                />
+              </div>
+              <select value={country} onChange={(e) => setCountry(e.target.value)} className="px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white min-w-[140px]">
+                {Object.entries(countries).map(([code, name]) => (
+                  <option key={code} value={code}>{name}</option>
+                ))}
+              </select>
+              <button onClick={() => handleSearch(false)} disabled={loading || !searchQuery.trim()} className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all disabled:opacity-50 disabled:shadow-none">
+                {loading ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
+                Search
+              </button>
+            </div>
+            {cacheInfo && (
+              <div className="mt-3 flex items-center gap-2 text-sm">
+                {cacheInfo.is_valid ? (
+                  <>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full">
+                      <Zap size={14} />Cached • Refreshes in {formatCacheTime(cacheInfo)}
+                    </span>
+                    <button onClick={() => handleSearch(true)} className="text-violet-600 hover:text-violet-700 text-xs font-medium">Force refresh</button>
+                  </>
+                ) : <span className="text-gray-400">Fresh results</span>}
+              </div>
+            )}
+          </div>
+
           {results.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
               {results.map((ad, idx) => (
-                <div
-                  key={ad.id || idx}
-                  onClick={() => handleAnalyze(ad)}
-                  className={`bg-white rounded-xl overflow-hidden border-2 cursor-pointer transition-all hover:shadow-lg ${
-                    selectedAd?.id === ad.id ? 'border-violet-500' : 'border-gray-100'
-                  }`}
-                >
-                  <div className="aspect-square bg-gray-100 relative flex items-center justify-center">
-                    <div className="text-center text-gray-400">
-                      <Video size={32} className="mx-auto mb-2 opacity-60" />
-                      <p className="text-xs">Video ad preview</p>
+                <div key={ad.ad_id || idx} className="group bg-white rounded-2xl overflow-hidden border border-gray-100 hover:border-violet-200 hover:shadow-xl hover:shadow-violet-100/50 transition-all duration-300 cursor-pointer" onClick={() => handleViewAd(ad)}>
+                  <div className="aspect-square bg-gradient-to-br from-gray-50 to-gray-100 relative overflow-hidden">
+                    {ad.cloudinary_thumbnail_url || ad.cloudinary_image_url ? (
+                      <img src={ad.cloudinary_thumbnail_url || ad.cloudinary_image_url} alt={ad.page_name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                    ) : ad.cloudinary_video_url ? (
+                      <video src={ad.cloudinary_video_url} className="w-full h-full object-cover" muted />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-300">
+                        {ad.media_type === 'video' ? <Video size={40} /> : <ImageIcon size={40} />}
+                      </div>
+                    )}
+                    <div className="absolute top-2 left-2">
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${ad.is_active ? 'bg-emerald-500 text-white' : 'bg-gray-500 text-white'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${ad.is_active ? 'bg-white' : 'bg-gray-300'}`} />
+                        {ad.is_active ? 'Active' : 'Ended'}
+                      </span>
                     </div>
-                    <div className="absolute inset-x-0 bottom-2 px-2">
-                      <p className="text-gray-700 text-xs font-medium truncate">{ad.page_name}</p>
+                    {ad.media_type === 'video' && (
+                      <div className="absolute top-2 right-2">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-black/60 text-white rounded-full text-[10px]"><Video size={10} />Video</span>
+                      </div>
+                    )}
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                      <button onClick={(e) => { e.stopPropagation(); handleSaveToBoard(ad); }} className="p-2.5 bg-white rounded-full text-gray-700 hover:bg-violet-100 hover:text-violet-700 transition-all"><Bookmark size={16} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); handleViewAd(ad); }} className="p-2.5 bg-white rounded-full text-gray-700 hover:bg-violet-100 hover:text-violet-700 transition-all"><Eye size={16} /></button>
                     </div>
                   </div>
                   <div className="p-3">
-                    <p className="text-xs text-gray-500 line-clamp-2">{ad.copy || 'No copy available'}</p>
-                    <div className="flex items-center gap-2 mt-2 text-[10px] text-gray-400">
-                      {ad.platforms?.slice(0, 2).map(p => (
-                        <span key={p} className="px-1.5 py-0.5 bg-gray-100 rounded">{p}</span>
-                      ))}
-                      {ad.snapshot_url && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            window.open(ad.snapshot_url, '_blank', 'noopener,noreferrer');
-                          }}
-                          className="ml-auto text-[10px] text-violet-600 hover:text-violet-700"
-                        >
-                          Open Ad
-                        </button>
+                    <div className="flex items-center gap-2 mb-2">
+                      {ad.page_profile_picture_url ? (
+                        <img src={ad.page_profile_picture_url} alt="" className="w-5 h-5 rounded-full" />
+                      ) : (
+                        <div className="w-5 h-5 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 text-[10px] font-bold">{ad.page_name?.charAt(0)}</div>
                       )}
+                      <span className="text-sm font-medium text-gray-900 truncate">{ad.page_name}</span>
+                    </div>
+                    <p className="text-xs text-gray-500 line-clamp-2 mb-2">{ad.ad_copy || 'No copy available'}</p>
+                    <div className="flex items-center gap-2 text-[10px] text-gray-400">
+                      {getDaysRunning(ad.start_date) !== null && <span className="px-1.5 py-0.5 bg-gray-100 rounded">{getDaysRunning(ad.start_date)}d</span>}
+                      {ad.platforms?.slice(0, 2).map(p => <span key={p} className="px-1.5 py-0.5 bg-gray-100 rounded capitalize">{p}</span>)}
+                      {ad.analysis && <span className="px-1.5 py-0.5 bg-violet-100 text-violet-700 rounded">✓ Analyzed</span>}
                     </div>
                   </div>
                 </div>
               ))}
             </div>
-          ) : !loading ? (
-            <div className="bg-white rounded-2xl p-12 text-center text-gray-400 border border-gray-100">
-              <Search size={40} className="mx-auto mb-3 opacity-50" />
-              <p>Search for a brand to see their active ads</p>
+          ) : loading ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {[...Array(8)].map((_, i) => (
+                <div key={i} className="bg-white rounded-2xl overflow-hidden border border-gray-100 animate-pulse">
+                  <div className="aspect-square bg-gray-100" />
+                  <div className="p-3 space-y-2">
+                    <div className="h-4 bg-gray-100 rounded w-3/4" />
+                    <div className="h-3 bg-gray-100 rounded w-full" />
+                    <div className="h-3 bg-gray-100 rounded w-1/2" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
-            <div className="bg-white rounded-2xl p-12 text-center border border-gray-100">
-              <RefreshCw size={32} className="mx-auto mb-3 animate-spin text-violet-500" />
-              <p className="text-gray-500">Searching Ad Library...</p>
+            <div className="bg-gradient-to-br from-white to-violet-50/30 rounded-3xl p-12 text-center border border-violet-100">
+              <div className="w-16 h-16 mx-auto mb-4 bg-violet-100 rounded-2xl flex items-center justify-center"><Search size={28} className="text-violet-600" /></div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">Who do you want to learn from?</h3>
+              <p className="text-gray-500 mb-6 max-w-md mx-auto">Enter a competitor's brand name above to discover their active ads and learn what's working for them.</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                {['Nike', 'Shein', 'Noon', 'Namshi'].map(brand => (
+                  <button key={brand} onClick={() => { setSearchQuery(brand); handleSearch(); }} className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-600 hover:border-violet-300 hover:bg-violet-50 transition-all">Try "{brand}"</button>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {activeTab === 'swipe' && (
+        <div>
+          {selectedSwipeFile ? (
+            <div>
+              <button onClick={() => { setSelectedSwipeFile(null); setSwipeFileAds([]); }} className="flex items-center gap-2 text-gray-500 hover:text-gray-700 mb-4"><ChevronLeft size={18} />Back to boards</button>
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl" style={{ backgroundColor: selectedSwipeFile.color + '20' }}>{selectedSwipeFile.icon}</div>
+                <div>
+                  <h3 className="text-xl font-semibold text-gray-900">{selectedSwipeFile.name}</h3>
+                  <p className="text-sm text-gray-500">{swipeFileAds.length} ads saved</p>
+                </div>
+              </div>
+              {swipeFileAds.length > 0 ? (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {swipeFileAds.map((ad, idx) => (
+                    <div key={ad.ad_id || idx} className="group bg-white rounded-2xl overflow-hidden border border-gray-100 hover:shadow-lg transition-all cursor-pointer" onClick={() => handleViewAd(ad)}>
+                      <div className="aspect-square bg-gray-100 relative">
+                        {ad.cloudinary_thumbnail_url || ad.cloudinary_image_url ? (
+                          <img src={ad.cloudinary_thumbnail_url || ad.cloudinary_image_url} alt={ad.page_name} className="w-full h-full object-cover" />
+                        ) : <div className="w-full h-full flex items-center justify-center text-gray-300"><ImageIcon size={40} /></div>}
+                      </div>
+                      <div className="p-3">
+                        <p className="text-sm font-medium text-gray-900 truncate">{ad.page_name}</p>
+                        <p className="text-xs text-gray-500 mt-1">Saved {new Date(ad.saved_at).toLocaleDateString()}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-gray-50 rounded-2xl p-12 text-center"><Bookmark size={40} className="mx-auto mb-3 text-gray-300" /><p className="text-gray-500">No ads saved to this board yet</p></div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-semibold text-gray-900">Your Boards</h3>
+                <button onClick={() => setShowCreateBoard(true)} className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 transition-all"><Plus size={16} />New Board</button>
+              </div>
+              {swipeFiles.length > 0 ? (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {swipeFiles.map(file => (
+                    <div key={file.id} onClick={() => loadSwipeFileAds(file)} className="bg-white rounded-2xl p-5 border border-gray-100 hover:border-violet-200 hover:shadow-lg transition-all cursor-pointer group">
+                      <div className="w-14 h-14 rounded-xl flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform" style={{ backgroundColor: file.color + '20' }}>{file.icon}</div>
+                      <h4 className="font-semibold text-gray-900 mb-1">{file.name}</h4>
+                      <p className="text-sm text-gray-500">{file.ad_count} ads</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-gradient-to-br from-white to-violet-50/30 rounded-3xl p-12 text-center border border-violet-100">
+                  <div className="w-16 h-16 mx-auto mb-4 bg-violet-100 rounded-2xl flex items-center justify-center"><Bookmark size={28} className="text-violet-600" /></div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">Start Building Your Swipe File</h3>
+                  <p className="text-gray-500 mb-6 max-w-md mx-auto">Save ads that inspire you to boards. Reference them when creating your own campaigns.</p>
+                  <button onClick={() => setShowCreateBoard(true)} className="px-6 py-3 bg-violet-600 text-white rounded-xl font-medium hover:bg-violet-700 transition-all">Create Your First Board</button>
+                </div>
+              )}
             </div>
           )}
         </div>
+      )}
 
-        {/* Analysis Panel */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 h-fit sticky top-20">
-          <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <Target size={18} />
-            AI Analysis
-          </h3>
-
-          {!selectedAd ? (
-            <div className="text-center text-gray-400 py-8">
-              <Eye size={32} className="mx-auto mb-2 opacity-50" />
-              <p className="text-sm">Select an ad to analyze</p>
-            </div>
-          ) : analyzing ? (
-            <div className="text-center py-8">
-              <RefreshCw size={32} className="mx-auto mb-3 animate-spin text-violet-500" />
-              <p className="text-gray-500">Analyzing creative...</p>
-            </div>
-          ) : analysis ? (
-            <div className="space-y-4 text-sm">
-              {/* Visual Style */}
-              <div>
-                <h4 className="font-medium text-gray-700 mb-2">Visual Style</h4>
-                <div className="flex gap-1 flex-wrap">
-                  {analysis.visual_style?.colors?.map((c, i) => (
-                    <div key={i} className="w-6 h-6 rounded" style={{ backgroundColor: c }} />
-                  ))}
+      {activeTab === 'tracked' && (
+        <div>
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-semibold text-gray-900">Tracked Brands</h3>
+            <button onClick={() => setShowAddBrand(true)} className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 transition-all"><Plus size={16} />Track Brand</button>
+          </div>
+          {trackedBrands.length > 0 ? (
+            <div className="space-y-3">
+              {trackedBrands.map(brand => (
+                <div key={brand.id} className="bg-white rounded-2xl p-4 border border-gray-100 flex items-center justify-between hover:shadow-md transition-all">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-violet-100 rounded-xl flex items-center justify-center text-violet-600 font-bold text-lg">{brand.brand_name.charAt(0)}</div>
+                    <div>
+                      <h4 className="font-semibold text-gray-900">{brand.brand_name}</h4>
+                      <p className="text-sm text-gray-500">{brand.total_ads_found} ads found • Tracking for {getDaysRunning(brand.tracking_started_at) || 0} days</p>
+                    </div>
+                    {brand.new_ads_since_last_check > 0 && <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs font-medium">🟢 {brand.new_ads_since_last_check} new</span>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => checkTrackedBrand(brand.id)} className="px-4 py-2 text-violet-600 hover:bg-violet-50 rounded-lg text-sm font-medium transition-all">Check Now</button>
+                    <button onClick={() => { setSearchQuery(brand.brand_name); setActiveTab('search'); handleSearch(); }} className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 transition-all">View Ads</button>
+                  </div>
                 </div>
-                <p className="text-gray-500 mt-1">{analysis.visual_style?.layout_type}</p>
-              </div>
-
-              {/* Hook Structure */}
-              <div>
-                <h4 className="font-medium text-gray-700 mb-2">Hook Strategy</h4>
-                <p className="text-gray-600">{analysis.hook_structure?.type}</p>
-                <p className="text-xs text-gray-400 mt-1">{analysis.hook_structure?.attention_grabber}</p>
-              </div>
-
-              {/* What Works */}
-              <div>
-                <h4 className="font-medium text-gray-700 mb-2">Why It Works</h4>
-                <ul className="space-y-1">
-                  {analysis.what_makes_it_work?.map((item, i) => (
-                    <li key={i} className="flex items-start gap-2 text-gray-600">
-                      <CheckCircle size={14} className="text-green-500 mt-0.5 flex-shrink-0" />
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              {/* Replicable */}
-              <div>
-                <h4 className="font-medium text-gray-700 mb-2">Copy These Elements</h4>
-                <ul className="space-y-1">
-                  {analysis.replicable_elements?.map((item, i) => (
-                    <li key={i} className="text-gray-600 text-xs bg-violet-50 px-2 py-1 rounded">
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <button
-                className="w-full mt-4 py-2 bg-violet-100 text-violet-700 rounded-lg font-medium text-sm hover:bg-violet-200 transition-all"
-                onClick={() => {
-                  if (!analysis || !selectedAd || !onGenerateBrief) return;
-                  onGenerateBrief({
-                    product_name: selectedAd.page_name || '',
-                    product_description: analysis.creative_brief?.key_message || '',
-                    target_audience: analysis.target_audience_signals?.demographics || '',
-                    objective: analysis.creative_brief?.objective || '',
-                    budget_level: 'medium'
-                  });
-                }}
-              >
-                Generate My Version
-              </button>
+              ))}
             </div>
-          ) : null}
+          ) : (
+            <div className="bg-gradient-to-br from-white to-violet-50/30 rounded-3xl p-12 text-center border border-violet-100">
+              <div className="w-16 h-16 mx-auto mb-4 bg-violet-100 rounded-2xl flex items-center justify-center"><Eye size={28} className="text-violet-600" /></div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">Never Miss a Competitor's Move</h3>
+              <p className="text-gray-500 mb-6 max-w-md mx-auto">Track brands to automatically check for new ads. Get notified when competitors launch new campaigns.</p>
+              <button onClick={() => setShowAddBrand(true)} className="px-6 py-3 bg-violet-600 text-white rounded-xl font-medium hover:bg-violet-700 transition-all">Track Your First Brand</button>
+            </div>
+          )}
         </div>
-      </div>
+      )}
+
+      {showAdModal && selectedAd && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowAdModal(false)}>
+          <div className="bg-white rounded-3xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col md:flex-row" onClick={(e) => e.stopPropagation()}>
+            <div className="md:w-1/2 bg-gray-900 flex items-center justify-center p-4 min-h-[300px]">
+              {selectedAd.cloudinary_video_url ? (
+                <video src={selectedAd.cloudinary_video_url} controls autoPlay className="max-w-full max-h-[60vh] rounded-lg" />
+              ) : selectedAd.cloudinary_image_url ? (
+                <img src={selectedAd.cloudinary_image_url} alt={selectedAd.page_name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
+              ) : (
+                <div className="text-gray-500 text-center"><ImageIcon size={48} className="mx-auto mb-2 opacity-50" /><p>No preview available</p></div>
+              )}
+            </div>
+            <div className="md:w-1/2 p-6 overflow-y-auto max-h-[90vh]">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  {selectedAd.page_profile_picture_url ? (
+                    <img src={selectedAd.page_profile_picture_url} alt="" className="w-10 h-10 rounded-full" />
+                  ) : (
+                    <div className="w-10 h-10 bg-violet-100 rounded-full flex items-center justify-center text-violet-600 font-bold">{selectedAd.page_name?.charAt(0)}</div>
+                  )}
+                  <div>
+                    <h3 className="font-semibold text-gray-900">{selectedAd.page_name}</h3>
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${selectedAd.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>
+                        {selectedAd.is_active ? '🟢 Active' : '⚫ Ended'}
+                      </span>
+                      {getDaysRunning(selectedAd.start_date) !== null && <span>{getDaysRunning(selectedAd.start_date)} days</span>}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setShowAdModal(false)} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
+              </div>
+              <div className="mb-4">
+                <h4 className="text-sm font-medium text-gray-500 mb-1">Ad Copy</h4>
+                <p className="text-gray-800 text-sm whitespace-pre-wrap">{selectedAd.ad_copy || 'No copy'}</p>
+              </div>
+              {selectedAd.headline && <div className="mb-4"><h4 className="text-sm font-medium text-gray-500 mb-1">Headline</h4><p className="text-gray-800 font-medium">{selectedAd.headline}</p></div>}
+              {selectedAd.cta_text && <div className="mb-4"><h4 className="text-sm font-medium text-gray-500 mb-1">CTA</h4><span className="inline-block px-3 py-1 bg-blue-600 text-white text-sm rounded-lg">{selectedAd.cta_text}</span></div>}
+              <div className="mb-4">
+                <h4 className="text-sm font-medium text-gray-500 mb-2">Platforms</h4>
+                <div className="flex flex-wrap gap-2">{selectedAd.platforms?.map(p => <span key={p} className="px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs capitalize">{p}</span>)}</div>
+              </div>
+              <div className="flex gap-2 mb-6">
+                <button onClick={() => handleSaveToBoard(selectedAd)} className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-all"><Bookmark size={16} />Save</button>
+                <button onClick={handleAnalyze} disabled={analyzing} className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all disabled:opacity-50">
+                  {analyzing ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                  {analysis ? 'Re-analyze' : 'Analyze with AI'}
+                </button>
+              </div>
+              {analysis && (
+                <div className="border-t border-gray-100 pt-4">
+                  <h4 className="font-semibold text-gray-900 mb-4 flex items-center gap-2"><Sparkles size={16} className="text-violet-600" />AI Analysis</h4>
+                  <div className="space-y-4 text-sm">
+                    <div>
+                      <h5 className="font-medium text-gray-700 mb-2">Visual Style</h5>
+                      <div className="flex gap-1.5 flex-wrap mb-1">{analysis.visual_style?.colors?.map((c, i) => <div key={i} className="w-7 h-7 rounded-lg shadow-sm border border-gray-200" style={{ backgroundColor: c }} title={c} />)}</div>
+                      <p className="text-gray-500 text-xs">{analysis.visual_style?.layout_type} • {analysis.visual_style?.imagery_style}</p>
+                    </div>
+                    <div>
+                      <h5 className="font-medium text-gray-700 mb-1">Hook Strategy</h5>
+                      <span className="inline-block px-2 py-0.5 bg-violet-100 text-violet-700 rounded text-xs mb-1">{analysis.hook_structure?.type}</span>
+                      <p className="text-gray-500 text-xs">{analysis.hook_structure?.attention_grabber}</p>
+                    </div>
+                    <div>
+                      <h5 className="font-medium text-gray-700 mb-2">Why It Works</h5>
+                      <ul className="space-y-1">{analysis.what_makes_it_work?.map((item, i) => <li key={i} className="flex items-start gap-2 text-gray-600 text-xs"><CheckCircle size={14} className="text-emerald-500 mt-0.5 flex-shrink-0" />{item}</li>)}</ul>
+                    </div>
+                    <div>
+                      <h5 className="font-medium text-gray-700 mb-2">Copy These Elements</h5>
+                      <div className="flex flex-wrap gap-1.5">{analysis.replicable_elements?.map((item, i) => <span key={i} className="px-2 py-1 bg-violet-50 text-violet-700 rounded-lg text-xs">{item}</span>)}</div>
+                    </div>
+                    <button onClick={handleGenerateBrief} className="w-full mt-4 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all"><FileText size={16} />Create Brief from This</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCreateBoard && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowCreateBoard(false)}>
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Create New Board</h3>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Board Name</label>
+              <input type="text" value={newBoardName} onChange={(e) => setNewBoardName(e.target.value)} placeholder="e.g., Best Hooks, UGC Inspiration" className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none" />
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
+              <div className="flex gap-2 flex-wrap">{BOARD_COLORS.map(color => <button key={color} onClick={() => setNewBoardColor(color)} className={`w-8 h-8 rounded-lg transition-all ${newBoardColor === color ? 'ring-2 ring-offset-2 ring-violet-500 scale-110' : ''}`} style={{ backgroundColor: color }} />)}</div>
+            </div>
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Icon</label>
+              <div className="flex gap-2 flex-wrap">{BOARD_ICONS.map(icon => <button key={icon} onClick={() => setNewBoardIcon(icon)} className={`w-10 h-10 rounded-lg text-xl flex items-center justify-center transition-all ${newBoardIcon === icon ? 'bg-violet-100 ring-2 ring-violet-500' : 'bg-gray-100 hover:bg-gray-200'}`}>{icon}</button>)}</div>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setShowCreateBoard(false)} className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-all">Cancel</button>
+              <button onClick={createSwipeFile} disabled={!newBoardName.trim()} className="flex-1 px-4 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all disabled:opacity-50">Create Board</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSaveModal && adToSave && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowSaveModal(false)}>
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Save to Board</h3>
+            {swipeFiles.length > 0 ? (
+              <div className="space-y-2 mb-4 max-h-64 overflow-y-auto">
+                {swipeFiles.map(file => (
+                  <button key={file.id} onClick={() => confirmSaveToBoard(file.id)} className="w-full flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:border-violet-200 hover:bg-violet-50 transition-all text-left">
+                    <div className="w-10 h-10 rounded-lg flex items-center justify-center text-lg" style={{ backgroundColor: file.color + '20' }}>{file.icon}</div>
+                    <div><p className="font-medium text-gray-900">{file.name}</p><p className="text-xs text-gray-500">{file.ad_count} ads</p></div>
+                  </button>
+                ))}
+              </div>
+            ) : <p className="text-gray-500 text-center py-4 mb-4">No boards yet. Create one first!</p>}
+            <button onClick={() => { setShowSaveModal(false); setShowCreateBoard(true); }} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border-2 border-dashed border-gray-200 rounded-xl text-gray-500 hover:border-violet-300 hover:text-violet-600 transition-all"><Plus size={16} />Create New Board</button>
+          </div>
+        </div>
+      )}
+
+      {showAddBrand && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowAddBrand(false)}>
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Track a Brand</h3>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Brand Name</label>
+              <input type="text" value={newBrandName} onChange={(e) => setNewBrandName(e.target.value)} placeholder="e.g., Nike, Adidas, Shein" className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none" />
+            </div>
+            <p className="text-sm text-gray-500 mb-6">We'll check for new ads daily and notify you when this brand launches new campaigns.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setShowAddBrand(false)} className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-all">Cancel</button>
+              <button onClick={addTrackedBrand} disabled={!newBrandName.trim()} className="flex-1 px-4 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all disabled:opacity-50">Start Tracking</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showWelcome && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-8 max-w-lg w-full text-center">
+            <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-violet-500 to-purple-600 rounded-2xl flex items-center justify-center"><Search size={36} className="text-white" /></div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-3">Stop Guessing. Start Learning.</h2>
+            <p className="text-gray-600 mb-6">Competitor Spy lets you discover what's working for other brands, save ads that inspire you, and turn competitor insights into your own winning creatives.</p>
+            <div className="grid grid-cols-3 gap-4 mb-8 text-sm">
+              <div className="p-4 bg-violet-50 rounded-xl"><Search size={24} className="text-violet-600 mx-auto mb-2" /><p className="font-medium text-gray-800">Search</p><p className="text-gray-500 text-xs">Find competitor ads</p></div>
+              <div className="p-4 bg-violet-50 rounded-xl"><Bookmark size={24} className="text-violet-600 mx-auto mb-2" /><p className="font-medium text-gray-800">Save</p><p className="text-gray-500 text-xs">Build swipe files</p></div>
+              <div className="p-4 bg-violet-50 rounded-xl"><Sparkles size={24} className="text-violet-600 mx-auto mb-2" /><p className="font-medium text-gray-800">Learn</p><p className="text-gray-500 text-xs">AI analysis</p></div>
+            </div>
+            <button onClick={dismissWelcome} className="w-full px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium hover:shadow-lg hover:shadow-violet-200 transition-all">Let's Go</button>
+          </div>
+        </div>
+      )}
+
+      {showHelp && (
+        <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setShowHelp(false)}>
+          <div className="absolute right-0 top-0 bottom-0 w-full max-w-md bg-white shadow-2xl p-6 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold text-gray-900">How Competitor Spy Works</h3>
+              <button onClick={() => setShowHelp(false)} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
+            </div>
+            <div className="space-y-6">
+              <div><h4 className="font-medium text-gray-900 mb-2">🔍 Search & Discover</h4><p className="text-sm text-gray-600">Enter any brand name to find their active Facebook and Instagram ads. Results are cached for 24 hours to save API costs.</p></div>
+              <div><h4 className="font-medium text-gray-900 mb-2">🤖 AI Analysis</h4><p className="text-sm text-gray-600">Click any ad to get a deep breakdown of what makes it work—hook strategy, visual style, target audience signals, and replicable elements.</p></div>
+              <div><h4 className="font-medium text-gray-900 mb-2">📁 Swipe Files</h4><p className="text-sm text-gray-600">Save ads that inspire you to organized boards. Reference them later when creating your own campaigns.</p></div>
+              <div><h4 className="font-medium text-gray-900 mb-2">👁️ Tracked Brands</h4><p className="text-sm text-gray-600">Track competitors to automatically check for new ads. Get alerted when they launch new campaigns.</p></div>
+              <div><h4 className="font-medium text-gray-900 mb-2">📝 Create Brief</h4><p className="text-sm text-gray-600">Turn any analyzed ad into a creative brief with one click. The AI extracts key elements to help you create your own version.</p></div>
+              <div className="pt-4 border-t border-gray-100">
+                <h4 className="font-medium text-gray-900 mb-2">💡 Pro Tips</h4>
+                <ul className="text-sm text-gray-600 space-y-2">
+                  <li>• Search for exact brand names for best results</li>
+                  <li>• Use "ALL" country for global brands</li>
+                  <li>• Check tracked brands weekly to spot trends</li>
+                  <li>• Save ads that match your brand's aesthetic</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ============================================================================
-// AI GENERATE (Hooks, Scripts, Brief, Localizer)
 // ============================================================================
 function AIGenerate({ store, prefillBrief, onPrefillApplied }) {
   const [activeGen, setActiveGen] = useState('hooks');
