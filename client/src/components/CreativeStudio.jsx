@@ -315,6 +315,21 @@ function AdEditor({ store }) {
   const [colorRecommendations, setColorRecommendations] = useState([]);
   const [isColorLoading, setIsColorLoading] = useState(false);
   const [imageFocus, setImageFocus] = useState({ x: 0.5, y: 0.5, subject: 'subject', confidence: 0 });
+  const [siteLogoUrl, setSiteLogoUrl] = useState('');
+  const [isLogoLoading, setIsLogoLoading] = useState(false);
+  const [showLogo, setShowLogo] = useState(true);
+  const [logoScale, setLogoScale] = useState(80);
+
+  const siteSnapshot = {
+    url: 'https://virona.com',
+    fetchedAt: 'Just now',
+    summary: 'Luxury minimal fashion destination emphasizing seasonal drops, clean typography, and editorial imagery.',
+    highlights: [
+      'Neutral palette with emphasis on ivory and onyx tones.',
+      'Hero copy focuses on timeless silhouettes and atelier craft.',
+      'Calls-to-action prioritize “Shop the Drop” and “Discover the Edit”.'
+    ]
+  };
 
   const adRef = useRef(null);
 
@@ -332,6 +347,39 @@ function AdEditor({ store }) {
     return () => {
       document.head.removeChild(link);
       document.body.removeChild(script);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    let objectUrl;
+
+    const fetchLogo = async () => {
+      setIsLogoLoading(true);
+      try {
+        const response = await fetch('https://logo.clearbit.com/virona.com');
+        if (!response.ok) throw new Error('Logo fetch failed');
+        const blob = await response.blob();
+        objectUrl = URL.createObjectURL(blob);
+        if (isMounted) {
+          setSiteLogoUrl(objectUrl);
+        }
+      } catch (error) {
+        console.error('Failed to fetch logo:', error);
+      } finally {
+        if (isMounted) {
+          setIsLogoLoading(false);
+        }
+      }
+    };
+
+    fetchLogo();
+
+    return () => {
+      isMounted = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
     };
   }, []);
 
@@ -958,6 +1006,16 @@ Return JSON with the same keys (headline, subhead, cta).`;
         {content.showOverlay && (
           <div className="absolute inset-0 bg-black transition-opacity" style={{ opacity: content.overlayOpacity / 100 }} />
         )}
+        {showLogo && siteLogoUrl && (
+          <div className="absolute left-6 top-6" style={{ width: `${logoScale}px`, height: `${logoScale}px` }}>
+            <img
+              src={siteLogoUrl}
+              alt="Brand logo"
+              className="w-full h-full object-contain"
+              crossOrigin="anonymous"
+            />
+          </div>
+        )}
       </div>
     );
 
@@ -1329,6 +1387,70 @@ Return JSON with the same keys (headline, subhead, cta).`;
                 ))}
               </div>
             )}
+          </div>
+
+          <div className="space-y-4 border-t border-neutral-100 pt-6">
+            <div className="flex items-center justify-between text-xs font-bold uppercase tracking-widest text-neutral-400">
+              <span className="flex items-center gap-2">
+                <Globe size={14} /> Website Snapshot
+              </span>
+              <span className="text-[10px] text-neutral-300">Simulated</span>
+            </div>
+
+            <div className="bg-white p-3 rounded border border-neutral-200 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] uppercase tracking-widest text-neutral-400">Fetched</p>
+                  <p className="text-xs font-semibold text-neutral-700">{siteSnapshot.url}</p>
+                  <p className="text-[10px] text-neutral-400">{siteSnapshot.fetchedAt}</p>
+                </div>
+                <div className="w-12 h-12 rounded bg-neutral-50 border border-neutral-200 flex items-center justify-center">
+                  {isLogoLoading ? (
+                    <Loader2 size={16} className="animate-spin text-neutral-400" />
+                  ) : siteLogoUrl ? (
+                    <img src={siteLogoUrl} alt="Fetched logo" className="w-9 h-9 object-contain" />
+                  ) : (
+                    <ImageIcon size={16} className="text-neutral-300" />
+                  )}
+                </div>
+              </div>
+
+              <div className="text-[11px] text-neutral-600 leading-snug border-t border-neutral-100 pt-2">
+                {siteSnapshot.summary}
+              </div>
+
+              <ul className="space-y-1 text-[10px] text-neutral-500">
+                {siteSnapshot.highlights.map((item) => (
+                  <li key={item} className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-neutral-400" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+
+              <div className="flex items-center justify-between pt-2 border-t border-neutral-100">
+                <label className="flex items-center gap-2 text-[10px] text-neutral-500">
+                  <input
+                    type="checkbox"
+                    checked={showLogo}
+                    onChange={(e) => setShowLogo(e.target.checked)}
+                    className="accent-black"
+                  />
+                  Place logo on canvas
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] text-neutral-400">Size</span>
+                  <input
+                    type="range"
+                    min="48"
+                    max="120"
+                    value={logoScale}
+                    onChange={(e) => setLogoScale(Number(e.target.value))}
+                    className="w-20 h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-black"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
