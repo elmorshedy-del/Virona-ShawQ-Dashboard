@@ -314,6 +314,16 @@ function AdEditor({ store }) {
   const [colorRecommendations, setColorRecommendations] = useState([]);
   const [isColorLoading, setIsColorLoading] = useState(false);
   const [imageFocus, setImageFocus] = useState({ x: 0.5, y: 0.5, subject: 'subject', confidence: 0 });
+  const [websiteUrl, setWebsiteUrl] = useState('');
+  const [websiteError, setWebsiteError] = useState('');
+  const [isWebsiteFetchLoading, setIsWebsiteFetchLoading] = useState(false);
+  const [logoUrl, setLogoUrl] = useState(null);
+  const [logoSettings, setLogoSettings] = useState({
+    enabled: false,
+    position: 'bottom-left',
+    scale: 0.18,
+    opacity: 1
+  });
 
   const adRef = useRef(null);
 
@@ -395,6 +405,15 @@ function AdEditor({ store }) {
       isMounted = false;
     };
   }, [store]);
+
+  useEffect(() => {
+    if (storeProfile?.storeUrl && !websiteUrl) {
+      setWebsiteUrl(storeProfile.storeUrl);
+    }
+    if (storeProfile?.logoUrl) {
+      setLogoUrl(storeProfile.logoUrl);
+    }
+  }, [storeProfile, websiteUrl]);
 
   useEffect(() => {
     const storedDefault = window.localStorage.getItem(`creativeStudio.defaultLocale.${store ?? 'vironax'}`);
@@ -502,6 +521,29 @@ function AdEditor({ store }) {
   const handleSetDefaultLocale = (localeValue) => {
     setDefaultLocale(localeValue);
     window.localStorage.setItem(`creativeStudio.defaultLocale.${store ?? 'vironax'}`, localeValue);
+  };
+
+  const handleWebsiteFetch = async () => {
+    if (!websiteUrl.trim()) return;
+    setWebsiteError('');
+    setIsWebsiteFetchLoading(true);
+    try {
+      const response = await fetch(
+        withStore(`/creative-studio/store-profile?store_url=${encodeURIComponent(websiteUrl.trim())}`, store)
+      );
+      const data = await response.json();
+      if (response.ok && data?.success) {
+        setStoreProfile(data.profile);
+        setLogoUrl(data.profile?.logoUrl || null);
+      } else {
+        setWebsiteError(data?.error || 'Unable to fetch website details.');
+      }
+    } catch (error) {
+      console.error('Website fetch failed:', error);
+      setWebsiteError('Unable to fetch website details.');
+    } finally {
+      setIsWebsiteFetchLoading(false);
+    }
   };
 
   const generateColorRecommendations = async () => {
@@ -944,6 +986,30 @@ Return JSON with the same keys (headline, subhead, cta).`;
       </div>
     );
 
+    const logoPlacement = {
+      'top-left': 'top-4 left-4',
+      'top-right': 'top-4 right-4',
+      'bottom-left': 'bottom-4 left-4',
+      'bottom-right': 'bottom-4 right-4',
+      center: 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2'
+    };
+
+    const LogoLayer = () => {
+      if (!logoSettings.enabled || !logoUrl) return null;
+      const size = Math.max(40, Math.round(dims.width * logoSettings.scale));
+      return (
+        <div className={`absolute ${logoPlacement[logoSettings.position] || logoPlacement['bottom-left']} z-20 pointer-events-none`}>
+          <img
+            src={logoUrl}
+            alt="Brand logo"
+            className="object-contain"
+            style={{ width: `${size}px`, opacity: logoSettings.opacity, backgroundColor: 'transparent' }}
+            crossOrigin="anonymous"
+          />
+        </div>
+      );
+    };
+
     const BackgroundLayer = () => (
       <div className="absolute inset-0 w-full h-full overflow-hidden">
         <img
@@ -963,7 +1029,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
     switch (content.layout) {
       case 'split':
         return (
-          <div className="w-full h-full flex flex-col bg-white">
+          <div className="w-full h-full flex flex-col bg-white relative">
             <div className="h-2/3 relative overflow-hidden">
               <img
                 src={image}
@@ -979,6 +1045,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
               <p className="text-xs uppercase tracking-widest opacity-90" style={{ fontFamily: fonts.modern, color: '#fff' }}>{content.subhead}</p>
               <div className="mt-4 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest">{resolvedCta}</div>
             </div>
+            <LogoLayer />
           </div>
         );
       case 'framed':
@@ -1002,6 +1069,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
                 <div className="text-xs border-b border-black pb-0.5 uppercase tracking-wider font-semibold">{resolvedCta}</div>
               </div>
             </div>
+            <LogoLayer />
           </div>
         );
       case 'centered':
@@ -1014,6 +1082,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
               <h1 className="text-4xl md:text-5xl lg:text-6xl mb-4 leading-tight" style={{ ...commonTextStyles, fontStyle: 'italic' }}>{content.headline}</h1>
               {CTA}
             </div>
+            <LogoLayer />
           </div>
         );
     }
@@ -1068,6 +1137,128 @@ Return JSON with the same keys (headline, subhead, cta).`;
                   {isMagicLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
                 </button>
               </div>
+            </div>
+          </div>
+
+          <div className="space-y-4 border-t border-neutral-100 pt-6">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-neutral-400">
+              <Globe size={14} /> Website Snapshot
+            </div>
+            <div className="space-y-3">
+              <div className="text-[11px] text-neutral-500">Preview what the editor would capture from a storefront.</div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="https://storefront.com"
+                  value={websiteUrl}
+                  onChange={(e) => setWebsiteUrl(e.target.value)}
+                  className="flex-1 text-xs p-2 border border-neutral-300 rounded focus:border-black outline-none bg-white"
+                />
+                <button
+                  type="button"
+                  onClick={handleWebsiteFetch}
+                  disabled={isWebsiteFetchLoading || !websiteUrl.trim()}
+                  className="px-3 py-2 text-[10px] uppercase tracking-widest font-bold bg-black text-white rounded disabled:opacity-50"
+                >
+                  {isWebsiteFetchLoading ? 'Fetching...' : 'Fetch'}
+                </button>
+              </div>
+              {websiteError && <div className="text-[10px] text-red-500">{websiteError}</div>}
+              {isStoreProfileLoading && !storeProfile && (
+                <div className="text-[10px] text-neutral-400">Loading store profile...</div>
+              )}
+              {storeProfile && (
+                <div className="space-y-3 bg-white p-3 rounded border border-neutral-200 shadow-sm">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest text-neutral-400">Summary</div>
+                    <p className="text-[11px] text-neutral-600 mt-1">
+                      {storeProfile.summary?.summary || 'No summary available yet.'}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[10px] text-neutral-500">
+                    <span className="px-2 py-1 rounded-full bg-neutral-100">Tone: {storeProfile.summary?.tone || '—'}</span>
+                    <span className="px-2 py-1 rounded-full bg-neutral-100">Style: {storeProfile.summary?.languageStyle || '—'}</span>
+                    <span className="px-2 py-1 rounded-full bg-neutral-100">Positioning: {storeProfile.summary?.pricePositioning || '—'}</span>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest text-neutral-400">Keywords</div>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {(storeProfile.summary?.keywords || []).slice(0, 6).map((keyword) => (
+                        <span
+                          key={keyword}
+                          className="text-[10px] px-2 py-0.5 rounded-full border border-neutral-200 text-neutral-500"
+                        >
+                          {keyword}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 border-t border-neutral-100 pt-3">
+                    <div className="w-12 h-12 border border-neutral-200 rounded bg-white flex items-center justify-center overflow-hidden">
+                      {logoUrl ? (
+                        <img src={logoUrl} alt="Fetched logo" className="w-full h-full object-contain" style={{ backgroundColor: 'transparent' }} />
+                      ) : (
+                        <span className="text-[9px] text-neutral-300 uppercase">Logo</span>
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-[10px] font-bold text-neutral-600">Logo (transparent)</div>
+                      <button
+                        type="button"
+                        onClick={() => setLogoSettings((prev) => ({ ...prev, enabled: !prev.enabled }))}
+                        disabled={!logoUrl}
+                        className="mt-1 text-[10px] uppercase tracking-widest font-bold text-black disabled:text-neutral-300"
+                      >
+                        {logoSettings.enabled ? 'Remove from canvas' : 'Place on canvas'}
+                      </button>
+                    </div>
+                  </div>
+                  {logoSettings.enabled && (
+                    <div className="space-y-3 border-t border-neutral-100 pt-3">
+                      <div className="flex items-center justify-between text-[10px] text-neutral-500">
+                        <span>Logo size</span>
+                        <span>{Math.round(logoSettings.scale * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.1"
+                        max="0.35"
+                        step="0.01"
+                        value={logoSettings.scale}
+                        onChange={(e) => setLogoSettings((prev) => ({ ...prev, scale: Number(e.target.value) }))}
+                        className="w-full h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-black"
+                      />
+                      <div className="flex items-center justify-between text-[10px] text-neutral-500">
+                        <span>Opacity</span>
+                        <span>{Math.round(logoSettings.opacity * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.3"
+                        max="1"
+                        step="0.05"
+                        value={logoSettings.opacity}
+                        onChange={(e) => setLogoSettings((prev) => ({ ...prev, opacity: Number(e.target.value) }))}
+                        className="w-full h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-black"
+                      />
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-neutral-500">Position</span>
+                        <select
+                          value={logoSettings.position}
+                          onChange={(e) => setLogoSettings((prev) => ({ ...prev, position: e.target.value }))}
+                          className="text-[10px] border border-neutral-200 rounded px-2 py-1 bg-white"
+                        >
+                          <option value="top-left">Top left</option>
+                          <option value="top-right">Top right</option>
+                          <option value="bottom-left">Bottom left</option>
+                          <option value="bottom-right">Bottom right</option>
+                          <option value="center">Center</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
