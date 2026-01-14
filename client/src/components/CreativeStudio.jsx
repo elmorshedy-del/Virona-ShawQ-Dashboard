@@ -310,11 +310,20 @@ function AdEditor({ store }) {
   const [recommendedLocales, setRecommendedLocales] = useState(RECOMMENDED_LOCALES);
   const [storeProfile, setStoreProfile] = useState(null);
   const [isStoreProfileLoading, setIsStoreProfileLoading] = useState(false);
+  const [storeProfileError, setStoreProfileError] = useState(null);
+  const [storeUrlInput, setStoreUrlInput] = useState('');
   const [languageSearch, setLanguageSearch] = useState('');
   const [activeLanguage, setActiveLanguage] = useState('en');
   const [colorRecommendations, setColorRecommendations] = useState([]);
   const [isColorLoading, setIsColorLoading] = useState(false);
   const [imageFocus, setImageFocus] = useState({ x: 0.5, y: 0.5, subject: 'subject', confidence: 0 });
+  const [logoImage, setLogoImage] = useState(null);
+  const [logoPlacement, setLogoPlacement] = useState({
+    visible: false,
+    position: 'top-left',
+    size: 72,
+    opacity: 100
+  });
 
   const adRef = useRef(null);
 
@@ -370,32 +379,33 @@ function AdEditor({ store }) {
     };
   }, [store]);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    const loadStoreProfile = async () => {
-      setIsStoreProfileLoading(true);
-      try {
-        const response = await fetch(withStore('/creative-studio/store-profile', store));
-        const data = await response.json();
-        if (response.ok && data?.success && isMounted) {
-          setStoreProfile(data.profile);
-        }
-      } catch (error) {
-        console.error('Failed to load store profile:', error);
-      } finally {
-        if (isMounted) {
-          setIsStoreProfileLoading(false);
-        }
+  const fetchStoreProfile = useCallback(async (storeUrl) => {
+    setIsStoreProfileLoading(true);
+    setStoreProfileError(null);
+    try {
+      const path = storeUrl
+        ? `/creative-studio/store-profile?store_url=${encodeURIComponent(storeUrl)}`
+        : '/creative-studio/store-profile';
+      const response = await fetch(withStore(path, store));
+      const data = await response.json();
+      if (response.ok && data?.success) {
+        setStoreProfile(data.profile);
+        setStoreUrlInput((prev) => prev || data.profile?.storeUrl || '');
+        setLogoImage(data.profile?.logoUrl || null);
+      } else {
+        setStoreProfileError(data?.error || 'Unable to fetch website summary.');
       }
-    };
-
-    loadStoreProfile();
-
-    return () => {
-      isMounted = false;
-    };
+    } catch (error) {
+      console.error('Failed to load store profile:', error);
+      setStoreProfileError('Unable to fetch website summary.');
+    } finally {
+      setIsStoreProfileLoading(false);
+    }
   }, [store]);
+
+  useEffect(() => {
+    fetchStoreProfile();
+  }, [fetchStoreProfile]);
 
   useEffect(() => {
     const storedDefault = window.localStorage.getItem(`creativeStudio.defaultLocale.${store ?? 'vironax'}`);
@@ -548,6 +558,10 @@ Return JSON array of { "color": "#hex", "reason": "short rationale" }.`;
     } finally {
       setIsColorLoading(false);
     }
+  };
+
+  const handleStoreProfileFetch = () => {
+    fetchStoreProfile(storeUrlInput?.trim());
   };
 
   const handleDownload = async () => {
@@ -961,10 +975,38 @@ Return JSON with the same keys (headline, subhead, cta).`;
       </div>
     );
 
+    const logoPositions = {
+      'top-left': 'top-4 left-4',
+      'top-right': 'top-4 right-4',
+      'bottom-left': 'bottom-4 left-4',
+      'bottom-right': 'bottom-4 right-4',
+      center: 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2'
+    };
+
+    const LogoLayer = () => {
+      if (!logoPlacement.visible || !logoImage) return null;
+      return (
+        <div className={`absolute z-20 ${logoPositions[logoPlacement.position]}`}>
+          <img
+            src={logoImage}
+            alt="Logo"
+            className="object-contain"
+            style={{
+              width: `${logoPlacement.size}px`,
+              height: `${logoPlacement.size}px`,
+              opacity: logoPlacement.opacity / 100,
+              backgroundColor: 'transparent'
+            }}
+            crossOrigin="anonymous"
+          />
+        </div>
+      );
+    };
+
     switch (content.layout) {
       case 'split':
         return (
-          <div className="w-full h-full flex flex-col bg-white">
+          <div className="w-full h-full flex flex-col bg-white relative">
             <div className="h-2/3 relative overflow-hidden">
               <img
                 src={image}
@@ -980,6 +1022,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
               <p className="text-xs uppercase tracking-widest opacity-90" style={{ fontFamily: fonts.modern, color: '#fff' }}>{content.subhead}</p>
               <div className="mt-4 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest">{resolvedCta}</div>
             </div>
+            <LogoLayer />
           </div>
         );
       case 'framed':
@@ -1003,6 +1046,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
                 <div className="text-xs border-b border-black pb-0.5 uppercase tracking-wider font-semibold">{resolvedCta}</div>
               </div>
             </div>
+            <LogoLayer />
           </div>
         );
       case 'centered':
@@ -1010,6 +1054,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
         return (
           <div className="w-full h-full relative flex flex-col items-center justify-center text-center p-8">
             <BackgroundLayer />
+            <LogoLayer />
             <div className="relative z-10 max-w-md">
               <p className="mb-3 text-xs md:text-sm uppercase tracking-[0.2em]" style={commonTextStyles}>{content.subhead}</p>
               <h1 className="text-4xl md:text-5xl lg:text-6xl mb-4 leading-tight" style={{ ...commonTextStyles, fontStyle: 'italic' }}>{content.headline}</h1>
@@ -1102,6 +1147,135 @@ Return JSON with the same keys (headline, subhead, cta).`;
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="space-y-4 border-t border-neutral-100 pt-6">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-neutral-400">
+              <Globe size={14} /> Website Fetch
+            </div>
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={storeUrlInput}
+                onChange={(e) => setStoreUrlInput(e.target.value)}
+                placeholder="Paste store URL (e.g. brand.com)"
+                className="w-full p-2 border border-neutral-300 rounded text-xs focus:border-black outline-none"
+              />
+              <button
+                type="button"
+                onClick={handleStoreProfileFetch}
+                disabled={isStoreProfileLoading || !storeUrlInput.trim()}
+                className="w-full py-2 bg-black text-white text-[10px] font-bold uppercase tracking-widest rounded hover:bg-neutral-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isStoreProfileLoading ? <Loader2 size={12} className="animate-spin" /> : <Globe size={12} />}
+                {isStoreProfileLoading ? 'Fetching...' : 'Fetch Site Summary'}
+              </button>
+            </div>
+            {storeProfileError && (
+              <div className="text-[10px] text-red-500">{storeProfileError}</div>
+            )}
+            {storeProfile && (
+              <div className="bg-white border border-neutral-200 rounded-lg p-3 text-[10px] space-y-3 shadow-sm">
+                <div className="space-y-1">
+                  <div className="text-[9px] uppercase tracking-widest text-neutral-400">What we fetched</div>
+                  <div className="text-neutral-600">{storeProfile.storeUrl || storeUrlInput}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-[9px] uppercase tracking-widest text-neutral-400">Summary</div>
+                  <p className="text-neutral-700 leading-snug">{storeProfile.summary?.summary || 'Summary ready.'}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {storeProfile.summary?.tone && (
+                    <span className="px-2 py-1 rounded-full bg-neutral-100 text-[9px] uppercase tracking-widest text-neutral-500">
+                      Tone: {storeProfile.summary.tone}
+                    </span>
+                  )}
+                  {storeProfile.summary?.pricePositioning && (
+                    <span className="px-2 py-1 rounded-full bg-neutral-100 text-[9px] uppercase tracking-widest text-neutral-500">
+                      {storeProfile.summary.pricePositioning}
+                    </span>
+                  )}
+                  {storeProfile.summary?.languageStyle && (
+                    <span className="px-2 py-1 rounded-full bg-neutral-100 text-[9px] uppercase tracking-widest text-neutral-500">
+                      {storeProfile.summary.languageStyle}
+                    </span>
+                  )}
+                </div>
+                {storeProfile.logoUrl && (
+                  <div className="flex items-center gap-3">
+                    <div className="w-16 h-16 bg-white border border-neutral-200 rounded flex items-center justify-center">
+                      <img
+                        src={storeProfile.logoUrl}
+                        alt="Store logo"
+                        className="w-full h-full object-contain p-2"
+                        style={{ backgroundColor: 'transparent' }}
+                        crossOrigin="anonymous"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLogoImage(storeProfile.logoUrl);
+                        setLogoPlacement((prev) => ({ ...prev, visible: true }));
+                      }}
+                      className="text-[10px] font-bold uppercase tracking-widest text-neutral-700 border border-neutral-200 px-3 py-2 rounded hover:bg-neutral-50"
+                    >
+                      Place Logo
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {logoImage && (
+              <div className="bg-white border border-neutral-200 rounded-lg p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Logo Placement</span>
+                  <button
+                    type="button"
+                    onClick={() => setLogoPlacement((prev) => ({ ...prev, visible: !prev.visible }))}
+                    className="text-[9px] uppercase tracking-widest text-neutral-500 border border-neutral-200 px-2 py-1 rounded"
+                  >
+                    {logoPlacement.visible ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'].map((position) => (
+                    <button
+                      key={position}
+                      type="button"
+                      onClick={() => setLogoPlacement((prev) => ({ ...prev, position }))}
+                      className={`px-2 py-1 text-[9px] uppercase tracking-widest rounded border ${
+                        logoPlacement.position === position ? 'border-black text-black bg-neutral-50' : 'border-neutral-200 text-neutral-500'
+                      }`}
+                    >
+                      {position.replace('-', ' ')}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] uppercase tracking-widest text-neutral-400">Size</span>
+                  <input
+                    type="range"
+                    min="40"
+                    max="160"
+                    value={logoPlacement.size}
+                    onChange={(e) => setLogoPlacement((prev) => ({ ...prev, size: Number(e.target.value) }))}
+                    className="w-24 h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-black"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] uppercase tracking-widest text-neutral-400">Opacity</span>
+                  <input
+                    type="range"
+                    min="40"
+                    max="100"
+                    value={logoPlacement.opacity}
+                    onChange={(e) => setLogoPlacement((prev) => ({ ...prev, opacity: Number(e.target.value) }))}
+                    className="w-24 h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-black"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="space-y-4 border-t border-neutral-100 pt-6">
