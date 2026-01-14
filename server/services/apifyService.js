@@ -319,7 +319,7 @@ async function uploadToCloudinary(url, resourceType = 'image') {
     const folder = 'competitor-spy';
     
     // Create signature
-    const crypto = await import('crypto');
+    // Create signature
     const signatureString = `folder=${folder}&timestamp=${timestamp}${CLOUDINARY_API_SECRET}`;
     const signature = crypto.createHash('sha1').update(signatureString).digest('hex');
 
