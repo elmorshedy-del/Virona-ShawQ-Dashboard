@@ -26,6 +26,130 @@ const fonts = {
 
 const DEFAULT_IMAGE = "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?q=80&w=1000&auto=format&fit=crop";
 
+const ON_CREATIVE_PROMPT = `You are a luxury-performance ad copywriter generating SHORT ON-CREATIVE text (headline + subheadline + CTA) for paid social (Meta/TikTok).
+
+GOAL
+Create the best-fitting words for the product and image—fresh, premium, high-converting. Be creative and varied. Avoid generic filler and “template” phrasing.
+
+GLOBAL HARD RULES (must obey)
+1) No new claims or facts. Only use what is explicitly provided in the input context/copy.
+   - Don’t invent discounts, prices, shipping times, guarantees, “#1/best”, limited stock, materials, awards, endorsements.
+2) Overlay-friendly length:
+   - Headline: 2–5 words
+   - Subheadline: 3–8 words
+   - CTA: 1–3 words
+3) Clean typography for image text:
+   - No emojis, no hashtags, no quotation marks
+   - Minimal punctuation only (avoid long punctuation chains)
+   - Avoid ALL CAPS (unless standard for the locale and only for one emphasis word)
+   - Arabic: no tashkeel (diacritics) and no kashida (ـ)
+4) Premium tone:
+   - Polished, confident, editorial-luxury
+   - Strong CTA, not pushy or “coupon-y”
+5) If the input is vague, stay safely general rather than inventing details.
+
+LOCALE / DIALECT RULES (must obey)
+General:
+- Match local spelling, cadence, and current ad phrasing for that locale (modern, marketing-native).
+- Avoid awkward literal translation; keep it natural and stylish.
+
+English:
+- en-US: American spelling and retail phrasing.
+- en-GB: British spelling and phrasing; slightly more understated tone.
+
+Spanish:
+- Premium but direct; natural retail phrasing.
+- Avoid country-specific idioms unless the locale is specified.
+
+Chinese:
+- Use correct script for the locale (Simplified vs Traditional).
+- Clean luxury commerce tone; avoid cheesy internet slang; avoid exaggerated superlatives unless provided.
+
+Japanese:
+- Understated, refined, minimal luxury tone.
+- Avoid aggressive hard-sell language; concise and elegant.
+
+Korean:
+- Modern premium commerce tone; concise and confident.
+- Avoid overly casual slang; keep it polished.
+
+Arabic (dialects with freedom, still brand-safe):
+- Write in the requested dialect/region using CURRENT marketing style in that region (what people actually see in ads today).
+- Dialect wording and cadence are allowed (not strict MSA), as long as it stays readable, premium, and not overly slangy.
+- Light mixing with MSA is allowed for clarity (especially headlines).
+- Keep it premium: avoid “cheap” vibes and heavy slang.
+- Avoid words that imply claims (e.g., “رقم 1/الأفضل/مضمون”) unless explicitly provided.
+
+Arabic region guidance (choose based on requested locale):
+- Gulf: confident, clean, premium; modern Gulf ad cadence; avoid Egypt/Maghreb-only phrasing.
+- Egypt: catchy and friendly but still premium; avoid very “street” slang.
+- Levant: smooth, warm, boutique feel; broadly understandable across Levant.
+- Maghreb: allow local feel but keep clarity high; avoid heavy Darija spelling that becomes hard to read.
+
+CREATIVE FREEDOM WITH BOUNDARIES
+- Produce multiple options with genuinely different angles (seasonal/editorial, craftsmanship, identity, minimal elegance, exclusivity mood, etc.)
+- Do not repeat the same core phrase across options.`;
+
+const LANGUAGE_OPTIONS = [
+  {
+    language: 'English',
+    locales: [
+      { value: 'en-US', label: 'English (US)' },
+      { value: 'en-GB', label: 'English (UK)' }
+    ]
+  },
+  {
+    language: 'Arabic',
+    locales: [
+      { value: 'ar-SA', label: 'Arabic (Saudi)' },
+      { value: 'ar-AE', label: 'Arabic (UAE)' },
+      { value: 'ar-EG', label: 'Arabic (Egypt)' },
+      { value: 'ar-TN', label: 'Arabic (Tunisia)' },
+      { value: 'ar-MA', label: 'Arabic (Morocco)' }
+    ]
+  },
+  {
+    language: 'Spanish',
+    locales: [
+      { value: 'es-ES', label: 'Spanish (ES)' },
+      { value: 'es-419', label: 'Spanish (LATAM)' }
+    ]
+  },
+  {
+    language: 'Chinese',
+    locales: [
+      { value: 'zh-CN', label: 'Chinese (Simplified)' },
+      { value: 'zh-TW', label: 'Chinese (Traditional)' },
+      { value: 'zh-HK', label: 'Chinese (Hong Kong)' }
+    ]
+  },
+  {
+    language: 'Korean',
+    locales: [{ value: 'ko-KR', label: 'Korean (KR)' }]
+  },
+  {
+    language: 'Japanese',
+    locales: [{ value: 'ja-JP', label: 'Japanese (JP)' }]
+  },
+  {
+    language: 'French',
+    locales: [{ value: 'fr-FR', label: 'French (FR)' }]
+  },
+  {
+    language: 'Italian',
+    locales: [{ value: 'it-IT', label: 'Italian (IT)' }]
+  }
+];
+
+const RECOMMENDED_LOCALES = [
+  { value: 'ar-SA', label: 'Arabic (Saudi)', country: 'Saudi Arabia' },
+  { value: 'en-US', label: 'English (US)', country: 'United States' },
+  { value: 'es-419', label: 'Spanish (LATAM)', country: 'LATAM' },
+  { value: 'ar-AE', label: 'Arabic (UAE)', country: 'United Arab Emirates' },
+  { value: 'zh-CN', label: 'Chinese (Simplified)', country: 'Mainland China' },
+  { value: 'ja-JP', label: 'Japanese (JP)', country: 'Japan' }
+];
+
 const addWavHeader = (pcmData, sampleRate = 24000, numChannels = 1, bitDepth = 16) => {
   const byteRate = sampleRate * numChannels * (bitDepth / 8);
   const blockAlign = numChannels * (bitDepth / 8);
@@ -174,8 +298,38 @@ function AdEditor({ store }) {
   const [isMagicLoading, setIsMagicLoading] = useState(false);
   const [critique, setCritique] = useState(null);
   const [isCritiqueLoading, setIsCritiqueLoading] = useState(false);
+  const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
+  const [recommendedOpen, setRecommendedOpen] = useState(false);
+  const [localeSearch, setLocaleSearch] = useState('');
+  const [selectedLocale, setSelectedLocale] = useState('en-US');
+  const [defaultLocale, setDefaultLocale] = useState(null);
+  const [colorRecommendations, setColorRecommendations] = useState([]);
+  const [isColorLoading, setIsColorLoading] = useState(false);
 
   const adRef = useRef(null);
+
+  useEffect(() => {
+    const storedDefault = localStorage.getItem(`creativeStudioDefaultLocale:${store ?? 'default'}`);
+    const storedLastUsed = localStorage.getItem(`creativeStudioLastLocale:${store ?? 'default'}`);
+    if (storedDefault) {
+      setDefaultLocale(storedDefault);
+      setSelectedLocale(storedLastUsed || storedDefault);
+    } else if (storedLastUsed) {
+      setSelectedLocale(storedLastUsed);
+    }
+  }, [store]);
+
+  useEffect(() => {
+    if (defaultLocale) {
+      localStorage.setItem(`creativeStudioDefaultLocale:${store ?? 'default'}`, defaultLocale);
+    }
+  }, [defaultLocale, store]);
+
+  useEffect(() => {
+    if (selectedLocale) {
+      localStorage.setItem(`creativeStudioLastLocale:${store ?? 'default'}`, selectedLocale);
+    }
+  }, [selectedLocale, store]);
 
   useEffect(() => {
     const link = document.createElement('link');
@@ -255,15 +409,19 @@ function AdEditor({ store }) {
         imageMime = image.split(';')[0].split(':')[1];
       }
 
-      const prompt = `You are a creative director for Virona (high-fashion). 
-      Generate ad copy based on the image and this vibe: "${aiPrompt || 'Luxury, Editorial, Timeless'}".
-      If no image is attached, assume a high-fashion generic context.
-      Return JSON.`;
+      const localeLabel = LANGUAGE_OPTIONS.flatMap(option => option.locales).find(locale => locale.value === selectedLocale)?.label || selectedLocale;
+      const context = {
+        locale: localeLabel,
+        vibe: aiPrompt || 'Luxury, Editorial, Timeless',
+        productContext: 'High-fashion creative studio ad.'
+      };
 
       const payload = {
         contents: [{
           parts: [
-            { text: prompt },
+            { text: ON_CREATIVE_PROMPT },
+            { text: `INPUT CONTEXT JSON: ${JSON.stringify(context)}. Use the image when provided.` },
+            { text: 'Return JSON with keys: headline, subhead, cta, accentColor, textColor.' },
             ...(imageBase64 ? [{ inlineData: { mimeType: imageMime, data: imageBase64 } }] : [])
           ]
         }],
@@ -304,12 +462,15 @@ function AdEditor({ store }) {
   const translateContent = async (langName) => {
     setIsAiLoading(true);
     try {
-      const prompt = `Translate this fashion ad copy to ${langName}. Keep the tone luxurious.
-      Input JSON: ${JSON.stringify({ headline: content.headline, subhead: content.subhead, cta: content.cta })}.
-      Return JSON with same keys.`;
-
+      const inputCopy = { headline: content.headline, subhead: content.subhead, cta: content.cta };
       const payload = {
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: [{
+          parts: [
+            { text: ON_CREATIVE_PROMPT },
+            { text: `TARGET LOCALE: ${langName}` },
+            { text: `INPUT CONTEXT JSON: ${JSON.stringify(inputCopy)}` }
+          ]
+        }],
         generationConfig: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -331,6 +492,66 @@ function AdEditor({ store }) {
       console.error("Translation failed:", error);
     } finally {
       setIsAiLoading(false);
+    }
+  };
+
+  const setLocaleAsDefault = (localeValue) => {
+    setDefaultLocale(localeValue);
+    setSelectedLocale(localeValue);
+  };
+
+  const handleLocaleSelect = (localeValue) => {
+    setSelectedLocale(localeValue);
+    const localeLabel = LANGUAGE_OPTIONS.flatMap(option => option.locales)
+      .find(locale => locale.value === localeValue)?.label || localeValue;
+    translateContent(localeLabel);
+    setLanguageMenuOpen(false);
+  };
+
+  const generateColorRecommendations = async () => {
+    setIsColorLoading(true);
+    try {
+      let imageBase64 = null;
+      let imageMime = null;
+      if (image.startsWith('data:image')) {
+        imageBase64 = image.split(',')[1];
+        imageMime = image.split(';')[0].split(':')[1];
+      }
+      const prompt = `Analyze the ad image and recommend 3-5 on-creative text colors for premium legibility. Return JSON.
+      Each item should include hex color and a short rationale (max 8 words).`;
+      const payload = {
+        contents: [{
+          parts: [
+            { text: prompt },
+            ...(imageBase64 ? [{ inlineData: { mimeType: imageMime, data: imageBase64 } }] : [])
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              colors: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    hex: { type: "STRING" },
+                    reason: { type: "STRING" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      };
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+      setColorRecommendations(result.colors || []);
+    } catch (error) {
+      console.error("Color recommendations failed:", error);
+    } finally {
+      setIsColorLoading(false);
     }
   };
 
@@ -612,6 +833,16 @@ function AdEditor({ store }) {
     }
   };
 
+  const localeOptions = LANGUAGE_OPTIONS.flatMap(option => option.locales);
+  const selectedLocaleLabel = localeOptions.find(locale => locale.value === selectedLocale)?.label || 'Select language';
+  const filteredLanguageOptions = LANGUAGE_OPTIONS.map(option => ({
+    ...option,
+    locales: option.locales.filter(locale =>
+      locale.label.toLowerCase().includes(localeSearch.toLowerCase()) ||
+      locale.value.toLowerCase().includes(localeSearch.toLowerCase())
+    )
+  })).filter(option => option.locales.length > 0);
+
   return (
     <div className="min-h-screen bg-neutral-100 text-neutral-800 font-sans flex flex-col md:flex-row">
       <div className="w-full md:w-96 bg-white border-r border-neutral-200 h-screen overflow-y-auto shadow-xl z-20 flex flex-col scrollbar-thin scrollbar-thumb-neutral-200">
@@ -701,12 +932,91 @@ function AdEditor({ store }) {
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-neutral-400">
                 <Type size={14} /> Content & Audio
               </div>
-              <div className="flex gap-1">
-                {['EN', 'FR', 'IT'].map(lang => (
-                  <button key={lang} onClick={() => translateContent(lang)} className="text-[10px] font-bold text-neutral-400 hover:text-black px-1.5 py-0.5 rounded transition-colors">{lang}</button>
-                ))}
-              </div>
+              <button
+                onClick={() => setLanguageMenuOpen((prev) => !prev)}
+                className="flex items-center gap-2 px-2 py-1 text-[10px] font-bold uppercase tracking-widest border border-neutral-200 rounded-full text-neutral-500 hover:text-neutral-800"
+              >
+                Language: {selectedLocaleLabel}
+                <ChevronDown size={12} className={`transition-transform ${languageMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
             </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setRecommendedOpen((prev) => !prev)}
+                className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-400 border border-neutral-200 rounded-full hover:text-neutral-700"
+              >
+                Recommended
+                <ChevronDown size={12} className={`transition-transform ${recommendedOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {defaultLocale && (
+                <span className="text-[10px] text-neutral-400">Default: {localeOptions.find(locale => locale.value === defaultLocale)?.label || defaultLocale}</span>
+              )}
+            </div>
+
+            {languageMenuOpen && (
+              <div className="border border-neutral-200 rounded-lg p-3 space-y-3 bg-white shadow-sm">
+                <input
+                  type="text"
+                  value={localeSearch}
+                  onChange={(e) => setLocaleSearch(e.target.value)}
+                  placeholder="Search language or locale..."
+                  className="w-full text-xs p-2 border border-neutral-200 rounded focus:border-black outline-none"
+                />
+                <div className="space-y-2 max-h-48 overflow-y-auto scrollbar-thin">
+                  {filteredLanguageOptions.map(option => (
+                    <div key={option.language} className="space-y-1">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-400">{option.language}</div>
+                      <div className="flex flex-wrap gap-2">
+                        {option.locales.map(locale => (
+                          <button
+                            key={locale.value}
+                            onClick={() => handleLocaleSelect(locale.value)}
+                            className={`px-2 py-1 text-[10px] rounded-full border ${
+                              selectedLocale === locale.value
+                                ? 'border-black text-black bg-neutral-50'
+                                : 'border-neutral-200 text-neutral-500 hover:text-neutral-800'
+                            }`}
+                          >
+                            {locale.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {recommendedOpen && (
+              <div className="border border-neutral-200 rounded-lg p-3 space-y-2 bg-neutral-50">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-400">Top Performing Countries</div>
+                <div className="space-y-2">
+                  {RECOMMENDED_LOCALES.map(locale => (
+                    <div key={locale.value} className="flex items-center justify-between bg-white border border-neutral-200 rounded-lg px-2 py-1">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-semibold text-neutral-700">{locale.label}</span>
+                        <span className="text-[9px] text-neutral-400">{locale.country}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleLocaleSelect(locale.value)}
+                          className="text-[10px] text-neutral-500 hover:text-neutral-800"
+                        >
+                          Use now
+                        </button>
+                        <button
+                          onClick={() => setLocaleAsDefault(locale.value)}
+                          className="text-[10px] font-semibold text-neutral-700 hover:text-black"
+                        >
+                          Use as default
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="space-y-3">
               <input type="text" value={content.headline} onChange={(e) => updateContent('headline', e.target.value)} className="w-full p-2 border border-neutral-300 rounded focus:border-black outline-none font-serif text-lg" placeholder="Headline" />
@@ -808,6 +1118,36 @@ function AdEditor({ store }) {
                   <button key={i} onClick={() => updateContent('textColor', c)} className={`w-5 h-5 rounded-full border border-neutral-200 shadow-sm ${content.textColor === c ? 'ring-1 ring-offset-1 ring-black' : ''}`} style={{ backgroundColor: c }} />
                 ))}
               </div>
+            </div>
+            <div className="space-y-2">
+              <button
+                onClick={generateColorRecommendations}
+                disabled={isColorLoading}
+                className="w-full flex items-center justify-center gap-2 text-[10px] uppercase tracking-widest font-semibold border border-neutral-200 rounded py-2 text-neutral-600 hover:text-black hover:border-neutral-300"
+              >
+                {isColorLoading ? <Loader2 size={12} className="animate-spin" /> : <Palette size={12} />}
+                {isColorLoading ? 'Analyzing Image...' : 'Recommend Text Colors'}
+              </button>
+              {colorRecommendations.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-400">Recommended</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {colorRecommendations.map((color, index) => (
+                      <button
+                        key={`${color.hex}-${index}`}
+                        onClick={() => updateContent('textColor', color.hex)}
+                        className="flex items-center gap-2 border border-neutral-200 rounded px-2 py-1 text-left text-[10px] text-neutral-600 hover:text-black"
+                      >
+                        <span className="w-4 h-4 rounded-full border border-neutral-200" style={{ backgroundColor: color.hex }} />
+                        <span className="flex-1">
+                          <span className="font-semibold">{color.hex}</span>
+                          <span className="block text-[9px] text-neutral-400">{color.reason}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
