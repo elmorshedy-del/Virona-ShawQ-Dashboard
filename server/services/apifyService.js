@@ -114,12 +114,12 @@ export async function searchByBrand(store, brandName, options = {}) {
 /**
  * Fetch ads from Apify actor
  */
-async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 50 } = options;
 
+  const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country === "ALL" ? "ALL" : country}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
+
   const input = {
-    searchQuery,
-    countryCode: country === 'ALL' ? undefined : country,
+    startUrls: [{ url: searchUrl }],
     maxItems: limit,
     proxy: {
       useApifyProxy: true,
