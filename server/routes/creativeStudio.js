@@ -484,9 +484,10 @@ router.post('/competitor/swipe-files', async (req, res) => {
 
 router.put('/competitor/swipe-files/:id', async (req, res) => {
   try {
+    const store = req.query.store || 'vironax';
     const { name, description, color, icon } = req.body;
     const db = getDb();
-    db.prepare('UPDATE competitor_swipe_files SET name = ?, description = ?, color = ?, icon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(name, description, color, icon, req.params.id);
+    db.prepare('UPDATE competitor_swipe_files SET name = ?, description = ?, color = ?, icon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND store = ?').run(name, description, color, icon, req.params.id, store);
     res.json({ success: true });
   } catch (error) {
     console.error('Update swipe file error:', error);
