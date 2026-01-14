@@ -315,8 +315,15 @@ function AdEditor({ store }) {
   const [colorRecommendations, setColorRecommendations] = useState([]);
   const [isColorLoading, setIsColorLoading] = useState(false);
   const [imageFocus, setImageFocus] = useState({ x: 0.5, y: 0.5, subject: 'subject', confidence: 0 });
+  const [showLogo, setShowLogo] = useState(false);
 
   const adRef = useRef(null);
+
+  const profileSummary = storeProfile?.summary || {};
+  const logoUrl = storeProfile?.logoUrl || '';
+  const websiteSummary = profileSummary.summary || storeProfile?.source?.description || '';
+  const productTypes = profileSummary.productTypes || [];
+  const keywords = profileSummary.keywords || [];
 
   useEffect(() => {
     const link = document.createElement('link');
@@ -396,6 +403,12 @@ function AdEditor({ store }) {
       isMounted = false;
     };
   }, [store]);
+
+  useEffect(() => {
+    if (logoUrl) {
+      setShowLogo(true);
+    }
+  }, [logoUrl]);
 
   useEffect(() => {
     const storedDefault = window.localStorage.getItem(`creativeStudio.defaultLocale.${store ?? 'vironax'}`);
@@ -945,6 +958,21 @@ Return JSON with the same keys (headline, subhead, cta).`;
       </div>
     );
 
+    const LogoOverlay = () => {
+      if (!showLogo || !logoUrl) return null;
+      return (
+        <div className="absolute bottom-6 left-6 z-20">
+          <img
+            src={logoUrl}
+            alt="Brand logo"
+            className="h-10 w-auto object-contain drop-shadow-md"
+            style={{ backgroundColor: 'transparent' }}
+            crossOrigin="anonymous"
+          />
+        </div>
+      );
+    };
+
     const BackgroundLayer = () => (
       <div className="absolute inset-0 w-full h-full overflow-hidden">
         <img
@@ -964,7 +992,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
     switch (content.layout) {
       case 'split':
         return (
-          <div className="w-full h-full flex flex-col bg-white">
+          <div className="w-full h-full flex flex-col bg-white relative">
             <div className="h-2/3 relative overflow-hidden">
               <img
                 src={image}
@@ -980,6 +1008,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
               <p className="text-xs uppercase tracking-widest opacity-90" style={{ fontFamily: fonts.modern, color: '#fff' }}>{content.subhead}</p>
               <div className="mt-4 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest">{resolvedCta}</div>
             </div>
+            <LogoOverlay />
           </div>
         );
       case 'framed':
@@ -1003,6 +1032,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
                 <div className="text-xs border-b border-black pb-0.5 uppercase tracking-wider font-semibold">{resolvedCta}</div>
               </div>
             </div>
+            <LogoOverlay />
           </div>
         );
       case 'centered':
@@ -1015,6 +1045,7 @@ Return JSON with the same keys (headline, subhead, cta).`;
               <h1 className="text-4xl md:text-5xl lg:text-6xl mb-4 leading-tight" style={{ ...commonTextStyles, fontStyle: 'italic' }}>{content.headline}</h1>
               {CTA}
             </div>
+            <LogoOverlay />
           </div>
         );
     }
@@ -1068,6 +1099,88 @@ Return JSON with the same keys (headline, subhead, cta).`;
                 >
                   {isMagicLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
                 </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-lg border border-neutral-200 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-neutral-500">
+                <Globe size={14} /> Website Fetch Preview
+              </div>
+              {isStoreProfileLoading && <Loader2 size={14} className="animate-spin text-neutral-400" />}
+            </div>
+            <p className="text-[11px] text-neutral-500">
+              What we&apos;d pull if we crawled your site for brand context.
+            </p>
+            <div className="space-y-2 text-[11px] text-neutral-600">
+              <div>
+                <span className="text-neutral-400 uppercase tracking-widest text-[9px]">Website</span>
+                <p className="text-neutral-700">{storeProfile?.storeUrl || store || 'Not connected'}</p>
+              </div>
+              <div>
+                <span className="text-neutral-400 uppercase tracking-widest text-[9px]">Summary</span>
+                {websiteSummary ? (
+                  <p className="text-neutral-600 leading-snug">{websiteSummary}</p>
+                ) : (
+                  <p className="text-neutral-400 italic">No summary available yet.</p>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <span className="text-neutral-400 uppercase tracking-widest text-[9px]">Tone</span>
+                  <p className="text-neutral-700">{profileSummary.tone || 'Luxury, Editorial'}</p>
+                </div>
+                <div>
+                  <span className="text-neutral-400 uppercase tracking-widest text-[9px]">Audience</span>
+                  <p className="text-neutral-700">{profileSummary.targetAudience || 'Premium fashion shoppers'}</p>
+                </div>
+              </div>
+              <div>
+                <span className="text-neutral-400 uppercase tracking-widest text-[9px]">Product Focus</span>
+                <p className="text-neutral-700">{productTypes.length ? productTypes.join(', ') : 'Apparel, accessories'}</p>
+              </div>
+              <div>
+                <span className="text-neutral-400 uppercase tracking-widest text-[9px]">Keywords</span>
+                <p className="text-neutral-700">{keywords.length ? keywords.join(', ') : 'Luxury, modern, timeless'}</p>
+              </div>
+            </div>
+
+            <div className="border-t border-neutral-100 pt-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded border border-neutral-200 bg-white flex items-center justify-center">
+                    {logoUrl ? (
+                      <img
+                        src={logoUrl}
+                        alt="Brand logo"
+                        className="max-h-9 max-w-[90%] object-contain"
+                        style={{ backgroundColor: 'transparent' }}
+                        crossOrigin="anonymous"
+                      />
+                    ) : (
+                      <ImageIcon size={18} className="text-neutral-300" />
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-medium text-neutral-700">
+                      {logoUrl ? 'Logo detected' : 'Logo not found'}
+                    </p>
+                    <p className="text-[10px] text-neutral-400">
+                      {logoUrl ? 'Placed with transparent background.' : 'Add a logo to place on the canvas.'}
+                    </p>
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-[10px] text-neutral-500">
+                  <input
+                    type="checkbox"
+                    className="accent-black"
+                    checked={showLogo}
+                    onChange={() => setShowLogo((prev) => !prev)}
+                    disabled={!logoUrl}
+                  />
+                  Add to canvas
+                </label>
               </div>
             </div>
           </div>
