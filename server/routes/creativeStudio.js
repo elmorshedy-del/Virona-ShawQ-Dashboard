@@ -185,8 +185,9 @@ router.get('/store-profile', async (req, res) => {
   try {
     const store = req.query.store || 'vironax';
     const storeUrl = req.query.store_url || req.query.storeUrl || null;
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
 
-    const profile = await getOrCreateStoreProfile(store, { storeUrl });
+    const profile = await getOrCreateStoreProfile(store, { storeUrl, forceRefresh });
     if (profile.error) {
       return res.status(400).json({ success: false, error: profile.error });
     }
