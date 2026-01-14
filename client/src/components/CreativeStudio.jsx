@@ -379,13 +379,15 @@ function AdEditor({ store }) {
     };
   }, [store]);
 
-  const fetchStoreProfile = useCallback(async (storeUrl) => {
+  const fetchStoreProfile = useCallback(async (storeUrl, refresh = false) => {
     setIsStoreProfileLoading(true);
     setStoreProfileError(null);
     try {
       const path = storeUrl
-        ? `/creative-studio/store-profile?store_url=${encodeURIComponent(storeUrl)}`
-        : '/creative-studio/store-profile';
+        ? `/creative-studio/store-profile?store_url=${encodeURIComponent(storeUrl)}${refresh ? '&refresh=1' : ''}`
+        : refresh
+          ? '/creative-studio/store-profile?refresh=1'
+          : '/creative-studio/store-profile';
       const response = await fetch(withStore(path, store));
       const data = await response.json();
       if (response.ok && data?.success) {
@@ -562,6 +564,10 @@ Return JSON array of { "color": "#hex", "reason": "short rationale" }.`;
 
   const handleStoreProfileFetch = () => {
     fetchStoreProfile(storeUrlInput?.trim());
+  };
+
+  const handleStoreProfileRefresh = () => {
+    fetchStoreProfile(storeUrlInput?.trim(), true);
   };
 
   const handleDownload = async () => {
@@ -1161,15 +1167,26 @@ Return JSON with the same keys (headline, subhead, cta).`;
                 placeholder="Paste store URL (e.g. brand.com)"
                 className="w-full p-2 border border-neutral-300 rounded text-xs focus:border-black outline-none"
               />
-              <button
-                type="button"
-                onClick={handleStoreProfileFetch}
-                disabled={isStoreProfileLoading || !storeUrlInput.trim()}
-                className="w-full py-2 bg-black text-white text-[10px] font-bold uppercase tracking-widest rounded hover:bg-neutral-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isStoreProfileLoading ? <Loader2 size={12} className="animate-spin" /> : <Globe size={12} />}
-                {isStoreProfileLoading ? 'Fetching...' : 'Fetch Site Summary'}
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleStoreProfileFetch}
+                  disabled={isStoreProfileLoading || !storeUrlInput.trim()}
+                  className="w-full py-2 bg-black text-white text-[10px] font-bold uppercase tracking-widest rounded hover:bg-neutral-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isStoreProfileLoading ? <Loader2 size={12} className="animate-spin" /> : <Globe size={12} />}
+                  {isStoreProfileLoading ? 'Fetching...' : 'Fetch Summary'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleStoreProfileRefresh}
+                  disabled={isStoreProfileLoading}
+                  className="w-full py-2 bg-white text-neutral-700 text-[10px] font-bold uppercase tracking-widest rounded border border-neutral-200 hover:bg-neutral-50 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isStoreProfileLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                  Refresh Cache
+                </button>
+              </div>
             </div>
             {storeProfileError && (
               <div className="text-[10px] text-red-500">{storeProfileError}</div>

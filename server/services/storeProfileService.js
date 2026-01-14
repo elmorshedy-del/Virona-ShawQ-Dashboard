@@ -4,6 +4,8 @@ import { getShopifyConnectionStatus } from './shopifyService.js';
 
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 const MAX_PRODUCTS = 4;
+const MAX_PAGE_TEXT_LENGTH = 6000;
+const MAX_SUPPORTING_PAGES = 4;
 
 function normalizeUrl(input) {
   if (!input) return null;
@@ -112,6 +114,12 @@ function extractLinks(html, baseUrl, pattern) {
   return Array.from(new Set(links));
 }
 
+function truncateText(text, maxLength = MAX_PAGE_TEXT_LENGTH) {
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength);
+}
+
 function extractLogo(html, baseUrl) {
   const candidates = [
     html.match(/<link[^>]+rel=["'](?:shortcut icon|icon)["'][^>]*href=["']([^"']+)["']/i)?.[1],
@@ -141,6 +149,15 @@ async function fetchPage(url) {
     throw new Error(`Failed to fetch ${url}: ${response.status}`);
   }
   return response.text();
+}
+
+async function safeFetchText(url) {
+  try {
+    const html = await fetchPage(url);
+    return truncateText(stripHtml(html));
+  } catch (error) {
+    return null;
+  }
 }
 
 async function callGemini(payload, model = GEMINI_MODEL) {
@@ -190,20 +207,27 @@ export async function buildStoreProfile(store, storeUrl) {
   const { products: homepageProducts, urls: productUrlsFromJsonLd } = collectProductsFromJsonLd(jsonLd);
 
   const aboutLinks = extractLinks(homepageHtml, normalizedUrl, /about|our-story|brand|mission|story|who-we-are/i);
-  let aboutText = null;
-  if (aboutLinks.length > 0) {
-    try {
-      const aboutHtml = await fetchPage(aboutLinks[0]);
-      aboutText = stripHtml(aboutHtml).slice(0, 5000);
-    } catch (error) {
-      aboutText = null;
-    }
-  }
+  const aboutText = aboutLinks.length > 0
+    ? await safeFetchText(aboutLinks[0])
+    : null;
 
   const productLinks = Array.from(new Set([
     ...productUrlsFromJsonLd,
     ...extractLinks(homepageHtml, normalizedUrl, /product|products/i)
   ])).slice(0, MAX_PRODUCTS);
+
+  const supportLinks = Array.from(new Set([
+    ...extractLinks(homepageHtml, normalizedUrl, /collections|collection|shop|catalog|lookbook/i),
+    ...extractLinks(homepageHtml, normalizedUrl, /journal|blog|press|news/i)
+  ])).filter(link => !productLinks.includes(link) && !aboutLinks.includes(link))
+    .slice(0, MAX_SUPPORTING_PAGES);
+
+  const supportingPages = await Promise.all(
+    supportLinks.map(async (link) => ({
+      url: link,
+      text: await safeFetchText(link)
+    }))
+  );
 
   const productDetails = [...homepageProducts];
 
@@ -226,7 +250,7 @@ export async function buildStoreProfile(store, storeUrl) {
     brand: product.brand
   }));
 
-  const prompt = `You are an expert brand strategist. Summarize the store based on the provided context.
+  const prompt = `You are an expert brand strategist. Summarize the store based strictly on the provided context.
 Return JSON with keys:
 - summary (1-2 sentences)
 - tone (short descriptors)
@@ -237,11 +261,16 @@ Return JSON with keys:
 - keywords (array of 5-8 phrases)
 - keyProducts (array of 3 products with name + short descriptor)
 
+Rules:
+- Do not assume the category; only use facts stated in the input.
+- If the category is unclear, say it is unclear in the summary.
+
 STORE INPUT
 Store URL: ${normalizedUrl}
 Store title: ${title || ''}
 Meta description: ${description || ''}
 About text: ${aboutText || ''}
+Supporting pages: ${JSON.stringify(supportingPages.filter(page => page.text))}
 Products: ${JSON.stringify(trimmedProducts)}
 `;
 
@@ -285,6 +314,7 @@ Products: ${JSON.stringify(trimmedProducts)}
       title,
       description,
       aboutText,
+      supportingPages,
       products: trimmedProducts
     }
   };
@@ -292,8 +322,9 @@ Products: ${JSON.stringify(trimmedProducts)}
 
 export async function getOrCreateStoreProfile(store, options = {}) {
   const db = getDb();
+  const forceRefresh = options.forceRefresh || false;
   const existing = db.prepare('SELECT * FROM store_profiles WHERE store = ?').get(store);
-  if (existing?.summary_json) {
+  if (existing?.summary_json && !forceRefresh) {
     return {
       store: existing.store,
       storeUrl: existing.store_url,
