@@ -306,10 +306,14 @@ function AdEditor({ store }) {
   const [defaultLocale, setDefaultLocale] = useState(null);
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [recommendedOpen, setRecommendedOpen] = useState(false);
+  const [recommendedLocales, setRecommendedLocales] = useState(RECOMMENDED_LOCALES);
+  const [storeProfile, setStoreProfile] = useState(null);
+  const [isStoreProfileLoading, setIsStoreProfileLoading] = useState(false);
   const [languageSearch, setLanguageSearch] = useState('');
   const [activeLanguage, setActiveLanguage] = useState('en');
   const [colorRecommendations, setColorRecommendations] = useState([]);
   const [isColorLoading, setIsColorLoading] = useState(false);
+  const [imageFocus, setImageFocus] = useState({ x: 0.5, y: 0.5, subject: 'subject', confidence: 0 });
 
   const adRef = useRef(null);
 
@@ -331,6 +335,68 @@ function AdEditor({ store }) {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+
+    const loadRecommendedLocales = async () => {
+      try {
+        const response = await fetch(withStore('/creative-studio/recommended-locales', store));
+        const data = await response.json();
+        if (!response.ok || !data?.success) return;
+
+        const locales = (data.locales || []).map((locale, index) => {
+          const label = LANGUAGE_OPTIONS
+            .flatMap((option) => option.locales)
+            .find((entry) => entry.value === locale.value)?.label || locale.label || locale.value;
+          return {
+            ...locale,
+            label,
+            rank: locale.rank || index + 1
+          };
+        });
+
+        if (isMounted && locales.length > 0) {
+          setRecommendedLocales(locales);
+        }
+      } catch (error) {
+        console.error('Failed to load recommended locales:', error);
+      }
+    };
+
+    loadRecommendedLocales();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [store]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadStoreProfile = async () => {
+      setIsStoreProfileLoading(true);
+      try {
+        const response = await fetch(withStore('/creative-studio/store-profile', store));
+        const data = await response.json();
+        if (response.ok && data?.success && isMounted) {
+          setStoreProfile(data.profile);
+        }
+      } catch (error) {
+        console.error('Failed to load store profile:', error);
+      } finally {
+        if (isMounted) {
+          setIsStoreProfileLoading(false);
+        }
+      }
+    };
+
+    loadStoreProfile();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [store]);
+
+  useEffect(() => {
     const storedDefault = window.localStorage.getItem(`creativeStudio.defaultLocale.${store ?? 'vironax'}`);
     if (storedDefault) {
       setDefaultLocale(storedDefault);
@@ -342,7 +408,7 @@ function AdEditor({ store }) {
       return;
     }
 
-    const suggested = RECOMMENDED_LOCALES[0]?.value;
+    const suggested = recommendedLocales[0]?.value;
     if (suggested) {
       setSelectedLocale(suggested);
       const match = LANGUAGE_OPTIONS.find((option) => option.locales.some((locale) => locale.value === suggested));
@@ -350,7 +416,7 @@ function AdEditor({ store }) {
         setActiveLanguage(match.id);
       }
     }
-  }, [store]);
+  }, [store, recommendedLocales]);
 
   const localeLabel = LANGUAGE_OPTIONS
     .flatMap((option) => option.locales)
@@ -366,8 +432,57 @@ function AdEditor({ store }) {
       const reader = new FileReader();
       reader.onloadend = () => {
         setImage(reader.result);
+        detectImageFocus(reader.result);
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const detectImageFocus = async (imageDataUrl) => {
+    if (!imageDataUrl?.startsWith('data:image')) {
+      setImageFocus({ x: 0.5, y: 0.5, subject: 'subject', confidence: 0 });
+      return;
+    }
+
+    try {
+      const imageBase64 = imageDataUrl.split(',')[1];
+      const imageMime = imageDataUrl.split(';')[0].split(':')[1];
+
+      const prompt = `Analyze the image and find the most important subject (face or product).\nReturn JSON with:\n- x (0-1) horizontal focal point\n- y (0-1) vertical focal point\n- subject (face | product | other)\n- confidence (0-1)\nOnly return JSON.`;
+
+      const payload = {
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: imageMime, data: imageBase64 } }
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              x: { type: "NUMBER" },
+              y: { type: "NUMBER" },
+              subject: { type: "STRING" },
+              confidence: { type: "NUMBER" }
+            }
+          }
+        }
+      };
+
+      const data = await callGemini(payload);
+      const result = JSON.parse(data.candidates[0].content.parts[0].text);
+      const nextFocus = {
+        x: typeof result.x === 'number' ? Math.min(Math.max(result.x, 0.05), 0.95) : 0.5,
+        y: typeof result.y === 'number' ? Math.min(Math.max(result.y, 0.05), 0.95) : 0.5,
+        subject: result.subject || 'subject',
+        confidence: typeof result.confidence === 'number' ? result.confidence : 0
+      };
+      setImageFocus(nextFocus);
+    } catch (error) {
+      console.error('Image focus detection failed:', error);
+      setImageFocus({ x: 0.5, y: 0.5, subject: 'subject', confidence: 0 });
     }
   };
 
@@ -480,14 +595,23 @@ Return JSON array of { "color": "#hex", "reason": "short rationale" }.`;
         imageMime = image.split(';')[0].split(':')[1];
       }
 
+      const profileSummary = storeProfile?.summary || {};
+      const brandLine = profileSummary.summary || storeProfile?.storeUrl || store;
+
       const prompt = `${ON_CREATIVE_SYSTEM_PROMPT}
 
 LOCALE REQUEST
 - Requested locale: ${selectedLocale} (${localeLabel})
 
 INPUT CONTEXT
-- Brand: Virona (high-fashion)
-- Vibe: ${aiPrompt || 'Luxury, Editorial, Timeless'}
+- Brand: ${brandLine}
+- Brand tone: ${profileSummary.tone || 'Luxury, Editorial, Timeless'}
+- Language style: ${profileSummary.languageStyle || 'Premium, modern'}
+- Product types: ${(profileSummary.productTypes || []).join(', ') || 'Fashion, accessories'}
+- Target audience: ${profileSummary.targetAudience || 'Luxury fashion shoppers'}
+- Price positioning: ${profileSummary.pricePositioning || 'Premium'}
+- Keywords: ${(profileSummary.keywords || []).join(', ') || 'Luxury, modern, timeless'}
+- Vibe request: ${aiPrompt || 'Luxury, Editorial, Timeless'}
 - Existing copy (if any): ${JSON.stringify({ headline: content.headline, subhead: content.subhead, cta: content.cta })}
 
 Return a JSON object with keys: headline, subhead, cta, accentColor, textColor.`;
@@ -519,11 +643,11 @@ Return a JSON object with keys: headline, subhead, cta, accentColor, textColor.`
 
       setContent(prev => ({
         ...prev,
-        headline: result.headline,
-        subhead: result.subhead,
-        cta: result.cta,
-        accentColor: result.accentColor,
-        textColor: result.textColor
+        headline: result.headline || prev.headline,
+        subhead: result.subhead || prev.subhead,
+        cta: result.cta || prev.cta || 'Shop Now',
+        accentColor: result.accentColor || prev.accentColor,
+        textColor: result.textColor || prev.textColor
       }));
     } catch (error) {
       console.error("AI Generation failed:", error);
@@ -580,7 +704,12 @@ Return JSON with the same keys (headline, subhead, cta).`;
       const data = await callGemini(payload);
       const result = JSON.parse(data.candidates[0].content.parts[0].text);
 
-      setContent(prev => ({ ...prev, ...result }));
+      setContent(prev => ({
+        ...prev,
+        headline: result.headline || prev.headline,
+        subhead: result.subhead || prev.subhead,
+        cta: result.cta || prev.cta || 'Shop Now'
+      }));
     } catch (error) {
       console.error("Translation failed:", error);
     } finally {
@@ -803,18 +932,28 @@ Return JSON with the same keys (headline, subhead, cta).`;
       textShadow: content.showOverlay ? '0 2px 10px rgba(0,0,0,0.3)' : 'none'
     };
 
+    const resolvedCta = content.cta?.trim() || 'Shop Now';
+    const imagePosition = `${Math.round(imageFocus.x * 100)}% ${Math.round(imageFocus.y * 100)}%`;
+
     const CTA = (
       <div
         className="mt-6 px-6 py-2.5 text-sm tracking-widest uppercase font-medium border transition-colors inline-block cursor-default"
         style={{ borderColor: content.textColor, color: content.textColor, fontFamily: fonts.modern }}
       >
-        {content.cta}
+        {resolvedCta}
       </div>
     );
 
     const BackgroundLayer = () => (
       <div className="absolute inset-0 w-full h-full overflow-hidden">
-        <img src={image} alt="Bg" className="w-full h-full object-cover" crossOrigin="anonymous" />
+        <img
+          src={image}
+          alt="Bg"
+          className="w-full h-full object-cover"
+          style={{ objectPosition: imagePosition }}
+          crossOrigin="anonymous"
+          key={image}
+        />
         {content.showOverlay && (
           <div className="absolute inset-0 bg-black transition-opacity" style={{ opacity: content.overlayOpacity / 100 }} />
         )}
@@ -826,12 +965,19 @@ Return JSON with the same keys (headline, subhead, cta).`;
         return (
           <div className="w-full h-full flex flex-col bg-white">
             <div className="h-2/3 relative overflow-hidden">
-              <img src={image} className="w-full h-full object-cover" crossOrigin="anonymous" alt="Product" />
+              <img
+                src={image}
+                className="w-full h-full object-cover"
+                style={{ objectPosition: imagePosition }}
+                crossOrigin="anonymous"
+                alt="Product"
+                key={image}
+              />
             </div>
             <div className="h-1/3 flex flex-col items-center justify-center p-6 text-center" style={{ backgroundColor: content.accentColor }}>
               <h2 className="text-3xl mb-2" style={{ fontFamily: fonts[content.fontStyle], color: '#fff' }}>{content.headline}</h2>
               <p className="text-xs uppercase tracking-widest opacity-90" style={{ fontFamily: fonts.modern, color: '#fff' }}>{content.subhead}</p>
-              <div className="mt-4 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest">{content.cta}</div>
+              <div className="mt-4 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest">{resolvedCta}</div>
             </div>
           </div>
         );
@@ -840,13 +986,20 @@ Return JSON with the same keys (headline, subhead, cta).`;
           <div className="w-full h-full p-6 relative bg-white flex items-center justify-center">
             <div className="relative w-full h-full border border-gray-200 flex flex-col">
               <div className="flex-1 relative overflow-hidden">
-                <img src={image} className="w-full h-full object-cover" crossOrigin="anonymous" alt="Product" />
+                <img
+                  src={image}
+                  className="w-full h-full object-cover"
+                  style={{ objectPosition: imagePosition }}
+                  crossOrigin="anonymous"
+                  alt="Product"
+                  key={image}
+                />
                 {content.showOverlay && <div className="absolute inset-0 bg-black/20" />}
               </div>
               <div className="h-auto py-6 bg-white flex flex-col items-center justify-center text-center z-10">
                 <h2 className="text-2xl mb-1 text-black" style={{ fontFamily: fonts[content.fontStyle] }}>{content.headline}</h2>
                 <p className="text-xs text-gray-500 uppercase tracking-widest mb-3" style={{ fontFamily: fonts.modern }}>{content.subhead}</p>
-                <div className="text-xs border-b border-black pb-0.5 uppercase tracking-wider font-semibold">{content.cta}</div>
+                <div className="text-xs border-b border-black pb-0.5 uppercase tracking-wider font-semibold">{resolvedCta}</div>
               </div>
             </div>
           </div>
@@ -1024,13 +1177,14 @@ Return JSON with the same keys (headline, subhead, cta).`;
                   Recommended
                   <ChevronDown size={12} className={`transition-transform ${recommendedOpen ? 'rotate-180' : ''}`} />
                 </button>
+                <span className="text-[10px] text-neutral-400">Based on your top customer demographics</span>
                 {defaultLocaleLabel && (
                   <span className="text-[10px] text-neutral-400">Default: {defaultLocaleLabel}</span>
                 )}
               </div>
               {recommendedOpen && (
                 <div className="flex flex-wrap gap-2 bg-neutral-50 border border-neutral-200 rounded-lg p-3">
-                  {RECOMMENDED_LOCALES.map((locale) => (
+                  {recommendedLocales.map((locale) => (
                     <div key={locale.value} className="flex items-center gap-2 px-2 py-1 rounded-full border border-neutral-200 bg-white text-[10px]">
                       <button
                         type="button"

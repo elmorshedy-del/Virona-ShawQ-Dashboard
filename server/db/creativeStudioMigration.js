@@ -89,11 +89,24 @@ export function runMigration() {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS store_profiles (
+      store TEXT PRIMARY KEY,
+      store_url TEXT,
+      logo_url TEXT,
+      summary_json JSON,
+      source_json JSON,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_studio_creatives_type ON studio_creatives(type);
     CREATE INDEX IF NOT EXISTS idx_competitor_analyses_brand ON competitor_analyses(brand_name);
     CREATE INDEX IF NOT EXISTS idx_generated_content_type ON generated_content(type);
     CREATE INDEX IF NOT EXISTS idx_creative_fatigue_status ON creative_fatigue(status);
     CREATE INDEX IF NOT EXISTS idx_creative_fatigue_ad_id ON creative_fatigue(ad_id);
+    CREATE INDEX IF NOT EXISTS idx_store_profiles_store ON store_profiles(store);
   `);
 
   console.log('✅ Creative Studio tables ready');

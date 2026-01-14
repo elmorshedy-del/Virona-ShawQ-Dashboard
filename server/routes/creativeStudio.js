@@ -9,11 +9,118 @@ import * as fatigueService from '../services/fatigueService.js';
 import * as auditorService from '../services/auditorService.js';
 import { extractAndDownloadVideoFromUrl } from '../utils/videoExtractor.js';
 import { getDb } from '../db/database.js';
+import { getOrCreateStoreProfile } from '../services/storeProfileService.js';
 
 const router = express.Router();
 const db = getDb();
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+const LOCALE_LABELS = {
+  'en-US': 'English (US)',
+  'en-GB': 'English (UK)',
+  'ar-SA': 'Arabic (Saudi)',
+  'ar-AE': 'Arabic (UAE)',
+  'ar-EG': 'Arabic (Egypt)',
+  'ar-TN': 'Arabic (Tunisia)',
+  'ar-MA': 'Arabic (Morocco)',
+  'es-ES': 'Spanish (ES)',
+  'es-419': 'Spanish (LATAM)',
+  'zh-CN': 'Chinese (Simplified)',
+  'zh-TW': 'Chinese (Traditional)',
+  'zh-HK': 'Chinese (HK)',
+  'ko-KR': 'Korean',
+  'ja-JP': 'Japanese',
+  'fr-FR': 'French',
+  'it-IT': 'Italian'
+};
+
+const COUNTRY_TO_LOCALE = {
+  SA: 'ar-SA',
+  AE: 'ar-AE',
+  EG: 'ar-EG',
+  TN: 'ar-TN',
+  MA: 'ar-MA',
+  US: 'en-US',
+  GB: 'en-GB',
+  CA: 'en-US',
+  AU: 'en-GB',
+  NZ: 'en-GB',
+  ES: 'es-ES',
+  MX: 'es-419',
+  AR: 'es-419',
+  CO: 'es-419',
+  CL: 'es-419',
+  PE: 'es-419',
+  BR: 'en-US',
+  FR: 'fr-FR',
+  IT: 'it-IT',
+  CN: 'zh-CN',
+  TW: 'zh-TW',
+  HK: 'zh-HK',
+  JP: 'ja-JP',
+  KR: 'ko-KR'
+};
+
+const DEFAULT_RECOMMENDED = ['ar-SA', 'en-US', 'es-419'];
+
+function buildRecommendedLocales(store) {
+  const rawRows = db.prepare(`
+    SELECT country_code as country, COUNT(*) as orders, SUM(order_total) as revenue
+    FROM salla_orders
+    WHERE store = ? AND country_code IS NOT NULL AND country_code != ''
+    GROUP BY country_code
+    UNION ALL
+    SELECT country_code as country, COUNT(*) as orders, SUM(subtotal) as revenue
+    FROM shopify_orders
+    WHERE store = ? AND country_code IS NOT NULL AND country_code != ''
+    GROUP BY country_code
+    UNION ALL
+    SELECT country as country, SUM(orders_count) as orders, SUM(revenue) as revenue
+    FROM manual_orders
+    WHERE store = ? AND country IS NOT NULL AND country != ''
+    GROUP BY country
+  `).all(store, store, store);
+
+  const countryMap = new Map();
+  rawRows.forEach(row => {
+    const code = (row.country || '').toUpperCase().trim();
+    if (!code) return;
+    if (!countryMap.has(code)) {
+      countryMap.set(code, { country: code, orders: 0, revenue: 0 });
+    }
+    const existing = countryMap.get(code);
+    existing.orders += row.orders || 0;
+    existing.revenue += row.revenue || 0;
+  });
+
+  const sorted = Array.from(countryMap.values())
+    .filter(row => row.orders > 0 || row.revenue > 0)
+    .sort((a, b) => (b.revenue || 0) - (a.revenue || 0) || (b.orders || 0) - (a.orders || 0));
+
+  const significant = sorted.filter(row => row.orders >= 2 || row.revenue >= 100);
+  const topCountries = (significant.length ? significant : sorted).slice(0, 3);
+
+  if (topCountries.length === 0) {
+    return DEFAULT_RECOMMENDED.map((locale, index) => ({
+      value: locale,
+      label: LOCALE_LABELS[locale] || locale,
+      rank: index + 1
+    }));
+  }
+
+  return topCountries.map((row, index) => {
+    const locale = COUNTRY_TO_LOCALE[row.country] || 'en-US';
+    return {
+      value: locale,
+      label: LOCALE_LABELS[locale] || locale,
+      rank: index + 1,
+      country: row.country,
+      orders: row.orders,
+      revenue: row.revenue
+    };
+  });
+}
 
 // ============================================================================
 // META CONNECTION STATUS
@@ -65,6 +172,42 @@ router.post('/gemini', async (req, res) => {
   } catch (error) {
     console.error('Gemini proxy error:', error?.response?.data || error.message);
     return res.status(500).json({ error: error?.response?.data?.error?.message || error.message });
+  }
+});
+
+// ============================================================================
+// STORE PROFILE (Summary + Logo)
+// ============================================================================
+
+router.get('/store-profile', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const storeUrl = req.query.store_url || req.query.storeUrl || null;
+
+    const profile = await getOrCreateStoreProfile(store, { storeUrl });
+    if (profile.error) {
+      return res.status(400).json({ success: false, error: profile.error });
+    }
+
+    return res.json({ success: true, profile, generated: profile.generated });
+  } catch (error) {
+    console.error('Store profile error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// RECOMMENDED LOCALES
+// ============================================================================
+
+router.get('/recommended-locales', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const locales = buildRecommendedLocales(store);
+    res.json({ success: true, locales });
+  } catch (error) {
+    console.error('Recommended locales error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
