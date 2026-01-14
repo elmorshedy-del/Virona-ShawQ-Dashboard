@@ -9,6 +9,8 @@ import * as fatigueService from '../services/fatigueService.js';
 import * as auditorService from '../services/auditorService.js';
 import { extractAndDownloadVideoFromUrl } from '../utils/videoExtractor.js';
 import { getDb } from '../db/database.js';
+import * as apifyService from '../services/apifyService.js';
+import { isBrandCacheValid, getBrandCacheExpiry } from '../db/competitorSpyMigration.js';
 import { getOrCreateStoreProfile } from '../services/storeProfileService.js';
 
 const router = express.Router();
@@ -319,79 +321,118 @@ router.post('/extract-style', upload.single('image'), async (req, res) => {
 });
 
 // ============================================================================
-// COMPETITOR SPY
+// ============================================================================
+// COMPETITOR SPY (Apify-powered)
 // ============================================================================
 
-// Search Facebook Ad Library
+// Search for competitor ads
 router.get('/competitor/search', async (req, res) => {
   try {
-    const { brand_name, country = 'SA', limit = 25 } = req.query;
+    const store = req.query.store || 'vironax';
+    const { brand_name, country = 'ALL', force_refresh = 'false' } = req.query;
 
     if (!brand_name) {
       return res.status(400).json({ success: false, error: 'Brand name required' });
     }
 
-    const ads = await fbAdLibrary.searchByBrand(brand_name, { country, limit: parseInt(limit) });
+    const result = await apifyService.searchByBrand(store, brand_name, {
+      country,
+      forceRefresh: force_refresh === 'true'
+    });
 
-    res.json({ success: true, ads, count: ads.length });
+    res.json({
+      success: true,
+      ads: result.ads,
+      count: result.ads.length,
+      from_cache: result.fromCache,
+      cache_info: result.cacheInfo
+    });
   } catch (error) {
     console.error('Competitor search error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Get supported countries
-router.get('/competitor/countries', (req, res) => {
-  res.json({ success: true, countries: fbAdLibrary.getSupportedCountries() });
-});
-
-// Analyze competitor ad
-router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
+// Force refresh brand search
+router.post('/competitor/refresh', async (req, res) => {
   try {
-    let analysis;
-    let analysisMediaType = 'image';
+    const store = req.query.store || 'vironax';
+    const { brand_name, country = 'ALL' } = req.body;
 
-    if (req.body.snapshot_url) {
-      const videoResult = await extractAndDownloadVideoFromUrl(req.body.snapshot_url);
-      if (!videoResult.success) {
-        return res.status(400).json({ success: false, error: videoResult.error });
-      }
-      analysisMediaType = 'video';
-      analysis = await geminiVision.analyzeCompetitorVideo(videoResult.data);
-    } else {
-      let imageBase64;
-
-      if (req.file) {
-        imageBase64 = req.file.buffer.toString('base64');
-      } else if (req.body.image_url) {
-        imageBase64 = await cloudinary.fetchAsBase64(req.body.image_url);
-      } else {
-        return res.status(400).json({ success: false, error: 'No image provided' });
-      }
-
-      analysis = await geminiVision.analyzeCompetitorAd(imageBase64);
+    if (!brand_name) {
+      return res.status(400).json({ success: false, error: 'Brand name required' });
     }
 
-    // Save to database
-    const stmt = db.prepare(`
-      INSERT INTO competitor_analyses (brand_name, source_url, source_type, creative_url, analysis)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    const result = stmt.run(
-      req.body.brand_name || 'Unknown',
-      req.body.source_url || req.body.snapshot_url || null,
-      req.body.source_type || 'screenshot',
-      req.body.image_url || null,
-      JSON.stringify(analysis)
-    );
+    const result = await apifyService.searchByBrand(store, brand_name, {
+      country,
+      forceRefresh: true
+    });
 
     res.json({
       success: true,
-      analysis,
-      analysis_id: result.lastInsertRowid,
-      media_type: analysisMediaType
+      ads: result.ads,
+      count: result.ads.length,
+      cache_info: result.cacheInfo
     });
+  } catch (error) {
+    console.error('Competitor refresh error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get single ad details
+router.get('/competitor/ad/:ad_id', async (req, res) => {
+  try {
+    const ad = apifyService.getAdById(req.params.ad_id);
+    if (!ad) {
+      return res.status(404).json({ success: false, error: 'Ad not found' });
+    }
+    res.json({ success: true, ad });
+  } catch (error) {
+    console.error('Get ad error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get supported countries
+router.get('/competitor/countries', (req, res) => {
+  res.json({ success: true, countries: apifyService.getSupportedCountries() });
+});
+
+// Analyze competitor ad
+router.post('/competitor/analyze', async (req, res) => {
+  try {
+    const { ad_id, image_url, snapshot_url, brand_name } = req.body;
+
+    // Check if ad already has cached analysis
+    if (ad_id) {
+      const existingAd = apifyService.getAdById(ad_id);
+      if (existingAd?.analysis) {
+        return res.json({ success: true, analysis: existingAd.analysis, from_cache: true });
+      }
+    }
+
+    let analysis;
+    if (snapshot_url) {
+      const videoResult = await extractAndDownloadVideoFromUrl(snapshot_url);
+      if (videoResult.success) {
+        analysis = await geminiVision.analyzeCompetitorVideo(videoResult.data);
+      } else {
+        return res.status(400).json({ success: false, error: videoResult.error });
+      }
+    } else if (image_url) {
+      const imageBase64 = await cloudinary.fetchAsBase64(image_url);
+      analysis = await geminiVision.analyzeCompetitorAd(imageBase64);
+    } else {
+      return res.status(400).json({ success: false, error: 'No image or video URL provided' });
+    }
+
+    // Cache analysis to ad if ad_id provided
+    if (ad_id) {
+      apifyService.saveAnalysisToAd(ad_id, analysis);
+    }
+
+    res.json({ success: true, analysis, from_cache: false });
   } catch (error) {
     console.error('Competitor analysis error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -401,26 +442,199 @@ router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
 // Get past analyses
 router.get('/competitor/analyses', async (req, res) => {
   try {
+    const store = req.query.store || 'vironax';
     const { limit = 20 } = req.query;
-    const analyses = db.prepare(`
-      SELECT * FROM competitor_analyses 
-      ORDER BY created_at DESC 
-      LIMIT ?
-    `).all(parseInt(limit));
-
-    const parsed = analyses.map(a => ({
-      ...a,
-      analysis: JSON.parse(a.analysis || '{}')
-    }));
-
-    res.json({ success: true, analyses: parsed });
+    const ads = apifyService.getAdsWithAnalysis(store, parseInt(limit));
+    res.json({ success: true, analyses: ads });
   } catch (error) {
     console.error('Get analyses error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ============================================================================
+// SWIPE FILES CRUD
+router.get('/competitor/swipe-files', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const db = getDb();
+    const files = db.prepare('SELECT * FROM competitor_swipe_files WHERE store = ? ORDER BY created_at DESC').all(store);
+    const filesWithCount = files.map(f => {
+      const count = db.prepare('SELECT COUNT(*) as cnt FROM competitor_saved_ads WHERE swipe_file_id = ?').get(f.id);
+      return { ...f, ad_count: count.cnt };
+    });
+    res.json({ success: true, swipe_files: filesWithCount });
+  } catch (error) {
+    console.error('Get swipe files error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/competitor/swipe-files', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { name, description, color, icon } = req.body;
+    const db = getDb();
+    const result = db.prepare('INSERT INTO competitor_swipe_files (store, name, description, color, icon) VALUES (?, ?, ?, ?, ?)').run(store, name, description || null, color || '#6366f1', icon || '📁');
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (error) {
+    console.error('Create swipe file error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put('/competitor/swipe-files/:id', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { name, description, color, icon } = req.body;
+    const db = getDb();
+    db.prepare('UPDATE competitor_swipe_files SET name = ?, description = ?, color = ?, icon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND store = ?').run(name, description, color, icon, req.params.id, store);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update swipe file error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete('/competitor/swipe-files/:id', async (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM competitor_swipe_files WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete swipe file error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/competitor/swipe-files/:id/ads', async (req, res) => {
+  try {
+    const db = getDb();
+    const saved = db.prepare('SELECT ca.*, csa.notes, csa.tags, csa.saved_at FROM competitor_saved_ads csa JOIN competitor_ads ca ON csa.ad_id = ca.ad_id WHERE csa.swipe_file_id = ? ORDER BY csa.saved_at DESC').all(req.params.id);
+    const ads = saved.map(a => ({ ...a, platforms: JSON.parse(a.platforms || '[]'), analysis: a.analysis ? JSON.parse(a.analysis) : null }));
+    res.json({ success: true, ads });
+  } catch (error) {
+    console.error('Get swipe file ads error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/competitor/swipe-files/:id/ads', async (req, res) => {
+  try {
+    const { ad_id, notes, tags } = req.body;
+    const db = getDb();
+    db.prepare('INSERT OR IGNORE INTO competitor_saved_ads (swipe_file_id, ad_id, notes, tags) VALUES (?, ?, ?, ?)').run(req.params.id, ad_id, notes || null, JSON.stringify(tags || []));
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Save ad to swipe file error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete('/competitor/swipe-files/:id/ads/:ad_id', async (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM competitor_saved_ads WHERE swipe_file_id = ? AND ad_id = ?').run(req.params.id, req.params.ad_id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove ad from swipe file error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// TRACKED BRANDS
+router.get('/competitor/tracked-brands', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const db = getDb();
+    const brands = db.prepare('SELECT * FROM competitor_tracked_brands WHERE store = ? AND is_active = 1 ORDER BY created_at DESC').all(store);
+    res.json({ success: true, tracked_brands: brands });
+  } catch (error) {
+    console.error('Get tracked brands error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/competitor/tracked-brands', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { brand_name, country, check_frequency } = req.body;
+    const db = getDb();
+    const result = db.prepare('INSERT OR REPLACE INTO competitor_tracked_brands (store, brand_name, country, check_frequency) VALUES (?, ?, ?, ?)').run(store, brand_name, country || 'ALL', check_frequency || 'daily');
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (error) {
+    console.error('Add tracked brand error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/competitor/tracked-brands/:id/check', async (req, res) => {
+  try {
+    const db = getDb();
+    const brand = db.prepare('SELECT * FROM competitor_tracked_brands WHERE id = ?').get(req.params.id);
+    if (!brand) return res.status(404).json({ success: false, error: 'Brand not found' });
+    const result = await apifyService.searchByBrand(brand.store, brand.brand_name, { country: brand.country, forceRefresh: true });
+    const newCount = result.ads.length - brand.total_ads_found;
+    db.prepare('UPDATE competitor_tracked_brands SET last_checked_at = CURRENT_TIMESTAMP, total_ads_found = ?, new_ads_since_last_check = ? WHERE id = ?').run(result.ads.length, Math.max(0, newCount), req.params.id);
+    res.json({ success: true, new_ads: Math.max(0, newCount), total: result.ads.length });
+  } catch (error) {
+    console.error('Check tracked brand error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete('/competitor/tracked-brands/:id', async (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('UPDATE competitor_tracked_brands SET is_active = 0 WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete tracked brand error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ONBOARDING
+router.get('/onboarding/:feature/:element', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { feature, element } = req.params;
+    const db = getDb();
+    const dismissed = db.prepare('SELECT * FROM user_onboarding WHERE store = ? AND feature = ? AND element = ?').get(store, feature, element);
+    res.json({ success: true, should_show: !dismissed });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/onboarding/:feature/:element/dismiss', async (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { feature, element } = req.params;
+    const db = getDb();
+    db.prepare('INSERT OR IGNORE INTO user_onboarding (store, feature, element) VALUES (?, ?, ?)').run(store, feature, element);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Generate brief from competitor ad
+router.post('/competitor/to-brief', async (req, res) => {
+  try {
+    const { ad_id, analysis } = req.body;
+    const brief = {
+      product_name: analysis?.creative_brief?.brand || '',
+      product_description: analysis?.creative_brief?.key_message || '',
+      target_audience: analysis?.target_audience_signals?.demographics || '',
+      objective: analysis?.creative_brief?.objective || '',
+      inspiration_ad_id: ad_id
+    };
+    res.json({ success: true, brief });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // HOOK GENERATOR
 // ============================================================================
 
