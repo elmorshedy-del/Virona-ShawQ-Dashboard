@@ -222,21 +222,26 @@ export async function searchByBrand(store, brandName, options = {}) {
 async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
-  const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country === "ALL" ? "ALL" : country}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
-
+  // Use search-based input instead of URL-based (URL-based ignores maxItems!)
   const input = {
-    startUrls: [{ url: searchUrl }],
+    searchQueries: [searchQuery],
+    countryCode: country === "ALL" ? "US" : country, // ALL not supported, default to US
+    activeStatus: "active",
+    adType: "all",
+    mediaType: "all",
     maxItems: Math.min(limit, 50), // Cap at 50 to reduce timeout risk
+    resultsLimit: Math.min(limit, 50), // Try both parameter names
+    maxResults: Math.min(limit, 50), // Try all possible names
     proxy: {
       useApifyProxy: true,
       apifyProxyGroups: ['RESIDENTIAL']
     }
   };
 
-  debugLog.add('APIFY_INPUT', `Prepared Apify input with maxItems=${input.maxItems}`, { 
-    searchUrl: searchUrl.slice(0, 100), 
+  debugLog.add('APIFY_INPUT', `Using search-based input with limit=${limit}`, { 
+    searchQuery,
+    countryCode: input.countryCode,
     maxItems: input.maxItems,
-    WARNING: input.maxItems > 10 ? 'High maxItems may cause long runs and high costs!' : null
   });
   
   console.log(`[CompetitorSpy] Starting Apify run with maxItems=${input.maxItems} for query "${searchQuery}"`);
@@ -445,7 +450,14 @@ async function fetchFromApify(searchQuery, options = {}) {
     throw error;
   }
 
-  const results = await resultsResponse.json();
+  let results = await resultsResponse.json();
+  
+  // SAFETY: Force limit results even if actor returned more (actor sometimes ignores maxItems)
+  if (results.length > limit) {
+    debugLog.add('RESULTS_TRIMMED', `Actor returned ${results.length} results, trimming to ${limit}`);
+    results = results.slice(0, limit);
+  }
+  
   const runDurationMs = Date.now() - startTime;
   const runDurationMin = runDurationMs / 60000;
   
