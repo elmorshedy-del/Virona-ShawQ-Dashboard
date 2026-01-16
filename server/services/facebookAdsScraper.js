@@ -60,37 +60,63 @@ export async function scrapeAds(searchQuery, options = {}) {
     
     log('Page loaded, waiting for content...');
     
+    // Wait longer for Facebook's JS to load
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Check page title to see if we're on the right page
+    const pageTitle = await page.title();
+    log('Page title:', pageTitle);
+    
+    // Get page content for debugging
+    const pageText = await page.evaluate(() => document.body.innerText.slice(0, 500));
+    log('Page text preview:', pageText.slice(0, 200));
+    
+    // Check if Facebook is blocking us
+    const pageContent = await page.content();
+    if (pageContent.includes('login') || pageContent.includes('Log In') || pageContent.includes('Log into')) {
+      log('Facebook requires login - bot might be blocked');
+      return { ads: [], error: 'Facebook requires login - may be blocking automated access' };
+    }
+    
+    if (pageContent.includes('No ads match') || pageContent.includes('no results')) {
+      log('No ads found for this search');
+      return { ads: [], message: 'No ads found for this search query' };
+    }
+    
     // Wait for ads to load (try multiple selectors)
     const adSelectors = [
       '[data-testid="ad_library_preview"]',
-      '[class*="xrvj5dj"]', // Common FB class for ad cards
+      'div[class*="_7jyr"]', // Common FB ad card class
+      'div[class*="x1dr59a3"]', // Another FB class
       'div[role="article"]',
-      '.x1lliihq', // Another common FB class
+      'div[class*="xrvj5dj"]',
+      'div[class*="x1lliihq"]',
     ];
     
     let foundSelector = null;
     for (const selector of adSelectors) {
       try {
-        await page.waitForSelector(selector, { timeout: 10000 });
-        foundSelector = selector;
-        log('Found ads with selector:', selector);
-        break;
+        const elements = await page.$$(selector);
+        if (elements.length > 0) {
+          foundSelector = selector;
+          log(`Found ${elements.length} elements with selector: ${selector}`);
+          break;
+        }
       } catch (e) {
-        log('Selector not found:', selector);
+        // Continue to next selector
       }
     }
     
     if (!foundSelector) {
-      // Try to find any content
-      const pageContent = await page.content();
-      if (pageContent.includes('No ads match')) {
-        log('No ads found for this search');
-        return { ads: [], message: 'No ads found for this search query' };
-      }
+      log('Could not find ad elements with known selectors');
       
-      log('Could not find ad elements, taking screenshot for debug...');
-      // You could save screenshot here for debugging
-      return { ads: [], error: 'Could not find ad elements on page' };
+      // Try to find ANY divs with substantial content
+      const divCount = await page.evaluate(() => {
+        return document.querySelectorAll('div').length;
+      });
+      log(`Page has ${divCount} divs total`);
+      
+      return { ads: [], error: 'Could not find ad elements on page - Facebook may have changed layout' };
     }
     
     // Wait a bit more for all content to load
