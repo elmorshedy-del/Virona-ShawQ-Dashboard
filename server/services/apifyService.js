@@ -224,35 +224,34 @@ async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
   const effectiveLimit = Math.min(limit, 50);
+  const countryCode = country === "ALL" ? "ALL" : country;
+  
+  // Build the Facebook Ad Library URL
+  const adLibraryUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${countryCode}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
   
   // Input for whoareyouanas~meta-ad-scraper
-  // Try multiple common parameter formats
+  // Try BOTH URL-based and search-based inputs
   const input = {
-    // Search terms - try all common names
+    // URL-based (most reliable)
+    url: adLibraryUrl,
+    urls: [adLibraryUrl],
+    startUrls: [{ url: adLibraryUrl }],
+    startUrl: adLibraryUrl,
+    
+    // Search terms as backup
     searchTerm: searchQuery,
-    searchTerms: searchQuery,
+    searchTerms: [searchQuery],
     search: searchQuery,
     query: searchQuery,
-    keyword: searchQuery,
-    keywords: searchQuery,
-    q: searchQuery,
     
     // Country settings
-    country: country === "ALL" ? "US" : country,
-    countryCode: country === "ALL" ? "US" : country,
-    countries: [country === "ALL" ? "US" : country],
-    adReachedCountries: [country === "ALL" ? "US" : country],
-    
-    // Filters
-    adActiveStatus: "ACTIVE",
-    activeStatus: "active",
-    adType: "all",
+    country: countryCode,
+    countryCode: countryCode,
     
     // Limits
     limit: effectiveLimit,
     maxResults: effectiveLimit,
     maxItems: effectiveLimit,
-    resultsLimit: effectiveLimit,
     
     // Proxy
     proxy: {
