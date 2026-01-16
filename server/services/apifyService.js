@@ -1,7 +1,8 @@
 // server/services/apifyService.js
-// Apify Facebook Ads Scraper Integration
+// Apify Facebook Ads Scraper Integration with robust error handling
 
 import { getDb } from '../db/database.js';
+import crypto from 'crypto';
 import { 
   isBrandCacheValid, 
   updateBrandCache, 
@@ -15,6 +16,15 @@ const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper';
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY;
 const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET;
+
+// Configuration
+const CONFIG = {
+  POLL_INTERVAL_MS: 3000,          // Poll every 3 seconds (faster feedback)
+  MAX_POLL_TIME_MS: 180000,        // Max 3 minutes polling (reasonable timeout)
+  INITIAL_WAIT_MS: 5000,           // Wait 5 seconds before first poll
+  MAX_RETRIES: 2,                  // Retry failed requests
+  RETRY_DELAY_MS: 2000,            // Wait 2 seconds between retries
+};
 
 const SUPPORTED_COUNTRIES = {
   'ALL': 'All Countries',
@@ -39,6 +49,35 @@ const SUPPORTED_COUNTRIES = {
   'PH': 'Philippines'
 };
 
+// Debug logger for tracking search progress
+const debugLog = {
+  logs: [],
+  add(stage, message, data = null) {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      stage,
+      message,
+      data
+    };
+    this.logs.push(entry);
+    console.log(`[CompetitorSpy] ${stage}: ${message}`, data ? JSON.stringify(data).slice(0, 200) : '');
+    // Keep only last 100 logs
+    if (this.logs.length > 100) {
+      this.logs = this.logs.slice(-100);
+    }
+  },
+  getRecent(count = 20) {
+    return this.logs.slice(-count);
+  },
+  clear() {
+    this.logs = [];
+  }
+};
+
+export function getDebugLogs(count = 20) {
+  return debugLog.getRecent(count);
+}
+
 export function getSupportedCountries() {
   return SUPPORTED_COUNTRIES;
 }
@@ -48,16 +87,26 @@ export function getSupportedCountries() {
  * Uses 24-hour cache to reduce API calls
  */
 export async function searchByBrand(store, brandName, options = {}) {
-  const { country = 'ALL', forceRefresh = false, limit = 2 } = options;
+  const { country = 'ALL', forceRefresh = false, limit = 10 } = options;
+  const searchId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   
+  debugLog.add('SEARCH_START', `Search initiated for "${brandName}"`, { store, country, forceRefresh, limit, searchId });
+  
+  // Validate API token
   if (!APIFY_API_TOKEN) {
-    throw new Error('APIFY_API_TOKEN is not configured');
+    const error = new Error('APIFY_API_TOKEN is not configured. Please set this environment variable.');
+    error.code = 'CONFIG_ERROR';
+    error.debug = { stage: 'VALIDATION', searchId };
+    debugLog.add('ERROR', 'Missing APIFY_API_TOKEN');
+    throw error;
   }
 
   // Check cache first (unless force refresh)
   if (!forceRefresh) {
+    debugLog.add('CACHE_CHECK', 'Checking cache...');
     const cachedAdIds = getCachedAdIds(store, brandName, country);
     if (cachedAdIds && cachedAdIds.length > 0) {
+      debugLog.add('CACHE_HIT', `Found ${cachedAdIds.length} cached ads`);
       const ads = getAdsByIds(cachedAdIds);
       return {
         ads,
@@ -65,29 +114,60 @@ export async function searchByBrand(store, brandName, options = {}) {
         cacheInfo: {
           ...getCacheExpiry(store, brandName, country),
           is_valid: true
+        },
+        debug: {
+          searchId,
+          stage: 'CACHE_HIT',
+          logs: debugLog.getRecent(5)
         }
       };
     }
+    debugLog.add('CACHE_MISS', 'No valid cache found');
   }
 
   // Fetch from Apify
   try {
-    const ads = await fetchFromApify(brandName, { country, limit });
+    debugLog.add('APIFY_START', 'Starting Apify fetch...');
+    const result = await fetchFromApify(brandName, { country, limit, searchId });
+    
+    if (!result.ads || result.ads.length === 0) {
+      debugLog.add('NO_RESULTS', 'Apify returned no ads');
+      return {
+        ads: [],
+        fromCache: false,
+        cacheInfo: null,
+        debug: {
+          searchId,
+          stage: 'NO_RESULTS',
+          apifyRunId: result.runId,
+          logs: debugLog.getRecent(10)
+        }
+      };
+    }
     
     // Process and store ads
-    const storedAds = await processAndStoreAds(ads);
+    debugLog.add('PROCESSING', `Processing ${result.ads.length} ads...`);
+    const storedAds = await processAndStoreAds(result.ads);
     
     // Update cache
     const adIds = storedAds.map(ad => ad.ad_id);
     updateBrandCache(store, brandName, country, adIds);
+    debugLog.add('CACHE_UPDATE', `Cached ${adIds.length} ad IDs`);
 
     return {
       ads: storedAds,
       fromCache: false,
-      cacheInfo: getCacheExpiry(store, brandName, country)
+      cacheInfo: getCacheExpiry(store, brandName, country),
+      debug: {
+        searchId,
+        stage: 'SUCCESS',
+        apifyRunId: result.runId,
+        processedCount: storedAds.length,
+        logs: debugLog.getRecent(10)
+      }
     };
   } catch (error) {
-    console.error('Apify fetch error:', error);
+    debugLog.add('ERROR', error.message, { code: error.code, stage: error.debug?.stage });
     
     // Try to return stale cache if available
     const db = getDb();
@@ -97,86 +177,246 @@ export async function searchByBrand(store, brandName, options = {}) {
     `).get(store, brandName, country);
     
     if (staleCache) {
+      debugLog.add('STALE_CACHE', 'Returning stale cache due to error');
       const adIds = JSON.parse(staleCache.ad_ids || '[]');
       const ads = getAdsByIds(adIds);
       return {
         ads,
         fromCache: true,
         stale: true,
-        error: error.message
+        error: error.message,
+        errorCode: error.code || 'UNKNOWN',
+        debug: {
+          searchId,
+          stage: 'STALE_CACHE_FALLBACK',
+          originalError: error.message,
+          logs: debugLog.getRecent(15)
+        }
       };
     }
     
+    // Enhance error with debug info
+    error.debug = {
+      searchId,
+      stage: error.debug?.stage || 'UNKNOWN',
+      logs: debugLog.getRecent(15)
+    };
     throw error;
   }
 }
 
 /**
- * Fetch ads from Apify actor
+ * Fetch ads from Apify actor with robust error handling
  */
 async function fetchFromApify(searchQuery, options = {}) {
-  const { country = 'ALL', limit = 2 } = options;
+  const { country = 'ALL', limit = 10, searchId = 'unknown' } = options;
 
   const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country === "ALL" ? "ALL" : country}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
 
   const input = {
     startUrls: [{ url: searchUrl }],
-    maxItems: limit,
+    maxItems: Math.min(limit, 50), // Cap at 50 to reduce timeout risk
     proxy: {
       useApifyProxy: true,
       apifyProxyGroups: ['RESIDENTIAL']
     }
   };
 
-  // Start the actor run
-  const runResponse = await fetch(
-    `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_API_TOKEN}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input)
-    }
-  );
+  debugLog.add('APIFY_INPUT', 'Prepared Apify input', { searchUrl: searchUrl.slice(0, 100), maxItems: input.maxItems });
 
-  if (!runResponse.ok) {
-    const error = await runResponse.text();
-    throw new Error(`Apify actor start failed: ${error}`);
+  // Start the actor run with retry
+  let runResponse;
+  let retries = 0;
+  
+  while (retries <= CONFIG.MAX_RETRIES) {
+    try {
+      debugLog.add('APIFY_REQUEST', `Starting actor run (attempt ${retries + 1})...`);
+      
+      runResponse = await fetch(
+        `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_API_TOKEN}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(input)
+        }
+      );
+
+      if (runResponse.ok) break;
+      
+      const errorText = await runResponse.text();
+      debugLog.add('APIFY_ERROR', `Actor start failed: ${runResponse.status}`, { error: errorText.slice(0, 200) });
+      
+      if (runResponse.status === 401) {
+        const error = new Error('Invalid Apify API token. Please check your APIFY_API_TOKEN.');
+        error.code = 'AUTH_ERROR';
+        error.debug = { stage: 'ACTOR_START' };
+        throw error;
+      }
+      
+      if (runResponse.status === 402) {
+        const error = new Error('Apify account has insufficient credits. Please add credits or upgrade your plan.');
+        error.code = 'CREDITS_ERROR';
+        error.debug = { stage: 'ACTOR_START' };
+        throw error;
+      }
+      
+      if (runResponse.status >= 500) {
+        retries++;
+        if (retries <= CONFIG.MAX_RETRIES) {
+          debugLog.add('RETRY', `Server error, retrying in ${CONFIG.RETRY_DELAY_MS}ms...`);
+          await sleep(CONFIG.RETRY_DELAY_MS);
+          continue;
+        }
+      }
+      
+      const error = new Error(`Apify actor start failed (${runResponse.status}): ${errorText.slice(0, 100)}`);
+      error.code = 'ACTOR_START_ERROR';
+      error.debug = { stage: 'ACTOR_START', status: runResponse.status };
+      throw error;
+      
+    } catch (fetchError) {
+      if (fetchError.code) throw fetchError; // Re-throw our custom errors
+      
+      retries++;
+      if (retries <= CONFIG.MAX_RETRIES) {
+        debugLog.add('RETRY', `Network error, retrying in ${CONFIG.RETRY_DELAY_MS}ms...`, { error: fetchError.message });
+        await sleep(CONFIG.RETRY_DELAY_MS);
+        continue;
+      }
+      
+      const error = new Error(`Network error connecting to Apify: ${fetchError.message}`);
+      error.code = 'NETWORK_ERROR';
+      error.debug = { stage: 'ACTOR_START' };
+      throw error;
+    }
   }
 
   const runData = await runResponse.json();
-  const runId = runData.data.id;
-
-  // Wait for the run to complete (poll every 5 seconds, max 5 minutes)
-  let status = 'RUNNING';
-  let attempts = 0;
-  const maxAttempts = 60; // 5 minutes
-
-  while (status === 'RUNNING' && attempts < maxAttempts) {
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    const statusResponse = await fetch(
-      `https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_TOKEN}`
-    );
-    const statusData = await statusResponse.json();
-    status = statusData.data.status;
-    attempts++;
+  const runId = runData.data?.id;
+  
+  if (!runId) {
+    const error = new Error('Apify did not return a run ID');
+    error.code = 'INVALID_RESPONSE';
+    error.debug = { stage: 'ACTOR_START', response: JSON.stringify(runData).slice(0, 200) };
+    throw error;
   }
 
+  debugLog.add('APIFY_RUN_STARTED', `Actor run started`, { runId, defaultDatasetId: runData.data?.defaultDatasetId });
+
+  // Initial wait before polling
+  debugLog.add('POLLING_WAIT', `Waiting ${CONFIG.INITIAL_WAIT_MS}ms before polling...`);
+  await sleep(CONFIG.INITIAL_WAIT_MS);
+
+  // Poll for completion with timeout
+  const startTime = Date.now();
+  let status = 'RUNNING';
+  let pollCount = 0;
+  let lastStatusData = null;
+
+  while (Date.now() - startTime < CONFIG.MAX_POLL_TIME_MS) {
+    pollCount++;
+    
+    try {
+      const statusResponse = await fetch(
+        `https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_TOKEN}`
+      );
+      
+      if (!statusResponse.ok) {
+        debugLog.add('POLL_ERROR', `Status check failed: ${statusResponse.status}`);
+        await sleep(CONFIG.POLL_INTERVAL_MS);
+        continue;
+      }
+      
+      const statusData = await statusResponse.json();
+      lastStatusData = statusData.data;
+      status = statusData.data?.status;
+      
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+      debugLog.add('POLL_STATUS', `Poll #${pollCount}: ${status} (${elapsedSec}s elapsed)`);
+      
+      // Check for terminal states
+      if (status === 'SUCCEEDED') {
+        debugLog.add('APIFY_SUCCESS', 'Actor run completed successfully');
+        break;
+      }
+      
+      if (status === 'FAILED') {
+        const error = new Error(`Apify actor run failed. Check the Apify console for details.`);
+        error.code = 'ACTOR_FAILED';
+        error.debug = { stage: 'POLLING', runId, statusMessage: lastStatusData?.statusMessage };
+        throw error;
+      }
+      
+      if (status === 'ABORTED') {
+        const error = new Error('Apify actor run was aborted');
+        error.code = 'ACTOR_ABORTED';
+        error.debug = { stage: 'POLLING', runId };
+        throw error;
+      }
+      
+      if (status === 'TIMED-OUT') {
+        const error = new Error('Apify actor run timed out. Try searching with fewer results or a more specific query.');
+        error.code = 'ACTOR_TIMEOUT';
+        error.debug = { stage: 'POLLING', runId };
+        throw error;
+      }
+      
+      // Still running, wait and poll again
+      if (status === 'RUNNING' || status === 'READY') {
+        await sleep(CONFIG.POLL_INTERVAL_MS);
+        continue;
+      }
+      
+      // Unknown status
+      debugLog.add('UNKNOWN_STATUS', `Unexpected status: ${status}`);
+      await sleep(CONFIG.POLL_INTERVAL_MS);
+      
+    } catch (pollError) {
+      if (pollError.code) throw pollError; // Re-throw our custom errors
+      
+      debugLog.add('POLL_NETWORK_ERROR', pollError.message);
+      await sleep(CONFIG.POLL_INTERVAL_MS);
+    }
+  }
+
+  // Check if we timed out while still running
   if (status !== 'SUCCEEDED') {
-    throw new Error(`Apify actor run failed with status: ${status}`);
+    const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+    const error = new Error(
+      `Search timed out after ${elapsedSec} seconds. The search is still running on Apify. ` +
+      `Try again in a minute or search for fewer results.`
+    );
+    error.code = 'POLL_TIMEOUT';
+    error.debug = { 
+      stage: 'POLLING', 
+      runId, 
+      lastStatus: status, 
+      elapsedMs: Date.now() - startTime,
+      pollCount 
+    };
+    throw error;
   }
 
   // Get the results
   const datasetId = runData.data.defaultDatasetId;
+  debugLog.add('FETCHING_RESULTS', `Fetching results from dataset ${datasetId}...`);
+  
   const resultsResponse = await fetch(
     `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}`
   );
 
   if (!resultsResponse.ok) {
-    throw new Error('Failed to fetch Apify results');
+    const errorText = await resultsResponse.text();
+    const error = new Error(`Failed to fetch Apify results: ${resultsResponse.status}`);
+    error.code = 'RESULTS_FETCH_ERROR';
+    error.debug = { stage: 'RESULTS_FETCH', datasetId, status: resultsResponse.status };
+    throw error;
   }
 
-  return await resultsResponse.json();
+  const results = await resultsResponse.json();
+  debugLog.add('RESULTS_FETCHED', `Fetched ${results.length} raw results`);
+
+  return { ads: results, runId };
 }
 
 /**
@@ -195,61 +435,82 @@ async function processAndStoreAds(rawAds) {
       // Check if ad already exists
       const existing = db.prepare('SELECT * FROM competitor_ads WHERE ad_id = ?').get(adId);
       if (existing) {
-        processedAds.push(existing);
+        processedAds.push(formatAdForResponse(existing));
         continue;
       }
 
-      // Extract media URLs
+      // Extract media URLs with multiple fallbacks
       let originalImageUrl = null;
       let originalVideoUrl = null;
       let mediaType = 'image';
 
+      // Try multiple paths for video URLs
       if (rawAd.snapshot?.videos?.length > 0) {
-        originalVideoUrl = rawAd.snapshot.videos[0].video_hd_url || rawAd.snapshot.videos[0].video_sd_url;
+        const video = rawAd.snapshot.videos[0];
+        originalVideoUrl = video.video_hd_url || video.video_sd_url || video.video_url || video.url;
         mediaType = 'video';
-      } else if (rawAd.snapshot?.images?.length > 0) {
+      } else if (rawAd.video_url || rawAd.videoUrl) {
+        originalVideoUrl = rawAd.video_url || rawAd.videoUrl;
+        mediaType = 'video';
+      }
+      
+      // Try multiple paths for image URLs
+      if (rawAd.snapshot?.images?.length > 0) {
         originalImageUrl = rawAd.snapshot.images[0];
       } else if (rawAd.snapshot?.cards?.length > 0) {
-        originalImageUrl = rawAd.snapshot.cards[0].original_image_url;
-        mediaType = 'carousel';
+        originalImageUrl = rawAd.snapshot.cards[0].original_image_url || rawAd.snapshot.cards[0].image_url;
+        if (!originalVideoUrl) mediaType = 'carousel';
+      } else if (rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url) {
+        originalImageUrl = rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url;
       }
 
-      // Upload to Cloudinary if configured
+      // Upload to Cloudinary if configured (with timeout protection)
       let cloudinaryImageUrl = null;
       let cloudinaryVideoUrl = null;
       let cloudinaryThumbnailUrl = null;
 
       if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
-        if (originalImageUrl) {
-          cloudinaryImageUrl = await uploadToCloudinary(originalImageUrl, 'image');
-          cloudinaryThumbnailUrl = cloudinaryImageUrl?.replace('/upload/', '/upload/w_400,h_400,c_fill/');
-        }
-        if (originalVideoUrl) {
-          cloudinaryVideoUrl = await uploadToCloudinary(originalVideoUrl, 'video');
-          // Generate video thumbnail
-          cloudinaryThumbnailUrl = cloudinaryVideoUrl?.replace('/upload/', '/upload/w_400,h_400,c_fill,so_0/').replace('.mp4', '.jpg');
+        try {
+          if (originalImageUrl) {
+            cloudinaryImageUrl = await uploadToCloudinaryWithTimeout(originalImageUrl, 'image');
+            if (cloudinaryImageUrl) {
+              cloudinaryThumbnailUrl = cloudinaryImageUrl.replace('/upload/', '/upload/w_400,h_400,c_fill/');
+            }
+          }
+          if (originalVideoUrl) {
+            cloudinaryVideoUrl = await uploadToCloudinaryWithTimeout(originalVideoUrl, 'video');
+            if (cloudinaryVideoUrl) {
+              // Generate video thumbnail
+              cloudinaryThumbnailUrl = cloudinaryVideoUrl
+                .replace('/upload/', '/upload/w_400,h_400,c_fill,so_0/')
+                .replace(/\.(mp4|webm|mov)$/i, '.jpg');
+            }
+          }
+        } catch (cloudinaryError) {
+          debugLog.add('CLOUDINARY_ERROR', `Failed to upload media: ${cloudinaryError.message}`);
+          // Continue without Cloudinary URLs - we'll use originals as fallback
         }
       }
 
-      // Extract ad copy
-      const adCopy = rawAd.snapshot?.body?.text || rawAd.snapshot?.caption || '';
-      const headline = rawAd.snapshot?.title || '';
-      const ctaText = rawAd.snapshot?.cta_text || rawAd.snapshot?.link_title || '';
-      const ctaLink = rawAd.snapshot?.link_url || '';
+      // Extract ad copy with fallbacks
+      const adCopy = rawAd.snapshot?.body?.text || rawAd.snapshot?.caption || rawAd.body || rawAd.text || '';
+      const headline = rawAd.snapshot?.title || rawAd.title || rawAd.headline || '';
+      const ctaText = rawAd.snapshot?.cta_text || rawAd.snapshot?.link_title || rawAd.cta_text || '';
+      const ctaLink = rawAd.snapshot?.link_url || rawAd.link_url || '';
 
       // Extract dates
-      const startDate = rawAd.startDate || rawAd.startDateFormatted || null;
-      const endDate = rawAd.endDate || rawAd.endDateFormatted || null;
+      const startDate = rawAd.startDate || rawAd.startDateFormatted || rawAd.start_date || null;
+      const endDate = rawAd.endDate || rawAd.endDateFormatted || rawAd.end_date || null;
       const isActive = !endDate || new Date(endDate) > new Date();
 
       // Extract platforms
-      const platforms = rawAd.publisherPlatform || ['facebook'];
+      const platforms = rawAd.publisherPlatform || rawAd.platforms || ['facebook'];
 
       // Extract reach/spend estimates
-      const impressionsLower = rawAd.impressions?.lower_bound || null;
-      const impressionsUpper = rawAd.impressions?.upper_bound || null;
-      const spendLower = rawAd.spend?.lower_bound || null;
-      const spendUpper = rawAd.spend?.upper_bound || null;
+      const impressionsLower = rawAd.impressions?.lower_bound || rawAd.impressionsLowerBound || null;
+      const impressionsUpper = rawAd.impressions?.upper_bound || rawAd.impressionsUpperBound || null;
+      const spendLower = rawAd.spend?.lower_bound || rawAd.spendLowerBound || null;
+      const spendUpper = rawAd.spend?.upper_bound || rawAd.spendUpperBound || null;
       const currency = rawAd.currency || 'USD';
 
       // Insert into database
@@ -270,10 +531,10 @@ async function processAndStoreAds(rawAds) {
         adId,
         rawAd.pageID || rawAd.page_id || null,
         rawAd.pageName || rawAd.page_name || 'Unknown',
-        rawAd.pageProfilePictureURL || rawAd.snapshot?.page_profile_picture_url || null,
+        rawAd.pageProfilePictureURL || rawAd.snapshot?.page_profile_picture_url || rawAd.page_profile_picture_url || null,
         adCopy,
         headline,
-        rawAd.snapshot?.link_description || '',
+        rawAd.snapshot?.link_description || rawAd.description || '',
         ctaText,
         ctaLink,
         originalImageUrl,
@@ -282,7 +543,7 @@ async function processAndStoreAds(rawAds) {
         cloudinaryVideoUrl,
         cloudinaryThumbnailUrl,
         mediaType,
-        JSON.stringify(platforms),
+        JSON.stringify(Array.isArray(platforms) ? platforms : [platforms]),
         JSON.stringify(rawAd.deliveryByRegion?.map(r => r.region) || []),
         startDate,
         endDate,
@@ -300,6 +561,7 @@ async function processAndStoreAds(rawAds) {
       const insertedAd = db.prepare('SELECT * FROM competitor_ads WHERE ad_id = ?').get(adId);
       processedAds.push(formatAdForResponse(insertedAd));
     } catch (error) {
+      debugLog.add('PROCESS_AD_ERROR', `Error processing ad: ${error.message}`);
       console.error('Error processing ad:', error);
     }
   }
@@ -308,9 +570,29 @@ async function processAndStoreAds(rawAds) {
 }
 
 /**
+ * Upload media to Cloudinary with timeout
+ */
+async function uploadToCloudinaryWithTimeout(url, resourceType = 'image', timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const result = await uploadToCloudinary(url, resourceType, controller.signal);
+    clearTimeout(timeoutId);
+    return result;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      debugLog.add('CLOUDINARY_TIMEOUT', `Upload timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
+/**
  * Upload media to Cloudinary
  */
-async function uploadToCloudinary(url, resourceType = 'image') {
+async function uploadToCloudinary(url, resourceType = 'image', signal = null) {
   if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
     return null;
   }
@@ -319,7 +601,6 @@ async function uploadToCloudinary(url, resourceType = 'image') {
     const timestamp = Math.floor(Date.now() / 1000);
     const folder = 'competitor-spy';
     
-    // Create signature
     // Create signature
     const signatureString = `folder=${folder}&timestamp=${timestamp}${CLOUDINARY_API_SECRET}`;
     const signature = crypto.createHash('sha1').update(signatureString).digest('hex');
@@ -331,23 +612,30 @@ async function uploadToCloudinary(url, resourceType = 'image') {
     formData.append('signature', signature);
     formData.append('folder', folder);
 
+    const fetchOptions = {
+      method: 'POST',
+      body: formData
+    };
+    
+    if (signal) {
+      fetchOptions.signal = signal;
+    }
+
     const response = await fetch(
       `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`,
-      {
-        method: 'POST',
-        body: formData
-      }
+      fetchOptions
     );
 
     if (!response.ok) {
-      console.error('Cloudinary upload failed:', await response.text());
+      const errorText = await response.text();
+      debugLog.add('CLOUDINARY_UPLOAD_FAILED', `Upload failed: ${response.status}`, { error: errorText.slice(0, 100) });
       return null;
     }
 
     const data = await response.json();
     return data.secure_url;
   } catch (error) {
-    console.error('Cloudinary upload error:', error);
+    debugLog.add('CLOUDINARY_ERROR', `Cloudinary upload error: ${error.message}`);
     return null;
   }
 }
@@ -408,20 +696,46 @@ export function getAdsWithAnalysis(store, limit = 20) {
 }
 
 /**
- * Format ad for API response
+ * Format ad for API response with fallback URLs
  */
 function formatAdForResponse(ad) {
   if (!ad) return null;
   
+  // Determine best available media URLs (prefer Cloudinary, fallback to original)
+  const videoUrl = ad.cloudinary_video_url || ad.original_video_url || null;
+  const imageUrl = ad.cloudinary_image_url || ad.original_image_url || null;
+  const thumbnailUrl = ad.cloudinary_thumbnail_url || imageUrl || null;
+  
   return {
     ...ad,
-    platforms: JSON.parse(ad.platforms || '[]'),
-    countries: JSON.parse(ad.countries || '[]'),
-    demographic_distribution: ad.demographic_distribution ? JSON.parse(ad.demographic_distribution) : null,
-    region_distribution: ad.region_distribution ? JSON.parse(ad.region_distribution) : null,
-    analysis: ad.analysis ? JSON.parse(ad.analysis) : null,
-    is_active: Boolean(ad.is_active)
+    // Add convenience fields with fallbacks
+    video_url: videoUrl,
+    image_url: imageUrl,
+    thumbnail_url: thumbnailUrl,
+    // Parse JSON fields
+    platforms: safeJsonParse(ad.platforms, []),
+    countries: safeJsonParse(ad.countries, []),
+    demographic_distribution: ad.demographic_distribution ? safeJsonParse(ad.demographic_distribution, null) : null,
+    region_distribution: ad.region_distribution ? safeJsonParse(ad.region_distribution, null) : null,
+    analysis: ad.analysis ? safeJsonParse(ad.analysis, null) : null,
+    is_active: Boolean(ad.is_active),
+    // Add media availability flags
+    has_video: Boolean(videoUrl),
+    has_image: Boolean(imageUrl),
+    media_source: ad.cloudinary_video_url || ad.cloudinary_image_url ? 'cloudinary' : 'original'
   };
+}
+
+/**
+ * Safely parse JSON with fallback
+ */
+function safeJsonParse(str, fallback) {
+  if (!str) return fallback;
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    return fallback;
+  }
 }
 
 /**
@@ -445,5 +759,27 @@ function getCacheExpiry(store, brandName, country) {
     last_fetched_at: cache.last_fetched_at,
     hours_remaining: Math.max(0, hoursRemaining),
     is_valid: hoursRemaining > 0
+  };
+}
+
+/**
+ * Sleep helper
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Get service health status
+ */
+export function getHealthStatus() {
+  return {
+    apifyConfigured: Boolean(APIFY_API_TOKEN),
+    cloudinaryConfigured: Boolean(CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET),
+    config: {
+      pollIntervalMs: CONFIG.POLL_INTERVAL_MS,
+      maxPollTimeMs: CONFIG.MAX_POLL_TIME_MS,
+      maxRetries: CONFIG.MAX_RETRIES
+    }
   };
 }
