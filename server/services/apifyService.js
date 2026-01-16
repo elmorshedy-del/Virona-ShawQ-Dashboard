@@ -11,7 +11,8 @@ import {
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
 // Using curious_coder's actor - 7x cheaper ($0.00075 vs $0.005 per result)
-const APIFY_ACTOR_ID = 'curious_coder/facebook-ads-library-scraper';
+// Format: username~actorname (tilde, not slash)
+const APIFY_ACTOR_ID = 'curious_coder~facebook-ads-library-scraper';
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
