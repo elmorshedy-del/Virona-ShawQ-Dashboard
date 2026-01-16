@@ -8,13 +8,21 @@ import {
   updateBrandCache, 
   getCachedAdIds 
 } from '../db/competitorSpyMigration.js';
-import * as customScraper from './facebookAdsScraper.js';
+// Try to import custom scraper - may fail if puppeteer not installed
+let customScraper = null;
+let USE_CUSTOM_SCRAPER = false;
+
+try {
+  customScraper = await import('./facebookAdsScraper.js');
+  USE_CUSTOM_SCRAPER = true;
+  console.log('[CompetitorSpy] Custom Puppeteer scraper loaded successfully');
+} catch (importError) {
+  console.log('[CompetitorSpy] Custom scraper not available:', importError.message);
+  console.log('[CompetitorSpy] Falling back to Apify only');
+}
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
 const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper'; // Fallback only
-
-// Use custom scraper first (free), Apify as fallback
-const USE_CUSTOM_SCRAPER = true;
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -140,7 +148,7 @@ export async function searchByBrand(store, brandName, options = {}) {
 
   // Try custom scraper first (FREE), then Apify as fallback
   try {
-    if (USE_CUSTOM_SCRAPER) {
+    if (USE_CUSTOM_SCRAPER && customScraper) {
       debugLog.add('CUSTOM_SCRAPER_START', 'Trying custom Puppeteer scraper (free)...');
       
       try {
