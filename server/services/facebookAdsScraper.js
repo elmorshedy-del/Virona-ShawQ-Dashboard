@@ -167,10 +167,34 @@ export async function scrapeAds(searchQuery, options = {}) {
     
     log(`Extracted ${extractedAds.length} ads`);
     
+    // FILTER: Only keep ads that match the search query
+    const searchLower = searchQuery.toLowerCase();
+    const filteredAds = extractedAds.filter(ad => {
+      const pageName = (ad.page_name || '').toLowerCase();
+      const adCopy = (ad.ad_copy || '').toLowerCase();
+      
+      // Check if page name or ad copy contains the search term
+      return pageName.includes(searchLower) || adCopy.includes(searchLower);
+    });
+    
+    log(`Filtered to ${filteredAds.length} relevant ads (matched "${searchQuery}")`);
+    
+    // If no matches, return all with a warning
+    if (filteredAds.length === 0 && extractedAds.length > 0) {
+      log('No exact matches found, returning unfiltered results with warning');
+      return { 
+        ads: extractedAds,
+        count: extractedAds.length,
+        source: 'custom_puppeteer_scraper',
+        warning: `No ads exactly matching "${searchQuery}" - showing all results`
+      };
+    }
+    
     return { 
-      ads: extractedAds,
-      count: extractedAds.length,
-      source: 'custom_puppeteer_scraper'
+      ads: filteredAds,
+      count: filteredAds.length,
+      source: 'custom_puppeteer_scraper',
+      filtered: true
     };
     
   } catch (error) {
