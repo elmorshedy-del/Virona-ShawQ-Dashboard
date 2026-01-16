@@ -10,8 +10,8 @@ import {
 } from '../db/competitorSpyMigration.js';
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
-// Back to official actor - our smart polling will grab partial results early
-const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper';
+// Using whoareyouanas/meta-ad-scraper - $0.01 per ad, actually searches properly
+const APIFY_ACTOR_ID = 'whoareyouanas~meta-ad-scraper';
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -223,27 +223,51 @@ export async function searchByBrand(store, brandName, options = {}) {
 async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
-  // Build Facebook Ad Library URL
-  const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country === "ALL" ? "ALL" : country}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
-  
   const effectiveLimit = Math.min(limit, 50);
   
+  // Input for whoareyouanas~meta-ad-scraper
+  // Try multiple common parameter formats
   const input = {
-    startUrls: [{ url: searchUrl }],
+    // Search terms - try all common names
+    searchTerm: searchQuery,
+    searchTerms: searchQuery,
+    search: searchQuery,
+    query: searchQuery,
+    keyword: searchQuery,
+    keywords: searchQuery,
+    q: searchQuery,
+    
+    // Country settings
+    country: country === "ALL" ? "US" : country,
+    countryCode: country === "ALL" ? "US" : country,
+    countries: [country === "ALL" ? "US" : country],
+    adReachedCountries: [country === "ALL" ? "US" : country],
+    
+    // Filters
+    adActiveStatus: "ACTIVE",
+    activeStatus: "active",
+    adType: "all",
+    
+    // Limits
+    limit: effectiveLimit,
+    maxResults: effectiveLimit,
     maxItems: effectiveLimit,
+    resultsLimit: effectiveLimit,
+    
+    // Proxy
     proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ['RESIDENTIAL']
+      useApifyProxy: true
     }
   };
 
-  debugLog.add('APIFY_INPUT', `Starting with maxItems=${effectiveLimit} (will grab partial results early)`, { 
+  debugLog.add('APIFY_INPUT', `Using meta-ad-scraper with limit=${effectiveLimit}`, { 
     searchQuery,
-    country,
-    limit: effectiveLimit
+    country: input.country,
+    limit: effectiveLimit,
+    actor: APIFY_ACTOR_ID
   });
   
-  console.log(`[CompetitorSpy] Starting apify actor with maxItems=${effectiveLimit} for "${searchQuery}" - will grab partial results early`);
+  console.log(`[CompetitorSpy] Starting ${APIFY_ACTOR_ID} for "${searchQuery}" (limit=${effectiveLimit})`);
   
 
   // Start the actor run with retry
