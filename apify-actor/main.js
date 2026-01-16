@@ -14,7 +14,7 @@ await Actor.init();
 const input = await Actor.getInput() || {};
 const {
   searchQuery = '',
-  country = 'US',
+  country = 'ALL',  // 'ALL' for global search, or country code like 'US'
   limit = 10,
   filterResults = true  // Only return ads matching searchQuery
 } = input;

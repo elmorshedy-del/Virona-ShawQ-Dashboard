@@ -9,8 +9,8 @@ import {
   getCachedAdIds 
 } from '../db/competitorSpyMigration.js';
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
-// Using YOUR custom actor with stealth + filtering
-const APIFY_ACTOR_ID = 'QS2Exip8vjfCY0mNq';
+// Custom actor ID - can be overridden via env var
+const APIFY_ACTOR_ID = process.env.APIFY_CUSTOM_ACTOR_ID || 'QS2Exip8vjfCY0mNq';
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -134,45 +134,9 @@ export async function searchByBrand(store, brandName, options = {}) {
     debugLog.add('CACHE_MISS', 'No valid cache found');
   }
 
-  // Try custom scraper first (FREE), then Apify as fallback
+  // Fetch from custom Apify actor
   try {
-    if (USE_CUSTOM_SCRAPER && customScraper) {
-      debugLog.add('CUSTOM_SCRAPER_START', 'Trying custom Puppeteer scraper (free)...');
-      
-      try {
-        const customResult = await customScraper.scrapeAds(brandName, { country, limit });
-        
-        if (customResult.ads && customResult.ads.length > 0) {
-          debugLog.add('CUSTOM_SCRAPER_SUCCESS', `Got ${customResult.ads.length} ads from custom scraper`);
-          
-          // Process and store ads
-          const storedAds = await processAndStoreAds(customResult.ads);
-          const adIds = storedAds.map(ad => ad.ad_id);
-          updateBrandCache(store, brandName, country, adIds);
-          
-          return {
-            ads: storedAds,
-            fromCache: false,
-            cacheInfo: getCacheExpiry(store, brandName, country),
-            cost: { total: 0, note: 'Custom scraper - FREE' },
-            debug: {
-              searchId,
-              stage: 'CUSTOM_SCRAPER_SUCCESS',
-              source: 'puppeteer',
-              logs: debugLog.getRecent(10)
-            }
-          };
-        } else {
-          debugLog.add('CUSTOM_SCRAPER_NO_RESULTS', customResult.error || 'No results from custom scraper');
-        }
-      } catch (customError) {
-        debugLog.add('CUSTOM_SCRAPER_FAILED', customError.message);
-      }
-      
-      debugLog.add('FALLBACK_TO_APIFY', 'Custom scraper failed, trying Apify...');
-    }
-    
-    debugLog.add('APIFY_START', 'Starting Apify fetch...');
+    debugLog.add('APIFY_START', 'Starting custom Apify actor...');
     const result = await fetchFromApify(brandName, { country, limit, searchId });
     
     if (!result.ads || result.ads.length === 0) {
@@ -259,9 +223,10 @@ async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
   const effectiveLimit = Math.min(limit, 50);
-  const countryCode = country === "ALL" ? "US" : country;
+  // Facebook Ad Library supports 'ALL' for global search
+  const countryCode = country || 'ALL';
   
-  // Input for YOUR custom actor
+  // Input for custom actor
   const input = {
     searchQuery: searchQuery,
     country: countryCode,
