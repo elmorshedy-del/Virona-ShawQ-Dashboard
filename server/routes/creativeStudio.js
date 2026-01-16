@@ -381,6 +381,7 @@ router.get('/competitor/search', async (req, res) => {
       from_cache: result.fromCache,
       stale: result.stale || false,
       cache_info: result.cacheInfo,
+      cost: result.cost || null,
       debug: result.debug || null,
       // Include any non-fatal errors
       warning: result.error || null

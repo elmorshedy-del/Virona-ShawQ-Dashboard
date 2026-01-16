@@ -1925,6 +1925,7 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const [debugLogs, setDebugLogs] = useState([]);
   const [healthStatus, setHealthStatus] = useState(null);
   const [videoError, setVideoError] = useState({});
+  const [lastSearchCost, setLastSearchCost] = useState(null);
 
   const BOARD_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#0ea5e9', '#6b7280'];
   const BOARD_ICONS = ['📁', '💡', '🎯', '🔥', '⭐', '💎', '🚀', '🎨', '📊', '🏆'];
@@ -1992,6 +1993,13 @@ function CompetitorSpy({ store, onGenerateBrief }) {
       if (data.success) {
         setResults(data.ads || []);
         setCacheInfo(data.cache_info);
+        
+        // Store cost info
+        if (data.cost) {
+          setLastSearchCost(data.cost);
+        } else if (data.from_cache) {
+          setLastSearchCost({ fromCache: true });
+        }
         
         // Store debug info
         if (data.debug) {
@@ -2258,9 +2266,9 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                 Search
               </button>
             </div>
-            {cacheInfo && (
-              <div className="mt-3 flex items-center gap-2 text-sm">
-                {cacheInfo.is_valid ? (
+            {(cacheInfo || lastSearchCost) && (
+              <div className="mt-3 flex items-center gap-2 text-sm flex-wrap">
+                {cacheInfo?.is_valid ? (
                   <>
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full">
                       <Zap size={14} />Cached • Refreshes in {formatCacheTime(cacheInfo)}
@@ -2268,6 +2276,23 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                     <button onClick={() => handleSearch(true)} className="text-violet-600 hover:text-violet-700 text-xs font-medium">Force refresh</button>
                   </>
                 ) : <span className="text-gray-400">Fresh results</span>}
+                
+                {/* Cost display */}
+                {lastSearchCost && !lastSearchCost.fromCache && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-700 rounded-full border border-amber-200">
+                    <span className="font-medium">API Cost:</span>
+                    <span>${lastSearchCost.total?.toFixed(4) || '0.00'}</span>
+                    <span className="text-amber-500">|</span>
+                    <span>{lastSearchCost.resultsCount} ads</span>
+                    <span className="text-amber-500">|</span>
+                    <span>{lastSearchCost.runDurationSeconds}s</span>
+                  </span>
+                )}
+                {lastSearchCost?.fromCache && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-green-50 text-green-700 rounded-full">
+                    <Zap size={14} />$0.00 (cached)
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -2775,6 +2800,29 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                   </div>
                 )}
               </div>
+              
+              {/* Cost breakdown */}
+              {lastSearchCost && !lastSearchCost.fromCache && (
+                <div className="p-3 border-t border-gray-700 bg-amber-900/20">
+                  <div className="text-xs text-amber-400">
+                    <span className="font-medium">Last Search Cost Breakdown:</span>
+                    <div className="mt-1 grid grid-cols-4 gap-4 text-gray-300">
+                      <div>
+                        <span className="text-gray-500">Base:</span> ${lastSearchCost.baseCost?.toFixed(4)}
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Compute ({lastSearchCost.runDurationSeconds}s):</span> ${lastSearchCost.computeCost?.toFixed(4)}
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Results ({lastSearchCost.resultsCount}):</span> ${lastSearchCost.resultsCost?.toFixed(4)}
+                      </div>
+                      <div>
+                        <span className="text-amber-400 font-medium">Total:</span> ${lastSearchCost.total?.toFixed(4)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               
               {error?.debug && (
                 <div className="p-3 border-t border-gray-700 bg-red-900/20">

@@ -26,6 +26,15 @@ const CONFIG = {
   RETRY_DELAY_MS: 2000,            // Wait 2 seconds between retries
 };
 
+// Apify cost estimation (approximate - check Apify pricing for exact rates)
+// Facebook Ads Scraper typically costs ~$0.50-1.00 per 1000 results
+// Plus compute units (~$0.25-0.50 per actor run depending on duration)
+const COST_ESTIMATE = {
+  PER_RESULT: 0.001,              // ~$0.001 per ad result (rough estimate)
+  BASE_RUN_COST: 0.05,            // ~$0.05 base cost per actor run
+  PER_MINUTE_COMPUTE: 0.004,      // ~$0.004 per minute of compute
+};
+
 const SUPPORTED_COUNTRIES = {
   'ALL': 'All Countries',
   'SA': 'Saudi Arabia',
@@ -136,6 +145,7 @@ export async function searchByBrand(store, brandName, options = {}) {
         ads: [],
         fromCache: false,
         cacheInfo: null,
+        cost: result.cost || null,
         debug: {
           searchId,
           stage: 'NO_RESULTS',
@@ -158,6 +168,7 @@ export async function searchByBrand(store, brandName, options = {}) {
       ads: storedAds,
       fromCache: false,
       cacheInfo: getCacheExpiry(store, brandName, country),
+      cost: result.cost || null,
       debug: {
         searchId,
         stage: 'SUCCESS',
@@ -414,9 +425,25 @@ async function fetchFromApify(searchQuery, options = {}) {
   }
 
   const results = await resultsResponse.json();
-  debugLog.add('RESULTS_FETCHED', `Fetched ${results.length} raw results`);
+  const runDurationMs = Date.now() - startTime;
+  const runDurationMin = runDurationMs / 60000;
+  
+  // Calculate estimated cost
+  const estimatedCost = {
+    baseCost: COST_ESTIMATE.BASE_RUN_COST,
+    computeCost: runDurationMin * COST_ESTIMATE.PER_MINUTE_COMPUTE,
+    resultsCost: results.length * COST_ESTIMATE.PER_RESULT,
+    total: 0,
+    runDurationSeconds: Math.round(runDurationMs / 1000),
+    resultsCount: results.length
+  };
+  estimatedCost.total = estimatedCost.baseCost + estimatedCost.computeCost + estimatedCost.resultsCost;
+  
+  debugLog.add('RESULTS_FETCHED', `Fetched ${results.length} raw results in ${estimatedCost.runDurationSeconds}s`, {
+    estimatedCost: `$${estimatedCost.total.toFixed(4)}`
+  });
 
-  return { ads: results, runId };
+  return { ads: results, runId, cost: estimatedCost };
 }
 
 /**
