@@ -113,7 +113,7 @@ export async function scrapeAds(searchQuery, options = {}) {
           let adCopy = '';
           textEls.forEach(el => {
             const text = el.textContent?.trim();
-            if (text && text.length > 50) {
+            if (text && text.length > adCopy.length) {
               adCopy = text;
             }
           });
