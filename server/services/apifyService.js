@@ -8,18 +8,9 @@ import {
   updateBrandCache, 
   getCachedAdIds 
 } from '../db/competitorSpyMigration.js';
-// Try to import custom scraper - may fail if puppeteer not installed
-let customScraper = null;
-let USE_CUSTOM_SCRAPER = false;
-
-try {
-  customScraper = await import('./facebookAdsScraper.js');
-  USE_CUSTOM_SCRAPER = true;
-  console.log('[CompetitorSpy] Custom Puppeteer scraper loaded successfully');
-} catch (importError) {
-  console.log('[CompetitorSpy] Custom scraper not available:', importError.message);
-  console.log('[CompetitorSpy] Falling back to Apify only');
-}
+// Custom scraper disabled - Facebook blocks datacenter IPs
+// Using Apify with smart polling + filtering instead
+const USE_CUSTOM_SCRAPER = false;
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
 const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper'; // Fallback only
