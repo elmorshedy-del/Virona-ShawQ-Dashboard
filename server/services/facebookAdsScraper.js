@@ -23,15 +23,11 @@ export async function scrapeAds(searchQuery, options = {}) {
   try {
     log('Starting browser...');
     
-    // Use system Chrome if available (Railway/Docker)
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || 
-                           process.env.CHROME_PATH ||
-                           '/usr/bin/chromium-browser' ||
-                           '/usr/bin/chromium';
+    // Use Puppeteer's bundled Chromium
+    log('Launching browser...');
     
     browser = await puppeteer.launch({
       headless: 'new',
-      executablePath: executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -226,13 +222,8 @@ export async function scrapeAds(searchQuery, options = {}) {
 export async function healthCheck() {
   let browser = null;
   try {
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || 
-                           process.env.CHROME_PATH ||
-                           '/usr/bin/chromium-browser';
-    
     browser = await puppeteer.launch({
       headless: 'new',
-      executablePath: executablePath,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--single-process', '--no-zygote']
     });
     await browser.close();
