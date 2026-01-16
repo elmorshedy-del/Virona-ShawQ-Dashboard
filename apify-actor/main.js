@@ -23,8 +23,11 @@ const {
   searchQuery = '',
   country = 'ALL',
   limit = 10,
-  filterResults = true
+  filterResults = true,
+  debugMode = true  // Set to false in production once working
 } = input;
+
+const DEBUG = debugMode;
 
 console.log(`[START] Searching for "${searchQuery}" in ${country}, limit ${limit}`);
 
@@ -234,7 +237,7 @@ function extractAdsFromResponse(data, adsArray, searchQuery, filterResults) {
     
     if (hasAdIndicators) {
       // LOG THE RAW OBJECT TO SEE WHAT FACEBOOK RETURNS
-      console.log('[RAW_AD_OBJECT]', JSON.stringify(obj).slice(0, 2000));
+      if (DEBUG) console.log('[RAW_AD_OBJECT]', JSON.stringify(obj).slice(0, 2000));
       
       const ad = parseAdObject(obj);
       
@@ -252,7 +255,7 @@ function extractAdsFromResponse(data, adsArray, searchQuery, filterResults) {
       if (!seenAdKeys.has(adKey) && ad.page_name) {
         seenAdKeys.add(adKey);
         adsArray.push(ad);
-        console.log(`[CAPTURED] Ad from "${ad.page_name}" | copy: "${ad.ad_copy?.slice(0, 100)}" | img: ${ad.original_image_url ? 'YES' : 'NO'}`);
+        if (DEBUG) console.log(`[CAPTURED] Ad from "${ad.page_name}" | copy: "${ad.ad_copy?.slice(0, 100)}" | img: ${ad.original_image_url ? 'YES' : 'NO'}`);
       }
     }
     
@@ -320,9 +323,11 @@ function parseAdObject(obj) {
   if (obj.video_url) videos.push(obj.video_url);
   if (obj.videoUrl) videos.push(obj.videoUrl);
   
-  // Find any URL that looks like a video
-  const videoMatches = objStr.match(/https:\/\/[^"]+\.(?:mp4|webm|mov)/gi) || [];
-  videos.push(...videoMatches.slice(0, 3));
+  // Find any URL that looks like a video (prioritize Facebook CDN)
+  const fbVideoMatches = objStr.match(/https:\/\/[^"]+(?:video|scontent|fbcdn)[^"]*\.(?:mp4|webm|mov)/gi) || [];
+  const genericVideoMatches = objStr.match(/https:\/\/[^"]+\.(?:mp4|webm|mov)/gi) || [];
+  // Prefer FB CDN videos, fallback to generic
+  videos.push(...(fbVideoMatches.length ? fbVideoMatches : genericVideoMatches).slice(0, 3));
   
   const startDate = 
     obj.startDate ||
@@ -337,7 +342,7 @@ function parseAdObject(obj) {
     obj.platforms ||
     ['facebook'];
 
-  console.log(`[PARSE] pageName="${pageName}" | adCopy="${(typeof adCopy === 'string' ? adCopy : '').slice(0, 50)}" | images=${images.length} | videos=${videos.length}`);
+  if (DEBUG) console.log(`[PARSE] pageName="${pageName}" | adCopy="${(typeof adCopy === 'string' ? adCopy : '').slice(0, 50)}" | images=${images.length} | videos=${videos.length}`);
   
   return {
     ad_id: obj.adArchiveID || obj.ad_archive_id || obj.adid || obj.id || `fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
