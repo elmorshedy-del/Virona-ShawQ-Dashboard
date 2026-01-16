@@ -8,12 +8,9 @@ import {
   updateBrandCache, 
   getCachedAdIds 
 } from '../db/competitorSpyMigration.js';
-// Custom scraper disabled - Facebook blocks datacenter IPs
-// Using Apify with smart polling + filtering instead
-const USE_CUSTOM_SCRAPER = false;
-
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
-const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper'; // Fallback only
+// Using YOUR custom actor with stealth + filtering
+const APIFY_ACTOR_ID = 'QS2Exip8vjfCY0mNq';
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -262,49 +259,24 @@ async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
   const effectiveLimit = Math.min(limit, 50);
-  const countryCode = country === "ALL" ? "ALL" : country;
+  const countryCode = country === "ALL" ? "US" : country;
   
-  // Build the Facebook Ad Library URL
-  const adLibraryUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${countryCode}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
-  
-  // Input for whoareyouanas~meta-ad-scraper
-  // Try BOTH URL-based and search-based inputs
+  // Input for YOUR custom actor
   const input = {
-    // URL-based (most reliable)
-    url: adLibraryUrl,
-    urls: [adLibraryUrl],
-    startUrls: [{ url: adLibraryUrl }],
-    startUrl: adLibraryUrl,
-    
-    // Search terms as backup
-    searchTerm: searchQuery,
-    searchTerms: [searchQuery],
-    search: searchQuery,
-    query: searchQuery,
-    
-    // Country settings
+    searchQuery: searchQuery,
     country: countryCode,
-    countryCode: countryCode,
-    
-    // Limits
     limit: effectiveLimit,
-    maxResults: effectiveLimit,
-    maxItems: effectiveLimit,
-    
-    // Proxy
-    proxy: {
-      useApifyProxy: true
-    }
+    filterResults: true  // Only return ads matching searchQuery
   };
 
-  debugLog.add('APIFY_INPUT', `Using meta-ad-scraper with limit=${effectiveLimit}`, { 
+  debugLog.add('APIFY_INPUT', `Using YOUR custom actor with limit=${effectiveLimit}`, { 
     searchQuery,
-    country: input.country,
+    country: countryCode,
     limit: effectiveLimit,
-    actor: APIFY_ACTOR_ID
+    filterResults: true
   });
   
-  console.log(`[CompetitorSpy] Starting ${APIFY_ACTOR_ID} for "${searchQuery}" (limit=${effectiveLimit})`);
+  console.log(`[CompetitorSpy] Starting custom actor for "${searchQuery}" (limit=${effectiveLimit}, filter=true)`);
   
 
   // Start the actor run with retry
