@@ -10,7 +10,8 @@ import {
 } from '../db/competitorSpyMigration.js';
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
-const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper';
+// Using curious_coder's actor - 7x cheaper ($0.00075 vs $0.005 per result)
+const APIFY_ACTOR_ID = 'curious_coder/facebook-ads-library-scraper';
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -222,24 +223,44 @@ export async function searchByBrand(store, brandName, options = {}) {
 async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
-  const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country === "ALL" ? "ALL" : country}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
-
+  // Input for curious_coder/facebook-ads-library-scraper (cheaper & more reliable)
+  const effectiveLimit = Math.min(limit, 50);
+  
   const input = {
-    startUrls: [{ url: searchUrl }],
-    maxItems: Math.min(limit, 50), // Cap at 50 to reduce timeout risk
+    // Search parameters
+    search: searchQuery,
+    searchQuery: searchQuery,  // Try both param names
+    query: searchQuery,        // And this one too
+    
+    // Country
+    country: country === "ALL" ? "US" : country,
+    countryCode: country === "ALL" ? "US" : country,
+    
+    // Filters
+    activeStatus: "active",
+    adActiveStatus: "ACTIVE",
+    
+    // LIMIT - try every possible parameter name
+    limit: effectiveLimit,
+    maxItems: effectiveLimit,
+    maxResults: effectiveLimit,
+    resultsLimit: effectiveLimit,
+    max_results: effectiveLimit,
+    
+    // Proxy
     proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ['RESIDENTIAL']
+      useApifyProxy: true
     }
   };
 
-  debugLog.add('APIFY_INPUT', `Prepared Apify input with maxItems=${input.maxItems}`, { 
-    searchUrl: searchUrl.slice(0, 100), 
-    maxItems: input.maxItems,
-    WARNING: input.maxItems > 10 ? 'High maxItems may cause long runs and high costs!' : null
+  debugLog.add('APIFY_INPUT', `Using curious_coder actor with limit=${effectiveLimit}`, { 
+    searchQuery,
+    country: input.country,
+    limit: effectiveLimit,
+    actorId: APIFY_ACTOR_ID
   });
   
-  console.log(`[CompetitorSpy] Starting Apify run with maxItems=${input.maxItems} for query "${searchQuery}"`);
+  console.log(`[CompetitorSpy] Starting ${APIFY_ACTOR_ID} with limit=${effectiveLimit} for query "${searchQuery}"`);
   
 
   // Start the actor run with retry
@@ -325,16 +346,20 @@ async function fetchFromApify(searchQuery, options = {}) {
   debugLog.add('POLLING_WAIT', `Waiting ${CONFIG.INITIAL_WAIT_MS}ms before polling...`);
   await sleep(CONFIG.INITIAL_WAIT_MS);
 
-  // Poll for completion with timeout
+  // Poll for completion OR until we have enough results
   const startTime = Date.now();
   let status = 'RUNNING';
   let pollCount = 0;
   let lastStatusData = null;
+  const datasetId = runData.data.defaultDatasetId;
+  
+  debugLog.add('POLLING_START', `Polling run ${runId}, will check dataset ${datasetId} for early results`);
 
   while (Date.now() - startTime < CONFIG.MAX_POLL_TIME_MS) {
     pollCount++;
     
     try {
+      // Check run status
       const statusResponse = await fetch(
         `https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_TOKEN}`
       );
@@ -350,7 +375,6 @@ async function fetchFromApify(searchQuery, options = {}) {
       status = statusData.data?.status;
       
       const elapsedSec = Math.round((Date.now() - startTime) / 1000);
-      debugLog.add('POLL_STATUS', `Poll #${pollCount}: ${status} (${elapsedSec}s elapsed)`);
       
       // Check for terminal states
       if (status === 'SUCCEEDED') {
@@ -379,14 +403,54 @@ async function fetchFromApify(searchQuery, options = {}) {
         throw error;
       }
       
-      // Still running, wait and poll again
-      if (status === 'RUNNING' || status === 'READY') {
-        await sleep(CONFIG.POLL_INTERVAL_MS);
-        continue;
+      // SMART: Check dataset for partial results while still running
+      if (status === 'RUNNING' && pollCount > 3) { // Wait a few polls first
+        try {
+          const partialResponse = await fetch(
+            `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}&limit=${limit}`
+          );
+          if (partialResponse.ok) {
+            const partialResults = await partialResponse.json();
+            debugLog.add('POLL_STATUS', `Poll #${pollCount}: ${status} (${elapsedSec}s) - Dataset has ${partialResults.length} items`);
+            
+            // If we have enough results, abort and return early!
+            if (partialResults.length >= limit) {
+              debugLog.add('EARLY_RETURN', `Got ${partialResults.length} results (need ${limit}), aborting run to save costs`);
+              
+              // Abort the run since we have what we need
+              try {
+                await fetch(
+                  `https://api.apify.com/v2/actor-runs/${runId}/abort?token=${APIFY_API_TOKEN}`,
+                  { method: 'POST' }
+                );
+                debugLog.add('RUN_ABORTED', 'Aborted run after getting enough results');
+              } catch (e) { /* ignore abort errors */ }
+              
+              // Return early with partial results
+              const runDurationMs = Date.now() - startTime;
+              return { 
+                ads: partialResults.slice(0, limit), 
+                runId, 
+                earlyReturn: true,
+                cost: {
+                  baseCost: COST_ESTIMATE.BASE_RUN_COST,
+                  computeCost: (runDurationMs / 60000) * COST_ESTIMATE.PER_MINUTE_COMPUTE,
+                  resultsCost: Math.min(partialResults.length, limit) * COST_ESTIMATE.PER_RESULT,
+                  total: COST_ESTIMATE.BASE_RUN_COST + ((runDurationMs / 60000) * COST_ESTIMATE.PER_MINUTE_COMPUTE) + (Math.min(partialResults.length, limit) * COST_ESTIMATE.PER_RESULT),
+                  runDurationSeconds: Math.round(runDurationMs / 1000),
+                  resultsCount: Math.min(partialResults.length, limit)
+                }
+              };
+            }
+          }
+        } catch (e) {
+          // Ignore dataset check errors, continue polling
+        }
+      } else {
+        debugLog.add('POLL_STATUS', `Poll #${pollCount}: ${status} (${elapsedSec}s elapsed)`);
       }
       
-      // Unknown status
-      debugLog.add('UNKNOWN_STATUS', `Unexpected status: ${status}`);
+      // Still running, wait and poll again
       await sleep(CONFIG.POLL_INTERVAL_MS);
       
     } catch (pollError) {
@@ -401,8 +465,47 @@ async function fetchFromApify(searchQuery, options = {}) {
   if (status !== 'SUCCEEDED') {
     const elapsedSec = Math.round((Date.now() - startTime) / 1000);
     
-    // IMPORTANT: Abort the run to stop charging!
-    debugLog.add('ABORTING_RUN', `Aborting run ${runId} to prevent further charges...`);
+    // Before aborting, try to get any partial results
+    debugLog.add('TIMEOUT_CHECK_DATASET', 'Checking for partial results before aborting...');
+    try {
+      const partialResponse = await fetch(
+        `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}&limit=${limit}`
+      );
+      if (partialResponse.ok) {
+        const partialResults = await partialResponse.json();
+        if (partialResults.length > 0) {
+          debugLog.add('TIMEOUT_PARTIAL_RESULTS', `Found ${partialResults.length} partial results, returning those`);
+          
+          // Abort and return partial results
+          try {
+            await fetch(
+              `https://api.apify.com/v2/actor-runs/${runId}/abort?token=${APIFY_API_TOKEN}`,
+              { method: 'POST' }
+            );
+          } catch (e) { /* ignore */ }
+          
+          const runDurationMs = Date.now() - startTime;
+          return { 
+            ads: partialResults.slice(0, limit), 
+            runId, 
+            partial: true,
+            cost: {
+              baseCost: COST_ESTIMATE.BASE_RUN_COST,
+              computeCost: (runDurationMs / 60000) * COST_ESTIMATE.PER_MINUTE_COMPUTE,
+              resultsCost: Math.min(partialResults.length, limit) * COST_ESTIMATE.PER_RESULT,
+              total: COST_ESTIMATE.BASE_RUN_COST + ((runDurationMs / 60000) * COST_ESTIMATE.PER_MINUTE_COMPUTE) + (Math.min(partialResults.length, limit) * COST_ESTIMATE.PER_RESULT),
+              runDurationSeconds: Math.round(runDurationMs / 1000),
+              resultsCount: Math.min(partialResults.length, limit)
+            }
+          };
+        }
+      }
+    } catch (e) {
+      debugLog.add('TIMEOUT_DATASET_ERROR', e.message);
+    }
+    
+    // No partial results, abort and throw error
+    debugLog.add('ABORTING_RUN', `Aborting run ${runId} - no results found`);
     try {
       await fetch(
         `https://api.apify.com/v2/actor-runs/${runId}/abort?token=${APIFY_API_TOKEN}`,
@@ -414,8 +517,8 @@ async function fetchFromApify(searchQuery, options = {}) {
     }
     
     const error = new Error(
-      `Search timed out after ${elapsedSec} seconds. The run has been aborted to prevent extra charges. ` +
-      `Try searching for a more specific brand name.`
+      `Search timed out after ${elapsedSec} seconds with no results. ` +
+      `Try a different brand name or country.`
     );
     error.code = 'POLL_TIMEOUT';
     error.debug = { 
@@ -429,9 +532,8 @@ async function fetchFromApify(searchQuery, options = {}) {
     throw error;
   }
 
-  // Get the results
-  const datasetId = runData.data.defaultDatasetId;
-  debugLog.add('FETCHING_RESULTS', `Fetching results from dataset ${datasetId}...`);
+  // Get the final results (datasetId already defined above)
+  debugLog.add('FETCHING_RESULTS', `Fetching final results from dataset ${datasetId}...`);
   
   const resultsResponse = await fetch(
     `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}`
@@ -445,7 +547,14 @@ async function fetchFromApify(searchQuery, options = {}) {
     throw error;
   }
 
-  const results = await resultsResponse.json();
+  let results = await resultsResponse.json();
+  
+  // SAFETY: Force limit results even if actor returned more (actor sometimes ignores maxItems)
+  if (results.length > limit) {
+    debugLog.add('RESULTS_TRIMMED', `Actor returned ${results.length} results, trimming to ${limit}`);
+    results = results.slice(0, limit);
+  }
+  
   const runDurationMs = Date.now() - startTime;
   const runDurationMin = runDurationMs / 60000;
   
