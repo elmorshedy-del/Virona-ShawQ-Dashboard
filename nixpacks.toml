@@ -1,5 +1,9 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg"]
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg", "chromium"]
+
+[phases.setup.env]
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
+PUPPETEER_EXECUTABLE_PATH = "/nix/store/chromium/bin/chromium"
 
 [phases.install]
 cmds = ["npm install"]

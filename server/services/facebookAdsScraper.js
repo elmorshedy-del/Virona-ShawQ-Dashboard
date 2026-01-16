@@ -23,14 +23,23 @@ export async function scrapeAds(searchQuery, options = {}) {
   try {
     log('Starting browser...');
     
+    // Use system Chrome if available (Railway/Docker)
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || 
+                           process.env.CHROME_PATH ||
+                           '/usr/bin/chromium-browser' ||
+                           '/usr/bin/chromium';
+    
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath: executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--disable-gpu',
+        '--single-process',
+        '--no-zygote',
         '--window-size=1920,1080'
       ]
     });
@@ -217,9 +226,14 @@ export async function scrapeAds(searchQuery, options = {}) {
 export async function healthCheck() {
   let browser = null;
   try {
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || 
+                           process.env.CHROME_PATH ||
+                           '/usr/bin/chromium-browser';
+    
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      executablePath: executablePath,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--single-process', '--no-zygote']
     });
     await browser.close();
     return { ok: true, message: 'Puppeteer working' };
