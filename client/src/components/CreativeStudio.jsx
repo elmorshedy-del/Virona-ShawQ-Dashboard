@@ -1897,6 +1897,7 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [country, setCountry] = useState('ALL');
   const [loading, setLoading] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState('');
   const [results, setResults] = useState([]);
   const [cacheInfo, setCacheInfo] = useState(null);
   const [countries, setCountries] = useState({});
@@ -1918,6 +1919,13 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const [adToSave, setAdToSave] = useState(null);
   const [showWelcome, setShowWelcome] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  // Error and debug state
+  const [error, setError] = useState(null);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+  const [debugLogs, setDebugLogs] = useState([]);
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [videoError, setVideoError] = useState({});
+  const [lastSearchCost, setLastSearchCost] = useState(null);
 
   const BOARD_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#0ea5e9', '#6b7280'];
   const BOARD_ICONS = ['📁', '💡', '🎯', '🔥', '⭐', '💎', '🚀', '🎨', '📊', '🏆'];
@@ -1956,18 +1964,119 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const handleSearch = async (forceRefresh = false) => {
     if (!searchQuery.trim()) return;
     setLoading(true);
+    setLoadingStatus('Starting search...');
     setResults([]);
     setCacheInfo(null);
+    setError(null);
+    
+    // Simulate progress for better UX
+    const statusMessages = [
+      'Connecting to Facebook Ad Library...',
+      'Searching for ads...',
+      'This may take 1-2 minutes...',
+      'Still searching...',
+      'Processing results...'
+    ];
+    let statusIndex = 0;
+    const statusInterval = setInterval(() => {
+      statusIndex = Math.min(statusIndex + 1, statusMessages.length - 1);
+      setLoadingStatus(statusMessages[statusIndex]);
+    }, 15000);
+    
     try {
-      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}`, store);
+      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}&limit=2`, store);
       const response = await fetch(url);
       const data = await response.json();
+      
+      clearInterval(statusInterval);
+      
       if (data.success) {
-        setResults(data.ads);
+        setResults(data.ads || []);
         setCacheInfo(data.cache_info);
+        
+        // Store cost info
+        if (data.cost) {
+          setLastSearchCost(data.cost);
+        } else if (data.from_cache) {
+          setLastSearchCost({ fromCache: true });
+        }
+        
+        // Store debug info
+        if (data.debug) {
+          setDebugLogs(prev => [...(data.debug.logs || []), ...prev].slice(0, 100));
+        }
+        
+        // Show warning if there was a non-fatal error
+        if (data.warning) {
+          setError({ type: 'warning', message: data.warning, code: null });
+        }
+        
+        // Show notice if using stale cache
+        if (data.stale) {
+          setError({ 
+            type: 'warning', 
+            message: 'Showing cached results. Fresh search failed.',
+            code: null 
+          });
+        }
+        
+        if (data.ads?.length === 0) {
+          setError({ 
+            type: 'info', 
+            message: 'No ads found for this brand. Try a different spelling or country.',
+            code: null 
+          });
+        }
+      } else {
+        // Handle error response
+        setError({
+          type: 'error',
+          message: data.error || 'Search failed',
+          code: data.errorCode,
+          suggestion: data.suggestion,
+          debug: data.debug
+        });
+        
+        if (data.debug?.logs) {
+          setDebugLogs(prev => [...data.debug.logs, ...prev].slice(0, 100));
+        }
       }
-    } catch (error) { console.error('Search failed:', error); }
+    } catch (err) { 
+      clearInterval(statusInterval);
+      console.error('Search failed:', err);
+      setError({
+        type: 'error',
+        message: err.message || 'Network error - please check your connection',
+        code: 'NETWORK_ERROR'
+      });
+    }
+    
     setLoading(false);
+    setLoadingStatus('');
+  };
+
+  // Load health status for debug panel
+  const loadHealthStatus = async () => {
+    try {
+      const res = await fetch(withStore('/creative-studio/competitor/health', store));
+      const data = await res.json();
+      if (data.success) {
+        setHealthStatus(data.health);
+        if (data.recentLogs) {
+          setDebugLogs(data.recentLogs);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load health status:', e);
+    }
+  };
+
+  // Handle video playback errors with fallback
+  const handleVideoError = (adId, currentSrc, fallbackSrc) => {
+    if (fallbackSrc && !videoError[adId]) {
+      setVideoError(prev => ({ ...prev, [adId]: true }));
+      // The video element will re-render with fallback src
+    }
   };
 
   const handleViewAd = (ad) => {
@@ -2157,9 +2266,9 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                 Search
               </button>
             </div>
-            {cacheInfo && (
-              <div className="mt-3 flex items-center gap-2 text-sm">
-                {cacheInfo.is_valid ? (
+            {(cacheInfo || lastSearchCost) && (
+              <div className="mt-3 flex items-center gap-2 text-sm flex-wrap">
+                {cacheInfo?.is_valid ? (
                   <>
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full">
                       <Zap size={14} />Cached • Refreshes in {formatCacheTime(cacheInfo)}
@@ -2167,19 +2276,79 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                     <button onClick={() => handleSearch(true)} className="text-violet-600 hover:text-violet-700 text-xs font-medium">Force refresh</button>
                   </>
                 ) : <span className="text-gray-400">Fresh results</span>}
+                
+                {/* Cost display */}
+                {lastSearchCost && !lastSearchCost.fromCache && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-700 rounded-full border border-amber-200">
+                    <span className="font-medium">API Cost:</span>
+                    <span>${lastSearchCost.total?.toFixed(4) || '0.00'}</span>
+                    <span className="text-amber-500">|</span>
+                    <span>{lastSearchCost.resultsCount} ads</span>
+                    <span className="text-amber-500">|</span>
+                    <span>{lastSearchCost.runDurationSeconds}s</span>
+                  </span>
+                )}
+                {lastSearchCost?.fromCache && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-green-50 text-green-700 rounded-full">
+                    <Zap size={14} />$0.00 (cached)
+                  </span>
+                )}
               </div>
             )}
           </div>
+
+          {/* Error/Warning display */}
+          {error && !loading && (
+            <div className={`mb-4 p-4 rounded-xl flex items-start gap-3 ${
+              error.type === 'error' ? 'bg-red-50 border border-red-200' :
+              error.type === 'warning' ? 'bg-amber-50 border border-amber-200' :
+              'bg-blue-50 border border-blue-200'
+            }`}>
+              <div className={`p-1 rounded-full ${
+                error.type === 'error' ? 'bg-red-100' :
+                error.type === 'warning' ? 'bg-amber-100' :
+                'bg-blue-100'
+              }`}>
+                {error.type === 'error' ? <AlertTriangle size={16} className="text-red-600" /> :
+                 error.type === 'warning' ? <AlertTriangle size={16} className="text-amber-600" /> :
+                 <HelpCircle size={16} className="text-blue-600" />}
+              </div>
+              <div className="flex-1">
+                <p className={`text-sm font-medium ${
+                  error.type === 'error' ? 'text-red-800' :
+                  error.type === 'warning' ? 'text-amber-800' :
+                  'text-blue-800'
+                }`}>{error.message}</p>
+                {error.suggestion && (
+                  <p className="text-xs text-gray-600 mt-1">{error.suggestion}</p>
+                )}
+                {error.code && (
+                  <p className="text-xs text-gray-400 mt-1">Error code: {error.code}</p>
+                )}
+              </div>
+              <button onClick={() => setError(null)} className="p-1 hover:bg-white/50 rounded">
+                <X size={14} className="text-gray-400" />
+              </button>
+            </div>
+          )}
 
           {results.length > 0 ? (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
               {results.map((ad, idx) => (
                 <div key={ad.ad_id || idx} className="group bg-white rounded-2xl overflow-hidden border border-gray-100 hover:border-violet-200 hover:shadow-xl hover:shadow-violet-100/50 transition-all duration-300 cursor-pointer" onClick={() => handleViewAd(ad)}>
                   <div className="aspect-square bg-gradient-to-br from-gray-50 to-gray-100 relative overflow-hidden">
-                    {ad.cloudinary_thumbnail_url || ad.cloudinary_image_url ? (
-                      <img src={ad.cloudinary_thumbnail_url || ad.cloudinary_image_url} alt={ad.page_name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-                    ) : ad.cloudinary_video_url ? (
-                      <video src={ad.cloudinary_video_url} className="w-full h-full object-cover" muted />
+                    {/* Thumbnail with fallbacks */}
+                    {(ad.cloudinary_thumbnail_url || ad.thumbnail_url || ad.cloudinary_image_url || ad.original_image_url) ? (
+                      <ImageWithFallback
+                        src={ad.cloudinary_thumbnail_url || ad.thumbnail_url || ad.cloudinary_image_url}
+                        fallbackSrc={ad.original_image_url || ad.original_video_url}
+                        alt={ad.page_name}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      />
+                    ) : (ad.cloudinary_video_url || ad.original_video_url) ? (
+                      <div className="w-full h-full flex items-center justify-center bg-gray-800">
+                        <Video size={40} className="text-gray-400" />
+                      </div>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-gray-300">
                         {ad.media_type === 'video' ? <Video size={40} /> : <ImageIcon size={40} />}
@@ -2221,17 +2390,36 @@ function CompetitorSpy({ store, onGenerateBrief }) {
               ))}
             </div>
           ) : loading ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {[...Array(8)].map((_, i) => (
-                <div key={i} className="bg-white rounded-2xl overflow-hidden border border-gray-100 animate-pulse">
-                  <div className="aspect-square bg-gray-100" />
-                  <div className="p-3 space-y-2">
-                    <div className="h-4 bg-gray-100 rounded w-3/4" />
-                    <div className="h-3 bg-gray-100 rounded w-full" />
-                    <div className="h-3 bg-gray-100 rounded w-1/2" />
-                  </div>
+            <div className="space-y-6">
+              {/* Loading status message */}
+              <div className="bg-gradient-to-br from-violet-50 to-purple-50 rounded-2xl p-6 text-center border border-violet-100">
+                <div className="w-16 h-16 mx-auto mb-4 bg-violet-100 rounded-2xl flex items-center justify-center">
+                  <RefreshCw size={28} className="text-violet-600 animate-spin" />
                 </div>
-              ))}
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Searching for "{searchQuery}"</h3>
+                <p className="text-gray-600 mb-3">{loadingStatus || 'Starting search...'}</p>
+                <div className="flex items-center justify-center gap-2 text-sm text-gray-500">
+                  <Clock size={14} />
+                  <span>First search may take 1-2 minutes</span>
+                </div>
+                <div className="mt-4 h-1 bg-violet-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-violet-500 to-purple-500 rounded-full animate-pulse" style={{ width: '60%' }} />
+                </div>
+              </div>
+              
+              {/* Skeleton grid */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {[...Array(8)].map((_, i) => (
+                  <div key={i} className="bg-white rounded-2xl overflow-hidden border border-gray-100 animate-pulse">
+                    <div className="aspect-square bg-gray-100" />
+                    <div className="p-3 space-y-2">
+                      <div className="h-4 bg-gray-100 rounded w-3/4" />
+                      <div className="h-3 bg-gray-100 rounded w-full" />
+                      <div className="h-3 bg-gray-100 rounded w-1/2" />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="bg-gradient-to-br from-white to-violet-50/30 rounded-3xl p-12 text-center border border-violet-100">
@@ -2265,8 +2453,13 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                   {swipeFileAds.map((ad, idx) => (
                     <div key={ad.ad_id || idx} className="group bg-white rounded-2xl overflow-hidden border border-gray-100 hover:shadow-lg transition-all cursor-pointer" onClick={() => handleViewAd(ad)}>
                       <div className="aspect-square bg-gray-100 relative">
-                        {ad.cloudinary_thumbnail_url || ad.cloudinary_image_url ? (
-                          <img src={ad.cloudinary_thumbnail_url || ad.cloudinary_image_url} alt={ad.page_name} className="w-full h-full object-cover" />
+                        {(ad.cloudinary_thumbnail_url || ad.thumbnail_url || ad.cloudinary_image_url || ad.original_image_url) ? (
+                          <ImageWithFallback
+                            src={ad.cloudinary_thumbnail_url || ad.thumbnail_url || ad.cloudinary_image_url}
+                            fallbackSrc={ad.original_image_url}
+                            alt={ad.page_name}
+                            className="w-full h-full object-cover"
+                          />
                         ) : <div className="w-full h-full flex items-center justify-center text-gray-300"><ImageIcon size={40} /></div>}
                       </div>
                       <div className="p-3">
@@ -2349,10 +2542,19 @@ function CompetitorSpy({ store, onGenerateBrief }) {
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowAdModal(false)}>
           <div className="bg-white rounded-3xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col md:flex-row" onClick={(e) => e.stopPropagation()}>
             <div className="md:w-1/2 bg-gray-900 flex items-center justify-center p-4 min-h-[300px]">
-              {selectedAd.cloudinary_video_url ? (
-                <video src={selectedAd.cloudinary_video_url} controls autoPlay className="max-w-full max-h-[60vh] rounded-lg" />
-              ) : selectedAd.cloudinary_image_url ? (
-                <img src={selectedAd.cloudinary_image_url} alt={selectedAd.page_name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
+              {/* Video player with fallback chain */}
+              {(selectedAd.cloudinary_video_url || selectedAd.original_video_url || selectedAd.video_url) ? (
+                <VideoPlayer 
+                  ad={selectedAd}
+                  className="max-w-full max-h-[60vh] rounded-lg"
+                />
+              ) : (selectedAd.cloudinary_image_url || selectedAd.original_image_url || selectedAd.image_url) ? (
+                <ImageWithFallback
+                  src={selectedAd.cloudinary_image_url || selectedAd.original_image_url || selectedAd.image_url}
+                  fallbackSrc={selectedAd.original_image_url}
+                  alt={selectedAd.page_name}
+                  className="max-w-full max-h-[60vh] rounded-lg object-contain"
+                />
               ) : (
                 <div className="text-gray-500 text-center"><ImageIcon size={48} className="mx-auto mb-2 opacity-50" /><p>No preview available</p></div>
               )}
@@ -2527,7 +2729,218 @@ function CompetitorSpy({ store, onGenerateBrief }) {
           </div>
         </div>
       )}
+
+      {/* Debug Panel - Fixed at bottom */}
+      <div className="fixed bottom-0 left-0 right-0 z-40">
+        <div className="max-w-7xl mx-auto px-6">
+          {/* Debug toggle button */}
+          <button
+            onClick={() => {
+              setShowDebugPanel(!showDebugPanel);
+              if (!showDebugPanel && !healthStatus) loadHealthStatus();
+            }}
+            className="ml-auto flex items-center gap-2 px-3 py-1.5 bg-gray-800 text-gray-300 text-xs rounded-t-lg hover:bg-gray-700 transition-all"
+          >
+            <Activity size={12} />
+            Debug Panel
+            <ChevronDown size={12} className={`transform transition-transform ${showDebugPanel ? 'rotate-180' : ''}`} />
+          </button>
+          
+          {/* Debug panel content */}
+          {showDebugPanel && (
+            <div className="bg-gray-900 text-gray-100 rounded-t-xl shadow-2xl border border-gray-700 max-h-80 overflow-hidden">
+              <div className="p-3 border-b border-gray-700 flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <span className="text-sm font-medium">Competitor Spy Debug</span>
+                  {healthStatus && (
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className={`flex items-center gap-1 ${healthStatus.apifyConfigured ? 'text-green-400' : 'text-red-400'}`}>
+                        <span className={`w-2 h-2 rounded-full ${healthStatus.apifyConfigured ? 'bg-green-400' : 'bg-red-400'}`} />
+                        Apify
+                      </span>
+                      <span className={`flex items-center gap-1 ${healthStatus.cloudinaryConfigured ? 'text-green-400' : 'text-amber-400'}`}>
+                        <span className={`w-2 h-2 rounded-full ${healthStatus.cloudinaryConfigured ? 'bg-green-400' : 'bg-amber-400'}`} />
+                        Cloudinary
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={loadHealthStatus} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white">
+                    <RefreshCw size={14} />
+                  </button>
+                  <button onClick={() => setShowDebugPanel(false)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white">
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+              
+              <div className="p-3 overflow-y-auto max-h-56 font-mono text-xs">
+                {debugLogs.length > 0 ? (
+                  <div className="space-y-1">
+                    {debugLogs.map((log, i) => (
+                      <div key={i} className={`flex gap-2 ${
+                        log.stage === 'ERROR' ? 'text-red-400' :
+                        log.stage === 'SUCCESS' || log.stage === 'CACHE_HIT' ? 'text-green-400' :
+                        log.stage === 'WARNING' ? 'text-amber-400' :
+                        'text-gray-400'
+                      }`}>
+                        <span className="text-gray-600 flex-shrink-0">
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </span>
+                        <span className="text-violet-400 flex-shrink-0">[{log.stage}]</span>
+                        <span className="flex-1">{log.message}</span>
+                        {log.data && <span className="text-gray-600 truncate max-w-xs">{JSON.stringify(log.data)}</span>}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-gray-500 text-center py-8">
+                    No debug logs yet. Perform a search to see activity.
+                  </div>
+                )}
+              </div>
+              
+              {/* Cost breakdown */}
+              {lastSearchCost && !lastSearchCost.fromCache && (
+                <div className="p-3 border-t border-gray-700 bg-amber-900/20">
+                  <div className="text-xs text-amber-400">
+                    <span className="font-medium">Last Search Cost Breakdown:</span>
+                    <div className="mt-1 grid grid-cols-4 gap-4 text-gray-300">
+                      <div>
+                        <span className="text-gray-500">Base:</span> ${lastSearchCost.baseCost?.toFixed(4)}
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Compute ({lastSearchCost.runDurationSeconds}s):</span> ${lastSearchCost.computeCost?.toFixed(4)}
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Results ({lastSearchCost.resultsCount}):</span> ${lastSearchCost.resultsCost?.toFixed(4)}
+                      </div>
+                      <div>
+                        <span className="text-amber-400 font-medium">Total:</span> ${lastSearchCost.total?.toFixed(4)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {error?.debug && (
+                <div className="p-3 border-t border-gray-700 bg-red-900/20">
+                  <div className="text-xs text-red-400">
+                    <span className="font-medium">Last Error:</span> {error.message}
+                    {error.code && <span className="ml-2 text-gray-500">({error.code})</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
+  );
+}
+
+// ============================================================================
+// VIDEO PLAYER WITH FALLBACK
+// ============================================================================
+function VideoPlayer({ ad, className = '' }) {
+  const [error, setError] = useState(false);
+  const [currentSrc, setCurrentSrc] = useState(null);
+  const videoRef = useRef(null);
+  
+  // Build fallback chain
+  const sources = [
+    ad.cloudinary_video_url,
+    ad.video_url,
+    ad.original_video_url
+  ].filter(Boolean);
+  
+  useEffect(() => {
+    setCurrentSrc(sources[0] || null);
+    setError(false);
+  }, [ad.ad_id]);
+  
+  const handleError = () => {
+    const currentIndex = sources.indexOf(currentSrc);
+    if (currentIndex < sources.length - 1) {
+      // Try next source
+      setCurrentSrc(sources[currentIndex + 1]);
+    } else {
+      setError(true);
+    }
+  };
+  
+  if (!currentSrc || error) {
+    return (
+      <div className={`flex flex-col items-center justify-center bg-gray-800 text-gray-400 ${className}`}>
+        <Video size={48} className="mb-2 opacity-50" />
+        <p className="text-sm">Video unavailable</p>
+        {ad.original_video_url && (
+          <a 
+            href={ad.original_video_url} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="mt-2 text-xs text-violet-400 hover:underline"
+          >
+            Try opening directly
+          </a>
+        )}
+      </div>
+    );
+  }
+  
+  return (
+    <video
+      ref={videoRef}
+      src={currentSrc}
+      controls
+      autoPlay
+      playsInline
+      className={className}
+      onError={handleError}
+      crossOrigin="anonymous"
+    >
+      Your browser does not support video playback.
+    </video>
+  );
+}
+
+// ============================================================================
+// IMAGE WITH FALLBACK
+// ============================================================================
+function ImageWithFallback({ src, fallbackSrc, alt, className = '' }) {
+  const [error, setError] = useState(false);
+  const [currentSrc, setCurrentSrc] = useState(src);
+  
+  useEffect(() => {
+    setCurrentSrc(src);
+    setError(false);
+  }, [src]);
+  
+  const handleError = () => {
+    if (fallbackSrc && currentSrc !== fallbackSrc) {
+      setCurrentSrc(fallbackSrc);
+    } else {
+      setError(true);
+    }
+  };
+  
+  if (error || !currentSrc) {
+    return (
+      <div className={`flex items-center justify-center bg-gray-100 text-gray-400 ${className}`}>
+        <ImageIcon size={40} />
+      </div>
+    );
+  }
+  
+  return (
+    <img
+      src={currentSrc}
+      alt={alt}
+      className={className}
+      onError={handleError}
+      loading="lazy"
+    />
   );
 }
 

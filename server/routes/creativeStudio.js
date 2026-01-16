@@ -326,19 +326,52 @@ router.post('/extract-style', upload.single('image'), async (req, res) => {
 // COMPETITOR SPY (Apify-powered)
 // ============================================================================
 
+// Health check and debug info for competitor spy
+router.get('/competitor/health', async (req, res) => {
+  try {
+    const health = apifyService.getHealthStatus();
+    const debugLogs = apifyService.getDebugLogs(20);
+    
+    res.json({
+      success: true,
+      health,
+      recentLogs: debugLogs,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get debug logs
+router.get('/competitor/debug-logs', async (req, res) => {
+  try {
+    const count = parseInt(req.query.count) || 50;
+    const logs = apifyService.getDebugLogs(count);
+    res.json({ success: true, logs, count: logs.length });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Search for competitor ads
 router.get('/competitor/search', async (req, res) => {
   try {
     const store = req.query.store || 'vironax';
-    const { brand_name, country = 'ALL', force_refresh = 'false' } = req.query;
+    const { brand_name, country = 'ALL', force_refresh = 'false', limit = '2' } = req.query;
 
     if (!brand_name) {
-      return res.status(400).json({ success: false, error: 'Brand name required' });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Brand name required',
+        errorCode: 'MISSING_BRAND_NAME'
+      });
     }
 
     const result = await apifyService.searchByBrand(store, brand_name, {
       country,
-      forceRefresh: force_refresh === 'true'
+      forceRefresh: force_refresh === 'true',
+      limit: Math.min(parseInt(limit) || 10, 50)
     });
 
     res.json({
@@ -346,13 +379,43 @@ router.get('/competitor/search', async (req, res) => {
       ads: result.ads,
       count: result.ads.length,
       from_cache: result.fromCache,
-      cache_info: result.cacheInfo
+      stale: result.stale || false,
+      cache_info: result.cacheInfo,
+      cost: result.cost || null,
+      debug: result.debug || null,
+      // Include any non-fatal errors
+      warning: result.error || null
     });
   } catch (error) {
     console.error('Competitor search error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    
+    // Return detailed error info
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      errorCode: error.code || 'UNKNOWN_ERROR',
+      debug: error.debug || null,
+      suggestion: getErrorSuggestion(error.code)
+    });
   }
 });
+
+// Helper to provide user-friendly error suggestions
+function getErrorSuggestion(errorCode) {
+  const suggestions = {
+    'CONFIG_ERROR': 'Contact support - the API is not properly configured.',
+    'AUTH_ERROR': 'Contact support - the API authentication has failed.',
+    'CREDITS_ERROR': 'The search service is temporarily unavailable. Try again later.',
+    'ACTOR_START_ERROR': 'The search service is temporarily unavailable. Try again in a few minutes.',
+    'NETWORK_ERROR': 'Check your internet connection and try again.',
+    'ACTOR_FAILED': 'The search failed. Try a different brand name or country.',
+    'ACTOR_ABORTED': 'The search was interrupted. Please try again.',
+    'ACTOR_TIMEOUT': 'The search took too long. Try searching with fewer results.',
+    'POLL_TIMEOUT': 'The search is still processing. Wait a minute and try again, or search for fewer results.',
+    'RESULTS_FETCH_ERROR': 'Failed to retrieve results. Please try again.'
+  };
+  return suggestions[errorCode] || 'An unexpected error occurred. Please try again.';
+}
 
 // Force refresh brand search
 router.post('/competitor/refresh', async (req, res) => {
