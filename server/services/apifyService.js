@@ -10,9 +10,8 @@ import {
 } from '../db/competitorSpyMigration.js';
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
-// Using curious_coder's actor - 7x cheaper ($0.00075 vs $0.005 per result)
-// Format: username~actorname (tilde, not slash)
-const APIFY_ACTOR_ID = 'curious_coder~facebook-ads-library-scraper';
+// Back to official actor - our smart polling will grab partial results early
+const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper';
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -224,44 +223,27 @@ export async function searchByBrand(store, brandName, options = {}) {
 async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
-  // Input for curious_coder/facebook-ads-library-scraper (cheaper & more reliable)
+  // Build Facebook Ad Library URL
+  const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country === "ALL" ? "ALL" : country}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
+  
   const effectiveLimit = Math.min(limit, 50);
   
   const input = {
-    // Search parameters
-    search: searchQuery,
-    searchQuery: searchQuery,  // Try both param names
-    query: searchQuery,        // And this one too
-    
-    // Country
-    country: country === "ALL" ? "US" : country,
-    countryCode: country === "ALL" ? "US" : country,
-    
-    // Filters
-    activeStatus: "active",
-    adActiveStatus: "ACTIVE",
-    
-    // LIMIT - try every possible parameter name
-    limit: effectiveLimit,
+    startUrls: [{ url: searchUrl }],
     maxItems: effectiveLimit,
-    maxResults: effectiveLimit,
-    resultsLimit: effectiveLimit,
-    max_results: effectiveLimit,
-    
-    // Proxy
     proxy: {
-      useApifyProxy: true
+      useApifyProxy: true,
+      apifyProxyGroups: ['RESIDENTIAL']
     }
   };
 
-  debugLog.add('APIFY_INPUT', `Using curious_coder actor with limit=${effectiveLimit}`, { 
+  debugLog.add('APIFY_INPUT', `Starting with maxItems=${effectiveLimit} (will grab partial results early)`, { 
     searchQuery,
-    country: input.country,
-    limit: effectiveLimit,
-    actorId: APIFY_ACTOR_ID
+    country,
+    limit: effectiveLimit
   });
   
-  console.log(`[CompetitorSpy] Starting ${APIFY_ACTOR_ID} with limit=${effectiveLimit} for query "${searchQuery}"`);
+  console.log(`[CompetitorSpy] Starting apify actor with maxItems=${effectiveLimit} for "${searchQuery}" - will grab partial results early`);
   
 
   // Start the actor run with retry
