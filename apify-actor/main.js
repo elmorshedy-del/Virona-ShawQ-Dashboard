@@ -62,67 +62,105 @@ try {
     throw new Error('Facebook requires login - blocked');
   }
 
-  // Extract ads
+  // Extract ads - try to get raw HTML structure first
   console.log('Extracting ads...');
   
-  const ads = await page.evaluate((maxAds) => {
+  // Wait more for dynamic content
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  
+  // Debug: log page structure
+  const debugInfo = await page.evaluate(() => {
+    return {
+      divCount: document.querySelectorAll('div').length,
+      imgCount: document.querySelectorAll('img').length,
+      hasArticles: document.querySelectorAll('[role="article"]').length,
+      bodyText: document.body.innerText.slice(0, 1000)
+    };
+  });
+  console.log('Page debug:', JSON.stringify(debugInfo));
+  
+  const ads = await page.evaluate((maxAds, searchTerm) => {
     const results = [];
+    const searchLower = searchTerm.toLowerCase();
     
-    // Try multiple selectors
-    const containers = document.querySelectorAll('div[role="article"], div[class*="_7jyr"], div[class*="x1dr59a3"]');
+    // Facebook Ad Library uses complex nested divs
+    // Look for ad cards by finding elements with specific patterns
     
-    for (let i = 0; i < Math.min(containers.length, maxAds * 2); i++) {
-      const container = containers[i];
+    // Method 1: Find all links to ad library pages (these are usually page names)
+    const pageLinks = document.querySelectorAll('a[href*="/ads/library/?"]');
+    const processedIds = new Set();
+    
+    pageLinks.forEach((link, i) => {
+      if (results.length >= maxAds * 3) return;
       
       try {
-        // Page name
-        const pageNameEl = container.querySelector('a[href*="/ads/library/"] span, strong, h4, a[role="link"] span');
-        const pageName = pageNameEl?.textContent?.trim() || '';
+        // Get the parent container (go up several levels)
+        let container = link;
+        for (let j = 0; j < 10; j++) {
+          if (container.parentElement) container = container.parentElement;
+        }
         
-        // Ad copy - get longest text
+        // Skip if we've seen this container
+        const containerId = container.innerHTML.slice(0, 100);
+        if (processedIds.has(containerId)) return;
+        processedIds.add(containerId);
+        
+        // Extract page name from link
+        const pageName = link.textContent?.trim() || '';
+        
+        // Find ad copy - look for longer text blocks
         let adCopy = '';
-        container.querySelectorAll('div[style*="webkit-line-clamp"], span[dir="auto"], div[dir="auto"]').forEach(el => {
-          const text = el.textContent?.trim();
-          if (text && text.length > adCopy.length) {
-            adCopy = text;
+        const textNodes = container.querySelectorAll('span, div');
+        textNodes.forEach(node => {
+          const text = node.textContent?.trim() || '';
+          // Ad copy is usually 50-2000 chars and not the page name
+          if (text.length > 50 && text.length < 2000 && text !== pageName && text.length > adCopy.length) {
+            // Skip if it looks like UI text
+            if (!text.includes('Ad Library') && !text.includes('See ad details')) {
+              adCopy = text;
+            }
           }
         });
         
-        // Images
+        // Find images
         const images = [];
-        container.querySelectorAll('img[src*="scontent"], img[src*="fbcdn"]').forEach(img => {
-          if (img.src && !img.src.includes('emoji') && img.width > 50) {
-            images.push(img.src);
+        container.querySelectorAll('img').forEach(img => {
+          const src = img.src || img.getAttribute('src');
+          if (src && (src.includes('scontent') || src.includes('fbcdn')) && !src.includes('emoji')) {
+            const width = img.naturalWidth || img.width || 0;
+            if (width > 50 || src.includes('p720x720')) {
+              images.push(src);
+            }
           }
         });
         
-        // Videos  
+        // Find videos
         const videos = [];
-        container.querySelectorAll('video source, video[src]').forEach(video => {
-          const src = video.src || video.getAttribute('src');
+        container.querySelectorAll('video, video source').forEach(el => {
+          const src = el.src || el.getAttribute('src');
           if (src) videos.push(src);
         });
         
-        // Start date
-        const dateMatch = container.textContent?.match(/Started running on (\w+ \d+, \d+)/);
+        // Extract start date
+        const containerText = container.textContent || '';
+        const dateMatch = containerText.match(/Started running on ([A-Za-z]+ \d+, \d+)/);
         const startDate = dateMatch ? dateMatch[1] : null;
         
         // Platforms
         const platforms = [];
-        const text = container.textContent || '';
-        if (text.includes('Facebook')) platforms.push('facebook');
-        if (text.includes('Instagram')) platforms.push('instagram');
-        if (text.includes('Messenger')) platforms.push('messenger');
+        if (containerText.includes('Facebook')) platforms.push('facebook');
+        if (containerText.includes('Instagram')) platforms.push('instagram');
         
-        if (pageName || adCopy || images.length > 0) {
+        // Only add if we have meaningful data
+        if (pageName && pageName.length > 1) {
           results.push({
-            ad_id: `fb_${Date.now()}_${i}`,
+            ad_id: `fb_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`,
             page_name: pageName,
-            ad_copy: adCopy,
+            ad_copy: adCopy || '',
             original_image_url: images[0] || null,
             original_video_url: videos[0] || null,
-            all_images: images,
-            all_videos: videos,
+            all_images: images.slice(0, 5),
+            all_videos: videos.slice(0, 3),
             media_type: videos.length > 0 ? 'video' : (images.length > 0 ? 'image' : 'text'),
             platforms: platforms.length > 0 ? platforms : ['facebook'],
             start_date: startDate,
@@ -130,12 +168,12 @@ try {
           });
         }
       } catch (e) {
-        console.error('Error extracting ad:', e);
+        // Continue on error
       }
-    }
+    });
     
     return results;
-  }, limit);
+  }, limit, searchQuery);
 
   console.log(`Extracted ${ads.length} ads`);
 
