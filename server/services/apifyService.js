@@ -48,7 +48,7 @@ export function getSupportedCountries() {
  * Uses 24-hour cache to reduce API calls
  */
 export async function searchByBrand(store, brandName, options = {}) {
-  const { country = 'ALL', forceRefresh = false, limit = 50 } = options;
+  const { country = 'ALL', forceRefresh = false, limit = 10 } = options;
   
   if (!APIFY_API_TOKEN) {
     throw new Error('APIFY_API_TOKEN is not configured');
@@ -114,7 +114,7 @@ export async function searchByBrand(store, brandName, options = {}) {
 /**
  * Fetch ads from Apify actor
  */
-  const { country = 'ALL', limit = 50 } = options;
+  const { country = 'ALL', limit = 10 } = options;
 
   const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country === "ALL" ? "ALL" : country}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
 
