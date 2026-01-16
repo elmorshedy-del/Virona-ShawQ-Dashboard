@@ -233,7 +233,14 @@ async function fetchFromApify(searchQuery, options = {}) {
     }
   };
 
-  debugLog.add('APIFY_INPUT', 'Prepared Apify input', { searchUrl: searchUrl.slice(0, 100), maxItems: input.maxItems });
+  debugLog.add('APIFY_INPUT', `Prepared Apify input with maxItems=${input.maxItems}`, { 
+    searchUrl: searchUrl.slice(0, 100), 
+    maxItems: input.maxItems,
+    WARNING: input.maxItems > 10 ? 'High maxItems may cause long runs and high costs!' : null
+  });
+  
+  console.log(`[CompetitorSpy] Starting Apify run with maxItems=${input.maxItems} for query "${searchQuery}"`);
+  
 
   // Start the actor run with retry
   let runResponse;
@@ -393,9 +400,22 @@ async function fetchFromApify(searchQuery, options = {}) {
   // Check if we timed out while still running
   if (status !== 'SUCCEEDED') {
     const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+    
+    // IMPORTANT: Abort the run to stop charging!
+    debugLog.add('ABORTING_RUN', `Aborting run ${runId} to prevent further charges...`);
+    try {
+      await fetch(
+        `https://api.apify.com/v2/actor-runs/${runId}/abort?token=${APIFY_API_TOKEN}`,
+        { method: 'POST' }
+      );
+      debugLog.add('RUN_ABORTED', `Successfully aborted run ${runId}`);
+    } catch (abortError) {
+      debugLog.add('ABORT_FAILED', `Failed to abort run: ${abortError.message}`);
+    }
+    
     const error = new Error(
-      `Search timed out after ${elapsedSec} seconds. The search is still running on Apify. ` +
-      `Try again in a minute or search for fewer results.`
+      `Search timed out after ${elapsedSec} seconds. The run has been aborted to prevent extra charges. ` +
+      `Try searching for a more specific brand name.`
     );
     error.code = 'POLL_TIMEOUT';
     error.debug = { 
@@ -403,7 +423,8 @@ async function fetchFromApify(searchQuery, options = {}) {
       runId, 
       lastStatus: status, 
       elapsedMs: Date.now() - startTime,
-      pollCount 
+      pollCount,
+      aborted: true
     };
     throw error;
   }
