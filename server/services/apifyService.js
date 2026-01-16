@@ -10,7 +10,8 @@ import {
 } from '../db/competitorSpyMigration.js';
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
-const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper';
+// Using curious_coder's actor - 7x cheaper ($0.00075 vs $0.005 per result)
+const APIFY_ACTOR_ID = 'curious_coder/facebook-ads-library-scraper';
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -222,29 +223,44 @@ export async function searchByBrand(store, brandName, options = {}) {
 async function fetchFromApify(searchQuery, options = {}) {
   const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
-  // Use search-based input instead of URL-based (URL-based ignores maxItems!)
+  // Input for curious_coder/facebook-ads-library-scraper (cheaper & more reliable)
+  const effectiveLimit = Math.min(limit, 50);
+  
   const input = {
-    searchQueries: [searchQuery],
-    countryCode: country === "ALL" ? "US" : country, // ALL not supported, default to US
+    // Search parameters
+    search: searchQuery,
+    searchQuery: searchQuery,  // Try both param names
+    query: searchQuery,        // And this one too
+    
+    // Country
+    country: country === "ALL" ? "US" : country,
+    countryCode: country === "ALL" ? "US" : country,
+    
+    // Filters
     activeStatus: "active",
-    adType: "all",
-    mediaType: "all",
-    maxItems: Math.min(limit, 50), // Cap at 50 to reduce timeout risk
-    resultsLimit: Math.min(limit, 50), // Try both parameter names
-    maxResults: Math.min(limit, 50), // Try all possible names
+    adActiveStatus: "ACTIVE",
+    
+    // LIMIT - try every possible parameter name
+    limit: effectiveLimit,
+    maxItems: effectiveLimit,
+    maxResults: effectiveLimit,
+    resultsLimit: effectiveLimit,
+    max_results: effectiveLimit,
+    
+    // Proxy
     proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ['RESIDENTIAL']
+      useApifyProxy: true
     }
   };
 
-  debugLog.add('APIFY_INPUT', `Using search-based input with limit=${limit}`, { 
+  debugLog.add('APIFY_INPUT', `Using curious_coder actor with limit=${effectiveLimit}`, { 
     searchQuery,
-    countryCode: input.countryCode,
-    maxItems: input.maxItems,
+    country: input.country,
+    limit: effectiveLimit,
+    actorId: APIFY_ACTOR_ID
   });
   
-  console.log(`[CompetitorSpy] Starting Apify run with maxItems=${input.maxItems} for query "${searchQuery}"`);
+  console.log(`[CompetitorSpy] Starting ${APIFY_ACTOR_ID} with limit=${effectiveLimit} for query "${searchQuery}"`);
   
 
   // Start the actor run with retry
