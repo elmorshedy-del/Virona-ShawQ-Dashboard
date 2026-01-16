@@ -1,5 +1,5 @@
 // server/services/apifyService.js
-// Apify Facebook Ads Scraper Integration with robust error handling
+// Facebook Ads Scraper - Custom Puppeteer first, Apify fallback
 
 import { getDb } from '../db/database.js';
 import crypto from 'crypto';
@@ -8,10 +8,13 @@ import {
   updateBrandCache, 
   getCachedAdIds 
 } from '../db/competitorSpyMigration.js';
+import * as customScraper from './facebookAdsScraper.js';
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
-// Using whoareyouanas/meta-ad-scraper - $0.01 per ad, actually searches properly
-const APIFY_ACTOR_ID = 'whoareyouanas~meta-ad-scraper';
+const APIFY_ACTOR_ID = 'apify~facebook-ads-scraper'; // Fallback only
+
+// Use custom scraper first (free), Apify as fallback
+const USE_CUSTOM_SCRAPER = true;
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -135,8 +138,44 @@ export async function searchByBrand(store, brandName, options = {}) {
     debugLog.add('CACHE_MISS', 'No valid cache found');
   }
 
-  // Fetch from Apify
+  // Try custom scraper first (FREE), then Apify as fallback
   try {
+    if (USE_CUSTOM_SCRAPER) {
+      debugLog.add('CUSTOM_SCRAPER_START', 'Trying custom Puppeteer scraper (free)...');
+      
+      try {
+        const customResult = await customScraper.scrapeAds(brandName, { country, limit });
+        
+        if (customResult.ads && customResult.ads.length > 0) {
+          debugLog.add('CUSTOM_SCRAPER_SUCCESS', `Got ${customResult.ads.length} ads from custom scraper`);
+          
+          // Process and store ads
+          const storedAds = await processAndStoreAds(customResult.ads);
+          const adIds = storedAds.map(ad => ad.ad_id);
+          updateBrandCache(store, brandName, country, adIds);
+          
+          return {
+            ads: storedAds,
+            fromCache: false,
+            cacheInfo: getCacheExpiry(store, brandName, country),
+            cost: { total: 0, note: 'Custom scraper - FREE' },
+            debug: {
+              searchId,
+              stage: 'CUSTOM_SCRAPER_SUCCESS',
+              source: 'puppeteer',
+              logs: debugLog.getRecent(10)
+            }
+          };
+        } else {
+          debugLog.add('CUSTOM_SCRAPER_NO_RESULTS', customResult.error || 'No results from custom scraper');
+        }
+      } catch (customError) {
+        debugLog.add('CUSTOM_SCRAPER_FAILED', customError.message);
+      }
+      
+      debugLog.add('FALLBACK_TO_APIFY', 'Custom scraper failed, trying Apify...');
+    }
+    
     debugLog.add('APIFY_START', 'Starting Apify fetch...');
     const result = await fetchFromApify(brandName, { country, limit, searchId });
     
