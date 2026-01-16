@@ -29,6 +29,12 @@
       "type": "boolean",
       "description": "Only return ads matching the search query",
       "default": true
+    },
+    "debugMode": {
+      "title": "Debug Mode",
+      "type": "boolean",
+      "description": "Enable verbose logging (turn off in production)",
+      "default": true
     }
   },
   "required": ["searchQuery"]
