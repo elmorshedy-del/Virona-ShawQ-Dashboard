@@ -94,7 +94,7 @@ export async function scrapeAds(searchQuery, options = {}) {
     }
     
     // Wait a bit more for all content to load
-    await page.waitForTimeout(3000);
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
     // Extract ads
     log('Extracting ad data...');
