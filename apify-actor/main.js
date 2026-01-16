@@ -233,6 +233,9 @@ function extractAdsFromResponse(data, adsArray, searchQuery, filterResults) {
       (obj.page_name && obj.ad_creative_bodies);
     
     if (hasAdIndicators) {
+      // LOG THE RAW OBJECT TO SEE WHAT FACEBOOK RETURNS
+      console.log('[RAW_AD_OBJECT]', JSON.stringify(obj).slice(0, 2000));
+      
       const ad = parseAdObject(obj);
       
       // Filter if needed
@@ -249,7 +252,7 @@ function extractAdsFromResponse(data, adsArray, searchQuery, filterResults) {
       if (!seenAdKeys.has(adKey) && ad.page_name) {
         seenAdKeys.add(adKey);
         adsArray.push(ad);
-        console.log(`[CAPTURED] Ad from ${ad.page_name}`);
+        console.log(`[CAPTURED] Ad from "${ad.page_name}" | copy: "${ad.ad_copy?.slice(0, 100)}" | img: ${ad.original_image_url ? 'YES' : 'NO'}`);
       }
     }
     
@@ -262,62 +265,109 @@ function extractAdsFromResponse(data, adsArray, searchQuery, filterResults) {
 
 // Parse various ad object formats into our standard format
 function parseAdObject(obj) {
-  // Handle different Facebook API response formats
+  // Handle different Facebook API response formats - try ALL possible field names
   const pageName = 
     obj.pageName || 
     obj.page_name || 
     obj.snapshot?.page_name ||
+    obj.snapshot?.pageName ||
     obj.page?.name ||
+    obj.page?.pageName ||
+    obj.collationID ||  // Sometimes this contains page info
+    findNestedValue(obj, ['pageName', 'page_name', 'name']) ||
     '';
   
   const adCopy = 
     obj.snapshot?.body?.text ||
     obj.snapshot?.body?.markup?.__html ||
+    obj.snapshot?.body_with_entities?.text ||
     obj.ad_creative_bodies?.[0] ||
     obj.body?.text ||
     obj.bodyText ||
+    obj.message ||
+    obj.text ||
+    findNestedValue(obj, ['body', 'text', 'message', 'ad_creative_bodies']) ||
     '';
   
   const images = [];
-  if (obj.snapshot?.images) {
-    images.push(...obj.snapshot.images);
-  }
+  // Try all possible image locations
+  if (obj.snapshot?.images) images.push(...obj.snapshot.images);
+  if (obj.snapshot?.resized_image_url) images.push(obj.snapshot.resized_image_url);
+  if (obj.snapshot?.watermarked_resized_image_url) images.push(obj.snapshot.watermarked_resized_image_url);
   if (obj.snapshot?.cards) {
     obj.snapshot.cards.forEach(card => {
       if (card.original_image_url) images.push(card.original_image_url);
+      if (card.resized_image_url) images.push(card.resized_image_url);
     });
   }
+  if (obj.ad_snapshot_url) images.push(obj.ad_snapshot_url);
+  if (obj.image_url) images.push(obj.image_url);
+  if (obj.imageUrl) images.push(obj.imageUrl);
+  
+  // Find any URL that looks like an image
+  const objStr = JSON.stringify(obj);
+  const imageMatches = objStr.match(/https:\/\/[^"]+(?:scontent|fbcdn)[^"]+\.(?:jpg|jpeg|png|webp)/gi) || [];
+  images.push(...imageMatches.slice(0, 5));
   
   const videos = [];
   if (obj.snapshot?.videos) {
     obj.snapshot.videos.forEach(v => {
       if (v.video_hd_url) videos.push(v.video_hd_url);
-      else if (v.video_sd_url) videos.push(v.video_sd_url);
+      if (v.video_sd_url) videos.push(v.video_sd_url);
+      if (v.video_url) videos.push(v.video_url);
     });
   }
+  if (obj.video_url) videos.push(obj.video_url);
+  if (obj.videoUrl) videos.push(obj.videoUrl);
+  
+  // Find any URL that looks like a video
+  const videoMatches = objStr.match(/https:\/\/[^"]+\.(?:mp4|webm|mov)/gi) || [];
+  videos.push(...videoMatches.slice(0, 3));
   
   const startDate = 
     obj.startDate ||
     obj.start_date ||
     obj.ad_delivery_start_time ||
+    obj.startDateText ||
     null;
   
   const platforms = 
     obj.publisherPlatform ||
     obj.publisher_platforms ||
+    obj.platforms ||
     ['facebook'];
+
+  console.log(`[PARSE] pageName="${pageName}" | adCopy="${(typeof adCopy === 'string' ? adCopy : '').slice(0, 50)}" | images=${images.length} | videos=${videos.length}`);
   
   return {
-    ad_id: obj.adArchiveID || obj.ad_archive_id || obj.adid || `fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    ad_id: obj.adArchiveID || obj.ad_archive_id || obj.adid || obj.id || `fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     page_name: pageName,
-    ad_copy: typeof adCopy === 'string' ? adCopy : '',
+    ad_copy: typeof adCopy === 'string' ? adCopy : (Array.isArray(adCopy) ? adCopy[0] : ''),
     original_image_url: images[0] || null,
     original_video_url: videos[0] || null,
-    all_images: images,
-    all_videos: videos,
+    all_images: [...new Set(images)], // Remove duplicates
+    all_videos: [...new Set(videos)],
     media_type: videos.length > 0 ? 'video' : (images.length > 0 ? 'image' : 'text'),
     platforms: Array.isArray(platforms) ? platforms : [platforms],
     start_date: startDate,
     is_active: obj.isActive !== false && obj.is_active !== false
   };
+}
+
+// Helper to find a value in nested object by trying multiple keys
+function findNestedValue(obj, keys, depth = 0) {
+  if (depth > 5 || !obj) return null;
+  
+  for (const key of keys) {
+    if (obj[key]) return obj[key];
+  }
+  
+  if (typeof obj === 'object') {
+    for (const value of Object.values(obj)) {
+      const found = findNestedValue(value, keys, depth + 1);
+      if (found) return found;
+    }
+  }
+  
+  return null;
 }
