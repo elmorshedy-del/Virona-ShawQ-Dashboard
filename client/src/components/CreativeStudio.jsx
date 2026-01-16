@@ -1983,7 +1983,7 @@ function CompetitorSpy({ store, onGenerateBrief }) {
     }, 15000);
     
     try {
-      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}&limit=10`, store);
+      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}&limit=2`, store);
       const response = await fetch(url);
       const data = await response.json();
       

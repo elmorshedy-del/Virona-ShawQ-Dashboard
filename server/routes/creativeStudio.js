@@ -358,7 +358,7 @@ router.get('/competitor/debug-logs', async (req, res) => {
 router.get('/competitor/search', async (req, res) => {
   try {
     const store = req.query.store || 'vironax';
-    const { brand_name, country = 'ALL', force_refresh = 'false', limit = '10' } = req.query;
+    const { brand_name, country = 'ALL', force_refresh = 'false', limit = '2' } = req.query;
 
     if (!brand_name) {
       return res.status(400).json({ 

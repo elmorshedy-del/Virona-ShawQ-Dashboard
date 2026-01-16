@@ -87,7 +87,7 @@ export function getSupportedCountries() {
  * Uses 24-hour cache to reduce API calls
  */
 export async function searchByBrand(store, brandName, options = {}) {
-  const { country = 'ALL', forceRefresh = false, limit = 10 } = options;
+  const { country = 'ALL', forceRefresh = false, limit = 2 } = options;
   const searchId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   
   debugLog.add('SEARCH_START', `Search initiated for "${brandName}"`, { store, country, forceRefresh, limit, searchId });
@@ -209,7 +209,7 @@ export async function searchByBrand(store, brandName, options = {}) {
  * Fetch ads from Apify actor with robust error handling
  */
 async function fetchFromApify(searchQuery, options = {}) {
-  const { country = 'ALL', limit = 10, searchId = 'unknown' } = options;
+  const { country = 'ALL', limit = 2, searchId = 'unknown' } = options;
 
   const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country === "ALL" ? "ALL" : country}&q=${encodeURIComponent(searchQuery)}&search_type=keyword_unordered&media_type=all`;
 
