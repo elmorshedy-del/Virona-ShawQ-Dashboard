@@ -7,6 +7,15 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
 puppeteer.use(StealthPlugin());
 
+// Configuration constants for easier maintenance
+const CONFIG = {
+  INITIAL_WAIT_MS: 5000,
+  SCROLL_WAIT_MS: 2000,
+  SCROLL_COUNT: 3,
+  SCROLL_DISTANCE: 1000,
+  MAX_RECURSION_DEPTH: 10
+};
+
 await Actor.init();
 
 const input = await Actor.getInput() || {};
@@ -74,12 +83,14 @@ try {
               try {
                 const json = JSON.parse(jsonMatch[0]);
                 extractAdsFromResponse(json, capturedAds, searchQuery, filterResults);
-              } catch (e2) {}
+              } catch (e2) {
+                console.warn('[WARN] Failed to parse JSON from regex match:', e2.message);
+              }
             }
           }
         }
       } catch (e) {
-        // Response might not be readable, skip
+        console.warn('[WARN] Could not read response body:', e.message);
       }
     }
   });
@@ -96,12 +107,12 @@ try {
 
   // Wait for content and scroll to trigger more loads
   console.log('[WAIT] Waiting for ads to load...');
-  await new Promise(resolve => setTimeout(resolve, 5000));
+  await new Promise(resolve => setTimeout(resolve, CONFIG.INITIAL_WAIT_MS));
   
   // Scroll down to trigger lazy loading
-  for (let i = 0; i < 3; i++) {
-    await page.evaluate(() => window.scrollBy(0, 1000));
-    await new Promise(resolve => setTimeout(resolve, 2000));
+  for (let i = 0; i < CONFIG.SCROLL_COUNT; i++) {
+    await page.evaluate((distance) => window.scrollBy(0, distance), CONFIG.SCROLL_DISTANCE);
+    await new Promise(resolve => setTimeout(resolve, CONFIG.SCROLL_WAIT_MS));
     console.log(`[SCROLL] Scroll ${i + 1}/3, captured ${capturedAds.length} ads so far`);
     
     if (capturedAds.length >= limit) break;
@@ -197,10 +208,12 @@ await Actor.exit();
 // Helper function to extract ads from Facebook API response
 function extractAdsFromResponse(data, adsArray, searchQuery, filterResults) {
   const searchLower = searchQuery.toLowerCase();
+  // Use Set for O(1) duplicate lookups instead of O(n) array.some()
+  const seenAdKeys = new Set(adsArray.map(ad => `${ad.page_name}|${ad.ad_copy}`));
   
   // Recursively search for ad-like objects in the response
   function findAds(obj, depth = 0) {
-    if (depth > 10 || !obj) return;
+    if (depth > CONFIG.MAX_RECURSION_DEPTH || !obj) return;
     
     if (Array.isArray(obj)) {
       obj.forEach(item => findAds(item, depth + 1));
@@ -231,13 +244,10 @@ function extractAdsFromResponse(data, adsArray, searchQuery, filterResults) {
         }
       }
       
-      // Avoid duplicates
-      const isDuplicate = adsArray.some(existing => 
-        existing.page_name === ad.page_name && 
-        existing.ad_copy === ad.ad_copy
-      );
-      
-      if (!isDuplicate && ad.page_name) {
+      // Avoid duplicates using Set for O(1) lookups
+      const adKey = `${ad.page_name}|${ad.ad_copy}`;
+      if (!seenAdKeys.has(adKey) && ad.page_name) {
+        seenAdKeys.add(adKey);
         adsArray.push(ad);
         console.log(`[CAPTURED] Ad from ${ad.page_name}`);
       }
@@ -276,9 +286,6 @@ function parseAdObject(obj) {
     obj.snapshot.cards.forEach(card => {
       if (card.original_image_url) images.push(card.original_image_url);
     });
-  }
-  if (obj.ad_creative_link_captions) {
-    // Sometimes images are in different fields
   }
   
   const videos = [];
