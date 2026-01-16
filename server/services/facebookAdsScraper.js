@@ -1,7 +1,11 @@
 // server/services/facebookAdsScraper.js
-// Custom Facebook Ad Library Scraper using Puppeteer
+// Custom Facebook Ad Library Scraper using Puppeteer with Stealth
 
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+// Add stealth plugin to avoid bot detection
+puppeteer.use(StealthPlugin());
 
 const DEBUG = true;
 const log = (msg, data = null) => {
