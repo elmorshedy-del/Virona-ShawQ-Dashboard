@@ -111,12 +111,89 @@ const TOKEN_LIMITS = {
   deep: 120000
 };
 
+const EXPLORE_MODEL = 'gpt-4.1';
+
 const DEPTH_TO_EFFORT = {
   instant: 'none',
   fast: 'low',
   balanced: 'medium',
   deep: 'high'
 };
+
+const EXPLORE_SYSTEM_PROMPT = `You are a data visualization assistant. Interpret a natural language request and return a chart specification.
+
+AVAILABLE METRICS:
+- revenue (currency)
+- orders (number)
+- spend (currency)
+- impressions (number)
+- clicks (number)
+- roas (number, ratio)
+- aov (currency)
+- conversion_rate (percent)
+- add_to_cart (number)
+
+AVAILABLE DIMENSIONS:
+- date (for time series)
+- country
+- campaign_name
+- adset_name
+- platform
+- age
+- gender
+
+CHART TYPES:
+- line: use for trends over time (requires date dimension)
+- bar: use for categorical comparisons
+- area: use for cumulative trends over time
+- pie: use for showing share/proportion (max 6 segments)
+
+RULES:
+1. Always return valid JSON matching the schema below.
+2. Only use metrics and dimensions from the lists above.
+3. If the query is ambiguous, make a reasonable assumption.
+4. If the query asks for something impossible, return an error message.
+5. For pie charts, limit to top 6 categories; group rest as "Other".
+6. Default date range is 30 days if not specified.
+
+OUTPUT FORMAT:
+{
+  "success": true,
+  "spec": {
+    "title": "Human readable title",
+    "metric": "metric_key",
+    "dimension": "dimension_key",
+    "chartType": "line|bar|area|pie|auto",
+    "dateRange": "7d|14d|30d|custom",
+    "customDateStart": "YYYY-MM-DD",
+    "customDateEnd": "YYYY-MM-DD",
+    "autoReason": "Brief explanation of why this chart type was chosen"
+  }
+}
+
+OR if the query cannot be fulfilled:
+{
+  "success": false,
+  "error": "Human readable explanation of why this can't be charted"
+}`;
+
+function parseJsonResponse(content) {
+  if (!content) return null;
+  try {
+    return JSON.parse(content);
+  } catch (error) {
+    const start = content.indexOf('{');
+    const end = content.lastIndexOf('}');
+    if (start !== -1 && end !== -1) {
+      try {
+        return JSON.parse(content.slice(start, end + 1));
+      } catch (innerError) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
 
 // ============================================================================
 // OPTIMIZED DATA FETCHING - Full hierarchy with funnel metrics (120k token support)
@@ -1409,6 +1486,27 @@ export async function summarizeDataStream(question, store, onDelta, history = []
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
   return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
+}
+
+// ============================================================================
+// EXPLORE MODE - Chart spec generation
+// ============================================================================
+
+export async function exploreQuery(query, store, currentFilters = {}) {
+  const userPrompt = `Query: ${query}\nCurrent Filters: ${JSON.stringify(currentFilters, null, 2)}`;
+  const response = await client.chat.completions.create({
+    model: EXPLORE_MODEL,
+    messages: [
+      { role: 'system', content: EXPLORE_SYSTEM_PROMPT },
+      { role: 'user', content: userPrompt }
+    ],
+    temperature: 0.2,
+    max_tokens: 800
+  });
+
+  const content = response.choices[0]?.message?.content;
+  const parsed = parseJsonResponse(content);
+  return parsed || { success: false, error: 'Invalid response from model' };
 }
 
 // ============================================================================
