@@ -58,6 +58,14 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
               ? formatDateAsGmt3(createdAtDate)
               : (createdAtIso?.split('T')[0] || null);
 
+          const landingSite = order.landing_site || null;
+          const referringSite = order.referring_site || null;
+          const utmParams = extractUtmParams({
+            landingSite,
+            referringSite,
+            noteAttributes: order.note_attributes || []
+          });
+
           orders.push({
             order_id: order.id.toString(),
             date: dateGmt3,
@@ -77,7 +85,14 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             payment_method: order.payment_gateway_names?.[0] || 'unknown',
             currency: order.currency || 'USD',
             order_created_at: createdAtUtc,
-            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
+            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null,
+            landing_site: landingSite,
+            referring_site: referringSite,
+            utm_source: utmParams.utm_source,
+            utm_medium: utmParams.utm_medium,
+            utm_campaign: utmParams.utm_campaign,
+            utm_content: utmParams.utm_content,
+            utm_term: utmParams.utm_term
           });
         }
       }
@@ -127,8 +142,9 @@ export async function syncShopifyOrders() {
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_orders
       (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount,
-       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at,
+       landing_site, referring_site, utm_source, utm_medium, utm_campaign, utm_content, utm_term)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let recordsInserted = 0;
@@ -152,7 +168,14 @@ export async function syncShopifyOrders() {
         order.fulfillment_status,
         order.payment_method,
         order.currency,
-        order.order_created_at
+        order.order_created_at,
+        order.landing_site,
+        order.referring_site,
+        order.utm_source,
+        order.utm_medium,
+        order.utm_campaign,
+        order.utm_content,
+        order.utm_term
       );
       recordsInserted++;
     }
@@ -236,6 +259,63 @@ function getCountryName(code) {
   };
 
   return countries[code] || code;
+}
+
+function extractUtmParams({ landingSite, referringSite, noteAttributes }) {
+  const params = {
+    utm_source: null,
+    utm_medium: null,
+    utm_campaign: null,
+    utm_content: null,
+    utm_term: null
+  };
+
+  const mergeParams = (values) => {
+    if (!values) return;
+    Object.keys(params).forEach((key) => {
+      if (!params[key] && values[key]) {
+        params[key] = values[key];
+      }
+    });
+  };
+
+  const parseFromUrl = (urlValue) => {
+    if (!urlValue || typeof urlValue !== 'string') {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(urlValue, 'https://shopify.local');
+      return {
+        utm_source: parsed.searchParams.get('utm_source'),
+        utm_medium: parsed.searchParams.get('utm_medium'),
+        utm_campaign: parsed.searchParams.get('utm_campaign'),
+        utm_content: parsed.searchParams.get('utm_content'),
+        utm_term: parsed.searchParams.get('utm_term')
+      };
+    } catch (error) {
+      return null;
+    }
+  };
+
+  mergeParams(parseFromUrl(landingSite));
+  mergeParams(parseFromUrl(referringSite));
+
+  if (Array.isArray(noteAttributes) && noteAttributes.length > 0) {
+    const noteParams = {};
+    noteAttributes.forEach((attr) => {
+      if (!attr || typeof attr.name !== 'string') {
+        return;
+      }
+      const key = attr.name.toLowerCase().trim();
+      if (key.startsWith('utm_')) {
+        noteParams[key] = attr.value;
+      }
+    });
+    mergeParams(noteParams);
+  }
+
+  return params;
 }
 
 // Demo data removed - only real Shopify API data is used
