@@ -1,7 +1,8 @@
 // client/src/components/CreativeStudio.jsx
 // Main Creative Studio Component - Google-style Ad Editor
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { COUNTRIES } from '../data/countries';
 import {
   Type, Image as ImageIcon, Download, Layout, Palette, Move,
   Maximize, Smartphone, Monitor, Check, Undo, Upload, Wand2,
@@ -1892,15 +1893,22 @@ function VideoResizer({ store }) {
 // ============================================================================
 // COMPETITOR SPY (Apify-powered with modern UI)
 // ============================================================================
+const COUNTRY_LIMIT_OPTIONS = [2, 5, 10, 20];
+const getFlagEmoji = (code) => code
+  .toUpperCase()
+  .replace(/./g, char => String.fromCodePoint(char.charCodeAt(0) + 127397));
+
 function CompetitorSpy({ store, onGenerateBrief }) {
   const [activeTab, setActiveTab] = useState('search');
   const [searchQuery, setSearchQuery] = useState('');
   const [country, setCountry] = useState('ALL');
+  const [countryQuery, setCountryQuery] = useState('All Countries');
+  const [isCountryOpen, setIsCountryOpen] = useState(false);
+  const [limit, setLimit] = useState(2);
   const [loading, setLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [results, setResults] = useState([]);
   const [cacheInfo, setCacheInfo] = useState(null);
-  const [countries, setCountries] = useState({});
   const [selectedAd, setSelectedAd] = useState(null);
   const [showAdModal, setShowAdModal] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -1930,11 +1938,31 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const BOARD_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#0ea5e9', '#6b7280'];
   const BOARD_ICONS = ['📁', '💡', '🎯', '🔥', '⭐', '💎', '🚀', '🎨', '📊', '🏆'];
 
+  const countryOptions = useMemo(() => {
+    const options = COUNTRIES
+      .map(({ code, name }) => ({
+        code,
+        name,
+        flag: getFlagEmoji(code)
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return [
+      { code: 'ALL', name: 'All Countries', flag: '🌍' },
+      ...options
+    ];
+  }, []);
+
+  const countryNameLookup = useMemo(() => new Map(
+    countryOptions.map(option => [option.code, option.name])
+  ), [countryOptions]);
+
   useEffect(() => {
-    fetch(withStore('/creative-studio/competitor/countries', store))
-      .then(res => res.json())
-      .then(data => { if (data.success) setCountries(data.countries); });
-  }, [store]);
+    const selectedName = countryNameLookup.get(country);
+    if (selectedName) {
+      setCountryQuery(selectedName);
+    }
+  }, [country, countryNameLookup]);
 
   useEffect(() => { loadSwipeFiles(); }, [store]);
   useEffect(() => { loadTrackedBrands(); }, [store]);
@@ -1944,6 +1972,14 @@ function CompetitorSpy({ store, onGenerateBrief }) {
       .then(res => res.json())
       .then(data => { if (data.should_show) setShowWelcome(true); });
   }, [store]);
+
+  const filteredCountries = useMemo(() => {
+    const query = countryQuery.trim().toLowerCase();
+    if (!query) return countryOptions;
+    return countryOptions.filter(option => (
+      option.name.toLowerCase().includes(query) || option.code.toLowerCase().includes(query)
+    ));
+  }, [countryOptions, countryQuery]);
 
   const loadSwipeFiles = async () => {
     try {
@@ -1984,7 +2020,8 @@ function CompetitorSpy({ store, onGenerateBrief }) {
     }, 15000);
     
     try {
-      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}&limit=2`, store);
+      const normalizedLimit = Math.max(1, Number(limit) || 2);
+      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}&limit=${normalizedLimit}`, store);
       const response = await fetch(url);
       const data = await response.json();
       
@@ -2203,6 +2240,20 @@ function CompetitorSpy({ store, onGenerateBrief }) {
     return Math.floor((now - start) / (1000 * 60 * 60 * 24));
   };
 
+  const limitSelectValue = COUNTRY_LIMIT_OPTIONS.includes(Number(limit)) ? String(limit) : 'custom';
+
+  const handleCountrySelect = (option) => {
+    setCountry(option.code);
+    setCountryQuery(option.name);
+    setIsCountryOpen(false);
+  };
+
+  const handleCountryInputKeyDown = (event) => {
+    if (event.key === 'Enter' && filteredCountries.length > 0) {
+      handleCountrySelect(filteredCountries[0]);
+    }
+  };
+
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-6 flex items-center justify-between">
@@ -2244,7 +2295,7 @@ function CompetitorSpy({ store, onGenerateBrief }) {
       {activeTab === 'search' && (
         <>
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-6">
-            <div className="flex gap-3">
+            <div className="flex flex-col lg:flex-row gap-3">
               <div className="flex-1 relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                 <input
@@ -2256,11 +2307,89 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                   className="w-full pl-12 pr-4 py-3.5 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all"
                 />
               </div>
-              <select value={country} onChange={(e) => setCountry(e.target.value)} className="px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white min-w-[140px]">
-                {Object.entries(countries).map(([code, name]) => (
-                  <option key={code} value={code}>{name}</option>
-                ))}
-              </select>
+              <div className="relative min-w-[220px]">
+                <label className="sr-only" htmlFor="competitor-country-search">Country</label>
+                <div className="relative">
+                  <Globe className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <input
+                    id="competitor-country-search"
+                    type="text"
+                    value={countryQuery}
+                    onChange={(event) => {
+                      setCountryQuery(event.target.value);
+                      setIsCountryOpen(true);
+                    }}
+                    onFocus={() => setIsCountryOpen(true)}
+                    onBlur={() => setTimeout(() => setIsCountryOpen(false), 120)}
+                    onKeyDown={handleCountryInputKeyDown}
+                    placeholder="Select a country"
+                    className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all"
+                  />
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => setIsCountryOpen((open) => !open)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    <ChevronDown size={18} />
+                  </button>
+                </div>
+                {isCountryOpen && (
+                  <div className="absolute z-30 mt-2 w-full max-h-64 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg">
+                    {filteredCountries.length === 0 ? (
+                      <div className="px-4 py-3 text-sm text-gray-500">No countries found.</div>
+                    ) : (
+                      filteredCountries.map(option => (
+                        <button
+                          key={option.code}
+                          type="button"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            handleCountrySelect(option);
+                          }}
+                          className={`w-full px-4 py-2.5 text-left text-sm flex items-center gap-2 hover:bg-violet-50 ${
+                            option.code === country ? 'bg-violet-50 text-violet-700 font-medium' : 'text-gray-700'
+                          }`}
+                        >
+                          <span>{option.flag}</span>
+                          <span>{option.name}</span>
+                          <span className="ml-auto text-xs text-gray-400">{option.code}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col gap-1 min-w-[220px]">
+                <span className="text-xs font-medium text-gray-500">Number of ads</span>
+                <div className="flex gap-2">
+                  <select
+                    value={limitSelectValue}
+                    onChange={(event) => {
+                      const { value } = event.target;
+                      if (value === 'custom') return;
+                      setLimit(Number(value));
+                    }}
+                    className="px-3 py-2.5 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white min-w-[100px]"
+                  >
+                    {COUNTRY_LIMIT_OPTIONS.map(option => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input
+                    type="number"
+                    min="1"
+                    value={limit}
+                    onChange={(event) => {
+                      const nextValue = Number(event.target.value);
+                      if (Number.isNaN(nextValue)) return;
+                      setLimit(Math.max(1, nextValue));
+                    }}
+                    className="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white"
+                  />
+                </div>
+              </div>
               <button onClick={() => handleSearch(false)} disabled={loading || !searchQuery.trim()} className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all disabled:opacity-50 disabled:shadow-none">
                 {loading ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
                 Search
