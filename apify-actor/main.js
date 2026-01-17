@@ -178,27 +178,59 @@ try {
     // Extract data from each ad container
     adContainers.slice(0, limit * 2).forEach((container, index) => {
       try {
-        // Get page name - usually in a link or span at the top of the card
+        // Get page name - look for link to Facebook page (not ad library link)
         let pageName = '';
-        const links = container.querySelectorAll('a[href*="/ads/library/"]');
-        links.forEach(link => {
+        
+        // Method 1: Find links to Facebook pages (exclude ad library links)
+        const allLinks = container.querySelectorAll('a[href*="facebook.com"]');
+        allLinks.forEach(link => {
+          const href = link.href || '';
           const text = link.innerText?.trim();
-          if (text && text.length > 1 && text.length < 100 && !text.includes('See ad details')) {
-            if (!pageName || text.length > pageName.length) {
+          
+          // Skip ad library links, we want the actual page link
+          if (href.includes('/ads/library/') || href.includes('ad_library')) return;
+          
+          // Page links usually look like facebook.com/PageName or facebook.com/profile.php
+          if (text && text.length > 1 && text.length < 80 && 
+              !text.includes('See ad details') && 
+              !text.includes('Library ID') &&
+              !text.includes('Disclaimer')) {
+            if (!pageName) {
               pageName = text;
             }
           }
         });
         
-        // Fallback: look for spans with page name characteristics
+        // Method 2: Look for page name in first strong/bold text or heading
+        if (!pageName) {
+          const strongText = container.querySelector('strong, b, h1, h2, h3, h4');
+          if (strongText) {
+            const text = strongText.innerText?.trim();
+            if (text && text.length > 1 && text.length < 80 && !text.includes('Library ID')) {
+              pageName = text;
+            }
+          }
+        }
+        
+        // Method 3: First line of ad copy often contains page name
+        if (!pageName) {
+          const allText = container.innerText || '';
+          const firstLine = allText.split('\n')[0]?.trim();
+          if (firstLine && firstLine.length > 1 && firstLine.length < 80 &&
+              !firstLine.includes('Library ID') && !firstLine.includes('Started')) {
+            pageName = firstLine;
+          }
+        }
+        
+        // Method 4: Fallback to spans
         if (!pageName) {
           const spans = container.querySelectorAll('span');
           spans.forEach(span => {
             const text = span.innerText?.trim();
             if (text && text.length > 2 && text.length < 80) {
-              // Page names are usually at the start and don't contain dates or common phrases
               if (!text.includes('Started') && !text.includes('Disclaimer') && 
                   !text.includes('Active') && !text.includes('Inactive') &&
+                  !text.includes('Library ID') &&
                   !text.match(/^\d/) && !pageName) {
                 pageName = text;
               }
@@ -328,19 +360,38 @@ try {
         const dateMatch = container.innerText.match(/Started running on (\w+ \d+, \d{4})/);
         if (dateMatch) startDate = dateMatch[1];
 
+        // Extract Library ID separately
+        let libraryId = '';
+        const libraryMatch = container.innerText.match(/Library ID[:\s]+(\d+)/);
+        if (libraryMatch) libraryId = libraryMatch[1];
+        
         // Check if active
         const isActive = container.innerText.includes('Active') && !container.innerText.includes('Inactive');
 
+        // Filter out thumbnails and static resources, pick best image
+        const goodImages = images.filter(url => {
+          // Skip tiny thumbnails (s60x60, s75x75, etc)
+          if (url.match(/_s\d+x\d+/)) return false;
+          if (url.match(/stp=dst-jpg_s\d+x\d+/)) return false;
+          // Skip static FB resources
+          if (url.includes('static.xx.fbcdn') || url.includes('rsrc.php')) return false;
+          return true;
+        });
+        
+        // Pick best image: prefer larger images (ones without size params)
+        const bestImage = goodImages[0] || images.find(url => !url.includes('s60x60')) || images[0] || null;
+
         if (pageName || images.length > 0 || videos.length > 0) {
           if (debug) {
-            console.log(`[AD_FOUND] pageName="${pageName}" images=${images.length} videos=${videos.length}`);
-            if (images.length > 0) console.log(`[AD_IMAGES] ${images.slice(0, 2).join(' | ')}`);
+            console.log(`[AD_FOUND] pageName="${pageName}" libraryId="${libraryId}" images=${images.length} goodImages=${goodImages.length} videos=${videos.length}`);
+            if (bestImage) console.log(`[BEST_IMAGE] ${bestImage.slice(0, 100)}...`);
           }
           ads.push({
             ad_id: `fb_${Date.now()}_${index}`,
+            library_id: libraryId || null,
             page_name: pageName || searchQuery,
             ad_copy: adCopy || '',
-            original_image_url: images[0] || null,
+            original_image_url: bestImage,
             original_video_url: videos[0] || null,
             all_images: images,
             all_videos: videos,
