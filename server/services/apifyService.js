@@ -164,6 +164,13 @@ export async function searchByBrand(store, brandName, options = {}) {
     updateBrandCache(store, brandName, country, adIds);
     debugLog.add('CACHE_UPDATE', `Cached ${adIds.length} ad IDs`);
 
+    // Upload media to Cloudinary in background (non-blocking)
+    setImmediate(() => {
+      uploadMediaInBackground(storedAds).catch(err => {
+        debugLog.add('BACKGROUND_UPLOAD_ERROR', err.message);
+      });
+    });
+
     return {
       ads: storedAds,
       fromCache: false,
@@ -690,31 +697,11 @@ async function processAndStoreAds(rawAds) {
         Boolean(originalImageUrl)
       );
 
-      // === UPLOAD TO CLOUDINARY ===
+      // === SKIP CLOUDINARY ON INITIAL SAVE (will upload in background) ===
       let cloudinaryImageUrl = null;
       let cloudinaryVideoUrl = null;
       let cloudinaryThumbnailUrl = null;
-
-      if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
-        try {
-          if (originalImageUrl) {
-            cloudinaryImageUrl = await uploadToCloudinaryWithTimeout(originalImageUrl, 'image');
-            if (cloudinaryImageUrl) {
-              cloudinaryThumbnailUrl = cloudinaryImageUrl.replace('/upload/', '/upload/w_400,h_400,c_fill/');
-            }
-          }
-          if (originalVideoUrl) {
-            cloudinaryVideoUrl = await uploadToCloudinaryWithTimeout(originalVideoUrl, 'video');
-            if (cloudinaryVideoUrl) {
-              cloudinaryThumbnailUrl = cloudinaryVideoUrl
-                .replace('/upload/', '/upload/w_400,h_400,c_fill,so_0/')
-                .replace(/\.(mp4|webm|mov)$/i, '.jpg');
-            }
-          }
-        } catch (cloudinaryError) {
-          debugLog.add('CLOUDINARY_ERROR', `Failed to upload media: ${cloudinaryError.message}`);
-        }
-      }
+      // Cloudinary upload happens in background after response is sent
 
       // === EXTRACT TEXT CONTENT ===
       const adCopy = getFirstValid(
@@ -889,6 +876,65 @@ async function processAndStoreAds(rawAds) {
   }
 
   return processedAds;
+}
+
+/**
+ * Upload media to Cloudinary in background (non-blocking)
+ * Updates database with permanent URLs after upload completes
+ */
+async function uploadMediaInBackground(ads) {
+  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
+    return;
+  }
+
+  const db = getDb();
+  
+  for (const ad of ads) {
+    try {
+      // Skip if already has Cloudinary URLs
+      if (ad.cloudinary_video_url || ad.cloudinary_image_url) {
+        continue;
+      }
+
+      let cloudinaryImageUrl = null;
+      let cloudinaryVideoUrl = null;
+      let cloudinaryThumbnailUrl = null;
+
+      // Upload image
+      if (ad.original_image_url) {
+        cloudinaryImageUrl = await uploadToCloudinaryWithTimeout(ad.original_image_url, 'image');
+        if (cloudinaryImageUrl) {
+          cloudinaryThumbnailUrl = cloudinaryImageUrl.replace('/upload/', '/upload/w_400,h_400,c_fill/');
+        }
+      }
+
+      // Upload video
+      if (ad.original_video_url) {
+        cloudinaryVideoUrl = await uploadToCloudinaryWithTimeout(ad.original_video_url, 'video');
+        if (cloudinaryVideoUrl) {
+          cloudinaryThumbnailUrl = cloudinaryVideoUrl
+            .replace('/upload/', '/upload/w_400,h_400,c_fill,so_0/')
+            .replace(/\.(mp4|webm|mov)$/i, '.jpg');
+        }
+      }
+
+      // Update database if we got any URLs
+      if (cloudinaryImageUrl || cloudinaryVideoUrl) {
+        db.prepare(`
+          UPDATE competitor_ads 
+          SET cloudinary_image_url = COALESCE(?, cloudinary_image_url),
+              cloudinary_video_url = COALESCE(?, cloudinary_video_url),
+              cloudinary_thumbnail_url = COALESCE(?, cloudinary_thumbnail_url),
+              updated_at = datetime('now')
+          WHERE ad_id = ?
+        `).run(cloudinaryImageUrl, cloudinaryVideoUrl, cloudinaryThumbnailUrl, ad.ad_id);
+        
+        debugLog.add('BACKGROUND_UPLOAD', `Uploaded media for ad ${ad.ad_id}`);
+      }
+    } catch (error) {
+      debugLog.add('BACKGROUND_UPLOAD_ERROR', `Failed for ad ${ad.ad_id}: ${error.message}`);
+    }
+  }
 }
 
 /**
