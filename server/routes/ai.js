@@ -10,7 +10,8 @@ import {
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
-  runQuery
+  runQuery,
+  exploreQuery
 } from '../services/openaiService.js';
 import {
   dismissCreativeFunnelSummary,
@@ -171,6 +172,162 @@ function getConversationHistory(conversationId, limit = 10) {
   }
 }
 
+const VALID_METRICS = ['revenue', 'orders', 'spend', 'impressions', 'clicks', 'roas', 'aov', 'conversion_rate', 'add_to_cart'];
+const VALID_DIMENSIONS = ['date', 'country', 'campaign_name', 'adset_name', 'platform', 'age', 'gender'];
+const VALID_CHART_TYPES = ['line', 'bar', 'area', 'pie'];
+
+function getMetricExpression(metric) {
+  switch (metric) {
+    case 'revenue':
+      return 'SUM(conversion_value)';
+    case 'orders':
+      return 'SUM(conversions)';
+    case 'spend':
+      return 'SUM(spend)';
+    case 'impressions':
+      return 'SUM(impressions)';
+    case 'clicks':
+      return 'SUM(clicks)';
+    case 'roas':
+      return "CASE WHEN SUM(spend) = 0 THEN 0 ELSE SUM(conversion_value) / SUM(spend) END";
+    case 'aov':
+      return "CASE WHEN SUM(conversions) = 0 THEN 0 ELSE SUM(conversion_value) / SUM(conversions) END";
+    case 'conversion_rate':
+      return "CASE WHEN SUM(clicks) = 0 THEN 0 ELSE SUM(conversions) / SUM(clicks) END";
+    case 'add_to_cart':
+      return 'SUM(add_to_cart)';
+    default:
+      return 'SUM(conversion_value)';
+  }
+}
+
+function resolveDateRange(spec) {
+  const end = new Date();
+  const start = new Date();
+  if (spec.dateRange === 'custom' && spec.customDateStart && spec.customDateEnd) {
+    return { start: spec.customDateStart, end: spec.customDateEnd };
+  }
+  switch (spec.dateRange) {
+    case '7d':
+      start.setDate(end.getDate() - 7);
+      break;
+    case '14d':
+      start.setDate(end.getDate() - 14);
+      break;
+    case '30d':
+    default:
+      start.setDate(end.getDate() - 30);
+      break;
+  }
+  return {
+    start: start.toISOString().split('T')[0],
+    end: end.toISOString().split('T')[0]
+  };
+}
+
+function getAutoReasonForSpec(spec) {
+  if (spec.dimension === 'date') {
+    return 'Trend over time';
+  }
+  if (spec.chartType === 'pie') {
+    return 'Share of total';
+  }
+  return 'Categorical breakdown';
+}
+
+function buildTitle(spec) {
+  const metricLabel = {
+    revenue: 'Revenue',
+    orders: 'Orders',
+    spend: 'Spend',
+    impressions: 'Impressions',
+    clicks: 'Clicks',
+    roas: 'ROAS',
+    aov: 'AOV',
+    conversion_rate: 'Conversion Rate',
+    add_to_cart: 'Add to Cart'
+  }[spec.metric] || 'Metric';
+
+  const dimensionLabel = {
+    date: 'Date',
+    country: 'Country',
+    campaign_name: 'Campaign',
+    adset_name: 'Ad Set',
+    platform: 'Platform',
+    age: 'Age',
+    gender: 'Gender'
+  }[spec.dimension] || 'Dimension';
+
+  if (spec.dimension === 'date') {
+    return `${metricLabel} trend`;
+  }
+  return `${metricLabel} by ${dimensionLabel}`;
+}
+
+function validateToolCall(toolCall) {
+  return VALID_METRICS.includes(toolCall.metric)
+    && VALID_DIMENSIONS.includes(toolCall.dimension)
+    && VALID_CHART_TYPES.includes(toolCall.chartType);
+}
+
+function calculateMetaTotal(metric, data) {
+  if (!Array.isArray(data) || data.length === 0) return 0;
+  if (['roas', 'aov', 'conversion_rate'].includes(metric)) {
+    const sum = data.reduce((acc, row) => acc + (row.value || 0), 0);
+    return sum / data.length;
+  }
+  return data.reduce((acc, row) => acc + (row.value || 0), 0);
+}
+
+function fetchChartData(db, spec, store, startDate, endDate) {
+  const metricExpression = getMetricExpression(spec.metric);
+  const storeName = (store || '').toLowerCase();
+  const MAX_ROWS = 100;
+
+  if (spec.dimension === 'date') {
+    const rows = db.prepare(`
+      SELECT date, ${metricExpression} as value
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+      GROUP BY date
+      ORDER BY date ASC
+      LIMIT ${MAX_ROWS}
+    `).all(storeName, startDate, endDate);
+
+    return rows.map(row => ({ date: row.date, value: row.value || 0 }));
+  }
+
+  const rows = db.prepare(`
+    SELECT ${spec.dimension} as category, ${metricExpression} as value
+    FROM meta_daily_metrics
+    WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+    GROUP BY ${spec.dimension}
+    ORDER BY value DESC
+    LIMIT 10
+  `).all(storeName, startDate, endDate);
+
+  let data = rows.map(row => ({ category: row.category || 'Unknown', value: row.value || 0 }));
+
+  if (spec.chartType === 'pie') {
+    const totalRow = db.prepare(`
+      SELECT ${metricExpression} as value, COUNT(DISTINCT ${spec.dimension}) as totalCategories
+      FROM meta_daily_metrics
+      WHERE LOWER(store) = ? AND date BETWEEN ? AND ?
+    `).get(storeName, startDate, endDate);
+
+    if (totalRow?.totalCategories > 6) {
+      const topFive = data.slice(0, 5);
+      const topFiveTotal = topFive.reduce((acc, row) => acc + (row.value || 0), 0);
+      const otherValue = Math.max((totalRow.value || 0) - topFiveTotal, 0);
+      data = [...topFive, { category: 'Other', value: otherValue }];
+    } else {
+      data = data.slice(0, 6);
+    }
+  }
+
+  return data;
+}
+
 // ============================================================================
 // ANALYZE - GPT-5 nano (Quick metrics)
 // ============================================================================
@@ -260,6 +417,81 @@ router.post('/summarize', async (req, res) => {
       error: error.message,
       details: 'Check server logs for more info'
     });
+  }
+});
+
+// ============================================================================
+// EXPLORE - AI-driven chart specification + data
+// ============================================================================
+router.post('/explore', async (req, res) => {
+  try {
+    const { query, store, currentFilters, skipAI } = req.body;
+
+    if (!store) {
+      return res.status(400).json({ success: false, error: 'Store required' });
+    }
+
+    if (!skipAI && !query) {
+      return res.status(400).json({ success: false, error: 'Query required' });
+    }
+
+    let spec;
+    if (skipAI) {
+      const baseSpec = {
+        metric: currentFilters?.metric || 'revenue',
+        dimension: currentFilters?.dimension || 'country',
+        chartType: currentFilters?.chartType || 'auto',
+        dateRange: currentFilters?.dateRange || '14d',
+        customDateStart: currentFilters?.customDateStart,
+        customDateEnd: currentFilters?.customDateEnd
+      };
+
+      const resolvedChartType = baseSpec.chartType === 'auto'
+        ? (baseSpec.dimension === 'date' ? 'line' : 'bar')
+        : baseSpec.chartType;
+
+      spec = {
+        ...baseSpec,
+        chartType: resolvedChartType,
+        title: buildTitle(baseSpec),
+        autoReason: baseSpec.chartType === 'auto' ? getAutoReasonForSpec(baseSpec) : ''
+      };
+    } else {
+      const result = await exploreQuery(query, currentFilters);
+      if (!result.success) {
+        return res.json(result);
+      }
+      spec = result.spec;
+    }
+
+    if (!VALID_METRICS.includes(spec.metric) || !VALID_DIMENSIONS.includes(spec.dimension)) {
+      return res.json({ success: false, error: 'Unsupported metric or dimension.' });
+    }
+
+    const { start, end } = resolveDateRange(spec);
+    const db = getDb();
+    const data = fetchChartData(db, spec, store, start, end);
+    const total = calculateMetaTotal(spec.metric, data);
+    const currency = store.toLowerCase() === 'shawq' ? 'USD' : 'SAR';
+
+    res.json({
+      success: true,
+      spec: {
+        ...spec,
+        autoReason: spec.autoReason || getAutoReasonForSpec(spec)
+      },
+      data,
+      meta: {
+        total,
+        currency,
+        periodStart: start,
+        periodEnd: end
+      },
+      availableMetrics: VALID_METRICS
+    });
+  } catch (error) {
+    console.error('[API] Explore error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -397,6 +629,49 @@ router.post('/stream', async (req, res) => {
       fullText += delta;
       res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
     };
+    const onTool = async (toolArgs) => {
+      try {
+        if (!validateToolCall(toolArgs)) {
+          return 'Invalid chart request.';
+        }
+
+        const spec = {
+          title: toolArgs.title,
+          note: toolArgs.note,
+          metric: toolArgs.metric,
+          dimension: toolArgs.dimension,
+          chartType: toolArgs.chartType,
+          dateRange: toolArgs.dateRange,
+          autoReason: getAutoReasonForSpec(toolArgs)
+        };
+
+        const { start, end } = resolveDateRange(spec);
+        const db = getDb();
+        const data = fetchChartData(db, spec, store, start, end);
+        const total = calculateMetaTotal(spec.metric, data);
+        const currency = store.toLowerCase() === 'shawq' ? 'USD' : 'SAR';
+
+        res.write(`data: ${JSON.stringify({
+          type: 'tool',
+          name: 'show_chart',
+          payload: {
+            spec,
+            data,
+            meta: {
+              total,
+              currency,
+              periodStart: start,
+              periodEnd: end
+            }
+          }
+        })}\n\n`);
+
+        return `Chart ready: ${spec.title}`;
+      } catch (toolError) {
+        console.error('Chart data fetch failed:', toolError.message);
+        return 'Chart data fetch failed.';
+      }
+    };
 
     if (activeMode === 'daily-summary') {
       // Daily summary uses GPT-5.1 deep - always for both stores
@@ -415,11 +690,11 @@ router.post('/stream', async (req, res) => {
         onDelta
       });
     } else if (activeMode === 'analyze') {
-      result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
+      result = await analyzeQuestionStream(question, store, onDelta, onTool, history, startDate, endDate);
     } else if (activeMode === 'summarize') {
-      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
+      result = await summarizeDataStream(question, store, onDelta, onTool, history, startDate, endDate);
     } else {
-      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
+      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, onTool, history, startDate, endDate);
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
