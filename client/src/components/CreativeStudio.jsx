@@ -1944,16 +1944,21 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const BOARD_ICONS = ['📁', '💡', '🎯', '🔥', '⭐', '💎', '🚀', '🎨', '📊', '🏆'];
 
   useEffect(() => {
-    let isMounted = true;
-    fetch(withStore('/creative-studio/competitor/countries', store))
+    const controller = new AbortController();
+    const { signal } = controller;
+    fetch(withStore('/creative-studio/competitor/countries', store), { signal })
       .then(res => res.json())
       .then(data => {
-        if (data.success && Array.isArray(data.countries) && isMounted) {
+        if (data.success && Array.isArray(data.countries)) {
           setCountryOptions(data.countries);
         }
       })
-      .catch(error => console.error('Failed to load countries:', error));
-    return () => { isMounted = false; };
+      .catch(error => {
+        if (error.name !== 'AbortError') {
+          console.error('Failed to load countries:', error);
+        }
+      });
+    return () => { controller.abort(); };
   }, [store]);
 
   useEffect(() => { loadSwipeFiles(); }, [store]);
@@ -2071,9 +2076,12 @@ function CompetitorSpy({ store, onGenerateBrief }) {
     }, 15000);
     
     try {
-      const resolvedCountry = resolveCountryFromQuery(countryQuery)?.code || country;
-      if (resolvedCountry !== country) {
-        setCountry(resolvedCountry);
+      const query = countryQuery.trim();
+      const topMatch = query && filteredCountries.length > 0 ? filteredCountries[0] : null;
+      const resolvedCountry = topMatch ? topMatch.code : country;
+
+      if (topMatch && topMatch.code !== country) {
+        handleCountrySelect(topMatch);
       }
       const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${resolvedCountry}&force_refresh=${forceRefresh}&limit=${limit}`, store);
       const response = await fetch(url);
@@ -2422,7 +2430,14 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                   className="w-24 px-3 py-3 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all"
                 />
               </div>
-              <button onClick={() => handleSearch(false)} disabled={loading || !searchQuery.trim()} className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all disabled:opacity-50 disabled:shadow-none">
+              <button
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  handleSearch(false);
+                }}
+                disabled={loading || !searchQuery.trim()}
+                className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all disabled:opacity-50 disabled:shadow-none"
+              >
                 {loading ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
                 Search
               </button>
