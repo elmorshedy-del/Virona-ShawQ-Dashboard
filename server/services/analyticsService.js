@@ -186,7 +186,7 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
   let totalRevenue = metaTotals.revenue || 0;
   let totalOrders = metaTotals.orders || 0;
 
-  if (store === 'shawq' && !campaignValue) {
+  if (store === 'shawq') {
     const ecomData = db.prepare(`
       SELECT COUNT(*) as orders, SUM(subtotal) as revenue
       FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?
@@ -511,7 +511,7 @@ function getTrends(store, startDate, endDate, params = {}) {
   }
 
   let salesData = [];
-  if (store === 'shawq' && !campaignValue) {
+  if (store === 'shawq') {
     salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
   } else {
     salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs);
