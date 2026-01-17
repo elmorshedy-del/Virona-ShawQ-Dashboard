@@ -567,8 +567,29 @@ async function processAndStoreAds(rawAds) {
 
   for (const rawAd of rawAds) {
     try {
+      const parsedRawData = typeof rawAd?.raw_data === 'string'
+        ? safeJsonParse(rawAd.raw_data, null)
+        : (rawAd?.raw_data && typeof rawAd.raw_data === 'object' ? rawAd.raw_data : null);
+      const rawData = parsedRawData && typeof parsedRawData === 'object' ? parsedRawData : null;
+      const snapshot = rawAd?.snapshot || rawData?.snapshot || null;
+
+      const pickValue = (...values) => {
+        for (const value of values) {
+          if (value !== null && value !== undefined && value !== '') {
+            return value;
+          }
+        }
+        return null;
+      };
+
       // Generate a unique ad_id
-      const adId = rawAd.adArchiveID || rawAd.id || `ad_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const adId = pickValue(
+        rawAd.adArchiveID,
+        rawAd.id,
+        rawData?.adArchiveID,
+        rawData?.id,
+        `ad_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      );
       
       // Check if ad already exists
       const existing = db.prepare('SELECT * FROM competitor_ads WHERE ad_id = ?').get(adId);
@@ -581,25 +602,44 @@ async function processAndStoreAds(rawAds) {
       let originalImageUrl = null;
       let originalVideoUrl = null;
       let mediaType = 'image';
+      const explicitMediaType = pickValue(rawAd?.media_type, rawData?.media_type);
 
       // Try multiple paths for video URLs
-      if (rawAd.snapshot?.videos?.length > 0) {
-        const video = rawAd.snapshot.videos[0];
+      if (snapshot?.videos?.length > 0) {
+        const video = snapshot.videos[0];
         originalVideoUrl = video.video_hd_url || video.video_sd_url || video.video_url || video.url;
         mediaType = 'video';
-      } else if (rawAd.video_url || rawAd.videoUrl) {
-        originalVideoUrl = rawAd.video_url || rawAd.videoUrl;
+      } else if (pickValue(rawAd.video_url, rawAd.videoUrl, rawData?.video_url, rawData?.videoUrl, rawData?.original_video_url)) {
+        originalVideoUrl = pickValue(
+          rawAd.video_url,
+          rawAd.videoUrl,
+          rawData?.video_url,
+          rawData?.videoUrl,
+          rawData?.original_video_url
+        );
         mediaType = 'video';
       }
       
       // Try multiple paths for image URLs
-      if (rawAd.snapshot?.images?.length > 0) {
-        originalImageUrl = rawAd.snapshot.images[0];
-      } else if (rawAd.snapshot?.cards?.length > 0) {
-        originalImageUrl = rawAd.snapshot.cards[0].original_image_url || rawAd.snapshot.cards[0].image_url;
+      if (snapshot?.images?.length > 0) {
+        originalImageUrl = snapshot.images[0];
+      } else if (snapshot?.cards?.length > 0) {
+        originalImageUrl = snapshot.cards[0].original_image_url || snapshot.cards[0].image_url;
         if (!originalVideoUrl) mediaType = 'carousel';
-      } else if (rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url) {
-        originalImageUrl = rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url;
+      } else if (pickValue(rawAd.image_url, rawAd.imageUrl, rawAd.thumbnail_url, rawData?.image_url, rawData?.imageUrl, rawData?.thumbnail_url, rawData?.original_image_url)) {
+        originalImageUrl = pickValue(
+          rawAd.image_url,
+          rawAd.imageUrl,
+          rawAd.thumbnail_url,
+          rawData?.image_url,
+          rawData?.imageUrl,
+          rawData?.thumbnail_url,
+          rawData?.original_image_url
+        );
+      }
+
+      if (explicitMediaType && mediaType === 'image') {
+        mediaType = explicitMediaType;
       }
 
       // Upload to Cloudinary if configured (with timeout protection)
@@ -631,25 +671,36 @@ async function processAndStoreAds(rawAds) {
       }
 
       // Extract ad copy with fallbacks
-      const adCopy = rawAd.snapshot?.body?.text || rawAd.snapshot?.caption || rawAd.body || rawAd.text || '';
-      const headline = rawAd.snapshot?.title || rawAd.title || rawAd.headline || '';
-      const ctaText = rawAd.snapshot?.cta_text || rawAd.snapshot?.link_title || rawAd.cta_text || '';
-      const ctaLink = rawAd.snapshot?.link_url || rawAd.link_url || '';
+      const adCopy = pickValue(
+        snapshot?.body?.text,
+        snapshot?.caption,
+        rawAd.body,
+        rawAd.text,
+        rawData?.ad_copy,
+        rawData?.body,
+        rawData?.text,
+        rawData?.snapshot?.body?.text,
+        rawData?.snapshot?.caption,
+        ''
+      );
+      const headline = pickValue(snapshot?.title, rawAd.title, rawAd.headline, rawData?.headline, rawData?.title, '');
+      const ctaText = pickValue(snapshot?.cta_text, snapshot?.link_title, rawAd.cta_text, rawData?.cta_text, '');
+      const ctaLink = pickValue(snapshot?.link_url, rawAd.link_url, rawData?.cta_link, rawData?.link_url, '');
 
       // Extract dates
-      const startDate = rawAd.startDate || rawAd.startDateFormatted || rawAd.start_date || null;
-      const endDate = rawAd.endDate || rawAd.endDateFormatted || rawAd.end_date || null;
+      const startDate = pickValue(rawAd.startDate, rawAd.startDateFormatted, rawAd.start_date, rawData?.start_date, rawData?.startDate, null);
+      const endDate = pickValue(rawAd.endDate, rawAd.endDateFormatted, rawAd.end_date, rawData?.end_date, rawData?.endDate, null);
       const isActive = !endDate || new Date(endDate) > new Date();
 
       // Extract platforms
-      const platforms = rawAd.publisherPlatform || rawAd.platforms || ['facebook'];
+      const platforms = pickValue(rawAd.publisherPlatform, rawAd.platforms, rawData?.publisherPlatform, rawData?.platforms, ['facebook']);
 
       // Extract reach/spend estimates
-      const impressionsLower = rawAd.impressions?.lower_bound || rawAd.impressionsLowerBound || null;
-      const impressionsUpper = rawAd.impressions?.upper_bound || rawAd.impressionsUpperBound || null;
-      const spendLower = rawAd.spend?.lower_bound || rawAd.spendLowerBound || null;
-      const spendUpper = rawAd.spend?.upper_bound || rawAd.spendUpperBound || null;
-      const currency = rawAd.currency || 'USD';
+      const impressionsLower = pickValue(rawAd.impressions?.lower_bound, rawAd.impressionsLowerBound, rawData?.impressions?.lower_bound, rawData?.impressionsLowerBound, null);
+      const impressionsUpper = pickValue(rawAd.impressions?.upper_bound, rawAd.impressionsUpperBound, rawData?.impressions?.upper_bound, rawData?.impressionsUpperBound, null);
+      const spendLower = pickValue(rawAd.spend?.lower_bound, rawAd.spendLowerBound, rawData?.spend?.lower_bound, rawData?.spendLowerBound, null);
+      const spendUpper = pickValue(rawAd.spend?.upper_bound, rawAd.spendUpperBound, rawData?.spend?.upper_bound, rawData?.spendUpperBound, null);
+      const currency = pickValue(rawAd.currency, rawData?.currency, 'USD');
 
       // Insert into database
       const stmt = db.prepare(`
@@ -667,12 +718,12 @@ async function processAndStoreAds(rawAds) {
 
       stmt.run(
         adId,
-        rawAd.pageID || rawAd.page_id || null,
-        rawAd.pageName || rawAd.page_name || 'Unknown',
-        rawAd.pageProfilePictureURL || rawAd.snapshot?.page_profile_picture_url || rawAd.page_profile_picture_url || null,
+        pickValue(rawAd.pageID, rawAd.page_id, rawData?.page_id, rawData?.pageID, null),
+        pickValue(rawAd.pageName, rawAd.page_name, rawData?.page_name, rawData?.pageName, 'Unknown'),
+        pickValue(rawAd.pageProfilePictureURL, snapshot?.page_profile_picture_url, rawAd.page_profile_picture_url, rawData?.page_profile_picture_url, null),
         adCopy,
         headline,
-        rawAd.snapshot?.link_description || rawAd.description || '',
+        pickValue(snapshot?.link_description, rawAd.description, rawData?.description, ''),
         ctaText,
         ctaLink,
         originalImageUrl,
@@ -682,7 +733,7 @@ async function processAndStoreAds(rawAds) {
         cloudinaryThumbnailUrl,
         mediaType,
         JSON.stringify(Array.isArray(platforms) ? platforms : [platforms]),
-        JSON.stringify(rawAd.deliveryByRegion?.map(r => r.region) || []),
+        JSON.stringify((rawAd.deliveryByRegion || rawData?.deliveryByRegion)?.map(r => r.region) || []),
         startDate,
         endDate,
         isActive ? 1 : 0,
@@ -691,9 +742,9 @@ async function processAndStoreAds(rawAds) {
         spendLower,
         spendUpper,
         currency,
-        JSON.stringify(rawAd.demographicDistribution || null),
-        JSON.stringify(rawAd.deliveryByRegion || null),
-        JSON.stringify(rawAd)
+        JSON.stringify(rawAd.demographicDistribution || rawData?.demographicDistribution || null),
+        JSON.stringify(rawAd.deliveryByRegion || rawData?.deliveryByRegion || null),
+        JSON.stringify(rawData || rawAd)
       );
 
       const insertedAd = db.prepare('SELECT * FROM competitor_ads WHERE ad_id = ?').get(adId);
