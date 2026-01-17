@@ -30,19 +30,20 @@ function NotificationRow({
   // Determine store logo based on notification.store
   const storeLogo = notification.store === 'shawq' ? '/shawq-logo.svg' : '/virona-logo.svg';
   const storeLabel = notification.store === 'shawq' ? 'Shawq' : 'Virona';
+  const isMatchNotification = notification.type === 'order_match';
   const campaignName = notification?.metadata?.campaign_name
     || notification?.metadata?.campaignName
     || notification?.metadata?.campaign
     || notification?.metadata?.campaign_id
     || notification?.metadata?.campaignId;
-  const showCampaignDetails = notification.type === 'order' && campaignName
+  const showCampaignDetails = (notification.type === 'order' || notification.type === 'order_match') && campaignName
     && (notification.store === 'shawq' || (notification.store === 'vironax' && source === 'meta'));
 
   return (
     <div 
       className={`p-4 hover:bg-gray-50 transition-colors ${
         !notification.is_read ? 'bg-indigo-50/50' : ''
-      }`}
+      } ${isMatchNotification ? 'border-l-4 border-violet-900 bg-violet-900/5' : ''}`}
     >
       <div className="flex items-start justify-between gap-3">
         {/* Store Logo */}
@@ -71,6 +72,11 @@ function NotificationRow({
           {/* Meta row: source badge + time */}
           <div className="flex items-center gap-2 mt-1.5">
             {getSourceBadge(notification.source || notification.metadata?.source)}
+            {isMatchNotification && (
+              <span className="px-2 py-0.5 rounded text-xs font-medium bg-violet-900 text-white">
+                Matched
+              </span>
+            )}
             <span className="text-xs text-gray-500">
               {timeAgoDisplay}
             </span>
