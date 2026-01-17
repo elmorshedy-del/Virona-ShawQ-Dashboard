@@ -564,11 +564,23 @@ async function fetchFromApify(searchQuery, options = {}) {
 async function processAndStoreAds(rawAds) {
   const db = getDb();
   const processedAds = [];
+  const preferValue = (...values) => values.find(value => value !== null && value !== undefined && value !== '');
 
   for (const rawAd of rawAds) {
     try {
+      // Some actors store all fields in raw_data as a JSON string. Parse it for fallback values.
+      const parsedRawData = typeof rawAd?.raw_data === 'string'
+        ? safeJsonParse(rawAd.raw_data, null)
+        : rawAd?.raw_data || null;
+      const rawDataSnapshot = parsedRawData?.snapshot || null;
+
       // Generate a unique ad_id
-      const adId = rawAd.adArchiveID || rawAd.id || `ad_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const adId = preferValue(
+        rawAd.adArchiveID,
+        rawAd.id,
+        parsedRawData?.adArchiveID,
+        parsedRawData?.id
+      ) || `ad_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
       // Check if ad already exists
       const existing = db.prepare('SELECT * FROM competitor_ads WHERE ad_id = ?').get(adId);
@@ -583,23 +595,48 @@ async function processAndStoreAds(rawAds) {
       let mediaType = 'image';
 
       // Try multiple paths for video URLs
-      if (rawAd.snapshot?.videos?.length > 0) {
-        const video = rawAd.snapshot.videos[0];
+      const snapshot = rawAd.snapshot || rawDataSnapshot;
+      if (snapshot?.videos?.length > 0) {
+        const video = snapshot.videos[0];
         originalVideoUrl = video.video_hd_url || video.video_sd_url || video.video_url || video.url;
         mediaType = 'video';
-      } else if (rawAd.video_url || rawAd.videoUrl) {
-        originalVideoUrl = rawAd.video_url || rawAd.videoUrl;
+      } else if (rawAd.video_url || rawAd.videoUrl || parsedRawData?.video_url || parsedRawData?.videoUrl || parsedRawData?.original_video_url) {
+        originalVideoUrl = preferValue(
+          rawAd.video_url,
+          rawAd.videoUrl,
+          parsedRawData?.video_url,
+          parsedRawData?.videoUrl,
+          parsedRawData?.original_video_url
+        );
         mediaType = 'video';
       }
       
       // Try multiple paths for image URLs
-      if (rawAd.snapshot?.images?.length > 0) {
-        originalImageUrl = rawAd.snapshot.images[0];
-      } else if (rawAd.snapshot?.cards?.length > 0) {
-        originalImageUrl = rawAd.snapshot.cards[0].original_image_url || rawAd.snapshot.cards[0].image_url;
+      if (snapshot?.images?.length > 0) {
+        originalImageUrl = snapshot.images[0];
+      } else if (snapshot?.cards?.length > 0) {
+        originalImageUrl = snapshot.cards[0].original_image_url || snapshot.cards[0].image_url;
         if (!originalVideoUrl) mediaType = 'carousel';
-      } else if (rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url) {
-        originalImageUrl = rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url;
+      } else if (rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url || parsedRawData?.image_url || parsedRawData?.imageUrl || parsedRawData?.thumbnail_url || parsedRawData?.original_image_url) {
+        originalImageUrl = preferValue(
+          rawAd.image_url,
+          rawAd.imageUrl,
+          rawAd.thumbnail_url,
+          parsedRawData?.image_url,
+          parsedRawData?.imageUrl,
+          parsedRawData?.thumbnail_url,
+          parsedRawData?.original_image_url
+        );
+      }
+      if (!originalVideoUrl && parsedRawData?.original_video_url) {
+        originalVideoUrl = parsedRawData.original_video_url;
+        mediaType = 'video';
+      }
+      if (!originalImageUrl && parsedRawData?.original_image_url) {
+        originalImageUrl = parsedRawData.original_image_url;
+      }
+      if (!originalVideoUrl && !originalImageUrl && parsedRawData?.media_type) {
+        mediaType = parsedRawData.media_type;
       }
 
       // Upload to Cloudinary if configured (with timeout protection)
@@ -631,25 +668,88 @@ async function processAndStoreAds(rawAds) {
       }
 
       // Extract ad copy with fallbacks
-      const adCopy = rawAd.snapshot?.body?.text || rawAd.snapshot?.caption || rawAd.body || rawAd.text || '';
-      const headline = rawAd.snapshot?.title || rawAd.title || rawAd.headline || '';
-      const ctaText = rawAd.snapshot?.cta_text || rawAd.snapshot?.link_title || rawAd.cta_text || '';
-      const ctaLink = rawAd.snapshot?.link_url || rawAd.link_url || '';
+      const adCopy = preferValue(
+        snapshot?.body?.text,
+        snapshot?.caption,
+        rawAd.body,
+        rawAd.text,
+        parsedRawData?.ad_copy,
+        parsedRawData?.body,
+        parsedRawData?.text
+      ) || '';
+      const headline = preferValue(
+        snapshot?.title,
+        rawAd.title,
+        rawAd.headline,
+        parsedRawData?.headline,
+        parsedRawData?.title
+      ) || '';
+      const ctaText = preferValue(
+        snapshot?.cta_text,
+        snapshot?.link_title,
+        rawAd.cta_text,
+        parsedRawData?.cta_text
+      ) || '';
+      const ctaLink = preferValue(
+        snapshot?.link_url,
+        rawAd.link_url,
+        parsedRawData?.cta_link,
+        parsedRawData?.link_url
+      ) || '';
 
       // Extract dates
-      const startDate = rawAd.startDate || rawAd.startDateFormatted || rawAd.start_date || null;
-      const endDate = rawAd.endDate || rawAd.endDateFormatted || rawAd.end_date || null;
+      const startDate = preferValue(
+        rawAd.startDate,
+        rawAd.startDateFormatted,
+        rawAd.start_date,
+        parsedRawData?.startDate,
+        parsedRawData?.startDateFormatted,
+        parsedRawData?.start_date
+      ) || null;
+      const endDate = preferValue(
+        rawAd.endDate,
+        rawAd.endDateFormatted,
+        rawAd.end_date,
+        parsedRawData?.endDate,
+        parsedRawData?.endDateFormatted,
+        parsedRawData?.end_date
+      ) || null;
       const isActive = !endDate || new Date(endDate) > new Date();
 
       // Extract platforms
-      const platforms = rawAd.publisherPlatform || rawAd.platforms || ['facebook'];
+      const platforms = preferValue(
+        rawAd.publisherPlatform,
+        rawAd.platforms,
+        parsedRawData?.publisherPlatform,
+        parsedRawData?.platforms
+      ) || ['facebook'];
 
       // Extract reach/spend estimates
-      const impressionsLower = rawAd.impressions?.lower_bound || rawAd.impressionsLowerBound || null;
-      const impressionsUpper = rawAd.impressions?.upper_bound || rawAd.impressionsUpperBound || null;
-      const spendLower = rawAd.spend?.lower_bound || rawAd.spendLowerBound || null;
-      const spendUpper = rawAd.spend?.upper_bound || rawAd.spendUpperBound || null;
-      const currency = rawAd.currency || 'USD';
+      const impressionsLower = preferValue(
+        rawAd.impressions?.lower_bound,
+        rawAd.impressionsLowerBound,
+        parsedRawData?.impressions?.lower_bound,
+        parsedRawData?.impressionsLowerBound
+      ) || null;
+      const impressionsUpper = preferValue(
+        rawAd.impressions?.upper_bound,
+        rawAd.impressionsUpperBound,
+        parsedRawData?.impressions?.upper_bound,
+        parsedRawData?.impressionsUpperBound
+      ) || null;
+      const spendLower = preferValue(
+        rawAd.spend?.lower_bound,
+        rawAd.spendLowerBound,
+        parsedRawData?.spend?.lower_bound,
+        parsedRawData?.spendLowerBound
+      ) || null;
+      const spendUpper = preferValue(
+        rawAd.spend?.upper_bound,
+        rawAd.spendUpperBound,
+        parsedRawData?.spend?.upper_bound,
+        parsedRawData?.spendUpperBound
+      ) || null;
+      const currency = preferValue(rawAd.currency, parsedRawData?.currency) || 'USD';
 
       // Insert into database
       const stmt = db.prepare(`
@@ -667,12 +767,18 @@ async function processAndStoreAds(rawAds) {
 
       stmt.run(
         adId,
-        rawAd.pageID || rawAd.page_id || null,
-        rawAd.pageName || rawAd.page_name || 'Unknown',
-        rawAd.pageProfilePictureURL || rawAd.snapshot?.page_profile_picture_url || rawAd.page_profile_picture_url || null,
+        preferValue(rawAd.pageID, rawAd.page_id, parsedRawData?.pageID, parsedRawData?.page_id) || null,
+        preferValue(rawAd.pageName, rawAd.page_name, parsedRawData?.pageName, parsedRawData?.page_name) || 'Unknown',
+        preferValue(
+          rawAd.pageProfilePictureURL,
+          snapshot?.page_profile_picture_url,
+          rawAd.page_profile_picture_url,
+          parsedRawData?.pageProfilePictureURL,
+          parsedRawData?.page_profile_picture_url
+        ) || null,
         adCopy,
         headline,
-        rawAd.snapshot?.link_description || rawAd.description || '',
+        preferValue(snapshot?.link_description, rawAd.description, parsedRawData?.description) || '',
         ctaText,
         ctaLink,
         originalImageUrl,
@@ -682,7 +788,7 @@ async function processAndStoreAds(rawAds) {
         cloudinaryThumbnailUrl,
         mediaType,
         JSON.stringify(Array.isArray(platforms) ? platforms : [platforms]),
-        JSON.stringify(rawAd.deliveryByRegion?.map(r => r.region) || []),
+        JSON.stringify(rawAd.deliveryByRegion?.map(r => r.region) || parsedRawData?.deliveryByRegion?.map(r => r.region) || []),
         startDate,
         endDate,
         isActive ? 1 : 0,
@@ -691,8 +797,8 @@ async function processAndStoreAds(rawAds) {
         spendLower,
         spendUpper,
         currency,
-        JSON.stringify(rawAd.demographicDistribution || null),
-        JSON.stringify(rawAd.deliveryByRegion || null),
+        JSON.stringify(rawAd.demographicDistribution || parsedRawData?.demographicDistribution || null),
+        JSON.stringify(rawAd.deliveryByRegion || parsedRawData?.deliveryByRegion || null),
         JSON.stringify(rawAd)
       );
 
