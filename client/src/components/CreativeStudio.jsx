@@ -1,7 +1,7 @@
 // client/src/components/CreativeStudio.jsx
 // Main Creative Studio Component - Google-style Ad Editor
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Type, Image as ImageIcon, Download, Layout, Palette, Move,
   Maximize, Smartphone, Monitor, Check, Undo, Upload, Wand2,
@@ -148,6 +148,15 @@ const LANGUAGE_OPTIONS = [
     locales: [{ value: 'it-IT', label: 'Italian' }]
   }
 ];
+
+const DEFAULT_COUNTRY_OPTION = { code: 'ALL', name: 'All Countries', flag: '🌍' };
+
+const getFlagEmoji = (code) => {
+  if (code === 'ALL') return '🌍';
+  if (!code || code.length !== 2) return '🏳️';
+  return String.fromCodePoint(...[...code.toUpperCase()].map(char => 127397 + char.charCodeAt()));
+};
+
 
 const RECOMMENDED_LOCALES = [
   { value: 'ar-SA', label: 'Arabic (Saudi)', rank: 1 },
@@ -1896,11 +1905,15 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const [activeTab, setActiveTab] = useState('search');
   const [searchQuery, setSearchQuery] = useState('');
   const [country, setCountry] = useState('ALL');
+  const [countryQuery, setCountryQuery] = useState(DEFAULT_COUNTRY_OPTION.name);
+  const [isCountryOpen, setIsCountryOpen] = useState(false);
+  const [limit, setLimit] = useState(2);
+  const [limitInput, setLimitInput] = useState('2');
   const [loading, setLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [results, setResults] = useState([]);
   const [cacheInfo, setCacheInfo] = useState(null);
-  const [countries, setCountries] = useState({});
+  const [countryOptions, setCountryOptions] = useState([DEFAULT_COUNTRY_OPTION]);
   const [selectedAd, setSelectedAd] = useState(null);
   const [showAdModal, setShowAdModal] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -1931,9 +1944,21 @@ function CompetitorSpy({ store, onGenerateBrief }) {
   const BOARD_ICONS = ['📁', '💡', '🎯', '🔥', '⭐', '💎', '🚀', '🎨', '📊', '🏆'];
 
   useEffect(() => {
-    fetch(withStore('/creative-studio/competitor/countries', store))
+    const controller = new AbortController();
+    const { signal } = controller;
+    fetch(withStore('/creative-studio/competitor/countries', store), { signal })
       .then(res => res.json())
-      .then(data => { if (data.success) setCountries(data.countries); });
+      .then(data => {
+        if (data.success && Array.isArray(data.countries)) {
+          setCountryOptions(data.countries);
+        }
+      })
+      .catch(error => {
+        if (error.name !== 'AbortError') {
+          console.error('Failed to load countries:', error);
+        }
+      });
+    return () => { controller.abort(); };
   }, [store]);
 
   useEffect(() => { loadSwipeFiles(); }, [store]);
@@ -1944,6 +1969,24 @@ function CompetitorSpy({ store, onGenerateBrief }) {
       .then(res => res.json())
       .then(data => { if (data.should_show) setShowWelcome(true); });
   }, [store]);
+
+  const presetLimits = useMemo(() => [2, 5, 10, 20], []);
+  const selectedCountryOption = useMemo(
+    () => countryOptions.find(option => option.code === country) || DEFAULT_COUNTRY_OPTION,
+    [country, countryOptions]
+  );
+  const filteredCountries = useMemo(() => {
+    const query = countryQuery.trim().toLowerCase();
+    if (!query) return countryOptions;
+    return countryOptions.filter(option => (
+      option.name.toLowerCase().includes(query)
+      || option.code.toLowerCase().includes(query)
+    ));
+  }, [countryQuery, countryOptions]);
+
+  useEffect(() => {
+    setCountryQuery(selectedCountryOption.name);
+  }, [selectedCountryOption]);
 
   const loadSwipeFiles = async () => {
     try {
@@ -1959,6 +2002,55 @@ function CompetitorSpy({ store, onGenerateBrief }) {
       const data = await res.json();
       if (data.success) setTrackedBrands(data.tracked_brands);
     } catch (e) { console.error('Failed to load tracked brands:', e); }
+  };
+
+  const handleCountrySelect = (option) => {
+    setCountry(option.code);
+    setCountryQuery(option.name);
+    setIsCountryOpen(false);
+  };
+
+  const normalizeLimitValue = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(1, Math.floor(parsed));
+  };
+
+  const handleLimitSelect = (value) => {
+    if (value === 'custom') return;
+    const parsed = normalizeLimitValue(value);
+    if (parsed) {
+      setLimit(parsed);
+      setLimitInput(String(parsed));
+    }
+  };
+
+  const handleLimitInputChange = (event) => {
+    const nextValue = event.target.value;
+    setLimitInput(nextValue);
+    const parsed = normalizeLimitValue(nextValue);
+    if (parsed) {
+      setLimit(parsed);
+    }
+  };
+
+  const handleLimitInputBlur = () => {
+    const parsed = normalizeLimitValue(limitInput);
+    if (!parsed) {
+      setLimitInput(String(limit));
+      return;
+    }
+    setLimit(parsed);
+    setLimitInput(String(parsed));
+  };
+
+  const resolveCountryFromQuery = (query) => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return null;
+    return countryOptions.find(option => (
+      option.name.toLowerCase() === normalized
+      || option.code.toLowerCase() === normalized
+    )) || null;
   };
 
   const handleSearch = async (forceRefresh = false) => {
@@ -1984,7 +2076,14 @@ function CompetitorSpy({ store, onGenerateBrief }) {
     }, 15000);
     
     try {
-      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}&limit=2`, store);
+      const query = countryQuery.trim();
+      const topMatch = query && filteredCountries.length > 0 ? filteredCountries[0] : null;
+      const resolvedCountry = topMatch ? topMatch.code : country;
+
+      if (topMatch && topMatch.code !== country) {
+        handleCountrySelect(topMatch);
+      }
+      const url = withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${resolvedCountry}&force_refresh=${forceRefresh}&limit=${limit}`, store);
       const response = await fetch(url);
       const data = await response.json();
       
@@ -2244,7 +2343,7 @@ function CompetitorSpy({ store, onGenerateBrief }) {
       {activeTab === 'search' && (
         <>
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-6">
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <div className="flex-1 relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                 <input
@@ -2256,12 +2355,89 @@ function CompetitorSpy({ store, onGenerateBrief }) {
                   className="w-full pl-12 pr-4 py-3.5 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all"
                 />
               </div>
-              <select value={country} onChange={(e) => setCountry(e.target.value)} className="px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white min-w-[140px]">
-                {Object.entries(countries).map(([code, name]) => (
-                  <option key={code} value={code}>{name}</option>
-                ))}
-              </select>
-              <button onClick={() => handleSearch(false)} disabled={loading || !searchQuery.trim()} className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all disabled:opacity-50 disabled:shadow-none">
+              <div className="relative min-w-[220px]">
+                <label className="sr-only" htmlFor="competitor-country">Country</label>
+                <input
+                  id="competitor-country"
+                  type="text"
+                  value={countryQuery}
+                  onChange={(event) => {
+                    setCountryQuery(event.target.value);
+                    setIsCountryOpen(true);
+                  }}
+                  onFocus={() => setIsCountryOpen(true)}
+                  onBlur={() => {
+                    const matched = resolveCountryFromQuery(countryQuery);
+                    if (matched) {
+                      handleCountrySelect(matched);
+                    } else {
+                      setCountryQuery(selectedCountryOption.name);
+                    }
+                    setTimeout(() => setIsCountryOpen(false), 150);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && filteredCountries.length > 0) {
+                      event.preventDefault();
+                      handleCountrySelect(filteredCountries[0]);
+                    }
+                    if (event.key === 'Escape') {
+                      setIsCountryOpen(false);
+                    }
+                  }}
+                  placeholder="Search country..."
+                  className="w-full px-4 py-3.5 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all bg-white"
+                />
+                {isCountryOpen && (
+                  <div className="absolute z-20 mt-2 w-full max-h-64 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg">
+                    {filteredCountries.map(option => (
+                      <button
+                        key={option.code}
+                        type="button"
+                        onMouseDown={() => handleCountrySelect(option)}
+                        className={`w-full px-4 py-2.5 text-left flex items-center gap-2 text-sm hover:bg-violet-50 ${
+                          option.code === country ? 'bg-violet-100 text-violet-800' : 'text-gray-700'
+                        }`}
+                      >
+                        <span className="text-base">{option.flag || getFlagEmoji(option.code)}</span>
+                        <span className="flex-1">{option.name}</span>
+                        <span className="text-xs text-gray-400">{option.code}</span>
+                      </button>
+                    ))}
+                    {filteredCountries.length === 0 && (
+                      <div className="px-4 py-3 text-sm text-gray-500">No matching countries.</div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-gray-500">Number of ads</span>
+                <select
+                  value={presetLimits.includes(limit) ? String(limit) : 'custom'}
+                  onChange={(event) => handleLimitSelect(event.target.value)}
+                  className="px-3 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white min-w-[90px]"
+                >
+                  {presetLimits.map(preset => (
+                    <option key={preset} value={preset}>{preset}</option>
+                  ))}
+                  <option value="custom">Custom</option>
+                </select>
+                <input
+                  type="number"
+                  min="1"
+                  value={limitInput}
+                  onChange={handleLimitInputChange}
+                  onBlur={handleLimitInputBlur}
+                  className="w-24 px-3 py-3 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all"
+                />
+              </div>
+              <button
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  handleSearch(false);
+                }}
+                disabled={loading || !searchQuery.trim()}
+                className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all disabled:opacity-50 disabled:shadow-none"
+              >
                 {loading ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
                 Search
               </button>
