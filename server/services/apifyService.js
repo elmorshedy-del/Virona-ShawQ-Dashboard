@@ -558,8 +558,77 @@ async function fetchFromApify(searchQuery, options = {}) {
 }
 
 /**
+ * Helper: Get first valid value from multiple options
+ * Handles null, undefined, empty strings, empty arrays, empty objects
+ */
+function getFirstValid(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    if (typeof value === 'string' && value.trim() === '') continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue;
+    return typeof value === 'string' ? value.trim() : value;
+  }
+  return null;
+}
+
+/**
+ * Helper: Validate URL is usable (not a tiny thumbnail or static asset)
+ */
+function isValidMediaUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
+  // Reject Facebook static assets
+  if (url.includes('rsrc.php')) return false;
+  if (url.includes('static.xx.fbcdn')) return false;
+  // Reject tiny thumbnails (but allow larger ones)
+  if (url.match(/[_-]s\d{1,2}x\d{1,2}[_.]/) || url.includes('s60x60')) return false;
+  return true;
+}
+
+/**
+ * Helper: Pick best image URL from array or single value
+ * Prioritizes full-size images over thumbnails
+ */
+function pickBestImageUrl(...sources) {
+  for (const source of sources) {
+    if (!source) continue;
+    
+    // If it's an array, find the best one
+    if (Array.isArray(source)) {
+      // First pass: find a valid non-thumbnail image
+      const good = source.find(url => isValidMediaUrl(url) && !url.includes('s60x60'));
+      if (good) return good;
+      // Second pass: any valid image
+      const any = source.find(url => isValidMediaUrl(url));
+      if (any) return any;
+    } else if (isValidMediaUrl(source)) {
+      return source;
+    }
+  }
+  return null;
+}
+
+/**
+ * Helper: Normalize media type
+ */
+function normalizeMediaType(type, hasVideo, hasImage) {
+  if (type) {
+    const normalized = String(type).toLowerCase().trim();
+    if (['video', 'image', 'carousel', 'text'].includes(normalized)) {
+      return normalized;
+    }
+  }
+  // Infer from available media
+  if (hasVideo) return 'video';
+  if (hasImage) return 'image';
+  return 'image';
+}
+
+/**
  * Process ads and store them in the database
  * Uploads media to Cloudinary for permanent storage
+ * Robust field extraction with multiple fallbacks
  */
 async function processAndStoreAds(rawAds) {
   const db = getDb();
@@ -567,8 +636,14 @@ async function processAndStoreAds(rawAds) {
 
   for (const rawAd of rawAds) {
     try {
-      // Generate a unique ad_id
-      const adId = rawAd.adArchiveID || rawAd.id || `ad_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      // === GENERATE UNIQUE AD ID ===
+      const adId = getFirstValid(
+        rawAd.library_id,           // Our scraper
+        rawAd.adArchiveID,          // Meta API format
+        rawAd.ad_archive_id,
+        rawAd.ad_id,
+        rawAd.id
+      ) || `ad_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
       // Check if ad already exists
       const existing = db.prepare('SELECT * FROM competitor_ads WHERE ad_id = ?').get(adId);
@@ -577,32 +652,45 @@ async function processAndStoreAds(rawAds) {
         continue;
       }
 
-      // Extract media URLs with multiple fallbacks
-      let originalImageUrl = null;
-      let originalVideoUrl = null;
-      let mediaType = 'image';
-
-      // Try multiple paths for video URLs
-      if (rawAd.snapshot?.videos?.length > 0) {
-        const video = rawAd.snapshot.videos[0];
-        originalVideoUrl = video.video_hd_url || video.video_sd_url || video.video_url || video.url;
-        mediaType = 'video';
-      } else if (rawAd.video_url || rawAd.videoUrl) {
-        originalVideoUrl = rawAd.video_url || rawAd.videoUrl;
-        mediaType = 'video';
-      }
+      // === EXTRACT VIDEO URL ===
+      // Priority: Our scraper format → Meta API format → other formats
+      let originalVideoUrl = getFirstValid(
+        rawAd.original_video_url,                           // Our scraper (direct)
+        rawAd.video_url,
+        rawAd.videoUrl,
+        rawAd.snapshot?.videos?.[0]?.video_hd_url,          // Meta API format
+        rawAd.snapshot?.videos?.[0]?.video_sd_url,
+        rawAd.snapshot?.videos?.[0]?.video_url,
+        rawAd.snapshot?.videos?.[0]?.url,
+        rawAd.all_videos?.[0]                               // Our scraper (array)
+      );
       
-      // Try multiple paths for image URLs
-      if (rawAd.snapshot?.images?.length > 0) {
-        originalImageUrl = rawAd.snapshot.images[0];
-      } else if (rawAd.snapshot?.cards?.length > 0) {
-        originalImageUrl = rawAd.snapshot.cards[0].original_image_url || rawAd.snapshot.cards[0].image_url;
-        if (!originalVideoUrl) mediaType = 'carousel';
-      } else if (rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url) {
-        originalImageUrl = rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url;
+      // Validate video URL
+      if (originalVideoUrl && !originalVideoUrl.startsWith('http')) {
+        originalVideoUrl = null;
       }
 
-      // Upload to Cloudinary if configured (with timeout protection)
+      // === EXTRACT IMAGE URL ===
+      // Priority: Our scraper format → Meta API format → other formats
+      let originalImageUrl = pickBestImageUrl(
+        rawAd.original_image_url,                           // Our scraper (direct)
+        rawAd.all_images,                                   // Our scraper (array)
+        rawAd.snapshot?.images,                             // Meta API format
+        rawAd.snapshot?.cards?.[0]?.original_image_url,
+        rawAd.snapshot?.cards?.[0]?.image_url,
+        rawAd.image_url,
+        rawAd.imageUrl,
+        rawAd.thumbnail_url
+      );
+
+      // === DETERMINE MEDIA TYPE ===
+      const mediaType = normalizeMediaType(
+        getFirstValid(rawAd.media_type, rawAd.mediaType),
+        Boolean(originalVideoUrl),
+        Boolean(originalImageUrl)
+      );
+
+      // === UPLOAD TO CLOUDINARY ===
       let cloudinaryImageUrl = null;
       let cloudinaryVideoUrl = null;
       let cloudinaryThumbnailUrl = null;
@@ -618,7 +706,6 @@ async function processAndStoreAds(rawAds) {
           if (originalVideoUrl) {
             cloudinaryVideoUrl = await uploadToCloudinaryWithTimeout(originalVideoUrl, 'video');
             if (cloudinaryVideoUrl) {
-              // Generate video thumbnail
               cloudinaryThumbnailUrl = cloudinaryVideoUrl
                 .replace('/upload/', '/upload/w_400,h_400,c_fill,so_0/')
                 .replace(/\.(mp4|webm|mov)$/i, '.jpg');
@@ -626,32 +713,120 @@ async function processAndStoreAds(rawAds) {
           }
         } catch (cloudinaryError) {
           debugLog.add('CLOUDINARY_ERROR', `Failed to upload media: ${cloudinaryError.message}`);
-          // Continue without Cloudinary URLs - we'll use originals as fallback
         }
       }
 
-      // Extract ad copy with fallbacks
-      const adCopy = rawAd.snapshot?.body?.text || rawAd.snapshot?.caption || rawAd.body || rawAd.text || '';
-      const headline = rawAd.snapshot?.title || rawAd.title || rawAd.headline || '';
-      const ctaText = rawAd.snapshot?.cta_text || rawAd.snapshot?.link_title || rawAd.cta_text || '';
-      const ctaLink = rawAd.snapshot?.link_url || rawAd.link_url || '';
+      // === EXTRACT TEXT CONTENT ===
+      const adCopy = getFirstValid(
+        rawAd.ad_copy,                                      // Our scraper
+        rawAd.snapshot?.body?.text,                         // Meta API format
+        rawAd.snapshot?.caption,
+        rawAd.body,
+        rawAd.text,
+        rawAd.message
+      ) || '';
 
-      // Extract dates
-      const startDate = rawAd.startDate || rawAd.startDateFormatted || rawAd.start_date || null;
-      const endDate = rawAd.endDate || rawAd.endDateFormatted || rawAd.end_date || null;
-      const isActive = !endDate || new Date(endDate) > new Date();
+      const headline = getFirstValid(
+        rawAd.headline,                                     // Our scraper / direct
+        rawAd.snapshot?.title,                              // Meta API format
+        rawAd.title
+      ) || '';
 
-      // Extract platforms
-      const platforms = rawAd.publisherPlatform || rawAd.platforms || ['facebook'];
+      const description = getFirstValid(
+        rawAd.description,
+        rawAd.snapshot?.link_description
+      ) || '';
 
-      // Extract reach/spend estimates
-      const impressionsLower = rawAd.impressions?.lower_bound || rawAd.impressionsLowerBound || null;
-      const impressionsUpper = rawAd.impressions?.upper_bound || rawAd.impressionsUpperBound || null;
-      const spendLower = rawAd.spend?.lower_bound || rawAd.spendLowerBound || null;
-      const spendUpper = rawAd.spend?.upper_bound || rawAd.spendUpperBound || null;
-      const currency = rawAd.currency || 'USD';
+      const ctaText = getFirstValid(
+        rawAd.cta_text,                                     // Our scraper
+        rawAd.snapshot?.cta_text,                           // Meta API format
+        rawAd.snapshot?.link_title,
+        rawAd.call_to_action
+      ) || '';
 
-      // Insert into database
+      const ctaLink = getFirstValid(
+        rawAd.cta_link,                                     // Our scraper
+        rawAd.snapshot?.link_url,                           // Meta API format
+        rawAd.link_url,
+        rawAd.website_url
+      ) || '';
+
+      // === EXTRACT PAGE INFO ===
+      const pageName = getFirstValid(
+        rawAd.page_name,                                    // Our scraper
+        rawAd.pageName,                                     // Meta API format
+        rawAd.snapshot?.page_name
+      ) || 'Unknown';
+
+      const pageId = getFirstValid(
+        rawAd.page_id,                                      // Our scraper
+        rawAd.pageID,                                       // Meta API format
+        rawAd.snapshot?.page_id
+      );
+
+      const pageProfilePictureUrl = getFirstValid(
+        rawAd.page_profile_picture_url,                     // Our scraper
+        rawAd.pageProfilePictureURL,                        // Meta API format
+        rawAd.snapshot?.page_profile_picture_url
+      );
+
+      // === EXTRACT DATES ===
+      const startDate = getFirstValid(
+        rawAd.start_date,                                   // Our scraper
+        rawAd.startDate,                                    // Meta API format
+        rawAd.startDateFormatted,
+        rawAd.ad_delivery_start_time
+      );
+
+      const endDate = getFirstValid(
+        rawAd.end_date,                                     // Our scraper
+        rawAd.endDate,                                      // Meta API format
+        rawAd.endDateFormatted,
+        rawAd.ad_delivery_stop_time
+      );
+
+      // Determine if active
+      const isActive = getFirstValid(rawAd.is_active, rawAd.isActive) !== false && 
+                       (!endDate || new Date(endDate) > new Date());
+
+      // === EXTRACT PLATFORMS ===
+      let platforms = getFirstValid(
+        rawAd.platforms,                                    // Our scraper
+        rawAd.publisherPlatform,                            // Meta API format
+        rawAd.publisher_platforms
+      ) || ['facebook'];
+      
+      // Ensure it's an array
+      if (!Array.isArray(platforms)) {
+        platforms = [platforms];
+      }
+
+      // === EXTRACT REACH/SPEND (if available - usually only political ads) ===
+      const impressionsLower = getFirstValid(
+        rawAd.impressions?.lower_bound,
+        rawAd.impressionsLowerBound
+      );
+      const impressionsUpper = getFirstValid(
+        rawAd.impressions?.upper_bound,
+        rawAd.impressionsUpperBound
+      );
+      const spendLower = getFirstValid(
+        rawAd.spend?.lower_bound,
+        rawAd.spendLowerBound
+      );
+      const spendUpper = getFirstValid(
+        rawAd.spend?.upper_bound,
+        rawAd.spendUpperBound
+      );
+      const currency = getFirstValid(rawAd.currency) || 'USD';
+
+      // === EXTRACT REGIONAL DATA ===
+      const deliveryByRegion = rawAd.deliveryByRegion || rawAd.delivery_by_region || [];
+      const countries = Array.isArray(deliveryByRegion) 
+        ? deliveryByRegion.map(r => r.region).filter(Boolean)
+        : [];
+
+      // === INSERT INTO DATABASE ===
       const stmt = db.prepare(`
         INSERT INTO competitor_ads (
           ad_id, page_id, page_name, page_profile_picture_url,
@@ -667,12 +842,12 @@ async function processAndStoreAds(rawAds) {
 
       stmt.run(
         adId,
-        rawAd.pageID || rawAd.page_id || null,
-        rawAd.pageName || rawAd.page_name || 'Unknown',
-        rawAd.pageProfilePictureURL || rawAd.snapshot?.page_profile_picture_url || rawAd.page_profile_picture_url || null,
+        pageId,
+        pageName,
+        pageProfilePictureUrl,
         adCopy,
         headline,
-        rawAd.snapshot?.link_description || rawAd.description || '',
+        description,
         ctaText,
         ctaLink,
         originalImageUrl,
@@ -681,8 +856,8 @@ async function processAndStoreAds(rawAds) {
         cloudinaryVideoUrl,
         cloudinaryThumbnailUrl,
         mediaType,
-        JSON.stringify(Array.isArray(platforms) ? platforms : [platforms]),
-        JSON.stringify(rawAd.deliveryByRegion?.map(r => r.region) || []),
+        JSON.stringify(platforms),
+        JSON.stringify(countries),
         startDate,
         endDate,
         isActive ? 1 : 0,
@@ -692,12 +867,21 @@ async function processAndStoreAds(rawAds) {
         spendUpper,
         currency,
         JSON.stringify(rawAd.demographicDistribution || null),
-        JSON.stringify(rawAd.deliveryByRegion || null),
+        JSON.stringify(deliveryByRegion.length > 0 ? deliveryByRegion : null),
         JSON.stringify(rawAd)
       );
 
       const insertedAd = db.prepare('SELECT * FROM competitor_ads WHERE ad_id = ?').get(adId);
       processedAds.push(formatAdForResponse(insertedAd));
+      
+      debugLog.add('AD_PROCESSED', `Stored ad ${adId}`, {
+        pageName,
+        mediaType,
+        hasImage: Boolean(originalImageUrl),
+        hasVideo: Boolean(originalVideoUrl),
+        hasCopy: Boolean(adCopy)
+      });
+      
     } catch (error) {
       debugLog.add('PROCESS_AD_ERROR', `Error processing ad: ${error.message}`);
       console.error('Error processing ad:', error);
