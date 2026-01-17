@@ -3,6 +3,7 @@
 
 import { getDb } from '../db/database.js';
 import crypto from 'crypto';
+import { getAllCountries } from '../utils/countryData.js';
 import { 
   isBrandCacheValid, 
   updateBrandCache, 
@@ -11,6 +12,7 @@ import {
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
 // Custom actor ID - can be overridden via env var
 const APIFY_ACTOR_ID = process.env.APIFY_CUSTOM_ACTOR_ID || 'QS2Exip8vjfCY0mNq';
+
 
 // Cloudinary config (optional but recommended for permanent URLs)
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
@@ -35,28 +37,6 @@ const COST_ESTIMATE = {
   PER_MINUTE_COMPUTE: 0.004,      // ~$0.004 per minute of compute
 };
 
-const SUPPORTED_COUNTRIES = {
-  'ALL': 'All Countries',
-  'SA': 'Saudi Arabia',
-  'AE': 'United Arab Emirates',
-  'KW': 'Kuwait',
-  'QA': 'Qatar',
-  'BH': 'Bahrain',
-  'OM': 'Oman',
-  'EG': 'Egypt',
-  'JO': 'Jordan',
-  'LB': 'Lebanon',
-  'US': 'United States',
-  'GB': 'United Kingdom',
-  'DE': 'Germany',
-  'FR': 'France',
-  'TR': 'Turkey',
-  'PK': 'Pakistan',
-  'IN': 'India',
-  'ID': 'Indonesia',
-  'MY': 'Malaysia',
-  'PH': 'Philippines'
-};
 
 // Debug logger for tracking search progress
 const debugLog = {
@@ -88,7 +68,10 @@ export function getDebugLogs(count = 20) {
 }
 
 export function getSupportedCountries() {
-  return SUPPORTED_COUNTRIES;
+  return [
+    { code: 'ALL', name: 'All Countries', flag: '🌍' },
+    ...getAllCountries()
+  ];
 }
 
 /**
