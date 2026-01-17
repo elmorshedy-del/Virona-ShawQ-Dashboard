@@ -567,6 +567,17 @@ async function processAndStoreAds(rawAds) {
 
   for (const rawAd of rawAds) {
     try {
+      // Some Apify runs store key fields in raw_data; parse safely for fallbacks.
+      const parsedRawData = rawAd?.raw_data
+        ? (typeof rawAd.raw_data === 'string'
+          ? safeJsonParse(rawAd.raw_data, null)
+          : rawAd.raw_data)
+        : null;
+
+      const rawDataFallback = parsedRawData && typeof parsedRawData === 'object'
+        ? parsedRawData
+        : null;
+
       // Generate a unique ad_id
       const adId = rawAd.adArchiveID || rawAd.id || `ad_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
@@ -591,6 +602,11 @@ async function processAndStoreAds(rawAds) {
         originalVideoUrl = rawAd.video_url || rawAd.videoUrl;
         mediaType = 'video';
       }
+
+      if (!originalVideoUrl && rawDataFallback?.original_video_url) {
+        originalVideoUrl = rawDataFallback.original_video_url;
+        mediaType = rawDataFallback.media_type === 'video' ? 'video' : mediaType;
+      }
       
       // Try multiple paths for image URLs
       if (rawAd.snapshot?.images?.length > 0) {
@@ -600,6 +616,19 @@ async function processAndStoreAds(rawAds) {
         if (!originalVideoUrl) mediaType = 'carousel';
       } else if (rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url) {
         originalImageUrl = rawAd.image_url || rawAd.imageUrl || rawAd.thumbnail_url;
+      }
+
+      if (!originalImageUrl && rawDataFallback?.original_image_url) {
+        originalImageUrl = rawDataFallback.original_image_url;
+      }
+      if (!originalVideoUrl && rawDataFallback?.video_url) {
+        originalVideoUrl = rawDataFallback.video_url;
+        if (rawDataFallback.media_type === 'video') {
+          mediaType = 'video';
+        }
+      }
+      if (mediaType === 'image' && rawDataFallback?.media_type) {
+        mediaType = rawDataFallback.media_type;
       }
 
       // Upload to Cloudinary if configured (with timeout protection)
@@ -631,7 +660,7 @@ async function processAndStoreAds(rawAds) {
       }
 
       // Extract ad copy with fallbacks
-      const adCopy = rawAd.snapshot?.body?.text || rawAd.snapshot?.caption || rawAd.body || rawAd.text || '';
+      const adCopy = rawAd.snapshot?.body?.text || rawAd.snapshot?.caption || rawAd.body || rawAd.text || rawDataFallback?.ad_copy || '';
       const headline = rawAd.snapshot?.title || rawAd.title || rawAd.headline || '';
       const ctaText = rawAd.snapshot?.cta_text || rawAd.snapshot?.link_title || rawAd.cta_text || '';
       const ctaLink = rawAd.snapshot?.link_url || rawAd.link_url || '';
