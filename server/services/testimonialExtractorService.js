@@ -44,6 +44,7 @@ async function loadFaceModels() {
         console.warn(`Face API models not found at ${FACE_MODEL_PATH}. Avatar detection disabled.`);
         return false;
       }
+      await faceapi.nets.tinyFaceDetector.loadFromDisk(FACE_MODEL_PATH);
       await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
       return true;
     })();
@@ -93,8 +94,10 @@ async function detectFaces(imagePath) {
     return [];
   }
   const img = await canvas.loadImage(imagePath);
-  const detections = await faceapi.detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.1 }));  return detections.map(det => ({
-    x: det.box.x,
+  const detections = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ 
+  scoreThreshold: 0.1, // Equivalent to minConfidence
+  inputSize: 512       // Common sizes: 128, 160, 224, 320, 416, 512, 608 
+   }));
     y: det.box.y,
     width: det.box.width,
     height: det.box.height
