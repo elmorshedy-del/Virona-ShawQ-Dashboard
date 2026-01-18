@@ -30,46 +30,26 @@ RULES:
 
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
 const GEMINI_TIMEOUT_MS = 30000;
-const FACE_MODEL_PATH = path.resolve(process.cwd(), '../models');
-const SSD_MANIFEST = 'ssd_mobilenetv1_model-weights_manifest.json';
+const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models/face-api');
 
 const { Canvas, Image, ImageData } = canvas;
 faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
 
 let faceModelsReady = null;
 
-function assertSsdModelFiles() {
-  if (!fs.existsSync(FACE_MODEL_PATH)) {
-    throw new Error(`Face API models not found at ${FACE_MODEL_PATH}. Download SSD Mobilenet V1 models into server/models.`);
-  }
-
-  const files = fs.readdirSync(FACE_MODEL_PATH);
-  const hasManifest = files.includes(SSD_MANIFEST);
-  const shardFiles = files.filter(file => file.startsWith('ssd_mobilenetv1_model-shard'));
-
-  if (!hasManifest || shardFiles.length === 0) {
-    throw new Error(`SSD Mobilenet V1 model files missing in ${FACE_MODEL_PATH}. Expected ${SSD_MANIFEST} and shard files.`);
-  }
-}
-
 async function loadFaceModels() {
   if (!faceModelsReady) {
     faceModelsReady = (async () => {
-      assertSsdModelFiles();
-      console.log('Loading SSD Mobilenet V1 face detection models from:', FACE_MODEL_PATH);
-      await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
-      if (!faceapi.nets.ssdMobilenetv1.isLoaded) {
-        throw new Error('SSD Mobilenet V1 model failed to load.');
+      if (!fs.existsSync(FACE_MODEL_PATH)) {
+        console.warn(`Face API models not found at ${FACE_MODEL_PATH}. Avatar detection disabled.`);
+        return false;
       }
-      console.log('SSD Mobilenet V1 models loaded successfully');
+      await faceapi.nets.tinyFaceDetector.loadFromDisk(FACE_MODEL_PATH);
+      await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
       return true;
     })();
   }
   return faceModelsReady;
-}
-
-export async function ensureFaceModelsLoaded() {
-  return loadFaceModels();
 }
 
 function isInsufficientFundsError(error) {
@@ -109,68 +89,18 @@ function normalizeAvatarBox(avatarBox, imageWidth, imageHeight) {
 }
 
 async function detectFaces(imagePath) {
-  console.log('CALLING FACE DETECTION:', imagePath);
-  console.log('FILE EXISTS:', fs.existsSync(imagePath));
-
-  await loadFaceModels();
-
-  console.log('MODELS LOADED:', faceapi.nets.ssdMobilenetv1.isLoaded);
-
+  const ready = await loadFaceModels();
+  if (!ready) {
+    return [];
+  }
   const img = await canvas.loadImage(imagePath);
-  const sourceWidth = img.width;
-  const sourceHeight = img.height;
-  const detectWidth = Math.round(sourceWidth * 2);
-  const detectHeight = Math.round(sourceHeight * 2);
-
-  console.log('SOURCE DIMENSIONS:', { sourceWidth, sourceHeight });
-  console.log('DETECT DIMENSIONS:', { detectWidth, detectHeight });
-  console.log('IMAGE DIMENSIONS:', { width: img.width, height: img.height });
-
-  if (!sourceWidth || !sourceHeight || !detectWidth || !detectHeight) {
-    throw new Error('Invalid image dimensions (0).');
-  }
-  if (img.width !== sourceWidth || img.height !== sourceHeight) {
-    throw new Error('Image dimensions mismatch with source dimensions.');
-  }
-
-  const detectionCanvas = canvas.createCanvas(detectWidth, detectHeight);
-  if (detectionCanvas.width !== detectWidth || detectionCanvas.height !== detectHeight) {
-    throw new Error('Detection canvas dimensions mismatch.');
-  }
-
-  const ctx = detectionCanvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, detectWidth, detectHeight);
-
-  console.log('DETECTION CANVAS:', {
-    width: detectionCanvas.width,
-    height: detectionCanvas.height
-  });
-
-  const detections = await faceapi.detectAllFaces(
-    detectionCanvas,
-    new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 })
-  );
-
-  console.log('FACES FOUND:', detections.length);
-
-  const scaleX = sourceWidth / detectWidth;
-  const scaleY = sourceHeight / detectHeight;
-
-  detections.forEach((det, i) => {
-    console.log(`FACE ${i + 1} DETECT BOX:`, det.box);
-    console.log(`FACE ${i + 1} SOURCE BOX:`, {
-      x: det.box.x * scaleX,
-      y: det.box.y * scaleY,
-      width: det.box.width * scaleX,
-      height: det.box.height * scaleY
-    });
-  });
-
-  return detections.map(det => ({
-    x: det.box.x * scaleX,
-    y: det.box.y * scaleY,
-    width: det.box.width * scaleX,
-    height: det.box.height * scaleY
+  const detections = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ 
+  scoreThreshold: 0.1, // Equivalent to minConfidence
+  inputSize: 512       // Common sizes: 128, 160, 224, 320, 416, 512, 608 
+   }));
+    y: det.box.y,
+    width: det.box.width,
+    height: det.box.height
   }));
 }
 
@@ -266,7 +196,18 @@ export async function extractMessagesFromImage(imagePath) {
     }
 
     const faceDetections = await detectFaces(imagePath);
-    const sortedFaces = faceDetections.sort((a, b) => a.y - b.y);
+    console.log('--- Detection Debug ---');
+    console.log('Total Faces Found:', faceDetections.length);
+    faceDetections.forEach((det, index) => {
+    console.log(`Face ${index} coordinates:`, {
+        x: det.x,
+        y: det.y,
+        width: det.width,
+        height: det.height,
+        score: det.score // Tells you how "sure" the AI is
+    });
+});
+console.log('-----------------------');    const sortedFaces = faceDetections.sort((a, b) => a.y - b.y);
 
     // Ensure required fields exist
     const validated = [];
