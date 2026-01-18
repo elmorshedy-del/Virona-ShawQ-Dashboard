@@ -97,7 +97,9 @@ async function detectFaces(imagePath) {
   const detections = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ 
   scoreThreshold: 0.1, // Equivalent to minConfidence
   inputSize: 512       // Common sizes: 128, 160, 224, 320, 416, 512, 608 
-   }));
+  }));
+  return detections.map(det => ({
+    x: det.box.x,
     y: det.box.y,
     width: det.box.width,
     height: det.box.height
