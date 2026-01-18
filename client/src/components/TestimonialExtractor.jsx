@@ -74,7 +74,6 @@ export default function TestimonialExtractor() {
     const files = Array.from(e.target.files);
     setUploadedFiles(files);
     setExtractError('');
-    setMessages([]);
     setGeneratedImage(null);
   };
 
@@ -87,7 +86,7 @@ export default function TestimonialExtractor() {
 
     setExtracting(true);
     setExtractError('');
-    setMessages([]);
+    setMessages([]); // Clear messages when starting extraction
 
     try {
       const formData = new FormData();
@@ -234,10 +233,12 @@ export default function TestimonialExtractor() {
           [blob.type]: blob
         })
       ]);
-      alert('Image copied to clipboard!');
+      setGenerateSuccess('✨ Image copied to clipboard!');
+      setGenerateError('');
     } catch (error) {
       console.error('Copy error:', error);
-      alert('Failed to copy to clipboard. Please use the download button instead.');
+      setGenerateError('Failed to copy to clipboard. Please use the download button instead.');
+      setGenerateSuccess('');
     }
   };
 
@@ -354,6 +355,7 @@ export default function TestimonialExtractor() {
                   </div>
                   <button
                     onClick={() => deleteMessage(index)}
+                    aria-label="Delete message"
                     className="p-3 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                   >
                     <Trash2 size={20} />

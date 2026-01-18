@@ -120,62 +120,54 @@ function generateHTML(messages, config) {
     backgroundStyle = `background: ${backgroundColor};`;
   }
 
-  // Bubble style CSS - varies by output shape
-  let bubbleCSS = '';
+  // Bubble style CSS - DRY approach with base + shape-specific overrides
+  const baseStyles = {
+    color: textColor,
+    fontSize: `${fontSize}px`,
+    lineHeight: '1.4',
+    marginBottom: '16px',
+    maxWidth: '500px',
+    wordWrap: 'break-word'
+  };
 
-  if (outputShape === 'minimal') {
-    // Minimal: no container, just text
-    bubbleCSS = `
-      color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
-      margin-bottom: 16px;
-      max-width: 500px;
-      word-wrap: break-word;
-    `;
-  } else if (outputShape === 'quote_card') {
-    // Quote card: centered with quotes
-    bubbleCSS = `
-      background: ${bubbleColor};
-      padding: 40px 30px;
-      border-radius: ${borderRadius}px;
-      margin-bottom: 16px;
-      max-width: 600px;
-      word-wrap: break-word;
-      color: ${textColor};
-      font-size: ${fontSize + 4}px;
-      line-height: 1.6;
-      text-align: center;
-      position: relative;
-    `;
-  } else if (outputShape === 'card') {
-    // Card: rectangle with border
-    bubbleCSS = `
-      background: ${bubbleColor};
-      padding: 24px;
-      border-radius: ${borderRadius}px;
-      margin-bottom: 16px;
-      max-width: 500px;
-      word-wrap: break-word;
-      color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
-      border: 1px solid rgba(0, 0, 0, 0.15);
-    `;
-  } else {
-    // Default bubble
-    bubbleCSS = `
-      background: ${bubbleColor};
-      padding: 20px;
-      border-radius: ${borderRadius}px;
-      margin-bottom: 16px;
-      max-width: 500px;
-      word-wrap: break-word;
-      color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
-    `;
-  }
+  const shapeStyles = {
+    minimal: {
+      // No container styling
+    },
+    quote_card: {
+      background: bubbleColor,
+      padding: '40px 30px',
+      borderRadius: `${borderRadius}px`,
+      maxWidth: '600px',
+      fontSize: `${fontSize + 4}px`,
+      lineHeight: '1.6',
+      textAlign: 'center',
+      position: 'relative'
+    },
+    card: {
+      background: bubbleColor,
+      padding: '24px',
+      borderRadius: `${borderRadius}px`,
+      border: '1px solid rgba(0, 0, 0, 0.15)'
+    },
+    bubble: {
+      background: bubbleColor,
+      padding: '20px',
+      borderRadius: `${borderRadius}px`
+    }
+  };
+
+  // Merge base + shape-specific styles
+  const mergedStyles = { ...baseStyles, ...(shapeStyles[outputShape] || shapeStyles.bubble) };
+
+  // Convert to CSS string
+  let bubbleCSS = Object.entries(mergedStyles)
+    .map(([key, value]) => {
+      // Convert camelCase to kebab-case
+      const cssKey = key.replace(/([A-Z])/g, '-$1').toLowerCase();
+      return `${cssKey}: ${value};`;
+    })
+    .join('\n      ');
 
   // Apply bubble style effects (shadow, outline) - skip for minimal
   if (outputShape !== 'minimal') {

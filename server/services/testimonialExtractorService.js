@@ -31,8 +31,8 @@ export async function extractMessagesFromImage(imagePath) {
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
 
-    // Read image file
-    const imageData = fs.readFileSync(imagePath);
+    // Read image file (async)
+    const imageData = await fs.promises.readFile(imagePath);
     const base64Image = imageData.toString('base64');
 
     // Determine mime type from file extension

@@ -53,14 +53,9 @@ router.post('/extract', upload.array('screenshots', 10), async (req, res) => {
 
     const messages = await extractFromMultipleImages(imagePaths);
 
-    // Clean up uploaded files
-    imagePaths.forEach(filePath => {
-      try {
-        fs.unlinkSync(filePath);
-      } catch (err) {
-        console.error('Error deleting file:', err);
-      }
-    });
+    // Clean up uploaded files (async)
+    Promise.all(imagePaths.map(filePath => fs.promises.unlink(filePath)))
+      .catch(err => console.error('Error deleting uploaded files:', err));
 
     if (messages.length === 0) {
       return res.status(400).json({
