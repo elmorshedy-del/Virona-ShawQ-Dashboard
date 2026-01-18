@@ -4,6 +4,7 @@ import satori from 'satori';
 import { Resvg } from '@resvg/resvg-js';
 import twemoji from 'twemoji';
 import fetch from 'node-fetch';
+import { fileURLToPath } from 'url';
 
 const PRESETS = {
   instagram_story: {
@@ -94,6 +95,8 @@ const EMOJI_CDN_BASES = [
 ];
 
 const fontCache = new Map();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function h(type, props, ...children) {
   return {
@@ -106,7 +109,7 @@ function h(type, props, ...children) {
 }
 
 function resolveFontPath(fileName) {
-  return path.resolve(process.cwd(), 'server', 'fonts', fileName);
+  return path.resolve(__dirname, '../fonts', fileName);
 }
 
 function loadFontData(fileName) {
@@ -449,7 +452,7 @@ export async function renderTestimonials(messages, outputPath, options = {}) {
 
   const fonts = buildFontConfig();
   if (fonts.length === 0) {
-    throw new Error('No fonts available for rendering. Ensure @fontsource/inter is installed.');
+    throw new Error('No fonts available for rendering. Ensure server/fonts/Inter-Regular.ttf exists or install @fontsource/inter.');
   }
 
   const { vnode, width, height } = await buildTestimonialVNode(messages, config);

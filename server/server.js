@@ -18,6 +18,7 @@ import creativeIntelligenceRouter from './routes/creativeIntelligence.js';
 import creativeStudioRouter from './routes/creativeStudio.js';
 import metaAuthRouter from './routes/metaAuth.js';
 import testimonialExtractorRouter from './routes/testimonialExtractor.js';
+import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
 import { runMigration as runCreativeStudioMigration } from './db/creativeStudioMigration.js';
@@ -40,6 +41,11 @@ const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '
 
 // Initialize database
 initDb();
+
+ensureFaceModelsLoaded().catch(error => {
+  console.error('❌ Failed to load face detection models:', error);
+  process.exit(1);
+});
 
 // Run AIBudget schema migration on startup
 runAIBudgetMigration()

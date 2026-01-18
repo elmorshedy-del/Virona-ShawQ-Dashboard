@@ -30,23 +30,61 @@ RULES:
 
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
 const GEMINI_TIMEOUT_MS = 30000;
-const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models');
+const FACE_MODEL_PATH = path.resolve(process.cwd(), 'server', 'models');
 
 const { Canvas, Image, ImageData } = canvas;
 faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
 
 let faceModelsReady = null;
 
+function assertModelFiles() {
+  if (!fs.existsSync(FACE_MODEL_PATH)) {
+    throw new Error(`Face API models not found at ${FACE_MODEL_PATH}. Download SSD Mobilenet V1 models into server/models/.`);
+  }
+
+  const manifestPath = path.join(FACE_MODEL_PATH, 'ssd_mobilenetv1_model-weights_manifest.json');
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`SSD Mobilenet V1 manifest missing at ${manifestPath}.`);
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`SSD Mobilenet V1 manifest could not be read: ${error.message}`);
+  }
+
+  const shardFiles = new Set();
+  if (Array.isArray(manifest)) {
+    manifest.forEach(entry => {
+      if (Array.isArray(entry.paths)) {
+        entry.paths.forEach(shard => shardFiles.add(shard));
+      }
+    });
+  }
+
+  if (shardFiles.size === 0) {
+    throw new Error('SSD Mobilenet V1 manifest is missing shard paths.');
+  }
+
+  for (const shard of shardFiles) {
+    const shardPath = path.join(FACE_MODEL_PATH, shard);
+    if (!fs.existsSync(shardPath)) {
+      throw new Error(`SSD Mobilenet V1 shard missing: ${shardPath}`);
+    }
+  }
+}
+
 async function loadFaceModels() {
   if (!faceModelsReady) {
     faceModelsReady = (async () => {
-      if (!fs.existsSync(FACE_MODEL_PATH)) {
-        console.warn(`Face API models not found at ${FACE_MODEL_PATH}. Avatar detection disabled.`);
-        return false;
-      }
+      assertModelFiles();
       console.log('Loading face detection models from:', FACE_MODEL_PATH);
-      await faceapi.nets.tinyFaceDetector.loadFromDisk(FACE_MODEL_PATH);
-      console.log('Face detection models loaded successfully');
+      await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
+      if (!faceapi.nets.ssdMobilenetv1.isLoaded) {
+        throw new Error('SSD Mobilenet V1 model failed to load.');
+      }
+      console.log('SSD Mobilenet V1 model loaded successfully');
       return true;
     })();
   }
@@ -95,33 +133,73 @@ async function detectFaces(imagePath) {
 
   const ready = await loadFaceModels();
   if (!ready) {
-    console.warn('Face detection models not ready');
-    return [];
+    throw new Error('Face detection models not ready.');
   }
 
-  console.log('MODELS LOADED:', faceapi.nets.tinyFaceDetector.isLoaded);
+  console.log('MODELS LOADED:', faceapi.nets.ssdMobilenetv1.isLoaded);
 
   const img = await canvas.loadImage(imagePath);
-  console.log('Image loaded for face detection:', img.width, 'x', img.height);
+  const sourceWidth = img.width;
+  const sourceHeight = img.height;
 
-  // Use tinyFaceDetector with options for better small face detection
-  const detections = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({
-    inputSize: 416,  // Higher resolution for better small face detection
-    scoreThreshold: 0.3  // Lower threshold to detect more faces
-  }));
-
-  console.log('FACES FOUND:', detections.length);
-  if (detections.length > 0) {
-    detections.forEach((det, i) => {
-      console.log(`FACE ${i + 1} BOX:`, det.box);
-    });
+  if (!sourceWidth || !sourceHeight) {
+    throw new Error('Invalid image dimensions (0).');
   }
 
-  return detections.map(det => ({
-    x: det.box.x,
-    y: det.box.y,
-    width: det.box.width,
-    height: det.box.height
+  const detectWidth = sourceWidth * 2;
+  const detectHeight = sourceHeight * 2;
+  const detectionCanvas = canvas.createCanvas(detectWidth, detectHeight);
+  const detectionContext = detectionCanvas.getContext('2d');
+  detectionContext.drawImage(img, 0, 0, detectWidth, detectHeight);
+
+  if (detectionCanvas.width !== detectWidth || detectionCanvas.height !== detectHeight) {
+    throw new Error('Detection canvas size mismatch.');
+  }
+
+  if (img.width !== sourceWidth || img.height !== sourceHeight) {
+    throw new Error('Image intrinsic size mismatch.');
+  }
+
+  console.log('Face detection debug:', {
+    sourceWidth,
+    sourceHeight,
+    detectWidth,
+    detectHeight,
+    naturalWidth: img.width,
+    naturalHeight: img.height,
+    detectionCanvasWidth: detectionCanvas.width,
+    detectionCanvasHeight: detectionCanvas.height
+  });
+
+  const detections = await faceapi.detectAllFaces(
+    detectionCanvas,
+    new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 })
+  );
+
+  console.log('FACES FOUND:', detections.length);
+  const scaleX = sourceWidth / detectWidth;
+  const scaleY = sourceHeight / detectHeight;
+  const mappedDetections = detections.map(det => {
+    const detectBox = det.box;
+    const mappedBox = {
+      x: detectBox.x * scaleX,
+      y: detectBox.y * scaleY,
+      width: detectBox.width * scaleX,
+      height: detectBox.height * scaleY
+    };
+    return { detectBox, mappedBox };
+  });
+
+  mappedDetections.forEach((entry, i) => {
+    console.log(`FACE ${i + 1} DETECT BOX:`, entry.detectBox);
+    console.log(`FACE ${i + 1} SOURCE BOX:`, entry.mappedBox);
+  });
+
+  return mappedDetections.map(entry => ({
+    x: entry.mappedBox.x,
+    y: entry.mappedBox.y,
+    width: entry.mappedBox.width,
+    height: entry.mappedBox.height
   }));
 }
 
@@ -130,6 +208,10 @@ async function detectFaces(imagePath) {
  * @param {string} imagePath - Path to the image file
  * @returns {Promise<Array>} Array of message objects
  */
+export async function ensureFaceModelsLoaded() {
+  return loadFaceModels();
+}
+
 export async function extractMessagesFromImage(imagePath) {
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
@@ -137,9 +219,13 @@ export async function extractMessagesFromImage(imagePath) {
     // Read image file
     const imageData = fs.readFileSync(imagePath);
     const base64Image = imageData.toString('base64');
-    const imageMeta = await sharp(imageData).metadata();
-    const imageWidth = imageMeta.width || 0;
-    const imageHeight = imageMeta.height || 0;
+    const img = await canvas.loadImage(imageData);
+    const sourceWidth = img.width;
+    const sourceHeight = img.height;
+
+    if (!sourceWidth || !sourceHeight) {
+      throw new Error('Invalid image dimensions (0).');
+    }
 
     // Determine mime type from file extension
     const ext = imagePath.toLowerCase().split('.').pop();
@@ -224,7 +310,7 @@ export async function extractMessagesFromImage(imagePath) {
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       const faceBox = sortedFaces[i] || null;
-      const avatarBox = normalizeAvatarBox(faceBox, imageWidth, imageHeight);
+      const avatarBox = normalizeAvatarBox(faceBox, sourceWidth, sourceHeight);
       let avatarDataUrl = null;
       let avatarPresent = Boolean(avatarBox);
       const avatarShape = 'circle';
