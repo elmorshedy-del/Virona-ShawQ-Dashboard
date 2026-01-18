@@ -112,7 +112,6 @@ export default function TestimonialExtractor() {
     setExtractError('');
     setMessages([]);
     setGeneratedImage(null);
-    e.target.value = '';
     addDebugEvent({
       step: 'Upload',
       status: 'updated',
@@ -135,9 +134,11 @@ export default function TestimonialExtractor() {
 
     try {
       const formData = new FormData();
-      uploadedFiles.forEach(file => {
-        formData.append('screenshots', file);
-      });
+     uploadedFiles.forEach((file, index) => {
+  // This will tell us if the file has data (bytes) or is empty
+     console.log(`File ${index}: ${file.name}, Size: ${file.size} bytes`);
+     formData.append('screenshots', file);
+});
 
       const response = await fetch('/api/testimonials/extract', {
         method: 'POST',
