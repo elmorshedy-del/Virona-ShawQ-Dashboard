@@ -32,22 +32,15 @@ const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
 const GEMINI_TIMEOUT_MS = 30000;
 const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models');
 const SSD_MANIFEST = 'ssd_mobilenetv1_model-weights_manifest.json';
-const FACE_MODEL_BASE_URL = process.env.FACE_MODEL_BASE_URL
-  || 'https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights';
-const FACE_MODEL_AUTO_DOWNLOAD = process.env.FACE_MODEL_AUTO_DOWNLOAD !== 'false';
-const MODEL_DOWNLOAD_TIMEOUT_MS = 30000;
 
 const { Canvas, Image, ImageData } = canvas;
 faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
 
 let faceModelsReady = null;
 
-function checkSsdModelFiles() {
+function assertSsdModelFiles() {
   if (!fs.existsSync(FACE_MODEL_PATH)) {
-    return {
-      ok: false,
-      message: `Face API models not found at ${FACE_MODEL_PATH}. Download SSD Mobilenet V1 models into server/models.`
-    };
+    throw new Error(`Face API models not found at ${FACE_MODEL_PATH}. Download SSD Mobilenet V1 models into server/models.`);
   }
 
   const files = fs.readdirSync(FACE_MODEL_PATH);
@@ -55,92 +48,14 @@ function checkSsdModelFiles() {
   const shardFiles = files.filter(file => file.startsWith('ssd_mobilenetv1_model-shard'));
 
   if (!hasManifest || shardFiles.length === 0) {
-    return {
-      ok: false,
-      message: `SSD Mobilenet V1 model files missing in ${FACE_MODEL_PATH}. Expected ${SSD_MANIFEST} and shard files.`
-    };
+    throw new Error(`SSD Mobilenet V1 model files missing in ${FACE_MODEL_PATH}. Expected ${SSD_MANIFEST} and shard files.`);
   }
-
-  return { ok: true, message: '' };
-}
-
-async function downloadFile(url, destinationPath) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), MODEL_DOWNLOAD_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
-    }
-    const buffer = Buffer.from(await response.arrayBuffer());
-    await fs.promises.writeFile(destinationPath, buffer);
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-async function downloadSsdModelFiles() {
-  await fs.promises.mkdir(FACE_MODEL_PATH, { recursive: true });
-  const manifestUrl = `${FACE_MODEL_BASE_URL}/${SSD_MANIFEST}`;
-  const manifestPath = path.join(FACE_MODEL_PATH, SSD_MANIFEST);
-
-  console.log(`[Testimonials] Downloading SSD Mobilenet V1 manifest from ${manifestUrl}`);
-  await downloadFile(manifestUrl, manifestPath);
-
-  const manifestData = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
-  const shardPaths = new Set();
-
-  if (Array.isArray(manifestData?.weights)) {
-    manifestData.weights.forEach(weight => {
-      if (Array.isArray(weight?.paths)) {
-        weight.paths.forEach(shardPath => shardPaths.add(shardPath));
-      }
-    });
-  }
-
-  if (shardPaths.size === 0) {
-    throw new Error('SSD Mobilenet manifest did not include shard paths.');
-  }
-
-  for (const shardPath of shardPaths) {
-    const shardUrl = `${FACE_MODEL_BASE_URL}/${shardPath}`;
-    const shardDestination = path.join(FACE_MODEL_PATH, shardPath);
-    console.log(`[Testimonials] Downloading SSD Mobilenet shard from ${shardUrl}`);
-    await downloadFile(shardUrl, shardDestination);
-  }
-}
-
-async function ensureSsdModelFiles() {
-  const initialCheck = checkSsdModelFiles();
-  if (initialCheck.ok) {
-    return initialCheck;
-  }
-
-  if (!FACE_MODEL_AUTO_DOWNLOAD) {
-    return initialCheck;
-  }
-
-  console.log('[Testimonials] Face models missing; attempting download...');
-  try {
-    await downloadSsdModelFiles();
-  } catch (error) {
-    return {
-      ok: false,
-      message: `Failed to download SSD Mobilenet V1 models: ${error.message}`
-    };
-  }
-
-  return checkSsdModelFiles();
 }
 
 async function loadFaceModels() {
   if (!faceModelsReady) {
     faceModelsReady = (async () => {
-      const modelCheck = await ensureSsdModelFiles();
-      if (!modelCheck.ok) {
-        console.warn(`[Testimonials] ${modelCheck.message} Face detection will be skipped.`);
-        return false;
-      }
+      assertSsdModelFiles();
       console.log('Loading SSD Mobilenet V1 face detection models from:', FACE_MODEL_PATH);
       await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
       if (!faceapi.nets.ssdMobilenetv1.isLoaded) {
@@ -197,11 +112,7 @@ async function detectFaces(imagePath) {
   console.log('CALLING FACE DETECTION:', imagePath);
   console.log('FILE EXISTS:', fs.existsSync(imagePath));
 
-  const modelsLoaded = await loadFaceModels();
-  if (!modelsLoaded) {
-    console.warn('[Testimonials] Face detection skipped because models are unavailable.');
-    return [];
-  }
+  await loadFaceModels();
 
   console.log('MODELS LOADED:', faceapi.nets.ssdMobilenetv1.isLoaded);
 
