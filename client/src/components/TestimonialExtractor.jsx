@@ -429,7 +429,7 @@ export default function TestimonialExtractor() {
 
             <div className="space-y-4">
               {messages.map((msg, index) => (
-                <div key={index} className="border border-gray-200 rounded-lg p-3">
+                <div key={msg.order} className="border border-gray-200 rounded-lg p-3">
                   <div className="flex gap-2">
                     <div className="flex-1 relative">
                       <textarea
