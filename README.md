@@ -36,9 +36,24 @@ SHAWQ_META_AD_ACCOUNT_ID=1026963365133388
 SHAWQ_META_ACCESS_TOKEN=...
 SHAWQ_SHOPIFY_STORE=shawqq.myshopify.com
 SHAWQ_SHOPIFY_ACCESS_TOKEN=shpat_...
+
+# Optional: Face API (testimonial extraction avatars)
+# Set to "false" to disable auto-download and provide models manually.
+FACE_MODEL_AUTO_DOWNLOAD=true
+# Optional override for model download source
+FACE_MODEL_BASE_URL=https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights
 ```
 
 4. Deploy
+
+#### Manual face model install (if auto-download disabled)
+
+If you prefer to manage the model files yourself (or want to pin them), set
+`FACE_MODEL_AUTO_DOWNLOAD=false` and copy the SSD Mobilenet V1 model files into
+the `models/` directory at the repo root (same level as `server/`). You need:
+
+- `ssd_mobilenetv1_model-weights_manifest.json`
+- `ssd_mobilenetv1_model-shard*.bin`
 
 ### Local Development
 
