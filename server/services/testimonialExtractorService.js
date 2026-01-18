@@ -1,5 +1,9 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
+import path from 'path';
+import sharp from 'sharp';
+import * as faceapi from 'face-api.js';
+import canvas from 'canvas';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -11,7 +15,9 @@ Return ONLY a valid JSON array, nothing else before or after:
   {
     "text": "exact message text including emojis",
     "side": "left",
-    "order": 1
+    "order": 1,
+    "authorName": "if present, otherwise null",
+    "authorRole": "if present, otherwise null"
   }
 ]
 
@@ -21,6 +27,80 @@ RULES:
 - "order": Number messages from top to bottom starting at 1
 - Include ALL messages visible in the screenshot
 - If you see multiple screenshots, extract from all of them`;
+
+const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
+const GEMINI_TIMEOUT_MS = 30000;
+const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models/face-api');
+
+const { Canvas, Image, ImageData } = canvas;
+faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
+
+let faceModelsReady = null;
+
+async function loadFaceModels() {
+  if (!faceModelsReady) {
+    faceModelsReady = (async () => {
+      if (!fs.existsSync(FACE_MODEL_PATH)) {
+        console.warn(`Face API models not found at ${FACE_MODEL_PATH}. Avatar detection disabled.`);
+        return false;
+      }
+      await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
+      return true;
+    })();
+  }
+  return faceModelsReady;
+}
+
+function isInsufficientFundsError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('insufficient') || message.includes('quota') || message.includes('billing');
+}
+
+function normalizeAvatarBox(avatarBox, imageWidth, imageHeight) {
+  if (!avatarBox) return null;
+  if (!imageWidth || !imageHeight) return null;
+  const x = Math.max(0, Math.floor(Number(avatarBox.x ?? 0)));
+  const y = Math.max(0, Math.floor(Number(avatarBox.y ?? 0)));
+  const width = Math.max(1, Math.floor(Number(avatarBox.width ?? 0)));
+  const height = Math.max(1, Math.floor(Number(avatarBox.height ?? 0)));
+
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) {
+    return null;
+  }
+
+  if (x >= imageWidth || y >= imageHeight) {
+    return null;
+  }
+
+  const clampedWidth = Math.min(width, imageWidth - x);
+  const clampedHeight = Math.min(height, imageHeight - y);
+
+  if (clampedWidth <= 0 || clampedHeight <= 0) {
+    return null;
+  }
+
+  return {
+    x,
+    y,
+    width: clampedWidth,
+    height: clampedHeight
+  };
+}
+
+async function detectFaces(imagePath) {
+  const ready = await loadFaceModels();
+  if (!ready) {
+    return [];
+  }
+  const img = await canvas.loadImage(imagePath);
+  const detections = await faceapi.detectAllFaces(img);
+  return detections.map(det => ({
+    x: det.box.x,
+    y: det.box.y,
+    width: det.box.width,
+    height: det.box.height
+  }));
+}
 
 /**
  * Extract messages from a single image using Gemini Vision
@@ -34,6 +114,9 @@ export async function extractMessagesFromImage(imagePath) {
     // Read image file
     const imageData = fs.readFileSync(imagePath);
     const base64Image = imageData.toString('base64');
+    const imageMeta = await sharp(imageData).metadata();
+    const imageWidth = imageMeta.width || 0;
+    const imageHeight = imageMeta.height || 0;
 
     // Determine mime type from file extension
     const ext = imagePath.toLowerCase().split('.').pop();
@@ -53,7 +136,16 @@ export async function extractMessagesFromImage(imagePath) {
       }
     };
 
-    const result = await model.generateContent([VISION_PROMPT, imagePart]);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+    let result;
+    try {
+      result = await model.generateContent([VISION_PROMPT, imagePart], {
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     const response = result.response;
     let resultText = response.text().trim();
 
@@ -101,14 +193,49 @@ export async function extractMessagesFromImage(imagePath) {
       return [];
     }
 
+    const faceDetections = await detectFaces(imagePath);
+    const sortedFaces = faceDetections.sort((a, b) => a.y - b.y);
+
     // Ensure required fields exist
     const validated = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
+      const faceBox = sortedFaces[i] || null;
+      const avatarBox = normalizeAvatarBox(faceBox, imageWidth, imageHeight);
+      let avatarDataUrl = null;
+      let avatarPresent = Boolean(avatarBox);
+      const avatarShape = 'circle';
+
+      if (avatarPresent && avatarBox) {
+        try {
+          const cropped = await sharp(imageData)
+            .extract({
+              left: avatarBox.x,
+              top: avatarBox.y,
+              width: avatarBox.width,
+              height: avatarBox.height
+            })
+            .png()
+            .toBuffer();
+          avatarDataUrl = `data:image/png;base64,${cropped.toString('base64')}`;
+        } catch (cropError) {
+          console.warn('Avatar crop failed:', cropError);
+          avatarPresent = false;
+        }
+      }
+
       validated.push({
         text: String(msg.text || ''),
+        quoteText: String(msg.text || ''),
         side: (msg.side === 'left' || msg.side === 'right') ? msg.side : 'left',
-        order: msg.order || (i + 1)
+        order: msg.order || (i + 1),
+        authorName: msg.authorName ? String(msg.authorName) : '',
+        authorRole: msg.authorRole ? String(msg.authorRole) : '',
+        avatarPresent,
+        avatarShape,
+        avatarBox: avatarPresent ? avatarBox : null,
+        avatarPlacementPct: null,
+        avatarDataUrl
       });
     }
 
@@ -119,7 +246,12 @@ export async function extractMessagesFromImage(imagePath) {
 
   } catch (error) {
     console.error('Extraction error:', error);
-    return [];
+    if (isInsufficientFundsError(error)) {
+      const fundsError = new Error('Insufficient funds to analyze the image.');
+      fundsError.code = INSUFFICIENT_FUNDS_CODE;
+      throw fundsError;
+    }
+    throw error;
   }
 }
 

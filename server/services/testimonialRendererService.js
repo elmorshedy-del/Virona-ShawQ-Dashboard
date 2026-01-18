@@ -1,6 +1,9 @@
-import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
+import satori from 'satori';
+import { Resvg } from '@resvg/resvg-js';
+import twemoji from 'twemoji';
+import fetch from 'node-fetch';
 
 const PRESETS = {
   instagram_story: {
@@ -80,10 +83,178 @@ const PRESETS = {
   }
 };
 
-/**
- * Generate HTML for testimonial bubbles
- */
-function generateHTML(messages, config) {
+const MAX_EMOJI_CACHE = 500;
+const EMOJI_FETCH_TIMEOUT_MS = 5000;
+const emojiSvgCache = new Map();
+
+const EMOJI_CDN_BASES = [
+  'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/',
+  'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg/',
+  'https://twemoji.maxcdn.com/v/latest/svg/'
+];
+
+const fontCache = new Map();
+
+function h(type, props, ...children) {
+  return {
+    type,
+    props: {
+      ...(props || {}),
+      children: children.flat().filter(child => child !== null && child !== undefined)
+    }
+  };
+}
+
+function resolveFontPath(fileName) {
+  return path.resolve(process.cwd(), 'node_modules', '@fontsource', 'inter', 'files', fileName);
+}
+
+function loadFontData(fileName) {
+  if (fontCache.has(fileName)) {
+    return fontCache.get(fileName);
+  }
+  const fontPath = resolveFontPath(fileName);
+  if (!fs.existsSync(fontPath)) {
+    return null;
+  }
+  const data = fs.readFileSync(fontPath);
+  fontCache.set(fileName, data);
+  return data;
+}
+
+function buildFontConfig() {
+  const fonts = [];
+  const regular = loadFontData('inter-latin-400-normal.woff');
+  if (regular) {
+    fonts.push({ name: 'Inter', data: regular, weight: 400, style: 'normal' });
+  }
+  const medium = loadFontData('inter-latin-500-normal.woff');
+  if (medium) {
+    fonts.push({ name: 'Inter', data: medium, weight: 500, style: 'normal' });
+  }
+  const semi = loadFontData('inter-latin-600-normal.woff');
+  if (semi) {
+    fonts.push({ name: 'Inter', data: semi, weight: 600, style: 'normal' });
+  }
+  return fonts;
+}
+
+async function fetchWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchEmojiDataUrlFromBase(baseUrl, filename) {
+  const src = `${baseUrl}${filename}`;
+  const response = await fetchWithTimeout(src, EMOJI_FETCH_TIMEOUT_MS);
+  if (!response.ok) {
+    throw new Error(`Emoji fetch failed: ${response.status}`);
+  }
+  const svgText = await response.text();
+  const base64 = Buffer.from(svgText).toString('base64');
+  return `data:image/svg+xml;base64,${base64}`;
+}
+
+async function fetchEmojiDataUrl(filename) {
+  if (emojiSvgCache.has(filename)) {
+    return emojiSvgCache.get(filename);
+  }
+
+  for (const baseUrl of EMOJI_CDN_BASES) {
+    try {
+      const dataUrl = await fetchEmojiDataUrlFromBase(baseUrl, filename);
+      if (emojiSvgCache.size >= MAX_EMOJI_CACHE) {
+        const firstKey = emojiSvgCache.keys().next().value;
+        emojiSvgCache.delete(firstKey);
+      }
+      emojiSvgCache.set(filename, dataUrl);
+      return dataUrl;
+    } catch (error) {
+      console.warn('Emoji fetch failed from base:', baseUrl, error.message);
+    }
+  }
+
+  return null;
+}
+
+async function buildTwemojiNodes(text) {
+  const parsed = twemoji.parse(text, { folder: 'svg', ext: '.svg' });
+  const regex = /<img[^>]+src="([^"]+)"[^>]*alt="([^"]+)"[^>]*>/g;
+  const nodes = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = regex.exec(parsed)) !== null) {
+    const [fullMatch, src, alt] = match;
+    const textChunk = parsed.slice(lastIndex, match.index);
+    if (textChunk) {
+      nodes.push(textChunk);
+    }
+    const filename = src.split('/').pop();
+    const dataUrl = filename ? await fetchEmojiDataUrl(filename) : null;
+    if (dataUrl) {
+      nodes.push(h('img', {
+        src: dataUrl,
+        width: '1em',
+        height: '1em',
+        style: { display: 'inline-block', verticalAlign: '-0.1em' }
+      }));
+    } else {
+      nodes.push(alt || '');
+    }
+    lastIndex = match.index + fullMatch.length;
+  }
+
+  const remaining = parsed.slice(lastIndex);
+  if (remaining) {
+    nodes.push(remaining);
+  }
+
+  return nodes;
+}
+
+function escapeHtml(text) {
+  const map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  };
+  return text.replace(/[&<>"']/g, m => map[m]);
+}
+
+async function buildMessageTextNodes(text, quoteScale, outputShape, textColor) {
+  const sanitized = escapeHtml(text || '');
+  const textNodes = await buildTwemojiNodes(sanitized);
+  if (outputShape !== 'quote_card') {
+    return textNodes;
+  }
+  return [
+    h('span', {
+      style: {
+        fontSize: `${quoteScale}em`,
+        color: textColor,
+        opacity: 0.85
+      }
+    }, '“'),
+    ...textNodes,
+    h('span', {
+      style: {
+        fontSize: `${quoteScale}em`,
+        color: textColor,
+        opacity: 0.85
+      }
+    }, '”')
+  ];
+}
+
+async function buildTestimonialVNode(messages, config) {
   const {
     width,
     height,
@@ -97,295 +268,197 @@ function generateHTML(messages, config) {
     bubbleColor = '#ffffff',
     textColor = '#000000',
     fontSize = 28,
+    typographyPreset = 'inherit',
+    quoteTreatment = 'polished',
+    weightOption = 'match',
+    cardPadding = 'm',
+    lineSpacing = 'normal',
+    maxWidth = 'standard',
     centerVertical = false,
     layout = 'stacked',
-    collageColumns = 2,
-    logoUrl = null,
-    logoPosition = 'bottom_right'
+    collageColumns = 2
   } = config;
 
-  // Calculate auto dimensions if needed
-  const isAutoWidth = width === null || width === undefined;
-  const isAutoHeight = height === null || height === undefined;
-  const canvasWidth = isAutoWidth ? 800 : width;
-  const canvasHeight = isAutoHeight ? 'auto' : height;
+  const resolvedCollageColumns = Math.min(4, Math.max(2, Number(collageColumns) || 2));
 
-  // Background style
-  let backgroundStyle = '';
-  if (backgroundType === 'transparent') {
-    backgroundStyle = 'background: transparent;';
-  } else if (backgroundType === 'gradient' && gradientColors.length >= 2) {
-    backgroundStyle = `background: linear-gradient(to bottom, ${gradientColors[0]}, ${gradientColors[gradientColors.length - 1]});`;
-  } else {
-    backgroundStyle = `background: ${backgroundColor};`;
-  }
-
-  // Bubble style CSS - varies by output shape
-  let bubbleCSS = '';
-
-  if (outputShape === 'minimal') {
-    // Minimal: no container, just text
-    bubbleCSS = `
-      color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
-      margin-bottom: 16px;
-      max-width: 500px;
-      word-wrap: break-word;
-    `;
-  } else if (outputShape === 'quote_card') {
-    // Quote card: centered with quotes
-    bubbleCSS = `
-      background: ${bubbleColor};
-      padding: 40px 30px;
-      border-radius: ${borderRadius}px;
-      margin-bottom: 16px;
-      max-width: 600px;
-      word-wrap: break-word;
-      color: ${textColor};
-      font-size: ${fontSize + 4}px;
-      line-height: 1.6;
-      text-align: center;
-      position: relative;
-    `;
-  } else if (outputShape === 'card') {
-    // Card: rectangle with border
-    bubbleCSS = `
-      background: ${bubbleColor};
-      padding: 24px;
-      border-radius: ${borderRadius}px;
-      margin-bottom: 16px;
-      max-width: 500px;
-      word-wrap: break-word;
-      color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
-      border: 1px solid rgba(0, 0, 0, 0.15);
-    `;
-  } else {
-    // Default bubble
-    bubbleCSS = `
-      background: ${bubbleColor};
-      padding: 20px;
-      border-radius: ${borderRadius}px;
-      margin-bottom: 16px;
-      max-width: 500px;
-      word-wrap: break-word;
-      color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
-    `;
-  }
-
-  // Apply bubble style effects (shadow, outline) - skip for minimal
-  if (outputShape !== 'minimal') {
-    if (bubbleStyle === 'soft_shadow') {
-      bubbleCSS += 'box-shadow: 6px 6px 20px rgba(0, 0, 0, 0.15);';
-    } else if (bubbleStyle === 'hard_shadow') {
-      bubbleCSS += 'box-shadow: 5px 5px 0px rgba(0, 0, 0, 1);';
-    } else if (bubbleStyle === 'outline') {
-      bubbleCSS += 'border: 2px solid #000000;';
-    }
-  }
-
-  // Layout-specific styles
-  let containerStyle = '';
-  let bubblesHTML = '';
-
-  // Helper to wrap text with quotes for quote_card shape
-  const formatMessage = (text) => {
-    if (outputShape === 'quote_card') {
-      return `<span style="font-size: 1.5em; color: rgba(0,0,0,0.3); vertical-align: -0.1em;">«</span> ${escapeHtml(text)} <span style="font-size: 1.5em; color: rgba(0,0,0,0.3); vertical-align: -0.1em;">»</span>`;
-    }
-    return escapeHtml(text);
+  const fontWeightMap = {
+    match: 400,
+    medium: 500,
+    bold: 600
   };
 
-  if (layout === 'collage' && messages.length > 1) {
-    // Collage grid layout
-    containerStyle = `
-      display: grid;
-      grid-template-columns: repeat(${collageColumns}, 1fr);
-      gap: 16px;
-      padding: ${padding}px;
-    `;
+  const typographyMap = {
+    inherit: { sizeMultiplier: 1, lineHeightAdjust: 0 },
+    editorial: { sizeMultiplier: 1.05, lineHeightAdjust: 0.08 },
+    compact: { sizeMultiplier: 0.95, lineHeightAdjust: -0.04 }
+  };
 
-    bubblesHTML = messages.map(msg => `
-      <div class="bubble" style="${bubbleCSS}">
-        ${formatMessage(msg.text)}
-      </div>
-    `).join('');
-  } else {
-    // Stacked layout
-    containerStyle = `
-      display: flex;
-      flex-direction: column;
-      padding: ${padding}px;
-      ${centerVertical && !isAutoHeight ? 'justify-content: center;' : ''}
-    `;
+  const maxWidthMap = {
+    narrow: '32ch',
+    standard: '38ch',
+    wide: '44ch'
+  };
 
-    bubblesHTML = messages.map(msg => {
-      const alignment = msg.side === 'right' ? 'flex-end' : 'flex-start';
-      // Center quote cards regardless of side
-      const actualAlignment = outputShape === 'quote_card' ? 'center' : alignment;
-      return `
-        <div style="display: flex; justify-content: ${actualAlignment}; margin-bottom: 16px;">
-          <div class="bubble" style="${bubbleCSS}">
-            ${formatMessage(msg.text)}
-          </div>
-        </div>
-      `;
-    }).join('');
+  const baseLineHeight = outputShape === 'quote_card' ? 1.6 : 1.4;
+  const typographyConfig = typographyMap[typographyPreset] || typographyMap.inherit;
+  const lineSpacingBoost = lineSpacing === 'relaxed' ? 0.1 : 0;
+  const lineHeight = Number((baseLineHeight + typographyConfig.lineHeightAdjust + lineSpacingBoost).toFixed(2));
+  const effectiveFontSize = Math.round(fontSize * typographyConfig.sizeMultiplier);
+  const fontWeight = fontWeightMap[weightOption] || fontWeightMap.match;
+  const resolvedMaxWidth = maxWidthMap[maxWidth] || maxWidthMap.standard;
+
+  const paddingByShape = {
+    bubble: { s: 16, m: 20, l: 24 },
+    card: { s: 20, m: 24, l: 32 },
+    quote_card: { s: 28, m: 36, l: 44 },
+    minimal: { s: 0, m: 0, l: 0 }
+  };
+  const shapePadding = paddingByShape[outputShape] || paddingByShape.bubble;
+  const resolvedCardPadding = shapePadding[cardPadding] ?? shapePadding.m;
+
+  const quoteScale = outputShape === 'quote_card'
+    ? 1.2
+    : (quoteTreatment === 'editorial' ? 1.08 : 1);
+
+  const backgroundStyle = backgroundType === 'transparent'
+    ? 'transparent'
+    : (backgroundType === 'gradient'
+      ? `linear-gradient(to bottom, ${gradientColors[0]}, ${gradientColors[gradientColors.length - 1]})`
+      : backgroundColor);
+
+  const bubbleBaseStyle = {
+    background: outputShape === 'minimal' ? 'transparent' : bubbleColor,
+    padding: outputShape === 'minimal' ? 0 : resolvedCardPadding,
+    borderRadius: outputShape === 'minimal' ? 0 : borderRadius,
+    marginBottom: 16,
+    maxWidth: resolvedMaxWidth,
+    color: textColor,
+    fontSize: effectiveFontSize,
+    lineHeight: lineHeight,
+    fontWeight: fontWeight,
+    textAlign: outputShape === 'quote_card' ? 'center' : 'left'
+  };
+
+  if (outputShape === 'card') {
+    bubbleBaseStyle.border = '1px solid rgba(0,0,0,0.15)';
+  }
+  if (bubbleStyle === 'soft_shadow') {
+    bubbleBaseStyle.boxShadow = '6px 6px 20px rgba(0,0,0,0.15)';
+  } else if (bubbleStyle === 'hard_shadow') {
+    bubbleBaseStyle.boxShadow = '5px 5px 0px rgba(0,0,0,1)';
+  } else if (bubbleStyle === 'outline') {
+    bubbleBaseStyle.border = '2px solid #000000';
   }
 
-  // Logo HTML
-  let logoHTML = '';
-  if (logoUrl) {
-    const logoPositions = {
-      'bottom_right': 'bottom: 20px; right: 20px;',
-      'bottom_left': 'bottom: 20px; left: 20px;',
-      'top_right': 'top: 20px; right: 20px;',
-      'top_left': 'top: 20px; left: 20px;'
+  const messageNodes = await Promise.all(messages.map(async (msg) => {
+    const textNodes = await buildMessageTextNodes(msg.quoteText || msg.text || '', quoteScale, outputShape, textColor);
+    const authorBlock = (msg.authorName || msg.authorRole || msg.avatarDataUrl)
+      ? h('div', {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          marginTop: 16
+        }
+      },
+      msg.avatarDataUrl
+        ? h('img', {
+          src: msg.avatarDataUrl,
+          width: 44,
+          height: 44,
+          style: {
+            borderRadius: '50%',
+            objectFit: 'cover'
+          }
+        })
+        : null,
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+        msg.authorName ? h('div', { style: { fontWeight: 500, fontSize: '0.85em', opacity: 0.85 } }, msg.authorName) : null,
+        msg.authorRole ? h('div', { style: { fontSize: '0.75em', opacity: 0.65 } }, msg.authorRole) : null
+      ))
+      : null;
+
+    return h('div', {
+      style: {
+        ...bubbleBaseStyle,
+        alignSelf: outputShape === 'quote_card'
+          ? 'center'
+          : (msg.side === 'right' ? 'flex-end' : 'flex-start')
+      }
+    },
+    h('div', { style: { display: 'inline' } }, ...textNodes),
+    authorBlock
+    );
+  }));
+
+  const contentContainerStyle = layout === 'collage'
+    ? {
+      display: 'grid',
+      gridTemplateColumns: `repeat(${resolvedCollageColumns}, minmax(0, 1fr))`,
+      gap: 16,
+      padding
+    }
+    : {
+      display: 'flex',
+      flexDirection: 'column',
+      padding,
+      justifyContent: centerVertical ? 'center' : 'flex-start',
+      gap: 16
     };
-    const positionStyle = logoPositions[logoPosition] || logoPositions['bottom_right'];
 
-    logoHTML = `
-      <img src="${logoUrl}"
-           style="position: absolute; ${positionStyle} max-height: 60px; width: auto; z-index: 100;" />
-    `;
-  }
+  const containerWidth = width || 800;
+  const baseHeight = height || Math.max(
+    200,
+    messages.length * (effectiveFontSize * 3 + 40) + padding * 2
+  );
 
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <style>
-        * {
-          margin: 0;
-          padding: 0;
-          box-sizing: border-box;
-        }
-
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
-          ${backgroundStyle}
-          width: ${canvasWidth}px;
-          ${isAutoHeight ? 'min-height: 100px;' : `height: ${canvasHeight}px;`}
-          position: relative;
-        }
-
-        .container {
-          ${containerStyle}
-          width: 100%;
-          height: 100%;
-        }
-
-        .bubble {
-          ${bubbleCSS}
-        }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        ${bubblesHTML}
-      </div>
-      ${logoHTML}
-    </body>
-    </html>
-  `;
-
-  return html;
-}
-
-/**
- * Escape HTML to prevent XSS
- */
-function escapeHtml(text) {
-  const map = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;'
+  return {
+    vnode: h('div', {
+      style: {
+        width: containerWidth,
+        height: baseHeight,
+        background: backgroundStyle,
+        display: 'flex',
+        flexDirection: 'column',
+        fontFamily: 'Inter, system-ui, -apple-system, sans-serif'
+      }
+    },
+    h('div', { style: contentContainerStyle }, messageNodes)),
+    width: containerWidth,
+    height: baseHeight
   };
-  return text.replace(/[&<>"']/g, m => map[m]);
 }
 
 /**
- * Render testimonials to PNG using Puppeteer
- * @param {Array} messages - Array of message objects
- * @param {string} outputPath - Output file path
- * @param {Object} options - Rendering options
- * @returns {Promise<string>} Path to generated image
+ * Render testimonials to PNG using Satori + Resvg
  */
 export async function renderTestimonials(messages, outputPath, options = {}) {
   if (!messages || messages.length === 0) {
     throw new Error('No messages to render');
   }
 
-  // Merge preset with custom options
   const presetName = options.preset || 'raw_bubbles';
   const preset = PRESETS[presetName] || PRESETS.raw_bubbles;
   const config = { ...preset, ...options };
 
-  const html = generateHTML(messages, config);
-
-  let browser;
-  try {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
-    });
-
-    const page = await browser.newPage();
-
-    // Set viewport
-    const viewportWidth = config.width || 800;
-    const viewportHeight = config.height || 600;
-    await page.setViewport({
-      width: viewportWidth,
-      height: viewportHeight,
-      deviceScaleFactor: 2 // For better quality
-    });
-
-    // Set content
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-
-    // For auto-height, calculate actual height
-    let screenshotOptions = {
-      path: outputPath,
-      type: 'png',
-      omitBackground: config.backgroundType === 'transparent'
-    };
-
-    if (config.height === null || config.height === undefined) {
-      // Auto-fit height
-      const bodyHeight = await page.evaluate(() => document.body.scrollHeight);
-      await page.setViewport({
-        width: viewportWidth,
-        height: bodyHeight,
-        deviceScaleFactor: 2
-      });
-      screenshotOptions.fullPage = true;
-    }
-
-    await page.screenshot(screenshotOptions);
-
-    return outputPath;
-
-  } catch (error) {
-    console.error('Rendering error:', error);
-    throw error;
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
+  const fonts = buildFontConfig();
+  if (fonts.length === 0) {
+    throw new Error('No fonts available for rendering. Ensure @fontsource/inter is installed.');
   }
+
+  const { vnode, width, height } = await buildTestimonialVNode(messages, config);
+  const svg = await satori(vnode, {
+    width,
+    height,
+    fonts
+  });
+
+  const resvg = new Resvg(svg, {
+    background: config.backgroundType === 'transparent' ? 'transparent' : undefined
+  });
+  const pngBuffer = resvg.render().asPng();
+  fs.writeFileSync(outputPath, pngBuffer);
+  return outputPath;
 }
 
 /**
