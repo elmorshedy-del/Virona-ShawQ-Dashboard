@@ -1,0 +1,660 @@
+import React, { useState } from 'react';
+import {
+  Upload, Sparkles, Download, Copy, Trash2, Plus,
+  ChevronDown, ChevronUp, Loader2, AlertCircle, CheckCircle2
+} from 'lucide-react';
+
+const PRESETS = [
+  { key: 'instagram_story', label: 'Instagram Story', dimensions: '1080x1920' },
+  { key: 'instagram_post', label: 'Instagram Post', dimensions: '1080x1080' },
+  { key: 'twitter', label: 'Twitter/X', dimensions: '1200x675' },
+  { key: 'linkedin', label: 'LinkedIn', dimensions: '1200x627' },
+  { key: 'website', label: 'Website', dimensions: 'Auto-fit' },
+  { key: 'presentation', label: 'Presentation', dimensions: '1920x1080' },
+  { key: 'raw_bubbles', label: 'Raw Bubbles', dimensions: 'Auto-fit' }
+];
+
+const BUBBLE_STYLES = [
+  { value: 'solid', label: 'Solid' },
+  { value: 'soft_shadow', label: 'Soft Shadow' },
+  { value: 'hard_shadow', label: 'Hard Shadow' },
+  { value: 'outline', label: 'Outline' }
+];
+
+const LOGO_POSITIONS = [
+  { value: 'bottom_right', label: 'Bottom Right' },
+  { value: 'bottom_left', label: 'Bottom Left' },
+  { value: 'top_right', label: 'Top Right' },
+  { value: 'top_left', label: 'Top Left' }
+];
+
+export default function TestimonialExtractor() {
+  // Phase 1: Extraction state
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState('');
+
+  // Phase 2: Messages state
+  const [messages, setMessages] = useState([]);
+  const [newMessageText, setNewMessageText] = useState('');
+
+  // Phase 3: Styling state
+  const [preset, setPreset] = useState('instagram_post');
+  const [layout, setLayout] = useState('stacked');
+  const [collageColumns, setCollageColumns] = useState(2);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Advanced options
+  const [backgroundType, setBackgroundType] = useState('solid');
+  const [backgroundColor, setBackgroundColor] = useState('#ffffff');
+  const [gradientColor1, setGradientColor1] = useState('#833ab4');
+  const [gradientColor2, setGradientColor2] = useState('#fcb045');
+  const [bubbleStyle, setBubbleStyle] = useState('soft_shadow');
+  const [bubbleColor, setBubbleColor] = useState('#ffffff');
+  const [textColor, setTextColor] = useState('#000000');
+  const [fontSize, setFontSize] = useState(28);
+
+  // Output state
+  const [generating, setGenerating] = useState(false);
+  const [generatedImage, setGeneratedImage] = useState(null);
+  const [generateError, setGenerateError] = useState('');
+  const [generateSuccess, setGenerateSuccess] = useState('');
+
+  // File upload handler
+  const handleFileChange = (e) => {
+    const files = Array.from(e.target.files);
+    setUploadedFiles(files);
+    setExtractError('');
+    setMessages([]);
+    setGeneratedImage(null);
+  };
+
+  // Extract messages from screenshots
+  const handleExtract = async () => {
+    if (uploadedFiles.length === 0) {
+      setExtractError('Please upload at least one screenshot');
+      return;
+    }
+
+    setExtracting(true);
+    setExtractError('');
+    setMessages([]);
+
+    try {
+      const formData = new FormData();
+      uploadedFiles.forEach(file => {
+        formData.append('screenshots', file);
+      });
+
+      const response = await fetch('/api/testimonials/extract', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to extract messages');
+      }
+
+      setMessages(data.messages);
+      setExtractError('');
+    } catch (error) {
+      console.error('Extract error:', error);
+      setExtractError(error.message);
+      setMessages([]);
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  // Update message text
+  const updateMessage = (index, newText) => {
+    const updated = [...messages];
+    updated[index].text = newText;
+    setMessages(updated);
+  };
+
+  // Delete message
+  const deleteMessage = (index) => {
+    const updated = messages.filter((_, i) => i !== index);
+    setMessages(updated);
+  };
+
+  // Add new message
+  const addMessage = () => {
+    if (!newMessageText.trim()) return;
+
+    const newMsg = {
+      text: newMessageText,
+      side: 'left',
+      order: messages.length + 1
+    };
+
+    setMessages([...messages, newMsg]);
+    setNewMessageText('');
+  };
+
+  // Toggle message side (left/right)
+  const toggleSide = (index) => {
+    const updated = [...messages];
+    updated[index].side = updated[index].side === 'left' ? 'right' : 'left';
+    setMessages(updated);
+  };
+
+  // Generate testimonial
+  const handleGenerate = async () => {
+    if (messages.length === 0) {
+      setGenerateError('No messages to render. Please extract or add messages first.');
+      return;
+    }
+
+    setGenerating(true);
+    setGenerateError('');
+    setGenerateSuccess('');
+
+    try {
+      const payload = {
+        messages,
+        preset,
+        layout,
+        collageColumns,
+        bubbleStyle,
+        bubbleColor,
+        textColor,
+        fontSize
+      };
+
+      // Add background options
+      if (backgroundType === 'transparent') {
+        payload.backgroundType = 'transparent';
+      } else if (backgroundType === 'gradient') {
+        payload.backgroundType = 'gradient';
+        payload.gradientColors = [gradientColor1, gradientColor2];
+      } else if (backgroundType === 'custom') {
+        payload.backgroundType = 'solid';
+        payload.backgroundColor = backgroundColor;
+      }
+
+      const response = await fetch('/api/testimonials/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate testimonial');
+      }
+
+      setGeneratedImage(data.image);
+      setGenerateSuccess('✨ Testimonial generated successfully!');
+    } catch (error) {
+      console.error('Generate error:', error);
+      setGenerateError(error.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Download image
+  const handleDownload = () => {
+    if (!generatedImage) return;
+
+    const link = document.createElement('a');
+    link.href = generatedImage;
+    link.download = `testimonial-${Date.now()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Copy to clipboard
+  const handleCopyToClipboard = async () => {
+    if (!generatedImage) return;
+
+    try {
+      const blob = await (await fetch(generatedImage)).blob();
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          [blob.type]: blob
+        })
+      ]);
+      alert('Image copied to clipboard!');
+    } catch (error) {
+      console.error('Copy error:', error);
+      alert('Failed to copy to clipboard. Please use the download button instead.');
+    }
+  };
+
+  return (
+    <div className="h-full overflow-y-auto p-6 bg-gradient-to-br from-blue-50 to-purple-50">
+      <div className="max-w-6xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+          <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            <Sparkles className="text-purple-600" size={28} />
+            Testimonial Extractor
+          </h2>
+          <p className="text-gray-600 mt-2">
+            Turn messy chat screenshots into beautiful, branded testimonial images
+          </p>
+        </div>
+
+        {/* Phase 1: Upload & Extract */}
+        <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            Step 1: Upload Screenshots
+          </h3>
+
+          <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-purple-400 transition-colors">
+            <Upload className="mx-auto text-gray-400 mb-4" size={48} />
+            <label className="cursor-pointer">
+              <span className="text-purple-600 hover:text-purple-700 font-medium">
+                Click to upload
+              </span>
+              <span className="text-gray-600"> or drag and drop</span>
+              <input
+                type="file"
+                multiple
+                accept="image/*"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </label>
+            <p className="text-sm text-gray-500 mt-2">
+              PNG, JPG, WebP (up to 10 files)
+            </p>
+          </div>
+
+          {uploadedFiles.length > 0 && (
+            <div className="mt-4">
+              <p className="text-sm text-gray-600 mb-2">
+                {uploadedFiles.length} file(s) selected
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {uploadedFiles.map((file, i) => (
+                  <span
+                    key={i}
+                    className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm"
+                  >
+                    {file.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={handleExtract}
+            disabled={extracting || uploadedFiles.length === 0}
+            className="mt-4 w-full bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 font-medium"
+          >
+            {extracting ? (
+              <>
+                <Loader2 className="animate-spin" size={20} />
+                Extracting...
+              </>
+            ) : (
+              <>
+                <Sparkles size={20} />
+                Extract Text
+              </>
+            )}
+          </button>
+
+          {extractError && (
+            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+              <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
+              <p className="text-red-700 text-sm">{extractError}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Phase 2: Edit Messages */}
+        {messages.length > 0 && (
+          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Step 2: Review & Edit Messages
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Edit the extracted text below. Fix any mistakes before generating.
+            </p>
+
+            <div className="space-y-3">
+              {messages.map((msg, index) => (
+                <div key={index} className="flex gap-2">
+                  <div className="flex-1 relative">
+                    <textarea
+                      value={msg.text}
+                      onChange={(e) => updateMessage(index, e.target.value)}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"
+                      rows={2}
+                    />
+                    <button
+                      onClick={() => toggleSide(index)}
+                      className="absolute bottom-2 right-2 px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded text-gray-700"
+                    >
+                      {msg.side === 'left' ? '← Left' : 'Right →'}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => deleteMessage(index)}
+                    className="p-3 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                  >
+                    <Trash2 size={20} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <input
+                type="text"
+                placeholder="Add new message manually..."
+                value={newMessageText}
+                onChange={(e) => setNewMessageText(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && addMessage()}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+              />
+              <button
+                onClick={addMessage}
+                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors flex items-center gap-2"
+              >
+                <Plus size={20} />
+                Add
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Phase 3: Style & Generate */}
+        {messages.length > 0 && (
+          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Step 3: Choose Style
+            </h3>
+
+            {/* Preset Selection */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Output Preset
+              </label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {PRESETS.map(p => (
+                  <button
+                    key={p.key}
+                    onClick={() => setPreset(p.key)}
+                    className={`p-3 border-2 rounded-lg text-left transition-all ${
+                      preset === p.key
+                        ? 'border-purple-600 bg-purple-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="font-medium text-gray-900">{p.label}</div>
+                    <div className="text-xs text-gray-500 mt-1">{p.dimensions}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Layout Selection */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Layout
+              </label>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setLayout('stacked')}
+                  className={`flex-1 p-3 border-2 rounded-lg transition-all ${
+                    layout === 'stacked'
+                      ? 'border-purple-600 bg-purple-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="font-medium text-gray-900">Stacked</div>
+                  <div className="text-xs text-gray-500 mt-1">Vertical bubbles</div>
+                </button>
+                <button
+                  onClick={() => setLayout('collage')}
+                  className={`flex-1 p-3 border-2 rounded-lg transition-all ${
+                    layout === 'collage'
+                      ? 'border-purple-600 bg-purple-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="font-medium text-gray-900">Collage Grid</div>
+                  <div className="text-xs text-gray-500 mt-1">Multi-column</div>
+                </button>
+              </div>
+
+              {layout === 'collage' && (
+                <div className="mt-3">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Columns: {collageColumns}
+                  </label>
+                  <input
+                    type="range"
+                    min="2"
+                    max="4"
+                    value={collageColumns}
+                    onChange={(e) => setCollageColumns(parseInt(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Advanced Options */}
+            <div className="mb-6">
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="flex items-center gap-2 text-purple-600 hover:text-purple-700 font-medium"
+              >
+                {showAdvanced ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                Advanced Options
+              </button>
+
+              {showAdvanced && (
+                <div className="mt-4 space-y-4 p-4 bg-gray-50 rounded-lg">
+                  {/* Background Type */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Background
+                    </label>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      {['solid', 'transparent', 'custom', 'gradient'].map(type => (
+                        <button
+                          key={type}
+                          onClick={() => setBackgroundType(type)}
+                          className={`px-3 py-2 border rounded-lg text-sm capitalize ${
+                            backgroundType === type
+                              ? 'border-purple-600 bg-purple-50'
+                              : 'border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          {type === 'solid' ? 'White' : type}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Color Pickers */}
+                  {backgroundType === 'custom' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Background Color
+                      </label>
+                      <input
+                        type="color"
+                        value={backgroundColor}
+                        onChange={(e) => setBackgroundColor(e.target.value)}
+                        className="h-10 w-full rounded border border-gray-300"
+                      />
+                    </div>
+                  )}
+
+                  {backgroundType === 'gradient' && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Gradient Start
+                        </label>
+                        <input
+                          type="color"
+                          value={gradientColor1}
+                          onChange={(e) => setGradientColor1(e.target.value)}
+                          className="h-10 w-full rounded border border-gray-300"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Gradient End
+                        </label>
+                        <input
+                          type="color"
+                          value={gradientColor2}
+                          onChange={(e) => setGradientColor2(e.target.value)}
+                          className="h-10 w-full rounded border border-gray-300"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Bubble Style */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Bubble Style
+                    </label>
+                    <select
+                      value={bubbleStyle}
+                      onChange={(e) => setBubbleStyle(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                    >
+                      {BUBBLE_STYLES.map(style => (
+                        <option key={style.value} value={style.value}>
+                          {style.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Colors */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Bubble Color
+                      </label>
+                      <input
+                        type="color"
+                        value={bubbleColor}
+                        onChange={(e) => setBubbleColor(e.target.value)}
+                        className="h-10 w-full rounded border border-gray-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Text Color
+                      </label>
+                      <input
+                        type="color"
+                        value={textColor}
+                        onChange={(e) => setTextColor(e.target.value)}
+                        className="h-10 w-full rounded border border-gray-300"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Font Size */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Font Size: {fontSize}px
+                    </label>
+                    <input
+                      type="range"
+                      min="16"
+                      max="48"
+                      value={fontSize}
+                      onChange={(e) => setFontSize(parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Generate Button */}
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-4 rounded-lg hover:from-purple-700 hover:to-pink-700 disabled:from-gray-300 disabled:to-gray-300 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 font-semibold text-lg shadow-lg"
+            >
+              {generating ? (
+                <>
+                  <Loader2 className="animate-spin" size={24} />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <Sparkles size={24} />
+                  Generate Testimonial
+                </>
+              )}
+            </button>
+
+            {generateError && (
+              <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+                <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
+                <p className="text-red-700 text-sm">{generateError}</p>
+              </div>
+            )}
+
+            {generateSuccess && (
+              <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-2">
+                <CheckCircle2 className="text-green-600 flex-shrink-0 mt-0.5" size={20} />
+                <p className="text-green-700 text-sm">{generateSuccess}</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Output Preview */}
+        {generatedImage && (
+          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Preview & Download
+            </h3>
+
+            <div className="bg-gray-100 rounded-lg p-4 mb-4">
+              <img
+                src={generatedImage}
+                alt="Generated testimonial"
+                className="max-w-full mx-auto rounded shadow-lg"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleDownload}
+                className="flex-1 bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition-colors flex items-center justify-center gap-2 font-medium"
+              >
+                <Download size={20} />
+                Download PNG
+              </button>
+              <button
+                onClick={handleCopyToClipboard}
+                className="flex-1 bg-gray-100 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-200 transition-colors flex items-center justify-center gap-2 font-medium"
+              >
+                <Copy size={20} />
+                Copy to Clipboard
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
