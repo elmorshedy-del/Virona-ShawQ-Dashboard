@@ -18,6 +18,7 @@ import creativeIntelligenceRouter from './routes/creativeIntelligence.js';
 import creativeStudioRouter from './routes/creativeStudio.js';
 import metaAuthRouter from './routes/metaAuth.js';
 import testimonialExtractorRouter from './routes/testimonialExtractor.js';
+import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
 import { runMigration as runCreativeStudioMigration } from './db/creativeStudioMigration.js';
@@ -29,7 +30,6 @@ import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
-import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +41,11 @@ const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '
 
 // Initialize database
 initDb();
+
+ensureFaceModelsLoaded().catch(error => {
+  console.error('❌ Failed to load face detection models:', error);
+  process.exit(1);
+});
 
 // Run AIBudget schema migration on startup
 runAIBudgetMigration()
@@ -204,35 +209,26 @@ async function syncDailyExchangeRate() {
   }
 }
 
-async function startServer() {
-  await ensureFaceModelsLoaded();
+// Initial sync on startup
+setTimeout(backgroundSync, 5000);
 
-  // Initial sync on startup
-  setTimeout(backgroundSync, 5000);
+// Initial What-If sync (delayed 2 min to let main sync finish)
+setTimeout(whatifSync, 2 * 60 * 1000);
 
-  // Initial What-If sync (delayed 2 min to let main sync finish)
-  setTimeout(whatifSync, 2 * 60 * 1000);
+// Sync every 15 minutes
+setInterval(backgroundSync, 15 * 60 * 1000);
 
-  // Sync every 15 minutes
-  setInterval(backgroundSync, 15 * 60 * 1000);
+// Rapid Shopify sync every minute (configurable via SHOPIFY_SYNC_INTERVAL_MS)
+setInterval(shopifyRealtimeSync, SHOPIFY_SYNC_INTERVAL);
 
-  // Rapid Shopify sync every minute (configurable via SHOPIFY_SYNC_INTERVAL_MS)
-  setInterval(shopifyRealtimeSync, SHOPIFY_SYNC_INTERVAL);
+// What-If sync every 24 hours
+setInterval(whatifSync, 24 * 60 * 60 * 1000);
 
-  // What-If sync every 24 hours
-  setInterval(whatifSync, 24 * 60 * 60 * 1000);
+// Daily exchange rate sync - runs once per day at startup check + every 24 hours
+// Fetches yesterday's final TRY→USD rate
+setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
+setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
 
-  // Daily exchange rate sync - runs once per day at startup check + every 24 hours
-  // Fetches yesterday's final TRY→USD rate
-  setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
-  setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
-
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
-
-startServer().catch(error => {
-  console.error('Server failed to start:', error);
-  process.exit(1);
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
