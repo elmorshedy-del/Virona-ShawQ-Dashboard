@@ -93,13 +93,19 @@ async function detectFaces(imagePath) {
     return [];
   }
   const img = await canvas.loadImage(imagePath);
-  const detections = await faceapi.detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.1 }));  return detections.map(det => ({
+  
+  // Corrected detector and properly formatted return
+  const detections = await faceapi.detectAllFaces(
+    img, 
+    new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.1 })
+  );
+
+  return detections.map(det => ({
     x: det.box.x,
     y: det.box.y,
     width: det.box.width,
     height: det.box.height
   }));
-}
 
 /**
  * Extract messages from a single image using Gemini Vision
