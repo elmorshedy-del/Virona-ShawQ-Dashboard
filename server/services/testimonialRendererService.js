@@ -91,6 +91,8 @@ function generateHTML(messages, config) {
     backgroundColor = '#ffffff',
     gradientColors = ['#833ab4', '#fcb045'],
     padding = 24,
+    outputShape = 'bubble',
+    borderRadius = 20,
     bubbleStyle = 'solid',
     bubbleColor = '#ffffff',
     textColor = '#000000',
@@ -118,30 +120,85 @@ function generateHTML(messages, config) {
     backgroundStyle = `background: ${backgroundColor};`;
   }
 
-  // Bubble style CSS
-  let bubbleCSS = `
-    background: ${bubbleColor};
-    padding: 20px;
-    border-radius: 20px;
-    margin-bottom: 16px;
-    max-width: 500px;
-    word-wrap: break-word;
-    color: ${textColor};
-    font-size: ${fontSize}px;
-    line-height: 1.4;
-  `;
+  // Bubble style CSS - varies by output shape
+  let bubbleCSS = '';
 
-  if (bubbleStyle === 'soft_shadow') {
-    bubbleCSS += 'box-shadow: 6px 6px 20px rgba(0, 0, 0, 0.15);';
-  } else if (bubbleStyle === 'hard_shadow') {
-    bubbleCSS += 'box-shadow: 5px 5px 0px rgba(0, 0, 0, 1);';
-  } else if (bubbleStyle === 'outline') {
-    bubbleCSS += 'border: 2px solid #000000;';
+  if (outputShape === 'minimal') {
+    // Minimal: no container, just text
+    bubbleCSS = `
+      color: ${textColor};
+      font-size: ${fontSize}px;
+      line-height: 1.4;
+      margin-bottom: 16px;
+      max-width: 500px;
+      word-wrap: break-word;
+    `;
+  } else if (outputShape === 'quote_card') {
+    // Quote card: centered with quotes
+    bubbleCSS = `
+      background: ${bubbleColor};
+      padding: 40px 30px;
+      border-radius: ${borderRadius}px;
+      margin-bottom: 16px;
+      max-width: 600px;
+      word-wrap: break-word;
+      color: ${textColor};
+      font-size: ${fontSize + 4}px;
+      line-height: 1.6;
+      text-align: center;
+      position: relative;
+    `;
+  } else if (outputShape === 'card') {
+    // Card: rectangle with border
+    bubbleCSS = `
+      background: ${bubbleColor};
+      padding: 24px;
+      border-radius: ${borderRadius}px;
+      margin-bottom: 16px;
+      max-width: 500px;
+      word-wrap: break-word;
+      color: ${textColor};
+      font-size: ${fontSize}px;
+      line-height: 1.4;
+      border: 1px solid rgba(0, 0, 0, 0.15);
+    `;
+  } else {
+    // Default bubble
+    bubbleCSS = `
+      background: ${bubbleColor};
+      padding: 20px;
+      border-radius: ${borderRadius}px;
+      margin-bottom: 16px;
+      max-width: 500px;
+      word-wrap: break-word;
+      color: ${textColor};
+      font-size: ${fontSize}px;
+      line-height: 1.4;
+    `;
+  }
+
+  // Apply bubble style effects (shadow, outline) - skip for minimal
+  if (outputShape !== 'minimal') {
+    if (bubbleStyle === 'soft_shadow') {
+      bubbleCSS += 'box-shadow: 6px 6px 20px rgba(0, 0, 0, 0.15);';
+    } else if (bubbleStyle === 'hard_shadow') {
+      bubbleCSS += 'box-shadow: 5px 5px 0px rgba(0, 0, 0, 1);';
+    } else if (bubbleStyle === 'outline') {
+      bubbleCSS += 'border: 2px solid #000000;';
+    }
   }
 
   // Layout-specific styles
   let containerStyle = '';
   let bubblesHTML = '';
+
+  // Helper to wrap text with quotes for quote_card shape
+  const formatMessage = (text) => {
+    if (outputShape === 'quote_card') {
+      return `<span style="font-size: 1.5em; color: rgba(0,0,0,0.3); vertical-align: -0.1em;">«</span> ${escapeHtml(text)} <span style="font-size: 1.5em; color: rgba(0,0,0,0.3); vertical-align: -0.1em;">»</span>`;
+    }
+    return escapeHtml(text);
+  };
 
   if (layout === 'collage' && messages.length > 1) {
     // Collage grid layout
@@ -154,7 +211,7 @@ function generateHTML(messages, config) {
 
     bubblesHTML = messages.map(msg => `
       <div class="bubble" style="${bubbleCSS}">
-        ${escapeHtml(msg.text)}
+        ${formatMessage(msg.text)}
       </div>
     `).join('');
   } else {
@@ -168,10 +225,12 @@ function generateHTML(messages, config) {
 
     bubblesHTML = messages.map(msg => {
       const alignment = msg.side === 'right' ? 'flex-end' : 'flex-start';
+      // Center quote cards regardless of side
+      const actualAlignment = outputShape === 'quote_card' ? 'center' : alignment;
       return `
-        <div style="display: flex; justify-content: ${alignment}; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: ${actualAlignment}; margin-bottom: 16px;">
           <div class="bubble" style="${bubbleCSS}">
-            ${escapeHtml(msg.text)}
+            ${formatMessage(msg.text)}
           </div>
         </div>
       `;

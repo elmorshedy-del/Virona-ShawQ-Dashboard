@@ -21,6 +21,13 @@ const BUBBLE_STYLES = [
   { value: 'outline', label: 'Outline' }
 ];
 
+const OUTPUT_SHAPES = [
+  { value: 'bubble', label: 'Chat Bubble', description: 'Rounded rectangle chat bubble' },
+  { value: 'quote_card', label: 'Quote Card', description: 'Large quotation marks with centered text' },
+  { value: 'card', label: 'Card', description: 'Rectangle with subtle border' },
+  { value: 'minimal', label: 'Minimal', description: 'Just text on background' }
+];
+
 const LOGO_POSITIONS = [
   { value: 'bottom_right', label: 'Bottom Right' },
   { value: 'bottom_left', label: 'Bottom Left' },
@@ -49,6 +56,8 @@ export default function TestimonialExtractor() {
   const [backgroundColor, setBackgroundColor] = useState('#ffffff');
   const [gradientColor1, setGradientColor1] = useState('#833ab4');
   const [gradientColor2, setGradientColor2] = useState('#fcb045');
+  const [outputShape, setOutputShape] = useState('bubble');
+  const [borderRadius, setBorderRadius] = useState(20);
   const [bubbleStyle, setBubbleStyle] = useState('soft_shadow');
   const [bubbleColor, setBubbleColor] = useState('#ffffff');
   const [textColor, setTextColor] = useState('#000000');
@@ -159,6 +168,8 @@ export default function TestimonialExtractor() {
         preset,
         layout,
         collageColumns,
+        outputShape,
+        borderRadius,
         bubbleStyle,
         bubbleColor,
         textColor,
@@ -523,6 +534,45 @@ export default function TestimonialExtractor() {
                       </div>
                     </div>
                   )}
+
+                  {/* Output Shape */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Output Shape
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {OUTPUT_SHAPES.map(shape => (
+                        <button
+                          key={shape.value}
+                          onClick={() => setOutputShape(shape.value)}
+                          className={`p-3 border-2 rounded-lg text-left transition-all ${
+                            outputShape === shape.value
+                              ? 'border-purple-600 bg-purple-50'
+                              : 'border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          <div className="font-medium text-sm text-gray-900">{shape.label}</div>
+                          <div className="text-xs text-gray-500 mt-1">{shape.description}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Border Radius */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Border Radius: {borderRadius}px {outputShape === 'minimal' && '(disabled for minimal)'}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="50"
+                      value={borderRadius}
+                      onChange={(e) => setBorderRadius(parseInt(e.target.value))}
+                      disabled={outputShape === 'minimal'}
+                      className="w-full disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                  </div>
 
                   {/* Bubble Style */}
                   <div>

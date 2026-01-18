@@ -87,6 +87,8 @@ router.post('/generate', async (req, res) => {
       preset = 'raw_bubbles',
       layout = 'stacked',
       collageColumns = 2,
+      outputShape,
+      borderRadius,
       backgroundType,
       backgroundColor,
       gradientColors,
@@ -126,6 +128,8 @@ router.post('/generate', async (req, res) => {
     };
 
     // Add custom options if provided
+    if (outputShape) options.outputShape = outputShape;
+    if (borderRadius !== undefined) options.borderRadius = parseInt(borderRadius);
     if (backgroundType) options.backgroundType = backgroundType;
     if (backgroundColor) options.backgroundColor = backgroundColor;
     if (gradientColors) options.gradientColors = gradientColors;
