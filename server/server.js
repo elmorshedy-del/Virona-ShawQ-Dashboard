@@ -18,6 +18,7 @@ import creativeIntelligenceRouter from './routes/creativeIntelligence.js';
 import creativeStudioRouter from './routes/creativeStudio.js';
 import metaAuthRouter from './routes/metaAuth.js';
 import testimonialExtractorRouter from './routes/testimonialExtractor.js';
+import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
 import { runMigration as runCreativeStudioMigration } from './db/creativeStudioMigration.js';
@@ -222,6 +223,13 @@ setInterval(whatifSync, 24 * 60 * 60 * 1000);
 // Fetches yesterday's final TRY→USD rate
 setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
 setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
+
+try {
+  await ensureFaceModelsLoaded();
+} catch (error) {
+  console.error('❌ Face detection startup failed:', error.message);
+  process.exit(1);
+}
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

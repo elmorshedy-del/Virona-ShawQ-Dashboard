@@ -1,9 +1,13 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import satori from 'satori';
 import { Resvg } from '@resvg/resvg-js';
 import twemoji from 'twemoji';
 import fetch from 'node-fetch';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PRESETS = {
   instagram_story: {
@@ -106,7 +110,7 @@ function h(type, props, ...children) {
 }
 
 function resolveFontPath(fileName) {
-  return path.resolve(process.cwd(), 'server', 'fonts', fileName);
+  return path.resolve(__dirname, '..', 'fonts', fileName);
 }
 
 function loadFontData(fileName) {
