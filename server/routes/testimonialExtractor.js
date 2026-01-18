@@ -50,6 +50,7 @@ router.post('/extract', upload.array('screenshots', 10), async (req, res) => {
     }
 
     req.files.forEach(file => imagePaths.push(file.path));
+    console.log('UPLOADED FILES:', req.files.map(f => ({ path: f.path, size: f.size, mimetype: f.mimetype })));
     console.log('Extracting from images:', imagePaths);
 
     const messages = await extractFromMultipleImages(imagePaths);

@@ -30,7 +30,7 @@ RULES:
 
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
 const GEMINI_TIMEOUT_MS = 30000;
-const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models/face-api');
+const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models');
 
 const { Canvas, Image, ImageData } = canvas;
 faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
@@ -44,7 +44,9 @@ async function loadFaceModels() {
         console.warn(`Face API models not found at ${FACE_MODEL_PATH}. Avatar detection disabled.`);
         return false;
       }
-      await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
+      console.log('Loading face detection models from:', FACE_MODEL_PATH);
+      await faceapi.nets.tinyFaceDetector.loadFromDisk(FACE_MODEL_PATH);
+      console.log('Face detection models loaded successfully');
       return true;
     })();
   }
@@ -88,12 +90,33 @@ function normalizeAvatarBox(avatarBox, imageWidth, imageHeight) {
 }
 
 async function detectFaces(imagePath) {
+  console.log('CALLING FACE DETECTION:', imagePath);
+  console.log('FILE EXISTS:', fs.existsSync(imagePath));
+
   const ready = await loadFaceModels();
   if (!ready) {
+    console.warn('Face detection models not ready');
     return [];
   }
+
+  console.log('MODELS LOADED:', faceapi.nets.tinyFaceDetector.isLoaded);
+
   const img = await canvas.loadImage(imagePath);
-  const detections = await faceapi.detectAllFaces(img);
+  console.log('Image loaded for face detection:', img.width, 'x', img.height);
+
+  // Use tinyFaceDetector with options for better small face detection
+  const detections = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({
+    inputSize: 416,  // Higher resolution for better small face detection
+    scoreThreshold: 0.3  // Lower threshold to detect more faces
+  }));
+
+  console.log('FACES FOUND:', detections.length);
+  if (detections.length > 0) {
+    detections.forEach((det, i) => {
+      console.log(`FACE ${i + 1} BOX:`, det.box);
+    });
+  }
+
   return detections.map(det => ({
     x: det.box.x,
     y: det.box.y,

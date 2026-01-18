@@ -106,7 +106,7 @@ function h(type, props, ...children) {
 }
 
 function resolveFontPath(fileName) {
-  return path.resolve(process.cwd(), 'node_modules', '@fontsource', 'inter', 'files', fileName);
+  return path.resolve(process.cwd(), 'server', 'fonts', fileName);
 }
 
 function loadFontData(fileName) {
@@ -115,6 +115,7 @@ function loadFontData(fileName) {
   }
   const fontPath = resolveFontPath(fileName);
   if (!fs.existsSync(fontPath)) {
+    console.warn(`Font not found: ${fontPath}`);
     return null;
   }
   const data = fs.readFileSync(fontPath);
@@ -124,18 +125,23 @@ function loadFontData(fileName) {
 
 function buildFontConfig() {
   const fonts = [];
-  const regular = loadFontData('inter-latin-400-normal.woff');
-  if (regular) {
-    fonts.push({ name: 'Inter', data: regular, weight: 400, style: 'normal' });
+
+  // Load Inter font
+  const interFont = loadFontData('Inter-Regular.ttf');
+  if (interFont) {
+    fonts.push({ name: 'Inter', data: interFont, weight: 400, style: 'normal' });
+  } else {
+    console.warn('Inter font not found, rendering may fail');
   }
-  const medium = loadFontData('inter-latin-500-normal.woff');
-  if (medium) {
-    fonts.push({ name: 'Inter', data: medium, weight: 500, style: 'normal' });
+
+  // Load Noto Color Emoji font for emoji support
+  const emojiFont = loadFontData('NotoColorEmoji.ttf');
+  if (emojiFont) {
+    fonts.push({ name: 'Noto Color Emoji', data: emojiFont, weight: 400, style: 'normal' });
+  } else {
+    console.warn('Emoji font not found, emojis may not render correctly');
   }
-  const semi = loadFontData('inter-latin-600-normal.woff');
-  if (semi) {
-    fonts.push({ name: 'Inter', data: semi, weight: 600, style: 'normal' });
-  }
+
   return fonts;
 }
 
