@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import satori from 'satori';
 import { Resvg } from '@resvg/resvg-js';
 import twemoji from 'twemoji';
@@ -96,9 +95,6 @@ const EMOJI_CDN_BASES = [
 
 const fontCache = new Map();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 function h(type, props, ...children) {
   return {
     type,
@@ -110,7 +106,7 @@ function h(type, props, ...children) {
 }
 
 function resolveFontPath(fileName) {
-  return path.resolve(__dirname, '..', 'fonts', fileName);
+  return path.resolve(process.cwd(), 'server', 'fonts', fileName);
 }
 
 function loadFontData(fileName) {
@@ -453,7 +449,7 @@ export async function renderTestimonials(messages, outputPath, options = {}) {
 
   const fonts = buildFontConfig();
   if (fonts.length === 0) {
-    throw new Error('No fonts available for rendering. Expected fonts in server/fonts (Inter-Regular.ttf, NotoColorEmoji.ttf).');
+    throw new Error('No fonts available for rendering. Ensure @fontsource/inter is installed.');
   }
 
   const { vnode, width, height } = await buildTestimonialVNode(messages, config);

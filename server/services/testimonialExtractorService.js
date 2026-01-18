@@ -31,45 +31,26 @@ RULES:
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
 const GEMINI_TIMEOUT_MS = 30000;
 const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models');
-const SSD_MANIFEST = 'ssd_mobilenetv1_model-weights_manifest.json';
 
 const { Canvas, Image, ImageData } = canvas;
 faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
 
 let faceModelsReady = null;
 
-function assertSsdModelFiles() {
-  if (!fs.existsSync(FACE_MODEL_PATH)) {
-    throw new Error(`Face API models not found at ${FACE_MODEL_PATH}. Download SSD Mobilenet V1 models into server/models.`);
-  }
-
-  const files = fs.readdirSync(FACE_MODEL_PATH);
-  const hasManifest = files.includes(SSD_MANIFEST);
-  const shardFiles = files.filter(file => file.startsWith('ssd_mobilenetv1_model-shard'));
-
-  if (!hasManifest || shardFiles.length === 0) {
-    throw new Error(`SSD Mobilenet V1 model files missing in ${FACE_MODEL_PATH}. Expected ${SSD_MANIFEST} and shard files.`);
-  }
-}
-
 async function loadFaceModels() {
   if (!faceModelsReady) {
     faceModelsReady = (async () => {
-      assertSsdModelFiles();
-      console.log('Loading SSD Mobilenet V1 face detection models from:', FACE_MODEL_PATH);
-      await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
-      if (!faceapi.nets.ssdMobilenetv1.isLoaded) {
-        throw new Error('SSD Mobilenet V1 model failed to load.');
+      if (!fs.existsSync(FACE_MODEL_PATH)) {
+        console.warn(`Face API models not found at ${FACE_MODEL_PATH}. Avatar detection disabled.`);
+        return false;
       }
-      console.log('SSD Mobilenet V1 models loaded successfully');
+      console.log('Loading face detection models from:', FACE_MODEL_PATH);
+      await faceapi.nets.tinyFaceDetector.loadFromDisk(FACE_MODEL_PATH);
+      console.log('Face detection models loaded successfully');
       return true;
     })();
   }
   return faceModelsReady;
-}
-
-export async function ensureFaceModelsLoaded() {
-  return loadFaceModels();
 }
 
 function isInsufficientFundsError(error) {
@@ -112,65 +93,35 @@ async function detectFaces(imagePath) {
   console.log('CALLING FACE DETECTION:', imagePath);
   console.log('FILE EXISTS:', fs.existsSync(imagePath));
 
-  await loadFaceModels();
+  const ready = await loadFaceModels();
+  if (!ready) {
+    console.warn('Face detection models not ready');
+    return [];
+  }
 
-  console.log('MODELS LOADED:', faceapi.nets.ssdMobilenetv1.isLoaded);
+  console.log('MODELS LOADED:', faceapi.nets.tinyFaceDetector.isLoaded);
 
   const img = await canvas.loadImage(imagePath);
-  const sourceWidth = img.width;
-  const sourceHeight = img.height;
-  const detectWidth = Math.round(sourceWidth * 2);
-  const detectHeight = Math.round(sourceHeight * 2);
+  console.log('Image loaded for face detection:', img.width, 'x', img.height);
 
-  console.log('SOURCE DIMENSIONS:', { sourceWidth, sourceHeight });
-  console.log('DETECT DIMENSIONS:', { detectWidth, detectHeight });
-  console.log('IMAGE DIMENSIONS:', { width: img.width, height: img.height });
-
-  if (!sourceWidth || !sourceHeight || !detectWidth || !detectHeight) {
-    throw new Error('Invalid image dimensions (0).');
-  }
-  if (img.width !== sourceWidth || img.height !== sourceHeight) {
-    throw new Error('Image dimensions mismatch with source dimensions.');
-  }
-
-  const detectionCanvas = canvas.createCanvas(detectWidth, detectHeight);
-  if (detectionCanvas.width !== detectWidth || detectionCanvas.height !== detectHeight) {
-    throw new Error('Detection canvas dimensions mismatch.');
-  }
-
-  const ctx = detectionCanvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, detectWidth, detectHeight);
-
-  console.log('DETECTION CANVAS:', {
-    width: detectionCanvas.width,
-    height: detectionCanvas.height
-  });
-
-  const detections = await faceapi.detectAllFaces(
-    detectionCanvas,
-    new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 })
-  );
+  // Use tinyFaceDetector with options for better small face detection
+  const detections = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({
+    inputSize: 416,  // Higher resolution for better small face detection
+    scoreThreshold: 0.3  // Lower threshold to detect more faces
+  }));
 
   console.log('FACES FOUND:', detections.length);
-
-  const scaleX = sourceWidth / detectWidth;
-  const scaleY = sourceHeight / detectHeight;
-
-  detections.forEach((det, i) => {
-    console.log(`FACE ${i + 1} DETECT BOX:`, det.box);
-    console.log(`FACE ${i + 1} SOURCE BOX:`, {
-      x: det.box.x * scaleX,
-      y: det.box.y * scaleY,
-      width: det.box.width * scaleX,
-      height: det.box.height * scaleY
+  if (detections.length > 0) {
+    detections.forEach((det, i) => {
+      console.log(`FACE ${i + 1} BOX:`, det.box);
     });
-  });
+  }
 
   return detections.map(det => ({
-    x: det.box.x * scaleX,
-    y: det.box.y * scaleY,
-    width: det.box.width * scaleX,
-    height: det.box.height * scaleY
+    x: det.box.x,
+    y: det.box.y,
+    width: det.box.width,
+    height: det.box.height
   }));
 }
 
