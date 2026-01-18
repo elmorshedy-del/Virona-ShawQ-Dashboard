@@ -29,6 +29,7 @@ import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
+import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -203,26 +204,35 @@ async function syncDailyExchangeRate() {
   }
 }
 
-// Initial sync on startup
-setTimeout(backgroundSync, 5000);
+async function startServer() {
+  await ensureFaceModelsLoaded();
 
-// Initial What-If sync (delayed 2 min to let main sync finish)
-setTimeout(whatifSync, 2 * 60 * 1000);
+  // Initial sync on startup
+  setTimeout(backgroundSync, 5000);
 
-// Sync every 15 minutes
-setInterval(backgroundSync, 15 * 60 * 1000);
+  // Initial What-If sync (delayed 2 min to let main sync finish)
+  setTimeout(whatifSync, 2 * 60 * 1000);
 
-// Rapid Shopify sync every minute (configurable via SHOPIFY_SYNC_INTERVAL_MS)
-setInterval(shopifyRealtimeSync, SHOPIFY_SYNC_INTERVAL);
+  // Sync every 15 minutes
+  setInterval(backgroundSync, 15 * 60 * 1000);
 
-// What-If sync every 24 hours
-setInterval(whatifSync, 24 * 60 * 60 * 1000);
+  // Rapid Shopify sync every minute (configurable via SHOPIFY_SYNC_INTERVAL_MS)
+  setInterval(shopifyRealtimeSync, SHOPIFY_SYNC_INTERVAL);
 
-// Daily exchange rate sync - runs once per day at startup check + every 24 hours
-// Fetches yesterday's final TRY→USD rate
-setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
-setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
+  // What-If sync every 24 hours
+  setInterval(whatifSync, 24 * 60 * 60 * 1000);
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  // Daily exchange rate sync - runs once per day at startup check + every 24 hours
+  // Fetches yesterday's final TRY→USD rate
+  setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
+  setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
+
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+startServer().catch(error => {
+  console.error('Server failed to start:', error);
+  process.exit(1);
 });
