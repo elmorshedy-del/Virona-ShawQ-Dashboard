@@ -97,12 +97,20 @@ function generateHTML(messages, config) {
     bubbleColor = '#ffffff',
     textColor = '#000000',
     fontSize = 28,
+    typographyPreset = 'inherit',
+    quoteTreatment = 'polished',
+    weightOption = 'match',
+    cardPadding = 'm',
+    lineSpacing = 'normal',
+    maxWidth = 'standard',
     centerVertical = false,
     layout = 'stacked',
     collageColumns = 2,
     logoUrl = null,
     logoPosition = 'bottom_right'
   } = config;
+
+  const resolvedCollageColumns = Math.min(4, Math.max(2, Number(collageColumns) || 2));
 
   // Calculate auto dimensions if needed
   const isAutoWidth = width === null || width === undefined;
@@ -120,6 +128,45 @@ function generateHTML(messages, config) {
     backgroundStyle = `background: ${backgroundColor};`;
   }
 
+  const fontWeightMap = {
+    match: 400,
+    medium: 500,
+    bold: 600
+  };
+
+  const typographyMap = {
+    inherit: { sizeMultiplier: 1, lineHeightAdjust: 0 },
+    editorial: { sizeMultiplier: 1.05, lineHeightAdjust: 0.08 },
+    compact: { sizeMultiplier: 0.95, lineHeightAdjust: -0.04 }
+  };
+
+  const maxWidthMap = {
+    narrow: '32ch',
+    standard: '38ch',
+    wide: '44ch'
+  };
+
+  const baseLineHeight = outputShape === 'quote_card' ? 1.6 : 1.4;
+  const typographyConfig = typographyMap[typographyPreset] || typographyMap.inherit;
+  const lineSpacingBoost = lineSpacing === 'relaxed' ? 0.1 : 0;
+  const lineHeight = Number((baseLineHeight + typographyConfig.lineHeightAdjust + lineSpacingBoost).toFixed(2));
+  const effectiveFontSize = Math.round(fontSize * typographyConfig.sizeMultiplier);
+  const fontWeight = fontWeightMap[weightOption] || fontWeightMap.match;
+  const resolvedMaxWidth = maxWidthMap[maxWidth] || maxWidthMap.standard;
+
+  const paddingByShape = {
+    bubble: { s: 16, m: 20, l: 24 },
+    card: { s: 20, m: 24, l: 32 },
+    quote_card: { s: 28, m: 36, l: 44 },
+    minimal: { s: 0, m: 0, l: 0 }
+  };
+  const shapePadding = paddingByShape[outputShape] || paddingByShape.bubble;
+  const resolvedCardPadding = shapePadding[cardPadding] ?? shapePadding.m;
+
+  const quoteScale = outputShape === 'quote_card'
+    ? 1.2
+    : (quoteTreatment === 'editorial' ? 1.08 : 1);
+
   // Bubble style CSS - varies by output shape
   let bubbleCSS = '';
 
@@ -127,24 +174,26 @@ function generateHTML(messages, config) {
     // Minimal: no container, just text
     bubbleCSS = `
       color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
+      font-size: ${effectiveFontSize}px;
+      line-height: ${lineHeight};
+      font-weight: ${fontWeight};
       margin-bottom: 16px;
-      max-width: 500px;
+      max-width: ${resolvedMaxWidth};
       word-wrap: break-word;
     `;
   } else if (outputShape === 'quote_card') {
     // Quote card: centered with quotes
     bubbleCSS = `
       background: ${bubbleColor};
-      padding: 40px 30px;
+      padding: ${resolvedCardPadding}px;
       border-radius: ${borderRadius}px;
       margin-bottom: 16px;
-      max-width: 600px;
+      max-width: ${resolvedMaxWidth};
       word-wrap: break-word;
       color: ${textColor};
-      font-size: ${fontSize + 4}px;
-      line-height: 1.6;
+      font-size: ${effectiveFontSize}px;
+      line-height: ${lineHeight};
+      font-weight: ${fontWeight};
       text-align: center;
       position: relative;
     `;
@@ -152,28 +201,30 @@ function generateHTML(messages, config) {
     // Card: rectangle with border
     bubbleCSS = `
       background: ${bubbleColor};
-      padding: 24px;
+      padding: ${resolvedCardPadding}px;
       border-radius: ${borderRadius}px;
       margin-bottom: 16px;
-      max-width: 500px;
+      max-width: ${resolvedMaxWidth};
       word-wrap: break-word;
       color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
+      font-size: ${effectiveFontSize}px;
+      line-height: ${lineHeight};
+      font-weight: ${fontWeight};
       border: 1px solid rgba(0, 0, 0, 0.15);
     `;
   } else {
     // Default bubble
     bubbleCSS = `
       background: ${bubbleColor};
-      padding: 20px;
+      padding: ${resolvedCardPadding}px;
       border-radius: ${borderRadius}px;
       margin-bottom: 16px;
-      max-width: 500px;
+      max-width: ${resolvedMaxWidth};
       word-wrap: break-word;
       color: ${textColor};
-      font-size: ${fontSize}px;
-      line-height: 1.4;
+      font-size: ${effectiveFontSize}px;
+      line-height: ${lineHeight};
+      font-weight: ${fontWeight};
     `;
   }
 
@@ -195,23 +246,75 @@ function generateHTML(messages, config) {
   // Helper to wrap text with quotes for quote_card shape
   const formatMessage = (text) => {
     if (outputShape === 'quote_card') {
-      return `<span style="font-size: 1.5em; color: rgba(0,0,0,0.3); vertical-align: -0.1em;">«</span> ${escapeHtml(text)} <span style="font-size: 1.5em; color: rgba(0,0,0,0.3); vertical-align: -0.1em;">»</span>`;
+      return `<span class="quote quote--open" style="font-size: ${quoteScale}em;">“</span>${escapeHtml(text)}<span class="quote quote--close" style="font-size: ${quoteScale}em;">”</span>`;
     }
     return escapeHtml(text);
   };
 
-  if (layout === 'collage' && messages.length > 1) {
+  const buildAvatarMarkup = (msg) => {
+    if (!msg.avatarPresent || !msg.avatarDataUrl || !msg.avatarPlacementPct) {
+      return '';
+    }
+    const { xPct, yPct, wPct, hPct } = msg.avatarPlacementPct;
+    const shapeClass = msg.avatarShape === 'circle' ? 'avatar--circle' : 'avatar--rounded';
+    return `
+      <img
+        class="avatar ${shapeClass}"
+        src="${msg.avatarDataUrl}"
+        alt=""
+        style="left: ${xPct}%; top: ${yPct}%; width: ${wPct}%; height: ${hPct}%;"
+      />
+    `;
+  };
+
+  const buildAuthorMarkup = (msg) => {
+    if (!msg.authorName && !msg.authorRole) {
+      return '';
+    }
+    return `
+      <div class="author">
+        ${msg.authorName ? `<div class="author-name">${escapeHtml(msg.authorName)}</div>` : ''}
+        ${msg.authorRole ? `<div class="author-role">${escapeHtml(msg.authorRole)}</div>` : ''}
+      </div>
+    `;
+  };
+
+  const buildAvatarPadding = (msg) => {
+    if (!msg.avatarPresent || !msg.avatarPlacementPct) {
+      return '';
+    }
+    const { xPct, yPct, wPct, hPct } = msg.avatarPlacementPct;
+    const paddingBuffer = 12;
+    const styles = [];
+    if (xPct < 50) {
+      styles.push(`padding-left: calc(${xPct + wPct}% + ${paddingBuffer}px);`);
+    } else {
+      styles.push(`padding-right: calc(${100 - xPct}% + ${paddingBuffer}px);`);
+    }
+    if (yPct < 50) {
+      styles.push(`padding-top: calc(${yPct + hPct}% + ${paddingBuffer}px);`);
+    }
+    return styles.join(' ');
+  };
+
+  if (layout === 'collage') {
     // Collage grid layout
     containerStyle = `
       display: grid;
-      grid-template-columns: repeat(${collageColumns}, 1fr);
+      grid-template-columns: repeat(${resolvedCollageColumns}, minmax(0, 1fr));
       gap: 16px;
       padding: ${padding}px;
     `;
 
     bubblesHTML = messages.map(msg => `
-      <div class="bubble" style="${bubbleCSS}">
-        ${formatMessage(msg.text)}
+      <div class="bubble ${msg.avatarPresent ? 'has-avatar' : ''}" style="${bubbleCSS} ${buildAvatarPadding(msg)}">
+        ${buildAvatarMarkup(msg)}
+        <div class="bubble-content">
+          <div class="message-text">
+            ${formatMessage(msg.quoteText || msg.text)}
+          </div>
+          ${buildAuthorMarkup(msg)}
+        </div>
       </div>
     `).join('');
   } else {
@@ -229,8 +332,14 @@ function generateHTML(messages, config) {
       const actualAlignment = outputShape === 'quote_card' ? 'center' : alignment;
       return `
         <div style="display: flex; justify-content: ${actualAlignment}; margin-bottom: 16px;">
-          <div class="bubble" style="${bubbleCSS}">
-            ${formatMessage(msg.text)}
+          <div class="bubble ${msg.avatarPresent ? 'has-avatar' : ''}" style="${bubbleCSS} ${buildAvatarPadding(msg)}">
+            ${buildAvatarMarkup(msg)}
+            <div class="bubble-content">
+              <div class="message-text">
+                ${formatMessage(msg.quoteText || msg.text)}
+              </div>
+              ${buildAuthorMarkup(msg)}
+            </div>
           </div>
         </div>
       `;
@@ -267,11 +376,16 @@ function generateHTML(messages, config) {
         }
 
         body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial',
+            'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
           ${backgroundStyle}
           width: ${canvasWidth}px;
           ${isAutoHeight ? 'min-height: 100px;' : `height: ${canvasHeight}px;`}
           position: relative;
+        }
+
+        html {
+          background: ${backgroundType === 'transparent' ? 'transparent' : backgroundColor};
         }
 
         .container {
@@ -283,6 +397,57 @@ function generateHTML(messages, config) {
         .bubble {
           ${bubbleCSS}
         }
+
+        .bubble.has-avatar {
+          position: relative;
+        }
+
+        .bubble-content {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .quote {
+          color: ${textColor};
+          opacity: 0.85;
+          font-weight: inherit;
+        }
+
+        .quote--open {
+          margin-right: 0.15em;
+        }
+
+        .quote--close {
+          margin-left: 0.15em;
+        }
+
+        .author {
+          font-size: 0.85em;
+          color: ${textColor};
+          opacity: 0.7;
+        }
+
+        .author-name {
+          font-weight: 500;
+        }
+
+        .author-role {
+          margin-top: 2px;
+        }
+
+        .avatar {
+          position: absolute;
+          object-fit: cover;
+        }
+
+        .avatar--circle {
+          border-radius: 9999px;
+        }
+
+        .avatar--rounded {
+          border-radius: 16px;
+        }
       </style>
     </head>
     <body>
@@ -290,6 +455,15 @@ function generateHTML(messages, config) {
         ${bubblesHTML}
       </div>
       ${logoHTML}
+      <script src="https://twemoji.maxcdn.com/v/latest/twemoji.min.js" crossorigin="anonymous"></script>
+      <script>
+        window.addEventListener('load', () => {
+          if (window.twemoji) {
+            window.twemoji.parse(document.body, { folder: 'svg', ext: '.svg' });
+          }
+          window.__twemojiParsed = true;
+        });
+      </script>
     </body>
     </html>
   `;
@@ -355,6 +529,12 @@ export async function renderTestimonials(messages, outputPath, options = {}) {
 
     // Set content
     await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(() => window.__twemojiParsed === true, { timeout: 5000 }).catch(() => {});
+    await page.evaluateHandle('document.fonts.ready');
+    await page.waitForFunction(
+      () => Array.from(document.images).every(img => img.complete),
+      { timeout: 5000 }
+    ).catch(() => {});
 
     // For auto-height, calculate actual height
     let screenshotOptions = {
