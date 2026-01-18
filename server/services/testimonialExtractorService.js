@@ -30,7 +30,7 @@ RULES:
 
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
 const GEMINI_TIMEOUT_MS = 30000;
-const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models');
+const FACE_MODEL_PATH = path.resolve(process.cwd(), '../models');
 const SSD_MANIFEST = 'ssd_mobilenetv1_model-weights_manifest.json';
 
 const { Canvas, Image, ImageData } = canvas;
