@@ -205,7 +205,18 @@ async function syncDailyExchangeRate() {
 }
 
 async function startServer() {
-  await ensureFaceModelsLoaded();
+  const requireFaceModels = process.env.REQUIRE_FACE_MODELS === 'true';
+  try {
+    await ensureFaceModelsLoaded();
+  } catch (error) {
+    if (requireFaceModels) {
+      throw error;
+    }
+    console.warn(
+      'Face API models not loaded; testimonial extraction features will remain disabled until models are installed.',
+      error
+    );
+  }
 
   // Initial sync on startup
   setTimeout(backgroundSync, 5000);
