@@ -12,6 +12,7 @@ import {
   Loader2, Mic, MessageSquare, Calendar, Briefcase, Send, Activity, Star,
   HelpCircle, Bookmark, ChevronLeft
 } from 'lucide-react';
+import TestimonialExtractor from './TestimonialExtractor';
 
 const API_BASE = '/api';
 const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
@@ -212,7 +213,8 @@ export default function CreativeStudio({ store }) {
     { id: 'video', label: 'Video Resizer', icon: <Film size={18} /> },
     { id: 'spy', label: 'Competitor Spy', icon: <Search size={18} /> },
     { id: 'generate', label: 'AI Generate', icon: <Wand2 size={18} /> },
-    { id: 'analyze', label: 'Analyze', icon: <Target size={18} /> }
+    { id: 'analyze', label: 'Analyze', icon: <Target size={18} /> },
+    { id: 'testimonial', label: 'Testimonial Extractor', icon: <MessageSquare size={18} /> }
   ];
 
   return (
@@ -276,6 +278,7 @@ export default function CreativeStudio({ store }) {
           />
         )}
         {activeTab === 'analyze' && <AnalyzeTools store={store} />}
+        {activeTab === 'testimonial' && <TestimonialExtractor />}
       </div>
     </div>
   );
