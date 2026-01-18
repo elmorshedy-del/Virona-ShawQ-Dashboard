@@ -93,8 +93,7 @@ async function detectFaces(imagePath) {
     return [];
   }
   const img = await canvas.loadImage(imagePath);
-  const detections = await faceapi.detectAllFaces(img);
-  return detections.map(det => ({
+  const detections = await faceapi.detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.1 }));  return detections.map(det => ({
     x: det.box.x,
     y: det.box.y,
     width: det.box.width,
@@ -194,7 +193,18 @@ export async function extractMessagesFromImage(imagePath) {
     }
 
     const faceDetections = await detectFaces(imagePath);
-    const sortedFaces = faceDetections.sort((a, b) => a.y - b.y);
+    console.log('--- Detection Debug ---');
+    console.log('Total Faces Found:', faceDetections.length);
+    faceDetections.forEach((det, index) => {
+    console.log(`Face ${index} coordinates:`, {
+        x: det.x,
+        y: det.y,
+        width: det.width,
+        height: det.height,
+        score: det.score // Tells you how "sure" the AI is
+    });
+});
+console.log('-----------------------');    const sortedFaces = faceDetections.sort((a, b) => a.y - b.y);
 
     // Ensure required fields exist
     const validated = [];
