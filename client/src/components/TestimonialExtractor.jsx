@@ -170,10 +170,12 @@ export default function TestimonialExtractor() {
         avatarDataUrl: msg.avatarDataUrl || null
       }));
       setMessages(normalizedMessages);
+      if (normalizedMessages.length < 2) {
+        setLayout('stacked');
+      }
       setLastExtractResponse({
         status,
-        messageCount: normalizedMessages.length,
-        hasAvatars: normalizedMessages.some(msg => msg.avatarDataUrl)
+        ...data
       });
       addDebugEvent({
         step: 'Extract',
@@ -206,6 +208,9 @@ export default function TestimonialExtractor() {
   const deleteMessage = (index) => {
     const updated = messages.filter((_, i) => i !== index);
     setMessages(updated);
+    if (updated.length < 2) {
+      setLayout('stacked');
+    }
   };
 
   // Add new message
@@ -323,8 +328,7 @@ export default function TestimonialExtractor() {
       setGenerateSuccess('✨ Testimonial generated successfully!');
       setLastGenerateResponse({
         status,
-        filename: data.filename,
-        imageLength: data.image?.length || 0
+        ...data
       });
       addDebugEvent({ step: 'Generate', status: 'success', detail: 'Image ready for preview' });
     } catch (error) {
@@ -411,6 +415,19 @@ export default function TestimonialExtractor() {
               <p className="text-sm text-gray-600 mb-2">
                 {uploadedFiles.length} file(s) selected
               </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadedFiles([]);
+                  setMessages([]);
+                  setGeneratedImage(null);
+                  setUploadError('');
+                  addDebugEvent({ step: 'Upload', status: 'cleared', detail: 'All uploads removed' });
+                }}
+                className="mb-3 text-xs text-gray-500 hover:text-gray-700"
+              >
+                Clear all uploads
+              </button>
               <div className="flex flex-wrap gap-2">
                 {uploadedFiles.map((file, i) => (
                   <span
@@ -579,7 +596,7 @@ export default function TestimonialExtractor() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Layout
               </label>
-              <div className={`flex gap-3 ${uploadedFiles.length < 2 ? 'opacity-50 pointer-events-none' : ''}`}>
+              <div className={`flex gap-3 ${messages.length < 2 ? 'opacity-50 pointer-events-none' : ''}`}>
                 <button
                   onClick={() => setLayout('stacked')}
                   className={`flex-1 p-3 border-2 rounded-lg transition-all ${
@@ -603,9 +620,9 @@ export default function TestimonialExtractor() {
                   <div className="text-xs text-gray-500 mt-1">Multi-column</div>
                 </button>
               </div>
-              {uploadedFiles.length < 2 && (
+              {messages.length < 2 && (
                 <p className="mt-2 text-xs text-gray-500">
-                  Layout options unlock when you upload two or more screenshots.
+                  Layout options unlock when two or more messages are available.
                 </p>
               )}
 

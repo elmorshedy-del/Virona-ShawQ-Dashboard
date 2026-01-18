@@ -1,6 +1,9 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
+import path from 'path';
 import sharp from 'sharp';
+import * as faceapi from 'face-api.js';
+import canvas from 'canvas';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -11,28 +14,42 @@ Return ONLY a valid JSON array, nothing else before or after:
 [
   {
     "text": "exact message text including emojis",
-    "quoteText": "same as text",
     "side": "left",
     "order": 1,
     "authorName": "if present, otherwise null",
-    "authorRole": "if present, otherwise null",
-    "avatarPresent": true,
-    "avatarShape": "circle|rounded|null",
-    "avatarBox": { "x": 10, "y": 20, "width": 50, "height": 50 }
+    "authorRole": "if present, otherwise null"
   }
 ]
 
 RULES:
 - "text": Copy the EXACT text, preserve emojis, punctuation, spelling
-- "quoteText": same as text (keep in sync)
 - "side": "left" if bubble is on left side of screen, "right" if on right side
 - "order": Number messages from top to bottom starting at 1
 - Include ALL messages visible in the screenshot
-- If you see an avatar/profile photo, set avatarPresent=true and provide avatarBox in PIXELS relative to the image
-- If no avatar exists for a message, set avatarPresent=false and avatarBox=null
 - If you see multiple screenshots, extract from all of them`;
 
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
+const GEMINI_TIMEOUT_MS = 30000;
+const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models/face-api');
+
+const { Canvas, Image, ImageData } = canvas;
+faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
+
+let faceModelsReady = null;
+
+async function loadFaceModels() {
+  if (!faceModelsReady) {
+    faceModelsReady = (async () => {
+      if (!fs.existsSync(FACE_MODEL_PATH)) {
+        console.warn(`Face API models not found at ${FACE_MODEL_PATH}. Avatar detection disabled.`);
+        return false;
+      }
+      await faceapi.nets.ssdMobilenetv1.loadFromDisk(FACE_MODEL_PATH);
+      return true;
+    })();
+  }
+  return faceModelsReady;
+}
 
 function isInsufficientFundsError(error) {
   const message = String(error?.message || '').toLowerCase();
@@ -70,15 +87,19 @@ function normalizeAvatarBox(avatarBox, imageWidth, imageHeight) {
   };
 }
 
-function computeAvatarPlacementPct(avatarBox, imageWidth, imageHeight) {
-  if (!avatarBox) return null;
-  if (!imageWidth || !imageHeight) return null;
-  return {
-    xPct: Number(((avatarBox.x / imageWidth) * 100).toFixed(2)),
-    yPct: Number(((avatarBox.y / imageHeight) * 100).toFixed(2)),
-    wPct: Number(((avatarBox.width / imageWidth) * 100).toFixed(2)),
-    hPct: Number(((avatarBox.height / imageHeight) * 100).toFixed(2))
-  };
+async function detectFaces(imagePath) {
+  const ready = await loadFaceModels();
+  if (!ready) {
+    return [];
+  }
+  const img = await canvas.loadImage(imagePath);
+  const detections = await faceapi.detectAllFaces(img);
+  return detections.map(det => ({
+    x: det.box.x,
+    y: det.box.y,
+    width: det.box.width,
+    height: det.box.height
+  }));
 }
 
 /**
@@ -115,7 +136,16 @@ export async function extractMessagesFromImage(imagePath) {
       }
     };
 
-    const result = await model.generateContent([VISION_PROMPT, imagePart]);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+    let result;
+    try {
+      result = await model.generateContent([VISION_PROMPT, imagePart], {
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     const response = result.response;
     let resultText = response.text().trim();
 
@@ -163,18 +193,20 @@ export async function extractMessagesFromImage(imagePath) {
       return [];
     }
 
+    const faceDetections = await detectFaces(imagePath);
+    const sortedFaces = faceDetections.sort((a, b) => a.y - b.y);
+
     // Ensure required fields exist
     const validated = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      const avatarBox = normalizeAvatarBox(msg.avatarBox, imageWidth, imageHeight);
+      const faceBox = sortedFaces[i] || null;
+      const avatarBox = normalizeAvatarBox(faceBox, imageWidth, imageHeight);
       let avatarDataUrl = null;
-      let avatarPlacementPct = null;
-      let avatarPresent = Boolean(msg.avatarPresent && avatarBox);
-      let avatarShape = msg.avatarShape === 'circle' ? 'circle' : (msg.avatarShape === 'rounded' ? 'rounded' : null);
+      let avatarPresent = Boolean(avatarBox);
+      const avatarShape = 'circle';
 
       if (avatarPresent && avatarBox) {
-        avatarPlacementPct = computeAvatarPlacementPct(avatarBox, imageWidth, imageHeight);
         try {
           const cropped = await sharp(imageData)
             .extract({
@@ -189,14 +221,12 @@ export async function extractMessagesFromImage(imagePath) {
         } catch (cropError) {
           console.warn('Avatar crop failed:', cropError);
           avatarPresent = false;
-          avatarShape = null;
-          avatarPlacementPct = null;
         }
       }
 
       validated.push({
-        text: String(msg.text || msg.quoteText || ''),
-        quoteText: String(msg.quoteText || msg.text || ''),
+        text: String(msg.text || ''),
+        quoteText: String(msg.text || ''),
         side: (msg.side === 'left' || msg.side === 'right') ? msg.side : 'left',
         order: msg.order || (i + 1),
         authorName: msg.authorName ? String(msg.authorName) : '',
@@ -204,7 +234,7 @@ export async function extractMessagesFromImage(imagePath) {
         avatarPresent,
         avatarShape,
         avatarBox: avatarPresent ? avatarBox : null,
-        avatarPlacementPct: avatarPresent ? avatarPlacementPct : null,
+        avatarPlacementPct: null,
         avatarDataUrl
       });
     }
