@@ -367,7 +367,7 @@ export default function TestimonialExtractor() {
               <div className="flex flex-wrap gap-2">
                 {uploadedFiles.map((file, i) => (
                   <span
-                    key={`${file.name}-${i}`}
+                    key={`${file.name}-${file.size}-${file.lastModified}-${i}`}
                     className="inline-flex items-center gap-2 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm"
                   >
                     {file.name}
