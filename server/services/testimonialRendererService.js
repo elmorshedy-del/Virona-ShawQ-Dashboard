@@ -228,7 +228,7 @@ async function buildTwemojiNodes(text) {
         src: dataUrl,
         width: '1em',
         height: '1em',
-        style: { display: 'inline-block', verticalAlign: '-0.1em' }
+        style: { verticalAlign: '-0.1em' }
       }));
     } else {
       nodes.push(alt || '');
