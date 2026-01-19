@@ -490,7 +490,7 @@ export async function renderTestimonials(messages, outputPath, options = {}) {
       ...(fonts.length > 0 ? { fonts } : {})
     });
   } catch (error) {
-    console.warn('FONT_LOAD_FAILED', error.message);
+    console.warn('FONT_LOAD_FAILED: Satori failed with custom fonts. Falling back to default fonts.', error);
     svg = await satori(vnode, { width, height });
   }
 
