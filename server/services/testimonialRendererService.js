@@ -414,7 +414,7 @@ async function buildTestimonialVNode(messages, config) {
           : (msg.side === 'right' ? 'flex-end' : 'flex-start')
       }
     },
-    h('div', { style: { display: 'inline' } }, ...textNodes),
+    h('div', { style: { display: 'block' } }, ...textNodes),
     authorBlock
     );
   }));
