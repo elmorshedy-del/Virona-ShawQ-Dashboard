@@ -735,3 +735,21 @@ Frontend:
 ```
 
 </details>
+
+
+---
+
+## Railway Deployment (SCRFD)
+
+Recommended setup uses two Railway services:
+
+1) **SCRFD Service** (root: `server/scrfd`)
+- Start command: `python face_detection_server.py`
+- Uses Railway `PORT` automatically.
+
+2) **Node App Service** (main app)
+- Set `SCRFD_SERVICE_URL` to the SCRFD service URL (e.g. `https://<your-scrfd-service>.up.railway.app`).
+- Optional: set `SCRFD_AUTO_START=0` in production.
+
+Health check:
+- `https://<your-scrfd-service>.up.railway.app/health`

@@ -110,3 +110,20 @@ Just uncomment the face-api sections and comment out the SCRFD sections.
 | `face_detection_server.py` | NEW — Python SCRFD microservice |
 | `requirements.txt` | NEW — Python dependencies |
 | `start_face_server.sh` | NEW — Startup script |
+
+
+## Railway Deployment (Recommended)
+
+Use **two Railway services** for best reliability:
+
+1) **SCRFD Service** (this folder)
+- Root directory: `server/scrfd`
+- Start command: `python face_detection_server.py`
+- Railway will set `PORT` automatically (the server now uses it).
+
+2) **Node App Service** (main app)
+- Set `SCRFD_SERVICE_URL` to the SCRFD service URL (e.g. `https://<your-scrfd-service>.up.railway.app`).
+- Optional: set `SCRFD_AUTO_START=0` in production to avoid local auto-start attempts.
+
+Health check:
+- Visit `https://<your-scrfd-service>.up.railway.app/health` to confirm it is ready.

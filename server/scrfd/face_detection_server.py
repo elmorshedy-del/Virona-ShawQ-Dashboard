@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 import base64
 import logging
+import os
 import sys
 
 # Suppress InsightFace verbose output
@@ -187,10 +188,11 @@ if __name__ == '__main__':
         print('2. Sufficient disk space for model download')
         sys.exit(1)
     
-    print('\nStarting server on http://localhost:5050')
+    port = int(os.environ.get('PORT', '5050'))
+    print(f'\nStarting server on http://localhost:{port}')
     print('Endpoints:')
     print('  POST /detect  - Detect faces in image region')
     print('  GET  /health  - Health check')
     print('=' * 50)
     
-    app.run(host='0.0.0.0', port=5050, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)
