@@ -1,0 +1,8 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "startCommand": "python face_detection_server.py",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 60
+  }
+}
