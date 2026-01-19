@@ -113,17 +113,24 @@ function resolveFontPath(fileName) {
   return path.resolve(__dirname, '..', 'assets', 'fonts', fileName);
 }
 
+function loadFontDataFromPath(fontPath) {
+  if (!fontPath || !fs.existsSync(fontPath)) {
+    return null;
+  }
+  const data = fs.readFileSync(fontPath);
+  return { data, path: fontPath };
+}
+
 function loadFontData(fileName) {
   if (fontCache.has(fileName)) {
     return fontCache.get(fileName);
   }
   const fontPath = resolveFontPath(fileName);
-  if (!fs.existsSync(fontPath)) {
+  const entry = loadFontDataFromPath(fontPath);
+  if (!entry) {
     console.warn(`Font not found: ${fontPath}`);
     return null;
   }
-  const data = fs.readFileSync(fontPath);
-  const entry = { data, path: fontPath };
   fontCache.set(fileName, entry);
   return entry;
 }
@@ -132,7 +139,8 @@ function buildFontConfig() {
   const fonts = [];
 
   // Load Inter font
-  const interFont = loadFontData('Inter-Regular.ttf');
+  const interFont = loadFontData('Inter-Regular.ttf')
+    || loadFontDataFromPath(path.resolve(__dirname, '..', '..', 'Inter-Regular.ttf'));
   if (interFont) {
     fonts.push({
       name: 'Inter',
