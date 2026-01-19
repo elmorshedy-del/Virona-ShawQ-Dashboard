@@ -94,7 +94,7 @@ def detect():
         
         image_b64 = data.get('image')
         region = data.get('region')
-        min_confidence = data.get('min_confidence', 0.3)  # Lower = catches smaller faces
+        min_confidence = data.get('min_confidence', 0.1)  # Lower = catches smaller faces
         
         if not image_b64 or not region:
             print('ERROR: Missing image or region')
@@ -134,7 +134,7 @@ def detect():
             return jsonify([])
         
         # Upscale 2x for better small face detection (matching original behavior)
-        scale = 2
+        scale = 4
         crop_h, crop_w = crop.shape[:2]
         crop_upscaled = cv2.resize(
             crop, 
