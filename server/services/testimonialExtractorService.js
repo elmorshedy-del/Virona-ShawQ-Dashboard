@@ -286,56 +286,54 @@ async function startScrfdService() {
 // =============================================================================
 // NEW: SCRFD-based face detection via Python microservice
 // =============================================================================
-async function detectFacesInRegion(imageData, region) {
+async function detectFacesInRegion(imageData, region, fullWidth = 1080, fullHeight = 1920) {
   console.log('CALLING SCRFD FACE DETECTION FOR REGION:', region);
-
   if (!region || region.width <= 0 || region.height <= 0) {
     return [];
   }
-
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), SCRFD_TIMEOUT_MS);
-
+    // NUCLEAR FIX: Send FULL IMAGE, not just region
+    const fullRegion = { x: 0, y: 0, width: fullWidth, height: fullHeight };
     const response = await fetch(`${SCRFD_SERVICE_URL}/detect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         image: imageData.toString('base64'),
-        region: region,
-        min_confidence: MIN_FACE_CONFIDENCE
+        region: fullRegion,
+        min_confidence: 0.05
       }),
       signal: controller.signal
     });
-
     clearTimeout(timeoutId);
-
     if (!response.ok) {
       console.warn('SCRFD service error:', response.status, response.statusText);
       return [];
     }
-
-    const faces = await response.json();
-    console.log('SCRFD FACES FOUND:', faces.length);
-
-    // Return in same format as original face-api.js: [{x, y, width, height}]
-    return faces.map(f => ({
-      x: f.x,
-      y: f.y,
-      width: f.width,
-      height: f.height,
-      score: f.score
-    }));
-
+    const allFaces = await response.json();
+    console.log('SCRFD TOTAL FACES IN IMAGE:', allFaces.length);
+    // Filter faces near expected region
+    const regionCenterX = region.x + region.width / 2;
+    const regionCenterY = region.y + region.height / 2;
+    const maxDistance = Math.max(region.width, region.height) * 2.5;
+    const nearbyFaces = allFaces.filter(f => {
+      const faceCenterX = f.x + f.width / 2;
+      const faceCenterY = f.y + f.height / 2;
+      const distance = Math.hypot(faceCenterX - regionCenterX, faceCenterY - regionCenterY);
+      return distance < maxDistance;
+    });
+    console.log('SCRFD FACES NEAR REGION:', nearbyFaces.length);
+    return nearbyFaces.map(f => ({ x: f.x, y: f.y, width: f.width, height: f.height, score: f.score }));
   } catch (error) {
     if (error.name === 'AbortError') {
       console.warn('SCRFD service timeout');
     } else {
       console.warn('SCRFD service unavailable:', error.message);
     }
-    // Return empty array - will fall through to contour/geometry fallbacks
     return [];
   }
+}
 }
 // =============================================================================
 
@@ -856,7 +854,7 @@ export async function extractMessagesFromImage(imagePath) {
         searchRegion = region;
 
         try {
-          const faces = await detectFacesInRegion(imageData, region);
+          const faces = await detectFacesInRegion(imageData, region, imageWidth, imageHeight);
           facesFound += faces.length;
           if (faces.length > 0) {
             const closestFace = faces.reduce((best, face) => {
