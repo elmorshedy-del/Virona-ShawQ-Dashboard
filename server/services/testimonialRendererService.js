@@ -110,7 +110,21 @@ function h(type, props, ...children) {
 }
 
 function resolveFontPath(fileName) {
-  return path.resolve(__dirname, '..', 'assets', 'fonts', fileName);
+  const candidatePaths = [
+    path.resolve(__dirname, '..', 'assets', 'fonts', fileName),
+    path.resolve(__dirname, '..', '..', 'assets', 'fonts', fileName),
+    path.resolve(process.cwd(), 'server', 'assets', 'fonts', fileName),
+    path.resolve(process.cwd(), 'assets', 'fonts', fileName),
+    path.resolve(process.cwd(), fileName)
+  ];
+
+  for (const candidate of candidatePaths) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidatePaths[0];
 }
 
 function loadFontData(fileName) {
@@ -119,7 +133,7 @@ function loadFontData(fileName) {
   }
   const fontPath = resolveFontPath(fileName);
   if (!fs.existsSync(fontPath)) {
-    console.warn(`Font not found: ${fontPath}`);
+    console.warn(`Font not found: ${fileName}`);
     return null;
   }
   const data = fs.readFileSync(fontPath);
