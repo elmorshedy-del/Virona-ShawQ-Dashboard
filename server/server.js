@@ -229,6 +229,13 @@ setInterval(whatifSync, 24 * 60 * 60 * 1000);
 setTimeout(syncDailyExchangeRate, 10000); // Run 10 seconds after startup
 setInterval(syncDailyExchangeRate, 24 * 60 * 60 * 1000); // Then every 24 hours
 
+try {
+  await ensureFaceModelsLoaded();
+} catch (error) {
+  console.error('❌ Face detection startup failed:', error.message);
+  process.exit(1);
+}
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
