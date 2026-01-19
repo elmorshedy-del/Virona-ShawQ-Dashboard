@@ -153,12 +153,6 @@ function buildFontConfig() {
   }
 
   // Load Noto Color Emoji font for emoji support
-  const emojiFont = loadFontData('NotoColorEmoji.ttf');
-  if (emojiFont) {
-    fonts.push({ name: 'Noto Color Emoji', data: emojiFont, weight: 400, style: 'normal' });
-  } else {
-    console.warn('Emoji font not found, emojis may not render correctly');
-  }
 
   return fonts;
 }
