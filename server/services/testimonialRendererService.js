@@ -368,6 +368,8 @@ async function buildTestimonialVNode(messages, config) {
       : backgroundColor);
 
   const bubbleBaseStyle = {
+    display: 'flex',
+    flexDirection: 'column',
     background: outputShape === 'minimal' ? 'transparent' : bubbleColor,
     padding: outputShape === 'minimal' ? 0 : resolvedCardPadding,
     borderRadius: outputShape === 'minimal' ? 0 : borderRadius,
@@ -427,7 +429,13 @@ async function buildTestimonialVNode(messages, config) {
           : (msg.side === 'right' ? 'flex-end' : 'flex-start')
       }
     },
-    h('div', { style: { display: 'block' } }, ...textNodes),
+    h('div', {
+      style: {
+        display: 'flex',
+        flexWrap: 'wrap',
+        alignItems: 'center'
+      }
+    }, ...textNodes),
     authorBlock
     );
   }));
