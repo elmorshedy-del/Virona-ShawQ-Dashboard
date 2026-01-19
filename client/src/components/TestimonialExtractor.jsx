@@ -600,24 +600,36 @@ export default function TestimonialExtractor() {
                 <button
                   onClick={() => setLayout('stacked')}
                   className={`flex-1 p-3 border-2 rounded-lg transition-all ${
-                    layout === 'stacked'
+                    messages.length < 2
+                      ? 'border-gray-200 bg-gray-50'
+                      : layout === 'stacked'
                       ? 'border-purple-600 bg-purple-50'
                       : 'border-gray-200 hover:border-gray-300'
                   }`}
                 >
-                  <div className="font-medium text-gray-900">Stacked</div>
-                  <div className="text-xs text-gray-500 mt-1">Vertical bubbles</div>
+                  <div className={`font-medium ${messages.length < 2 ? 'text-gray-400' : 'text-gray-900'}`}>
+                    Stacked
+                  </div>
+                  <div className={`text-xs mt-1 ${messages.length < 2 ? 'text-gray-400' : 'text-gray-500'}`}>
+                    Vertical bubbles
+                  </div>
                 </button>
                 <button
                   onClick={() => setLayout('collage')}
                   className={`flex-1 p-3 border-2 rounded-lg transition-all ${
-                    layout === 'collage'
+                    messages.length < 2
+                      ? 'border-gray-200 bg-gray-50'
+                      : layout === 'collage'
                       ? 'border-purple-600 bg-purple-50'
                       : 'border-gray-200 hover:border-gray-300'
                   }`}
                 >
-                  <div className="font-medium text-gray-900">Collage Grid</div>
-                  <div className="text-xs text-gray-500 mt-1">Multi-column</div>
+                  <div className={`font-medium ${messages.length < 2 ? 'text-gray-400' : 'text-gray-900'}`}>
+                    Collage Grid
+                  </div>
+                  <div className={`text-xs mt-1 ${messages.length < 2 ? 'text-gray-400' : 'text-gray-500'}`}>
+                    Multi-column
+                  </div>
                 </button>
               </div>
               {messages.length < 2 && (
