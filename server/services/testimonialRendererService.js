@@ -110,7 +110,7 @@ function h(type, props, ...children) {
 }
 
 function resolveFontPath(fileName) {
-  return path.resolve(__dirname, '..', 'fonts', fileName);
+  return path.resolve(__dirname, '..', 'assets', 'fonts', fileName);
 }
 
 function loadFontData(fileName) {
@@ -123,8 +123,9 @@ function loadFontData(fileName) {
     return null;
   }
   const data = fs.readFileSync(fontPath);
-  fontCache.set(fileName, data);
-  return data;
+  const entry = { data, path: fontPath };
+  fontCache.set(fileName, entry);
+  return entry;
 }
 
 function buildFontConfig() {
@@ -133,7 +134,13 @@ function buildFontConfig() {
   // Load Inter font
   const interFont = loadFontData('Inter-Regular.ttf');
   if (interFont) {
-    fonts.push({ name: 'Inter', data: interFont, weight: 400, style: 'normal' });
+    fonts.push({
+      name: 'Inter',
+      data: interFont.data,
+      weight: 400,
+      style: 'normal',
+      source: interFont.path
+    });
   } else {
     console.warn('Inter font not found, rendering may fail');
   }
@@ -141,12 +148,23 @@ function buildFontConfig() {
   // Load Noto Color Emoji font for emoji support
   const emojiFont = loadFontData('NotoColorEmoji.ttf');
   if (emojiFont) {
-    fonts.push({ name: 'Noto Color Emoji', data: emojiFont, weight: 400, style: 'normal' });
+    fonts.push({
+      name: 'Noto Color Emoji',
+      data: emojiFont.data,
+      weight: 400,
+      style: 'normal',
+      source: emojiFont.path
+    });
   } else {
     console.warn('Emoji font not found, emojis may not render correctly');
   }
 
   return fonts;
+}
+
+function formatFontSignature(data) {
+  const bytes = Array.from(data.subarray(0, 4));
+  return bytes.map(byte => byte.toString(16).padStart(2, '0')).join(' ');
 }
 
 async function fetchWithTimeout(url, timeoutMs) {
@@ -452,16 +470,29 @@ export async function renderTestimonials(messages, outputPath, options = {}) {
   const config = { ...preset, ...options };
 
   const fonts = buildFontConfig();
-  if (fonts.length === 0) {
-    throw new Error('No fonts available for rendering. Ensure @fontsource/inter is installed.');
-  }
 
   const { vnode, width, height } = await buildTestimonialVNode(messages, config);
-  const svg = await satori(vnode, {
-    width,
-    height,
-    fonts
-  });
+  if (fonts.length > 0) {
+    fonts.forEach(font => {
+      console.info('SATORI_FONT_SIGNATURE', {
+        source: font.source || 'unknown',
+        byteLength: font.data.length,
+        firstBytesHex: formatFontSignature(font.data)
+      });
+    });
+  }
+
+  let svg;
+  try {
+    svg = await satori(vnode, {
+      width,
+      height,
+      ...(fonts.length > 0 ? { fonts } : {})
+    });
+  } catch (error) {
+    console.warn('FONT_LOAD_FAILED', error.message);
+    svg = await satori(vnode, { width, height });
+  }
 
   const resvg = new Resvg(svg, {
     background: config.backgroundType === 'transparent' ? 'transparent' : undefined
