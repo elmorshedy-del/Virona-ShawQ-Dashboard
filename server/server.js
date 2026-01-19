@@ -42,6 +42,11 @@ const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '
 // Initialize database
 initDb();
 
+ensureFaceModelsLoaded().catch(error => {
+  console.error('❌ Failed to load face detection models:', error);
+  process.exit(1);
+});
+
 // Run AIBudget schema migration on startup
 runAIBudgetMigration()
   .then(() => {
