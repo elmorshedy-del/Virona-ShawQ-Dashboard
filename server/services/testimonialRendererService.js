@@ -1,8 +1,13 @@
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import satori from 'satori';
 import { Resvg } from '@resvg/resvg-js';
 import twemoji from 'twemoji';
 import fetch from 'node-fetch';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PRESETS = {
   instagram_story: {
@@ -109,12 +114,60 @@ async function loadGoogleFont(fontFamily = 'Inter', weight = 400) {
 }
 
 let cachedFont = null;
+let cachedEmojiFont = null;
 
 async function getFont() {
   if (!cachedFont) {
     cachedFont = await loadGoogleFont('Inter', 400);
   }
   return cachedFont;
+}
+
+function resolveEmojiFontPath(fileName) {
+  const candidatePaths = [
+    path.resolve(__dirname, '..', 'assets', 'fonts', fileName),
+    path.resolve(__dirname, '..', '..', 'assets', 'fonts', fileName),
+    path.resolve(process.cwd(), 'server', 'assets', 'fonts', fileName),
+    path.resolve(process.cwd(), 'assets', 'fonts', fileName),
+    path.resolve(process.cwd(), fileName)
+  ];
+
+  for (const candidate of candidatePaths) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidatePaths[0];
+}
+
+function loadLocalEmojiFont(fileName) {
+  const fontPath = resolveEmojiFontPath(fileName);
+  if (!fs.existsSync(fontPath)) {
+    return null;
+  }
+  return fs.readFileSync(fontPath);
+}
+
+async function getEmojiFont() {
+  if (cachedEmojiFont) {
+    return cachedEmojiFont;
+  }
+
+  try {
+    cachedEmojiFont = await loadGoogleFont('Noto Color Emoji', 400);
+    return cachedEmojiFont;
+  } catch (error) {
+    console.warn('Failed to fetch Noto Color Emoji from Google Fonts. Falling back to local font.', error);
+  }
+
+  const localEmojiFont = loadLocalEmojiFont('NotoColorEmoji.ttf');
+  if (!localEmojiFont) {
+    console.warn('Local emoji font not found. Emojis may not render correctly.');
+    return null;
+  }
+  cachedEmojiFont = localEmojiFont;
+  return cachedEmojiFont;
 }
 
 function h(type, props, ...children) {
@@ -430,18 +483,30 @@ export async function renderTestimonials(messages, outputPath, options = {}) {
   const config = { ...preset, ...options };
 
   const fontData = await getFont();
+  const emojiFontData = await getEmojiFont();
   const { vnode, width, height } = await buildTestimonialVNode(messages, config);
+  const fonts = [
+    {
+      name: 'Inter',
+      data: fontData,
+      weight: 400,
+      style: 'normal'
+    }
+  ];
+
+  if (emojiFontData) {
+    fonts.push({
+      name: 'Noto Color Emoji',
+      data: emojiFontData,
+      weight: 400,
+      style: 'normal'
+    });
+  }
+
   const svg = await satori(vnode, {
     width,
     height,
-    fonts: [
-      {
-        name: 'Inter',
-        data: fontData,
-        weight: 400,
-        style: 'normal'
-      }
-    ]
+    fonts
   });
 
   const resvg = new Resvg(svg, {
