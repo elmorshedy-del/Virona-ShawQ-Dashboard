@@ -79,6 +79,7 @@ export default function TestimonialExtractor() {
   const [debugEvents, setDebugEvents] = useState([]);
   const [lastExtractResponse, setLastExtractResponse] = useState(null);
   const [lastGenerateResponse, setLastGenerateResponse] = useState(null);
+  const [showAvatarStrip, setShowAvatarStrip] = useState(false);
 
   const addDebugEvent = (event) => {
     setDebugEvents(prev => ([
@@ -112,6 +113,7 @@ export default function TestimonialExtractor() {
     setExtractError('');
     setMessages([]);
     setGeneratedImage(null);
+    setShowAvatarStrip(false);
     e.target.value = '';
     addDebugEvent({
       step: 'Upload',
@@ -163,13 +165,17 @@ export default function TestimonialExtractor() {
         order: msg.order || index + 1,
         authorName: msg.authorName || '',
         authorRole: msg.authorRole || '',
-        avatarPresent: Boolean(msg.avatarPresent),
+        avatarPresent: Boolean(msg.avatarPresent || msg.avatarDataUrl),
         avatarShape: msg.avatarShape || null,
         avatarBox: msg.avatarBox || null,
         avatarPlacementPct: msg.avatarPlacementPct || null,
-        avatarDataUrl: msg.avatarDataUrl || null
+        avatarDataUrl: msg.avatarDataUrl || null,
+        avatarDebug: msg.avatarDebug || null,
+        avatarMethodUsed: msg.avatarMethodUsed || msg.avatarDebug?.methodUsed || null,
+        facesFound: typeof msg.facesFound === 'number' ? msg.facesFound : (msg.avatarDebug?.facesFound ?? null)
       }));
       setMessages(normalizedMessages);
+      setShowAvatarStrip(true);
       if (normalizedMessages.length < 2) {
         setLayout('stacked');
       }
@@ -227,6 +233,9 @@ export default function TestimonialExtractor() {
       avatarBox: null,
       avatarPlacementPct: null,
       avatarDataUrl: null,
+      avatarDebug: null,
+      avatarMethodUsed: null,
+      facesFound: null,
       side: 'left',
       order: messages.length + 1
     };
@@ -261,6 +270,7 @@ export default function TestimonialExtractor() {
     if (updatedFiles.length === 0) {
       setMessages([]);
       setGeneratedImage(null);
+      setShowAvatarStrip(false);
     }
   };
 
@@ -370,6 +380,66 @@ export default function TestimonialExtractor() {
     }
   };
 
+  const renderAvatarSanityStrip = () => {
+    if (messages.length === 0) {
+      return null;
+    }
+
+    const detectedCount = messages.filter((msg) => msg.avatarPresent || msg.avatarDataUrl).length;
+
+    return (
+      <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <button
+          type="button"
+          onClick={() => setShowAvatarStrip(!showAvatarStrip)}
+          className="flex w-full items-center justify-between gap-2"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-slate-700">Avatar sanity check</span>
+            <span className="text-xs text-slate-500">({detectedCount}/{messages.length} detected)</span>
+          </div>
+          {showAvatarStrip ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+        </button>
+        {showAvatarStrip && (
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {messages.map((msg, index) => {
+              const detected = Boolean(msg.avatarPresent || msg.avatarDataUrl);
+              const method = msg.avatarDebug?.methodUsed || msg.avatarMethodUsed || (detected ? 'detected' : 'none');
+              const facesFound = msg.avatarDebug?.facesFound ?? msg.facesFound;
+              const initials = msg.authorName ? msg.authorName.trim().charAt(0).toUpperCase() : 'NA';
+
+              return (
+                <div key={`avatar-${index}`} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-2">
+                  <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-xs text-slate-500">
+                    {msg.avatarDataUrl ? (
+                      <img
+                        src={msg.avatarDataUrl}
+                        alt={`Avatar ${index + 1}`}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <span>{initials}</span>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-slate-700">Message {index + 1}</div>
+                    <div className={`text-xs ${detected ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      {detected ? 'Avatar detected' : 'No avatar detected'}
+                    </div>
+                    <div className="text-[10px] text-slate-400">
+                      Method: {method || 'n/a'}
+                      {facesFound !== null && facesFound !== undefined ? ` | Faces: ${facesFound}` : ''}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="h-full overflow-y-auto p-6 bg-gradient-to-br from-blue-50 to-purple-50">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -421,6 +491,7 @@ export default function TestimonialExtractor() {
                   setUploadedFiles([]);
                   setMessages([]);
                   setGeneratedImage(null);
+                  setShowAvatarStrip(false);
                   setUploadError('');
                   addDebugEvent({ step: 'Upload', status: 'cleared', detail: 'All uploads removed' });
                 }}
@@ -490,6 +561,8 @@ export default function TestimonialExtractor() {
             <p className="text-sm text-gray-600 mb-4">
               Edit the extracted text below. Fix any mistakes before generating.
             </p>
+
+            {renderAvatarSanityStrip()}
 
             <div className="space-y-4">
               {messages.map((msg, index) => (
@@ -567,6 +640,8 @@ export default function TestimonialExtractor() {
             <h3 className="text-lg font-semibold text-gray-900 mb-4">
               Step 3: Choose Style
             </h3>
+
+            {renderAvatarSanityStrip()}
 
             {/* Preset Selection */}
             <div className="mb-6">

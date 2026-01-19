@@ -1,0 +1,13 @@
+# SCRFD Face Detection Server Dependencies
+# Install with: pip install -r requirements.txt
+
+flask>=2.0.0
+flask-cors>=3.0.0
+numpy>=1.20.0
+opencv-python>=4.5.0
+insightface>=0.7.0
+onnxruntime>=1.10.0
+
+# For GPU support (optional, much faster):
+# pip install onnxruntime-gpu
+# Then change providers in face_detection_server.py to ['CUDAExecutionProvider']
