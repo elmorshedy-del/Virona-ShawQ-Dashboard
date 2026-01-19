@@ -17,7 +17,8 @@ Return ONLY a valid JSON array, nothing else before or after:
     "side": "left",
     "order": 1,
     "authorName": "if present, otherwise null",
-    "authorRole": "if present, otherwise null"
+    "authorRole": "if present, otherwise null",
+    "bodyBox": { "x": 123, "y": 456, "w": 300, "h": 80 }
   }
 ]
 
@@ -26,6 +27,7 @@ RULES:
 - "side": "left" if bubble is on left side of screen, "right" if on right side
 - "order": Number messages from top to bottom starting at 1
 - Include ALL messages visible in the screenshot
+- "bodyBox": tight bounding box around the message text itself (not the avatar), in pixels relative to the original image
 - If you see multiple screenshots, extract from all of them`;
 
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
@@ -77,13 +79,12 @@ function isInsufficientFundsError(error) {
   return message.includes('insufficient') || message.includes('quota') || message.includes('billing');
 }
 
-function normalizeAvatarBox(avatarBox, imageWidth, imageHeight) {
-  if (!avatarBox) return null;
-  if (!imageWidth || !imageHeight) return null;
-  const x = Math.max(0, Math.floor(Number(avatarBox.x ?? 0)));
-  const y = Math.max(0, Math.floor(Number(avatarBox.y ?? 0)));
-  const width = Math.max(1, Math.floor(Number(avatarBox.width ?? 0)));
-  const height = Math.max(1, Math.floor(Number(avatarBox.height ?? 0)));
+function normalizeBodyBox(bodyBox, imageWidth, imageHeight) {
+  if (!bodyBox || !imageWidth || !imageHeight) return null;
+  const x = Math.max(0, Math.floor(Number(bodyBox.x ?? bodyBox.left ?? 0)));
+  const y = Math.max(0, Math.floor(Number(bodyBox.y ?? bodyBox.top ?? 0)));
+  const width = Math.max(1, Math.floor(Number(bodyBox.w ?? bodyBox.width ?? 0)));
+  const height = Math.max(1, Math.floor(Number(bodyBox.h ?? bodyBox.height ?? 0)));
 
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) {
     return null;
@@ -108,9 +109,84 @@ function normalizeAvatarBox(avatarBox, imageWidth, imageHeight) {
   };
 }
 
-async function detectFaces(imagePath) {
-  console.log('CALLING FACE DETECTION:', imagePath);
-  console.log('FILE EXISTS:', fs.existsSync(imagePath));
+function clampValue(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function clampBoxToImage(box, imageWidth, imageHeight) {
+  if (!box) return null;
+  const x = clampValue(Math.round(box.x), 0, imageWidth - 1);
+  const y = clampValue(Math.round(box.y), 0, imageHeight - 1);
+  const width = clampValue(Math.round(box.width), 1, imageWidth - x);
+  const height = clampValue(Math.round(box.height), 1, imageHeight - y);
+  return { x, y, width, height };
+}
+
+function getDefaultBodyBox(imageWidth, imageHeight) {
+  const width = Math.round(imageWidth * 0.5);
+  const height = Math.round(imageHeight * 0.2);
+  const x = Math.round((imageWidth - width) / 2);
+  const y = Math.round(imageHeight * 0.4);
+  return { x, y, width, height };
+}
+
+function getAvatarSearchRegion(bodyBox, side, sourceWidth, sourceHeight) {
+  const safeBodyBox = bodyBox || getDefaultBodyBox(sourceWidth, sourceHeight);
+  const bodyHeight = safeBodyBox.height;
+  const S = clampValue(Math.round(0.55 * bodyHeight), 40, 180);
+  const ry1 = Math.max(0, safeBodyBox.y - Math.round(0.25 * bodyHeight));
+  const ry2 = Math.min(sourceHeight, safeBodyBox.y + Math.round(1.1 * bodyHeight));
+
+  let rx1;
+  let rx2;
+
+  if (side === 'right') {
+    rx1 = Math.min(sourceWidth, safeBodyBox.x + safeBodyBox.width + Math.round(0.15 * S));
+    rx2 = Math.min(sourceWidth, safeBodyBox.x + safeBodyBox.width + Math.round(1.8 * S));
+  } else {
+    rx1 = Math.max(0, safeBodyBox.x - Math.round(1.8 * S));
+    rx2 = Math.max(0, safeBodyBox.x - Math.round(0.15 * S));
+  }
+
+  const region = {
+    x: Math.min(rx1, rx2),
+    y: Math.min(ry1, ry2),
+    width: Math.max(1, Math.abs(rx2 - rx1)),
+    height: Math.max(1, Math.abs(ry2 - ry1))
+  };
+
+  return {
+    region: clampBoxToImage(region, sourceWidth, sourceHeight),
+    expectedSize: S
+  };
+}
+
+function getExpectedCenter(region) {
+  return {
+    x: region.x + region.width / 2,
+    y: region.y + region.height / 2
+  };
+}
+
+function getSquareBoxAroundCenter(center, size, imageWidth, imageHeight) {
+  const clampedSize = Math.max(1, Math.min(Math.round(size), imageWidth, imageHeight));
+  const half = clampedSize / 2;
+  const x = clampValue(Math.round(center.x - half), 0, imageWidth - clampedSize);
+  const y = clampValue(Math.round(center.y - half), 0, imageHeight - clampedSize);
+  return {
+    x,
+    y,
+    width: Math.min(clampedSize, imageWidth - x),
+    height: Math.min(clampedSize, imageHeight - y)
+  };
+}
+
+function distanceBetween(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+async function detectFacesInRegion(imageData, region) {
+  console.log('CALLING FACE DETECTION FOR REGION:', region);
 
   const ready = await loadFaceModels();
   if (!ready) {
@@ -119,7 +195,21 @@ async function detectFaces(imagePath) {
 
   console.log('MODELS LOADED:', faceapi.nets.ssdMobilenetv1.isLoaded);
 
-  const img = await canvas.loadImage(imagePath);
+  if (!region || region.width <= 0 || region.height <= 0) {
+    return [];
+  }
+
+  const croppedBuffer = await sharp(imageData)
+    .extract({
+      left: region.x,
+      top: region.y,
+      width: region.width,
+      height: region.height
+    })
+    .png()
+    .toBuffer();
+
+  const img = await canvas.loadImage(croppedBuffer);
   const sourceWidth = img.width;
   const sourceHeight = img.height;
   const detectWidth = sourceWidth * 2;
@@ -165,8 +255,8 @@ async function detectFaces(imagePath) {
   const mappedDetections = detections.map((det, i) => {
     const detectBox = det.box;
     const mappedBox = {
-      x: detectBox.x * scaleX,
-      y: detectBox.y * scaleY,
+      x: detectBox.x * scaleX + region.x,
+      y: detectBox.y * scaleY + region.y,
       width: detectBox.width * scaleX,
       height: detectBox.height * scaleY
     };
@@ -176,6 +266,283 @@ async function detectFaces(imagePath) {
   });
 
   return mappedDetections;
+}
+
+function calculateVariance(values) {
+  if (!values.length) return 0;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return variance;
+}
+
+function getPixelLuma(r, g, b) {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+function getPixelSaturation(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max === 0) return 0;
+  return (max - min) / max;
+}
+
+async function findContourCandidate(imageData, region, expectedSize, expectedCenter, imageWidth, imageHeight) {
+  if (!region) return null;
+  const { data, info } = await sharp(imageData)
+    .extract({
+      left: region.x,
+      top: region.y,
+      width: region.width,
+      height: region.height
+    })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const width = info.width;
+  const height = info.height;
+  const pixelCount = width * height;
+  const channels = info.channels;
+
+  if (!pixelCount || channels < 3) {
+    return null;
+  }
+
+  let borderCount = 0;
+  let borderSumR = 0;
+  let borderSumG = 0;
+  let borderSumB = 0;
+  const borderIndices = [];
+
+  const addBorderPixel = (idx) => {
+    const offset = idx * channels;
+    borderSumR += data[offset];
+    borderSumG += data[offset + 1];
+    borderSumB += data[offset + 2];
+    borderCount += 1;
+    borderIndices.push(idx);
+  };
+
+  for (let x = 0; x < width; x++) {
+    addBorderPixel(x);
+    addBorderPixel((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y++) {
+    addBorderPixel(y * width);
+    addBorderPixel(y * width + (width - 1));
+  }
+
+  if (!borderCount) {
+    return null;
+  }
+
+  const meanR = borderSumR / borderCount;
+  const meanG = borderSumG / borderCount;
+  const meanB = borderSumB / borderCount;
+
+  let varianceSum = 0;
+  for (const idx of borderIndices) {
+    const offset = idx * channels;
+    const dr = data[offset] - meanR;
+    const dg = data[offset + 1] - meanG;
+    const db = data[offset + 2] - meanB;
+    varianceSum += dr * dr + dg * dg + db * db;
+  }
+
+  const borderStd = Math.sqrt(varianceSum / borderCount);
+  const threshold = Math.max(20, borderStd * 2);
+
+  const mask = new Uint8Array(pixelCount);
+  for (let i = 0; i < pixelCount; i++) {
+    const offset = i * channels;
+    const dr = data[offset] - meanR;
+    const dg = data[offset + 1] - meanG;
+    const db = data[offset + 2] - meanB;
+    const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+    if (dist >= threshold) {
+      mask[i] = 1;
+    }
+  }
+
+  const visited = new Uint8Array(pixelCount);
+  const candidates = [];
+  const minSize = 0.55 * expectedSize;
+  const maxSize = 1.6 * expectedSize;
+
+  const pushNeighbor = (queue, nx, ny) => {
+    if (nx < 0 || ny < 0 || nx >= width || ny >= height) return;
+    const nIdx = ny * width + nx;
+    if (!visited[nIdx] && mask[nIdx]) {
+      visited[nIdx] = 1;
+      queue.push(nIdx);
+    }
+  };
+
+  for (let idx = 0; idx < pixelCount; idx++) {
+    if (!mask[idx] || visited[idx]) continue;
+    const queue = [idx];
+    visited[idx] = 1;
+    let area = 0;
+    let perimeter = 0;
+    let minX = width;
+    let minY = height;
+    let maxX = 0;
+    let maxY = 0;
+    let lumaSum = 0;
+    let lumaSumSq = 0;
+
+    while (queue.length) {
+      const current = queue.pop();
+      const x = current % width;
+      const y = Math.floor(current / width);
+      area += 1;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+
+      const offset = current * channels;
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      const luma = getPixelLuma(r, g, b);
+      lumaSum += luma;
+      lumaSumSq += luma * luma;
+
+      const neighbors = [
+        { x: x + 1, y },
+        { x: x - 1, y },
+        { x, y: y + 1 },
+        { x, y: y - 1 }
+      ];
+
+      neighbors.forEach(({ x: nx, y: ny }) => {
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+          perimeter += 1;
+          return;
+        }
+        const nIdx = ny * width + nx;
+        if (!mask[nIdx]) {
+          perimeter += 1;
+        } else if (!visited[nIdx]) {
+          visited[nIdx] = 1;
+          queue.push(nIdx);
+        }
+      });
+    }
+
+    const cw = maxX - minX + 1;
+    const ch = maxY - minY + 1;
+    const squareness = Math.min(cw, ch) / Math.max(cw, ch);
+    if (Math.min(cw, ch) < minSize || Math.min(cw, ch) > maxSize) continue;
+    if (squareness < 0.75) continue;
+
+    const circularity = perimeter > 0 ? (4 * Math.PI * area) / (perimeter * perimeter) : 0;
+    const roundedSquare = squareness >= 0.85 && circularity >= 0.55;
+    if (circularity < 0.7 && !roundedSquare) continue;
+
+    const meanLuma = lumaSum / area;
+    const textureVariance = Math.max(0, lumaSumSq / area - meanLuma * meanLuma);
+    const center = {
+      x: region.x + minX + cw / 2,
+      y: region.y + minY + ch / 2
+    };
+    const distance = distanceBetween(center, expectedCenter);
+    const distancePenalty = distance / Math.max(region.width, region.height);
+    const textureScore = Math.min(1, textureVariance / 500);
+    const score = circularity + textureScore - distancePenalty;
+
+    candidates.push({
+      bounds: { x: region.x + minX, y: region.y + minY, width: cw, height: ch },
+      circularity,
+      textureVariance,
+      score
+    });
+  }
+
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  const size = Math.max(best.bounds.width, best.bounds.height);
+  const padding = Math.round(size * 0.08);
+  const center = {
+    x: best.bounds.x + best.bounds.width / 2,
+    y: best.bounds.y + best.bounds.height / 2
+  };
+  const avatarBox = getSquareBoxAroundCenter(center, size + padding * 2, imageWidth, imageHeight);
+
+  return {
+    avatarBox,
+    score: best.score,
+    circularity: best.circularity,
+    textureVariance: best.textureVariance
+  };
+}
+
+async function analyzeCropVariance(imageData, avatarBox) {
+  const { data, info } = await sharp(imageData)
+    .extract({
+      left: avatarBox.x,
+      top: avatarBox.y,
+      width: avatarBox.width,
+      height: avatarBox.height
+    })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const width = info.width;
+  const height = info.height;
+  const channels = info.channels;
+  const count = width * height;
+  const lumas = [];
+  const sats = [];
+
+  for (let i = 0; i < count; i++) {
+    const offset = i * channels;
+    const r = data[offset];
+    const g = data[offset + 1];
+    const b = data[offset + 2];
+    lumas.push(getPixelLuma(r, g, b));
+    sats.push(getPixelSaturation(r, g, b));
+  }
+
+  return {
+    lumaVariance: calculateVariance(lumas),
+    saturationVariance: calculateVariance(sats)
+  };
+}
+
+async function drawDebugImages(imageData, imageWidth, imageHeight, debugData, outputPrefix) {
+  const { bodyBox, searchRegion, avatarBox } = debugData;
+  const rectangles = [
+    bodyBox ? `<rect x="${bodyBox.x}" y="${bodyBox.y}" width="${bodyBox.width}" height="${bodyBox.height}" fill="none" stroke="#3b82f6" stroke-width="3" />` : '',
+    searchRegion ? `<rect x="${searchRegion.x}" y="${searchRegion.y}" width="${searchRegion.width}" height="${searchRegion.height}" fill="none" stroke="#f97316" stroke-width="3" />` : '',
+    avatarBox ? `<rect x="${avatarBox.x}" y="${avatarBox.y}" width="${avatarBox.width}" height="${avatarBox.height}" fill="none" stroke="#22c55e" stroke-width="3" />` : ''
+  ].join('');
+
+  const svg = `
+    <svg width="${imageWidth}" height="${imageHeight}" xmlns="http://www.w3.org/2000/svg">
+      ${rectangles}
+    </svg>
+  `;
+
+  await sharp(imageData)
+    .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+    .png()
+    .toFile(`${outputPrefix}-debug.png`);
+
+  if (avatarBox) {
+    await sharp(imageData)
+      .extract({
+        left: avatarBox.x,
+        top: avatarBox.y,
+        width: avatarBox.width,
+        height: avatarBox.height
+      })
+      .png()
+      .toFile(`${outputPrefix}-avatar.png`);
+  }
 }
 
 export async function ensureFaceModelsLoaded() {
@@ -276,36 +643,152 @@ export async function extractMessagesFromImage(imagePath) {
       return [];
     }
 
-    const faceDetections = await detectFaces(imagePath);
-    const sortedFaces = faceDetections.sort((a, b) => a.y - b.y);
+    const debugDir = path.join('uploads', 'testimonials', 'debug');
+    if (!fs.existsSync(debugDir)) {
+      fs.mkdirSync(debugDir, { recursive: true });
+    }
 
     // Ensure required fields exist
     const validated = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      const faceBox = sortedFaces[i] || null;
-      const avatarBox = normalizeAvatarBox(faceBox, imageWidth, imageHeight);
+      const normalizedBodyBox = normalizeBodyBox(msg.bodyBox, imageWidth, imageHeight) || getDefaultBodyBox(imageWidth, imageHeight);
+      const sideCandidates = (msg.side === 'left' || msg.side === 'right') ? [msg.side] : ['left', 'right'];
       let avatarDataUrl = null;
-      let avatarPresent = Boolean(avatarBox);
-      const avatarShape = 'circle';
+      let avatarPresent = false;
+      let avatarShape = 'circle';
+      let avatarBox = null;
+      let methodUsed = 'none';
+      let searchRegion = null;
+      let facesFound = 0;
+      let score = null;
+      let geometryFallback = null;
 
-      if (avatarPresent && avatarBox) {
+      for (const side of sideCandidates) {
+        const { region, expectedSize } = getAvatarSearchRegion(normalizedBodyBox, side, imageWidth, imageHeight);
+        if (!region) continue;
+        const expectedCenter = getExpectedCenter(region);
+        searchRegion = region;
+
         try {
-          const cropped = await sharp(imageData)
-            .extract({
-              left: avatarBox.x,
-              top: avatarBox.y,
-              width: avatarBox.width,
-              height: avatarBox.height
-            })
-            .png()
-            .toBuffer();
-          avatarDataUrl = `data:image/png;base64,${cropped.toString('base64')}`;
+          const faces = await detectFacesInRegion(imageData, region);
+          facesFound += faces.length;
+          if (faces.length > 0) {
+            const closestFace = faces.reduce((best, face) => {
+              const faceCenter = { x: face.x + face.width / 2, y: face.y + face.height / 2 };
+              const distance = distanceBetween(faceCenter, expectedCenter);
+              if (!best || distance < best.distance) {
+                return { face, distance };
+              }
+              return best;
+            }, null);
+
+            if (closestFace) {
+              const faceCenter = { x: closestFace.face.x + closestFace.face.width / 2, y: closestFace.face.y + closestFace.face.height / 2 };
+              const avatarSize = Math.max(expectedSize, closestFace.face.width * 1.6);
+              avatarBox = getSquareBoxAroundCenter(faceCenter, avatarSize, imageWidth, imageHeight);
+              avatarPresent = true;
+              avatarShape = 'circle';
+              methodUsed = 'faceapi';
+              score = Math.max(0, 1 - closestFace.distance / Math.max(region.width, region.height));
+            }
+          }
+        } catch (faceError) {
+          console.warn('Face detection failed for region:', faceError);
+        }
+
+        if (avatarPresent && avatarBox) {
+          break;
+        }
+
+        try {
+          const contour = await findContourCandidate(imageData, region, expectedSize, expectedCenter, imageWidth, imageHeight);
+          if (contour?.avatarBox) {
+            avatarBox = contour.avatarBox;
+            avatarPresent = true;
+            methodUsed = 'contour';
+            score = contour.score;
+            avatarShape = contour.circularity >= 0.7 ? 'circle' : 'rounded';
+            break;
+          }
+        } catch (contourError) {
+          console.warn('Contour detection failed:', contourError);
+        }
+
+        const avatarSize = expectedSize;
+        const offset = Math.round(0.2 * normalizedBodyBox.height);
+        const ax = side === 'right'
+          ? clampValue(normalizedBodyBox.x + normalizedBodyBox.width + offset, 0, imageWidth - avatarSize)
+          : clampValue(normalizedBodyBox.x - avatarSize - offset, 0, imageWidth - avatarSize);
+        const ay = clampValue(normalizedBodyBox.y + Math.round(0.08 * normalizedBodyBox.height), 0, imageHeight - avatarSize);
+        const geometryBox = clampBoxToImage({ x: ax, y: ay, width: avatarSize, height: avatarSize }, imageWidth, imageHeight);
+        let varianceScore = 0;
+        let present = false;
+        try {
+          const variance = await analyzeCropVariance(imageData, geometryBox);
+          varianceScore = variance.lumaVariance + variance.saturationVariance * 255;
+          present = !(variance.lumaVariance < 40 && variance.saturationVariance < 0.01);
+        } catch (geometryError) {
+          console.warn('Geometry analysis failed:', geometryError);
+        }
+        if (!geometryFallback || varianceScore > geometryFallback.score) {
+          geometryFallback = {
+            avatarBox: geometryBox,
+            avatarPresent: present,
+            score: varianceScore,
+            searchRegion: region
+          };
+        }
+      }
+
+      if (!avatarPresent && geometryFallback) {
+        avatarBox = geometryFallback.avatarBox;
+        avatarPresent = geometryFallback.avatarPresent;
+        methodUsed = 'geometry';
+        score = geometryFallback.score;
+        searchRegion = geometryFallback.searchRegion;
+      }
+
+      if (avatarBox) {
+        try {
+          if (avatarPresent) {
+            const cropped = await sharp(imageData)
+              .extract({
+                left: avatarBox.x,
+                top: avatarBox.y,
+                width: avatarBox.width,
+                height: avatarBox.height
+              })
+              .png()
+              .toBuffer();
+            avatarDataUrl = `data:image/png;base64,${cropped.toString('base64')}`;
+          }
         } catch (cropError) {
           console.warn('Avatar crop failed:', cropError);
           avatarPresent = false;
         }
       }
+
+      const debugPrefix = path.join(debugDir, `${path.basename(imagePath, path.extname(imagePath))}-msg-${i + 1}`);
+      try {
+        await drawDebugImages(imageData, imageWidth, imageHeight, {
+          bodyBox: normalizedBodyBox,
+          searchRegion,
+          avatarBox
+        }, debugPrefix);
+      } catch (debugError) {
+        console.warn('Debug image generation failed:', debugError);
+      }
+
+      const avatarDebug = {
+        methodUsed,
+        searchRegion,
+        avatarBox,
+        score,
+        facesFound
+      };
+
+      console.log('Avatar debug info:', avatarDebug);
 
       validated.push({
         text: String(msg.text || ''),
@@ -316,9 +799,11 @@ export async function extractMessagesFromImage(imagePath) {
         authorRole: msg.authorRole ? String(msg.authorRole) : '',
         avatarPresent,
         avatarShape,
-        avatarBox: avatarPresent ? avatarBox : null,
+        avatarBox: avatarBox || null,
         avatarPlacementPct: null,
-        avatarDataUrl
+        avatarDataUrl,
+        bodyBox: normalizedBodyBox,
+        avatarDebug
       });
     }
 
