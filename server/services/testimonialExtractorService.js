@@ -30,7 +30,7 @@ RULES:
 
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
 const GEMINI_TIMEOUT_MS = 30000;
-const FACE_MODEL_PATH = path.resolve(process.cwd(), 'models');
+const FACE_MODEL_PATH = path.resolve(process.cwd(), '../models');
 const REQUIRED_SSD_FILES = [
   'ssd_mobilenetv1_model-weights_manifest.json'
 ];
@@ -181,7 +181,7 @@ async function detectFaces(imagePath) {
 export async function ensureFaceModelsLoaded() {
   const loaded = await loadFaceModels();
   if (!loaded || !faceapi.nets.ssdMobilenetv1.isLoaded) {
-    throw new Error('SSD Mobilenet V1 model failed to load. Check server/models.');
+    throw new Error('SSD Mobilenet V1 model failed to load. Check ../models.');
   }
 }
 
