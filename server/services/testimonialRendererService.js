@@ -305,6 +305,7 @@ async function buildTestimonialVNode(messages, config) {
     collageColumns = 2
   } = config;
 
+  const containerWidth = width || 800;
   const resolvedCollageColumns = Math.min(4, Math.max(2, Number(collageColumns) || 2));
 
   const fontWeightMap = {
@@ -319,10 +320,10 @@ async function buildTestimonialVNode(messages, config) {
     compact: { sizeMultiplier: 0.95, lineHeightAdjust: -0.04 }
   };
 
-  const maxWidthMap = {
-    narrow: '32ch',
-    standard: '38ch',
-    wide: '44ch'
+  const maxWidthRatioMap = {
+    narrow: 0.6,
+    standard: 0.7,
+    wide: 0.8
   };
 
   const baseLineHeight = outputShape === 'quote_card' ? 1.6 : 1.4;
@@ -331,7 +332,8 @@ async function buildTestimonialVNode(messages, config) {
   const lineHeight = Number((baseLineHeight + typographyConfig.lineHeightAdjust + lineSpacingBoost).toFixed(2));
   const effectiveFontSize = Math.round(fontSize * typographyConfig.sizeMultiplier);
   const fontWeight = fontWeightMap[weightOption] || fontWeightMap.match;
-  const resolvedMaxWidth = maxWidthMap[maxWidth] || maxWidthMap.standard;
+  const maxWidthRatio = maxWidthRatioMap[maxWidth] ?? maxWidthRatioMap.standard;
+  const resolvedMaxWidth = Math.round(containerWidth * maxWidthRatio);
 
   const paddingByShape = {
     bubble: { s: 16, m: 20, l: 24 },
@@ -439,7 +441,6 @@ async function buildTestimonialVNode(messages, config) {
       gap: 16
     };
 
-  const containerWidth = width || 800;
   const baseHeight = height || Math.max(
     200,
     messages.length * (effectiveFontSize * 3 + 40) + padding * 2
