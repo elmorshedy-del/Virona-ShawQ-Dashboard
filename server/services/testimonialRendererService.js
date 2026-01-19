@@ -422,12 +422,14 @@ async function buildTestimonialVNode(messages, config) {
     return h('div', {
       style: {
         ...bubbleBaseStyle,
+        display: 'flex',
+        flexDirection: 'column',
         alignSelf: outputShape === 'quote_card'
           ? 'center'
           : (msg.side === 'right' ? 'flex-end' : 'flex-start')
       }
     },
-    h('div', { style: { display: 'block' } }, ...textNodes),
+    h('div', { style: { display: 'flex', flexDirection: 'column' } }, ...textNodes),
     authorBlock
     );
   }));
