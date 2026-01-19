@@ -97,19 +97,33 @@ const EMOJI_CDN_BASES = [
   'https://twemoji.maxcdn.com/v/latest/svg/'
 ];
 
-const fontCache = new Map();
+async function loadGoogleFont(fontFamily = 'Inter', weight = 400) {
+  const API = `https://fonts.googleapis.com/css2?family=${fontFamily.replace(' ', '+')}:wght@${weight}`;
 
-function h(type, props, ...children) {
-  return {
-    type,
-    props: {
-      ...(props || {}),
-      children: children.flat().filter(child => child !== null && child !== undefined)
-    }
-  };
+  const css = await fetch(API, {
+    headers: { 'User-Agent': 'Mozilla/5.0' }
+  }).then(res => res.text());
+
+  const fontUrl = css.match(/src: url\(([^)]+)\)/)?.[1];
+  if (!fontUrl) {
+    throw new Error('Could not parse font URL from Google Fonts');
+  }
+
+  const fontBuffer = await fetch(fontUrl).then(res => res.arrayBuffer());
+  return Buffer.from(fontBuffer);
 }
 
-function resolveFontPath(fileName) {
+let cachedFont = null;
+let cachedEmojiFont = null;
+
+async function getFont() {
+  if (!cachedFont) {
+    cachedFont = await loadGoogleFont('Inter', 400);
+  }
+  return cachedFont;
+}
+
+function resolveEmojiFontPath(fileName) {
   const candidatePaths = [
     path.resolve(__dirname, '..', 'assets', 'fonts', fileName),
     path.resolve(__dirname, '..', '..', 'assets', 'fonts', fileName),
@@ -127,58 +141,43 @@ function resolveFontPath(fileName) {
   return candidatePaths[0];
 }
 
-function loadFontData(fileName) {
-  if (fontCache.has(fileName)) {
-    return fontCache.get(fileName);
-  }
-  const fontPath = resolveFontPath(fileName);
+function loadLocalEmojiFont(fileName) {
+  const fontPath = resolveEmojiFontPath(fileName);
   if (!fs.existsSync(fontPath)) {
-    console.warn(`Font not found: ${fileName}`);
     return null;
   }
-  const data = fs.readFileSync(fontPath);
-  const entry = { data, path: fontPath };
-  fontCache.set(fileName, entry);
-  return entry;
+  return fs.readFileSync(fontPath);
 }
 
-function buildFontConfig() {
-  const fonts = [];
-
-  // Load Inter font
-  const interFont = loadFontData('Inter-Regular.ttf');
-  if (interFont) {
-    fonts.push({
-      name: 'Inter',
-      data: interFont.data,
-      weight: 400,
-      style: 'normal',
-      source: interFont.path
-    });
-  } else {
-    console.warn('Inter font not found, rendering may fail');
+async function getEmojiFont() {
+  if (cachedEmojiFont) {
+    return cachedEmojiFont;
   }
 
-  // Load Noto Color Emoji font for emoji support
-  const emojiFont = loadFontData('NotoColorEmoji.ttf');
-  if (emojiFont) {
-    fonts.push({
-      name: 'Noto Color Emoji',
-      data: emojiFont.data,
-      weight: 400,
-      style: 'normal',
-      source: emojiFont.path
-    });
-  } else {
-    console.warn('Emoji font not found, emojis may not render correctly');
+  try {
+    cachedEmojiFont = await loadGoogleFont('Noto Color Emoji', 400);
+    return cachedEmojiFont;
+  } catch (error) {
+    console.warn('Failed to fetch Noto Color Emoji from Google Fonts. Falling back to local font.', error);
   }
 
-  return fonts;
+  const localEmojiFont = loadLocalEmojiFont('NotoColorEmoji.ttf');
+  if (!localEmojiFont) {
+    console.warn('Local emoji font not found. Emojis may not render correctly.');
+    return null;
+  }
+  cachedEmojiFont = localEmojiFont;
+  return cachedEmojiFont;
 }
 
-function formatFontSignature(data) {
-  const bytes = Array.from(data.subarray(0, 4));
-  return bytes.map(byte => byte.toString(16).padStart(2, '0')).join(' ');
+function h(type, props, ...children) {
+  return {
+    type,
+    props: {
+      ...(props || {}),
+      children: children.flat().filter(child => child !== null && child !== undefined)
+    }
+  };
 }
 
 async function fetchWithTimeout(url, timeoutMs) {
@@ -483,30 +482,32 @@ export async function renderTestimonials(messages, outputPath, options = {}) {
   const preset = PRESETS[presetName] || PRESETS.raw_bubbles;
   const config = { ...preset, ...options };
 
-  const fonts = buildFontConfig();
-
+  const fontData = await getFont();
+  const emojiFontData = await getEmojiFont();
   const { vnode, width, height } = await buildTestimonialVNode(messages, config);
-  if (fonts.length > 0) {
-    fonts.forEach(font => {
-      console.info('SATORI_FONT_SIGNATURE', {
-        source: font.source || 'unknown',
-        byteLength: font.data.length,
-        firstBytesHex: formatFontSignature(font.data)
-      });
+  const fonts = [
+    {
+      name: 'Inter',
+      data: fontData,
+      weight: 400,
+      style: 'normal'
+    }
+  ];
+
+  if (emojiFontData) {
+    fonts.push({
+      name: 'Noto Color Emoji',
+      data: emojiFontData,
+      weight: 400,
+      style: 'normal'
     });
   }
 
-  let svg;
-  try {
-    svg = await satori(vnode, {
-      width,
-      height,
-      ...(fonts.length > 0 ? { fonts } : {})
-    });
-  } catch (error) {
-    console.warn('FONT_LOAD_FAILED: Satori failed with custom fonts. Falling back to default fonts.', error);
-    svg = await satori(vnode, { width, height });
-  }
+  const svg = await satori(vnode, {
+    width,
+    height,
+    fonts
+  });
 
   const resvg = new Resvg(svg, {
     background: config.backgroundType === 'transparent' ? 'transparent' : undefined
