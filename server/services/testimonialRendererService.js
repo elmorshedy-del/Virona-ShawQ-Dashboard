@@ -406,7 +406,7 @@ async function buildTestimonialVNode(messages, config) {
 
     return h('div', {
       style: {
-        ...bubbleBaseStyle,
+        ...bubbleBaseStyle, display: 'flex', flexDirection: 'column',
         alignSelf: outputShape === 'quote_card'
           ? 'center'
           : (msg.side === 'right' ? 'flex-end' : 'flex-start')
