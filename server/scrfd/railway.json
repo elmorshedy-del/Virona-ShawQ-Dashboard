@@ -1,7 +1,10 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "buildCommand": "pip uninstall -y opencv-python 2>/dev/null || true"
+  },
   "deploy": {
-    "startCommand": "pip uninstall -y opencv-python 2>/dev/null; python face_detection_server.py",
+    "startCommand": "python face_detection_server.py",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120
   }
