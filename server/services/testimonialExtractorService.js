@@ -335,7 +335,6 @@ async function detectFacesInRegion(imageData, region, fullWidth = 1080, fullHeig
   }
 }
 }
-// =============================================================================
 
 // =============================================================================
 // DISABLED: Original face-api.js detection function
