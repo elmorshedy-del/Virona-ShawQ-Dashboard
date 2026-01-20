@@ -45,7 +45,7 @@ def init_detector():
             allowed_modules=['detection'],
             providers=['CPUExecutionProvider']  # Use 'CUDAExecutionProvider' for GPU
         )
-        detector.prepare(ctx_id=-1, det_size=(640, 640))
+        detector.prepare(ctx_id=-1, det_size=(1280, 1280))
         print('✓ SCRFD detector ready')
         return True
     except Exception as e:
