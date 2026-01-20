@@ -217,42 +217,6 @@ async function fetchEmojiDataUrl(filename) {
 
   return null;
 }
-  // Fallback to CDN
-  for (const baseUrl of EMOJI_CDN_BASES) {
-    try {
-      const dataUrl = await fetchEmojiDataUrlFromBase(baseUrl, filename);
-      if (emojiSvgCache.size >= MAX_EMOJI_CACHE) {
-        const firstKey = emojiSvgCache.keys().next().value;
-        emojiSvgCache.delete(firstKey);
-      }
-      emojiSvgCache.set(filename, dataUrl);
-      return dataUrl;
-    } catch (error) {
-      console.warn('Emoji fetch failed from base:', baseUrl, error.message);
-    }
-  }
-
-  return null;
-}
-  // Fallback to CDN
-  for (const baseUrl of EMOJI_CDN_BASES) {
-    try {
-      const dataUrl = await fetchEmojiDataUrlFromBase(baseUrl, filename);
-      if (emojiSvgCache.size >= MAX_EMOJI_CACHE) {
-        const firstKey = emojiSvgCache.keys().next().value;
-        emojiSvgCache.delete(firstKey);
-      }
-      emojiSvgCache.set(filename, dataUrl);
-      return dataUrl;
-    } catch (error) {
-      console.warn('Emoji fetch failed from base:', baseUrl, error.message);
-    }
-  }
-
-  return null;
-}
-}
-
 async function buildTwemojiNodes(text) {
   const parsed = twemoji.parse(text, { folder: 'svg', ext: '.svg' });
   // Match img tags regardless of attribute order
