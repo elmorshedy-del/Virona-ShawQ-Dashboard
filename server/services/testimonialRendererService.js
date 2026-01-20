@@ -91,6 +91,8 @@ const MAX_EMOJI_CACHE = 500;
 const EMOJI_FETCH_TIMEOUT_MS = 5000;
 const emojiSvgCache = new Map();
 
+const LOCAL_EMOJI_PATH = path.resolve(__dirname, "..", "assets", "emoji");
+
 const EMOJI_CDN_BASES = [
   'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/',
   'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg/',
@@ -183,6 +185,22 @@ async function fetchEmojiDataUrl(filename) {
     return emojiSvgCache.get(filename);
   }
 
+  // NUCLEAR FIX: Check local emoji folder first
+  const localEmojiPath = path.resolve(__dirname, '..', 'assets', 'emoji', filename);
+  try {
+    if (fs.existsSync(localEmojiPath)) {
+      const svgText = fs.readFileSync(localEmojiPath, 'utf8');
+      const base64 = Buffer.from(svgText).toString('base64');
+      const dataUrl = `data:image/svg+xml;base64,${base64}`;
+      emojiSvgCache.set(filename, dataUrl);
+      console.log('Loaded local emoji:', filename);
+      return dataUrl;
+    }
+  } catch (localError) {
+    console.warn('Local emoji load failed:', filename, localError.message);
+  }
+
+  // Fallback to CDN
   for (const baseUrl of EMOJI_CDN_BASES) {
     try {
       const dataUrl = await fetchEmojiDataUrlFromBase(baseUrl, filename);
@@ -198,6 +216,41 @@ async function fetchEmojiDataUrl(filename) {
   }
 
   return null;
+}
+  // Fallback to CDN
+  for (const baseUrl of EMOJI_CDN_BASES) {
+    try {
+      const dataUrl = await fetchEmojiDataUrlFromBase(baseUrl, filename);
+      if (emojiSvgCache.size >= MAX_EMOJI_CACHE) {
+        const firstKey = emojiSvgCache.keys().next().value;
+        emojiSvgCache.delete(firstKey);
+      }
+      emojiSvgCache.set(filename, dataUrl);
+      return dataUrl;
+    } catch (error) {
+      console.warn('Emoji fetch failed from base:', baseUrl, error.message);
+    }
+  }
+
+  return null;
+}
+  // Fallback to CDN
+  for (const baseUrl of EMOJI_CDN_BASES) {
+    try {
+      const dataUrl = await fetchEmojiDataUrlFromBase(baseUrl, filename);
+      if (emojiSvgCache.size >= MAX_EMOJI_CACHE) {
+        const firstKey = emojiSvgCache.keys().next().value;
+        emojiSvgCache.delete(firstKey);
+      }
+      emojiSvgCache.set(filename, dataUrl);
+      return dataUrl;
+    } catch (error) {
+      console.warn('Emoji fetch failed from base:', baseUrl, error.message);
+    }
+  }
+
+  return null;
+}
 }
 
 async function buildTwemojiNodes(text) {
