@@ -35,6 +35,26 @@ const LOGO_POSITIONS = [
   { value: 'top_left', label: 'Top Left' }
 ];
 
+const normalizeAvatarMethodKey = (method = '') => (
+  String(method || '')
+    .toLowerCase()
+    .replace(/_/g, '-')
+    .replace(/\s+/g, '-')
+);
+
+const getAvatarMethodLabel = (method) => {
+  const key = normalizeAvatarMethodKey(method);
+  if (!key || key === 'none') return 'None';
+  if (key === 'grounding-dino') return 'Grounding DINO';
+  if (key === 'scrfd') return 'SCRFD';
+  if (key === 'contour') return 'Contour';
+  if (key === 'geometry') return 'Geometry';
+  if (key === 'detected') return 'Detected';
+  return method;
+};
+
+const isGroundingDinoMethod = (method) => normalizeAvatarMethodKey(method) === 'grounding-dino';
+
 export default function TestimonialExtractor() {
   // Phase 1: Extraction state
   const [uploadedFiles, setUploadedFiles] = useState([]);
@@ -405,12 +425,14 @@ export default function TestimonialExtractor() {
             {messages.map((msg, index) => {
               const detected = Boolean(msg.avatarPresent || msg.avatarDataUrl);
               const method = msg.avatarDebug?.methodUsed || msg.avatarMethodUsed || (detected ? 'detected' : 'none');
+              const methodLabel = getAvatarMethodLabel(method);
+              const isGroundingDino = isGroundingDinoMethod(method);
               const facesFound = msg.avatarDebug?.facesFound ?? msg.facesFound;
               const initials = msg.authorName ? msg.authorName.trim().charAt(0).toUpperCase() : 'NA';
 
               return (
                 <div key={`avatar-${index}`} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-2">
-                  <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-xs text-slate-500">
+                  <div className="relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-xs text-slate-500">
                     {msg.avatarDataUrl ? (
                       <img
                         src={msg.avatarDataUrl}
@@ -420,6 +442,11 @@ export default function TestimonialExtractor() {
                     ) : (
                       <span>{initials}</span>
                     )}
+                    {isGroundingDino && (
+                      <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-900 px-1.5 py-0.5 text-[9px] font-semibold text-white">
+                        DINO
+                      </span>
+                    )}
                   </div>
                   <div className="min-w-0">
                     <div className="text-xs font-semibold text-slate-700">Message {index + 1}</div>
@@ -427,7 +454,7 @@ export default function TestimonialExtractor() {
                       {detected ? 'Avatar detected' : 'No avatar detected'}
                     </div>
                     <div className="text-[10px] text-slate-400">
-                      Method: {method || 'n/a'}
+                      Method: {methodLabel || 'n/a'}
                       {facesFound !== null && facesFound !== undefined ? ` | Faces: ${facesFound}` : ''}
                     </div>
                   </div>
@@ -565,7 +592,10 @@ export default function TestimonialExtractor() {
             {renderAvatarSanityStrip()}
 
             <div className="space-y-4">
-              {messages.map((msg, index) => (
+              {messages.map((msg, index) => {
+                const methodLabel = getAvatarMethodLabel(msg.avatarDebug?.methodUsed || msg.avatarMethodUsed);
+
+                return (
                 <div key={index} className="border border-gray-200 rounded-lg p-3">
                   <div className="flex gap-2">
                     <div className="flex-1 relative">
@@ -607,11 +637,12 @@ export default function TestimonialExtractor() {
                   </div>
                   {msg.avatarPresent && (
                     <p className="mt-2 text-xs text-gray-500">
-                      Avatar detected and will be placed automatically during rendering.
+                      Avatar detected{methodLabel ? ` (${methodLabel})` : ''} and will be placed automatically during rendering.
                     </p>
                   )}
                 </div>
-              ))}
+              );
+              })}
             </div>
 
             <div className="mt-4 flex gap-2">
