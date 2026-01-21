@@ -3,7 +3,7 @@
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart
 } from 'recharts';
 import {
   RefreshCw, TrendingUp, TrendingDown, Plus, Trash2,
@@ -17,6 +17,7 @@ import AIBudget from './components/AIBudget';
 import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysis from './components/CreativeAnalysis.jsx';
+import MetricsChartsTab from './components/MetricsChartsTab';
 import CreativeIntelligence from './components/CreativeIntelligence';
 import CreativeStudio from './components/CreativeStudio';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
@@ -68,6 +69,7 @@ const getIstanbulDateString = (date = new Date()) =>
 const EPSILON = 1e-6;
 const K_PRIOR = 50;
 const CREATIVE_SAMPLES = 2000;
+const ALL_CAMPAIGNS_ID = 'all-campaigns';
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -77,6 +79,69 @@ const toNumber = (value) => {
   }
   if (value && typeof value === 'object' && 'value' in value) return Number(value.value);
   return 0;
+};
+
+const getMean = (values = []) => {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0) / values.length;
+};
+
+const getStandardDeviation = (values = [], mean = getMean(values)) => {
+  if (!Array.isArray(values) || values.length < 2) return 0;
+  const variance = values.reduce((sum, value) => {
+    const diff = (Number.isFinite(value) ? value : 0) - mean;
+    return sum + diff * diff;
+  }, 0) / values.length;
+  return Math.sqrt(variance);
+};
+
+const getLinearRegressionStats = (values = []) => {
+  const n = values.length;
+  if (n < 2) {
+    return { slope: 0, intercept: values[0] || 0, r2: 0 };
+  }
+
+  const meanX = (n - 1) / 2;
+  const meanY = getMean(values);
+  let num = 0;
+  let den = 0;
+  let ssTot = 0;
+  let ssRes = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    const x = i;
+    const y = Number.isFinite(values[i]) ? values[i] : 0;
+    num += (x - meanX) * (y - meanY);
+    den += (x - meanX) * (x - meanX);
+  }
+
+  const slope = den === 0 ? 0 : num / den;
+  const intercept = meanY - slope * meanX;
+
+  for (let i = 0; i < n; i += 1) {
+    const y = Number.isFinite(values[i]) ? values[i] : 0;
+    const fitted = intercept + slope * i;
+    ssRes += (y - fitted) * (y - fitted);
+    ssTot += (y - meanY) * (y - meanY);
+  }
+
+  const r2 = ssTot === 0 ? 0 : 1 - (ssRes / ssTot);
+  return { slope, intercept, r2 };
+};
+
+const getMovingAverage = (values = [], windowSize = 7) => {
+  if (!Array.isArray(values) || values.length === 0) return [];
+  const window = Math.max(1, Math.floor(windowSize));
+  const result = [];
+
+  for (let i = 0; i < values.length; i += 1) {
+    const start = Math.max(0, i - window + 1);
+    const slice = values.slice(start, i + 1);
+    const avg = getMean(slice);
+    result.push(avg);
+  }
+
+  return result;
 };
 
 const getFirstPositiveMetric = (...values) => {
@@ -267,7 +332,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1317,8 +1382,18 @@ export default function App() {
             dateRange={dashboard?.dateRange}
           />
           )}
-        
-        {activeTab === 1 && efficiency && (
+
+        {activeTab === 1 && (
+          <MetricsChartsTab
+            metaAdManagerData={metaAdManagerData}
+            dashboard={dashboard}
+            formatCurrency={formatCurrency}
+            formatNumber={formatNumber}
+            campaignScopeLabel={campaignScopeLabel}
+          />
+        )}
+
+        {activeTab === 2 && efficiency && (
           <EfficiencyTab
             efficiency={efficiency}
             trends={efficiencyTrends}
@@ -1327,7 +1402,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 2 && budgetIntelligence && (
+        {activeTab === 3 && budgetIntelligence && (
           <BudgetIntelligenceTab
             data={budgetIntelligence}
             formatCurrency={formatCurrency}
@@ -1335,7 +1410,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 3 && (
+        {activeTab === 4 && (
           <ManualDataTab
             orders={manualOrders}
             form={orderForm}
@@ -1354,7 +1429,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 4 && (
+        {activeTab === 5 && (
           <>
             <CreativeIntelligence store={currentStore} />
             <CreativeAnalysis store={store} />
@@ -1362,16 +1437,20 @@ export default function App() {
         )}
 
         {activeTab === 6 && (
+          <CreativeStudio store={currentStore} />
+        )}
+
+        {activeTab === 7 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 7 && (
+        {activeTab === 8 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === 9 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1379,12 +1458,8 @@ export default function App() {
           />
         )}
 
-        {activeTab === 9 && (
+        {activeTab === 10 && (
           <ExchangeRateDebug />
-        )}
-
-        {activeTab === 5 && (
-          <CreativeStudio store={currentStore} />
         )}
       </div>
 
@@ -1559,14 +1634,20 @@ function DashboardTab({
 
   const creativeCampaignOptions = useMemo(() => {
     if (!Array.isArray(metaAdManagerData)) return [];
-    return metaAdManagerData
+    const options = metaAdManagerData
       .map(campaign => {
         const id = campaign.campaign_id || campaign.campaignId;
-        const name = campaign.campaign_name || campaign.campaignName;
+        const name = campaign.campaign_name || campaign.campaignName || campaign.name;
         const ads = (campaign.adsets || []).flatMap(adset => adset?.ads || []);
         return { id, name, ads };
       })
       .filter(c => c.id && c.name && Array.isArray(c.ads) && c.ads.length > 0);
+
+    if (options.length === 0) return [];
+
+    const allAds = options.flatMap(c => c.ads);
+    const allOption = { id: ALL_CAMPAIGNS_ID, name: 'All Campaigns', ads: allAds, isAggregate: true };
+    return [allOption, ...options];
   }, [metaAdManagerData]);
 
   useEffect(() => {
@@ -1936,6 +2017,42 @@ function DashboardTab({
     });
   }, [selectedCreativeCampaign]);
 
+  const creativeTotals = useMemo(() => {
+    if (creativeAds.length === 0) return null;
+    const totals = creativeAds.reduce((acc, row) => ({
+      impressions: acc.impressions + (row.impressions || 0),
+      clicks: acc.clicks + (row.clicks || 0),
+      lpv: acc.lpv + (row.lpv || 0),
+      atc: acc.atc + (row.atc || 0),
+      purchases: acc.purchases + (row.purchases || 0),
+      visits: acc.visits + (row.visits || 0),
+      spend: acc.spend + (row.spend || 0),
+      revenue: acc.revenue + (row.revenue || 0)
+    }), {
+      impressions: 0,
+      clicks: 0,
+      lpv: 0,
+      atc: 0,
+      purchases: 0,
+      visits: 0,
+      spend: 0,
+      revenue: 0
+    });
+
+    const ctr = totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : null;
+    const atcRate = totals.lpv > 0 ? (totals.atc / totals.lpv) * 100 : null;
+    const cvr = totals.visits > 0 ? (totals.purchases / totals.visits) * 100 : null;
+    const roas = totals.spend > 0 ? totals.revenue / totals.spend : null;
+
+    return {
+      ...totals,
+      ctr,
+      atcRate,
+      cvr,
+      roas
+    };
+  }, [creativeAds]);
+
   const creativeBaselineCvr = useMemo(() => {
     if (!selectedCreativeCampaign) return EPSILON;
     const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
@@ -2243,30 +2360,43 @@ function DashboardTab({
   };
 
   const creativeSummaryCampaign = useMemo(() => {
+    if (selectedCreativeCampaignId === ALL_CAMPAIGNS_ID) return null;
     if (!Array.isArray(creativeSummaryData) || creativeSummaryData.length === 0) return null;
     return creativeSummaryData.find(c => (c.campaign_id || c.campaignId) === selectedCreativeCampaignId)
       || creativeSummaryData[0];
   }, [creativeSummaryData, selectedCreativeCampaignId]);
 
   const creativeSummaryPreviousCampaign = useMemo(() => {
+    if (selectedCreativeCampaignId === ALL_CAMPAIGNS_ID) return null;
     if (!Array.isArray(creativeSummaryPreviousData) || creativeSummaryPreviousData.length === 0) return null;
     return creativeSummaryPreviousData.find(c => (c.campaign_id || c.campaignId) === selectedCreativeCampaignId)
       || creativeSummaryPreviousData[0];
   }, [creativeSummaryPreviousData, selectedCreativeCampaignId]);
 
+  const collectCreativeSummaryAds = useCallback((summaryData = []) => {
+    if (!Array.isArray(summaryData)) return [];
+    return summaryData.flatMap((campaign) => (
+      Array.isArray(campaign?.adsets) ? campaign.adsets.flatMap(adset => adset?.ads || []) : []
+    ));
+  }, []);
+
   const creativeSummaryRows = useMemo(() => {
-    const ads = Array.isArray(creativeSummaryCampaign?.adsets)
-      ? creativeSummaryCampaign.adsets.flatMap(adset => adset?.ads || [])
-      : [];
+    const ads = selectedCreativeCampaignId === ALL_CAMPAIGNS_ID
+      ? collectCreativeSummaryAds(creativeSummaryData)
+      : (Array.isArray(creativeSummaryCampaign?.adsets)
+        ? creativeSummaryCampaign.adsets.flatMap(adset => adset?.ads || [])
+        : []);
     return buildCreativeSummaryRowsFromAds(ads);
-  }, [creativeSummaryCampaign]);
+  }, [creativeSummaryCampaign, creativeSummaryData, collectCreativeSummaryAds, selectedCreativeCampaignId]);
 
   const creativeSummaryPreviousRows = useMemo(() => {
-    const ads = Array.isArray(creativeSummaryPreviousCampaign?.adsets)
-      ? creativeSummaryPreviousCampaign.adsets.flatMap(adset => adset?.ads || [])
-      : [];
+    const ads = selectedCreativeCampaignId === ALL_CAMPAIGNS_ID
+      ? collectCreativeSummaryAds(creativeSummaryPreviousData)
+      : (Array.isArray(creativeSummaryPreviousCampaign?.adsets)
+        ? creativeSummaryPreviousCampaign.adsets.flatMap(adset => adset?.ads || [])
+        : []);
     return buildCreativeSummaryRowsFromAds(ads);
-  }, [creativeSummaryPreviousCampaign]);
+  }, [creativeSummaryPreviousCampaign, creativeSummaryPreviousData, collectCreativeSummaryAds, selectedCreativeCampaignId]);
 
   const creativeSummaryTopSpenders = useMemo(() => (
     [...creativeSummaryRows].sort((a, b) => (b.spend || 0) - (a.spend || 0)).slice(0, 5)
@@ -2536,6 +2666,80 @@ function DashboardTab({
       ? date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
       : dateString;
   }, [parseLocalDate]);
+
+  // Build smoothed series plus trend signal metadata for analytics charts.
+  const buildTrendAnalytics = useCallback((rawSeries = []) => {
+    const cleaned = (Array.isArray(rawSeries) ? rawSeries : [])
+      .map((point) => ({
+        date: getPointDate(point),
+        orders: toNumber(point?.orders),
+        revenue: toNumber(point?.revenue)
+      }))
+      .filter((point) => point.date)
+      .sort((a, b) => {
+        const aDate = parseLocalDate(a.date);
+        const bDate = parseLocalDate(b.date);
+        if (!aDate || !bDate) return 0;
+        return aDate.getTime() - bDate.getTime();
+      });
+
+    if (cleaned.length === 0) {
+      return { series: [], meta: null };
+    }
+
+    const ordersValues = cleaned.map((point) => point.orders || 0);
+    const revenueValues = cleaned.map((point) => point.revenue || 0);
+    const window = Math.min(7, cleaned.length);
+    const ordersMA = getMovingAverage(ordersValues, window);
+    const revenueMA = getMovingAverage(revenueValues, window);
+
+    const recent = ordersValues.slice(-window);
+    const previous = ordersValues.slice(-window * 2, -window);
+    const recentSum = recent.reduce((sum, value) => sum + value, 0);
+    const prevSum = previous.reduce((sum, value) => sum + value, 0);
+    const changePct = prevSum > 0 ? (recentSum - prevSum) / prevSum : null;
+
+    const { slope, r2 } = getLinearRegressionStats(ordersValues);
+    const meanOrders = getMean(ordersValues);
+    const volatility = meanOrders > 0 ? getStandardDeviation(ordersValues, meanOrders) / meanOrders : null;
+
+    return {
+      series: cleaned.map((point, index) => ({
+        ...point,
+        orders: ordersValues[index],
+        revenue: revenueValues[index],
+        ordersMA: ordersMA[index],
+        revenueMA: revenueMA[index]
+      })),
+      meta: {
+        window,
+        changePct,
+        slope,
+        r2,
+        volatility,
+        lastOrders: ordersValues[ordersValues.length - 1],
+        lastRevenue: revenueValues[revenueValues.length - 1]
+      }
+    };
+  }, [getPointDate, parseLocalDate]);
+
+  const annotatedCountryTrends = useMemo(() => (
+    orderedCountryTrends
+      .map((country) => ({
+        ...country,
+        analytics: buildTrendAnalytics(country.trends)
+      }))
+      .filter((country) => country.analytics?.series?.length > 0)
+  ), [buildTrendAnalytics, orderedCountryTrends]);
+
+  const annotatedCampaignTrends = useMemo(() => (
+    orderedCampaignTrends
+      .map((campaign) => ({
+        ...campaign,
+        analytics: buildTrendAnalytics(campaign.trends)
+      }))
+      .filter((campaign) => campaign.analytics?.series?.length > 0)
+  ), [buildTrendAnalytics, orderedCampaignTrends]);
 
   const tooltipLabels = {
     revenue: 'Revenue',
@@ -2829,6 +3033,107 @@ function DashboardTab({
     return { value: (delta / base) * 100, format: 'percent', unit };
   };
 
+  const alertMetrics = [
+    { key: 'revenue', label: 'Revenue', format: 'currency', goodDirection: 'up' },
+    { key: 'orders', label: 'Orders', format: 'number', goodDirection: 'up' },
+    { key: 'roas', label: 'ROAS', format: 'roas', goodDirection: 'up' },
+    { key: 'cac', label: 'CAC', format: 'currency', goodDirection: 'down' },
+    { key: 'aov', label: 'AOV', format: 'currency', goodDirection: 'up' },
+    { key: 'spend', label: 'Spend', format: 'currency', goodDirection: 'neutral' }
+  ];
+
+  // Alerts fire only on large anomalies or sustained trends with high signal strength.
+  const smartAlerts = useMemo(() => {
+    if (!Array.isArray(trends) || trends.length < 8) return [];
+    const results = [];
+
+    alertMetrics.forEach((metric) => {
+      const values = trends
+        .map((point) => toNumber(point?.[metric.key]))
+        .filter((value) => Number.isFinite(value));
+
+      if (values.length < 8) return;
+
+      const baselineWindow = Math.min(14, values.length - 1);
+      const baselineValues = values.slice(-baselineWindow - 1, -1);
+      const baselineMean = getMean(baselineValues);
+      const baselineStd = getStandardDeviation(baselineValues, baselineMean);
+      const current = values[values.length - 1];
+      const changePct = baselineMean !== 0 ? (current - baselineMean) / Math.abs(baselineMean) : null;
+      const zScore = baselineStd > 0 ? (current - baselineMean) / baselineStd : 0;
+
+      let bestAlert = null;
+
+      if (baselineWindow >= 7 && baselineStd > 0 && changePct != null) {
+        const anomalySignal = Math.abs(zScore) >= 2.5 && Math.abs(changePct) >= 0.35;
+        if (anomalySignal) {
+          bestAlert = {
+            id: `anomaly-${metric.key}`,
+            type: 'anomaly',
+            metricKey: metric.key,
+            metricLabel: metric.label,
+            format: metric.format,
+            goodDirection: metric.goodDirection,
+            direction: changePct >= 0 ? 'up' : 'down',
+            currentValue: current,
+            baselineValue: baselineMean,
+            changePct,
+            zScore,
+            r2: null,
+            window: baselineWindow,
+            severity: Math.abs(zScore) * 10 + Math.abs(changePct) * 100
+          };
+        }
+      }
+
+      const trendWindow = Math.min(14, values.length);
+      const trendValues = values.slice(-trendWindow);
+      if (trendValues.length >= 10) {
+        const { slope, r2 } = getLinearRegressionStats(trendValues);
+        const trendChange = trendValues[0] !== 0
+          ? (trendValues[trendValues.length - 1] - trendValues[0]) / Math.abs(trendValues[0])
+          : null;
+        const trendSignal = trendChange != null && Math.abs(trendChange) >= 0.3 && r2 >= 0.65;
+
+        if (trendSignal) {
+          const trendAlert = {
+            id: `trend-${metric.key}`,
+            type: 'trend',
+            metricKey: metric.key,
+            metricLabel: metric.label,
+            format: metric.format,
+            goodDirection: metric.goodDirection,
+            direction: slope >= 0 ? 'up' : 'down',
+            currentValue: trendValues[trendValues.length - 1],
+            baselineValue: trendValues[0],
+            changePct: trendChange,
+            zScore: null,
+            r2,
+            window: trendWindow,
+            severity: Math.abs(trendChange) * 100 + r2 * 25
+          };
+
+          if (!bestAlert || trendAlert.severity > bestAlert.severity) {
+            bestAlert = trendAlert;
+          }
+        }
+      }
+
+      if (bestAlert) {
+        results.push(bestAlert);
+      }
+    });
+
+    return results.sort((a, b) => b.severity - a.severity).slice(0, 6);
+  }, [trends]);
+
+  const formatAlertMetric = (value, format) => {
+    if (format === 'currency') return renderMetric(value, 'currency', 0);
+    if (format === 'roas') return renderMetric(value, 'roas', 2);
+    if (format === 'number') return renderMetric(value, 'number');
+    return renderMetric(value, 'number');
+  };
+
   const getCreativeSummaryRangeLabel = () => {
     if (creativeSummaryRange.type === 'custom') {
       if (creativeSummaryRange.start && creativeSummaryRange.end) {
@@ -3061,6 +3366,85 @@ function DashboardTab({
             formatCurrency={formatCurrency}
           />
         ))}
+      </div>
+
+      {/* Smart Alerts */}
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h3 className="text-lg font-semibold">Smart Alerts</h3>
+            <p className="text-sm text-gray-500">
+              Signals trigger only on large anomalies or sustained trends with statistical strength.
+            </p>
+          </div>
+          <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+            Signal window: 10-14 points
+          </div>
+        </div>
+        {smartAlerts.length === 0 ? (
+          <div className="mt-4 text-sm text-gray-500">
+            No statistically significant alerts detected in this period.
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            {smartAlerts.map((alert) => {
+              const tone = alert.goodDirection === 'neutral'
+                ? 'neutral'
+                : (alert.goodDirection === 'up'
+                  ? (alert.direction === 'up' ? 'positive' : 'negative')
+                  : (alert.direction === 'down' ? 'positive' : 'negative'));
+              const toneStyles = tone === 'positive'
+                ? 'bg-emerald-50 border-emerald-100'
+                : tone === 'negative'
+                  ? 'bg-rose-50 border-rose-100'
+                  : 'bg-gray-50 border-gray-100';
+              const ToneIcon = tone === 'positive' ? CheckCircle2 : AlertCircle;
+              const TrendIcon = alert.direction === 'up' ? TrendingUp : TrendingDown;
+              const changeLabel = formatDeltaPercent((alert.changePct || 0) * 100);
+
+              return (
+                <div key={alert.id} className={`rounded-xl border p-4 ${toneStyles}`}>
+                  <div className="flex items-start gap-3">
+                    <div className={`h-10 w-10 rounded-full flex items-center justify-center ${
+                      tone === 'positive'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : tone === 'negative'
+                          ? 'bg-rose-100 text-rose-700'
+                          : 'bg-gray-200 text-gray-600'
+                    }`}>
+                      <ToneIcon className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm font-semibold text-gray-900">{alert.metricLabel}</div>
+                        <span className="text-[11px] text-gray-500 uppercase tracking-wide">
+                          {alert.type === 'anomaly' ? 'Anomaly' : 'Trend'}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-sm text-gray-600">
+                        {alert.type === 'anomaly'
+                          ? `${alert.metricLabel} ${alert.direction === 'up' ? 'spiked' : 'dropped'} ${changeLabel} vs ${alert.window}d baseline.`
+                          : `${alert.metricLabel} ${alert.direction === 'up' ? 'rising' : 'falling'} ${changeLabel} over ${alert.window}d.`}
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-gray-500">
+                        <span className="inline-flex items-center gap-1">
+                          <TrendIcon className="h-3 w-3" />
+                          {formatAlertMetric(alert.currentValue, alert.format)}
+                        </span>
+                        {alert.type === 'anomaly' && alert.zScore != null && (
+                          <span>Z {alert.zScore.toFixed(2)}</span>
+                        )}
+                        {alert.type === 'trend' && alert.r2 != null && (
+                          <span>R2 {alert.r2.toFixed(2)}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Global Orders Trend */}
@@ -3635,45 +4019,75 @@ function DashboardTab({
                 <div className="text-sm text-gray-500 flex items-center gap-2">
                   <span>Campaign:</span>
                   <span className="inline-flex items-center px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 font-semibold">
-                    <span className="mr-1">{getCampaignEmoji(selectedCreativeCampaign.name)}</span>
+                    {selectedCreativeCampaign.isAggregate ? (
+                      <span className="mr-2 text-[10px] font-bold tracking-wide">ALL</span>
+                    ) : (
+                      <span className="mr-1">{getCampaignEmoji(selectedCreativeCampaign.name)}</span>
+                    )}
                     {selectedCreativeCampaign.name}
                   </span>
+                  {selectedCreativeCampaign.isAggregate && (
+                    <span className="text-[10px] text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded-full">Combined</span>
+                  )}
                 </div>
               )}
             </div>
           </div>
 
           {creativeCampaignOptions.length > 0 ? (
-            <div className="flex flex-col lg:flex-row gap-4">
-              <div className="lg:w-64">
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Campaigns</div>
-                <div className="mt-2 flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
-                  {creativeCampaignOptions.map((campaign) => {
-                    const isActive = campaign.id === selectedCreativeCampaignId;
-                    return (
-                      <button
-                        key={campaign.id}
-                        onClick={() => setSelectedCreativeCampaignId(campaign.id)}
-                        className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors flex items-center gap-2 justify-between text-left ${
-                          isActive
-                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                            : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        <span className="flex items-center gap-2 truncate">
-                          <span>{getCampaignEmoji(campaign.name)}</span>
-                          <span className="truncate" title={campaign.name}>{campaign.name}</span>
-                        </span>
-                        {isActive && <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">Active</span>}
-                      </button>
-                    );
-                  })}
+            <>
+              <div className="flex flex-col lg:flex-row gap-4">
+                <div className="lg:w-64">
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Campaigns</div>
+                  <div className="mt-2 flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                    {creativeCampaignOptions.map((campaign) => {
+                      const isActive = campaign.id === selectedCreativeCampaignId;
+                      return (
+                        <button
+                          key={campaign.id}
+                          onClick={() => setSelectedCreativeCampaignId(campaign.id)}
+                          className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors flex items-center gap-2 justify-between text-left ${
+                            isActive
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                              : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2 truncate">
+                            {campaign.isAggregate ? (
+                              <span className="text-[10px] font-bold tracking-wide bg-white/20 px-2 py-0.5 rounded-full">ALL</span>
+                            ) : (
+                              <span>{getCampaignEmoji(campaign.name)}</span>
+                            )}
+                            <span className="truncate" title={campaign.name}>{campaign.name}</span>
+                          </span>
+                          {isActive && <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">Active</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex-1 text-sm text-gray-500">
+                  Select a campaign (or all campaigns) to rank creatives. Switch between aggregated view (combines matching creatives) or country subsections to inspect localized performance.
                 </div>
               </div>
-              <div className="flex-1 text-sm text-gray-500">
-                Select a campaign to rank creatives. Switch between aggregated view (combines matching creatives) or country subsections to inspect localized performance.
-              </div>
-            </div>
+              {creativeTotals && (
+                <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[
+                    { label: 'Total Spend', value: creativeTotals.spend, format: 'currency', decimals: 0 },
+                    { label: 'Total Purchases', value: creativeTotals.purchases, format: 'number', decimals: 0 },
+                    { label: 'ROAS', value: creativeTotals.roas, format: 'roas', decimals: 2 },
+                    { label: 'CTR', value: creativeTotals.ctr, format: 'percent', decimals: 2 }
+                  ].map((item) => (
+                    <div key={item.label} className="bg-gray-50 border border-gray-100 rounded-xl p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-500">{item.label}</div>
+                      <div className="text-base font-semibold text-gray-900 mt-1">
+                        {renderMetric(item.value, item.format, item.decimals)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           ) : (
             <div className="text-sm text-gray-500">
               No creatives available. Switch to Meta Ad Manager view to load campaign data.
@@ -4497,7 +4911,7 @@ function DashboardTab({
       </div>
 
       {/* Country order trends (collapsible) */}
-      {orderedCountryTrends && orderedCountryTrends.length > 0 && (
+      {annotatedCountryTrends.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">
           <button
             onClick={() => setShowCountryTrends(!showCountryTrends)}
@@ -4506,8 +4920,7 @@ function DashboardTab({
             <div>
               <h2 className="text-lg font-semibold text-left">Order Trends by Country</h2>
               <p className="text-sm text-gray-500 text-left">
-                Click to {showCountryTrends ? 'collapse' : 'expand'} daily order trends
-                per country
+                Click to {showCountryTrends ? 'collapse' : 'expand'} analytics-ready trend views
               </p>
               {countryTrendsDataSource && (
                 <div className="flex items-center gap-2 mt-2 text-xs text-gray-600">
@@ -4585,58 +4998,123 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCountryTrends.map((country) => (
-                <div
-                  key={country.countryCode}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xl">{country.flag}</span>
-                    <span className="font-semibold">{country.country}</span>
-                    <span className="text-sm text-gray-500">
-                      ({country.totalOrders} orders)
-                    </span>
+              {annotatedCountryTrends.map((country, idx) => {
+                const meta = country.analytics?.meta;
+                const series = country.analytics?.series || [];
+                const changePct = meta?.changePct;
+                const changeLabel = Number.isFinite(changePct) ? formatDeltaPercent(changePct * 100) : '—';
+                const isUp = changePct != null ? changePct >= 0 : null;
+                const changeClass = isUp == null
+                  ? 'bg-gray-100 text-gray-500'
+                  : (isUp ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700');
+                const trendLabel = meta?.slope > 0 ? 'Uptrend' : meta?.slope < 0 ? 'Downtrend' : 'Flat';
+                const signalLabel = meta?.r2 >= 0.7 ? 'Strong' : meta?.r2 >= 0.45 ? 'Moderate' : 'Weak';
+                const volatilityLabel = meta?.volatility == null
+                  ? '—'
+                  : (meta.volatility <= 0.25 ? 'Low' : meta.volatility <= 0.5 ? 'Medium' : 'High');
+                const TrendIcon = meta?.slope >= 0 ? TrendingUp : TrendingDown;
+
+                return (
+                  <div
+                    key={country.countryCode || country.country || country.countryName || idx}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-start justify-between flex-wrap gap-4 mb-3">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xl">{country.flag}</span>
+                        <div>
+                          <div className="font-semibold">{country.country}</div>
+                          <div className="text-xs text-gray-500">{country.totalOrders} orders</div>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                        <span className={`px-2 py-1 rounded-full font-semibold ${changeClass}`}>
+                          {changeLabel} vs prev {meta?.window || 7}d
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          {trendLabel}
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          Signal {signalLabel}
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          Volatility {volatilityLabel}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="h-40">
+                      <ResponsiveContainer>
+                        <ComposedChart data={series}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={formatCountryTick}
+                          />
+                          <YAxis
+                            yAxisId="orders"
+                            tick={{ fontSize: 10 }}
+                            allowDecimals={false}
+                          />
+                          <YAxis
+                            yAxisId="revenue"
+                            orientation="right"
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={(value) => formatCurrency(value || 0, 0)}
+                          />
+                          <Tooltip
+                            labelFormatter={formatCountryTooltip}
+                            formatter={(value, name) => {
+                              const label = String(name);
+                              const isRevenue = label.toLowerCase().includes('revenue');
+                              const formatted = isRevenue
+                                ? formatCurrency(value || 0, 0)
+                                : formatNumber(value || 0);
+                              return [formatted, label];
+                            }}
+                          />
+                          <Bar
+                            yAxisId="orders"
+                            dataKey="orders"
+                            name="Orders"
+                            fill="#c7d2fe"
+                            barSize={8}
+                            radius={[4, 4, 0, 0]}
+                          />
+                          <Line
+                            yAxisId="orders"
+                            dataKey="ordersMA"
+                            name="Orders (7d MA)"
+                            stroke="#4338ca"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                          <Line
+                            yAxisId="revenue"
+                            dataKey="revenueMA"
+                            name="Revenue (7d MA)"
+                            stroke="#16a34a"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                      <TrendIcon className="h-3 w-3" />
+                      <span>Latest {formatNumber(meta?.lastOrders || 0)} orders</span>
+                      <span>• Revenue {formatCurrency(meta?.lastRevenue || 0, 0)}</span>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <LineChart data={country.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => {
-                            const metricKey = name === 'orders' ? 'orders' : 'revenue';
-                            return [
-                              formatTooltipMetricValue(metricKey, value),
-                              getTooltipMetricLabel(metricKey)
-                            ];
-                          }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="orders"
-                          stroke="#6366f1"
-                          strokeWidth={2}
-                          dot={false}
-                          fill="none"
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
       )}
 
       {/* Campaign order trends */}
-      {orderedCampaignTrends && orderedCampaignTrends.length > 0 && (
+      {annotatedCampaignTrends.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden mt-6">
           <button
             onClick={() => setShowCampaignTrends(!showCampaignTrends)}
@@ -4645,8 +5123,7 @@ function DashboardTab({
             <div>
               <h2 className="text-lg font-semibold text-left">Order Trends by Campaign</h2>
               <p className="text-sm text-gray-500 text-left">
-                Click to {showCampaignTrends ? 'collapse' : 'expand'} daily order trends
-                per campaign
+                Click to {showCampaignTrends ? 'collapse' : 'expand'} analytical trend views
               </p>
               {campaignTrendsDataSource && (
                 <div className="flex items-center gap-2 mt-2 text-xs text-gray-600">
@@ -4724,50 +5201,89 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCampaignTrends.map((campaign) => (
-                <div
-                  key={campaign.campaignId || campaign.campaignName}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="font-semibold">{campaign.campaignName}</span>
-                    <span className="text-sm text-gray-500">
-                      ({campaign.totalOrders} orders)
-                    </span>
+              {annotatedCampaignTrends.map((campaign, idx) => {
+                const meta = campaign.analytics?.meta;
+                const series = campaign.analytics?.series || [];
+                const changePct = meta?.changePct;
+                const changeLabel = Number.isFinite(changePct) ? formatDeltaPercent(changePct * 100) : '—';
+                const isUp = changePct != null ? changePct >= 0 : null;
+                const changeClass = isUp == null
+                  ? 'bg-gray-100 text-gray-500'
+                  : (isUp ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700');
+                const trendLabel = meta?.slope > 0 ? 'Uptrend' : meta?.slope < 0 ? 'Downtrend' : 'Flat';
+                const signalLabel = meta?.r2 >= 0.7 ? 'Strong' : meta?.r2 >= 0.45 ? 'Moderate' : 'Weak';
+                const TrendIcon = meta?.slope >= 0 ? TrendingUp : TrendingDown;
+
+                return (
+                  <div
+                    key={campaign.campaignId || campaign.campaignName || idx}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-start justify-between flex-wrap gap-4 mb-3">
+                      <div>
+                        <div className="font-semibold">{campaign.campaignName}</div>
+                        <div className="text-xs text-gray-500">{campaign.totalOrders} orders</div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                        <span className={`px-2 py-1 rounded-full font-semibold ${changeClass}`}>
+                          {changeLabel} vs prev {meta?.window || 7}d
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          {trendLabel}
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          Signal {signalLabel}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="h-40">
+                      <ResponsiveContainer>
+                        <ComposedChart data={series}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={formatCountryTick}
+                          />
+                          <YAxis
+                            yAxisId="orders"
+                            tick={{ fontSize: 10 }}
+                            allowDecimals={false}
+                          />
+                          <Tooltip
+                            labelFormatter={formatCountryTooltip}
+                            formatter={(value, name) => {
+                              const label = String(name);
+                              const formatted = formatNumber(value || 0);
+                              return [formatted, label];
+                            }}
+                          />
+                          <Bar
+                            yAxisId="orders"
+                            dataKey="orders"
+                            name="Orders"
+                            fill="#bbf7d0"
+                            barSize={8}
+                            radius={[4, 4, 0, 0]}
+                          />
+                          <Line
+                            yAxisId="orders"
+                            dataKey="ordersMA"
+                            name="Orders (7d MA)"
+                            stroke="#15803d"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                      <TrendIcon className="h-3 w-3" />
+                      <span>Latest {formatNumber(meta?.lastOrders || 0)} orders</span>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <LineChart data={campaign.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => {
-                            const metricKey = name === 'orders' ? 'orders' : 'revenue';
-                            return [
-                              formatTooltipMetricValue(metricKey, value),
-                              getTooltipMetricLabel(metricKey)
-                            ];
-                          }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="orders"
-                          stroke="#22c55e"
-                          strokeWidth={2}
-                          dot={false}
-                          fill="none"
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
