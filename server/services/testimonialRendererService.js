@@ -91,84 +91,15 @@ const MAX_EMOJI_CACHE = 500;
 const EMOJI_FETCH_TIMEOUT_MS = 5000;
 const emojiSvgCache = new Map();
 
+const LOCAL_EMOJI_PATH = path.resolve(__dirname, "..", "assets", "emoji");
+
 const EMOJI_CDN_BASES = [
   'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/',
   'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg/',
   'https://twemoji.maxcdn.com/v/latest/svg/'
 ];
 
-async function loadGoogleFont(fontFamily = 'Inter', weight = 400) {
-  const API = `https://fonts.googleapis.com/css2?family=${fontFamily.replace(' ', '+')}:wght@${weight}`;
-
-  const css = await fetch(API, {
-    headers: { 'User-Agent': 'Mozilla/5.0' }
-  }).then(res => res.text());
-
-  const fontUrl = css.match(/src: url\(([^)]+)\)/)?.[1];
-  if (!fontUrl) {
-    throw new Error('Could not parse font URL from Google Fonts');
-  }
-
-  const fontBuffer = await fetch(fontUrl).then(res => res.arrayBuffer());
-  return Buffer.from(fontBuffer);
-}
-
-let cachedFont = null;
-let cachedEmojiFont = null;
-
-async function getFont() {
-  if (!cachedFont) {
-    cachedFont = await loadGoogleFont('Inter', 400);
-  }
-  return cachedFont;
-}
-
-function resolveEmojiFontPath(fileName) {
-  const candidatePaths = [
-    path.resolve(__dirname, '..', 'assets', 'fonts', fileName),
-    path.resolve(__dirname, '..', '..', 'assets', 'fonts', fileName),
-    path.resolve(process.cwd(), 'server', 'assets', 'fonts', fileName),
-    path.resolve(process.cwd(), 'assets', 'fonts', fileName),
-    path.resolve(process.cwd(), fileName)
-  ];
-
-  for (const candidate of candidatePaths) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return candidatePaths[0];
-}
-
-function loadLocalEmojiFont(fileName) {
-  const fontPath = resolveEmojiFontPath(fileName);
-  if (!fs.existsSync(fontPath)) {
-    return null;
-  }
-  return fs.readFileSync(fontPath);
-}
-
-async function getEmojiFont() {
-  if (cachedEmojiFont) {
-    return cachedEmojiFont;
-  }
-
-  try {
-    cachedEmojiFont = await loadGoogleFont('Noto Color Emoji', 400);
-    return cachedEmojiFont;
-  } catch (error) {
-    console.warn('Failed to fetch Noto Color Emoji from Google Fonts. Falling back to local font.', error);
-  }
-
-  const localEmojiFont = loadLocalEmojiFont('NotoColorEmoji.ttf');
-  if (!localEmojiFont) {
-    console.warn('Local emoji font not found. Emojis may not render correctly.');
-    return null;
-  }
-  cachedEmojiFont = localEmojiFont;
-  return cachedEmojiFont;
-}
+const fontCache = new Map();
 
 function h(type, props, ...children) {
   return {
@@ -178,6 +109,54 @@ function h(type, props, ...children) {
       children: children.flat().filter(child => child !== null && child !== undefined)
     }
   };
+}
+
+function resolveFontPath(fileName) {
+  const candidates = [
+    path.resolve(__dirname, '..', 'assets', 'fonts', fileName),
+    path.resolve(__dirname, '..', 'fonts', fileName),
+    path.resolve(process.cwd(), 'server', 'assets', 'fonts', fileName),
+    path.resolve(process.cwd(), 'assets', 'fonts', fileName),
+    path.resolve(process.cwd(), fileName)
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0];
+}
+
+function loadFontData(fileName) {
+  if (fontCache.has(fileName)) {
+    return fontCache.get(fileName);
+  }
+  const fontPath = resolveFontPath(fileName);
+  if (!fs.existsSync(fontPath)) {
+    console.warn(`Font not found: ${fontPath}`);
+    return null;
+  }
+  const data = fs.readFileSync(fontPath);
+  fontCache.set(fileName, data);
+  return data;
+}
+
+function buildFontConfig() {
+  const fonts = [];
+
+  // Load Inter font
+  const interFont = loadFontData('Inter-Regular.ttf');
+  if (interFont) {
+    fonts.push({ name: 'Inter', data: interFont, weight: 400, style: 'normal' });
+  } else {
+    console.warn('Inter font not found, rendering may fail');
+  }
+
+  // Load Noto Color Emoji font for emoji support
+
+  return fonts;
 }
 
 async function fetchWithTimeout(url, timeoutMs) {
@@ -206,6 +185,22 @@ async function fetchEmojiDataUrl(filename) {
     return emojiSvgCache.get(filename);
   }
 
+  // NUCLEAR FIX: Check local emoji folder first
+  const localEmojiPath = path.resolve(__dirname, '..', 'assets', 'emoji', filename);
+  try {
+    if (fs.existsSync(localEmojiPath)) {
+      const svgText = fs.readFileSync(localEmojiPath, 'utf8');
+      const base64 = Buffer.from(svgText).toString('base64');
+      const dataUrl = `data:image/svg+xml;base64,${base64}`;
+      emojiSvgCache.set(filename, dataUrl);
+      console.log('Loaded local emoji:', filename);
+      return dataUrl;
+    }
+  } catch (localError) {
+    console.warn('Local emoji load failed:', filename, localError.message);
+  }
+
+  // Fallback to CDN
   for (const baseUrl of EMOJI_CDN_BASES) {
     try {
       const dataUrl = await fetchEmojiDataUrlFromBase(baseUrl, filename);
@@ -222,28 +217,35 @@ async function fetchEmojiDataUrl(filename) {
 
   return null;
 }
-
 async function buildTwemojiNodes(text) {
   const parsed = twemoji.parse(text, { folder: 'svg', ext: '.svg' });
-  const regex = /<img[^>]+src="([^"]+)"[^>]*alt="([^"]+)"[^>]*>/g;
+  // Match img tags regardless of attribute order
+  const imgRegex = /<img[^>]*>/g;
   const nodes = [];
   let lastIndex = 0;
   let match;
 
-  while ((match = regex.exec(parsed)) !== null) {
-    const [fullMatch, src, alt] = match;
+  while ((match = imgRegex.exec(parsed)) !== null) {
+    const fullMatch = match[0];
+    // Extract src and alt separately to handle any attribute order
+    const srcMatch = fullMatch.match(/src="([^"]+)"/);
+    const altMatch = fullMatch.match(/alt="([^"]+)"/);
+    const src = srcMatch ? srcMatch[1] : null;
+    const alt = altMatch ? altMatch[1] : '';
+
     const textChunk = parsed.slice(lastIndex, match.index);
     if (textChunk) {
       nodes.push(textChunk);
     }
-    const filename = src.split('/').pop();
+
+    const filename = src ? src.split('/').pop() : null;
     const dataUrl = filename ? await fetchEmojiDataUrl(filename) : null;
     if (dataUrl) {
       nodes.push(h('img', {
         src: dataUrl,
         width: '1em',
         height: '1em',
-        style: { display: 'inline-block', verticalAlign: '-0.1em' }
+        style: { verticalAlign: '-0.1em' }
       }));
     } else {
       nodes.push(alt || '');
@@ -320,6 +322,7 @@ async function buildTestimonialVNode(messages, config) {
     collageColumns = 2
   } = config;
 
+  const containerWidth = width || 800;
   const resolvedCollageColumns = Math.min(4, Math.max(2, Number(collageColumns) || 2));
 
   const fontWeightMap = {
@@ -334,10 +337,10 @@ async function buildTestimonialVNode(messages, config) {
     compact: { sizeMultiplier: 0.95, lineHeightAdjust: -0.04 }
   };
 
-  const maxWidthMap = {
-    narrow: '32ch',
-    standard: '38ch',
-    wide: '44ch'
+  const maxWidthRatioMap = {
+    narrow: 0.6,
+    standard: 0.7,
+    wide: 0.8
   };
 
   const baseLineHeight = outputShape === 'quote_card' ? 1.6 : 1.4;
@@ -346,7 +349,8 @@ async function buildTestimonialVNode(messages, config) {
   const lineHeight = Number((baseLineHeight + typographyConfig.lineHeightAdjust + lineSpacingBoost).toFixed(2));
   const effectiveFontSize = Math.round(fontSize * typographyConfig.sizeMultiplier);
   const fontWeight = fontWeightMap[weightOption] || fontWeightMap.match;
-  const resolvedMaxWidth = maxWidthMap[maxWidth] || maxWidthMap.standard;
+  const maxWidthRatio = maxWidthRatioMap[maxWidth] ?? maxWidthRatioMap.standard;
+  const resolvedMaxWidth = Math.round(containerWidth * maxWidthRatio);
 
   const paddingByShape = {
     bubble: { s: 16, m: 20, l: 24 },
@@ -368,8 +372,6 @@ async function buildTestimonialVNode(messages, config) {
       : backgroundColor);
 
   const bubbleBaseStyle = {
-    display: 'flex',
-    flexDirection: 'column',
     background: outputShape === 'minimal' ? 'transparent' : bubbleColor,
     padding: outputShape === 'minimal' ? 0 : resolvedCardPadding,
     borderRadius: outputShape === 'minimal' ? 0 : borderRadius,
@@ -423,18 +425,19 @@ async function buildTestimonialVNode(messages, config) {
 
     return h('div', {
       style: {
-        ...bubbleBaseStyle,
+        ...bubbleBaseStyle, display: 'flex', flexDirection: 'column',
         alignSelf: outputShape === 'quote_card'
           ? 'center'
           : (msg.side === 'right' ? 'flex-end' : 'flex-start')
       }
     },
-    h('div', {
-      style: {
-        display: 'flex',
+    h('div', { 
+      style: { 
+        display: 'flex', 
         flexWrap: 'wrap',
-        alignItems: 'center'
-      }
+        alignItems: 'baseline',
+        justifyContent: outputShape === 'quote_card' ? 'center' : 'flex-start'
+      } 
     }, ...textNodes),
     authorBlock
     );
@@ -455,7 +458,6 @@ async function buildTestimonialVNode(messages, config) {
       gap: 16
     };
 
-  const containerWidth = width || 800;
   const baseHeight = height || Math.max(
     200,
     messages.length * (effectiveFontSize * 3 + 40) + padding * 2
@@ -490,27 +492,12 @@ export async function renderTestimonials(messages, outputPath, options = {}) {
   const preset = PRESETS[presetName] || PRESETS.raw_bubbles;
   const config = { ...preset, ...options };
 
-  const fontData = await getFont();
-  const emojiFontData = await getEmojiFont();
-  const { vnode, width, height } = await buildTestimonialVNode(messages, config);
-  const fonts = [
-    {
-      name: 'Inter',
-      data: fontData,
-      weight: 400,
-      style: 'normal'
-    }
-  ];
-
-  if (emojiFontData) {
-    fonts.push({
-      name: 'Noto Color Emoji',
-      data: emojiFontData,
-      weight: 400,
-      style: 'normal'
-    });
+  const fonts = buildFontConfig();
+  if (fonts.length === 0) {
+    throw new Error('No fonts available for rendering. Ensure @fontsource/inter is installed.');
   }
 
+  const { vnode, width, height } = await buildTestimonialVNode(messages, config);
   const svg = await satori(vnode, {
     width,
     height,
