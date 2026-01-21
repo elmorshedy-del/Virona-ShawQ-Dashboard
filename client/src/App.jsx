@@ -18,6 +18,7 @@ import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysis from './components/CreativeAnalysis.jsx';
 import MetricsChartsTab from './components/MetricsChartsTab';
+import NeoMetaTab from './components/NeoMetaTab';
 import CreativeIntelligence from './components/CreativeIntelligence';
 import CreativeStudio from './components/CreativeStudio';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
@@ -332,7 +333,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS = ['Dashboard', 'Metrics Charts', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1393,7 +1394,12 @@ export default function App() {
           />
         )}
 
-        {activeTab === 2 && efficiency && (
+
+        {activeTab === 2 && (
+          <NeoMetaTab />
+        )}
+
+        {activeTab === 3 && efficiency && (
           <EfficiencyTab
             efficiency={efficiency}
             trends={efficiencyTrends}
@@ -1402,7 +1408,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 3 && budgetIntelligence && (
+        {activeTab === 4 && budgetIntelligence && (
           <BudgetIntelligenceTab
             data={budgetIntelligence}
             formatCurrency={formatCurrency}
@@ -1410,7 +1416,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 4 && (
+        {activeTab === 5 && (
           <ManualDataTab
             orders={manualOrders}
             form={orderForm}
@@ -1429,28 +1435,28 @@ export default function App() {
           />
         )}
 
-        {activeTab === 5 && (
+        {activeTab === 6 && (
           <>
             <CreativeIntelligence store={currentStore} />
             <CreativeAnalysis store={store} />
           </>
         )}
 
-        {activeTab === 6 && (
+        {activeTab === 7 && (
           <CreativeStudio store={currentStore} />
         )}
 
-        {activeTab === 7 && (
+        {activeTab === 8 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === 9 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 9 && (
+        {activeTab === 10 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1458,7 +1464,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 10 && (
+        {activeTab === 11 && (
           <ExchangeRateDebug />
         )}
       </div>
