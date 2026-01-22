@@ -427,7 +427,11 @@ export default function TestimonialExtractor() {
               const dinoDebug = msg.avatarDebug?.dino;
               const dinoAttempted = dinoDebug?.attempted;
               const dinoFallback = msg.avatarDebug?.dinoFallbackReason || dinoDebug?.fallbackReason;
-              const dinoErrorRaw = dinoDebug?.detect?.error || dinoDebug?.health?.error || dinoDebug?.health?.statusText;
+              const dinoErrorRaw = dinoDebug?.region?.detect?.error
+                || dinoDebug?.region?.detect?.statusText
+                || dinoDebug?.detect?.error
+                || dinoDebug?.health?.error
+                || dinoDebug?.health?.statusText;
               const dinoError = dinoErrorRaw && dinoErrorRaw.length > 40
                 ? `${dinoErrorRaw.slice(0, 37)}...`
                 : dinoErrorRaw;
