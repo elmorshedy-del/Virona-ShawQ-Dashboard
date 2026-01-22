@@ -108,14 +108,24 @@ def detect_avatars(image_bytes, confidence_threshold=0.25):
     with torch.no_grad():
         outputs = model(**inputs)
     
-    # Post-process results
-    results = processor.post_process_grounded_object_detection(
-        outputs,
-        inputs["input_ids"],
-        box_threshold=confidence_threshold,
-        text_threshold=confidence_threshold,
-        target_sizes=[(original_height, original_width)]
-    )[0]
+    # Post-process results (handle transformers API differences)
+    try:
+        results = processor.post_process_grounded_object_detection(
+            outputs,
+            inputs["input_ids"],
+            box_threshold=confidence_threshold,
+            text_threshold=confidence_threshold,
+            target_sizes=[(original_height, original_width)]
+        )[0]
+    except TypeError as e:
+        print(f"Post-process fallback (box_threshold unsupported): {e}")
+        results = processor.post_process_grounded_object_detection(
+            outputs,
+            inputs["input_ids"],
+            threshold=confidence_threshold,
+            text_threshold=confidence_threshold,
+            target_sizes=[(original_height, original_width)]
+        )[0]
     
     boxes = results["boxes"].cpu().numpy()  # [x1, y1, x2, y2] format
     scores = results["scores"].cpu().numpy()
