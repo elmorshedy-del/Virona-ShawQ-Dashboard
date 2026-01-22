@@ -17,6 +17,7 @@ import AIBudget from './components/AIBudget';
 import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysis from './components/CreativeAnalysis.jsx';
+import FatigueDetector from './components/FatigueDetector';
 import MetricsChartsTab from './components/MetricsChartsTab';
 import NeoMetaTab from './components/NeoMetaTab';
 import CreativeIntelligence from './components/CreativeIntelligence';
@@ -333,7 +334,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS = ['Dashboard', 'Metrics Charts', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1436,27 +1437,34 @@ export default function App() {
         )}
 
         {activeTab === 6 && (
+          <FatigueDetector
+            store={store}
+            formatCurrency={formatCurrency}
+          />
+        )}
+
+        {activeTab === 7 && (
           <>
             <CreativeIntelligence store={currentStore} />
             <CreativeAnalysis store={store} />
           </>
         )}
 
-        {activeTab === 7 && (
+        {activeTab === 8 && (
           <CreativeStudio store={currentStore} />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === 9 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 9 && (
+        {activeTab === 10 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 10 && (
+        {activeTab === 11 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1464,7 +1472,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 11 && (
+        {activeTab === 12 && (
           <ExchangeRateDebug />
         )}
       </div>

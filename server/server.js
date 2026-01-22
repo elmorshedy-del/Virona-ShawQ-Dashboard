@@ -16,6 +16,7 @@ import metaRouter from './routes/meta.js';
 import exchangeRateRoutes from './routes/exchangeRate.js';
 import creativeIntelligenceRouter from './routes/creativeIntelligence.js';
 import creativeStudioRouter from './routes/creativeStudio.js';
+import fatigueRouter from './routes/fatigue.js';
 import metaAuthRouter from './routes/metaAuth.js';
 import testimonialExtractorRouter from './routes/testimonialExtractor.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
@@ -114,6 +115,7 @@ app.use('/api/auth/meta', metaAuthRouter);
 app.use('/api/exchange-rates', exchangeRateRoutes);
 app.use('/api/creative-intelligence', creativeIntelligenceRouter);
 app.use('/api/creative-studio', creativeStudioRouter);
+app.use('/api/fatigue', fatigueRouter);
 app.use('/api/testimonials', testimonialExtractorRouter);
 
 // Serve static files in production
