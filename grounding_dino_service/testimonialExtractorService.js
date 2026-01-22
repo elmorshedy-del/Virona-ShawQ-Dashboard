@@ -43,18 +43,7 @@ RULES:
 
 const INSUFFICIENT_FUNDS_CODE = 'INSUFFICIENT_FUNDS';
 const GEMINI_TIMEOUT_MS = 30000;
-const MIN_FACE_CONFIDENCE = 0.3; // Lower threshold for SCRFD (it's more accurate)
-
-// Grounding DINO avatar detection service (primary)
-const GROUNDING_DINO_SERVICE_URL = process.env.GROUNDING_DINO_SERVICE_URL || 'http://localhost:5060';
-const GROUNDING_DINO_TIMEOUT_MS = 15000;
-const GROUNDING_DINO_HEALTH_TIMEOUT_MS = 5000;
-
-let avatarDetectionCache = {
-  imageId: null,
-  avatars: [],
-  timestamp: 0
-};
+const MIN_FACE_CONFIDENCE = 0.3;
 
 // =============================================================================
 // DISABLED: face-api.js model loading - now using SCRFD Python service
@@ -101,7 +90,7 @@ let avatarDetectionCache = {
 // }
 // =============================================================================
 
-// SCRFD Python service configuration
+// SCRFD Python service configuration (FALLBACK)
 const SCRFD_SERVICE_URL = process.env.SCRFD_SERVICE_URL || 'http://localhost:5050';
 const SCRFD_TIMEOUT_MS = 10000;
 const SCRFD_HEALTH_TIMEOUT_MS = 5000;
@@ -109,6 +98,20 @@ const SCRFD_STARTUP_TIMEOUT_MS = 15000;
 const SCRFD_AUTO_START = process.env.SCRFD_AUTO_START !== '0';
 const SCRFD_START_SCRIPT = process.env.SCRFD_START_SCRIPT
   || path.resolve(__dirname, '..', 'scrfd', 'start_face_server.sh');
+
+// =============================================================================
+// NEW: Grounding DINO service configuration (PRIMARY)
+// =============================================================================
+const GROUNDING_DINO_SERVICE_URL = process.env.GROUNDING_DINO_SERVICE_URL || 'http://localhost:5060';
+const GROUNDING_DINO_TIMEOUT_MS = 15000; // Longer timeout - model is heavier
+const GROUNDING_DINO_HEALTH_TIMEOUT_MS = 5000;
+
+// Cache for avatar detection results (avoid calling Grounding DINO multiple times per image)
+let avatarDetectionCache = {
+  imageId: null,
+  avatars: [],
+  timestamp: 0
+};
 
 let scrfdStartPromise = null;
 
@@ -223,6 +226,9 @@ function distanceBetween(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+// =============================================================================
+// NEW: Grounding DINO health check
+// =============================================================================
 async function checkGroundingDinoHealth(timeoutMs = GROUNDING_DINO_HEALTH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -232,52 +238,36 @@ async function checkGroundingDinoHealth(timeoutMs = GROUNDING_DINO_HEALTH_TIMEOU
       signal: controller.signal
     });
     if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        statusText: response.statusText || 'healthcheck_failed'
-      };
+      return false;
     }
     const health = await response.json().catch(() => null);
     if (health && health.model_ready === false) {
-      return {
-        ok: false,
-        status: response.status,
-        statusText: 'model_not_ready',
-        health
-      };
+      return false;
     }
-    return {
-      ok: true,
-      status: response.status,
-      health
-    };
+    return true;
   } catch (error) {
-    return {
-      ok: false,
-      error: error?.name === 'AbortError' ? 'timeout' : (error?.message || 'healthcheck_error')
-    };
+    return false;
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
+// =============================================================================
+// NEW: Grounding DINO avatar detection (PRIMARY METHOD)
+// =============================================================================
 async function detectAllAvatarsWithGroundingDino(imageData, imageId) {
+  // Check cache first - avoid multiple calls per image
   if (avatarDetectionCache.imageId === imageId && Date.now() - avatarDetectionCache.timestamp < 60000) {
-    return {
-      avatars: avatarDetectionCache.avatars,
-      debug: {
-        ok: true,
-        cached: true,
-        count: avatarDetectionCache.avatars.length
-      }
-    };
+    console.log('GROUNDING DINO: Using cached results');
+    return avatarDetectionCache.avatars;
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GROUNDING_DINO_TIMEOUT_MS);
-
+  console.log('GROUNDING DINO: Detecting avatars in full image...');
+  
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GROUNDING_DINO_TIMEOUT_MS);
+    
     const response = await fetch(`${GROUNDING_DINO_SERVICE_URL}/detect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -287,55 +277,39 @@ async function detectAllAvatarsWithGroundingDino(imageData, imageId) {
       }),
       signal: controller.signal
     });
-
+    
+    clearTimeout(timeoutId);
+    
     if (!response.ok) {
-      return {
-        avatars: null,
-        debug: {
-          ok: false,
-          status: response.status,
-          statusText: response.statusText || 'detect_failed'
-        }
-      };
+      console.warn('GROUNDING DINO: Service error:', response.status, response.statusText);
+      return null; // Return null to signal fallback to SCRFD
     }
-
-    const avatars = await response.json().catch(() => null);
-    if (!Array.isArray(avatars)) {
-      return {
-        avatars: null,
-        debug: {
-          ok: false,
-          error: 'invalid_response'
-        }
-      };
-    }
-
+    
+    const avatars = await response.json();
+    console.log('GROUNDING DINO: Found', avatars.length, 'avatars');
+    
+    // Cache results
     avatarDetectionCache = {
       imageId,
       avatars,
       timestamp: Date.now()
     };
-
-    return {
-      avatars,
-      debug: {
-        ok: true,
-        count: avatars.length
-      }
-    };
+    
+    return avatars;
+    
   } catch (error) {
-    return {
-      avatars: null,
-      debug: {
-        ok: false,
-        error: error?.name === 'AbortError' ? 'timeout' : (error?.message || 'detect_error')
-      }
-    };
-  } finally {
-    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.warn('GROUNDING DINO: Service timeout');
+    } else {
+      console.warn('GROUNDING DINO: Service unavailable:', error.message);
+    }
+    return null; // Return null to signal fallback to SCRFD
   }
 }
 
+// =============================================================================
+// SCRFD health check (FALLBACK)
+// =============================================================================
 async function checkScrfdHealth(timeoutMs = SCRFD_HEALTH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -408,18 +382,61 @@ async function startScrfdService() {
 }
 
 // =============================================================================
-// NEW: SCRFD-based face detection via Python microservice
+// MODIFIED: Avatar detection - tries Grounding DINO first, falls back to SCRFD
 // =============================================================================
-async function detectFacesInRegion(imageData, region, fullWidth = 1080, fullHeight = 1920) {
-  console.log('CALLING SCRFD FACE DETECTION FOR REGION:', region);
+async function detectFacesInRegion(imageData, region, fullWidth = 1080, fullHeight = 1920, imageId = null) {
+  console.log('DETECTING AVATARS FOR REGION:', region);
+  
   if (!region || region.width <= 0 || region.height <= 0) {
     return [];
   }
+  
+  const regionCenterX = region.x + region.width / 2;
+  const regionCenterY = region.y + region.height / 2;
+  // Increased max distance for better matching with Grounding DINO
+  const maxDistance = Math.max(region.width, region.height) * 3;
+  
+  // ==========================================================================
+  // STEP 1: Try Grounding DINO (PRIMARY)
+  // ==========================================================================
+  const groundingDinoHealthy = await checkGroundingDinoHealth();
+  if (groundingDinoHealthy) {
+    const allAvatars = await detectAllAvatarsWithGroundingDino(imageData, imageId);
+    
+    if (allAvatars && allAvatars.length > 0) {
+      // Filter avatars near expected region
+      const nearbyAvatars = allAvatars.filter(a => {
+        const avatarCenterX = a.x + a.width / 2;
+        const avatarCenterY = a.y + a.height / 2;
+        const distance = Math.hypot(avatarCenterX - regionCenterX, avatarCenterY - regionCenterY);
+        return distance < maxDistance;
+      });
+      
+      console.log('GROUNDING DINO: Avatars near region:', nearbyAvatars.length);
+      
+      if (nearbyAvatars.length > 0) {
+        return nearbyAvatars.map(a => ({ 
+          x: a.x, 
+          y: a.y, 
+          width: a.width, 
+          height: a.height, 
+          score: a.score,
+          method: 'grounding_dino'
+        }));
+      }
+    }
+  }
+  
+  // ==========================================================================
+  // STEP 2: Fall back to SCRFD (for real faces)
+  // ==========================================================================
+  console.log('FALLING BACK TO SCRFD...');
+  
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), SCRFD_TIMEOUT_MS);
-    // NUCLEAR FIX: Send FULL IMAGE, not just region
     const fullRegion = { x: 0, y: 0, width: fullWidth, height: fullHeight };
+    
     const response = await fetch(`${SCRFD_SERVICE_URL}/detect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -430,25 +447,34 @@ async function detectFacesInRegion(imageData, region, fullWidth = 1080, fullHeig
       }),
       signal: controller.signal
     });
+    
     clearTimeout(timeoutId);
+    
     if (!response.ok) {
       console.warn('SCRFD service error:', response.status, response.statusText);
       return [];
     }
+    
     const allFaces = await response.json();
     console.log('SCRFD TOTAL FACES IN IMAGE:', allFaces.length);
-    // Filter faces near expected region
-    const regionCenterX = region.x + region.width / 2;
-    const regionCenterY = region.y + region.height / 2;
-    const maxDistance = Math.max(region.width, region.height) * 2.5;
+    
     const nearbyFaces = allFaces.filter(f => {
       const faceCenterX = f.x + f.width / 2;
       const faceCenterY = f.y + f.height / 2;
       const distance = Math.hypot(faceCenterX - regionCenterX, faceCenterY - regionCenterY);
       return distance < maxDistance;
     });
+    
     console.log('SCRFD FACES NEAR REGION:', nearbyFaces.length);
-    return nearbyFaces.map(f => ({ x: f.x, y: f.y, width: f.width, height: f.height, score: f.score }));
+    return nearbyFaces.map(f => ({ 
+      x: f.x, 
+      y: f.y, 
+      width: f.width, 
+      height: f.height, 
+      score: f.score,
+      method: 'scrfd'
+    }));
+    
   } catch (error) {
     if (error.name === 'AbortError') {
       console.warn('SCRFD service timeout');
@@ -457,79 +483,6 @@ async function detectFacesInRegion(imageData, region, fullWidth = 1080, fullHeig
     }
     return [];
   }
-}
-
-// =============================================================================
-// Grounding DINO first, then SCRFD fallback (SCRFD code unchanged)
-// =============================================================================
-async function detectAvatarsInRegion(imageData, region, fullWidth = 1080, fullHeight = 1920, imageId = null) {
-  const debug = {
-    dino: {
-      attempted: false,
-      health: null,
-      detect: null,
-      totalCount: 0,
-      nearbyCount: 0,
-      fallbackReason: null
-    }
-  };
-
-  if (!region || region.width <= 0 || region.height <= 0) {
-    return { detections: [], debug };
-  }
-
-  debug.dino.attempted = true;
-  const health = await checkGroundingDinoHealth();
-  debug.dino.health = health;
-
-  if (health.ok) {
-    const { avatars, debug: detectDebug } = await detectAllAvatarsWithGroundingDino(imageData, imageId);
-    debug.dino.detect = detectDebug;
-
-    if (Array.isArray(avatars)) {
-      debug.dino.totalCount = avatars.length;
-      const regionCenterX = region.x + region.width / 2;
-      const regionCenterY = region.y + region.height / 2;
-      const maxDistance = Math.max(region.width, region.height) * 3;
-
-      const nearbyAvatars = avatars.filter(a => {
-        const avatarCenterX = a.x + a.width / 2;
-        const avatarCenterY = a.y + a.height / 2;
-        const distance = Math.hypot(avatarCenterX - regionCenterX, avatarCenterY - regionCenterY);
-        return distance < maxDistance;
-      });
-
-      debug.dino.nearbyCount = nearbyAvatars.length;
-      if (nearbyAvatars.length > 0) {
-        return {
-          detections: nearbyAvatars.map(a => ({
-            x: a.x,
-            y: a.y,
-            width: a.width,
-            height: a.height,
-            score: a.score,
-            method: 'grounding_dino'
-          })),
-          debug
-        };
-      }
-
-      debug.dino.fallbackReason = 'no_dino_avatars_near_region';
-    } else {
-      debug.dino.fallbackReason = 'dino_detect_failed';
-    }
-  } else {
-    debug.dino.fallbackReason = 'dino_unhealthy';
-  }
-
-  const scrfdFaces = await detectFacesInRegion(imageData, region, fullWidth, fullHeight);
-  return {
-    detections: scrfdFaces.map(face => ({
-      ...face,
-      method: 'scrfd'
-    })),
-    debug
-  };
 }
 
 // =============================================================================
@@ -907,32 +860,34 @@ async function drawDebugImages(imageData, imageWidth, imageHeight, debugData, ou
 // }
 // =============================================================================
 
-// NEW: Health check for SCRFD service (replaces ensureFaceModelsLoaded)
+// Health check for avatar detection services
 export async function ensureFaceModelsLoaded() {
-  const dinoHealth = await checkGroundingDinoHealth();
-  if (dinoHealth.ok) {
+  // Check Grounding DINO first (primary)
+  const groundingDinoHealthy = await checkGroundingDinoHealth();
+  if (groundingDinoHealthy) {
     console.log('Grounding DINO service health check passed');
     return true;
   }
-
-  const healthy = await checkScrfdHealth();
-  if (healthy) {
+  
+  // Fall back to SCRFD health check
+  const scrfdHealthy = await checkScrfdHealth();
+  if (scrfdHealthy) {
     console.log('SCRFD service health check passed');
     return true;
   }
 
   if (SCRFD_AUTO_START) {
-    console.warn('SCRFD service not available. Attempting auto-start...');
+    console.warn('Avatar detection services not available. Attempting SCRFD auto-start...');
     const started = await startScrfdService();
     if (started) {
       console.log('SCRFD service started successfully');
       return true;
     }
   } else {
-    console.warn('SCRFD service not available. Auto-start disabled (SCRFD_AUTO_START=0).');
+    console.warn('Avatar detection services not available. Auto-start disabled (SCRFD_AUTO_START=0).');
   }
 
-  console.warn('Face detection will fall back to contour/geometry methods');
+  console.warn('Avatar detection will fall back to contour/geometry methods');
   return false;
 }
 
@@ -942,9 +897,10 @@ export async function ensureFaceModelsLoaded() {
  * @returns {Promise<Array>} Array of message objects
  */
 export async function extractMessagesFromImage(imagePath) {
+  // Clear avatar detection cache for new image
   const imageId = `${imagePath}-${Date.now()}`;
   avatarDetectionCache = { imageId: null, avatars: [], timestamp: 0 };
-
+  
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
 
@@ -955,60 +911,46 @@ export async function extractMessagesFromImage(imagePath) {
     const imageWidth = imageMeta.width || 0;
     const imageHeight = imageMeta.height || 0;
 
-    // Determine mime type from file extension
-    const ext = imagePath.toLowerCase().split('.').pop();
-    const mimeTypes = {
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'png': 'image/png',
-      'webp': 'image/webp',
-      'gif': 'image/gif'
-    };
-    const mimeType = mimeTypes[ext] || 'image/jpeg';
+    // Send to Gemini Vision
+    const result = await Promise.race([
+      model.generateContent([
+        { text: VISION_PROMPT },
+        {
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: base64Image
+          }
+        }
+      ]),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Gemini timeout')), GEMINI_TIMEOUT_MS)
+      )
+    ]);
 
-    const imagePart = {
-      inlineData: {
-        data: base64Image,
-        mimeType: mimeType
-      }
-    };
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-    let result;
-    try {
-      result = await model.generateContent([VISION_PROMPT, imagePart], {
-        signal: controller.signal
-      });
-    } finally {
-      clearTimeout(timeoutId);
+    let resultText = result.response.text().trim();
+    // Fix common JSON issues
+    // Remove markdown code blocks
+    if (resultText.startsWith('```json')) {
+      resultText = resultText.slice(7);
+    } else if (resultText.startsWith('```')) {
+      resultText = resultText.slice(3);
     }
-    const response = result.response;
-    let resultText = response.text().trim();
-
-    console.log('Raw Gemini response:', resultText);
-
-    // Clean up response - Gemini sometimes wraps in markdown
-    if (resultText.includes('```json')) {
-      const jsonMatch = resultText.match(/```json\s*([\s\S]*?)\s*```/);
-      if (jsonMatch) {
-        resultText = jsonMatch[1];
-      }
-    } else if (resultText.includes('```')) {
-      const codeMatch = resultText.match(/```\s*([\s\S]*?)\s*```/);
-      if (codeMatch) {
-        resultText = codeMatch[1];
-      }
+    if (resultText.endsWith('```')) {
+      resultText = resultText.slice(0, -3);
     }
 
-    // Remove any text before the JSON array
+    // Find array bounds
     const arrayStartIndex = resultText.indexOf('[');
+    const arrayEndIndex = resultText.lastIndexOf(']');
+
+    if (arrayStartIndex === -1 || arrayEndIndex === -1 || arrayEndIndex < arrayStartIndex) {
+      console.error('No valid JSON array found in response:', resultText);
+      return [];
+    }
+
     if (arrayStartIndex > 0) {
       resultText = resultText.substring(arrayStartIndex);
     }
-
-    // Remove any text after the JSON array
-    const arrayEndIndex = resultText.lastIndexOf(']');
     if (arrayEndIndex > 0 && arrayEndIndex < resultText.length - 1) {
       resultText = resultText.substring(0, arrayEndIndex + 1);
     }
@@ -1049,7 +991,6 @@ export async function extractMessagesFromImage(imagePath) {
       let searchRegion = null;
       let facesFound = 0;
       let score = null;
-      let dinoDebug = null;
       let geometryFallback = null;
 
       for (const side of sideCandidates) {
@@ -1059,9 +1000,8 @@ export async function extractMessagesFromImage(imagePath) {
         searchRegion = region;
 
         try {
-          const avatarScan = await detectAvatarsInRegion(imageData, region, imageWidth, imageHeight, imageId);
-          const faces = avatarScan?.detections || [];
-          dinoDebug = avatarScan?.debug?.dino || dinoDebug;
+          // Pass imageId for caching
+          const faces = await detectFacesInRegion(imageData, region, imageWidth, imageHeight, imageId);
           facesFound += faces.length;
           if (faces.length > 0) {
             const closestFace = faces.reduce((best, face) => {
@@ -1079,7 +1019,7 @@ export async function extractMessagesFromImage(imagePath) {
               avatarBox = getSquareBoxAroundCenter(faceCenter, avatarSize, imageWidth, imageHeight);
               avatarPresent = true;
               avatarShape = 'circle';
-              methodUsed = closestFace.face.method || 'scrfd';
+              methodUsed = closestFace.face.method || 'grounding_dino';
               score = closestFace.face.score || Math.max(0, 1 - closestFace.distance / Math.max(region.width, region.height));
             }
           }
@@ -1175,9 +1115,7 @@ export async function extractMessagesFromImage(imagePath) {
         searchRegion,
         avatarBox,
         score,
-        facesFound,
-        dino: dinoDebug,
-        dinoFallbackReason: dinoDebug?.fallbackReason || null
+        facesFound
       };
 
       console.log('Avatar debug info:', avatarDebug);

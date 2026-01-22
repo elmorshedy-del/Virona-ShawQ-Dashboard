@@ -1,0 +1,8 @@
+# Grounding DINO Avatar Detection Server Dependencies
+flask>=2.0.0
+flask-cors>=3.0.0
+numpy>=1.20.0
+Pillow>=9.0.0
+torch>=2.0.0
+transformers>=4.36.0
+# Note: transformers will pull in the grounding-dino model from HuggingFace
