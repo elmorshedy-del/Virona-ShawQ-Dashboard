@@ -183,6 +183,24 @@ export default function TestimonialExtractor() {
         status,
         ...data
       });
+      const dinoFallbacks = normalizedMessages
+        .map((msg) => msg.avatarDebug?.dinoFallbackReason || msg.avatarDebug?.dino?.fallbackReason)
+        .filter(Boolean);
+      if (dinoFallbacks.length > 0) {
+        const reasonCounts = dinoFallbacks.reduce((acc, reason) => {
+          const key = String(reason);
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {});
+        const summary = Object.entries(reasonCounts)
+          .map(([reason, count]) => `${reason} (${count})`)
+          .join(', ');
+        addDebugEvent({
+          step: 'DINO',
+          status: 'fallback',
+          detail: summary
+        });
+      }
       addDebugEvent({
         step: 'Extract',
         status: 'success',
@@ -406,6 +424,19 @@ export default function TestimonialExtractor() {
               const detected = Boolean(msg.avatarPresent || msg.avatarDataUrl);
               const method = msg.avatarDebug?.methodUsed || msg.avatarMethodUsed || (detected ? 'detected' : 'none');
               const facesFound = msg.avatarDebug?.facesFound ?? msg.facesFound;
+              const dinoDebug = msg.avatarDebug?.dino;
+              const dinoAttempted = dinoDebug?.attempted;
+              const dinoFallback = msg.avatarDebug?.dinoFallbackReason || dinoDebug?.fallbackReason;
+              const dinoErrorRaw = dinoDebug?.detect?.error || dinoDebug?.health?.error || dinoDebug?.health?.statusText;
+              const dinoError = dinoErrorRaw && dinoErrorRaw.length > 40
+                ? `${dinoErrorRaw.slice(0, 37)}...`
+                : dinoErrorRaw;
+              const dinoStatus = dinoAttempted
+                ? (dinoDebug?.health?.ok ? 'ok' : 'fail')
+                : 'n/a';
+              const dinoLine = dinoDebug
+                ? `DINO: ${dinoStatus}${dinoFallback ? ` (${dinoFallback})` : ''}${dinoError ? ` | ${dinoError}` : ''}`
+                : null;
               const initials = msg.authorName ? msg.authorName.trim().charAt(0).toUpperCase() : 'NA';
 
               return (
@@ -430,6 +461,11 @@ export default function TestimonialExtractor() {
                       Method: {method || 'n/a'}
                       {facesFound !== null && facesFound !== undefined ? ` | Faces: ${facesFound}` : ''}
                     </div>
+                    {dinoLine && (
+                      <div className="text-[10px] text-slate-400">
+                        {dinoLine}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
