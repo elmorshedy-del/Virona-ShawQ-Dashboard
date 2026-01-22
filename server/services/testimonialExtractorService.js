@@ -336,6 +336,141 @@ async function detectAllAvatarsWithGroundingDino(imageData, imageId) {
   }
 }
 
+async function detectRegionAvatarsWithGroundingDino(imageData, region, fullWidth, fullHeight, minConfidence = 0.2) {
+  if (!region || region.width <= 0 || region.height <= 0) {
+    return {
+      avatars: null,
+      debug: { ok: false, error: 'invalid_region' }
+    };
+  }
+
+  try {
+    const crop = sharp(imageData).extract({
+      left: Math.max(0, Math.round(region.x)),
+      top: Math.max(0, Math.round(region.y)),
+      width: Math.max(1, Math.round(region.width)),
+      height: Math.max(1, Math.round(region.height))
+    });
+    const cropMeta = await crop.metadata();
+    const cropWidth = cropMeta.width || region.width;
+    const cropHeight = cropMeta.height || region.height;
+    const targetSize = Math.max(cropWidth, cropHeight, 512);
+
+    const { data: resizedBuffer, info: resizedInfo } = await crop
+      .resize({
+        width: targetSize,
+        height: targetSize,
+        fit: 'inside',
+        withoutEnlargement: false
+      })
+      .png()
+      .toBuffer({ resolveWithObject: true });
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GROUNDING_DINO_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(`${GROUNDING_DINO_SERVICE_URL}/detect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: resizedBuffer.toString('base64'),
+          min_confidence: minConfidence
+        }),
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        return {
+          avatars: null,
+          debug: {
+            ok: false,
+            status: response.status,
+            statusText: response.statusText || 'detect_failed',
+            cropWidth,
+            cropHeight,
+            resizedWidth: resizedInfo.width,
+            resizedHeight: resizedInfo.height,
+            minConfidence
+          }
+        };
+      }
+
+      const avatars = await response.json().catch(() => null);
+      if (!Array.isArray(avatars)) {
+        return {
+          avatars: null,
+          debug: {
+            ok: false,
+            error: 'invalid_response',
+            cropWidth,
+            cropHeight,
+            resizedWidth: resizedInfo.width,
+            resizedHeight: resizedInfo.height,
+            minConfidence
+          }
+        };
+      }
+
+      const scaleX = cropWidth / resizedInfo.width;
+      const scaleY = cropHeight / resizedInfo.height;
+      const mapped = avatars.map((avatar) => {
+        const mappedBox = {
+          x: avatar.x * scaleX + region.x,
+          y: avatar.y * scaleY + region.y,
+          width: avatar.width * scaleX,
+          height: avatar.height * scaleY
+        };
+        const clamped = (fullWidth && fullHeight)
+          ? clampBoxToImage(mappedBox, fullWidth, fullHeight)
+          : mappedBox;
+        return {
+          ...clamped,
+          score: avatar.score
+        };
+      }).filter(Boolean);
+
+      return {
+        avatars: mapped,
+        debug: {
+          ok: true,
+          count: mapped.length,
+          cropWidth,
+          cropHeight,
+          resizedWidth: resizedInfo.width,
+          resizedHeight: resizedInfo.height,
+          scaleX,
+          scaleY,
+          minConfidence
+        }
+      };
+    } catch (error) {
+      return {
+        avatars: null,
+        debug: {
+          ok: false,
+          error: error?.name === 'AbortError' ? 'timeout' : (error?.message || 'detect_error'),
+          cropWidth,
+          cropHeight,
+          resizedWidth: resizedInfo.width,
+          resizedHeight: resizedInfo.height,
+          minConfidence
+        }
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch (error) {
+    return {
+      avatars: null,
+      debug: {
+        ok: false,
+        error: error?.message || 'crop_error'
+      }
+    };
+  }
+}
+
 async function checkScrfdHealth(timeoutMs = SCRFD_HEALTH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -470,13 +605,24 @@ async function detectAvatarsInRegion(imageData, region, fullWidth = 1080, fullHe
       detect: null,
       totalCount: 0,
       nearbyCount: 0,
-      fallbackReason: null
+      fallbackReason: null,
+      region: {
+        attempted: false,
+        detect: null,
+        totalCount: 0,
+        nearbyCount: 0,
+        fallbackReason: null
+      }
     }
   };
 
   if (!region || region.width <= 0 || region.height <= 0) {
     return { detections: [], debug };
   }
+
+  const regionCenterX = region.x + region.width / 2;
+  const regionCenterY = region.y + region.height / 2;
+  const maxDistance = Math.max(region.width, region.height) * 3;
 
   debug.dino.attempted = true;
   const health = await checkGroundingDinoHealth();
@@ -488,9 +634,6 @@ async function detectAvatarsInRegion(imageData, region, fullWidth = 1080, fullHe
 
     if (Array.isArray(avatars)) {
       debug.dino.totalCount = avatars.length;
-      const regionCenterX = region.x + region.width / 2;
-      const regionCenterY = region.y + region.height / 2;
-      const maxDistance = Math.max(region.width, region.height) * 3;
 
       const nearbyAvatars = avatars.filter(a => {
         const avatarCenterX = a.x + a.width / 2;
@@ -517,6 +660,48 @@ async function detectAvatarsInRegion(imageData, region, fullWidth = 1080, fullHe
       debug.dino.fallbackReason = 'no_dino_avatars_near_region';
     } else {
       debug.dino.fallbackReason = 'dino_detect_failed';
+    }
+
+    debug.dino.region.attempted = true;
+    const { avatars: regionAvatars, debug: regionDebug } = await detectRegionAvatarsWithGroundingDino(
+      imageData,
+      region,
+      fullWidth,
+      fullHeight,
+      0.18
+    );
+    debug.dino.region.detect = regionDebug;
+
+    if (Array.isArray(regionAvatars)) {
+      debug.dino.region.totalCount = regionAvatars.length;
+      const nearbyRegionAvatars = regionAvatars.filter(a => {
+        const avatarCenterX = a.x + a.width / 2;
+        const avatarCenterY = a.y + a.height / 2;
+        const distance = Math.hypot(avatarCenterX - regionCenterX, avatarCenterY - regionCenterY);
+        return distance < maxDistance;
+      });
+      debug.dino.region.nearbyCount = nearbyRegionAvatars.length;
+      if (nearbyRegionAvatars.length > 0) {
+        return {
+          detections: nearbyRegionAvatars.map(a => ({
+            x: a.x,
+            y: a.y,
+            width: a.width,
+            height: a.height,
+            score: a.score,
+            method: 'grounding_dino_region'
+          })),
+          debug
+        };
+      }
+
+      debug.dino.region.fallbackReason = 'dino_region_no_avatar';
+    } else {
+      debug.dino.region.fallbackReason = 'dino_region_detect_failed';
+    }
+
+    if (debug.dino.region.fallbackReason) {
+      debug.dino.fallbackReason = debug.dino.region.fallbackReason;
     }
   } else {
     debug.dino.fallbackReason = 'dino_unhealthy';
@@ -1177,7 +1362,7 @@ export async function extractMessagesFromImage(imagePath) {
         score,
         facesFound,
         dino: dinoDebug,
-        dinoFallbackReason: dinoDebug?.fallbackReason || null
+        dinoFallbackReason: dinoDebug?.region?.fallbackReason || dinoDebug?.fallbackReason || null
       };
 
       console.log('Avatar debug info:', avatarDebug);
