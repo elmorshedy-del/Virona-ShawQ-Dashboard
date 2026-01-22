@@ -199,7 +199,7 @@ def detect():
         print(f'ERROR in /detect: {e}')
         import traceback
         traceback.print_exc()
-        return jsonify([])
+        return jsonify({"error": "An internal error occurred during detection."}), 500
 
 
 if __name__ == '__main__':
