@@ -313,6 +313,23 @@ export function initDb() {
     db.exec('ALTER TABLE exchange_rates ADD COLUMN fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP');
   } catch (e) { /* column exists */ }
 
+  // Exchange rate API usage log (tracks actual external calls; not number of rows inserted)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exchange_rate_api_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      date TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      status TEXT NOT NULL,
+      http_status INTEGER,
+      error_code TEXT,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
