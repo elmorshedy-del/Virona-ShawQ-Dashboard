@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fetch from 'node-fetch';
 
 import { initDb, getDb } from './db/database.js';
 import analyticsRouter from './routes/analytics.js';
@@ -32,6 +31,14 @@ import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
+import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
+import {
+  fetchApilayerHistoricalTryToUsdRate,
+  fetchCurrencyFreaksHistoricalTryToUsdRate,
+  fetchCurrencyFreaksTimeseriesTryToUsdRates,
+  fetchFrankfurterTryToUsdRate,
+  fetchOXRHistoricalTryToUsdRate
+} from './services/exchangeRateProviders.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -284,28 +291,10 @@ async function dayTurnMetaSync() {
 // Backfill missing exchange rates on startup (historical only)
 async function backfillMissingExchangeRates(daysBack = 60) {
   const db = getDb();
-  const apilayerKey = process.env.APILAYER_EXCHANGE_RATES_KEY;
-  const oxrKey = process.env.OXR_APP_ID;
   const maxCalls = parseInt(process.env.EXCHANGE_RATE_BACKFILL_MAX_CALLS || '100', 10);
-  const providerOverride = (process.env.EXCHANGE_RATE_BACKFILL_PROVIDER || process.env.EXCHANGE_RATE_HISTORICAL_PROVIDER || '').toLowerCase();
-  const backfillProvider = providerOverride || (apilayerKey ? 'apilayer' : oxrKey ? 'oxr' : null);
+  const { primaryBackfillProvider, secondaryBackfillProvider } = resolveExchangeRateProviders();
 
-  if (backfillProvider === 'apilayer' && !apilayerKey) {
-    console.log('[Exchange] APILayer key missing, skipping missing-rate backfill');
-    return;
-  }
-
-  if (backfillProvider === 'oxr' && !oxrKey) {
-    console.log('[Exchange] OXR key missing, skipping missing-rate backfill');
-    return;
-  }
-
-  if (backfillProvider && !['apilayer', 'oxr', 'frankfurter'].includes(backfillProvider)) {
-    console.log(`[Exchange] Unknown backfill provider "${backfillProvider}"; skipping missing-rate backfill`);
-    return;
-  }
-
-  if (!backfillProvider) {
+  if (!primaryBackfillProvider) {
     console.log('[Exchange] No backfill provider configured, skipping missing-rate backfill');
     return;
   }
@@ -318,12 +307,13 @@ async function backfillMissingExchangeRates(daysBack = 60) {
     date.setDate(date.getDate() - i);
     const dateStr = formatDateAsGmt3(date);
 
+    // Daily sync owns yesterday; do not backfill it with a historical source.
     if (dateStr === yesterday) {
       continue;
     }
 
     const existing = db.prepare(`
-      SELECT rate FROM exchange_rates
+      SELECT 1 FROM exchange_rates
       WHERE from_currency = 'TRY' AND to_currency = 'USD' AND date = ?
     `).get(dateStr);
 
@@ -337,152 +327,140 @@ async function backfillMissingExchangeRates(daysBack = 60) {
     return;
   }
 
-  console.log(`[Exchange] Backfilling ${missingDates.length} missing dates (provider: ${backfillProvider}, max ${maxCalls} calls)`);
+  const primary = String(primaryBackfillProvider).toLowerCase();
+  const secondary =
+    secondaryBackfillProvider && String(secondaryBackfillProvider).toLowerCase() !== primary
+      ? String(secondaryBackfillProvider).toLowerCase()
+      : null;
 
-  let calls = 0;
-  let fetched = 0;
-  let failed = 0;
+  console.log(
+    `[Exchange] Backfilling ${missingDates.length} missing dates (primary: ${primary}` +
+      `${secondary ? `, secondary: ${secondary}` : ''}, max ${maxCalls} calls)`
+  );
 
-  if (backfillProvider === 'frankfurter') {
-    if (maxCalls < 1) {
-      console.log('[Exchange] Backfill disabled by EXCHANGE_RATE_BACKFILL_MAX_CALLS');
-      return;
-    }
-
-    const sortedDates = [...missingDates].sort();
-    const startDate = sortedDates[0];
-    const endDate = sortedDates[sortedDates.length - 1];
-    const url = `https://api.frankfurter.app/${startDate}..${endDate}?from=TRY&to=USD`;
-
-    try {
-      const res = await fetch(url);
-      calls += 1;
-
-      if (!res.ok) {
-        console.warn(`[Exchange] Frankfurter request failed: ${res.status}`);
-        failed = missingDates.length;
-      } else {
-        const data = await res.json();
-        const rates = data?.rates || {};
-
-        for (const dateStr of missingDates) {
-          const rate = parseFloat(rates?.[dateStr]?.USD);
-          if (!Number.isFinite(rate) || rate <= 0) {
-            console.warn(`[Exchange] Frankfurter has no published rate for ${dateStr}`);
-            failed += 1;
-            continue;
-          }
-
-          db.prepare(`
-            INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source)
-            VALUES ('TRY', 'USD', ?, ?, ?)
-          `).run(rate, dateStr, 'frankfurter');
-
-          fetched += 1;
-          console.log(`[Exchange] Backfilled ${dateStr}: TRY→USD = ${rate.toFixed(6)} (frankfurter)`);
-        }
-      }
-    } catch (error) {
-      console.error(`[Exchange] Frankfurter backfill error: ${error.message}`);
-      failed = missingDates.length;
-    }
-
-    console.log(`[Exchange] Backfill complete: fetched=${fetched}, failed=${failed}, calls=${calls}`);
+  if (maxCalls < 1) {
+    console.log('[Exchange] Backfill disabled by EXCHANGE_RATE_BACKFILL_MAX_CALLS');
     return;
   }
 
-  for (const dateStr of missingDates) {
-    if (calls >= maxCalls) {
-      console.log(`[Exchange] Reached max backfill calls (${maxCalls}). Stopping.`);
-      break;
+  let callBudget = maxCalls;
+  let fetched = 0;
+  let failed = 0;
+
+  const insertRate = (rate, dateStr, source) => {
+    db.prepare(`
+      INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source)
+      VALUES ('TRY', 'USD', ?, ?, ?)
+    `).run(rate, dateStr, source);
+
+    fetched += 1;
+    console.log(`[Exchange] Backfilled ${dateStr}: TRY→USD = ${rate.toFixed(6)} (${source})`);
+  };
+
+  const remainingDates = [];
+
+  // Primary backfill
+  if (primary === 'currencyfreaks') {
+    const sortedDates = [...missingDates].sort();
+    const startDate = sortedDates[0];
+    const endDate = sortedDates[sortedDates.length - 1];
+
+    if (callBudget < 1) {
+      console.log('[Exchange] No call budget remaining for CurrencyFreaks timeseries.');
+      return;
     }
 
-    let tryToUsd = null;
-    let source = null;
+    const series = await fetchCurrencyFreaksTimeseriesTryToUsdRates(startDate, endDate);
 
-    try {
-      if (backfillProvider === 'apilayer') {
-        const url = `https://api.exchangeratesapi.io/v1/${dateStr}?access_key=${apilayerKey}&symbols=USD,TRY`;
-        const res = await fetch(url);
-        calls += 1;
+    // Count this as a single call attempt for throttling purposes.
+    callBudget -= 1;
 
-        if (res.status === 429) {
-          console.error('[Exchange] APILayer rate limit reached. Stopping backfill.');
-          break;
-        }
-        if (!res.ok) {
-          console.warn(`[Exchange] APILayer request failed for ${dateStr}: ${res.status}`);
-          failed += 1;
+    if (!series.ok) {
+      console.warn(`[Exchange] CurrencyFreaks timeseries failed (${series.code}${series.status ? `, HTTP ${series.status}` : ''}): ${series.message}`);
+      remainingDates.push(...missingDates);
+    } else {
+      for (const dateStr of missingDates) {
+        const rate = series.ratesByDate.get(dateStr);
+        if (!Number.isFinite(rate) || rate <= 0) {
+          remainingDates.push(dateStr);
           continue;
         }
-
-        const data = await res.json();
-        if (data?.success === false) {
-          console.warn(`[Exchange] APILayer error for ${dateStr}: ${data?.error?.info || data?.error?.type || 'Unknown error'}`);
-          failed += 1;
-          continue;
-        }
-
-        const usdRate = parseFloat(data?.rates?.USD);
-        const tryRate = parseFloat(data?.rates?.TRY);
-        if (!Number.isFinite(usdRate) || !Number.isFinite(tryRate) || tryRate <= 0) {
-          console.warn(`[Exchange] APILayer missing USD/TRY rates for ${dateStr}`);
-          failed += 1;
-          continue;
-        }
-
-        tryToUsd = usdRate / tryRate;
-        source = 'apilayer';
-      } else if (backfillProvider === 'oxr') {
-        const url = `https://openexchangerates.org/api/historical/${dateStr}.json?app_id=${oxrKey}&symbols=TRY`;
-        const res = await fetch(url);
-        calls += 1;
-
-        if (res.status === 429) {
-          console.error('[Exchange] OXR rate limit reached. Stopping backfill.');
-          break;
-        }
-        if (!res.ok) {
-          console.warn(`[Exchange] OXR request failed for ${dateStr}: ${res.status}`);
-          failed += 1;
-          continue;
-        }
-
-        const data = await res.json();
-        if (data.error) {
-          console.warn(`[Exchange] OXR error for ${dateStr}: ${data.message || data.description}`);
-          failed += 1;
-          continue;
-        }
-
-        if (!data?.rates?.TRY) {
-          console.warn(`[Exchange] OXR missing TRY rate for ${dateStr}`);
-          failed += 1;
-          continue;
-        }
-
-        tryToUsd = 1 / data.rates.TRY;
-        source = 'oxr';
+        insertRate(rate, dateStr, series.source || 'currencyfreaks');
       }
-
-      if (tryToUsd && source) {
-        db.prepare(`
-          INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source)
-          VALUES ('TRY', 'USD', ?, ?, ?)
-        `).run(tryToUsd, dateStr, source);
-
-        fetched += 1;
-        console.log(`[Exchange] Backfilled ${dateStr}: TRY→USD = ${tryToUsd.toFixed(6)} (${source})`);
-      }
-    } catch (error) {
-      console.error(`[Exchange] Backfill error for ${dateStr}: ${error.message}`);
-      failed += 1;
     }
+  } else {
+    for (const dateStr of missingDates) {
+      if (callBudget < 1) {
+        console.log(`[Exchange] Reached max backfill calls (${maxCalls}). Stopping.`);
+        remainingDates.push(dateStr);
+        continue;
+      }
 
-    await new Promise(resolve => setTimeout(resolve, 400));
+      let result = null;
+
+      if (primary === 'oxr') {
+        result = await fetchOXRHistoricalTryToUsdRate(dateStr);
+      } else if (primary === 'apilayer') {
+        result = await fetchApilayerHistoricalTryToUsdRate(dateStr);
+      } else if (primary === 'frankfurter') {
+        result = await fetchFrankfurterTryToUsdRate(dateStr);
+      } else {
+        console.warn(`[Exchange] Unknown primary backfill provider "${primary}"; skipping.`);
+        remainingDates.push(dateStr);
+        continue;
+      }
+
+      callBudget -= 1;
+
+      if (result.ok && Number.isFinite(result.tryToUsd) && result.tryToUsd > 0) {
+        insertRate(result.tryToUsd, dateStr, result.source || primary);
+      } else {
+        remainingDates.push(dateStr);
+        failed += 1;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
   }
 
-  console.log(`[Exchange] Backfill complete: fetched=${fetched}, failed=${failed}, calls=${calls}`);
+  // Secondary fallback (only for the dates primary couldn't fill)
+  if (secondary && remainingDates.length && callBudget > 0) {
+    console.log(`[Exchange] Trying secondary backfill for ${remainingDates.length} remaining dates (${secondary})...`);
+
+    for (const dateStr of remainingDates) {
+      if (callBudget < 1) {
+        console.log(`[Exchange] Reached max backfill calls (${maxCalls}). Stopping secondary.`);
+        break;
+      }
+
+      let result = null;
+      if (secondary === 'oxr') {
+        result = await fetchOXRHistoricalTryToUsdRate(dateStr);
+      } else if (secondary === 'apilayer') {
+        result = await fetchApilayerHistoricalTryToUsdRate(dateStr);
+      } else if (secondary === 'frankfurter') {
+        result = await fetchFrankfurterTryToUsdRate(dateStr);
+      } else if (secondary === 'currencyfreaks') {
+        // Secondary CurrencyFreaks uses per-date historical endpoint for a single day.
+        result = await fetchCurrencyFreaksHistoricalTryToUsdRate(dateStr);
+      } else {
+        console.warn(`[Exchange] Unknown secondary backfill provider "${secondary}"; skipping.`);
+        break;
+      }
+
+      callBudget -= 1;
+
+      if (result.ok && Number.isFinite(result.tryToUsd) && result.tryToUsd > 0) {
+        insertRate(result.tryToUsd, dateStr, result.source || secondary);
+      } else {
+        failed += 1;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
+
+  console.log(`[Exchange] Backfill complete: fetched=${fetched}, failed=${failed}`);
 }
 
 // Daily exchange rate sync - fetch yesterday's final rate

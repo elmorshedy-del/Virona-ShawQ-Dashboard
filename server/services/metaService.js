@@ -2,6 +2,14 @@ import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 import { createOrderNotifications, backfillShopifyCampaignNames } from './notificationService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import { resolveExchangeRateProviders } from './exchangeRateConfig.js';
+import {
+  fetchApilayerHistoricalTryToUsdRate,
+  fetchCurrencyFreaksHistoricalTryToUsdRate,
+  fetchCurrencyFreaksLatestTryToUsdRate,
+  fetchFrankfurterTryToUsdRate,
+  fetchOXRHistoricalTryToUsdRate
+} from './exchangeRateProviders.js';
 
 const META_API_VERSION = 'v19.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -35,48 +43,31 @@ function setCachedDateRate(dateStr, rate) {
 }
 
 
-function parsePositiveNumber(value) {
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return null;
-  }
-  return parsed;
-}
 
-// Helper: Fetch actual TRY→USD exchange rate
+// Helper: Fetch actual TRY->USD exchange rate (daily provider)
 async function fetchTryToUsdRate() {
   // Return cached rate if still valid
   if (cachedTryToUsd && (Date.now() - cacheTimestamp) < CACHE_DURATION_MS) {
     return cachedTryToUsd;
   }
 
-  const apiKey = process.env.CURRENCYFREAKS_API_KEY;
-  if (!apiKey) {
-    console.warn('[Exchange] CURRENCYFREAKS_API_KEY not found in environment.');
+  const { dailyProvider } = resolveExchangeRateProviders();
+  if (dailyProvider !== 'currencyfreaks') {
+    console.warn(`[Exchange] Unsupported daily exchange provider "${dailyProvider}". Falling back to no conversion.`);
     return null;
   }
 
-  try {
-    const url = `https://api.currencyfreaks.com/v2.0/rates/latest?apikey=${apiKey}&symbols=TRY`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.warn(`[Exchange] CurrencyFreaks request failed with status: ${response.status}`);
-      return null;
-    }
-    const data = await response.json();
-    const usdToTry = parsePositiveNumber(data?.rates?.TRY);
-    if (usdToTry) {
-      cachedTryToUsd = 1 / usdToTry;
-      cacheTimestamp = Date.now();
-      console.log(`[Exchange] Fetched TRY→USD rate from CurrencyFreaks: ${cachedTryToUsd.toFixed(6)}`);
-      return cachedTryToUsd;
-    }
-    console.warn('[Exchange] CurrencyFreaks response missing TRY rate');
-  } catch (err) {
-    console.warn(`[Exchange] Failed to fetch CurrencyFreaks rate: ${err.message}`);
+  const result = await fetchCurrencyFreaksLatestTryToUsdRate();
+  if (!result.ok) {
+    const statusLabel = result.status ? `HTTP ${result.status}` : 'no response';
+    console.warn(`[Exchange] CurrencyFreaks latest failed (${result.code}, ${statusLabel}): ${result.message}`);
+    return null;
   }
 
-  return null;
+  cachedTryToUsd = result.tryToUsd;
+  cacheTimestamp = Date.now();
+  console.log(`[Exchange] Fetched TRY→USD rate from CurrencyFreaks: ${cachedTryToUsd.toFixed(6)}`);
+  return cachedTryToUsd;
 }
 
 // Helper: Get currency conversion rate
@@ -89,139 +80,52 @@ async function getCurrencyRate(store) {
   return 1.0;
 }
 
-async function fetchApilayerTryToUsdRate(dateStr) {
-  const apiKey = process.env.APILAYER_EXCHANGE_RATES_KEY;
-  if (!apiKey) {
-    return null;
+function resolveHistoricalProviders() {
+  const { primaryBackfillProvider, secondaryBackfillProvider } = resolveExchangeRateProviders();
+  const providers = [];
+
+  if (primaryBackfillProvider) {
+    providers.push(primaryBackfillProvider);
+  }
+  if (secondaryBackfillProvider && secondaryBackfillProvider !== primaryBackfillProvider) {
+    providers.push(secondaryBackfillProvider);
   }
 
-  try {
-    const url = `https://api.exchangeratesapi.io/v1/${dateStr}?access_key=${apiKey}&symbols=USD,TRY`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.warn(`[Exchange] APILayer request failed for ${dateStr}: ${response.status}`);
-      return null;
-    }
-    const data = await response.json();
-    if (data?.success === false) {
-      console.warn(`[Exchange] APILayer error for ${dateStr}: ${data?.error?.info || data?.error?.type || 'Unknown error'}`);
-      return null;
-    }
-    const usdRate = parsePositiveNumber(data?.rates?.USD);
-    const tryRate = parsePositiveNumber(data?.rates?.TRY);
-    if (!usdRate || !tryRate) {
-      console.warn(`[Exchange] APILayer missing USD/TRY rates for ${dateStr}`);
-      return null;
-    }
-    return usdRate / tryRate;
-  } catch (err) {
-    console.warn(`[Exchange] APILayer fetch failed for ${dateStr}: ${err.message}`);
-    return null;
-  }
-}
-
-async function fetchOXRHistoricalTryToUsdRate(dateStr) {
-  const OXR_APP_ID = process.env.OXR_APP_ID;
-  if (!OXR_APP_ID) {
-    return null;
-  }
-
-  try {
-    const url = `https://openexchangerates.org/api/historical/${dateStr}.json?app_id=${OXR_APP_ID}&symbols=TRY`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.warn(`[Exchange] OXR request failed for ${dateStr}: ${response.status}`);
-      return null;
-    }
-    const data = await response.json();
-    if (data.error) {
-      console.error(`[Exchange] OXR API error for ${dateStr}: ${data.message || data.description}`);
-      return null;
-    }
-    const usdToTry = parsePositiveNumber(data?.rates?.TRY);
-    if (!usdToTry) {
-      console.warn(`[Exchange] OXR response missing TRY rate for ${dateStr}`);
-      return null;
-    }
-    return 1 / usdToTry;
-  } catch (err) {
-    console.warn(`[Exchange] OXR fetch failed for ${dateStr}: ${err.message}`);
-    return null;
-  }
-}
-
-
-async function fetchFrankfurterTryToUsdRate(dateStr) {
-  try {
-    const url = `https://api.frankfurter.app/${dateStr}?from=TRY&to=USD`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.warn(`[Exchange] Frankfurter request failed for ${dateStr}: ${response.status}`);
-      return null;
-    }
-    const data = await response.json();
-    if (data?.date !== dateStr) {
-      console.warn(`[Exchange] Frankfurter has no published rate for ${dateStr}`);
-      return null;
-    }
-    const rate = parsePositiveNumber(data?.rates?.USD);
-    if (!rate) {
-      console.warn(`[Exchange] Frankfurter response missing USD rate for ${dateStr}`);
-      return null;
-    }
-    return rate;
-  } catch (err) {
-    console.warn(`[Exchange] Frankfurter fetch failed for ${dateStr}: ${err.message}`);
-    return null;
-  }
-}
-
-function resolveHistoricalProvider() {
-  const override = (process.env.EXCHANGE_RATE_BACKFILL_PROVIDER || process.env.EXCHANGE_RATE_HISTORICAL_PROVIDER || '').toLowerCase();
-  if (override) {
-    return override;
-  }
-  if (process.env.APILAYER_EXCHANGE_RATES_KEY) {
-    return 'apilayer';
-  }
-  if (process.env.OXR_APP_ID) {
-    return 'oxr';
-  }
-  return null;
+  return providers;
 }
 
 async function fetchHistoricalTryToUsdRate(dateStr) {
-  const provider = resolveHistoricalProvider();
-  if (provider === 'frankfurter') {
-    const rate = await fetchFrankfurterTryToUsdRate(dateStr);
-    if (rate) {
-      return { rate, source: 'frankfurter' };
+  const providers = resolveHistoricalProviders();
+
+  if (!providers.length) {
+    console.warn(`[Exchange] No historical rate provider configured for ${dateStr}`);
+    return null;
+  }
+
+  for (const provider of providers) {
+    let result = null;
+
+    if (provider === 'currencyfreaks') {
+      result = await fetchCurrencyFreaksHistoricalTryToUsdRate(dateStr);
+    } else if (provider === 'oxr') {
+      result = await fetchOXRHistoricalTryToUsdRate(dateStr);
+    } else if (provider === 'apilayer') {
+      result = await fetchApilayerHistoricalTryToUsdRate(dateStr);
+    } else if (provider === 'frankfurter') {
+      result = await fetchFrankfurterTryToUsdRate(dateStr);
+    } else {
+      console.warn(`[Exchange] Unknown historical rate provider "${provider}" for ${dateStr}`);
+      continue;
     }
-    return null;
-  }
 
-  if (provider === 'apilayer') {
-    const rate = await fetchApilayerTryToUsdRate(dateStr);
-    if (rate) {
-      return { rate, source: 'apilayer' };
+    if (result?.ok) {
+      return { rate: result.tryToUsd, source: result.source || provider };
     }
-    return null;
+
+    const statusLabel = result?.status ? `HTTP ${result.status}` : 'no response';
+    console.warn(`[Exchange] ${provider} historical failed for ${dateStr} (${result?.code || 'error'}, ${statusLabel}): ${result?.message || 'Unknown error'}`);
   }
 
-  if (provider === 'oxr') {
-    const rate = await fetchOXRHistoricalTryToUsdRate(dateStr);
-    if (rate) {
-      return { rate, source: 'oxr' };
-    }
-    return null;
-  }
-
-  if (provider) {
-    console.warn(`[Exchange] Unknown historical rate provider "${provider}" for ${dateStr}`);
-    return null;
-  }
-
-  console.warn(`[Exchange] No historical rate provider configured for ${dateStr}`);
   return null;
 }
 
@@ -229,7 +133,7 @@ async function fetchHistoricalTryToUsdRate(dateStr) {
  * Get TRY→USD exchange rate for a specific date.
  * - For today (GMT+3): uses yesterday's finalized rate
  * - For yesterday: uses CurrencyFreaks latest
- * - For earlier dates: uses APILayer historical (or OXR if configured)
+ * - For earlier dates: uses the configured historical provider(s) (Primary Backfill, then Secondary Backfill)
  * - No hardcoded fallback; missing rates remain null
  * @param {string} dateStr - Date in YYYY-MM-DD format
  * @returns {Promise<number|null>} - TRY to USD rate
@@ -280,7 +184,7 @@ export async function getExchangeRateForDate(dateStr) {
     return null;
   }
 
-  // Fetch from APILayer (historical) or OXR fallback if configured
+  // Fetch from the configured historical provider(s)
   const historical = await fetchHistoricalTryToUsdRate(lookupDate);
   if (historical?.rate) {
     db.prepare(`
