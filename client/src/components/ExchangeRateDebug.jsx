@@ -9,6 +9,7 @@ function providerLabel(provider) {
   if (provider === 'apilayer') return 'APILayer';
   if (provider === 'frankfurter') return 'Frankfurter (ECB)';
   return provider;
+}
 
 function providerStatus(provider, configured) {
   if (!provider) return { label: 'Not configured', tone: 'text-gray-500' };
@@ -17,8 +18,6 @@ function providerStatus(provider, configured) {
   return isReady
     ? { label: 'Connected', tone: 'text-green-600' }
     : { label: 'Missing API key', tone: 'text-red-600' };
-}
-
 }
 
 export default function ExchangeRateDebug() {
