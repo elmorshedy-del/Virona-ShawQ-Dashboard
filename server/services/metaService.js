@@ -150,8 +150,57 @@ async function fetchOXRHistoricalTryToUsdRate(dateStr) {
   }
 }
 
-async function fetchHistoricalTryToUsdRate(dateStr) {
+
+async function fetchFrankfurterTryToUsdRate(dateStr) {
+  try {
+    const url = `https://api.frankfurter.app/${dateStr}?from=TRY&to=USD`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.warn(`[Exchange] Frankfurter request failed for ${dateStr}: ${response.status}`);
+      return null;
+    }
+    const data = await response.json();
+    if (data?.date !== dateStr) {
+      console.warn(`[Exchange] Frankfurter has no published rate for ${dateStr}`);
+      return null;
+    }
+    const rate = parsePositiveNumber(data?.rates?.USD);
+    if (!rate) {
+      console.warn(`[Exchange] Frankfurter response missing USD rate for ${dateStr}`);
+      return null;
+    }
+    return rate;
+  } catch (err) {
+    console.warn(`[Exchange] Frankfurter fetch failed for ${dateStr}: ${err.message}`);
+    return null;
+  }
+}
+
+function resolveHistoricalProvider() {
+  const override = (process.env.EXCHANGE_RATE_BACKFILL_PROVIDER || process.env.EXCHANGE_RATE_HISTORICAL_PROVIDER || '').toLowerCase();
+  if (override) {
+    return override;
+  }
   if (process.env.APILAYER_EXCHANGE_RATES_KEY) {
+    return 'apilayer';
+  }
+  if (process.env.OXR_APP_ID) {
+    return 'oxr';
+  }
+  return null;
+}
+
+async function fetchHistoricalTryToUsdRate(dateStr) {
+  const provider = resolveHistoricalProvider();
+  if (provider === 'frankfurter') {
+    const rate = await fetchFrankfurterTryToUsdRate(dateStr);
+    if (rate) {
+      return { rate, source: 'frankfurter' };
+    }
+    return null;
+  }
+
+  if (provider === 'apilayer') {
     const rate = await fetchApilayerTryToUsdRate(dateStr);
     if (rate) {
       return { rate, source: 'apilayer' };
@@ -159,11 +208,17 @@ async function fetchHistoricalTryToUsdRate(dateStr) {
     return null;
   }
 
-  if (process.env.OXR_APP_ID) {
+  if (provider === 'oxr') {
     const rate = await fetchOXRHistoricalTryToUsdRate(dateStr);
     if (rate) {
       return { rate, source: 'oxr' };
     }
+    return null;
+  }
+
+  if (provider) {
+    console.warn(`[Exchange] Unknown historical rate provider "${provider}" for ${dateStr}`);
+    return null;
   }
 
   console.warn(`[Exchange] No historical rate provider configured for ${dateStr}`);

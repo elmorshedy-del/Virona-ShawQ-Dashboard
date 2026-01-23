@@ -217,8 +217,25 @@ async function backfillMissingExchangeRates(daysBack = 60) {
   const apilayerKey = process.env.APILAYER_EXCHANGE_RATES_KEY;
   const oxrKey = process.env.OXR_APP_ID;
   const maxCalls = parseInt(process.env.EXCHANGE_RATE_BACKFILL_MAX_CALLS || '100', 10);
+  const providerOverride = (process.env.EXCHANGE_RATE_BACKFILL_PROVIDER || process.env.EXCHANGE_RATE_HISTORICAL_PROVIDER || '').toLowerCase();
+  const backfillProvider = providerOverride || (apilayerKey ? 'apilayer' : oxrKey ? 'oxr' : null);
 
-  if (!apilayerKey && !oxrKey) {
+  if (backfillProvider === 'apilayer' && !apilayerKey) {
+    console.log('[Exchange] APILayer key missing, skipping missing-rate backfill');
+    return;
+  }
+
+  if (backfillProvider === 'oxr' && !oxrKey) {
+    console.log('[Exchange] OXR key missing, skipping missing-rate backfill');
+    return;
+  }
+
+  if (backfillProvider && !['apilayer', 'oxr', 'frankfurter'].includes(backfillProvider)) {
+    console.log(`[Exchange] Unknown backfill provider "${backfillProvider}"; skipping missing-rate backfill`);
+    return;
+  }
+
+  if (!backfillProvider) {
     console.log('[Exchange] No backfill provider configured, skipping missing-rate backfill');
     return;
   }
@@ -250,11 +267,59 @@ async function backfillMissingExchangeRates(daysBack = 60) {
     return;
   }
 
-  console.log(`[Exchange] Backfilling ${missingDates.length} missing dates (max ${maxCalls} calls)`);
+  console.log(`[Exchange] Backfilling ${missingDates.length} missing dates (provider: ${backfillProvider}, max ${maxCalls} calls)`);
 
   let calls = 0;
   let fetched = 0;
   let failed = 0;
+
+  if (backfillProvider === 'frankfurter') {
+    if (maxCalls < 1) {
+      console.log('[Exchange] Backfill disabled by EXCHANGE_RATE_BACKFILL_MAX_CALLS');
+      return;
+    }
+
+    const sortedDates = [...missingDates].sort();
+    const startDate = sortedDates[0];
+    const endDate = sortedDates[sortedDates.length - 1];
+    const url = `https://api.frankfurter.app/${startDate}..${endDate}?from=TRY&to=USD`;
+
+    try {
+      const res = await fetch(url);
+      calls += 1;
+
+      if (!res.ok) {
+        console.warn(`[Exchange] Frankfurter request failed: ${res.status}`);
+        failed = missingDates.length;
+      } else {
+        const data = await res.json();
+        const rates = data?.rates || {};
+
+        for (const dateStr of missingDates) {
+          const rate = parseFloat(rates?.[dateStr]?.USD);
+          if (!Number.isFinite(rate) || rate <= 0) {
+            console.warn(`[Exchange] Frankfurter has no published rate for ${dateStr}`);
+            failed += 1;
+            continue;
+          }
+
+          db.prepare(`
+            INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source)
+            VALUES ('TRY', 'USD', ?, ?, ?)
+          `).run(rate, dateStr, 'frankfurter');
+
+          fetched += 1;
+          console.log(`[Exchange] Backfilled ${dateStr}: TRY→USD = ${rate.toFixed(6)} (frankfurter)`);
+        }
+      }
+    } catch (error) {
+      console.error(`[Exchange] Frankfurter backfill error: ${error.message}`);
+      failed = missingDates.length;
+    }
+
+    console.log(`[Exchange] Backfill complete: fetched=${fetched}, failed=${failed}, calls=${calls}`);
+    return;
+  }
 
   for (const dateStr of missingDates) {
     if (calls >= maxCalls) {
@@ -266,7 +331,7 @@ async function backfillMissingExchangeRates(daysBack = 60) {
     let source = null;
 
     try {
-      if (apilayerKey) {
+      if (backfillProvider === 'apilayer') {
         const url = `https://api.exchangeratesapi.io/v1/${dateStr}?access_key=${apilayerKey}&symbols=USD,TRY`;
         const res = await fetch(url);
         calls += 1;
@@ -298,7 +363,7 @@ async function backfillMissingExchangeRates(daysBack = 60) {
 
         tryToUsd = usdRate / tryRate;
         source = 'apilayer';
-      } else if (oxrKey) {
+      } else if (backfillProvider === 'oxr') {
         const url = `https://openexchangerates.org/api/historical/${dateStr}.json?app_id=${oxrKey}&symbols=TRY`;
         const res = await fetch(url);
         calls += 1;
