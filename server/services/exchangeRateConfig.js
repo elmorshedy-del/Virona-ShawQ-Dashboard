@@ -4,6 +4,12 @@ function normalizeProvider(value) {
   if (!value) return null;
   const v = String(value).trim().toLowerCase();
   if (!v || v === 'none' || v === 'null' || v === 'false') return null;
+
+  // Allow common aliases and minor typos in env vars (Railway UI is easy to mis-type).
+  if (v === 'frankfurt' || v === 'frankfurter') return 'frankfurter';
+  if (v === 'openexchangerates' || v === 'open-exchange-rates' || v === 'open_exchange_rates') return 'oxr';
+  if (v === 'currency-freaks' || v === 'currency_freaks' || v === 'currencyfreak') return 'currencyfreaks';
+
   return v;
 }
 

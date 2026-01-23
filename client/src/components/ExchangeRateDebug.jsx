@@ -71,7 +71,7 @@ export default function ExchangeRateDebug() {
       {
         id: 'primary_daily',
         label: `Primary (Daily) - ${providerLabel(strategy?.dailyProvider)}`,
-        description: 'Only for yesterday (finalized day in GMT+3).'
+        description: 'Uses CurrencyFreaks (latest for yesterday; historical for other dates).'
       },
       {
         id: 'secondary_backfill',
