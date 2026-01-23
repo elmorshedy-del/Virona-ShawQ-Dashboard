@@ -265,24 +265,21 @@ router.post('/backfill-single', async (req, res) => {
     });
   }
 
-  // Daily mode is ONLY for yesterday (finalized day). Never store a "latest" value onto arbitrary dates.
+  // Primary (Daily): use CurrencyFreaks latest for yesterday, and CurrencyFreaks historical for other dates.
+  // This lets users safely use the same "primary" source for both daily and manual historical lookups.
   if (mode === 'daily') {
     const yesterday = formatDateAsGmt3(new Date(Date.now() - 24 * 60 * 60 * 1000));
-    if (date !== yesterday) {
-      return res.status(400).json({
-        success: false,
-        error: `Primary (Daily) only supports yesterday (${yesterday}) because today's final rate isn't published yet. Select Primary (Backfill) for other dates.`
-      });
-    }
 
     if (provider !== 'currencyfreaks') {
       return res.status(500).json({
         success: false,
-        error: `Primary (Daily) is configured as "${provider}", but only CurrencyFreaks is supported for daily right now.`
+        error: `Primary (Daily) is configured as "${provider}", but only CurrencyFreaks is supported for this option right now.`
       });
     }
 
-    const result = await fetchCurrencyFreaksLatestTryToUsdRate();
+    const result = date == yesterday
+      ? await fetchCurrencyFreaksLatestTryToUsdRate()
+      : await fetchCurrencyFreaksHistoricalTryToUsdRate(date);
     if (!result.ok) {
       const mapped = toCustomerError({ provider, tier: selectedTier, result });
       return res.status(mapped.httpStatus).json({
