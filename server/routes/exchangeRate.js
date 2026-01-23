@@ -103,7 +103,7 @@ router.post('/backfill-single', async (req, res) => {
   const { date } = req.body;
 
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return res.status(400).json({ success: false, error: 'Invalid date format. Use YYYY-MM-DD' });
+    return res.status(400).json({ success: false, error: 'Invalid date format. Use YYYY-MM-DD.' });
   }
 
   const db = getDb();
@@ -123,9 +123,32 @@ router.post('/backfill-single', async (req, res) => {
 
   const apilayerKey = process.env.APILAYER_EXCHANGE_RATES_KEY;
   const oxrKey = process.env.OXR_APP_ID;
+  const providerOverride = (process.env.EXCHANGE_RATE_BACKFILL_PROVIDER || process.env.EXCHANGE_RATE_HISTORICAL_PROVIDER || '').toLowerCase();
+  const backfillProvider = providerOverride || (apilayerKey ? 'apilayer' : oxrKey ? 'oxr' : null);
 
-  if (!apilayerKey && !oxrKey) {
-    return res.status(500).json({ success: false, error: 'No exchange rate provider configured' });
+  if (backfillProvider && !['apilayer', 'oxr', 'frankfurter'].includes(backfillProvider)) {
+    return res.status(500).json({ success: false, error: `Unknown backfill provider: ${backfillProvider}` });
+  }
+
+  if (!backfillProvider) {
+    return res.status(500).json({
+      success: false,
+      error: 'Historical rates are not configured. Please set a historical provider and try again.'
+    });
+  }
+
+  if (backfillProvider === 'apilayer' && !apilayerKey) {
+    return res.status(500).json({
+      success: false,
+      error: 'APILayer is selected but the API key is missing.'
+    });
+  }
+
+  if (backfillProvider === 'oxr' && !oxrKey) {
+    return res.status(500).json({
+      success: false,
+      error: 'OXR is selected but the API key is missing.'
+    });
   }
 
   try {
@@ -133,37 +156,87 @@ router.post('/backfill-single', async (req, res) => {
     let usdToTry = null;
     let source = null;
 
-    if (apilayerKey) {
-      const url = `https://api.exchangeratesapi.io/v1/${date}?access_key=${apilayerKey}&symbols=USD,TRY`;
+    if (backfillProvider === 'frankfurter') {
+      const url = `https://api.frankfurter.app/${date}?from=TRY&to=USD`;
       const response = await fetch(url);
       if (!response.ok) {
-        return res.status(400).json({ success: false, error: `APILayer request failed (${response.status})` });
+        return res.status(400).json({
+          success: false,
+          error: `Frankfurter request failed (HTTP ${response.status}).`
+        });
+      }
+      const data = await response.json();
+      const rate = parseFloat(data?.rates?.USD);
+      if (data?.date !== date || !Number.isFinite(rate) || rate <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: `No published rate for ${date}. Market data may be unavailable (weekends or holidays).`
+        });
+      }
+      tryToUsd = rate;
+      usdToTry = 1 / tryToUsd;
+      source = 'frankfurter';
+    } else if (backfillProvider === 'apilayer') {
+      const url = `https://api.exchangeratesapi.io/v1/${date}?access_key=${apilayerKey}&symbols=USD,TRY`;
+      const response = await fetch(url);
+      if (response.status === 429) {
+        return res.status(429).json({
+          success: false,
+          error: 'APILayer quota reached. Please try again later or upgrade your plan.'
+        });
+      }
+      if (!response.ok) {
+        return res.status(400).json({
+          success: false,
+          error: `APILayer rejected the request (HTTP ${response.status}). Your plan may not include historical rates.`
+        });
       }
       const data = await response.json();
       if (data?.success === false) {
-        return res.status(400).json({ success: false, error: data?.error?.info || data?.error?.type || 'APILayer error' });
+        return res.status(400).json({
+          success: false,
+          error: data?.error?.info || data?.error?.type || 'APILayer returned an error.'
+        });
       }
       const usdRate = parseFloat(data?.rates?.USD);
       const tryRate = parseFloat(data?.rates?.TRY);
       if (!Number.isFinite(usdRate) || !Number.isFinite(tryRate) || tryRate <= 0) {
-        return res.status(400).json({ success: false, error: 'No USD/TRY rates in APILayer response' });
+        return res.status(400).json({
+          success: false,
+          error: 'APILayer response was missing USD/TRY rates.'
+        });
       }
       tryToUsd = usdRate / tryRate;
       usdToTry = 1 / tryToUsd;
       source = 'apilayer';
-    } else if (oxrKey) {
+    } else if (backfillProvider === 'oxr') {
       const url = `https://openexchangerates.org/api/historical/${date}.json?app_id=${oxrKey}&symbols=TRY`;
       const response = await fetch(url);
+      if (response.status === 429) {
+        return res.status(429).json({
+          success: false,
+          error: 'OXR quota reached. Please try again later or upgrade your plan.'
+        });
+      }
       if (!response.ok) {
-        return res.status(400).json({ success: false, error: `OXR request failed (${response.status})` });
+        return res.status(400).json({
+          success: false,
+          error: `OXR rejected the request (HTTP ${response.status}). Your plan may not include historical rates.`
+        });
       }
       const data = await response.json();
       if (data.error) {
-        return res.status(400).json({ success: false, error: data.message || data.description || 'OXR error' });
+        return res.status(400).json({
+          success: false,
+          error: data.message || data.description || 'OXR returned an error.'
+        });
       }
       const usdRate = parseFloat(data?.rates?.TRY);
       if (!Number.isFinite(usdRate) || usdRate <= 0) {
-        return res.status(400).json({ success: false, error: 'No TRY rate in OXR response' });
+        return res.status(400).json({
+          success: false,
+          error: 'OXR response was missing the TRY rate.'
+        });
       }
       usdToTry = usdRate;
       tryToUsd = 1 / usdToTry;
@@ -171,7 +244,7 @@ router.post('/backfill-single', async (req, res) => {
     }
 
     if (!tryToUsd) {
-      return res.status(400).json({ success: false, error: 'Backfill unavailable for this date' });
+      return res.status(400).json({ success: false, error: 'Backfill is not available for this date.' });
     }
 
     db.prepare(`
@@ -186,7 +259,10 @@ router.post('/backfill-single', async (req, res) => {
       usdToTry
     });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: 'Something went wrong while fetching the exchange rate. Please try again.'
+    });
   }
 });
 
