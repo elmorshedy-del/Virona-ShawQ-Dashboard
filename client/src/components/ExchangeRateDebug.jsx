@@ -9,6 +9,16 @@ function providerLabel(provider) {
   if (provider === 'apilayer') return 'APILayer';
   if (provider === 'frankfurter') return 'Frankfurter (ECB)';
   return provider;
+
+function providerStatus(provider, configured) {
+  if (!provider) return { label: 'Not configured', tone: 'text-gray-500' };
+  if (provider === 'frankfurter') return { label: 'Connected (public)', tone: 'text-green-600' };
+  const isReady = Boolean(configured?.[provider]);
+  return isReady
+    ? { label: 'Connected', tone: 'text-green-600' }
+    : { label: 'Missing API key', tone: 'text-red-600' };
+}
+
 }
 
 export default function ExchangeRateDebug() {
@@ -124,14 +134,26 @@ export default function ExchangeRateDebug() {
           <div className="p-3 rounded-lg border bg-gray-50">
             <div className="text-gray-500">Primary (Daily)</div>
             <div className="font-medium">{providerLabel(providerStrategy?.dailyProvider)}</div>
+            <div className={`text-xs mt-1 ${providerStatus(providerStrategy?.dailyProvider, providerStrategy?.configured).tone}`}>
+              {providerStatus(providerStrategy?.dailyProvider, providerStrategy?.configured).label}
+              {providerStrategy?.sources?.daily ? ` • ${providerStrategy.sources.daily}` : ''}
+            </div>
           </div>
           <div className="p-3 rounded-lg border bg-gray-50">
             <div className="text-gray-500">Primary (Backfill)</div>
             <div className="font-medium">{providerLabel(providerStrategy?.primaryBackfillProvider)}</div>
+            <div className={`text-xs mt-1 ${providerStatus(providerStrategy?.primaryBackfillProvider, providerStrategy?.configured).tone}`}>
+              {providerStatus(providerStrategy?.primaryBackfillProvider, providerStrategy?.configured).label}
+              {providerStrategy?.sources?.primaryBackfill ? ` • ${providerStrategy.sources.primaryBackfill}` : ''}
+            </div>
           </div>
           <div className="p-3 rounded-lg border bg-gray-50">
             <div className="text-gray-500">Secondary (Backfill)</div>
             <div className="font-medium">{providerLabel(providerStrategy?.secondaryBackfillProvider)}</div>
+            <div className={`text-xs mt-1 ${providerStatus(providerStrategy?.secondaryBackfillProvider, providerStrategy?.configured).tone}`}>
+              {providerStatus(providerStrategy?.secondaryBackfillProvider, providerStrategy?.configured).label}
+              {providerStrategy?.sources?.secondaryBackfill ? ` • ${providerStrategy.sources.secondaryBackfill}` : ''}
+            </div>
           </div>
         </div>
         {usageByProvider && (
