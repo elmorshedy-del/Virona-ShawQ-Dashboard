@@ -27,7 +27,8 @@ export function isExchangeRateProviderConfigured(provider) {
 }
 
 export function resolveExchangeRateProviders() {
-  const dailyProvider = normalizeProvider(process.env.EXCHANGE_RATE_DAILY_PROVIDER) || 'currencyfreaks';
+  const dailyEnv = normalizeProvider(process.env.EXCHANGE_RATE_DAILY_PROVIDER);
+  const dailyProvider = dailyEnv || 'currencyfreaks';
 
   // Backfill providers:
   // - Primary: explicitly configured or inferred from available keys.
@@ -55,11 +56,18 @@ export function resolveExchangeRateProviders() {
 
   const secondaryBackfillProvider = secondaryConfigured || inferredSecondary;
 
+  const sources = {
+    daily: dailyEnv ? 'env' : 'default',
+    primaryBackfill: primaryConfigured ? 'env' : (inferredPrimary ? 'inferred' : 'none'),
+    secondaryBackfill: secondaryConfigured ? 'env' : (inferredSecondary ? 'inferred' : 'none')
+  };
+
   return {
     supportedProviders: SUPPORTED_EXCHANGE_RATE_PROVIDERS,
     dailyProvider,
     primaryBackfillProvider,
     secondaryBackfillProvider,
+    sources,
     configured: {
       currencyfreaks: Boolean(process.env.CURRENCYFREAKS_API_KEY),
       oxr: Boolean(process.env.OXR_APP_ID),

@@ -87,6 +87,7 @@ router.get('/providers', (req, res) => {
       dailyProvider: config.dailyProvider,
       primaryBackfillProvider: config.primaryBackfillProvider,
       secondaryBackfillProvider: config.secondaryBackfillProvider,
+      sources: config.sources,
       configured: config.configured
     },
     tiers: {
@@ -182,6 +183,7 @@ router.get('/debug', (req, res) => {
         dailyProvider: providersConfig.dailyProvider,
         primaryBackfillProvider: providersConfig.primaryBackfillProvider,
         secondaryBackfillProvider: providersConfig.secondaryBackfillProvider,
+        sources: providersConfig.sources,
         configured: providersConfig.configured
       },
       summary: {
