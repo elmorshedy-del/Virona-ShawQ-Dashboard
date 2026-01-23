@@ -1502,6 +1502,7 @@ function DashboardTab({
   analyticsMode = 'meta-ad-manager',
   setAnalyticsMode = () => {},
   metaAdManagerData = [],
+  metaAdManagerNotice = '',
   adManagerBreakdown = 'none',
   setAdManagerBreakdown = () => {},
   expandedCampaigns = new Set(),
