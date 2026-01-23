@@ -397,6 +397,7 @@ export default function App() {
   // Unified analytics section state (must be before useEffect hooks that use them)
   const [analyticsMode, setAnalyticsMode] = useState('meta-ad-manager'); // 'countries' | 'meta-ad-manager'
   const [metaAdManagerData, setMetaAdManagerData] = useState([]);
+  const [metaAdManagerNotice, setMetaAdManagerNotice] = useState('');
   const [adManagerBreakdown, setAdManagerBreakdown] = useState('none'); // 'none', 'country', 'age', 'gender', 'age_gender', 'placement'
   const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
   const [expandedAdsets, setExpandedAdsets] = useState(new Set());
@@ -828,39 +829,85 @@ export default function App() {
 
   // Load Meta Ad Manager hierarchy data
   useEffect(() => {
-    if (!storeLoaded || analyticsMode !== 'meta-ad-manager') return;
+    if (!storeLoaded || analyticsMode !== 'meta-ad-manager') {
+      setMetaAdManagerNotice('');
+      return;
+    }
+
+    const isTodayRange = (range) => {
+      if (range.type === 'days' && range.value === 1) return true;
+      if (range.type === 'custom' && range.start && range.end) {
+        const today = getIstanbulDateString();
+        return range.start === today && range.end === today;
+      }
+      return false;
+    };
+
+    const buildParams = (range) => {
+      const params = new URLSearchParams({ store: currentStore });
+
+      if (range.type === 'custom') {
+        params.set('startDate', range.start);
+        params.set('endDate', range.end);
+      } else if (range.type === 'yesterday') {
+        params.set('yesterday', '1');
+      } else {
+        params.set(range.type, range.value);
+      }
+
+      if (adManagerBreakdown !== 'none') {
+        params.set('breakdown', adManagerBreakdown);
+      }
+
+      // Include inactive if toggle is on
+      if (includeInactive) {
+        params.set('includeInactive', 'true');
+      }
+
+      if (selectedCampaignId) {
+        params.set('campaignId', selectedCampaignId);
+      }
+
+      return params;
+    };
+
+    const fetchMetaAdManager = async (params) => {
+      const response = await fetch(`${API_BASE}/analytics/meta-ad-manager?${params}`);
+      const data = await response.json();
+      return Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+    };
 
     async function loadMetaAdManager() {
+      setMetaAdManagerNotice('');
       try {
-        const params = new URLSearchParams({ store: currentStore });
+        const params = buildParams(dateRange);
+        const data = await fetchMetaAdManager(params);
 
-        if (dateRange.type === 'custom') {
-          params.set('startDate', dateRange.start);
-          params.set('endDate', dateRange.end);
-        } else if (dateRange.type === 'yesterday') {
-          params.set('yesterday', '1');
-        } else {
-          params.set(dateRange.type, dateRange.value);
+        if (!data.length && isTodayRange(dateRange)) {
+          const yesterday = getIstanbulDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
+          const fallbackParams = buildParams({ type: 'custom', start: yesterday, end: yesterday });
+          const fallbackData = await fetchMetaAdManager(fallbackParams);
+
+          if (fallbackData.length > 0) {
+            setMetaAdManagerData(fallbackData);
+            setMetaAdManagerNotice(
+              `Today's data is still syncing with Meta. Showing ${yesterday} results for now; we'll update automatically once today's data is ready.`
+            );
+            return;
+          }
+
+          setMetaAdManagerData([]);
+          setMetaAdManagerNotice(
+            "Today's data is still syncing with Meta, and yesterday's results aren't available yet. We'll update automatically as soon as data arrives."
+          );
+          return;
         }
 
-        if (adManagerBreakdown !== 'none') {
-          params.set('breakdown', adManagerBreakdown);
-        }
-
-        // Include inactive if toggle is on
-        if (includeInactive) {
-          params.set('includeInactive', 'true');
-        }
-
-        if (selectedCampaignId) {
-          params.set('campaignId', selectedCampaignId);
-        }
-
-        const data = await fetch(`${API_BASE}/analytics/meta-ad-manager?${params}`).then(r => r.json());
-        setMetaAdManagerData(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+        setMetaAdManagerData(data);
       } catch (error) {
         console.error('Error loading Meta Ad Manager data:', error);
         setMetaAdManagerData([]);
+        setMetaAdManagerNotice('We had trouble loading Meta data just now. Please retry in a moment.');
       }
     }
 
@@ -1364,6 +1411,7 @@ export default function App() {
             analyticsMode={analyticsMode}
             setAnalyticsMode={setAnalyticsMode}
             metaAdManagerData={metaAdManagerData}
+            metaAdManagerNotice={metaAdManagerNotice}
             adManagerBreakdown={adManagerBreakdown}
             setAdManagerBreakdown={setAdManagerBreakdown}
             expandedCampaigns={expandedCampaigns}
@@ -3634,6 +3682,7 @@ function DashboardTab({
         dashboard={dashboard}
         countriesDataSource={countriesDataSource}
         metaAdManagerData={metaAdManagerData}
+        metaAdManagerNotice={metaAdManagerNotice}
         adManagerBreakdown={adManagerBreakdown}
         setAdManagerBreakdown={setAdManagerBreakdown}
         hiddenCampaigns={hiddenCampaigns}
