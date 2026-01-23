@@ -13,6 +13,15 @@ function normalizeProvider(value) {
   return v;
 }
 
+function coerceProvider(name, label) {
+  if (!name) return null;
+  if (!SUPPORTED_EXCHANGE_RATE_PROVIDERS.includes(name)) {
+    console.warn(`[Exchange] ${label} provider "${name}" is not supported. Allowed: ${SUPPORTED_EXCHANGE_RATE_PROVIDERS.join(', ')}`);
+    return null;
+  }
+  return name;
+}
+
 export function isSupportedExchangeRateProvider(provider) {
   return SUPPORTED_EXCHANGE_RATE_PROVIDERS.includes(provider);
 }
@@ -28,7 +37,15 @@ export function isExchangeRateProviderConfigured(provider) {
 
 export function resolveExchangeRateProviders() {
   const dailyEnv = normalizeProvider(process.env.EXCHANGE_RATE_DAILY_PROVIDER);
-  const dailyProvider = dailyEnv || 'currencyfreaks';
+  let dailyProvider = 'currencyfreaks';
+  let dailySource = dailyEnv ? 'env' : 'default';
+
+  const coercedDaily = coerceProvider(dailyEnv, 'daily');
+  if (coercedDaily) {
+    dailyProvider = coercedDaily;
+  } else if (dailyEnv) {
+    dailySource = 'env_invalid';
+  }
 
   // Backfill providers:
   // - Primary: explicitly configured or inferred from available keys.
@@ -44,7 +61,10 @@ export function resolveExchangeRateProviders() {
     (process.env.OXR_APP_ID && 'oxr') ||
     null;
 
-  const primaryBackfillProvider = primaryConfigured || inferredPrimary;
+  const primaryBackfillProviderRaw = primaryConfigured || inferredPrimary;
+  const primaryBackfillProvider = coerceProvider(primaryBackfillProviderRaw, 'primary backfill');
+  let primarySource = primaryConfigured ? 'env' : (inferredPrimary ? 'inferred' : 'none');
+  if (primaryConfigured && !primaryBackfillProvider) primarySource = 'env_invalid';
 
   const secondaryConfigured = normalizeProvider(process.env.EXCHANGE_RATE_BACKFILL_SECONDARY_PROVIDER);
 
@@ -54,19 +74,22 @@ export function resolveExchangeRateProviders() {
       ? 'oxr'
       : null;
 
-  const secondaryBackfillProvider = secondaryConfigured || inferredSecondary;
+  const secondaryBackfillProviderRaw = secondaryConfigured || inferredSecondary;
+  const secondaryBackfillProvider = coerceProvider(secondaryBackfillProviderRaw, 'secondary backfill');
+  let secondarySource = secondaryConfigured ? 'env' : (inferredSecondary ? 'inferred' : 'none');
+  if (secondaryConfigured && !secondaryBackfillProvider) secondarySource = 'env_invalid';
 
   const sources = {
-    daily: dailyEnv ? 'env' : 'default',
-    primaryBackfill: primaryConfigured ? 'env' : (inferredPrimary ? 'inferred' : 'none'),
-    secondaryBackfill: secondaryConfigured ? 'env' : (inferredSecondary ? 'inferred' : 'none')
+    daily: dailySource,
+    primaryBackfill: primarySource,
+    secondaryBackfill: secondarySource
   };
 
   return {
     supportedProviders: SUPPORTED_EXCHANGE_RATE_PROVIDERS,
     dailyProvider,
-    primaryBackfillProvider,
-    secondaryBackfillProvider,
+    primaryBackfillProvider: primaryBackfillProvider || null,
+    secondaryBackfillProvider: secondaryBackfillProvider || null,
     sources,
     configured: {
       currencyfreaks: Boolean(process.env.CURRENCYFREAKS_API_KEY),
