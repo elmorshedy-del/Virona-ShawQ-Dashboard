@@ -40,6 +40,10 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '60000', 10);
 const GMT3_OFFSET_MS = 3 * 60 * 60 * 1000;
+const META_DAYTURN_PULSE_MINUTES = (process.env.META_DAYTURN_PULSE_MINUTES || '5,15')
+  .split(',')
+  .map((value) => parseInt(value.trim(), 10))
+  .filter((value) => Number.isFinite(value) && value > 0);
 
 function getMsUntilNextGmt3Midnight() {
   const now = new Date();
@@ -72,6 +76,60 @@ function scheduleGmt3DailyJob(label, job) {
   };
   scheduleNext();
 }
+
+
+let metaDayTurnPulseTimers = [];
+
+function clearMetaDayTurnPulses() {
+  metaDayTurnPulseTimers.forEach((timer) => clearTimeout(timer));
+  metaDayTurnPulseTimers = [];
+}
+
+function hasMetaDailyData(store, dateStr) {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT 1 FROM meta_daily_metrics
+      WHERE store = ? AND date = ?
+      LIMIT 1
+    `).get(store, dateStr);
+    return !!row;
+  } catch (error) {
+    console.warn(`[Meta] Failed to check daily data for ${store} ${dateStr}: ${error.message}`);
+    return false;
+  }
+}
+
+async function runMetaDayTurnPulse(stores, dateStr, minutes) {
+  const remaining = stores.filter((store) => !hasMetaDailyData(store, dateStr));
+  if (!remaining.length) {
+    console.log(`[Meta] Day-turn pulse +${minutes}m skipped (data already available)`);
+    return;
+  }
+
+  console.log(`[Meta] Day-turn pulse +${minutes}m starting for ${remaining.join(', ')}`);
+  try {
+    await Promise.all(
+      remaining.map((store) => syncMetaData(store, { rangeDays: 2, skipBackfill: true }))
+    );
+    console.log(`[Meta] Day-turn pulse +${minutes}m complete`);
+  } catch (error) {
+    console.error(`[Meta] Day-turn pulse +${minutes}m error:`, error);
+  }
+}
+
+function scheduleMetaDayTurnPulses(stores, dateStr) {
+  clearMetaDayTurnPulses();
+  if (!META_DAYTURN_PULSE_MINUTES.length || !stores.length) {
+    return;
+  }
+  META_DAYTURN_PULSE_MINUTES.forEach((minutes) => {
+    const delayMs = minutes * 60 * 1000;
+    const timer = setTimeout(() => runMetaDayTurnPulse(stores, dateStr, minutes), delayMs);
+    metaDayTurnPulseTimers.push(timer);
+  });
+}
+
 
 // Initialize database
 initDb();
@@ -200,14 +258,24 @@ async function shopifyRealtimeSync() {
 // Meta day-turn sync (fast range, no backfill)
 async function dayTurnMetaSync() {
   console.log('[Meta] Starting day-turn sync...');
+  const today = formatDateAsGmt3(new Date());
+  const stores = ['vironax', 'shawq'];
   try {
-    await Promise.all([
-      syncMetaData('vironax', { rangeDays: 2, skipBackfill: true }),
-      syncMetaData('shawq', { rangeDays: 2, skipBackfill: true })
-    ]);
+    await Promise.all(
+      stores.map((store) => syncMetaData(store, { rangeDays: 2, skipBackfill: true }))
+    );
     console.log('[Meta] Day-turn sync complete');
   } catch (error) {
     console.error('[Meta] Day-turn sync error:', error);
+  }
+
+  const missingStores = stores.filter((store) => !hasMetaDailyData(store, today));
+  if (missingStores.length) {
+    console.log(`[Meta] Day-turn data missing for ${today}; scheduling pulses for ${missingStores.join(', ')}`);
+    scheduleMetaDayTurnPulses(missingStores, today);
+  } else {
+    clearMetaDayTurnPulses();
+    console.log(`[Meta] Day-turn data ready for ${today}; no pulses scheduled`);
   }
 }
 
