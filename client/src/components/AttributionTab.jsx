@@ -112,8 +112,8 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
   const alerts = summary?.alerts || [];
   const countryGaps = summary?.countryGaps || [];
   const unattributedOrders = summary?.unattributedOrders || [];
-  const countryBreakdownAvailable = summary?.countryBreakdownAvailable ?? true;
-  const attributionDataAvailable = summary?.attributionDataAvailable ?? true;
+  const countryBreakdownAvailable = summary?.countryBreakdownAvailable ?? false;
+  const attributionDataAvailable = summary?.attributionDataAvailable ?? false;
 
   const assistantContext = useMemo(() => ({
     store: store?.id,
@@ -144,7 +144,7 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
       open: true,
       mode: 'debug',
       title: 'Attribution Debug',
-      subtitle: 'Claude Opus 4.5',
+      subtitle: 'Claude Opus',
       context: { alert, ...assistantContext },
       autoPrompt: `Explain this alert and list the most likely fixes: ${alert.title}.`
     });

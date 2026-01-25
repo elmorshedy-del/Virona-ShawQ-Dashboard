@@ -11,7 +11,7 @@ const MODE_CONFIG = {
   },
   debug: {
     endpoint: '/api/attribution/assistant/debug',
-    label: 'Claude Opus 4.5'
+    label: 'Claude Opus'
   }
 };
 

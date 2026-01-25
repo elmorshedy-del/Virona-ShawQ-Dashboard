@@ -113,6 +113,20 @@ function parseAttribution(raw) {
   }
 }
 
+const countryDisplay = typeof Intl !== 'undefined' && Intl.DisplayNames
+  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  : null;
+
+function getCountryLabel(code) {
+  if (!code || code === 'UN') return 'Unknown';
+  if (!countryDisplay) return code;
+  try {
+    return countryDisplay.of(code) || code;
+  } catch (error) {
+    return code;
+  }
+}
+
 function parseConsentStatus(value) {
   if (value == null) return 'unknown';
   const normalized = String(value).trim().toLowerCase();
@@ -236,7 +250,7 @@ function buildAlerts({
   zeroMetaDays,
   totalDays,
   topCountryGap,
-  topCountryCode,
+  topCountryLabel,
   periodLabel,
   compareLabel
 }) {
@@ -296,11 +310,11 @@ function buildAlerts({
     });
   }
 
-  if (topCountryGap >= 10 && topCountryCode) {
+  if (topCountryGap >= 10 && topCountryLabel) {
     alerts.push({
       id: 'country_gap',
       title: 'Unattributed orders concentrated in one country',
-      message: `${topCountryCode} shows the largest gap with ${topCountryGap} more Shopify orders than Meta in ${periodLabel}.`,
+      message: `${topCountryLabel} shows the largest gap with ${topCountryGap} more Shopify orders than Meta in ${periodLabel}.`,
       fix: 'Check localized tracking scripts, currency, and consent settings.',
       severity: 'medium'
     });
@@ -610,6 +624,7 @@ router.get('/summary', (req, res) => {
     const totalDays = series.length;
     const topCountryGap = hasCountryRows ? (countryGaps[0]?.gap || 0) : 0;
     const topCountryCode = hasCountryRows ? (countryGaps[0]?.countryCode || null) : null;
+    const topCountryLabel = topCountryCode ? getCountryLabel(topCountryCode) : null;
 
     const alerts = buildAlerts({
       current: { coverageRate: currentCoverageRate },
@@ -621,7 +636,7 @@ router.get('/summary', (req, res) => {
       zeroMetaDays,
       totalDays,
       topCountryGap,
-      topCountryCode,
+      topCountryLabel,
       periodLabel: getPeriodLabel(range.start, range.end),
       compareLabel: getPeriodLabel(compareRange.start, compareRange.end)
     });
@@ -767,31 +782,49 @@ router.post('/assistant/debug', async (req, res) => {
       res.flushHeaders();
 
       const responseStream = anthropic.messages.stream({
-        model: 'claude-opus-4-20250514',
+        model: 'claude-3-opus-20240229',
         max_tokens: 1200,
         system: systemPrompt,
         messages
       });
 
-      responseStream.on('text', (text) => {
-        res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
-      });
+      const writeEvent = (payload) => {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        }
+      };
 
-      responseStream.on('end', () => {
-        res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
-        res.end();
-      });
+      const endStream = () => {
+        if (!res.writableEnded) {
+          res.end();
+        }
+      };
 
-      responseStream.on('error', (err) => {
-        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
-        res.end();
-      });
+      try {
+        responseStream.on('text', (text) => {
+          writeEvent({ type: 'delta', text });
+        });
+
+        responseStream.on('end', () => {
+          writeEvent({ type: 'done' });
+          endStream();
+        });
+
+        responseStream.on('error', (err) => {
+          writeEvent({ type: 'error', error: err.message || 'Stream error' });
+          endStream();
+        });
+      } catch (err) {
+        console.error('[Attribution] Debug assistant stream error:', err);
+        writeEvent({ type: 'error', error: 'An unexpected error occurred during streaming.' });
+        endStream();
+      }
 
       return;
     }
 
     const response = await anthropic.messages.create({
-      model: 'claude-opus-4-20250514',
+      model: 'claude-3-opus-20240229',
       max_tokens: 1200,
       system: systemPrompt,
       messages
