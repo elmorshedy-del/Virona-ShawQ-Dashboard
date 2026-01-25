@@ -2886,9 +2886,9 @@ function DashboardTab({
         if (elapsedDays >= 2 && remainingDays > 0) {
           const pace = getWeightedPace();
 
-          const projectedOrders = pace.orders * totalDays;
-          const projectedRevenue = pace.revenue * totalDays;
-          const projectedSpend = pace.spend * totalDays;
+          const projectedOrders = toNumber(lastPoint.orders) + pace.orders * remainingDays;
+          const projectedRevenue = toNumber(lastPoint.revenue) + pace.revenue * remainingDays;
+          const projectedSpend = toNumber(lastPoint.spend) + pace.spend * remainingDays;
 
           const projectedAov = projectedOrders > 0 ? projectedRevenue / projectedOrders : 0;
           const projectedCac = projectedOrders > 0 ? projectedSpend / projectedOrders : 0;
