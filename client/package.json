@@ -16,7 +16,9 @@
     "react-markdown": "^10.1.0",
     "recharts": "^2.10.4",
     "remark-gfm": "^4.0.0",
-    "shiki": "^1.1.7"
+    "shiki": "^1.1.7",
+    "@radix-ui/react-dialog": "^1.1.5",
+    "framer-motion": "^11.0.25"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.12",

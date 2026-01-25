@@ -21,6 +21,7 @@
     "openai": "^6.10.0",
     "puppeteer": "^24.35.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "@anthropic-ai/sdk": "^0.39.0"
   }
 }

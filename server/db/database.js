@@ -83,6 +83,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN order_created_at TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN attribution_json TEXT`);
+  } catch (e) { /* column exists */ }
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -168,6 +171,7 @@ export function initDb() {
       payment_method TEXT,
       currency TEXT DEFAULT 'USD',
       order_created_at TEXT,
+      attribution_json TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, order_id)
     )
