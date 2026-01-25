@@ -72,17 +72,6 @@ const EPSILON = 1e-6;
 const K_PRIOR = 50;
 const CREATIVE_SAMPLES = 2000;
 const ALL_CAMPAIGNS_ID = 'all-campaigns';
-const EUROPE_COUNTRY_CODES = new Set([
-  'AL', 'AD', 'AT', 'BY', 'BE', 'BA', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI',
-  'FR', 'DE', 'GR', 'HU', 'IS', 'IE', 'IT', 'XK', 'LV', 'LI', 'LT', 'LU', 'MT',
-  'MD', 'MC', 'ME', 'NL', 'MK', 'NO', 'PL', 'PT', 'RO', 'RU', 'SM', 'RS', 'SK',
-  'SI', 'ES', 'SE', 'CH', 'UA', 'GB', 'VA'
-]);
-const USA_COUNTRY_CODES = new Set(['US']);
-const REGION_COMPARE_COLORS = {
-  europe: '#2563eb',
-  usa: '#ef4444'
-};
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -404,8 +393,6 @@ export default function App() {
   const [campaignTrends, setCampaignTrends] = useState([]);
   const [campaignTrendsDataSource, setCampaignTrendsDataSource] = useState('');
   const [countriesDataSource, setCountriesDataSource] = useState('');
-  const [regionCompareTrends, setRegionCompareTrends] = useState([]);
-  const [regionCompareEnabled, setRegionCompareEnabled] = useState(false);
 
   // Unified analytics section state (must be before useEffect hooks that use them)
   const [analyticsMode, setAnalyticsMode] = useState('meta-ad-manager'); // 'countries' | 'meta-ad-manager'
@@ -577,7 +564,6 @@ export default function App() {
         endDate: getLocalDateString()
       });
       const countryTrendParams = new URLSearchParams({ store: currentStore });
-      const regionCompareParams = new URLSearchParams({ store: currentStore });
       const campaignTrendParams = new URLSearchParams({ store: currentStore });
       if (selectedCampaignId) {
         params.set('campaignId', selectedCampaignId);
@@ -648,7 +634,6 @@ export default function App() {
       applyDashboardRange(params);
       applyCountryTrendsRange(countryTrendParams);
       applyCampaignTrendsRange(campaignTrendParams);
-      applyDashboardRange(regionCompareParams);
       
       params.set('showArrows', shouldShowArrows);
 
@@ -658,7 +643,6 @@ export default function App() {
         budgetParams.set('includeInactive', 'true');
         countryTrendParams.set('includeInactive', 'true');
         campaignTrendParams.set('includeInactive', 'true');
-        regionCompareParams.set('includeInactive', 'true');
       }
 
       const shopifyRegion = selectedShopifyRegion ?? 'us';
@@ -674,7 +658,6 @@ export default function App() {
         spendOverrides,
         countries,
         cTrends,
-        regionCompare,
         nyTrend,
         campaignTrendData,
         timeOfDayData,
@@ -689,7 +672,6 @@ export default function App() {
         fetchJson(`${API_BASE}/manual/spend?${params}`, []),
         fetchJson(`${API_BASE}/analytics/countries?store=${currentStore}`, MASTER_COUNTRIES_WITH_FLAGS),
         fetchJson(`${API_BASE}/analytics/countries/trends?${countryTrendParams}`, { data: [], dataSource: '' }),
-        fetchJson(`${API_BASE}/analytics/countries/trends?${regionCompareParams}`, { data: [], dataSource: '' }),
         fetchJson(`${API_BASE}/analytics/newyork/trends?${countryTrendParams}`, { data: null, dataSource: '' }),
         fetchJson(`${API_BASE}/analytics/campaigns/trends?${campaignTrendParams}`, { data: [], dataSource: '' }),
         // Time of day - now fetches for both stores
@@ -756,14 +738,6 @@ export default function App() {
       } else {
         setCountryTrends([]);
         setCountryTrendsDataSource('');
-      }
-
-      if (regionCompare && typeof regionCompare === 'object' && Array.isArray(regionCompare.data)) {
-        setRegionCompareTrends(regionCompare.data);
-      } else if (Array.isArray(regionCompare)) {
-        setRegionCompareTrends(regionCompare);
-      } else {
-        setRegionCompareTrends([]);
       }
 
       // Handle New York trend - returns { data: {...} or null, dataSource: ... }
@@ -1378,23 +1352,6 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
-            <span className="text-sm font-medium text-gray-700">USA vs Europe Overlay</span>
-            <button
-              type="button"
-              onClick={() => setRegionCompareEnabled((prev) => !prev)}
-              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
-                regionCompareEnabled ? 'bg-blue-600' : 'bg-gray-300'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  regionCompareEnabled ? 'translate-x-5' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
           <div className="ml-auto flex items-center gap-3 text-sm text-gray-500 flex-wrap">
             <div>
               Showing: <strong>{getDateRangeLabel()}</strong>
@@ -1444,8 +1401,6 @@ export default function App() {
             campaignTrends={campaignTrends}
             campaignTrendsDataSource={campaignTrendsDataSource}
             countriesDataSource={countriesDataSource}
-            regionCompareTrends={regionCompareTrends}
-            regionCompareEnabled={regionCompareEnabled}
             timeOfDay={timeOfDay}
             selectedShopifyRegion={selectedShopifyRegion}
             setSelectedShopifyRegion={setSelectedShopifyRegion}
@@ -1626,8 +1581,6 @@ function DashboardTab({
   campaignTrends = [],
   campaignTrendsDataSource = '',
   countriesDataSource = '',
-  regionCompareTrends = [],
-  regionCompareEnabled = false,
   timeOfDay = { data: [], timezone: 'America/Chicago', sampleTimestamps: [], source: '' },
   selectedShopifyRegion = 'us',
   setSelectedShopifyRegion = () => {},
@@ -2684,9 +2637,9 @@ function DashboardTab({
     };
   }, []);
 
-  const buildBucketedTrends = useCallback((series = []) => {
-    if (!Array.isArray(series) || series.length === 0) return [];
-    const sorted = [...series]
+  const bucketedTrends = useMemo(() => {
+    if (!Array.isArray(trends) || trends.length === 0) return [];
+    const sorted = [...trends]
       .filter(point => getPointDate(point))
       .sort((a, b) => {
         const aDate = parseLocalDate(getPointDate(a));
@@ -2731,35 +2684,26 @@ function DashboardTab({
     }
 
     return buckets;
-  }, [aggregateBucket, bucketDays, getPointDate, parseLocalDate]);
+  }, [aggregateBucket, bucketDays, getPointDate, parseLocalDate, trends]);
 
-  const bucketedTrends = useMemo(() => (
-    buildBucketedTrends(trends)
-  ), [buildBucketedTrends, trends]);
-
-  const buildBucketedTrendsWithStatus = useCallback((series = []) => {
-    if (series.length === 0) return [];
+  const bucketedTrendsWithStatus = useMemo(() => {
+    if (bucketedTrends.length === 0) return [];
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return series.map((point, index) => {
-      const isLast = index === series.length - 1;
+    return bucketedTrends.map((point, index) => {
+      const isLast = index === bucketedTrends.length - 1;
       const bucketEnd = parseLocalDate(point.bucketEndDate);
       const isIncomplete = isLast && bucketEnd && bucketEnd >= today;
       return { ...point, isIncomplete };
     });
-  }, [parseLocalDate]);
+  }, [bucketedTrends, parseLocalDate]);
 
-  const bucketedTrendsWithStatus = useMemo(() => (
-    buildBucketedTrendsWithStatus(bucketedTrends)
-  ), [buildBucketedTrendsWithStatus, bucketedTrends]);
+  const lastBucketIncomplete = bucketedTrendsWithStatus.length > 0
+    && bucketedTrendsWithStatus[bucketedTrendsWithStatus.length - 1].isIncomplete;
 
-  const buildBucketedTrendsForChart = useCallback((series = []) => {
+  const bucketedTrendsForChart = useMemo(() => {
     const keys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
-    if (series.length === 0) {
-      return { data: [], lastBucketIncomplete: false };
-    }
-    const lastBucketIncomplete = series[series.length - 1].isIncomplete;
-    const data = series.map((point, index, arr) => {
+    return bucketedTrendsWithStatus.map((point, index, arr) => {
       const isLast = index === arr.length - 1;
       const isPrev = index === arr.length - 2;
       const next = { ...point };
@@ -2770,125 +2714,7 @@ function DashboardTab({
       });
       return next;
     });
-    return { data, lastBucketIncomplete };
-  }, []);
-
-  const { data: bucketedTrendsForChart, lastBucketIncomplete } = useMemo(() => (
-    buildBucketedTrendsForChart(bucketedTrendsWithStatus)
-  ), [buildBucketedTrendsForChart, bucketedTrendsWithStatus]);
-
-  const getCountryCode = useCallback((country = {}) => {
-    const rawCode = country.countryCode || country.code || country.country_code || country.countryIso;
-    return rawCode ? String(rawCode).toUpperCase() : '';
-  }, []);
-
-  const buildRegionTrendSeries = useCallback((countryCodes = new Set()) => {
-    if (!Array.isArray(regionCompareTrends) || regionCompareTrends.length === 0) return [];
-    const byDate = new Map();
-
-    regionCompareTrends.forEach((country) => {
-      const code = getCountryCode(country);
-      if (!code || !countryCodes.has(code)) return;
-      const points = Array.isArray(country?.trends) ? country.trends : [];
-      points.forEach((point) => {
-        const date = getPointDate(point);
-        if (!date) return;
-        const entry = byDate.get(date) || { date, orders: 0, revenue: 0, spend: 0 };
-        entry.orders += toNumber(point.orders);
-        entry.revenue += toNumber(point.revenue);
-        entry.spend += toNumber(point.spend);
-        byDate.set(date, entry);
-      });
-    });
-
-    return Array.from(byDate.values()).sort((a, b) => {
-      const aDate = parseLocalDate(a.date);
-      const bDate = parseLocalDate(b.date);
-      if (!aDate || !bDate) return 0;
-      return aDate.getTime() - bDate.getTime();
-    });
-  }, [getCountryCode, getPointDate, parseLocalDate, regionCompareTrends]);
-
-  const europeRegionTrends = useMemo(() => (
-    buildRegionTrendSeries(EUROPE_COUNTRY_CODES)
-  ), [buildRegionTrendSeries]);
-
-  const usaRegionTrends = useMemo(() => (
-    buildRegionTrendSeries(USA_COUNTRY_CODES)
-  ), [buildRegionTrendSeries]);
-
-  const europeBucketedTrends = useMemo(() => (
-    buildBucketedTrends(europeRegionTrends)
-  ), [buildBucketedTrends, europeRegionTrends]);
-  const usaBucketedTrends = useMemo(() => (
-    buildBucketedTrends(usaRegionTrends)
-  ), [buildBucketedTrends, usaRegionTrends]);
-
-  const europeBucketedWithStatus = useMemo(() => (
-    buildBucketedTrendsWithStatus(europeBucketedTrends)
-  ), [buildBucketedTrendsWithStatus, europeBucketedTrends]);
-  const usaBucketedWithStatus = useMemo(() => (
-    buildBucketedTrendsWithStatus(usaBucketedTrends)
-  ), [buildBucketedTrendsWithStatus, usaBucketedTrends]);
-
-  const { data: europeBucketedForChart, lastBucketIncomplete: europeLastBucketIncomplete } = useMemo(() => (
-    buildBucketedTrendsForChart(europeBucketedWithStatus)
-  ), [buildBucketedTrendsForChart, europeBucketedWithStatus]);
-
-  const { data: usaBucketedForChart, lastBucketIncomplete: usaLastBucketIncomplete } = useMemo(() => (
-    buildBucketedTrendsForChart(usaBucketedWithStatus)
-  ), [buildBucketedTrendsForChart, usaBucketedWithStatus]);
-
-  const prefixBucketedSeries = useCallback((series = [], prefix = '') => {
-    const metricKeys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
-    const normalizePrefix = prefix ? `${prefix}` : '';
-    const capitalize = (value = '') => value.charAt(0).toUpperCase() + value.slice(1);
-    return series.map((point) => {
-      const next = {
-        date: point.date,
-        bucketStartDate: point.bucketStartDate,
-        bucketEndDate: point.bucketEndDate,
-        [`${normalizePrefix}IsIncomplete`]: point.isIncomplete
-      };
-      metricKeys.forEach((metric) => {
-        const capMetric = capitalize(metric);
-        next[`${normalizePrefix}${capMetric}Complete`] = point[`${metric}Complete`];
-        next[`${normalizePrefix}${capMetric}Incomplete`] = point[`${metric}Incomplete`];
-      });
-      return next;
-    });
-  }, []);
-
-  const regionCompareChartData = useMemo(() => {
-    const europeSeries = prefixBucketedSeries(europeBucketedForChart, 'europe');
-    const usaSeries = prefixBucketedSeries(usaBucketedForChart, 'usa');
-    const byDate = new Map();
-    const mergePoint = (point) => {
-      if (!point?.date) return;
-      const existing = byDate.get(point.date) || { date: point.date };
-      if (point.bucketStartDate && !existing.bucketStartDate) {
-        existing.bucketStartDate = point.bucketStartDate;
-      }
-      if (point.bucketEndDate && !existing.bucketEndDate) {
-        existing.bucketEndDate = point.bucketEndDate;
-      }
-      Object.entries(point).forEach(([key, value]) => {
-        if (key === 'date' || key === 'bucketStartDate' || key === 'bucketEndDate') return;
-        existing[key] = value;
-      });
-      byDate.set(point.date, existing);
-    };
-    europeSeries.forEach(mergePoint);
-    usaSeries.forEach(mergePoint);
-    return Array.from(byDate.values()).sort((a, b) => {
-      const aDate = parseLocalDate(a.date);
-      const bDate = parseLocalDate(b.date);
-      if (!aDate || !bDate) return 0;
-      return aDate.getTime() - bDate.getTime();
-    });
-  }, [europeBucketedForChart, parseLocalDate, prefixBucketedSeries, usaBucketedForChart]);
-
-  const regionCompareActive = regionCompareEnabled && regionCompareChartData.length > 0;
+  }, [bucketedTrendsWithStatus, lastBucketIncomplete]);
 
   const formatCountryTick = useCallback((dateString) => {
     const date = parseLocalDate(dateString);
@@ -3064,83 +2890,6 @@ function DashboardTab({
       </div>
     );
   }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel]);
-
-  const renderRegionBucketTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
-    if (!active || !payload?.length) return null;
-    const metricKey = metricKeyOverride || 'orders';
-    const capMetric = metricKey.charAt(0).toUpperCase() + metricKey.slice(1);
-    const rangeLabel = getTrendRangeLabel(payload, label);
-
-    const getRegionValue = (prefix) => {
-      const completeKey = `${prefix}${capMetric}Complete`;
-      const incompleteKey = `${prefix}${capMetric}Incomplete`;
-      const completeItem = payload.find(item => item?.dataKey === completeKey && item?.value != null);
-      if (completeItem) return completeItem.value;
-      const incompleteItem = payload.find(item => item?.dataKey === incompleteKey && item?.value != null);
-      return incompleteItem ? incompleteItem.value : null;
-    };
-
-    const europeValue = getRegionValue('europe');
-    const usaValue = getRegionValue('usa');
-    const formatRegionValue = (value) =>
-      value == null ? '—' : formatTooltipMetricValue(metricKey, value);
-
-    return (
-      <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
-        <p className="text-xs text-gray-500">
-          {rangeLabel}
-        </p>
-        <div className="mt-1 space-y-1 text-sm font-medium text-gray-900">
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.europe }} />
-            <span>Europe:</span>
-            <span>{formatRegionValue(europeValue)}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.usa }} />
-            <span>USA:</span>
-            <span>{formatRegionValue(usaValue)}</span>
-          </div>
-        </div>
-      </div>
-    );
-  }, [formatTooltipMetricValue, getTrendRangeLabel]);
-
-  const renderTrendLine = ({ baseKey, stroke, lastBucketIncomplete, isIncompleteKey }) => (
-    <>
-      <Line
-        type="monotone"
-        dataKey={`${baseKey}Complete`}
-        stroke={stroke}
-        strokeWidth={2}
-        dot={false}
-        fill="none"
-      />
-      {lastBucketIncomplete && (
-        <Line
-          type="monotone"
-          dataKey={`${baseKey}Incomplete`}
-          stroke={stroke}
-          strokeWidth={2}
-          dot={({ cx, cy, payload }) => {
-            if (!payload?.[isIncompleteKey] || cx == null || cy == null) return null;
-            return (
-              <circle
-                cx={cx}
-                cy={cy}
-                r={4}
-                fill="white"
-                stroke={stroke}
-                strokeWidth={2}
-              />
-            );
-          }}
-          strokeDasharray="5,5"
-          fill="none"
-        />
-      )}
-    </>
-  );
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
@@ -3766,18 +3515,6 @@ function DashboardTab({
         <div className="bg-white rounded-xl p-6 shadow-sm">
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <h3 className="text-lg font-semibold">Orders Trend</h3>
-            {regionCompareActive && (
-              <div className="flex items-center gap-3 text-xs text-gray-500">
-                <span className="inline-flex items-center gap-1">
-                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.europe }} />
-                  Europe
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.usa }} />
-                  USA
-                </span>
-              </div>
-            )}
             {totalDays > 60 && (
               <div className="flex items-center gap-2 text-sm">
                 <span className="text-gray-500">Buckets:</span>
@@ -3808,37 +3545,43 @@ function DashboardTab({
           </div>
           <div className="h-64">
             <ResponsiveContainer>
-              <LineChart data={regionCompareActive ? regionCompareChartData : bucketedTrendsForChart}>
+              <LineChart data={bucketedTrendsForChart}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
                 <Tooltip
-                  content={regionCompareActive ? renderRegionBucketTooltip('orders') : renderBucketTooltip('orders')}
+                  content={renderBucketTooltip('orders')}
                 />
-                {regionCompareActive ? (
-                  <>
-                    {renderTrendLine({
-                      baseKey: 'europeOrders',
-                      stroke: REGION_COMPARE_COLORS.europe,
-                      lastBucketIncomplete: europeLastBucketIncomplete,
-                      isIncompleteKey: 'europeIsIncomplete'
-                    })}
-                    {renderTrendLine({
-                      baseKey: 'usaOrders',
-                      stroke: REGION_COMPARE_COLORS.usa,
-                      lastBucketIncomplete: usaLastBucketIncomplete,
-                      isIncompleteKey: 'usaIsIncomplete'
-                    })}
-                  </>
-                ) : (
-                  <>
-                    {renderTrendLine({
-                      baseKey: 'orders',
-                      stroke: '#22c55e',
-                      lastBucketIncomplete,
-                      isIncompleteKey: 'isIncomplete'
-                    })}
-                  </>
+                <Line
+                  type="monotone"
+                  dataKey="ordersComplete"
+                  stroke="#22c55e"
+                  strokeWidth={2}
+                  dot={false}
+                  fill="none"
+                />
+                {lastBucketIncomplete && (
+                  <Line
+                    type="monotone"
+                    dataKey="ordersIncomplete"
+                    stroke="#22c55e"
+                    strokeWidth={2}
+                    dot={({ cx, cy, payload }) => {
+                      if (!payload?.isIncomplete || cx == null || cy == null) return null;
+                      return (
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={4}
+                          fill="white"
+                          stroke="#22c55e"
+                          strokeWidth={2}
+                        />
+                      );
+                    }}
+                    strokeDasharray="5,5"
+                    fill="none"
+                  />
                 )}
               </LineChart>
             </ResponsiveContainer>
@@ -3852,25 +3595,10 @@ function DashboardTab({
           {expandedKpis.filter(key => key !== 'orders').map((key) => {
             const thisKpi = kpis.find(k => k.key === key);
             if (!thisKpi) return null;
-            const capKey = key.charAt(0).toUpperCase() + key.slice(1);
-            const europeBaseKey = `europe${capKey}`;
-            const usaBaseKey = `usa${capKey}`;
             return (
               <div key={key} className="bg-white rounded-xl p-6 shadow-sm animate-fade-in">
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
                   <h3 className="text-lg font-semibold">{thisKpi.label} Trend</h3>
-                  {regionCompareActive && (
-                    <div className="flex items-center gap-3 text-xs text-gray-500">
-                      <span className="inline-flex items-center gap-1">
-                        <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.europe }} />
-                        Europe
-                      </span>
-                      <span className="inline-flex items-center gap-1">
-                        <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.usa }} />
-                        USA
-                      </span>
-                    </div>
-                  )}
                   {totalDays > 60 && (
                     <div className="flex items-center gap-2 text-sm">
                       <span className="text-gray-500">Buckets:</span>
@@ -3901,37 +3629,43 @@ function DashboardTab({
                 </div>
                 <div className="h-64">
                   <ResponsiveContainer>
-                    <LineChart data={regionCompareActive ? regionCompareChartData : bucketedTrendsForChart}>
+                    <LineChart data={bucketedTrendsForChart}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                       <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                       <YAxis tick={{ fontSize: 12 }} />
                       <Tooltip
-                        content={regionCompareActive ? renderRegionBucketTooltip(key) : renderBucketTooltip(key)}
+                        content={renderBucketTooltip(key)}
                       />
-                      {regionCompareActive ? (
-                        <>
-                          {renderTrendLine({
-                            baseKey: europeBaseKey,
-                            stroke: REGION_COMPARE_COLORS.europe,
-                            lastBucketIncomplete: europeLastBucketIncomplete,
-                            isIncompleteKey: 'europeIsIncomplete'
-                          })}
-                          {renderTrendLine({
-                            baseKey: usaBaseKey,
-                            stroke: REGION_COMPARE_COLORS.usa,
-                            lastBucketIncomplete: usaLastBucketIncomplete,
-                            isIncompleteKey: 'usaIsIncomplete'
-                          })}
-                        </>
-                      ) : (
-                        <>
-                          {renderTrendLine({
-                            baseKey: key,
-                            stroke: thisKpi.color,
-                            lastBucketIncomplete,
-                            isIncompleteKey: 'isIncomplete'
-                          })}
-                        </>
+                      <Line
+                        type="monotone"
+                        dataKey={`${key}Complete`}
+                        stroke={thisKpi.color}
+                        strokeWidth={2}
+                        dot={false}
+                        fill="none"
+                      />
+                      {lastBucketIncomplete && (
+                        <Line
+                          type="monotone"
+                          dataKey={`${key}Incomplete`}
+                          stroke={thisKpi.color}
+                          strokeWidth={2}
+                          dot={({ cx, cy, payload }) => {
+                            if (!payload?.isIncomplete || cx == null || cy == null) return null;
+                            return (
+                              <circle
+                                cx={cx}
+                                cy={cy}
+                                r={4}
+                                fill="white"
+                                stroke={thisKpi.color}
+                                strokeWidth={2}
+                              />
+                            );
+                          }}
+                          strokeDasharray="5,5"
+                          fill="none"
+                        />
                       )}
                     </LineChart>
                   </ResponsiveContainer>
