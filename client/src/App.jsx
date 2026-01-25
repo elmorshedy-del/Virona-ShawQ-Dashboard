@@ -2830,8 +2830,11 @@ function DashboardTab({
       return { data: [], lastBucketIncomplete: false, hasProjection: false };
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayLocalString = getLocalDateString(new Date());
+    const today = parseLocalDate(todayLocalString);
+    if (!today) {
+      return { data: [], lastBucketIncomplete: false, hasProjection: false };
+    }
 
     const lastIndex = series.length - 1;
     const lastPoint = series[lastIndex];
@@ -2851,7 +2854,7 @@ function DashboardTab({
       let weightedRevenue = 0;
       let weightedSpend = 0;
 
-      for (let offset = 0; offset < 7; offset += 1) {
+      for (let offset = 1; offset <= 7; offset += 1) {
         const day = new Date(today);
         day.setDate(day.getDate() - offset);
         const dayKey = getLocalDateString(day);
@@ -2881,10 +2884,18 @@ function DashboardTab({
       if (bucketStart && bucketEnd) {
         const elapsedDays = Math.floor((today - bucketStart) / msInDay) + 1;
         const totalDays = Math.floor((bucketEnd - bucketStart) / msInDay) + 1;
-        const remainingDays = totalDays - elapsedDays;
+        const remainingDays = Math.max(totalDays - elapsedDays, 0);
 
         if (elapsedDays >= 2 && remainingDays > 0) {
-          const pace = getWeightedPace();
+          let pace = getWeightedPace();
+          if (!pace.orders && !pace.revenue && !pace.spend) {
+            const safeElapsed = Math.max(elapsedDays, 1);
+            pace = {
+              orders: toNumber(lastPoint.orders) / safeElapsed,
+              revenue: toNumber(lastPoint.revenue) / safeElapsed,
+              spend: toNumber(lastPoint.spend) / safeElapsed
+            };
+          }
 
           const projectedOrders = toNumber(lastPoint.orders) + pace.orders * remainingDays;
           const projectedRevenue = toNumber(lastPoint.revenue) + pace.revenue * remainingDays;
