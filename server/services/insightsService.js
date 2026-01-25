@@ -45,7 +45,7 @@ const addDays = (date, delta) => {
 };
 
 const normalize = (value, min, max) => {
-  if (max == min) return 0.5;
+  if (max === min) return 0.5;
   return clamp((value - min) / (max - min), 0, 1);
 };
 
