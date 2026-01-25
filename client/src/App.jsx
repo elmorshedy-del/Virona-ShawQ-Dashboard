@@ -2848,9 +2848,9 @@ function DashboardTab({
     const msInDay = 1000 * 60 * 60 * 24;
 
     const getWeightedPace = () => {
-      const alpha = 0.3;
-      const beta = 0.1;
-      const phi = 0.9;
+      const alpha = 0.3; // Level smoothing factor
+      const beta = 0.1;  // Trend smoothing factor
+      const phi = 0.9;   // Damping factor
 
       const values = { orders: [], revenue: [], spend: [] };
 
