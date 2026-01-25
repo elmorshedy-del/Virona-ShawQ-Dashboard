@@ -2848,33 +2848,43 @@ function DashboardTab({
     const msInDay = 1000 * 60 * 60 * 24;
 
     const getWeightedPace = () => {
-      const alpha = 0.8;
-      let weightSum = 0;
-      let weightedOrders = 0;
-      let weightedRevenue = 0;
-      let weightedSpend = 0;
+      const alpha = 0.3;
+      const beta = 0.1;
+      const phi = 0.9;
 
-      for (let offset = 1; offset <= 7; offset += 1) {
+      const values = { orders: [], revenue: [], spend: [] };
+
+      for (let offset = 7; offset >= 1; offset -= 1) {
         const day = new Date(today);
         day.setDate(day.getDate() - offset);
         const dayKey = getLocalDateString(day);
-        const weight = Math.pow(alpha, offset);
         const entry = dailyMap?.get(dayKey) || {};
-
-        weightedOrders += toNumber(entry.orders) * weight;
-        weightedRevenue += toNumber(entry.revenue) * weight;
-        weightedSpend += toNumber(entry.spend) * weight;
-        weightSum += weight;
+        values.orders.push(toNumber(entry.orders));
+        values.revenue.push(toNumber(entry.revenue));
+        values.spend.push(toNumber(entry.spend));
       }
 
-      if (weightSum <= 0) {
-        return { orders: 0, revenue: 0, spend: 0 };
-      }
+      const holtPace = (arr) => {
+        const n = arr.length;
+        if (n === 0) return 0;
+        if (n === 1) return arr[0];
+
+        let level = arr[0];
+        let trend = arr[1] - arr[0];
+
+        for (let i = 1; i < n; i++) {
+          const prevLevel = level;
+          level = alpha * arr[i] + (1 - alpha) * (prevLevel + phi * trend);
+          trend = beta * (level - prevLevel) + (1 - beta) * phi * trend;
+        }
+
+        return Math.max(0, level + phi * trend);
+      };
 
       return {
-        orders: weightedOrders / weightSum,
-        revenue: weightedRevenue / weightSum,
-        spend: weightedSpend / weightSum
+        orders: holtPace(values.orders),
+        revenue: holtPace(values.revenue),
+        spend: holtPace(values.spend)
       };
     };
 
