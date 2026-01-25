@@ -20,6 +20,7 @@ import CreativeAnalysis from './components/CreativeAnalysis.jsx';
 import FatigueDetector from './components/FatigueDetector';
 import MetricsChartsTab from './components/MetricsChartsTab';
 import AttributionTab from './components/AttributionTab';
+import InsightsTab from './components/InsightsTab';
 import NeoMetaTab from './components/NeoMetaTab';
 import CreativeIntelligence from './components/CreativeIntelligence';
 import CreativeStudio from './components/CreativeStudio';
@@ -346,7 +347,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -1476,6 +1477,7 @@ export default function App() {
             includeInactive={includeInactive}
             setIncludeInactive={setIncludeInactive}
             dateRange={dashboard?.dateRange}
+            dateRangeType={dateRange.type}
           />
           )}
 
@@ -1498,10 +1500,18 @@ export default function App() {
         )}
 
         {activeTab === 3 && (
+          <InsightsTab
+            store={store}
+            formatCurrency={formatCurrency}
+            formatNumber={formatNumber}
+          />
+        )}
+
+        {activeTab === 4 && (
           <NeoMetaTab />
         )}
 
-        {activeTab === 4 && efficiency && (
+        {activeTab === 5 && efficiency && (
           <EfficiencyTab
             efficiency={efficiency}
             trends={efficiencyTrends}
@@ -1510,7 +1520,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 5 && budgetIntelligence && (
+        {activeTab === 6 && budgetIntelligence && (
           <BudgetIntelligenceTab
             data={budgetIntelligence}
             formatCurrency={formatCurrency}
@@ -1518,7 +1528,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 6 && (
+        {activeTab === 7 && (
           <ManualDataTab
             orders={manualOrders}
             form={orderForm}
@@ -1537,35 +1547,35 @@ export default function App() {
           />
         )}
 
-        {activeTab === 7 && (
+        {activeTab === 8 && (
           <FatigueDetector
             store={store}
             formatCurrency={formatCurrency}
           />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === 9 && (
           <>
             <CreativeIntelligence store={currentStore} />
             <CreativeAnalysis store={store} />
           </>
         )}
 
-        {activeTab === 9 && (
+        {activeTab === 10 && (
           <CreativeStudio store={currentStore} />
         )}
 
-        {activeTab === 10 && (
+        {activeTab === 11 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 11 && (
+        {activeTab === 12 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 12 && (
+        {activeTab === 13 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1573,7 +1583,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 13 && (
+        {activeTab === 14 && (
           <ExchangeRateDebug />
         )}
       </div>
@@ -1665,6 +1675,7 @@ function DashboardTab({
   includeInactive = false,
   setIncludeInactive = () => {},
   dateRange = {},
+  dateRangeType = '',
   diagnosticsCampaignOptions = [],
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
@@ -2637,7 +2648,7 @@ function DashboardTab({
 
   const getBucketDays = (totalDays) => {
     if (totalDays <= 7) return 1;
-    if (totalDays <= 14) return 3;
+    if (totalDays <= 21) return 3;
     if (totalDays <= 60) return 7;
     return 30;
   };
@@ -2672,9 +2683,12 @@ function DashboardTab({
 
   const totalDays = getTotalDays();
   const baseBucketDays = getBucketDays(totalDays);
-  const bucketDays = totalDays > 60
-    ? (longRangeBucketMode === 'weekly' ? 7 : 30)
-    : baseBucketDays;
+  const forceWeeklyBuckets = dateRangeType === 'custom' && totalDays > 30;
+  const bucketDays = forceWeeklyBuckets
+    ? 7
+    : totalDays > 60
+      ? (longRangeBucketMode === 'weekly' ? 7 : 30)
+      : baseBucketDays;
 
   const aggregateBucket = useCallback((dataPoints = []) => {
     if (!Array.isArray(dataPoints) || dataPoints.length === 0) return null;
@@ -2785,6 +2799,18 @@ function DashboardTab({
     buildBucketedTrendsForChart(bucketedTrendsWithStatus)
   ), [buildBucketedTrendsForChart, bucketedTrendsWithStatus]);
 
+  const regionCompareDateOrder = useMemo(() => {
+    if (!Array.isArray(trends) || trends.length === 0) return [];
+    const seen = new Set();
+    return trends
+      .map((point) => getPointDate(point))
+      .filter((date) => {
+        if (!date || seen.has(date)) return false;
+        seen.add(date);
+        return true;
+      });
+  }, [getPointDate, trends]);
+
   const getCountryCode = useCallback((country = {}) => {
     const rawCode = country.countryCode || country.code || country.country_code || country.countryIso;
     return rawCode ? String(rawCode).toUpperCase() : '';
@@ -2809,13 +2835,19 @@ function DashboardTab({
       });
     });
 
-    return Array.from(byDate.values()).sort((a, b) => {
-      const aDate = parseLocalDate(a.date);
-      const bDate = parseLocalDate(b.date);
-      if (!aDate || !bDate) return 0;
-      return aDate.getTime() - bDate.getTime();
-    });
-  }, [getCountryCode, getPointDate, parseLocalDate, regionCompareTrends]);
+    const orderedDates = regionCompareDateOrder.length > 0
+      ? regionCompareDateOrder
+      : Array.from(byDate.keys()).sort((a, b) => {
+        const aDate = parseLocalDate(a);
+        const bDate = parseLocalDate(b);
+        if (!aDate || !bDate) return 0;
+        return aDate.getTime() - bDate.getTime();
+      });
+
+    return orderedDates.map((date) => (
+      byDate.get(date) || { date, orders: 0, revenue: 0, spend: 0 }
+    ));
+  }, [getCountryCode, getPointDate, parseLocalDate, regionCompareDateOrder, regionCompareTrends]);
 
   const europeRegionTrends = useMemo(() => (
     buildRegionTrendSeries(EUROPE_COUNTRY_CODES)
