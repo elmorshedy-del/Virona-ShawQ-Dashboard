@@ -2864,6 +2864,8 @@ function DashboardTab({
         values.spend.push(toNumber(entry.spend));
       }
 
+      // Implements Holt's linear trend method (with damping) to forecast the next day's value.
+      // See: https://otexts.com/fpp3/holt.html
       const holtPace = (arr) => {
         const n = arr.length;
         if (n === 0) return 0;
