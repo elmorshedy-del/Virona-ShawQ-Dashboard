@@ -3106,6 +3106,42 @@ function DashboardTab({
     );
   }, [formatTooltipMetricValue, getTrendRangeLabel]);
 
+  const TrendLine = ({ baseKey, stroke, lastBucketIncomplete, isIncompleteKey }) => (
+    <>
+      <Line
+        type="monotone"
+        dataKey={`${baseKey}Complete`}
+        stroke={stroke}
+        strokeWidth={2}
+        dot={false}
+        fill="none"
+      />
+      {lastBucketIncomplete && (
+        <Line
+          type="monotone"
+          dataKey={`${baseKey}Incomplete`}
+          stroke={stroke}
+          strokeWidth={2}
+          dot={({ cx, cy, payload }) => {
+            if (!payload?.[isIncompleteKey] || cx == null || cy == null) return null;
+            return (
+              <circle
+                cx={cx}
+                cy={cy}
+                r={4}
+                fill="white"
+                stroke={stroke}
+                strokeWidth={2}
+              />
+            );
+          }}
+          strokeDasharray="5,5"
+          fill="none"
+        />
+      )}
+    </>
+  );
+
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
   const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
@@ -3781,102 +3817,27 @@ function DashboardTab({
                 />
                 {regionCompareActive ? (
                   <>
-                    <Line
-                      type="monotone"
-                      dataKey="europeOrdersComplete"
+                    <TrendLine
+                      baseKey="europeOrders"
                       stroke={REGION_COMPARE_COLORS.europe}
-                      strokeWidth={2}
-                      dot={false}
-                      fill="none"
+                      lastBucketIncomplete={europeLastBucketIncomplete}
+                      isIncompleteKey="europeIsIncomplete"
                     />
-                    {europeLastBucketIncomplete && (
-                      <Line
-                        type="monotone"
-                        dataKey="europeOrdersIncomplete"
-                        stroke={REGION_COMPARE_COLORS.europe}
-                        strokeWidth={2}
-                        dot={({ cx, cy, payload }) => {
-                          if (!payload?.europeIsIncomplete || cx == null || cy == null) return null;
-                          return (
-                            <circle
-                              cx={cx}
-                              cy={cy}
-                              r={4}
-                              fill="white"
-                              stroke={REGION_COMPARE_COLORS.europe}
-                              strokeWidth={2}
-                            />
-                          );
-                        }}
-                        strokeDasharray="5,5"
-                        fill="none"
-                      />
-                    )}
-                    <Line
-                      type="monotone"
-                      dataKey="usaOrdersComplete"
+                    <TrendLine
+                      baseKey="usaOrders"
                       stroke={REGION_COMPARE_COLORS.usa}
-                      strokeWidth={2}
-                      dot={false}
-                      fill="none"
+                      lastBucketIncomplete={usaLastBucketIncomplete}
+                      isIncompleteKey="usaIsIncomplete"
                     />
-                    {usaLastBucketIncomplete && (
-                      <Line
-                        type="monotone"
-                        dataKey="usaOrdersIncomplete"
-                        stroke={REGION_COMPARE_COLORS.usa}
-                        strokeWidth={2}
-                        dot={({ cx, cy, payload }) => {
-                          if (!payload?.usaIsIncomplete || cx == null || cy == null) return null;
-                          return (
-                            <circle
-                              cx={cx}
-                              cy={cy}
-                              r={4}
-                              fill="white"
-                              stroke={REGION_COMPARE_COLORS.usa}
-                              strokeWidth={2}
-                            />
-                          );
-                        }}
-                        strokeDasharray="5,5"
-                        fill="none"
-                      />
-                    )}
                   </>
                 ) : (
                   <>
-                    <Line
-                      type="monotone"
-                      dataKey="ordersComplete"
+                    <TrendLine
+                      baseKey="orders"
                       stroke="#22c55e"
-                      strokeWidth={2}
-                      dot={false}
-                      fill="none"
+                      lastBucketIncomplete={lastBucketIncomplete}
+                      isIncompleteKey="isIncomplete"
                     />
-                    {lastBucketIncomplete && (
-                      <Line
-                        type="monotone"
-                        dataKey="ordersIncomplete"
-                        stroke="#22c55e"
-                        strokeWidth={2}
-                        dot={({ cx, cy, payload }) => {
-                          if (!payload?.isIncomplete || cx == null || cy == null) return null;
-                          return (
-                            <circle
-                              cx={cx}
-                              cy={cy}
-                              r={4}
-                              fill="white"
-                              stroke="#22c55e"
-                              strokeWidth={2}
-                            />
-                          );
-                        }}
-                        strokeDasharray="5,5"
-                        fill="none"
-                      />
-                    )}
                   </>
                 )}
               </LineChart>
@@ -3892,10 +3853,8 @@ function DashboardTab({
             const thisKpi = kpis.find(k => k.key === key);
             if (!thisKpi) return null;
             const capKey = key.charAt(0).toUpperCase() + key.slice(1);
-            const europeCompleteKey = `europe${capKey}Complete`;
-            const europeIncompleteKey = `europe${capKey}Incomplete`;
-            const usaCompleteKey = `usa${capKey}Complete`;
-            const usaIncompleteKey = `usa${capKey}Incomplete`;
+            const europeBaseKey = `europe${capKey}`;
+            const usaBaseKey = `usa${capKey}`;
             return (
               <div key={key} className="bg-white rounded-xl p-6 shadow-sm animate-fade-in">
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
@@ -3951,102 +3910,27 @@ function DashboardTab({
                       />
                       {regionCompareActive ? (
                         <>
-                          <Line
-                            type="monotone"
-                            dataKey={europeCompleteKey}
+                          <TrendLine
+                            baseKey={europeBaseKey}
                             stroke={REGION_COMPARE_COLORS.europe}
-                            strokeWidth={2}
-                            dot={false}
-                            fill="none"
+                            lastBucketIncomplete={europeLastBucketIncomplete}
+                            isIncompleteKey="europeIsIncomplete"
                           />
-                          {europeLastBucketIncomplete && (
-                            <Line
-                              type="monotone"
-                              dataKey={europeIncompleteKey}
-                              stroke={REGION_COMPARE_COLORS.europe}
-                              strokeWidth={2}
-                              dot={({ cx, cy, payload }) => {
-                                if (!payload?.europeIsIncomplete || cx == null || cy == null) return null;
-                                return (
-                                  <circle
-                                    cx={cx}
-                                    cy={cy}
-                                    r={4}
-                                    fill="white"
-                                    stroke={REGION_COMPARE_COLORS.europe}
-                                    strokeWidth={2}
-                                  />
-                                );
-                              }}
-                              strokeDasharray="5,5"
-                              fill="none"
-                            />
-                          )}
-                          <Line
-                            type="monotone"
-                            dataKey={usaCompleteKey}
+                          <TrendLine
+                            baseKey={usaBaseKey}
                             stroke={REGION_COMPARE_COLORS.usa}
-                            strokeWidth={2}
-                            dot={false}
-                            fill="none"
+                            lastBucketIncomplete={usaLastBucketIncomplete}
+                            isIncompleteKey="usaIsIncomplete"
                           />
-                          {usaLastBucketIncomplete && (
-                            <Line
-                              type="monotone"
-                              dataKey={usaIncompleteKey}
-                              stroke={REGION_COMPARE_COLORS.usa}
-                              strokeWidth={2}
-                              dot={({ cx, cy, payload }) => {
-                                if (!payload?.usaIsIncomplete || cx == null || cy == null) return null;
-                                return (
-                                  <circle
-                                    cx={cx}
-                                    cy={cy}
-                                    r={4}
-                                    fill="white"
-                                    stroke={REGION_COMPARE_COLORS.usa}
-                                    strokeWidth={2}
-                                  />
-                                );
-                              }}
-                              strokeDasharray="5,5"
-                              fill="none"
-                            />
-                          )}
                         </>
                       ) : (
                         <>
-                          <Line
-                            type="monotone"
-                            dataKey={`${key}Complete`}
+                          <TrendLine
+                            baseKey={key}
                             stroke={thisKpi.color}
-                            strokeWidth={2}
-                            dot={false}
-                            fill="none"
+                            lastBucketIncomplete={lastBucketIncomplete}
+                            isIncompleteKey="isIncomplete"
                           />
-                          {lastBucketIncomplete && (
-                            <Line
-                              type="monotone"
-                              dataKey={`${key}Incomplete`}
-                              stroke={thisKpi.color}
-                              strokeWidth={2}
-                              dot={({ cx, cy, payload }) => {
-                                if (!payload?.isIncomplete || cx == null || cy == null) return null;
-                                return (
-                                  <circle
-                                    cx={cx}
-                                    cy={cy}
-                                    r={4}
-                                    fill="white"
-                                    stroke={thisKpi.color}
-                                    strokeWidth={2}
-                                  />
-                                );
-                              }}
-                              strokeDasharray="5,5"
-                              fill="none"
-                            />
-                          )}
                         </>
                       )}
                     </LineChart>
