@@ -408,6 +408,7 @@ export default function App() {
   const [countriesDataSource, setCountriesDataSource] = useState('');
   const [regionCompareTrends, setRegionCompareTrends] = useState([]);
   const [regionCompareEnabled, setRegionCompareEnabled] = useState(false);
+  const [chartMode, setChartMode] = useState('bucket');
 
   // Unified analytics section state (must be before useEffect hooks that use them)
   const [analyticsMode, setAnalyticsMode] = useState('meta-ad-manager'); // 'countries' | 'meta-ad-manager'
@@ -1380,6 +1381,32 @@ export default function App() {
             )}
           </div>
 
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-gray-500">Trend:</span>
+            <div className="flex rounded-lg bg-gray-100 p-1">
+              <button
+                onClick={() => setChartMode('bucket')}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  chartMode === 'bucket'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500'
+                }`}
+              >
+                Buckets
+              </button>
+              <button
+                onClick={() => setChartMode('ma')}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  chartMode === 'ma'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500'
+                }`}
+              >
+                MA
+              </button>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
             <span className="text-sm font-medium text-gray-700">USA vs Europe Overlay</span>
             <button
@@ -1477,7 +1504,7 @@ export default function App() {
             includeInactive={includeInactive}
             setIncludeInactive={setIncludeInactive}
             dateRange={dashboard?.dateRange}
-            dateRangeType={dateRange.type}
+            chartMode={chartMode}
           />
           )}
 
@@ -1675,7 +1702,7 @@ function DashboardTab({
   includeInactive = false,
   setIncludeInactive = () => {},
   dateRange = {},
-  dateRangeType = '',
+  chartMode = 'bucket',
   diagnosticsCampaignOptions = [],
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
@@ -1724,7 +1751,6 @@ function DashboardTab({
   const [showCreativeSummaryTable, setShowCreativeSummaryTable] = useState(true);
   const [showCreativeFunnelSummary, setShowCreativeFunnelSummary] = useState(true);
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
-  const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
   const countryTrendQuickOptions = [
     { label: '1W', type: 'weeks', value: 1 },
     { label: '2W', type: 'weeks', value: 2 },
@@ -2649,7 +2675,7 @@ function DashboardTab({
   const getBucketDays = (totalDays) => {
     if (totalDays <= 7) return 1;
     if (totalDays <= 21) return 3;
-    if (totalDays <= 60) return 7;
+    if (totalDays < 60) return 7;
     return 30;
   };
 
@@ -2682,13 +2708,9 @@ function DashboardTab({
   }, [dateRange, parseLocalDate, trends]);
 
   const totalDays = getTotalDays();
-  const baseBucketDays = getBucketDays(totalDays);
-  const forceWeeklyBuckets = dateRangeType === 'custom' && totalDays > 30;
-  const bucketDays = forceWeeklyBuckets
-    ? 7
-    : totalDays > 60
-      ? (longRangeBucketMode === 'weekly' ? 7 : 30)
-      : baseBucketDays;
+  const bucketDays = getBucketDays(totalDays);
+  const maWindow = totalDays >= 60 ? 30 : 7;
+  const isBucketMode = chartMode === 'bucket';
 
   const aggregateBucket = useCallback((dataPoints = []) => {
     if (!Array.isArray(dataPoints) || dataPoints.length === 0) return null;
@@ -2722,6 +2744,7 @@ function DashboardTab({
         const orders = toNumber(point.orders);
         const revenue = toNumber(point.revenue);
         const spend = toNumber(point.spend);
+        const dateKey = getPointDate(point);
         return {
           ...point,
           orders,
@@ -2730,8 +2753,9 @@ function DashboardTab({
           roas: spend > 0 ? revenue / spend : 0,
           cac: orders > 0 ? spend / orders : 0,
           aov: orders > 0 ? revenue / orders : 0,
-          bucketStartDate: getPointDate(point),
-          bucketEndDate: getPointDate(point),
+          bucketStartDate: dateKey,
+          bucketEndDate: dateKey,
+          bucketExpectedEndDate: dateKey,
           isIncomplete: false
         };
       });
@@ -2744,16 +2768,24 @@ function DashboardTab({
       if (!summary) continue;
       const bucketStartDate = getPointDate(chunk[0]);
       const bucketEndDate = getPointDate(chunk[chunk.length - 1]);
+      const bucketStart = parseLocalDate(bucketStartDate);
+      let bucketExpectedEndDate = bucketEndDate;
+      if (bucketStart) {
+        const expectedEnd = new Date(bucketStart);
+        expectedEnd.setDate(expectedEnd.getDate() + bucketDays - 1);
+        bucketExpectedEndDate = getLocalDateString(expectedEnd);
+      }
       buckets.push({
         ...summary,
-        date: bucketStartDate,
+        date: bucketEndDate,
         bucketStartDate,
-        bucketEndDate
+        bucketEndDate,
+        bucketExpectedEndDate
       });
     }
 
     return buckets;
-  }, [aggregateBucket, bucketDays, getPointDate, parseLocalDate]);
+  }, [aggregateBucket, bucketDays, getLocalDateString, getPointDate, parseLocalDate]);
 
   const bucketedTrends = useMemo(() => (
     buildBucketedTrends(trends)
@@ -2765,9 +2797,12 @@ function DashboardTab({
     today.setHours(0, 0, 0, 0);
     return series.map((point, index) => {
       const isLast = index === series.length - 1;
-      const bucketEnd = parseLocalDate(point.bucketEndDate);
+      const bucketEnd = parseLocalDate(point.bucketExpectedEndDate || point.bucketEndDate);
       const isIncomplete = isLast && bucketEnd && bucketEnd >= today;
-      return { ...point, isIncomplete };
+      const bucketExpectedEndDate = isIncomplete
+        ? (point.bucketExpectedEndDate || point.bucketEndDate)
+        : point.bucketEndDate;
+      return { ...point, isIncomplete, bucketExpectedEndDate };
     });
   }, [parseLocalDate]);
 
@@ -2778,13 +2813,29 @@ function DashboardTab({
   const buildBucketedTrendsForChart = useCallback((series = []) => {
     const keys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
     if (series.length === 0) {
-      return { data: [], lastBucketIncomplete: false };
+      return { data: [], lastBucketIncomplete: false, hasProjection: false };
     }
-    const lastBucketIncomplete = series[series.length - 1].isIncomplete;
-    const data = series.map((point, index, arr) => {
-      const isLast = index === arr.length - 1;
-      const isPrev = index === arr.length - 2;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayKey = getLocalDateString(today);
+
+    const lastIndex = series.length - 1;
+    const lastPoint = series[lastIndex];
+    const lastBucketIncomplete = lastPoint.isIncomplete;
+
+    const data = series.map((point, index) => {
+      const isLast = index === lastIndex;
+      const isPrev = index === lastIndex - 1;
       const next = { ...point };
+
+      if (point.bucketEndDate && (!lastBucketIncomplete || !isLast)) {
+        next.date = point.bucketEndDate;
+      }
+      if (isLast && lastBucketIncomplete) {
+        next.date = todayKey;
+      }
+
       keys.forEach((key) => {
         const value = toNumber(point[key]);
         next[`${key}Complete`] = !lastBucketIncomplete || !isLast ? value : null;
@@ -2792,10 +2843,62 @@ function DashboardTab({
       });
       return next;
     });
-    return { data, lastBucketIncomplete };
-  }, []);
 
-  const { data: bucketedTrendsForChart, lastBucketIncomplete } = useMemo(() => (
+    let hasProjection = false;
+
+    if (lastBucketIncomplete) {
+      const bucketStart = parseLocalDate(lastPoint.bucketStartDate);
+      const bucketExpectedEnd = parseLocalDate(lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate);
+      if (bucketStart && bucketExpectedEnd) {
+        const msInDay = 1000 * 60 * 60 * 24;
+        const elapsedDays = Math.floor((today - bucketStart) / msInDay) + 1;
+        const totalDays = Math.floor((bucketExpectedEnd - bucketStart) / msInDay) + 1;
+        const remainingDays = totalDays - elapsedDays;
+
+        if (elapsedDays >= 2 && remainingDays > 0) {
+          const scale = totalDays / Math.max(elapsedDays, 1);
+          const projectedOrders = toNumber(lastPoint.orders) * scale;
+          const projectedRevenue = toNumber(lastPoint.revenue) * scale;
+          const projectedSpend = toNumber(lastPoint.spend) * scale;
+
+          const projectedAov = projectedOrders > 0 ? projectedRevenue / projectedOrders : 0;
+          const projectedCac = projectedOrders > 0 ? projectedSpend / projectedOrders : 0;
+          const projectedRoas = projectedSpend > 0 ? projectedRevenue / projectedSpend : 0;
+
+          const projectionPoint = {
+            date: lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate,
+            bucketStartDate: lastPoint.bucketStartDate,
+            bucketEndDate: lastPoint.bucketEndDate,
+            bucketExpectedEndDate: lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate,
+            isIncomplete: lastPoint.isIncomplete
+          };
+
+          const lastDataPoint = data[lastIndex];
+          keys.forEach((key) => {
+            lastDataPoint[`${key}Projected`] = toNumber(lastPoint[key]);
+          });
+
+          projectionPoint.ordersProjected = projectedOrders;
+          projectionPoint.revenueProjected = projectedRevenue;
+          projectionPoint.spendProjected = projectedSpend;
+          projectionPoint.aovProjected = projectedAov;
+          projectionPoint.cacProjected = projectedCac;
+          projectionPoint.roasProjected = projectedRoas;
+
+          data.push(projectionPoint);
+          hasProjection = true;
+        }
+      }
+    }
+
+    return { data, lastBucketIncomplete, hasProjection };
+  }, [getLocalDateString, parseLocalDate]);
+
+  const {
+    data: bucketedTrendsForChart,
+    lastBucketIncomplete,
+    hasProjection: bucketHasProjection
+  } = useMemo(() => (
     buildBucketedTrendsForChart(bucketedTrendsWithStatus)
   ), [buildBucketedTrendsForChart, bucketedTrendsWithStatus]);
 
@@ -2871,11 +2974,19 @@ function DashboardTab({
     buildBucketedTrendsWithStatus(usaBucketedTrends)
   ), [buildBucketedTrendsWithStatus, usaBucketedTrends]);
 
-  const { data: europeBucketedForChart, lastBucketIncomplete: europeLastBucketIncomplete } = useMemo(() => (
+  const {
+    data: europeBucketedForChart,
+    lastBucketIncomplete: europeLastBucketIncomplete,
+    hasProjection: europeHasProjection
+  } = useMemo(() => (
     buildBucketedTrendsForChart(europeBucketedWithStatus)
   ), [buildBucketedTrendsForChart, europeBucketedWithStatus]);
 
-  const { data: usaBucketedForChart, lastBucketIncomplete: usaLastBucketIncomplete } = useMemo(() => (
+  const {
+    data: usaBucketedForChart,
+    lastBucketIncomplete: usaLastBucketIncomplete,
+    hasProjection: usaHasProjection
+  } = useMemo(() => (
     buildBucketedTrendsForChart(usaBucketedWithStatus)
   ), [buildBucketedTrendsForChart, usaBucketedWithStatus]);
 
@@ -2888,18 +2999,20 @@ function DashboardTab({
         date: point.date,
         bucketStartDate: point.bucketStartDate,
         bucketEndDate: point.bucketEndDate,
+        bucketExpectedEndDate: point.bucketExpectedEndDate,
         [`${normalizePrefix}IsIncomplete`]: point.isIncomplete
       };
       metricKeys.forEach((metric) => {
         const capMetric = capitalize(metric);
         next[`${normalizePrefix}${capMetric}Complete`] = point[`${metric}Complete`];
         next[`${normalizePrefix}${capMetric}Incomplete`] = point[`${metric}Incomplete`];
+        next[`${normalizePrefix}${capMetric}Projected`] = point[`${metric}Projected`];
       });
       return next;
     });
   }, []);
 
-  const regionCompareChartData = useMemo(() => {
+  const regionCompareBucketChartData = useMemo(() => {
     const europeSeries = prefixBucketedSeries(europeBucketedForChart, 'europe');
     const usaSeries = prefixBucketedSeries(usaBucketedForChart, 'usa');
     const byDate = new Map();
@@ -2912,8 +3025,11 @@ function DashboardTab({
       if (point.bucketEndDate && !existing.bucketEndDate) {
         existing.bucketEndDate = point.bucketEndDate;
       }
+      if (point.bucketExpectedEndDate && !existing.bucketExpectedEndDate) {
+        existing.bucketExpectedEndDate = point.bucketExpectedEndDate;
+      }
       Object.entries(point).forEach(([key, value]) => {
-        if (key === 'date' || key === 'bucketStartDate' || key === 'bucketEndDate') return;
+        if (key === 'date' || key === 'bucketStartDate' || key === 'bucketEndDate' || key === 'bucketExpectedEndDate') return;
         existing[key] = value;
       });
       byDate.set(point.date, existing);
@@ -2928,7 +3044,113 @@ function DashboardTab({
     });
   }, [europeBucketedForChart, parseLocalDate, prefixBucketedSeries, usaBucketedForChart]);
 
-  const regionCompareActive = regionCompareEnabled && regionCompareChartData.length > 0;
+  const buildMovingAverageSeries = useCallback((series = [], windowSize = 7) => {
+    const cleaned = (Array.isArray(series) ? series : [])
+      .map((point) => {
+        const date = getPointDate(point);
+        if (!date) return null;
+        const orders = toNumber(point?.orders);
+        const revenue = toNumber(point?.revenue);
+        const spend = toNumber(point?.spend);
+        return { date, orders, revenue, spend };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        const aDate = parseLocalDate(a.date);
+        const bDate = parseLocalDate(b.date);
+        if (!aDate || !bDate) return 0;
+        return aDate.getTime() - bDate.getTime();
+      });
+
+    if (cleaned.length === 0) return [];
+
+    const ordersValues = cleaned.map((point) => point.orders || 0);
+    const revenueValues = cleaned.map((point) => point.revenue || 0);
+    const spendValues = cleaned.map((point) => point.spend || 0);
+
+    const ordersMA = getMovingAverage(ordersValues, windowSize);
+    const revenueMA = getMovingAverage(revenueValues, windowSize);
+    const spendMA = getMovingAverage(spendValues, windowSize);
+
+    return cleaned.map((point, index) => {
+      const ordersMAValue = toNumber(ordersMA[index]);
+      const revenueMAValue = toNumber(revenueMA[index]);
+      const spendMAValue = toNumber(spendMA[index]);
+      const aov = point.orders > 0 ? point.revenue / point.orders : 0;
+      const cac = point.orders > 0 ? point.spend / point.orders : 0;
+      const roas = point.spend > 0 ? point.revenue / point.spend : 0;
+      return {
+        ...point,
+        aov,
+        cac,
+        roas,
+        ordersMA: ordersMAValue,
+        revenueMA: revenueMAValue,
+        spendMA: spendMAValue,
+        aovMA: ordersMAValue > 0 ? revenueMAValue / ordersMAValue : 0,
+        cacMA: ordersMAValue > 0 ? spendMAValue / ordersMAValue : 0,
+        roasMA: spendMAValue > 0 ? revenueMAValue / spendMAValue : 0
+      };
+    });
+  }, [getPointDate, parseLocalDate]);
+
+  const maTrends = useMemo(() => (
+    buildMovingAverageSeries(trends, maWindow)
+  ), [buildMovingAverageSeries, maWindow, trends]);
+
+  const europeMaTrends = useMemo(() => (
+    buildMovingAverageSeries(europeRegionTrends, maWindow)
+  ), [buildMovingAverageSeries, europeRegionTrends, maWindow]);
+
+  const usaMaTrends = useMemo(() => (
+    buildMovingAverageSeries(usaRegionTrends, maWindow)
+  ), [buildMovingAverageSeries, maWindow, usaRegionTrends]);
+
+  const prefixMaSeries = useCallback((series = [], prefix = '') => {
+    const metricKeys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
+    const normalizePrefix = prefix ? `${prefix}` : '';
+    const capitalize = (value = '') => value.charAt(0).toUpperCase() + value.slice(1);
+    return series.map((point) => {
+      const next = { date: point.date };
+      metricKeys.forEach((metric) => {
+        const capMetric = capitalize(metric);
+        next[`${normalizePrefix}${capMetric}`] = point[metric];
+        next[`${normalizePrefix}${capMetric}MA`] = point[`${metric}MA`];
+      });
+      return next;
+    });
+  }, []);
+
+  const regionCompareMaChartData = useMemo(() => {
+    const europeSeries = prefixMaSeries(europeMaTrends, 'europe');
+    const usaSeries = prefixMaSeries(usaMaTrends, 'usa');
+    const byDate = new Map();
+    const mergePoint = (point) => {
+      if (!point?.date) return;
+      const existing = byDate.get(point.date) || { date: point.date };
+      Object.entries(point).forEach(([key, value]) => {
+        if (key === 'date') return;
+        existing[key] = value;
+      });
+      byDate.set(point.date, existing);
+    };
+    europeSeries.forEach(mergePoint);
+    usaSeries.forEach(mergePoint);
+    return Array.from(byDate.values()).sort((a, b) => {
+      const aDate = parseLocalDate(a.date);
+      const bDate = parseLocalDate(b.date);
+      if (!aDate || !bDate) return 0;
+      return aDate.getTime() - bDate.getTime();
+    });
+  }, [europeMaTrends, parseLocalDate, prefixMaSeries, usaMaTrends]);
+
+  const regionCompareActive = regionCompareEnabled && (
+    isBucketMode ? regionCompareBucketChartData.length > 0 : regionCompareMaChartData.length > 0
+  );
+  const regionCompareChartData = isBucketMode ? regionCompareBucketChartData : regionCompareMaChartData;
+  const hasTrendData = isBucketMode
+    ? bucketedTrendsWithStatus.length > 0
+    : maTrends.length > 0;
 
   const formatCountryTick = useCallback((dateString) => {
     const date = parseLocalDate(dateString);
@@ -3028,7 +3250,7 @@ function DashboardTab({
   };
 
   const getTooltipMetricKey = (dataKey = '') =>
-    dataKey.replace(/(Complete|Incomplete)$/u, '').toLowerCase();
+    dataKey.replace(/(Complete|Incomplete|Projected|MA)$/u, '').toLowerCase();
 
   const getTooltipMetricLabel = (metricKey) =>
     tooltipLabels[metricKey] || metricKey;
@@ -3044,10 +3266,11 @@ function DashboardTab({
 
   const getTrendRangeLabel = useCallback((payload, fallbackLabel) => {
     const point = payload?.find(item => item?.payload)?.payload;
-    if (point?.bucketStartDate && point?.bucketEndDate) {
+    const rangeEnd = point?.bucketExpectedEndDate || point?.bucketEndDate;
+    if (point?.bucketStartDate && rangeEnd) {
       const startLabel = formatCountryTooltip(point.bucketStartDate);
-      const endLabel = formatCountryTooltip(point.bucketEndDate);
-      if (point.bucketStartDate !== point.bucketEndDate) {
+      const endLabel = formatCountryTooltip(rangeEnd);
+      if (point.bucketStartDate !== rangeEnd) {
         return `${startLabel} - ${endLabel}`;
       }
       return startLabel;
@@ -3060,11 +3283,27 @@ function DashboardTab({
     const isInProgress = payload.some(item => item?.payload?.isIncomplete);
     const point = payload.find(item => item?.payload)?.payload;
     let rangeLabel = getTrendRangeLabel(payload, label);
-    const displayItem = payload.find(item => item?.value != null && !String(item?.dataKey).includes('Incomplete'))
+    const displayItem = payload.find(item => (
+      item?.value != null
+      && !String(item?.dataKey).includes('Incomplete')
+      && !String(item?.dataKey).includes('Projected')
+    )) || (isInProgress
+      ? payload.find(item => item?.value != null && String(item?.dataKey).includes('Incomplete'))
+      : null)
       || payload.find(item => item?.value != null);
-    const metricKey = metricKeyOverride || getTooltipMetricKey(displayItem?.dataKey || '');
+    const dataKey = String(displayItem?.dataKey || '');
+    const metricKey = metricKeyOverride || getTooltipMetricKey(dataKey);
     let metricLabel = getTooltipMetricLabel(metricKey);
     const formattedValue = formatTooltipMetricValue(metricKey, displayItem?.value);
+    const hasActualValue = payload.some(item => (
+      item?.value != null && (
+        String(item?.dataKey).includes('Complete') || String(item?.dataKey).includes('Incomplete')
+      )
+    ));
+
+    if (dataKey.includes('Projected') && !hasActualValue) {
+      metricLabel = `Projected ${metricLabel}`;
+    }
 
     if (isInProgress && point?.bucketStartDate) {
       const getTurkeyToday = () => {
@@ -3074,22 +3313,27 @@ function DashboardTab({
         return turkeyDate.getTime();
       };
 
-      const actualEndDate = new Date(point.bucketStartDate);
-      actualEndDate.setDate(actualEndDate.getDate() + bucketDays - 1);
+      const rangeEnd = point.bucketExpectedEndDate || point.bucketEndDate;
+      const startDate = parseLocalDate(point.bucketStartDate);
+      const endDate = rangeEnd ? parseLocalDate(rangeEnd) : null;
 
-      const formatDate = (date) => new Date(date).toLocaleDateString('en-US', {
+      const formatDate = (date) => date.toLocaleDateString('en-US', {
         month: 'short',
         day: 'numeric'
       });
 
-      rangeLabel = `${formatDate(point.bucketStartDate)} - ${formatDate(actualEndDate)} (in progress)`;
+      if (startDate && endDate) {
+        rangeLabel = `${formatDate(startDate)} - ${formatDate(endDate)} (in progress)`;
+      }
 
       const today = getTurkeyToday();
-      const endTime = actualEndDate.setHours(0, 0, 0, 0);
-      const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
+      if (endDate) {
+        const endTime = endDate.setHours(0, 0, 0, 0);
+        const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
 
-      if (daysLeft >= 0) {
-        metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
+        if (daysLeft >= 0) {
+          metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
+        }
       }
     }
 
@@ -3103,21 +3347,108 @@ function DashboardTab({
         </p>
       </div>
     );
-  }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel]);
+  }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate]);
+
+  const renderMaTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const metricKey = metricKeyOverride || getTooltipMetricKey(payload?.[0]?.dataKey || '');
+    const metricLabel = getTooltipMetricLabel(metricKey);
+    const dailyItem = payload.find(item => item?.dataKey === metricKey);
+    const maItem = payload.find(item => item?.dataKey === `${metricKey}MA`);
+    const dailyValue = dailyItem?.value != null
+      ? formatTooltipMetricValue(metricKey, dailyItem.value)
+      : '—';
+    const maValue = maItem?.value != null
+      ? formatTooltipMetricValue(metricKey, maItem.value)
+      : '—';
+
+    return (
+      <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
+        <p className="text-xs text-gray-500">
+          {formatCountryTooltip(label)}
+        </p>
+        <p className="text-sm font-medium text-gray-900">
+          {metricLabel}
+        </p>
+        <div className="mt-1 space-y-1 text-xs text-gray-600">
+          <div className="flex items-center justify-between gap-4">
+            <span>Daily</span>
+            <span className="text-gray-900">{dailyValue}</span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span>{maWindow}d MA</span>
+            <span className="text-gray-900">{maValue}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }, [formatCountryTooltip, formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, maWindow]);
 
   const renderRegionBucketTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
     const metricKey = metricKeyOverride || 'orders';
     const capMetric = metricKey.charAt(0).toUpperCase() + metricKey.slice(1);
-    const rangeLabel = getTrendRangeLabel(payload, label);
+    const point = payload.find(item => item?.payload)?.payload;
+    const isInProgress = payload.some(
+      item => item?.payload?.europeIsIncomplete || item?.payload?.usaIsIncomplete
+    );
+    let rangeLabel = getTrendRangeLabel(payload, label);
+    let metricLabel = getTooltipMetricLabel(metricKey);
+
+    const hasActualValue = payload.some(item => (
+      item?.value != null && (
+        String(item?.dataKey).includes('Complete') || String(item?.dataKey).includes('Incomplete')
+      )
+    ));
+    const hasProjectedValue = payload.some(
+      item => item?.value != null && String(item?.dataKey).includes('Projected')
+    );
+
+    if (hasProjectedValue && !hasActualValue) {
+      metricLabel = `Projected ${metricLabel}`;
+    }
+
+    if (isInProgress && point?.bucketStartDate) {
+      const getTurkeyToday = () => {
+        const now = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
+        const turkeyDate = new Date(now);
+        turkeyDate.setHours(0, 0, 0, 0);
+        return turkeyDate.getTime();
+      };
+
+      const rangeEnd = point.bucketExpectedEndDate || point.bucketEndDate;
+      const startDate = parseLocalDate(point.bucketStartDate);
+      const endDate = rangeEnd ? parseLocalDate(rangeEnd) : null;
+
+      const formatDate = (date) => date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric'
+      });
+
+      if (startDate && endDate) {
+        rangeLabel = `${formatDate(startDate)} - ${formatDate(endDate)} (in progress)`;
+      }
+
+      const today = getTurkeyToday();
+      if (endDate) {
+        const endTime = endDate.setHours(0, 0, 0, 0);
+        const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
+        if (daysLeft >= 0) {
+          metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
+        }
+      }
+    }
 
     const getRegionValue = (prefix) => {
+      const projectedKey = `${prefix}${capMetric}Projected`;
       const completeKey = `${prefix}${capMetric}Complete`;
       const incompleteKey = `${prefix}${capMetric}Incomplete`;
       const completeItem = payload.find(item => item?.dataKey === completeKey && item?.value != null);
       if (completeItem) return completeItem.value;
       const incompleteItem = payload.find(item => item?.dataKey === incompleteKey && item?.value != null);
-      return incompleteItem ? incompleteItem.value : null;
+      if (incompleteItem) return incompleteItem.value;
+      const projectedItem = payload.find(item => item?.dataKey === projectedKey && item?.value != null);
+      return projectedItem ? projectedItem.value : null;
     };
 
     const europeValue = getRegionValue('europe');
@@ -3129,6 +3460,9 @@ function DashboardTab({
       <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
         <p className="text-xs text-gray-500">
           {rangeLabel}
+        </p>
+        <p className="text-sm font-medium text-gray-900">
+          {metricLabel}
         </p>
         <div className="mt-1 space-y-1 text-sm font-medium text-gray-900">
           <div className="flex items-center gap-2">
@@ -3144,9 +3478,74 @@ function DashboardTab({
         </div>
       </div>
     );
-  }, [formatTooltipMetricValue, getTrendRangeLabel]);
+  }, [formatTooltipMetricValue, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate]);
 
-  const renderTrendLine = ({ baseKey, stroke, lastBucketIncomplete, isIncompleteKey }) => (
+  const renderRegionMaTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const metricKey = metricKeyOverride || 'orders';
+    const capMetric = metricKey.charAt(0).toUpperCase() + metricKey.slice(1);
+    const metricLabel = getTooltipMetricLabel(metricKey);
+
+    const getRegionValues = (prefix) => {
+      const dailyKey = `${prefix}${capMetric}`;
+      const maKey = `${prefix}${capMetric}MA`;
+      const dailyItem = payload.find(item => item?.dataKey === dailyKey);
+      const maItem = payload.find(item => item?.dataKey === maKey);
+      return {
+        daily: dailyItem?.value,
+        ma: maItem?.value
+      };
+    };
+
+    const europeValues = getRegionValues('europe');
+    const usaValues = getRegionValues('usa');
+
+    const formatValue = (value) =>
+      value == null ? '—' : formatTooltipMetricValue(metricKey, value);
+
+    return (
+      <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
+        <p className="text-xs text-gray-500">
+          {formatCountryTooltip(label)}
+        </p>
+        <p className="text-sm font-medium text-gray-900">
+          {metricLabel}
+        </p>
+        <div className="mt-2 space-y-2 text-xs text-gray-600">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.europe }} />
+              <span>Europe</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span>Daily</span>
+              <span className="text-gray-900">{formatValue(europeValues.daily)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span>{maWindow}d MA</span>
+              <span className="text-gray-900">{formatValue(europeValues.ma)}</span>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.usa }} />
+              <span>USA</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span>Daily</span>
+              <span className="text-gray-900">{formatValue(usaValues.daily)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span>{maWindow}d MA</span>
+              <span className="text-gray-900">{formatValue(usaValues.ma)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }, [formatCountryTooltip, formatTooltipMetricValue, getTooltipMetricLabel, maWindow]);
+
+  const renderTrendLine = ({ baseKey, stroke, lastBucketIncomplete, isIncompleteKey, showProjection }) => (
     <>
       <Line
         type="monotone"
@@ -3179,6 +3578,37 @@ function DashboardTab({
           fill="none"
         />
       )}
+      {showProjection && (
+        <Line
+          type="monotone"
+          dataKey={`${baseKey}Projected`}
+          stroke={stroke}
+          strokeWidth={2}
+          dot={false}
+          strokeDasharray="3,3"
+          fill="none"
+        />
+      )}
+    </>
+  );
+
+  const renderMaLines = ({ baseKey, stroke }) => (
+    <>
+      <Line
+        type="monotone"
+        dataKey={baseKey}
+        stroke={stroke}
+        strokeWidth={1.5}
+        dot={false}
+        strokeOpacity={0.35}
+      />
+      <Line
+        type="monotone"
+        dataKey={`${baseKey}MA`}
+        stroke={stroke}
+        strokeWidth={2.5}
+        dot={false}
+      />
     </>
   );
 
@@ -3802,7 +4232,7 @@ function DashboardTab({
       </div>
 
       {/* Global Orders Trend */}
-      {bucketedTrendsWithStatus.length > 0 && showOrdersTrend && (
+      {hasTrendData && showOrdersTrend && (
         <div className="bg-white rounded-xl p-6 shadow-sm">
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <h3 className="text-lg font-semibold">Orders Trend</h3>
@@ -3818,67 +4248,63 @@ function DashboardTab({
                 </span>
               </div>
             )}
-            {totalDays > 60 && (
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-gray-500">Buckets:</span>
-                <div className="flex rounded-lg bg-gray-100 p-1">
-                  <button
-                    onClick={() => setLongRangeBucketMode('weekly')}
-                    className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                      longRangeBucketMode === 'weekly'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500'
-                    }`}
-                  >
-                    Weekly
-                  </button>
-                  <button
-                    onClick={() => setLongRangeBucketMode('monthly')}
-                    className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                      longRangeBucketMode === 'monthly'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500'
-                    }`}
-                  >
-                    Monthly
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
           <div className="h-64">
             <ResponsiveContainer>
-              <LineChart data={regionCompareActive ? regionCompareChartData : bucketedTrendsForChart}>
+              <LineChart data={regionCompareActive ? regionCompareChartData : (isBucketMode ? bucketedTrendsForChart : maTrends)}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
                 <Tooltip
-                  content={regionCompareActive ? renderRegionBucketTooltip('orders') : renderBucketTooltip('orders')}
+                  content={regionCompareActive
+                    ? (isBucketMode ? renderRegionBucketTooltip('orders') : renderRegionMaTooltip('orders'))
+                    : (isBucketMode ? renderBucketTooltip('orders') : renderMaTooltip('orders'))}
                 />
                 {regionCompareActive ? (
-                  <>
-                    {renderTrendLine({
-                      baseKey: 'europeOrders',
-                      stroke: REGION_COMPARE_COLORS.europe,
-                      lastBucketIncomplete: europeLastBucketIncomplete,
-                      isIncompleteKey: 'europeIsIncomplete'
-                    })}
-                    {renderTrendLine({
-                      baseKey: 'usaOrders',
-                      stroke: REGION_COMPARE_COLORS.usa,
-                      lastBucketIncomplete: usaLastBucketIncomplete,
-                      isIncompleteKey: 'usaIsIncomplete'
-                    })}
-                  </>
+                  isBucketMode ? (
+                    <>
+                      {renderTrendLine({
+                        baseKey: 'europeOrders',
+                        stroke: REGION_COMPARE_COLORS.europe,
+                        lastBucketIncomplete: europeLastBucketIncomplete,
+                        isIncompleteKey: 'europeIsIncomplete',
+                        showProjection: europeHasProjection
+                      })}
+                      {renderTrendLine({
+                        baseKey: 'usaOrders',
+                        stroke: REGION_COMPARE_COLORS.usa,
+                        lastBucketIncomplete: usaLastBucketIncomplete,
+                        isIncompleteKey: 'usaIsIncomplete',
+                        showProjection: usaHasProjection
+                      })}
+                    </>
+                  ) : (
+                    <>
+                      {renderMaLines({
+                        baseKey: 'europeOrders',
+                        stroke: REGION_COMPARE_COLORS.europe
+                      })}
+                      {renderMaLines({
+                        baseKey: 'usaOrders',
+                        stroke: REGION_COMPARE_COLORS.usa
+                      })}
+                    </>
+                  )
                 ) : (
-                  <>
-                    {renderTrendLine({
+                  isBucketMode ? (
+                    renderTrendLine({
                       baseKey: 'orders',
                       stroke: '#22c55e',
                       lastBucketIncomplete,
-                      isIncompleteKey: 'isIncomplete'
-                    })}
-                  </>
+                      isIncompleteKey: 'isIncomplete',
+                      showProjection: bucketHasProjection
+                    })
+                  ) : (
+                    renderMaLines({
+                      baseKey: 'orders',
+                      stroke: '#22c55e'
+                    })
+                  )
                 )}
               </LineChart>
             </ResponsiveContainer>
@@ -3887,7 +4313,7 @@ function DashboardTab({
       )}
 
       {/* Expanded KPI charts */}
-      {expandedKpis.length > 0 && bucketedTrendsWithStatus.length > 0 && (
+      {expandedKpis.length > 0 && hasTrendData && (
         <div className="space-y-6">
           {expandedKpis.filter(key => key !== 'orders').map((key) => {
             const thisKpi = kpis.find(k => k.key === key);
@@ -3911,67 +4337,63 @@ function DashboardTab({
                       </span>
                     </div>
                   )}
-                  {totalDays > 60 && (
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="text-gray-500">Buckets:</span>
-                      <div className="flex rounded-lg bg-gray-100 p-1">
-                        <button
-                          onClick={() => setLongRangeBucketMode('weekly')}
-                          className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                            longRangeBucketMode === 'weekly'
-                              ? 'bg-white text-gray-900 shadow-sm'
-                              : 'text-gray-500'
-                          }`}
-                        >
-                          Weekly
-                        </button>
-                        <button
-                          onClick={() => setLongRangeBucketMode('monthly')}
-                          className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                            longRangeBucketMode === 'monthly'
-                              ? 'bg-white text-gray-900 shadow-sm'
-                              : 'text-gray-500'
-                          }`}
-                        >
-                          Monthly
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </div>
                 <div className="h-64">
                   <ResponsiveContainer>
-                    <LineChart data={regionCompareActive ? regionCompareChartData : bucketedTrendsForChart}>
+                    <LineChart data={regionCompareActive ? regionCompareChartData : (isBucketMode ? bucketedTrendsForChart : maTrends)}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                       <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                       <YAxis tick={{ fontSize: 12 }} />
                       <Tooltip
-                        content={regionCompareActive ? renderRegionBucketTooltip(key) : renderBucketTooltip(key)}
+                        content={regionCompareActive
+                          ? (isBucketMode ? renderRegionBucketTooltip(key) : renderRegionMaTooltip(key))
+                          : (isBucketMode ? renderBucketTooltip(key) : renderMaTooltip(key))}
                       />
                       {regionCompareActive ? (
-                        <>
-                          {renderTrendLine({
-                            baseKey: europeBaseKey,
-                            stroke: REGION_COMPARE_COLORS.europe,
-                            lastBucketIncomplete: europeLastBucketIncomplete,
-                            isIncompleteKey: 'europeIsIncomplete'
-                          })}
-                          {renderTrendLine({
-                            baseKey: usaBaseKey,
-                            stroke: REGION_COMPARE_COLORS.usa,
-                            lastBucketIncomplete: usaLastBucketIncomplete,
-                            isIncompleteKey: 'usaIsIncomplete'
-                          })}
-                        </>
+                        isBucketMode ? (
+                          <>
+                            {renderTrendLine({
+                              baseKey: europeBaseKey,
+                              stroke: REGION_COMPARE_COLORS.europe,
+                              lastBucketIncomplete: europeLastBucketIncomplete,
+                              isIncompleteKey: 'europeIsIncomplete',
+                              showProjection: europeHasProjection
+                            })}
+                            {renderTrendLine({
+                              baseKey: usaBaseKey,
+                              stroke: REGION_COMPARE_COLORS.usa,
+                              lastBucketIncomplete: usaLastBucketIncomplete,
+                              isIncompleteKey: 'usaIsIncomplete',
+                              showProjection: usaHasProjection
+                            })}
+                          </>
+                        ) : (
+                          <>
+                            {renderMaLines({
+                              baseKey: europeBaseKey,
+                              stroke: REGION_COMPARE_COLORS.europe
+                            })}
+                            {renderMaLines({
+                              baseKey: usaBaseKey,
+                              stroke: REGION_COMPARE_COLORS.usa
+                            })}
+                          </>
+                        )
                       ) : (
-                        <>
-                          {renderTrendLine({
+                        isBucketMode ? (
+                          renderTrendLine({
                             baseKey: key,
                             stroke: thisKpi.color,
                             lastBucketIncomplete,
-                            isIncompleteKey: 'isIncomplete'
-                          })}
-                        </>
+                            isIncompleteKey: 'isIncomplete',
+                            showProjection: bucketHasProjection
+                          })
+                        ) : (
+                          renderMaLines({
+                            baseKey: key,
+                            stroke: thisKpi.color
+                          })
+                        )
                       )}
                     </LineChart>
                   </ResponsiveContainer>
