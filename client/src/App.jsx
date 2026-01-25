@@ -2791,6 +2791,20 @@ function DashboardTab({
     buildBucketedTrends(trends)
   ), [buildBucketedTrends, trends]);
 
+  const dailyTrendMap = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(trends) ? trends : []).forEach((point) => {
+      const dateKey = getPointDate(point);
+      if (!dateKey) return;
+      map.set(dateKey, {
+        orders: toNumber(point.orders),
+        revenue: toNumber(point.revenue),
+        spend: toNumber(point.spend)
+      });
+    });
+    return map;
+  }, [getPointDate, trends]);
+
   const buildBucketedTrendsWithStatus = useCallback((series = []) => {
     if (series.length === 0) return [];
     const today = new Date();
@@ -2810,7 +2824,7 @@ function DashboardTab({
     buildBucketedTrendsWithStatus(bucketedTrends)
   ), [buildBucketedTrendsWithStatus, bucketedTrends]);
 
-  const buildBucketedTrendsForChart = useCallback((series = []) => {
+  const buildBucketedTrendsForChart = useCallback((series = [], dailyMap = new Map()) => {
     const keys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
     if (series.length === 0) {
       return { data: [], lastBucketIncomplete: false, hasProjection: false };
@@ -2825,34 +2839,62 @@ function DashboardTab({
     const bucketExpectedEnd = lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate;
 
     let hasProjection = false;
-    let projectionPoint = null;
     let projectionSourceIndex = null;
+    let projectedTotals = null;
+
+    const msInDay = 1000 * 60 * 60 * 24;
+
+    const getWeightedPace = () => {
+      const alpha = 0.8;
+      let weightSum = 0;
+      let weightedOrders = 0;
+      let weightedRevenue = 0;
+      let weightedSpend = 0;
+
+      for (let offset = 0; offset < 7; offset += 1) {
+        const day = new Date(today);
+        day.setDate(day.getDate() - offset);
+        const dayKey = getLocalDateString(day);
+        const weight = Math.pow(alpha, offset);
+        const entry = dailyMap?.get(dayKey) || {};
+
+        weightedOrders += toNumber(entry.orders) * weight;
+        weightedRevenue += toNumber(entry.revenue) * weight;
+        weightedSpend += toNumber(entry.spend) * weight;
+        weightSum += weight;
+      }
+
+      if (weightSum <= 0) {
+        return { orders: 0, revenue: 0, spend: 0 };
+      }
+
+      return {
+        orders: weightedOrders / weightSum,
+        revenue: weightedRevenue / weightSum,
+        spend: weightedSpend / weightSum
+      };
+    };
 
     if (lastBucketIncomplete && bucketExpectedEnd && lastIndex > 0) {
       const bucketStart = parseLocalDate(lastPoint.bucketStartDate);
       const bucketEnd = parseLocalDate(bucketExpectedEnd);
       if (bucketStart && bucketEnd) {
-        const msInDay = 1000 * 60 * 60 * 24;
         const elapsedDays = Math.floor((today - bucketStart) / msInDay) + 1;
         const totalDays = Math.floor((bucketEnd - bucketStart) / msInDay) + 1;
         const remainingDays = totalDays - elapsedDays;
 
         if (elapsedDays >= 2 && remainingDays > 0) {
-          const scale = totalDays / Math.max(elapsedDays, 1);
-          const projectedOrders = toNumber(lastPoint.orders) * scale;
-          const projectedRevenue = toNumber(lastPoint.revenue) * scale;
-          const projectedSpend = toNumber(lastPoint.spend) * scale;
+          const pace = getWeightedPace();
+
+          const projectedOrders = pace.orders * totalDays;
+          const projectedRevenue = pace.revenue * totalDays;
+          const projectedSpend = pace.spend * totalDays;
 
           const projectedAov = projectedOrders > 0 ? projectedRevenue / projectedOrders : 0;
           const projectedCac = projectedOrders > 0 ? projectedSpend / projectedOrders : 0;
           const projectedRoas = projectedSpend > 0 ? projectedRevenue / projectedSpend : 0;
 
-          projectionPoint = {
-            date: bucketExpectedEnd,
-            bucketStartDate: lastPoint.bucketStartDate,
-            bucketEndDate: lastPoint.bucketEndDate,
-            bucketExpectedEndDate: bucketExpectedEnd,
-            isIncomplete: lastPoint.isIncomplete,
+          projectedTotals = {
             ordersProjected: projectedOrders,
             revenueProjected: projectedRevenue,
             spendProjected: projectedSpend,
@@ -2884,25 +2926,26 @@ function DashboardTab({
       return next;
     });
 
-    if (hasProjection && projectionPoint && projectionSourceIndex != null) {
+    if (hasProjection && projectionSourceIndex != null && projectedTotals) {
       const sourcePoint = data[projectionSourceIndex];
-      const sourceSeriesPoint = series[projectionSourceIndex];
       keys.forEach((key) => {
-        sourcePoint[`${key}Projected`] = toNumber(sourceSeriesPoint?.[key]);
+        sourcePoint[`${key}Projected`] = toNumber(series[projectionSourceIndex]?.[key]);
       });
-      data.push(projectionPoint);
+      const targetPoint = data[lastIndex];
+      Object.entries(projectedTotals).forEach(([key, value]) => {
+        targetPoint[key] = value;
+      });
     }
 
     return { data, lastBucketIncomplete, hasProjection };
-  }, [parseLocalDate]);
-
+  }, [getLocalDateString, parseLocalDate]);
   const {
     data: bucketedTrendsForChart,
     lastBucketIncomplete,
     hasProjection: bucketHasProjection
   } = useMemo(() => (
-    buildBucketedTrendsForChart(bucketedTrendsWithStatus)
-  ), [buildBucketedTrendsForChart, bucketedTrendsWithStatus]);
+    buildBucketedTrendsForChart(bucketedTrendsWithStatus, dailyTrendMap)
+  ), [buildBucketedTrendsForChart, bucketedTrendsWithStatus, dailyTrendMap]);
 
   const regionCompareDateOrder = useMemo(() => {
     if (!Array.isArray(trends) || trends.length === 0) return [];
@@ -2962,6 +3005,34 @@ function DashboardTab({
     buildRegionTrendSeries(USA_COUNTRY_CODES)
   ), [buildRegionTrendSeries]);
 
+  const europeDailyTrendMap = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(europeRegionTrends) ? europeRegionTrends : []).forEach((point) => {
+      const dateKey = getPointDate(point);
+      if (!dateKey) return;
+      map.set(dateKey, {
+        orders: toNumber(point.orders),
+        revenue: toNumber(point.revenue),
+        spend: toNumber(point.spend)
+      });
+    });
+    return map;
+  }, [europeRegionTrends, getPointDate]);
+
+  const usaDailyTrendMap = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(usaRegionTrends) ? usaRegionTrends : []).forEach((point) => {
+      const dateKey = getPointDate(point);
+      if (!dateKey) return;
+      map.set(dateKey, {
+        orders: toNumber(point.orders),
+        revenue: toNumber(point.revenue),
+        spend: toNumber(point.spend)
+      });
+    });
+    return map;
+  }, [getPointDate, usaRegionTrends]);
+
   const europeBucketedTrends = useMemo(() => (
     buildBucketedTrends(europeRegionTrends)
   ), [buildBucketedTrends, europeRegionTrends]);
@@ -2981,16 +3052,16 @@ function DashboardTab({
     lastBucketIncomplete: europeLastBucketIncomplete,
     hasProjection: europeHasProjection
   } = useMemo(() => (
-    buildBucketedTrendsForChart(europeBucketedWithStatus)
-  ), [buildBucketedTrendsForChart, europeBucketedWithStatus]);
+    buildBucketedTrendsForChart(europeBucketedWithStatus, europeDailyTrendMap)
+  ), [buildBucketedTrendsForChart, europeBucketedWithStatus, europeDailyTrendMap]);
 
   const {
     data: usaBucketedForChart,
     lastBucketIncomplete: usaLastBucketIncomplete,
     hasProjection: usaHasProjection
   } = useMemo(() => (
-    buildBucketedTrendsForChart(usaBucketedWithStatus)
-  ), [buildBucketedTrendsForChart, usaBucketedWithStatus]);
+    buildBucketedTrendsForChart(usaBucketedWithStatus, usaDailyTrendMap)
+  ), [buildBucketedTrendsForChart, usaBucketedWithStatus, usaDailyTrendMap]);
 
   const prefixBucketedSeries = useCallback((series = [], prefix = '') => {
     const metricKeys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
