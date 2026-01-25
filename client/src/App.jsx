@@ -3852,7 +3852,7 @@ function DashboardTab({
           {expandedKpis.filter(key => key !== 'orders').map((key) => {
             const thisKpi = kpis.find(k => k.key === key);
             if (!thisKpi) return null;
-            const capKey = key.charAt(0).toUpperCase() + key.slice(1);
+            const capKey = capitalize(key);
             const europeBaseKey = `europe${capKey}`;
             const usaBaseKey = `usa${capKey}`;
             return (
