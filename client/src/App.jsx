@@ -2818,41 +2818,23 @@ function DashboardTab({
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const todayKey = getLocalDateString(today);
 
     const lastIndex = series.length - 1;
     const lastPoint = series[lastIndex];
     const lastBucketIncomplete = lastPoint.isIncomplete;
-
-    const data = series.map((point, index) => {
-      const isLast = index === lastIndex;
-      const isPrev = index === lastIndex - 1;
-      const next = { ...point };
-
-      if (point.bucketEndDate && (!lastBucketIncomplete || !isLast)) {
-        next.date = point.bucketEndDate;
-      }
-      if (isLast && lastBucketIncomplete) {
-        next.date = todayKey;
-      }
-
-      keys.forEach((key) => {
-        const value = toNumber(point[key]);
-        next[`${key}Complete`] = !lastBucketIncomplete || !isLast ? value : null;
-        next[`${key}Incomplete`] = lastBucketIncomplete && (isPrev || isLast) ? value : null;
-      });
-      return next;
-    });
+    const bucketExpectedEnd = lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate;
 
     let hasProjection = false;
+    let projectionPoint = null;
+    let projectionSourceIndex = null;
 
-    if (lastBucketIncomplete) {
+    if (lastBucketIncomplete && bucketExpectedEnd && lastIndex > 0) {
       const bucketStart = parseLocalDate(lastPoint.bucketStartDate);
-      const bucketExpectedEnd = parseLocalDate(lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate);
-      if (bucketStart && bucketExpectedEnd) {
+      const bucketEnd = parseLocalDate(bucketExpectedEnd);
+      if (bucketStart && bucketEnd) {
         const msInDay = 1000 * 60 * 60 * 24;
         const elapsedDays = Math.floor((today - bucketStart) / msInDay) + 1;
-        const totalDays = Math.floor((bucketExpectedEnd - bucketStart) / msInDay) + 1;
+        const totalDays = Math.floor((bucketEnd - bucketStart) / msInDay) + 1;
         const remainingDays = totalDays - elapsedDays;
 
         if (elapsedDays >= 2 && remainingDays > 0) {
@@ -2865,34 +2847,54 @@ function DashboardTab({
           const projectedCac = projectedOrders > 0 ? projectedSpend / projectedOrders : 0;
           const projectedRoas = projectedSpend > 0 ? projectedRevenue / projectedSpend : 0;
 
-          const projectionPoint = {
-            date: lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate,
+          projectionPoint = {
+            date: bucketExpectedEnd,
             bucketStartDate: lastPoint.bucketStartDate,
             bucketEndDate: lastPoint.bucketEndDate,
-            bucketExpectedEndDate: lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate,
-            isIncomplete: lastPoint.isIncomplete
+            bucketExpectedEndDate: bucketExpectedEnd,
+            isIncomplete: lastPoint.isIncomplete,
+            ordersProjected: projectedOrders,
+            revenueProjected: projectedRevenue,
+            spendProjected: projectedSpend,
+            aovProjected: projectedAov,
+            cacProjected: projectedCac,
+            roasProjected: projectedRoas
           };
 
-          const lastDataPoint = data[lastIndex];
-          keys.forEach((key) => {
-            lastDataPoint[`${key}Projected`] = toNumber(lastPoint[key]);
-          });
-
-          projectionPoint.ordersProjected = projectedOrders;
-          projectionPoint.revenueProjected = projectedRevenue;
-          projectionPoint.spendProjected = projectedSpend;
-          projectionPoint.aovProjected = projectedAov;
-          projectionPoint.cacProjected = projectedCac;
-          projectionPoint.roasProjected = projectedRoas;
-
-          data.push(projectionPoint);
+          projectionSourceIndex = lastIndex - 1;
           hasProjection = true;
         }
       }
     }
 
+    const showIncompleteLine = lastBucketIncomplete && !hasProjection;
+
+    const data = series.map((point, index) => {
+      const isLast = index === lastIndex;
+      const isPrev = index === lastIndex - 1;
+      const next = { ...point };
+      next.date = point.bucketExpectedEndDate || point.bucketEndDate || point.date;
+
+      keys.forEach((key) => {
+        const value = toNumber(point[key]);
+        next[`${key}Complete`] = !lastBucketIncomplete || !isLast ? value : null;
+        const showIncomplete = lastBucketIncomplete && (isLast || (showIncompleteLine && isPrev));
+        next[`${key}Incomplete`] = showIncomplete ? value : null;
+      });
+      return next;
+    });
+
+    if (hasProjection && projectionPoint && projectionSourceIndex != null) {
+      const sourcePoint = data[projectionSourceIndex];
+      const sourceSeriesPoint = series[projectionSourceIndex];
+      keys.forEach((key) => {
+        sourcePoint[`${key}Projected`] = toNumber(sourceSeriesPoint?.[key]);
+      });
+      data.push(projectionPoint);
+    }
+
     return { data, lastBucketIncomplete, hasProjection };
-  }, [getLocalDateString, parseLocalDate]);
+  }, [parseLocalDate]);
 
   const {
     data: bucketedTrendsForChart,
@@ -3349,17 +3351,22 @@ function DashboardTab({
     );
   }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate]);
 
-  const renderMaTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
+  const renderMaTooltip = useCallback((metricKeyOverride, color) => ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
     const metricKey = metricKeyOverride || getTooltipMetricKey(payload?.[0]?.dataKey || '');
     const metricLabel = getTooltipMetricLabel(metricKey);
-    const dailyItem = payload.find(item => item?.dataKey === metricKey);
-    const maItem = payload.find(item => item?.dataKey === `${metricKey}MA`);
-    const dailyValue = dailyItem?.value != null
-      ? formatTooltipMetricValue(metricKey, dailyItem.value)
+    const point = payload?.[0]?.payload || {};
+    const dailyValue = point[metricKey];
+    const maValue = point[`${metricKey}MA`];
+
+    const maColor = color || '#64748b';
+    const dailyColor = color ? `${color}66` : '#94a3b8';
+
+    const dailyFormatted = dailyValue != null
+      ? formatTooltipMetricValue(metricKey, dailyValue)
       : '—';
-    const maValue = maItem?.value != null
-      ? formatTooltipMetricValue(metricKey, maItem.value)
+    const maFormatted = maValue != null
+      ? formatTooltipMetricValue(metricKey, maValue)
       : '—';
 
     return (
@@ -3372,12 +3379,18 @@ function DashboardTab({
         </p>
         <div className="mt-1 space-y-1 text-xs text-gray-600">
           <div className="flex items-center justify-between gap-4">
-            <span>Daily</span>
-            <span className="text-gray-900">{dailyValue}</span>
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: dailyColor }} />
+              <span>Daily</span>
+            </div>
+            <span className="text-gray-900">{dailyFormatted}</span>
           </div>
           <div className="flex items-center justify-between gap-4">
-            <span>{maWindow}d MA</span>
-            <span className="text-gray-900">{maValue}</span>
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: maColor }} />
+              <span>{maWindow}d MA</span>
+            </div>
+            <span className="text-gray-900">{maFormatted}</span>
           </div>
         </div>
       </div>
@@ -3485,20 +3498,17 @@ function DashboardTab({
     const metricKey = metricKeyOverride || 'orders';
     const capMetric = metricKey.charAt(0).toUpperCase() + metricKey.slice(1);
     const metricLabel = getTooltipMetricLabel(metricKey);
+    const point = payload?.[0]?.payload || {};
 
-    const getRegionValues = (prefix) => {
-      const dailyKey = `${prefix}${capMetric}`;
-      const maKey = `${prefix}${capMetric}MA`;
-      const dailyItem = payload.find(item => item?.dataKey === dailyKey);
-      const maItem = payload.find(item => item?.dataKey === maKey);
-      return {
-        daily: dailyItem?.value,
-        ma: maItem?.value
-      };
-    };
+    const europeColor = REGION_COMPARE_COLORS.europe;
+    const usaColor = REGION_COMPARE_COLORS.usa;
+    const europeDailyColor = `${europeColor}66`;
+    const usaDailyColor = `${usaColor}66`;
 
-    const europeValues = getRegionValues('europe');
-    const usaValues = getRegionValues('usa');
+    const europeDaily = point[`europe${capMetric}`];
+    const europeMa = point[`europe${capMetric}MA`];
+    const usaDaily = point[`usa${capMetric}`];
+    const usaMa = point[`usa${capMetric}MA`];
 
     const formatValue = (value) =>
       value == null ? '—' : formatTooltipMetricValue(metricKey, value);
@@ -3514,30 +3524,42 @@ function DashboardTab({
         <div className="mt-2 space-y-2 text-xs text-gray-600">
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
-              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.europe }} />
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: europeColor }} />
               <span>Europe</span>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <span>Daily</span>
-              <span className="text-gray-900">{formatValue(europeValues.daily)}</span>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: europeDailyColor }} />
+                <span>Daily</span>
+              </div>
+              <span className="text-gray-900">{formatValue(europeDaily)}</span>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <span>{maWindow}d MA</span>
-              <span className="text-gray-900">{formatValue(europeValues.ma)}</span>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: europeColor }} />
+                <span>{maWindow}d MA</span>
+              </div>
+              <span className="text-gray-900">{formatValue(europeMa)}</span>
             </div>
           </div>
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
-              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.usa }} />
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: usaColor }} />
               <span>USA</span>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <span>Daily</span>
-              <span className="text-gray-900">{formatValue(usaValues.daily)}</span>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: usaDailyColor }} />
+                <span>Daily</span>
+              </div>
+              <span className="text-gray-900">{formatValue(usaDaily)}</span>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <span>{maWindow}d MA</span>
-              <span className="text-gray-900">{formatValue(usaValues.ma)}</span>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: usaColor }} />
+                <span>{maWindow}d MA</span>
+              </div>
+              <span className="text-gray-900">{formatValue(usaMa)}</span>
             </div>
           </div>
         </div>
@@ -3585,6 +3607,7 @@ function DashboardTab({
           stroke={stroke}
           strokeWidth={2}
           dot={false}
+          connectNulls
           strokeDasharray="3,3"
           fill="none"
         />
@@ -3592,25 +3615,44 @@ function DashboardTab({
     </>
   );
 
-  const renderMaLines = ({ baseKey, stroke }) => (
-    <>
-      <Line
-        type="monotone"
-        dataKey={baseKey}
-        stroke={stroke}
-        strokeWidth={1.5}
-        dot={false}
-        strokeOpacity={0.35}
-      />
-      <Line
-        type="monotone"
-        dataKey={`${baseKey}MA`}
-        stroke={stroke}
-        strokeWidth={2.5}
-        dot={false}
-      />
-    </>
-  );
+  const renderMaLines = ({ baseKey, stroke }) => {
+    const dailyColor = `${stroke}66`;
+    return (
+      <>
+        <Line
+          type="monotone"
+          dataKey={`${baseKey}MA`}
+          stroke={stroke}
+          strokeWidth={2.5}
+          dot={false}
+          activeDot={false}
+        />
+        <Line
+          type="monotone"
+          dataKey={baseKey}
+          stroke={stroke}
+          strokeWidth={2}
+          dot={false}
+          strokeOpacity={0}
+          legendType="none"
+          activeDot={({ cx, cy }) => {
+            if (cx == null || cy == null) return null;
+            return (
+              <circle
+                cx={cx}
+                cy={cy}
+                r={4}
+                fill={dailyColor}
+                stroke={stroke}
+                strokeWidth={1.5}
+              />
+            );
+          }}
+          isAnimationActive={false}
+        />
+      </>
+    );
+  };
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
@@ -4258,7 +4300,7 @@ function DashboardTab({
                 <Tooltip
                   content={regionCompareActive
                     ? (isBucketMode ? renderRegionBucketTooltip('orders') : renderRegionMaTooltip('orders'))
-                    : (isBucketMode ? renderBucketTooltip('orders') : renderMaTooltip('orders'))}
+                    : (isBucketMode ? renderBucketTooltip('orders') : renderMaTooltip('orders', '#22c55e'))}
                 />
                 {regionCompareActive ? (
                   isBucketMode ? (
@@ -4347,7 +4389,7 @@ function DashboardTab({
                       <Tooltip
                         content={regionCompareActive
                           ? (isBucketMode ? renderRegionBucketTooltip(key) : renderRegionMaTooltip(key))
-                          : (isBucketMode ? renderBucketTooltip(key) : renderMaTooltip(key))}
+                          : (isBucketMode ? renderBucketTooltip(key) : renderMaTooltip(key, thisKpi.color))}
                       />
                       {regionCompareActive ? (
                         isBucketMode ? (
