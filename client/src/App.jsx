@@ -2849,8 +2849,8 @@ function DashboardTab({
 
     const getWeightedPace = () => {
       const alpha = 0.3; // Level smoothing factor
-      const beta = 0.1;  // Trend smoothing factor
-      const phi = 0.9;   // Damping factor
+      const beta = 0.05;  // Trend smoothing factor
+      const phi = 0.98;   // Damping factor
 
       const values = { orders: [], revenue: [], spend: [] };
 
