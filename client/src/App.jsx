@@ -2691,6 +2691,11 @@ function DashboardTab({
     return point.date || point.day || point.label || '';
   }, []);
 
+  const capitalize = (value = '') => value.charAt(0).toUpperCase() + value.slice(1);
+
+
+
+
   const getTotalDays = useCallback(() => {
     if (dateRange?.startDate && dateRange?.endDate) {
       const start = parseLocalDate(dateRange.startDate);
@@ -3349,7 +3354,6 @@ function DashboardTab({
   const getTooltipMetricLabel = (metricKey) =>
     tooltipLabels[metricKey] || metricKey;
 
-  const capitalize = (value = '') => value.charAt(0).toUpperCase() + value.slice(1);
 
   const formatTooltipMetricValue = useCallback((metricKey, value) => {
     if (metricKey === 'roas') return `${Number(value || 0).toFixed(2)}x`;
