@@ -3089,8 +3089,7 @@ function DashboardTab({
   const prefixBucketedSeries = useCallback((series = [], prefix = '') => {
     const metricKeys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
     const normalizePrefix = prefix ? `${prefix}` : '';
-    const capitalize = (value = '') => value.charAt(0).toUpperCase() + value.slice(1);
-    return series.map((point) => {
+      return series.map((point) => {
       const next = {
         date: point.date,
         bucketStartDate: point.bucketStartDate,
@@ -3205,8 +3204,7 @@ function DashboardTab({
   const prefixMaSeries = useCallback((series = [], prefix = '') => {
     const metricKeys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
     const normalizePrefix = prefix ? `${prefix}` : '';
-    const capitalize = (value = '') => value.charAt(0).toUpperCase() + value.slice(1);
-    return series.map((point) => {
+      return series.map((point) => {
       const next = { date: point.date };
       metricKeys.forEach((metric) => {
         const capMetric = capitalize(metric);
@@ -3350,6 +3348,8 @@ function DashboardTab({
 
   const getTooltipMetricLabel = (metricKey) =>
     tooltipLabels[metricKey] || metricKey;
+
+  const capitalize = (value = '') => value.charAt(0).toUpperCase() + value.slice(1);
 
   const formatTooltipMetricValue = useCallback((metricKey, value) => {
     if (metricKey === 'roas') return `${Number(value || 0).toFixed(2)}x`;
