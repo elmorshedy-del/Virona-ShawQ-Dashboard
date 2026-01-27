@@ -2914,13 +2914,15 @@ function DashboardTab({
 
         if (elapsedDays >= 2 && remainingDays > 0) {
           let pace = getWeightedPace();
-          if (!pace.orders && !pace.revenue && !pace.spend) {
-            const safeElapsed = Math.max(elapsedDays, 1);
-            pace = {
-              orders: toNumber(lastPoint.orders) / safeElapsed,
-              revenue: toNumber(lastPoint.revenue) / safeElapsed,
-              spend: toNumber(lastPoint.spend) / safeElapsed
-            };
+          const safeElapsed = Math.max(elapsedDays, 1);
+          if (!pace.orders) {
+            pace.orders = toNumber(lastPoint.orders) / safeElapsed;
+          }
+          if (!pace.revenue) {
+            pace.revenue = toNumber(lastPoint.revenue) / safeElapsed;
+          }
+          if (!pace.spend) {
+            pace.spend = toNumber(lastPoint.spend) / safeElapsed;
           }
 
           const projectedOrders = toNumber(lastPoint.orders) + pace.orders * remainingDays;
