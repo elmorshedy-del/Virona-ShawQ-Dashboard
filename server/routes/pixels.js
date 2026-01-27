@@ -1,5 +1,6 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
+import { recordSessionIntelligenceEvent } from '../services/sessionIntelligenceService.js';
 
 const router = express.Router();
 
@@ -265,6 +266,13 @@ router.post('/shopify', async (req, res) => {
     } catch (dbError) {
       // Don't break live tracking if DB is unavailable/read-only.
       console.warn('[Pixels] Shopify DB insert failed:', dbError?.message || dbError);
+    }
+
+    // Session Intelligence normalized ingest (best-effort).
+    try {
+      recordSessionIntelligenceEvent({ store, payload, source: 'shopify_pixel' });
+    } catch (siError) {
+      console.warn('[Pixels] Session Intelligence ingest failed:', siError?.message || siError);
     }
 
     res.json({ success: true });

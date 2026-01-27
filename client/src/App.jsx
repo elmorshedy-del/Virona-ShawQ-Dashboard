@@ -21,6 +21,7 @@ import FatigueDetector from './components/FatigueDetector';
 import MetricsChartsTab from './components/MetricsChartsTab';
 import AttributionTab from './components/AttributionTab';
 import InsightsTab from './components/InsightsTab';
+import SessionIntelligenceTab from './components/SessionIntelligenceTab';
 import NeoMetaTab from './components/NeoMetaTab';
 import CreativeIntelligence from './components/CreativeIntelligence';
 import CreativeStudio from './components/CreativeStudio';
@@ -350,7 +351,8 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS_VERSION = '2026-01-27-session-intelligence-v1';
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -358,9 +360,21 @@ export default function App() {
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(() => {
     try {
+      const savedLabel = localStorage.getItem('activeTabLabel');
+      if (savedLabel) {
+        const idx = TABS.indexOf(savedLabel);
+        if (idx >= 0) return idx;
+      }
+
+      const version = localStorage.getItem('tabsVersion');
       const saved = localStorage.getItem('activeTab');
       const parsed = Number(saved);
       if (Number.isInteger(parsed) && parsed >= 0 && parsed < TABS.length) {
+        // Migration: inserted Session Intelligence after Insights (index 4).
+        if (version !== TABS_VERSION && parsed >= 4) {
+          const shifted = parsed + 1;
+          if (shifted >= 0 && shifted < TABS.length) return shifted;
+        }
         return parsed;
       }
     } catch (e) {
@@ -543,6 +557,8 @@ export default function App() {
     if (!storeLoaded) return;
     try {
       localStorage.setItem('activeTab', String(activeTab));
+      localStorage.setItem('activeTabLabel', TABS[activeTab] || '');
+      localStorage.setItem('tabsVersion', TABS_VERSION);
     } catch (e) {
       console.error('Error writing localStorage:', e);
     }
@@ -1544,10 +1560,14 @@ export default function App() {
         )}
 
         {activeTab === 4 && (
+          <SessionIntelligenceTab store={store} />
+        )}
+
+        {activeTab === 5 && (
           <NeoMetaTab />
         )}
 
-        {activeTab === 5 && efficiency && (
+        {activeTab === 6 && efficiency && (
           <EfficiencyTab
             efficiency={efficiency}
             trends={efficiencyTrends}
@@ -1556,7 +1576,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 6 && budgetIntelligence && (
+        {activeTab === 7 && budgetIntelligence && (
           <BudgetIntelligenceTab
             data={budgetIntelligence}
             formatCurrency={formatCurrency}
@@ -1564,7 +1584,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 7 && (
+        {activeTab === 8 && (
           <ManualDataTab
             orders={manualOrders}
             form={orderForm}
@@ -1583,35 +1603,35 @@ export default function App() {
           />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === 9 && (
           <FatigueDetector
             store={store}
             formatCurrency={formatCurrency}
           />
         )}
 
-        {activeTab === 9 && (
+        {activeTab === 10 && (
           <>
             <CreativeIntelligence store={currentStore} />
             <CreativeAnalysis store={store} />
           </>
         )}
 
-        {activeTab === 10 && (
+        {activeTab === 11 && (
           <CreativeStudio store={currentStore} />
         )}
 
-        {activeTab === 11 && (
+        {activeTab === 12 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 12 && (
+        {activeTab === 13 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 13 && (
+        {activeTab === 14 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1619,7 +1639,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 14 && (
+        {activeTab === 15 && (
           <ExchangeRateDebug />
         )}
       </div>
