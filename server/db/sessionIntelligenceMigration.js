@@ -4,6 +4,23 @@ export function runSessionIntelligenceMigration() {
   const db = getDb();
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS si_client_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, client_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_client_sessions_store_last_seen
+    ON si_client_sessions(store, last_seen_at)
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS si_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,
