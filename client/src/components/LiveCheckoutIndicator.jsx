@@ -30,6 +30,11 @@ export default function LiveCheckoutIndicator({
       try {
         const res = await fetch(buildEndpoint(store, windowSeconds));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          const snippet = (await res.text()).slice(0, 160);
+          throw new Error(`Expected JSON but got ${contentType}: ${snippet}`);
+        }
         const data = await res.json();
         if (!data?.success) throw new Error('Invalid response');
         if (!active) return;
