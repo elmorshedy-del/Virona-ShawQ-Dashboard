@@ -1,4 +1,4 @@
-// client/src/App.jsx
+x// client/src/App.jsx
 
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
@@ -2853,28 +2853,34 @@ function DashboardTab({
     const msInDay = 1000 * 60 * 60 * 24;
 
     const getWeightedPace = () => {
-      const alpha = 0.3; // Level smoothing factor
-      const beta = 0.05;  // Trend smoothing factor
-      const phi = 0.98;   // Damping factor
+      const alpha = 0.3;
+      const beta = 0.05;
+      const phi = 0.98;
 
       const values = { orders: [], revenue: [], spend: [] };
 
+      // Only include days that have actual data
       for (let offset = 7; offset >= 1; offset -= 1) {
         const day = new Date(today);
         day.setDate(day.getDate() - offset);
         const dayKey = getLocalDateString(day);
-        const entry = dailyMap?.get(dayKey) || {};
-        values.orders.push(toNumber(entry.orders));
-        values.revenue.push(toNumber(entry.revenue));
-        values.spend.push(toNumber(entry.spend));
+        const entry = dailyMap?.get(dayKey);
+        if (entry) {
+          values.orders.push(toNumber(entry.orders));
+          values.revenue.push(toNumber(entry.revenue));
+          values.spend.push(toNumber(entry.spend));
+        }
       }
 
-      // Implements Holt's linear trend method (with damping) to forecast the next day's value.
-      // See: https://otexts.com/fpp3/holt.html
       const holtPace = (arr) => {
         const n = arr.length;
         if (n === 0) return 0;
         if (n === 1) return arr[0];
+        
+        // For very few data points, just use average
+        if (n < 3) {
+          return arr.reduce((a, b) => a + b, 0) / n;
+        }
 
         let level = arr[0];
         let trend = arr[1] - arr[0];
@@ -2885,7 +2891,10 @@ function DashboardTab({
           trend = beta * (level - prevLevel) + (1 - beta) * phi * trend;
         }
 
-        return Math.max(0, level + phi * trend);
+        // Floor: never project below 50% of average
+        const avg = arr.reduce((a, b) => a + b, 0) / n;
+        const projected = level + phi * trend;
+        return Math.max(avg * 0.5, projected);
       };
 
       return {
