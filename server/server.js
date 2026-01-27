@@ -21,17 +21,20 @@ import pixelsRouter from './routes/pixels.js';
 import fatigueRouter from './routes/fatigue.js';
 import metaAuthRouter from './routes/metaAuth.js';
 import testimonialExtractorRouter from './routes/testimonialExtractor.js';
+import sessionIntelligenceRouter from './routes/sessionIntelligence.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
 import { runMigration as runCreativeStudioMigration } from './db/creativeStudioMigration.js';
 import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
 import { runMigration as runCompetitorSpyMigration } from './db/competitorSpyMigration.js';
+import { runSessionIntelligenceMigration } from './db/sessionIntelligenceMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
 import { syncMetaData, getExchangeRateForDate } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
+import { cleanupSessionIntelligenceRaw } from './services/sessionIntelligenceService.js';
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
 import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
@@ -166,6 +169,7 @@ runWhatIfMigration();
 runCreativeIntelligenceMigration();
 runCreativeStudioMigration();
 runCompetitorSpyMigration();
+runSessionIntelligenceMigration();
 
 // Schedule creative funnel summaries (daily/weekly + spend reset checks)
 scheduleCreativeFunnelSummaryJobs();
@@ -220,6 +224,7 @@ app.use('/api/exchange-rates', exchangeRateRoutes);
 app.use('/api/creative-intelligence', creativeIntelligenceRouter);
 app.use('/api/creative-studio', creativeStudioRouter);
 app.use('/api/pixels', pixelsRouter);
+app.use('/api/session-intelligence', sessionIntelligenceRouter);
 app.use('/api/fatigue', fatigueRouter);
 app.use('/api/testimonials', testimonialExtractorRouter);
 
@@ -501,6 +506,18 @@ setTimeout(backgroundSync, 5000);
 // Initial What-If sync (delayed 2 min to let main sync finish)
 setTimeout(whatifSync, 2 * 60 * 1000);
 
+// Session Intelligence cleanup (raw events retention)
+setTimeout(() => {
+  try {
+    const result = cleanupSessionIntelligenceRaw();
+    if (result.deletedEvents) {
+      console.log(`[SessionIntelligence] Cleanup removed ${result.deletedEvents} events`);
+    }
+  } catch (error) {
+    console.warn('[SessionIntelligence] Cleanup failed:', error?.message || error);
+  }
+}, 15000);
+
 // Sync every 15 minutes
 setInterval(backgroundSync, 15 * 60 * 1000);
 
@@ -509,6 +526,14 @@ setInterval(shopifyRealtimeSync, SHOPIFY_SYNC_INTERVAL);
 
 // What-If sync every 24 hours
 setInterval(whatifSync, 24 * 60 * 60 * 1000);
+
+setInterval(() => {
+  try {
+    cleanupSessionIntelligenceRaw();
+  } catch (error) {
+    console.warn('[SessionIntelligence] Scheduled cleanup failed:', error?.message || error);
+  }
+}, 60 * 60 * 1000);
 
 // Day-turn Meta sync (fast range) and daily exchange rate sync
 scheduleGmt3DailyJob('Meta day-turn sync', dayTurnMetaSync);
