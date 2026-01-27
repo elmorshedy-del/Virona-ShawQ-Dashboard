@@ -251,16 +251,14 @@ export default function SessionIntelligenceTab({ store }) {
   }, []);
 
   return (
-    <div className="si-root">
-      <div className="si-header">
-        <div className="si-title">
-          <h2>Session Intelligence</h2>
-          <p>
-            Stripe‑indigo light. Raw events auto‑delete after <strong>{overview?.retentionHours ?? 72}h</strong>. Checkout
-            drop‑offs = last step before <strong>{checkoutDropMinutes}m</strong> inactivity (no purchase). ATC abandoned =
-            <strong> {abandonAfterHours}h</strong> after ATC (no purchase).
-          </p>
-        </div>
+	    <div className="si-root">
+	      <div className="si-header">
+	        <div className="si-title">
+	          <h2>Session Intelligence</h2>
+	          <p>
+	            Understand Shopify shopper behavior at scale: sessions, funnel movement, and where people drop in checkout.
+	          </p>
+	        </div>
 
         <div className="si-actions">
           <div className="si-pill" title="Polling Shopify events">
@@ -274,13 +272,45 @@ export default function SessionIntelligenceTab({ store }) {
             </span>
           </button>
         </div>
-      </div>
+	      </div>
 
-      <div className="si-grid">
-        <div className="si-card">
-          <div className="si-metric-label">
-            <div className="si-icon" />
-            Sessions (24h)
+	      <div className="si-card si-intro-card">
+	        <div className="si-card-title">
+	          <h3>What this page does (and how it works)</h3>
+	          <span className="si-muted">Team-friendly • Privacy-safe</span>
+	        </div>
+	        <div className="si-muted">
+	          This page turns Shopify events into session-level insights and retargeting signals without storing recordings.
+	        </div>
+	        <ul className="si-list">
+	          <li>
+	            <strong>Data source:</strong> Shopify Custom Pixel (plus optional theme click tracking) sends events to this dashboard.
+	          </li>
+	          <li>
+	            <strong>Sessions vs events:</strong> KPIs show both. “Events” can be higher when the same shopper triggers an action multiple times.
+	          </li>
+	          <li>
+	            <strong>Checkout drop‑offs:</strong> We infer the step from the checkout URL (example{' '}
+	            <code className="si-code">?step=shipping_method</code>) and mark it dropped after <strong>{checkoutDropMinutes}m</strong>{' '}
+	            inactivity with no purchase.
+	          </li>
+	          <li>
+	            <strong>ATC abandoned:</strong> Add‑to‑cart with no purchase after <strong>{abandonAfterHours}h</strong> (useful for audiences).
+	          </li>
+	          <li>
+	            <strong>Anonymous IDs:</strong> Shoppers appear as friendly codes like <code className="si-code">U-4K9X2P</code> (same browser).
+	          </li>
+	          <li>
+	            <strong>Retention:</strong> Raw events auto‑delete after <strong>{overview?.retentionHours ?? 72}h</strong>.
+	          </li>
+	        </ul>
+	      </div>
+
+	      <div className="si-grid">
+	        <div className="si-card">
+	          <div className="si-metric-label">
+	            <div className="si-icon" />
+	            Sessions (24h)
           </div>
           <div className="si-metric-value">{overview?.kpis?.sessions24h ?? '—'}</div>
           <div className="si-metric-sub">Store: {store?.name || storeId}</div>
