@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ChevronDown, RefreshCw } from 'lucide-react';
 import './SessionIntelligenceTab.css';
 
-const POLL_EVENTS_MS = 5000;
+const POLL_EVENTS_MS = 1000;
 const POLL_OVERVIEW_MS = 20000;
 
 const STEP_LABELS = {
@@ -256,7 +256,7 @@ export default function SessionIntelligenceTab({ store }) {
 	        <div className="si-title">
 	          <h2>Session Intelligence</h2>
 	          <p>
-	            Understand Shopify shopper behavior at scale: sessions, funnel movement, and where people drop in checkout.
+	            Live shopper journeys, checkout drop-offs, and AI-ready insights.
 	          </p>
 	        </div>
 
@@ -276,32 +276,27 @@ export default function SessionIntelligenceTab({ store }) {
 
 	      <div className="si-card si-intro-card">
 	        <div className="si-card-title">
-	          <h3>What this page does (and how it works)</h3>
-	          <span className="si-muted">Team-friendly • Privacy-safe</span>
+	          <h3>What this page is</h3>
+	          <span className="si-muted">Live • Team-friendly</span>
 	        </div>
 	        <div className="si-muted">
-	          This page turns Shopify events into session-level insights and retargeting signals without storing recordings.
+	          This page is your live “truth layer” for Shawq — basically Microsoft Clarity, but without the numerous, endless recordings.
 	        </div>
 	        <ul className="si-list">
 	          <li>
-	            <strong>Data source:</strong> Shopify Custom Pixel (plus optional theme click tracking) sends events to this dashboard.
+	            <strong>Live feed (updates every second):</strong> it receives behavior signals from our Shopify Custom Pixel, so you’re not guessing — you’re watching real intent form in real time.
 	          </li>
 	          <li>
-	            <strong>Sessions vs events:</strong> KPIs show both. “Events” can be higher when the same shopper triggers an action multiple times.
+	            <strong>Full journey per shopper:</strong> each shopper gets a private “codename”, and we track their path step‑by‑step across the entire session (page → product → add to cart → checkout steps → purchase or drop‑off).
 	          </li>
 	          <li>
-	            <strong>Checkout drop‑offs:</strong> We infer the step from the checkout URL (example{' '}
-	            <code className="si-code">?step=shipping_method</code>) and mark it dropped after <strong>{checkoutDropMinutes}m</strong>{' '}
-	            inactivity with no purchase.
+	            <strong>Checkout clarity:</strong> we pinpoint exactly where checkout stalls (Contact / Shipping / Payment) so you know what to fix first.
 	          </li>
 	          <li>
-	            <strong>ATC abandoned:</strong> Add‑to‑cart with no purchase after <strong>{abandonAfterHours}h</strong> (useful for audiences).
+	            <strong>AI insights (next phase):</strong> AI will review the highest‑impact sessions (like ATC with no purchase) and send a short brief: what likely happened, what’s broken/confusing, and the fixes that move revenue.
 	          </li>
 	          <li>
-	            <strong>Anonymous IDs:</strong> Shoppers appear as friendly codes like <code className="si-code">U-4K9X2P</code> (same browser).
-	          </li>
-	          <li>
-	            <strong>Retention:</strong> Raw events auto‑delete after <strong>{overview?.retentionHours ?? 72}h</strong>.
+	            <strong>Audience power:</strong> we can turn “high intent” shoppers into retargeting audiences automatically.
 	          </li>
 	        </ul>
 	      </div>
