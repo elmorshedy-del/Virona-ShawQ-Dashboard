@@ -201,6 +201,37 @@
   color: var(--si-muted);
 }
 
+.si-intro-card {
+  margin-bottom: 12px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.si-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: var(--si-muted);
+  font-size: 13px;
+}
+
+.si-list li {
+  margin: 7px 0;
+}
+
+.si-list strong {
+  color: var(--si-text);
+  font-weight: 800;
+}
+
+.si-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(15, 23, 42, 0.04);
+  color: var(--si-text);
+}
+
 .si-steps {
   display: flex;
   flex-wrap: wrap;
@@ -330,4 +361,3 @@
   font-size: 13px;
   color: var(--si-muted);
 }
-
