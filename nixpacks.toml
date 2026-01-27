@@ -11,7 +11,7 @@ cmds = ["npm install"]
 PYTHON = "python3"
 
 [phases.build]
-cmds = []
+cmds = ["npm --prefix client install", "npm --prefix client run build"]
 
 [start]
 cmd = "node server/server.js"
