@@ -27,22 +27,49 @@ export default function LiveCheckoutIndicator({
 
     const fetchLive = async (initial = false) => {
       if (initial) setStatus('loading');
+      const url = buildEndpoint(store, windowSeconds);
       try {
-        const res = await fetch(buildEndpoint(store, windowSeconds));
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const res = await fetch(url, { cache: 'no-store' });
         const contentType = res.headers.get('content-type') || '';
+        const raw = await res.text();
+        const snippet = raw.slice(0, 220);
+
+        let data = null;
+        if (contentType.includes('application/json') && raw) {
+          try {
+            data = JSON.parse(raw);
+          } catch (parseError) {
+            // Keep data null; we'll surface the snippet below.
+          }
+        }
+
+        if (!res.ok) {
+          const apiMessage = (data && (data.error || data.message)) ? (data.error || data.message) : null;
+          throw new Error(
+            apiMessage
+              ? `HTTP ${res.status}: ${apiMessage}`
+              : `HTTP ${res.status} (non-JSON: ${contentType}): ${snippet}`
+          );
+        }
+
         if (!contentType.includes('application/json')) {
-          const snippet = (await res.text()).slice(0, 160);
           throw new Error(`Expected JSON but got ${contentType}: ${snippet}`);
         }
-        const data = await res.json();
-        if (!data?.success) throw new Error('Invalid response');
+
+        if (!data || !data.success) {
+          throw new Error((data && data.error) ? data.error : 'Invalid response');
+        }
         if (!active) return;
         setCount(Number.isFinite(data.count) ? data.count : 0);
         setStatus('ok');
       } catch (error) {
         if (!active) return;
-        console.error('Failed to fetch live checkout count:', error);
+        console.error('Failed to fetch live checkout count:', {
+          url,
+          store,
+          windowSeconds,
+          error
+        });
         setStatus('error');
       }
     };

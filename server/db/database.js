@@ -177,6 +177,23 @@ export function initDb() {
     )
   `);
 
+  // Shopify pixel events (session-level / live behavior)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_pixel_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      event_type TEXT NOT NULL,
+      event_ts TEXT NOT NULL,
+      payload_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_pixel_events_store_created_at
+    ON shopify_pixel_events(store, created_at)
+  `);
+
   // Manual orders - with store column
   db.exec(`
     CREATE TABLE IF NOT EXISTS manual_orders (
