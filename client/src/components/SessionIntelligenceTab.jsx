@@ -70,6 +70,7 @@ export default function SessionIntelligenceTab({ store }) {
 
   const [overview, setOverview] = useState(null);
   const [brief, setBrief] = useState(null);
+  const [sessions, setSessions] = useState([]);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [eventsStatus, setEventsStatus] = useState('idle');
@@ -107,21 +108,28 @@ export default function SessionIntelligenceTab({ store }) {
     }
   }, [storeId]);
 
+  const loadSessions = useCallback(async () => {
+    const url = `/api/session-intelligence/sessions?store=${encodeURIComponent(storeId)}&limit=80`;
+    const data = await fetchJson(url);
+    const list = Array.isArray(data.sessions) ? data.sessions : [];
+    setSessions(list);
+  }, [storeId]);
+
   const manualRefresh = useCallback(async () => {
     setLoading(true);
     try {
-      await Promise.all([loadOverview(), loadBrief(), loadEvents()]);
+      await Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents()]);
     } finally {
       setLoading(false);
     }
-  }, [loadBrief, loadEvents, loadOverview]);
+  }, [loadBrief, loadEvents, loadOverview, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadOverview(), loadBrief(), loadEvents()])
+    Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -145,6 +153,10 @@ export default function SessionIntelligenceTab({ store }) {
         if (!active) return;
         console.error('[SessionIntelligenceTab] overview poll failed:', error);
       });
+      loadSessions().catch((error) => {
+        if (!active) return;
+        console.error('[SessionIntelligenceTab] sessions poll failed:', error);
+      });
     }, POLL_OVERVIEW_MS);
 
     return () => {
@@ -152,7 +164,7 @@ export default function SessionIntelligenceTab({ store }) {
       clearInterval(eventsTimer);
       clearInterval(overviewTimer);
     };
-  }, [loadBrief, loadEvents, loadOverview]);
+  }, [loadBrief, loadEvents, loadOverview, loadSessions]);
 
   const dropoffChips = useMemo(() => {
     const byStep = overview?.checkoutDropoffsByStep || {};
@@ -163,6 +175,54 @@ export default function SessionIntelligenceTab({ store }) {
   }, [overview]);
 
   const latestEventAt = events?.[0]?.created_at || null;
+
+  const abandonAfterHours = overview?.abandonAfterHours ?? 24;
+  const abandonCutoffMs = Date.now() - abandonAfterHours * 60 * 60 * 1000;
+
+  const abandonedSessions = useMemo(() => {
+    if (!Array.isArray(sessions) || sessions.length === 0) return [];
+    return sessions
+      .filter((s) => s?.atc_at && !s?.purchase_at)
+      .filter((s) => {
+        const atcDate = parseSqliteTimestamp(s.atc_at);
+        if (!atcDate) return false;
+        return atcDate.getTime() <= abandonCutoffMs;
+      })
+      .sort((a, b) => {
+        const aDate = parseSqliteTimestamp(a.atc_at)?.getTime() || 0;
+        const bDate = parseSqliteTimestamp(b.atc_at)?.getTime() || 0;
+        return bDate - aDate;
+      })
+      .slice(0, 20);
+  }, [abandonCutoffMs, sessions]);
+
+  const getCartSummary = useCallback((lastCartJson) => {
+    if (!lastCartJson || typeof lastCartJson !== 'string') return '—';
+    try {
+      const cart = JSON.parse(lastCartJson);
+      const items =
+        cart?.lines ||
+        cart?.lineItems ||
+        cart?.items ||
+        cart?.cartLines ||
+        cart?.cart_lines ||
+        null;
+      if (!Array.isArray(items) || items.length === 0) return '—';
+
+      const first = items[0];
+      const title =
+        first?.merchandise?.product?.title ||
+        first?.merchandise?.title ||
+        first?.product?.title ||
+        first?.title ||
+        first?.name ||
+        'Item';
+      const qty = first?.quantity || first?.qty || null;
+      return qty ? `${title} ×${qty}` : title;
+    } catch (e) {
+      return '—';
+    }
+  }, []);
 
   return (
     <div className="si-root">
@@ -269,6 +329,46 @@ export default function SessionIntelligenceTab({ store }) {
               : 'Next step: enable AI review for abandoned ATC sessions (10/day) to turn these events into reasons & fixes.'}
           </div>
         </div>
+      </div>
+
+      <div className="si-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Abandoned sessions (ATC → no purchase)</h3>
+          <span className="si-muted">Older than {abandonAfterHours}h</span>
+        </div>
+
+        {abandonedSessions.length === 0 ? (
+          <div className="si-empty">None yet. Once users add to cart and don’t purchase for {abandonAfterHours}h, they appear here.</div>
+        ) : (
+          <table className="si-event-table">
+            <thead>
+              <tr>
+                <th>Last seen</th>
+                <th>Cart (last)</th>
+                <th>Drop‑off step</th>
+                <th>ATC</th>
+                <th>Session</th>
+              </tr>
+            </thead>
+            <tbody>
+              {abandonedSessions.map((s) => (
+                <tr key={s.session_id}>
+                  <td>{timeAgo(s.last_event_at || s.updated_at || s.created_at)}</td>
+                  <td title={getCartSummary(s.last_cart_json)}>{getCartSummary(s.last_cart_json)}</td>
+                  <td>
+                    {s.last_checkout_step ? (
+                      <span className="si-badge">{normalizeStepLabel(s.last_checkout_step)}</span>
+                    ) : (
+                      <span className="si-muted">Pre‑checkout</span>
+                    )}
+                  </td>
+                  <td>{timeAgo(s.atc_at)}</td>
+                  <td title={s.session_id || ''}>{(s.session_id || '—').slice(0, 16)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <div className="si-sanity">

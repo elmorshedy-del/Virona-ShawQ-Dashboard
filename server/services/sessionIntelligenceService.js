@@ -209,18 +209,15 @@ function isPurchase(eventName) {
 
 function extractCartSnapshot(eventData) {
   if (!eventData || typeof eventData !== 'object') return null;
-  const candidates = [
-    eventData.cart,
-    eventData.checkout,
-    eventData?.checkout?.cart,
-    eventData?.cartLine,
-    eventData?.lineItem,
-    eventData?.line_item
-  ];
+  if (eventData.cart && typeof eventData.cart === 'object') return eventData.cart;
+  if (eventData.checkout && typeof eventData.checkout === 'object') return eventData.checkout;
+  if (eventData?.checkout?.cart && typeof eventData.checkout.cart === 'object') return eventData.checkout.cart;
 
-  for (const value of candidates) {
-    if (value && typeof value === 'object') return value;
+  const singleLine = eventData?.cartLine || eventData?.lineItem || eventData?.line_item;
+  if (singleLine && typeof singleLine === 'object') {
+    return { lines: [singleLine] };
   }
+
   return null;
 }
 
@@ -537,4 +534,3 @@ export function formatCheckoutStepLabel(step) {
   if (!key) return '—';
   return CHECKOUT_STEP_LABELS[key] || key;
 }
-
