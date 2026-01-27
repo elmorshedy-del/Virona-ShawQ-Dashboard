@@ -37,6 +37,7 @@ export default function LiveCheckoutIndicator({
         setStatus('ok');
       } catch (error) {
         if (!active) return;
+        console.error('Failed to fetch live checkout count:', error);
         setStatus('error');
       }
     };
