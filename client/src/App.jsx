@@ -26,6 +26,7 @@ import CreativeIntelligence from './components/CreativeIntelligence';
 import CreativeStudio from './components/CreativeStudio';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
+import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -1231,7 +1232,12 @@ export default function App() {
                 {dashboard?.dateRange &&
                   `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
               </span>
-              <NotificationCenter currentStore={currentStore} />
+              <div className="flex flex-col items-end gap-1">
+                <NotificationCenter currentStore={currentStore} />
+                {store?.ecommerce === 'Shopify' && (
+                  <LiveCheckoutIndicator store={currentStore} />
+                )}
+              </div>
               <button
                 onClick={handleSync}
                 disabled={syncing}
