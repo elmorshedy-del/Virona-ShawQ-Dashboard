@@ -593,122 +593,138 @@ export function getCtrTrends(store, params = {}) {
   const adId = params.adId || null;
   const country = params.country || null;
 
-  const table = adId ? 'meta_ad_metrics' : 'meta_daily_metrics';
-  const statusColumn = adId ? 'ad_effective_status' : 'effective_status';
-  const statusFilter = buildStatusFilterForColumn(params, statusColumn);
+  try {
+    const table = adId ? 'meta_ad_metrics' : 'meta_daily_metrics';
+    const statusColumn = adId ? 'ad_effective_status' : 'effective_status';
+    const statusFilter = buildStatusFilterForColumn(params, statusColumn);
 
-  let where = 'WHERE store = ? AND date BETWEEN ? AND ?';
-  const args = [store, startDate, endDate];
+    let where = 'WHERE store = ? AND date BETWEEN ? AND ?';
+    const args = [store, startDate, endDate];
 
-  if (campaignId) {
-    where += ' AND campaign_id = ?';
-    args.push(campaignId);
-  }
-  if (adId) {
-    where += ' AND ad_id = ?';
-    args.push(adId);
-  }
-  if (country) {
-    where += ' AND country = ?';
-    args.push(country);
-  }
-
-  const query = `
-    SELECT
-      date,
-      SUM(impressions) as impressions,
-      SUM(inline_link_clicks) as inline_link_clicks,
-      SUM(clicks) as clicks
-    FROM ${table}
-    ${where}${statusFilter}
-    GROUP BY date
-    ORDER BY date ASC
-  `;
-
-  const rows = db.prepare(query).all(...args);
-
-  const allDates = [];
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    allDates.push(formatDateAsGmt3(d));
-  }
-
-  const map = new Map();
-  allDates.forEach(date => map.set(date, { date, impressions: 0, inline_link_clicks: 0, clicks: 0 }));
-
-  rows.forEach(row => {
-    if (!map.has(row.date)) {
-      map.set(row.date, { date: row.date, impressions: 0, inline_link_clicks: 0, clicks: 0 });
+    if (campaignId) {
+      where += ' AND campaign_id = ?';
+      args.push(campaignId);
     }
-    const entry = map.get(row.date);
-    entry.impressions = parseInt(row.impressions || 0);
-    entry.inline_link_clicks = parseInt(row.inline_link_clicks || 0);
-    entry.clicks = parseInt(row.clicks || 0);
-  });
+    if (adId) {
+      where += ' AND ad_id = ?';
+      args.push(adId);
+    }
+    if (country) {
+      where += ' AND country = ?';
+      args.push(country);
+    }
 
-  const series = Array.from(map.values())
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map(row => {
-      const impressions = row.impressions || 0;
-      const inlineClicks = row.inline_link_clicks || 0;
-      const clicks = row.clicks || 0;
-      const linkClicks = inlineClicks > 0 ? inlineClicks : clicks;
-      return {
-        date: row.date,
-        impressions,
-        link_clicks: linkClicks,
-        ctr: impressions > 0 ? (linkClicks / impressions) * 100 : null
-      };
+    const query = `
+      SELECT
+        date,
+        SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(clicks) as clicks
+      FROM ${table}
+      ${where}${statusFilter}
+      GROUP BY date
+      ORDER BY date ASC
+    `;
+
+    const rows = db.prepare(query).all(...args);
+
+    const allDates = [];
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      allDates.push(formatDateAsGmt3(d));
+    }
+
+    const map = new Map();
+    allDates.forEach(date => map.set(date, { date, impressions: 0, inline_link_clicks: 0, clicks: 0 }));
+
+    rows.forEach(row => {
+      if (!map.has(row.date)) {
+        map.set(row.date, { date: row.date, impressions: 0, inline_link_clicks: 0, clicks: 0 });
+      }
+      const entry = map.get(row.date);
+      entry.impressions = parseInt(row.impressions || 0);
+      entry.inline_link_clicks = parseInt(row.inline_link_clicks || 0);
+      entry.clicks = parseInt(row.clicks || 0);
     });
 
-  let campaignName = null;
-  if (campaignId) {
-    const row = db.prepare(`
-      SELECT campaign_name FROM meta_daily_metrics WHERE store = ? AND campaign_id = ? LIMIT 1
-    `).get(store, campaignId);
-    campaignName = row?.campaign_name || null;
-  }
+    const series = Array.from(map.values())
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map(row => {
+        const impressions = row.impressions || 0;
+        const inlineClicks = row.inline_link_clicks || 0;
+        const clicks = row.clicks || 0;
+        const linkClicks = inlineClicks > 0 ? inlineClicks : clicks;
+        return {
+          date: row.date,
+          impressions,
+          link_clicks: linkClicks,
+          ctr: impressions > 0 ? (linkClicks / impressions) * 100 : null
+        };
+      });
 
-  let adName = null;
-  let adCampaignName = null;
-  if (adId) {
-    const row = db.prepare(`
-      SELECT ad_name, campaign_name FROM meta_ad_metrics WHERE store = ? AND ad_id = ? LIMIT 1
-    `).get(store, adId);
-    adName = row?.ad_name || null;
-    adCampaignName = row?.campaign_name || null;
-  }
-
-  const countryInfo = country ? getCountryInfo(country) : null;
-  const countryLabel = country ? (countryInfo?.name || country) : null;
-
-  let label = 'All Campaigns';
-  if (campaignId) {
-    label = campaignName || 'Campaign';
-  }
-  if (adId) {
-    label = adName || 'Ad';
-    const campaignLabel = adCampaignName || campaignName;
-    if (campaignLabel) {
-      label = `${label} • ${campaignLabel}`;
+    let campaignName = null;
+    if (campaignId) {
+      const row = db.prepare(`
+        SELECT campaign_name FROM meta_daily_metrics WHERE store = ? AND campaign_id = ? LIMIT 1
+      `).get(store, campaignId);
+      campaignName = row?.campaign_name || null;
     }
-  }
-  if (countryLabel) {
-    label = `${label} • ${countryLabel}`;
-  }
 
-  return {
-    label,
-    series,
-    meta: {
-      startDate,
-      endDate,
-      campaignId,
-      adId,
-      country
+    let adName = null;
+    let adCampaignName = null;
+    if (adId) {
+      const row = db.prepare(`
+        SELECT ad_name, campaign_name FROM meta_ad_metrics WHERE store = ? AND ad_id = ? LIMIT 1
+      `).get(store, adId);
+      adName = row?.ad_name || null;
+      adCampaignName = row?.campaign_name || null;
     }
-  };
+
+    const countryInfo = country ? getCountryInfo(country) : null;
+    const countryLabel = country ? (countryInfo?.name || country) : null;
+
+    let label = 'All Campaigns';
+    if (campaignId) {
+      label = campaignName || 'Campaign';
+    }
+    if (adId) {
+      label = adName || 'Ad';
+      const campaignLabel = adCampaignName || campaignName;
+      if (campaignLabel) {
+        label = `${label} • ${campaignLabel}`;
+      }
+    }
+    if (countryLabel) {
+      label = `${label} • ${countryLabel}`;
+    }
+
+    return {
+      label,
+      series,
+      meta: {
+        startDate,
+        endDate,
+        campaignId,
+        adId,
+        country
+      }
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting CTR trends:', error);
+    return {
+      label: 'CTR',
+      series: [],
+      meta: {
+        startDate,
+        endDate,
+        campaignId,
+        adId,
+        country
+      },
+      error: error?.message || 'CTR trends unavailable'
+    };
+  }
 }
 
 // ============================================================================
