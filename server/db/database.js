@@ -148,6 +148,56 @@ export function initDb() {
     )
   `);
 
+
+
+  // Shopify pixel events (session-level)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_pixel_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      event_type TEXT NOT NULL,
+      event_ts TEXT NOT NULL,
+      payload_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Shopify order items (line items)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      order_id TEXT NOT NULL,
+      order_date TEXT NOT NULL,
+      product_id TEXT,
+      variant_id TEXT,
+      sku TEXT,
+      name TEXT,
+      quantity INTEGER DEFAULT 1,
+      price REAL DEFAULT 0,
+      currency TEXT DEFAULT 'USD',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Salla order items (line items)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS salla_order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'vironax',
+      order_id TEXT NOT NULL,
+      order_date TEXT NOT NULL,
+      product_id TEXT,
+      variant_id TEXT,
+      sku TEXT,
+      name TEXT,
+      quantity INTEGER DEFAULT 1,
+      price REAL DEFAULT 0,
+      currency TEXT DEFAULT 'SAR',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Shopify orders (Shawq only)
   db.exec(`
     CREATE TABLE IF NOT EXISTS shopify_orders (

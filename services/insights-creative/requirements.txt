@@ -1,0 +1,13 @@
+fastapi==0.110.0
+uvicorn==0.27.1
+pydantic==2.6.4
+requests==2.31.0
+pillow==10.2.0
+numpy==1.26.4
+scikit-learn==1.4.1.post1
+hdbscan==0.8.33
+torch==2.2.1
+torchvision==0.17.1
+open_clip_torch==2.24.0
+torchtuples==0.2.2
+pycox==0.2.3
