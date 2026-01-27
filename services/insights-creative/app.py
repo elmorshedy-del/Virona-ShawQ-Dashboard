@@ -19,6 +19,13 @@ try:
 except Exception:
     PYCOX_AVAILABLE = False
 
+SURV_CACHE = {
+    'hash': None,
+    'model': None,
+}
+
+ENABLE_DEEPSURV_TRAIN = os.getenv('ENABLE_DEEPSURV_TRAIN', '0') == '1'
+
 app = FastAPI()
 
 MODEL_NAME = os.getenv('CLIP_MODEL', 'ViT-L-14')
@@ -96,6 +103,7 @@ def compute_fatigue_days(history: List[CreativeHistoryPoint]) -> Optional[float]
 
     events = []
     features = []
+    fatigue_days = []
     for ad_id, points in grouped.items():
         points.sort(key=lambda x: x[0])
         ctrs = [p[1] for p in points]
@@ -111,20 +119,31 @@ def compute_fatigue_days(history: List[CreativeHistoryPoint]) -> Optional[float]
         event = 1 if fatigue_day is not None else 0
         time = fatigue_day if fatigue_day is not None else duration
         events.append((time, event))
-        features.append([peak, np.mean(ctrs), np.std(ctrs) if len(ctrs) > 1 else 0.0])
+        features.append([peak, float(sum(ctrs)) / len(ctrs), float((sum((c - (sum(ctrs)/len(ctrs)))**2 for c in ctrs) / max(1, len(ctrs)-1))**0.5)])
+        if fatigue_day is not None:
+            fatigue_days.append(fatigue_day)
 
-    if len(events) < 6 or not PYCOX_AVAILABLE:
-        return None
+    if len(events) < 6:
+        return float(sum(fatigue_days) / len(fatigue_days)) if fatigue_days else None
+
+    # Heuristic fallback (no training) unless enabled.
+    if not PYCOX_AVAILABLE or not ENABLE_DEEPSURV_TRAIN:
+        return float(sum(fatigue_days) / len(fatigue_days)) if fatigue_days else None
 
     x = np.array(features, dtype=np.float32)
     durations = np.array([e[0] for e in events], dtype=np.float32)
     events_arr = np.array([e[1] for e in events], dtype=np.int64)
 
-    in_features = x.shape[1]
-    net = tt.practical.MLPVanilla(in_features, [16, 16], 1, batch_norm=True, dropout=0.1)
-    model_surv = CoxPH(net, tt.optim.Adam)
-    model_surv.fit(x, (durations, events_arr), batch_size=16, epochs=20, verbose=False)
+    data_hash = hash(x.tobytes() + durations.tobytes() + events_arr.tobytes())
+    if SURV_CACHE['model'] is None or SURV_CACHE['hash'] != data_hash:
+        in_features = x.shape[1]
+        net = tt.practical.MLPVanilla(in_features, [16, 16], 1, batch_norm=True, dropout=0.1)
+        model_surv = CoxPH(net, tt.optim.Adam)
+        model_surv.fit(x, (durations, events_arr), batch_size=16, epochs=20, verbose=False)
+        SURV_CACHE['model'] = model_surv
+        SURV_CACHE['hash'] = data_hash
 
+    model_surv = SURV_CACHE['model']
     surv = model_surv.predict_surv_df(x)
     median_surv = surv.apply(lambda col: col[col <= 0.5].index.min() if (col <= 0.5).any() else col.index.max())
     return float(np.nanmedian(median_surv.values))

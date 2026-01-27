@@ -15,6 +15,11 @@ try:
 except Exception:
     TABPFN_AVAILABLE = False
 
+PRED_CACHE = {}
+EMBED_CACHE = {}
+ENABLE_TABPFN = os.getenv('ENABLE_TABPFN', '1') == '1'
+ENABLE_SIAMESE_TRAIN = os.getenv('ENABLE_SIAMESE_TRAIN', '1') == '1'
+
 app = FastAPI()
 
 class GeoFeature(BaseModel):
@@ -96,21 +101,33 @@ def predict(payload: GeoPayload):
     target = np.array([g.conversions or g.demand or 0 for g in geos], dtype=np.float32)
 
     preds = target.copy()
-    if TABPFN_AVAILABLE and len(geos) >= 4:
-        model = TabPFNRegressor(device='cpu', n_estimators=16)
-        model.fit(features_scaled, target)
-        preds = model.predict(features_scaled)
+    if TABPFN_AVAILABLE and ENABLE_TABPFN and len(geos) >= 4:
+        cache_key = hash(features_scaled.tobytes() + target.tobytes())
+        cached = PRED_CACHE.get(cache_key)
+        if cached is None:
+            model = TabPFNRegressor(device='cpu', n_estimators=16)
+            model.fit(features_scaled, target)
+            preds = model.predict(features_scaled)
+            PRED_CACHE[cache_key] = preds
+        else:
+            preds = cached
 
     # labels for siamese (top vs bottom)
     threshold = np.median(preds)
     labels = (preds >= threshold).astype(int)
 
-    siamese_model = train_siamese(features_scaled, labels)
-    if siamese_model is not None:
-        with torch.no_grad():
-            embeddings = siamese_model(torch.tensor(features_scaled, dtype=torch.float32)).numpy()
-    else:
-        embeddings = features_scaled
+    embeddings = features_scaled
+    if ENABLE_SIAMESE_TRAIN:
+        embed_key = hash(features_scaled.tobytes() + labels.tobytes())
+        cached_embed = EMBED_CACHE.get(embed_key)
+        if cached_embed is None:
+            siamese_model = train_siamese(features_scaled, labels)
+            if siamese_model is not None:
+                with torch.no_grad():
+                    embeddings = siamese_model(torch.tensor(features_scaled, dtype=torch.float32)).numpy()
+            EMBED_CACHE[embed_key] = embeddings
+        else:
+            embeddings = cached_embed
 
     # choose candidate not top_geo
     ranked = sorted(zip(geos, preds, embeddings), key=lambda x: x[1], reverse=True)

@@ -333,41 +333,6 @@ const getForecastSeries = (store, recentStart, endDate) => {
 };
 
 
-  if (!adIds.length) return [];
-  const db = getDb();
-  const placeholders = adIds.map(() => '?').join(',');
-  const rows = db.prepare(`
-    SELECT ad_id, date,
-           SUM(clicks) as clicks,
-           SUM(impressions) as impressions,
-           SUM(conversions) as conversions
-    FROM meta_ad_metrics
-    WHERE store = ? AND date BETWEEN ? AND ? AND ad_id IN (${placeholders})
-    GROUP BY ad_id, date
-    ORDER BY date
-  `).all(store, startDate, endDate, ...adIds);
-
-  const byAd = new Map();
-  rows.forEach((row) => {
-    byAd.set(row.ad_id, (byAd.get(row.ad_id) || []).concat(row));
-  });
-
-  const history = [];
-  byAd.forEach((series, adId) => {
-    series.sort((a, b) => a.date.localeCompare(b.date));
-    series.forEach((row, index) => {
-      history.push({
-        ad_id: adId,
-        day_index: index + 1,
-        ctr: row.impressions ? row.clicks / row.impressions : 0,
-        conversions: row.conversions || 0
-      });
-    });
-  });
-
-  return history;
-};
-
 const normalize = (value, min, max) => {
   if (max === min) return 0.5;
   return clamp((value - min) / (max - min), 0, 1);

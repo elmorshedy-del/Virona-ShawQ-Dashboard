@@ -8,6 +8,9 @@ import torch
 
 app = FastAPI()
 
+CACHE = {}
+CACHE_MAX = 32
+
 class Order(BaseModel):
     order_id: Optional[str] = None
     items: List[str] = []
@@ -64,6 +67,11 @@ def health():
 def predict(payload: AdjacentPayload):
     orders = payload.orders or []
     edges_in = payload.edges or []
+
+    cache_key = hash(str(orders) + str(edges_in))
+    cached = CACHE.get(cache_key)
+    if cached is not None:
+        return {"insight": cached}
 
     items = set()
     for order in orders:
@@ -131,5 +139,9 @@ def predict(payload: AdjacentPayload):
         "logic": "Items with highest combined graph + sequence score are prioritized.",
         "limits": "Needs line-item data for reliable adjacency signals."
     }
+
+    CACHE[cache_key] = insight
+    if len(CACHE) > CACHE_MAX:
+        CACHE.pop(next(iter(CACHE)))
 
     return {"insight": insight}
