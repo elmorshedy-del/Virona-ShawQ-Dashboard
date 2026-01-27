@@ -85,6 +85,8 @@ const REGION_COMPARE_COLORS = {
   europe: '#2563eb',
   usa: '#ef4444'
 };
+const CTR_TREND_COLORS = ['#2563eb', '#f97316', '#10b981'];
+const CTR_COMPARE_LIMIT = 3;
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -1458,6 +1460,7 @@ export default function App() {
             metaBreakdownData={metaBreakdownData}
             store={store}
             campaignScopeLabel={campaignScopeLabel}
+            availableCountries={availableCountries}
             nyTrendData={nyTrendData}
             diagnosticsCampaignOptions={diagnosticsCampaignOptions}
             countryTrends={countryTrends}
@@ -1657,6 +1660,7 @@ function DashboardTab({
   metaBreakdownData = [],
   store = {},
   campaignScopeLabel = 'All Campaigns',
+  availableCountries = [],
   nyTrendData = null,
   countryTrends = [],
   countryTrendsDataSource = '',
@@ -1750,6 +1754,21 @@ function DashboardTab({
   const [creativeInsightError, setCreativeInsightError] = useState('');
   const [showCreativeSummaryTable, setShowCreativeSummaryTable] = useState(true);
   const [showCreativeFunnelSummary, setShowCreativeFunnelSummary] = useState(true);
+  const [ctrTrendRangeMode, setCtrTrendRangeMode] = useState('dashboard'); // 'dashboard' | 'local'
+  const [ctrTrendRange, setCtrTrendRange] = useState({ type: 'days', value: 7 });
+  const [ctrTrendCustomRange, setCtrTrendCustomRange] = useState(() => ({
+    start: dateRange?.startDate || '',
+    end: dateRange?.endDate || ''
+  }));
+  const [showCtrTrendCustomPicker, setShowCtrTrendCustomPicker] = useState(false);
+  const [ctrTrendIncludeInactive, setCtrTrendIncludeInactive] = useState(false);
+  const [ctrTrendCountry, setCtrTrendCountry] = useState('ALL');
+  const [ctrTrendAdId, setCtrTrendAdId] = useState('ALL');
+  const [ctrTrendCompareIds, setCtrTrendCompareIds] = useState([]);
+  const [ctrTrendSeries, setCtrTrendSeries] = useState([]);
+  const [ctrTrendLoading, setCtrTrendLoading] = useState(false);
+  const [ctrTrendError, setCtrTrendError] = useState('');
+  const [ctrTrendCompareError, setCtrTrendCompareError] = useState('');
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
   const countryTrendQuickOptions = [
     { label: '1W', type: 'weeks', value: 1 },
@@ -1785,6 +1804,12 @@ function DashboardTab({
     if (n.includes('test')) return '🧪';
     if (n.includes('video')) return '🎥';
     return '📣';
+  };
+
+  const isActiveStatus = (status) => {
+    if (!status) return true;
+    const normalized = String(status).toUpperCase();
+    return normalized === 'ACTIVE' || normalized === 'UNKNOWN';
   };
 
   const creativeCampaignOptions = useMemo(() => {
@@ -1823,12 +1848,121 @@ function DashboardTab({
     return creativeCampaignOptions.find(c => c.id === selectedCreativeCampaignId) || creativeCampaignOptions[0];
   }, [creativeCampaignOptions, selectedCreativeCampaignId]);
 
+  const ctrCampaignId = selectedCreativeCampaignId === ALL_CAMPAIGNS_ID
+    ? null
+    : selectedCreativeCampaignId;
+
+  const ctrCountryOptions = useMemo(() => {
+    const base = Array.isArray(availableCountries) && availableCountries.length > 0
+      ? availableCountries
+      : (Array.isArray(dashboard?.countries)
+        ? dashboard.countries.map(c => ({
+          code: c.code || c.country || c.name || '',
+          name: c.name || c.country || c.code || '',
+          flag: c.flag || ''
+        }))
+        : []);
+
+    const unique = new Map();
+    base.forEach((country) => {
+      const rawCode = (country.code || country.country || '').toUpperCase().trim();
+      if (!rawCode) return;
+      unique.set(rawCode, {
+        code: rawCode,
+        name: country.name || country.country || rawCode,
+        flag: country.flag || ''
+      });
+    });
+
+    return Array.from(unique.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [availableCountries, dashboard?.countries]);
+
+  const ctrAdOptions = useMemo(() => {
+    if (!selectedCreativeCampaign) return [];
+    const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
+    const map = new Map();
+
+    ads.forEach((ad) => {
+      const id = ad.ad_id || ad.id;
+      if (!id) return;
+      const status = ad.ad_effective_status || ad.effective_status || ad.status || ad.ad_status;
+      if (!ctrTrendIncludeInactive && !isActiveStatus(status)) return;
+      const name = ad.ad_name || ad.name || 'Ad';
+      const campaignLabel = selectedCreativeCampaign.isAggregate
+        ? (ad.campaign_name || ad.campaignName || selectedCreativeCampaign.name)
+        : selectedCreativeCampaign.name;
+      const label = selectedCreativeCampaign.isAggregate
+        ? `${name} • ${campaignLabel || 'Campaign'}`
+        : name;
+      map.set(id, {
+        id,
+        name,
+        label,
+        campaignName: campaignLabel || null,
+        status
+      });
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [ctrTrendIncludeInactive, isActiveStatus, selectedCreativeCampaign]);
+
+  useEffect(() => {
+    if (ctrTrendAdId !== 'ALL' && !ctrAdOptions.some(option => option.id === ctrTrendAdId)) {
+      setCtrTrendAdId('ALL');
+    }
+  }, [ctrAdOptions, ctrTrendAdId]);
+
+  useEffect(() => {
+    if (ctrTrendCountry !== 'ALL' && !ctrCountryOptions.some(option => option.code === ctrTrendCountry)) {
+      setCtrTrendCountry('ALL');
+    }
+  }, [ctrCountryOptions, ctrTrendCountry]);
+
+  const ctrTrendMode = useMemo(() => {
+    const hasAd = ctrTrendAdId && ctrTrendAdId !== 'ALL';
+    const hasCountry = ctrTrendCountry && ctrTrendCountry !== 'ALL';
+    if (hasAd) return hasCountry ? 'ad_country' : 'ad';
+    if (hasCountry) return 'country';
+    return 'campaign';
+  }, [ctrTrendAdId, ctrTrendCountry]);
+
+  const ctrCompareOptions = useMemo(() => {
+    if (ctrTrendMode === 'country') {
+      return ctrCountryOptions.map(country => ({
+        id: country.code,
+        label: `${country.flag ? `${country.flag} ` : ''}${country.name} (${country.code})`
+      }));
+    }
+    if (ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') {
+      return ctrAdOptions.map(ad => ({ id: ad.id, label: ad.label }));
+    }
+    return [];
+  }, [ctrAdOptions, ctrCountryOptions, ctrTrendMode]);
+
+  useEffect(() => {
+    setCtrTrendCompareIds((prev) => {
+      const validIds = new Set(ctrCompareOptions.map(option => option.id));
+      const filtered = prev.filter(id => validIds.has(id));
+      if (filtered.length > 0) return filtered;
+      if (ctrTrendMode === 'country' && ctrTrendCountry !== 'ALL') return [ctrTrendCountry];
+      if ((ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') && ctrTrendAdId !== 'ALL') return [ctrTrendAdId];
+      return [];
+    });
+  }, [ctrCompareOptions, ctrTrendMode, ctrTrendCountry, ctrTrendAdId]);
+
   useEffect(() => {
     if (dateRange?.startDate && dateRange?.endDate) {
       setCreativeSummaryRange({ type: 'custom', start: dateRange.startDate, end: dateRange.endDate });
       setCreativeSummaryCustomRange({ start: dateRange.startDate, end: dateRange.endDate });
     }
   }, [dateRange?.startDate, dateRange?.endDate]);
+
+  useEffect(() => {
+    if (ctrTrendRangeMode !== 'dashboard') return;
+    if (dateRange?.startDate && dateRange?.endDate) {
+      setCtrTrendCustomRange({ start: dateRange.startDate, end: dateRange.endDate });
+    }
+  }, [ctrTrendRangeMode, dateRange?.startDate, dateRange?.endDate]);
 
   useEffect(() => {
     if (creativeSummaryRange?.type === 'days' && creativeSummaryRange?.value === 1) {
@@ -1855,6 +1989,13 @@ function DashboardTab({
     const startDate = getIstanbulDateString(new Date(Date.now() - (totalDays - 1) * 24 * 60 * 60 * 1000));
     return { startDate, endDate };
   }, []);
+
+  const ctrResolvedRange = useMemo(() => {
+    if (ctrTrendRangeMode === 'dashboard' && dateRange?.startDate && dateRange?.endDate) {
+      return { startDate: dateRange.startDate, endDate: dateRange.endDate };
+    }
+    return resolveCreativeSummaryRange(ctrTrendRange);
+  }, [ctrTrendRangeMode, dateRange?.startDate, dateRange?.endDate, resolveCreativeSummaryRange, ctrTrendRange]);
 
   const getPreviousCreativeSummaryRange = useCallback((startDate, endDate) => {
     if (!startDate || !endDate) return null;
@@ -1961,6 +2102,97 @@ function DashboardTab({
     resolveCreativeSummaryRange,
     getPreviousCreativeSummaryRange,
     creativeSummaryRefreshTick
+  ]);
+
+  const fetchCtrSeries = useCallback(async (target, range) => {
+    if (!store?.id || !range?.startDate || !range?.endDate) return null;
+
+    const params = new URLSearchParams({
+      store: store.id,
+      startDate: range.startDate,
+      endDate: range.endDate
+    });
+
+    if (target.campaignId) params.set('campaignId', target.campaignId);
+    if (target.adId) params.set('adId', target.adId);
+    if (target.country) params.set('country', target.country);
+    if (ctrTrendIncludeInactive) params.set('includeInactive', 'true');
+
+    const data = await fetchJson(`${API_BASE}/analytics/ctr-trends?${params}`, { label: '', series: [] });
+    return { ...data, key: target.key };
+  }, [ctrTrendIncludeInactive, store?.id]);
+
+  useEffect(() => {
+    if (!store?.id) return;
+    if (!ctrResolvedRange?.startDate || !ctrResolvedRange?.endDate) return;
+    if (!selectedCreativeCampaignId) return;
+
+    const targets = [];
+    const campaignId = ctrCampaignId && ctrCampaignId !== ALL_CAMPAIGNS_ID
+      ? ctrCampaignId
+      : null;
+
+    if (ctrTrendMode === 'campaign') {
+      targets.push({ key: campaignId || 'all', campaignId });
+    } else if (ctrTrendMode === 'country') {
+      const ids = ctrTrendCompareIds.length > 0
+        ? ctrTrendCompareIds
+        : (ctrTrendCountry !== 'ALL' ? [ctrTrendCountry] : []);
+      ids.forEach((code) => {
+        targets.push({ key: `country:${code}`, campaignId, country: code });
+      });
+    } else if (ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') {
+      const ids = ctrTrendCompareIds.length > 0
+        ? ctrTrendCompareIds
+        : (ctrTrendAdId !== 'ALL' ? [ctrTrendAdId] : []);
+      ids.forEach((id) => {
+        targets.push({
+          key: `ad:${id}:${ctrTrendMode === 'ad_country' ? ctrTrendCountry : 'all'}`,
+          campaignId,
+          adId: id,
+          country: ctrTrendMode === 'ad_country' ? ctrTrendCountry : null
+        });
+      });
+    }
+
+    if (targets.length === 0) {
+      setCtrTrendSeries([]);
+      return;
+    }
+
+    let isActive = true;
+    setCtrTrendLoading(true);
+    setCtrTrendError('');
+
+    Promise.all(targets.map(target => fetchCtrSeries(target, ctrResolvedRange)))
+      .then((results) => {
+        if (!isActive) return;
+        const cleaned = results.filter(Boolean);
+        setCtrTrendSeries(cleaned);
+      })
+      .catch((error) => {
+        if (!isActive) return;
+        setCtrTrendSeries([]);
+        setCtrTrendError(error?.message || 'Failed to load CTR trends.');
+      })
+      .finally(() => {
+        if (isActive) setCtrTrendLoading(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [
+    ctrCampaignId,
+    ctrResolvedRange,
+    ctrTrendAdId,
+    ctrTrendCompareIds,
+    ctrTrendCountry,
+    ctrTrendMode,
+    ctrTrendIncludeInactive,
+    fetchCtrSeries,
+    selectedCreativeCampaignId,
+    store?.id
   ]);
 
   const syncCreativeInsightSettings = useCallback(async ({ action: actionOverride = null, updates = null } = {}) => {
@@ -2171,6 +2403,75 @@ function DashboardTab({
       };
     });
   }, [selectedCreativeCampaign]);
+
+  const toggleCtrCompareId = useCallback((id) => {
+    setCtrTrendCompareError('');
+    setCtrTrendCompareIds((prev) => {
+      if (prev.includes(id)) return prev.filter(item => item !== id);
+      if (prev.length >= CTR_COMPARE_LIMIT) {
+        setCtrTrendCompareError(`Select up to ${CTR_COMPARE_LIMIT}.`);
+        return prev;
+      }
+      return [...prev, id];
+    });
+  }, []);
+
+  const ctrTrendChartData = useMemo(() => {
+    if (!ctrTrendSeries || ctrTrendSeries.length === 0) return [];
+    const map = new Map();
+
+    ctrTrendSeries.forEach((series, idx) => {
+      const points = Array.isArray(series?.series) ? series.series : [];
+      points.forEach(point => {
+        if (!point?.date) return;
+        const row = map.get(point.date) || { date: point.date };
+        row[`series_${idx}`] = point.ctr;
+        row[`series_${idx}_clicks`] = point.link_clicks || 0;
+        row[`series_${idx}_impressions`] = point.impressions || 0;
+        map.set(point.date, row);
+      });
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [ctrTrendSeries]);
+
+  const ctrSharpNotes = useMemo(() => {
+    if (!ctrTrendSeries || ctrTrendSeries.length === 0) return [];
+    const notes = [];
+
+    ctrTrendSeries.forEach((series) => {
+      const points = Array.isArray(series?.series) ? series.series : [];
+      const valid = points.filter(p => p && Number.isFinite(p.ctr) && (p.impressions || 0) > 0);
+      if (valid.length < 6) return;
+
+      const lastSix = valid.slice(-6);
+      const prevWindow = lastSix.slice(0, 3);
+      const recentWindow = lastSix.slice(3);
+      const prevStats = getLinearRegressionStats(prevWindow.map(p => p.ctr));
+      const recentStats = getLinearRegressionStats(recentWindow.map(p => p.ctr));
+      const slopeChange = recentStats.slope - prevStats.slope;
+      const recentImpressions = recentWindow.reduce((sum, p) => sum + (p.impressions || 0), 0);
+
+      if (
+        Math.abs(recentStats.slope) < 0.3 ||
+        Math.abs(slopeChange) < 0.2 ||
+        recentStats.r2 < 0.6 ||
+        recentImpressions < 500
+      ) {
+        return;
+      }
+
+      notes.push({
+        label: series.label || 'CTR',
+        direction: recentStats.slope >= 0 ? 'up' : 'down',
+        slope: recentStats.slope,
+        startDate: recentWindow[0]?.date,
+        r2: recentStats.r2
+      });
+    });
+
+    return notes;
+  }, [ctrTrendSeries]);
 
   const creativeTotals = useMemo(() => {
     if (creativeAds.length === 0) return null;
@@ -4060,6 +4361,59 @@ function DashboardTab({
     return 'Period';
   };
 
+  const getCtrTrendRangeLabel = () => {
+    if (ctrTrendRangeMode === 'dashboard') {
+      if (dateRange?.startDate && dateRange?.endDate) {
+        return `${dateRange.startDate} to ${dateRange.endDate}`;
+      }
+      return 'Dashboard';
+    }
+    if (ctrTrendRange.type === 'custom') {
+      if (ctrTrendRange.start && ctrTrendRange.end) {
+        return `${ctrTrendRange.start} to ${ctrTrendRange.end}`;
+      }
+      return 'Custom';
+    }
+    if (ctrTrendRange.type === 'yesterday') return 'Yesterday';
+    if (ctrTrendRange.type === 'days' && ctrTrendRange.value === 1) return 'Today';
+    if (ctrTrendRange.type === 'days' && ctrTrendRange.value === 2) return 'Today & Yesterday';
+    if (ctrTrendRange.type === 'days') return `${ctrTrendRange.value}D`;
+    return 'Period';
+  };
+
+  const renderCtrTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const row = payload[0]?.payload || {};
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm">
+        <div className="text-[11px] text-gray-500 mb-2">{label}</div>
+        <div className="space-y-1">
+          {ctrTrendSeries.map((series, idx) => {
+            const value = row[`series_${idx}`];
+            if (!Number.isFinite(value)) return null;
+            const clicks = row[`series_${idx}_clicks`] ?? 0;
+            const impressions = row[`series_${idx}_impressions`] ?? 0;
+            return (
+              <div key={series.key || idx} className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: CTR_TREND_COLORS[idx % CTR_TREND_COLORS.length] }}
+                  />
+                  <span className="font-medium text-gray-700">{series.label || `Series ${idx + 1}`}</span>
+                </div>
+                <div className="text-gray-700">{renderMetric(value, 'percent', 2)}</div>
+                <div className="text-[11px] text-gray-400">
+                  {formatNumber(clicks)} clicks · {formatNumber(impressions)} impr
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   const renderCreativeSummaryValue = (value, format) => {
     if (!Number.isFinite(value)) return '—';
     if (format === 'currency') return renderMetric(value, 'currency');
@@ -5011,6 +5365,319 @@ function DashboardTab({
           ) : (
             <div className="text-sm text-gray-500">
               No creatives available. Switch to Meta Ad Manager view to load campaign data.
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-b border-gray-100 bg-gray-50/40">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h3 className="text-base font-semibold text-gray-900">CTR Trends</h3>
+              <p className="text-xs text-gray-500">
+                Daily link CTR. Compare up to {CTR_COMPARE_LIMIT} ads or countries.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
+              <span>
+                Range: <span className="font-semibold text-gray-700">{getCtrTrendRangeLabel()}</span>
+              </span>
+              {ctrTrendRangeMode === 'local' && (
+                <button
+                  type="button"
+                  onClick={() => setCtrTrendRangeMode('dashboard')}
+                  className="text-indigo-600 hover:text-indigo-700 font-semibold"
+                >
+                  Use dashboard range
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <span className="font-semibold text-gray-700">Campaign</span>
+              <select
+                value={selectedCreativeCampaignId || ''}
+                onChange={(e) => setSelectedCreativeCampaignId(e.target.value)}
+                className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white"
+              >
+                {creativeCampaignOptions.map((campaign) => (
+                  <option key={campaign.id} value={campaign.id}>
+                    {campaign.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <span className="font-semibold text-gray-700">Country</span>
+              <select
+                value={ctrTrendCountry}
+                onChange={(e) => setCtrTrendCountry(e.target.value)}
+                className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white min-w-[160px]"
+              >
+                <option value="ALL">All countries</option>
+                {ctrCountryOptions.map((country) => (
+                  <option key={country.code} value={country.code}>
+                    {`${country.flag ? `${country.flag} ` : ''}${country.name} (${country.code})`}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <span className="font-semibold text-gray-700">Ad</span>
+              <select
+                value={ctrTrendAdId}
+                onChange={(e) => setCtrTrendAdId(e.target.value)}
+                className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white min-w-[200px]"
+              >
+                <option value="ALL">All ads</option>
+                {ctrAdOptions.map((ad) => (
+                  <option key={ad.id} value={ad.id}>
+                    {ad.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-3 text-xs text-gray-600">
+              <span className="font-semibold text-gray-700">
+                {ctrTrendIncludeInactive ? 'Active + inactive' : 'Active only'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCtrTrendIncludeInactive(prev => !prev)}
+                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
+                  ctrTrendIncludeInactive ? 'bg-indigo-600' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    ctrTrendIncludeInactive ? 'translate-x-5' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+            <span className="text-gray-500">Range:</span>
+            <button
+              onClick={() => {
+                setCtrTrendRangeMode('local');
+                setCtrTrendRange({ type: 'days', value: 1 });
+                setShowCtrTrendCustomPicker(false);
+              }}
+              className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                ctrTrendRangeMode === 'local' && ctrTrendRange.type === 'days' && ctrTrendRange.value === 1
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              Today
+            </button>
+            <button
+              onClick={() => {
+                setCtrTrendRangeMode('local');
+                setCtrTrendRange({ type: 'yesterday', value: 1 });
+                setShowCtrTrendCustomPicker(false);
+              }}
+              className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                ctrTrendRangeMode === 'local' && ctrTrendRange.type === 'yesterday'
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              Yesterday
+            </button>
+            {[7, 14, 30].map(days => (
+              <button
+                key={days}
+                onClick={() => {
+                  setCtrTrendRangeMode('local');
+                  setCtrTrendRange({ type: 'days', value: days });
+                  setShowCtrTrendCustomPicker(false);
+                }}
+                className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                  ctrTrendRangeMode === 'local' && ctrTrendRange.type === 'days' && ctrTrendRange.value === days
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                {days}D
+              </button>
+            ))}
+            <button
+              onClick={() => {
+                setCtrTrendRangeMode('local');
+                setShowCtrTrendCustomPicker((prev) => !prev);
+                setCtrTrendRange({ type: 'custom', start: ctrTrendCustomRange.start, end: ctrTrendCustomRange.end });
+              }}
+              className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                ctrTrendRangeMode === 'local' && ctrTrendRange.type === 'custom'
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              Custom
+            </button>
+          </div>
+
+          {showCtrTrendCustomPicker && (
+            <div className="mt-3 flex flex-wrap items-end gap-2 text-xs text-gray-600">
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-500 mb-1">Start</label>
+                <input
+                  type="date"
+                  value={ctrTrendCustomRange.start}
+                  onChange={(e) => setCtrTrendCustomRange(prev => ({ ...prev, start: e.target.value }))}
+                  max={ctrTrendCustomRange.end || getIstanbulDateString()}
+                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-500 mb-1">End</label>
+                <input
+                  type="date"
+                  value={ctrTrendCustomRange.end}
+                  onChange={(e) => setCtrTrendCustomRange(prev => ({ ...prev, end: e.target.value }))}
+                  min={ctrTrendCustomRange.start}
+                  max={getIstanbulDateString()}
+                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (ctrTrendCustomRange.start && ctrTrendCustomRange.end) {
+                    setCtrTrendRangeMode('local');
+                    setCtrTrendRange({
+                      type: 'custom',
+                      start: ctrTrendCustomRange.start,
+                      end: ctrTrendCustomRange.end
+                    });
+                    setShowCtrTrendCustomPicker(false);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold hover:bg-gray-800"
+              >
+                Apply
+              </button>
+            </div>
+          )}
+
+          <div className="mt-4">
+            {ctrTrendError && (
+              <div className="text-xs text-rose-600 mb-2">{ctrTrendError}</div>
+            )}
+            {ctrTrendLoading ? (
+              <div className="h-64 flex items-center justify-center text-sm text-gray-500">
+                Loading CTR trends...
+              </div>
+            ) : ctrTrendChartData.length > 0 ? (
+              <>
+                <div className="h-64">
+                  <ResponsiveContainer>
+                    <LineChart data={ctrTrendChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis
+                        tick={{ fontSize: 11 }}
+                        tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
+                      />
+                      <Tooltip content={renderCtrTooltip} />
+                      {ctrTrendSeries.map((series, idx) => (
+                        <Line
+                          key={series.key || idx}
+                          type="monotone"
+                          dataKey={`series_${idx}`}
+                          stroke={CTR_TREND_COLORS[idx % CTR_TREND_COLORS.length]}
+                          strokeWidth={2.5}
+                          dot={false}
+                          activeDot={{ r: 4 }}
+                          isAnimationActive={false}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-3 text-xs text-gray-500">
+                  {ctrTrendSeries.map((series, idx) => (
+                    <div key={series.key || idx} className="flex items-center gap-2">
+                      <span
+                        className="inline-block h-2 w-2 rounded-full"
+                        style={{ backgroundColor: CTR_TREND_COLORS[idx % CTR_TREND_COLORS.length] }}
+                      />
+                      <span className="font-semibold text-gray-700">{series.label || `Series ${idx + 1}`}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="h-64 flex items-center justify-center text-sm text-gray-500">
+                Select a campaign and optionally a country or ad to view CTR.
+              </div>
+            )}
+          </div>
+
+          {ctrTrendMode !== 'campaign' && (
+            <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div className="rounded-xl border border-gray-100 bg-white p-4">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Compare (max {CTR_COMPARE_LIMIT})
+                </div>
+                {ctrCompareOptions.length === 0 ? (
+                  <div className="mt-2 text-xs text-gray-500">No options available.</div>
+                ) : (
+                  <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
+                    {ctrCompareOptions.map((option) => (
+                      <label key={option.id} className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={ctrTrendCompareIds.includes(option.id)}
+                          onChange={() => toggleCtrCompareId(option.id)}
+                          className="accent-indigo-600"
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {ctrTrendCompareError && (
+                  <div className="mt-2 text-xs text-rose-500">{ctrTrendCompareError}</div>
+                )}
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-white p-4">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Smart notes
+                </div>
+                {ctrSharpNotes.length === 0 ? (
+                  <div className="mt-2 text-xs text-gray-500">
+                    No sharp CTR slope signals in the last 6 days.
+                  </div>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    {ctrSharpNotes.map((note) => {
+                      const Icon = note.direction === 'up' ? TrendingUp : TrendingDown;
+                      const tone = note.direction === 'up' ? 'text-emerald-600' : 'text-rose-600';
+                      const directionLabel = note.direction === 'up' ? 'spike' : 'drop';
+                      return (
+                        <div key={`${note.label}-${note.startDate}`} className="flex items-start gap-2 text-xs">
+                          <Icon className={`h-4 w-4 ${tone}`} />
+                          <div>
+                            <div className="font-semibold text-gray-900">{note.label}</div>
+                            <div className="text-gray-600">
+                              Sharp CTR {directionLabel} starting {note.startDate}: {note.slope >= 0 ? '+' : ''}
+                              {note.slope.toFixed(2)} pp/day (r² {note.r2.toFixed(2)})
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
