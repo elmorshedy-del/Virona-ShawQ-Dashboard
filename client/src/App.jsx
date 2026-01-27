@@ -1939,14 +1939,25 @@ function DashboardTab({
     return [];
   }, [ctrAdOptions, ctrCountryOptions, ctrTrendMode]);
 
+  const areIdsEqual = (a = [], b = []) =>
+    a.length === b.length && a.every((id, idx) => id === b[idx]);
+
   useEffect(() => {
     setCtrTrendCompareIds((prev) => {
       const validIds = new Set(ctrCompareOptions.map(option => option.id));
       const filtered = prev.filter(id => validIds.has(id));
-      if (filtered.length > 0) return filtered;
-      if (ctrTrendMode === 'country' && ctrTrendCountry !== 'ALL') return [ctrTrendCountry];
-      if ((ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') && ctrTrendAdId !== 'ALL') return [ctrTrendAdId];
-      return [];
+      if (filtered.length > 0) {
+        return areIdsEqual(prev, filtered) ? prev : filtered;
+      }
+      if (ctrTrendMode === 'country' && ctrTrendCountry !== 'ALL') {
+        const next = [ctrTrendCountry];
+        return areIdsEqual(prev, next) ? prev : next;
+      }
+      if ((ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') && ctrTrendAdId !== 'ALL') {
+        const next = [ctrTrendAdId];
+        return areIdsEqual(prev, next) ? prev : next;
+      }
+      return prev.length === 0 ? prev : [];
     });
   }, [ctrCompareOptions, ctrTrendMode, ctrTrendCountry, ctrTrendAdId]);
 
