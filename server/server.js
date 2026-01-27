@@ -17,6 +17,7 @@ import exchangeRateRoutes from './routes/exchangeRate.js';
 import attributionRouter from './routes/attribution.js';
 import creativeIntelligenceRouter from './routes/creativeIntelligence.js';
 import creativeStudioRouter from './routes/creativeStudio.js';
+import pixelsRouter from './routes/pixels.js';
 import fatigueRouter from './routes/fatigue.js';
 import metaAuthRouter from './routes/metaAuth.js';
 import testimonialExtractorRouter from './routes/testimonialExtractor.js';
@@ -218,13 +219,16 @@ app.use('/api/attribution', attributionRouter);
 app.use('/api/exchange-rates', exchangeRateRoutes);
 app.use('/api/creative-intelligence', creativeIntelligenceRouter);
 app.use('/api/creative-studio', creativeStudioRouter);
+app.use('/api/pixels', pixelsRouter);
 app.use('/api/fatigue', fatigueRouter);
 app.use('/api/testimonials', testimonialExtractorRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
 app.use(express.static(clientDist));
-app.get('*', (req, res) => {
+app.get('*', (req, res, next) => {
+  // Don't serve the SPA shell for API routes (prevents "Unexpected token <" JSON errors).
+  if (req.path.startsWith('/api')) return next();
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
