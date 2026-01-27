@@ -11,6 +11,12 @@ const LIVE_STATE_GC_MULTIPLIER = 6; // keep some buffer beyond the visible windo
 // Structure: store -> sessionKey -> { type, tsMs }
 const liveSessionsByStore = new Map();
 
+// Best-effort GeoIP cache (keeps us from calling a GeoIP provider for every event).
+// Keyed by raw IP string, but we only ever persist country codes in DB/memory state.
+const geoIpCache = new Map(); // ip -> { countryCode, expiresAtMs }
+const GEOIP_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const GEOIP_TIMEOUT_MS = parseInt(process.env.PIXELS_GEOIP_TIMEOUT_MS || '1000', 10);
+
 function getStoreLiveMap(store) {
   const key = store || 'shawq';
   let map = liveSessionsByStore.get(key);
@@ -94,7 +100,7 @@ function isCheckoutCompleted(eventType = '') {
   return String(eventType).toLowerCase() === 'checkout_completed';
 }
 
-function updateLiveState(store, eventType, payload, timestampIso) {
+function updateLiveState(store, eventType, payload, timestampIso, countryCode) {
   if (!isCheckoutRelated(eventType)) return false;
   const key = extractCheckoutKey(payload);
   if (!key) return false;
@@ -109,7 +115,11 @@ function updateLiveState(store, eventType, payload, timestampIso) {
 
   const existing = sessions.get(sessionKey);
   if (!existing || tsMs >= existing.tsMs) {
-    sessions.set(sessionKey, { type: eventType, tsMs });
+    sessions.set(sessionKey, {
+      type: eventType,
+      tsMs,
+      countryCode: (typeof countryCode === 'string' && countryCode.trim()) ? countryCode.trim().toUpperCase() : null
+    });
   }
   return true;
 }
@@ -121,6 +131,7 @@ function computeLiveFromMemory(store, windowSeconds) {
 
   let active = 0;
   let lastEventAt = null;
+  const byCountry = {};
 
   for (const [key, entry] of sessions.entries()) {
     if (!entry || !Number.isFinite(entry.tsMs)) {
@@ -138,27 +149,115 @@ function computeLiveFromMemory(store, windowSeconds) {
     if (entry.tsMs < cutoffMs) continue;
     if (isCheckoutCompleted(entry.type)) continue;
     active += 1;
+    if (entry.countryCode) {
+      byCountry[entry.countryCode] = (byCountry[entry.countryCode] || 0) + 1;
+    }
   }
 
   return {
     count: active,
-    lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : null
+    lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : null,
+    byCountry
   };
 }
 
-router.post('/shopify', (req, res) => {
+function getClientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim();
+  }
+  const ip = req.socket?.remoteAddress || null;
+  if (!ip) return null;
+  return ip.startsWith('::ffff:') ? ip.slice('::ffff:'.length) : ip;
+}
+
+function getCountryFromHeaders(req) {
+  const headerKeys = [
+    'cf-ipcountry',
+    'x-vercel-ip-country',
+    'x-geo-country',
+    'x-country-code'
+  ];
+  for (const key of headerKeys) {
+    const value = req.headers[key];
+    if (typeof value === 'string' && /^[A-Za-z]{2}$/.test(value.trim())) {
+      return value.trim().toUpperCase();
+    }
+  }
+  return null;
+}
+
+function extractCountryCodeFromPayload(payload) {
+  const candidates = [
+    payload?.countryCode,
+    payload?.country_code,
+    payload?.data?.checkout?.shippingAddress?.countryCode,
+    payload?.data?.checkout?.billingAddress?.countryCode,
+    payload?.checkout?.shippingAddress?.countryCode,
+    payload?.checkout?.billingAddress?.countryCode,
+    payload?.geoipCountryCode
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'string' && /^[A-Za-z]{2}$/.test(value.trim())) {
+      return value.trim().toUpperCase();
+    }
+  }
+  return null;
+}
+
+async function lookupCountryCode(ip) {
+  if (!ip || typeof ip !== 'string') return null;
+  const now = Date.now();
+  const cached = geoIpCache.get(ip);
+  if (cached && cached.expiresAtMs > now) return cached.countryCode;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GEOIP_TIMEOUT_MS);
+
+  try {
+    // ipapi.co returns plain text country code at /country/
+    const res = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/country/`, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'virona-dashboard/geoip' }
+    });
+    if (!res.ok) return null;
+    const text = (await res.text()).trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(text)) return null;
+    geoIpCache.set(ip, { countryCode: text, expiresAtMs: now + GEOIP_CACHE_TTL_MS });
+    return text;
+  } catch (error) {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+router.post('/shopify', async (req, res) => {
   try {
     const payload = req.body || {};
     const store = resolveStore(payload);
     const type = normalizeEventType(payload);
     const ts = normalizeEventTimestamp(payload);
 
+    // Best-effort GeoIP enrichment: prefer explicit checkout address country (when available),
+    // then edge-provided headers, then IP-based lookup.
+    const explicitCountry = extractCountryCodeFromPayload(payload);
+    const headerCountry = explicitCountry ? null : getCountryFromHeaders(req);
+    const ip = (explicitCountry || headerCountry) ? null : getClientIp(req);
+
+    // NOTE: We don't persist raw IP. Only the derived country code (if found).
+    // We keep the live state update synchronous; GeoIP happens in a microtask below.
+    const countryCode = explicitCountry || headerCountry || (ip ? await lookupCountryCode(ip) : null);
+
     // Always update the live in-memory counter (even if DB writes fail).
-    updateLiveState(store, type, payload, ts);
+    updateLiveState(store, type, payload, ts, countryCode);
 
     // Best-effort DB write (optional; useful for later analysis).
     try {
       const db = getDb();
+      if (countryCode && !payload.geoipCountryCode) {
+        payload.geoipCountryCode = countryCode;
+      }
       db.prepare(`
         INSERT INTO shopify_pixel_events (store, event_type, event_ts, payload_json)
         VALUES (?, ?, ?, ?)
@@ -219,6 +318,7 @@ router.get('/shopify/live', (req, res) => {
       success: true,
       store,
       count: finalMem.count,
+      byCountry: finalMem.byCountry,
       windowSeconds,
       updatedAt: new Date().toISOString(),
       lastEventAt: finalMem.lastEventAt,
