@@ -5,6 +5,21 @@ const router = express.Router();
 
 const DEFAULT_WINDOW_SECONDS = 180;
 const MAX_WINDOW_SECONDS = 1800;
+const LIVE_STATE_GC_MULTIPLIER = 6; // keep some buffer beyond the visible window
+
+// In-memory live state (fast + works even if DB is read-only / unavailable).
+// Structure: store -> sessionKey -> { type, tsMs }
+const liveSessionsByStore = new Map();
+
+function getStoreLiveMap(store) {
+  const key = store || 'shawq';
+  let map = liveSessionsByStore.get(key);
+  if (!map) {
+    map = new Map();
+    liveSessionsByStore.set(key, map);
+  }
+  return map;
+}
 
 function resolveStore(payload) {
   const host = payload?.context?.document?.location?.host || payload?.context?.document?.location?.hostname;
@@ -79,18 +94,79 @@ function isCheckoutCompleted(eventType = '') {
   return String(eventType).toLowerCase() === 'checkout_completed';
 }
 
+function updateLiveState(store, eventType, payload, timestampIso) {
+  if (!isCheckoutRelated(eventType)) return false;
+  const key = extractCheckoutKey(payload);
+  if (!key) return false;
+  const tsMs = Date.parse(timestampIso) || Date.now();
+  const sessions = getStoreLiveMap(store);
+  const sessionKey = String(key);
+
+  if (isCheckoutCompleted(eventType)) {
+    sessions.delete(sessionKey);
+    return true;
+  }
+
+  const existing = sessions.get(sessionKey);
+  if (!existing || tsMs >= existing.tsMs) {
+    sessions.set(sessionKey, { type: eventType, tsMs });
+  }
+  return true;
+}
+
+function computeLiveFromMemory(store, windowSeconds) {
+  const sessions = getStoreLiveMap(store);
+  const cutoffMs = Date.now() - windowSeconds * 1000;
+  const gcCutoffMs = Date.now() - windowSeconds * 1000 * LIVE_STATE_GC_MULTIPLIER;
+
+  let active = 0;
+  let lastEventAt = null;
+
+  for (const [key, entry] of sessions.entries()) {
+    if (!entry || !Number.isFinite(entry.tsMs)) {
+      sessions.delete(key);
+      continue;
+    }
+
+    if (entry.tsMs < gcCutoffMs) {
+      sessions.delete(key);
+      continue;
+    }
+
+    if (!lastEventAt || entry.tsMs > lastEventAt) lastEventAt = entry.tsMs;
+
+    if (entry.tsMs < cutoffMs) continue;
+    if (isCheckoutCompleted(entry.type)) continue;
+    active += 1;
+  }
+
+  return {
+    count: active,
+    lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : null
+  };
+}
+
 router.post('/shopify', (req, res) => {
   try {
     const payload = req.body || {};
-    const db = getDb();
     const store = resolveStore(payload);
     const type = normalizeEventType(payload);
     const ts = normalizeEventTimestamp(payload);
 
-    db.prepare(`
-      INSERT INTO shopify_pixel_events (store, event_type, event_ts, payload_json)
-      VALUES (?, ?, ?, ?)
-    `).run(store, type, ts, JSON.stringify(payload));
+    // Always update the live in-memory counter (even if DB writes fail).
+    updateLiveState(store, type, payload, ts);
+
+    // Best-effort DB write (optional; useful for later analysis).
+    try {
+      const db = getDb();
+      db.prepare(`
+        INSERT INTO shopify_pixel_events (store, event_type, event_ts, payload_json)
+        VALUES (?, ?, ?, ?)
+      `).run(store, type, ts, JSON.stringify(payload));
+    } catch (dbError) {
+      // Don't break live tracking if DB is unavailable/read-only.
+      console.warn('[Pixels] Shopify DB insert failed:', dbError?.message || dbError);
+    }
 
     res.json({ success: true });
   } catch (error) {
@@ -110,51 +186,43 @@ router.get('/shopify/live', (req, res) => {
     const requestedWindow = parseInt(req.query.windowSeconds, 10);
     const baseWindow = Number.isFinite(requestedWindow) ? requestedWindow : DEFAULT_WINDOW_SECONDS;
     const windowSeconds = Math.min(Math.max(baseWindow, 30), MAX_WINDOW_SECONDS);
-    const db = getDb();
-    const rows = db.prepare(`
-      SELECT event_type, event_ts, created_at, payload_json
-      FROM shopify_pixel_events
-      WHERE store = ? AND created_at >= datetime('now', ?)
-    `).all(store, `-${windowSeconds} seconds`);
+    const mem = computeLiveFromMemory(store, windowSeconds);
+    const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
+    let dbDegraded = false;
 
-    const sessions = new Map();
-    let lastEventAt = null;
-    const cutoffMs = Date.now() - windowSeconds * 1000;
+    // Optional DB-backed reconciliation: if memory has nothing yet (fresh deploy),
+    // try to bootstrap the counter from the last window of DB events.
+    if (mem.count === 0 && wantsDebug) {
+      try {
+        const db = getDb();
+        const rows = db.prepare(`
+          SELECT event_type, event_ts, created_at, payload_json
+          FROM shopify_pixel_events
+          WHERE store = ? AND created_at >= datetime('now', ?)
+        `).all(store, `-${windowSeconds} seconds`);
 
-    for (const row of rows) {
-      const eventType = row.event_type || 'unknown';
-      if (!isCheckoutRelated(eventType)) continue;
-      const payload = safeJsonParse(row.payload_json) || {};
-      const key = extractCheckoutKey(payload);
-      if (!key) continue;
-      const tsMs =
-        parseSqliteTimestamp(row.created_at) ||
-        parseSqliteTimestamp(row.event_ts) ||
-        parseSqliteTimestamp(payload?.timestamp);
-      if (!Number.isFinite(tsMs)) continue;
-
-      const existing = sessions.get(key);
-      if (!existing || tsMs >= existing.tsMs) {
-        sessions.set(key, { type: eventType, tsMs });
+        for (const row of rows) {
+          const eventType = row.event_type || 'unknown';
+          const payload = safeJsonParse(row.payload_json) || {};
+          const tsIso = row.event_ts || row.created_at || payload?.timestamp || new Date().toISOString();
+          updateLiveState(store, eventType, payload, tsIso);
+        }
+      } catch (dbError) {
+        dbDegraded = true;
+        console.warn('[Pixels] Shopify DB read failed:', dbError?.message || dbError);
       }
-
-      if (!lastEventAt || tsMs > lastEventAt) lastEventAt = tsMs;
     }
 
-    let active = 0;
-    for (const entry of sessions.values()) {
-      if (entry.tsMs < cutoffMs) continue;
-      if (isCheckoutCompleted(entry.type)) continue;
-      active += 1;
-    }
+    const finalMem = computeLiveFromMemory(store, windowSeconds);
 
     res.json({
       success: true,
       store,
-      count: active,
+      count: finalMem.count,
       windowSeconds,
       updatedAt: new Date().toISOString(),
-      lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : null
+      lastEventAt: finalMem.lastEventAt,
+      ...(wantsDebug ? { degraded: dbDegraded, memorySize: getStoreLiveMap(store).size } : {})
     });
   } catch (error) {
     const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
