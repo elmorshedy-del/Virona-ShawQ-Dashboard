@@ -28,9 +28,15 @@ export default function LiveCheckoutIndicator({
     const fetchLive = async (initial = false) => {
       if (initial) setStatus('loading');
       const url = buildEndpoint(store, windowSeconds);
+      let requestId = null;
       try {
         const res = await fetch(url, { cache: 'no-store' });
         const contentType = res.headers.get('content-type') || '';
+        requestId =
+          res.headers.get('x-railway-request-id') ||
+          res.headers.get('x-request-id') ||
+          res.headers.get('x-amzn-trace-id') ||
+          null;
         const raw = await res.text();
         const snippet = raw.slice(0, 220);
 
@@ -47,8 +53,8 @@ export default function LiveCheckoutIndicator({
           const apiMessage = (data && (data.error || data.message)) ? (data.error || data.message) : null;
           throw new Error(
             apiMessage
-              ? `HTTP ${res.status}: ${apiMessage}`
-              : `HTTP ${res.status} (non-JSON: ${contentType}): ${snippet}`
+              ? `HTTP ${res.status}${requestId ? ` [${requestId}]` : ''}: ${apiMessage}`
+              : `HTTP ${res.status}${requestId ? ` [${requestId}]` : ''} (non-JSON: ${contentType}): ${snippet}`
           );
         }
 
@@ -68,6 +74,7 @@ export default function LiveCheckoutIndicator({
           url,
           store,
           windowSeconds,
+          requestId,
           error
         });
         setStatus('error');

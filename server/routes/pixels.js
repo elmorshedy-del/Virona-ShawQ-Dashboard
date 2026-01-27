@@ -94,8 +94,13 @@ router.post('/shopify', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('[Pixels] Shopify error:', error.message);
-    res.status(500).json({ success: false, error: 'Failed to record event' });
+    const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
+    console.error('[Pixels] Shopify error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to record event',
+      ...(wantsDebug ? { details: error?.message || String(error) } : {})
+    });
   }
 });
 
@@ -152,8 +157,13 @@ router.get('/shopify/live', (req, res) => {
       lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : null
     });
   } catch (error) {
-    console.error('[Pixels] Shopify live error:', error.message);
-    res.status(500).json({ success: false, error: 'Failed to compute live checkouts' });
+    const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
+    console.error('[Pixels] Shopify live error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to compute live checkouts',
+      ...(wantsDebug ? { details: error?.message || String(error) } : {})
+    });
   }
 });
 
