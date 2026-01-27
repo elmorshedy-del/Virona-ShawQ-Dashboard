@@ -3216,7 +3216,7 @@ function DashboardTab({
         spend: totalSpend / dayCount
       };
     };
-
+    
     if (lastBucketIncomplete && bucketExpectedEnd && lastIndex > 0) {
       const bucketStart = parseLocalDate(lastPoint.bucketStartDate);
       const bucketEnd = parseLocalDate(bucketExpectedEnd);
