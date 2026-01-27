@@ -2896,7 +2896,16 @@ function DashboardTab({
         const projected = level + phi * trend;
         return Math.max(avg * 0.5, projected);
       };
-
+      
+      console.log('DEBUG pace:', {
+        valuesOrders: values.orders,
+        valuesLen: values.orders.length,
+        dailyMapSize: dailyMap?.size,
+        dailyMapKeys: dailyMap ? Array.from(dailyMap.keys()).slice(0, 10) : [],
+        today: today,
+        sampleDayKey: getLocalDateString(new Date(today.getTime() - 86400000))
+      });
+  
       return {
         orders: holtPace(values.orders),
         revenue: holtPace(values.revenue),
