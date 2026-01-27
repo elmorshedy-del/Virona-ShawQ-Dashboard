@@ -177,6 +177,7 @@ export default function SessionIntelligenceTab({ store }) {
   const latestEventAt = events?.[0]?.created_at || null;
 
   const abandonAfterHours = overview?.abandonAfterHours ?? 24;
+  const checkoutDropMinutes = overview?.checkoutDropMinutes ?? 30;
   const abandonCutoffMs = Date.now() - abandonAfterHours * 60 * 60 * 1000;
 
   const abandonedSessions = useMemo(() => {
@@ -230,9 +231,9 @@ export default function SessionIntelligenceTab({ store }) {
         <div className="si-title">
           <h2>Session Intelligence</h2>
           <p>
-            Stripe‑indigo light. Raw events auto‑delete after{' '}
-            <strong>{overview?.retentionHours ?? 72}h</strong>. Drop‑offs = last checkout step seen before{' '}
-            <strong>{overview?.abandonAfterHours ?? 24}h</strong> with no purchase.
+            Stripe‑indigo light. Raw events auto‑delete after <strong>{overview?.retentionHours ?? 72}h</strong>. Checkout
+            drop‑offs = last step before <strong>{checkoutDropMinutes}m</strong> inactivity (no purchase). ATC abandoned =
+            <strong> {abandonAfterHours}h</strong> after ATC (no purchase).
           </p>
         </div>
 
@@ -266,7 +267,9 @@ export default function SessionIntelligenceTab({ store }) {
             Add to cart (24h)
           </div>
           <div className="si-metric-value">{overview?.kpis?.atc24h ?? '—'}</div>
-          <div className="si-metric-sub">From pixel + theme clicks</div>
+          <div className="si-metric-sub">
+            Sessions • Events: {overview?.kpis?.atcEvents24h ?? '—'}
+          </div>
         </div>
 
         <div className="si-card">
@@ -275,7 +278,9 @@ export default function SessionIntelligenceTab({ store }) {
             Checkout started (24h)
           </div>
           <div className="si-metric-value">{overview?.kpis?.checkoutStarted24h ?? '—'}</div>
-          <div className="si-metric-sub">Seen checkout_started</div>
+          <div className="si-metric-sub">
+            Sessions • Events: {overview?.kpis?.checkoutStartedEvents24h ?? '—'}
+          </div>
         </div>
 
         <div className="si-card">
@@ -284,7 +289,9 @@ export default function SessionIntelligenceTab({ store }) {
             Purchases (24h)
           </div>
           <div className="si-metric-value">{overview?.kpis?.purchases24h ?? '—'}</div>
-          <div className="si-metric-sub">Seen checkout_completed</div>
+          <div className="si-metric-sub">
+            Sessions • Events: {overview?.kpis?.purchasesEvents24h ?? '—'}
+          </div>
         </div>
 
         <div className="si-card">
@@ -301,11 +308,15 @@ export default function SessionIntelligenceTab({ store }) {
         <div className="si-card">
           <div className="si-card-title">
             <h3>Checkout drop‑offs (no purchase)</h3>
-            <span className="si-muted">Last step observed</span>
+            <span className="si-muted">
+              Dropped: {overview?.kpis?.checkoutDropped24h ?? 0} • In progress: {overview?.kpis?.checkoutInProgress ?? 0}
+            </span>
           </div>
 
           {dropoffChips.length === 0 ? (
-            <div className="si-empty">No drop‑offs detected yet (or waiting for the 24h window).</div>
+            <div className="si-empty">
+              No dropped checkouts yet (based on {checkoutDropMinutes}m inactivity).
+            </div>
           ) : (
             <div className="si-steps">
               {dropoffChips.map(([step, count]) => (
