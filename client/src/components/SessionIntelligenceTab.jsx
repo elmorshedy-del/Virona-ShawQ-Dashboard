@@ -65,6 +65,31 @@ function normalizeStepLabel(step) {
   return STEP_LABELS[key] || key;
 }
 
+function fnv1a32(input) {
+  const str = (input || '').toString();
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < str.length; i += 1) {
+    hash ^= str.charCodeAt(i);
+    hash = (hash + (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function toCode(prefix, raw, width = 6) {
+  if (!raw) return '—';
+  const code = fnv1a32(raw).toString(36).toUpperCase();
+  const padded = code.padStart(width, '0');
+  return `${prefix}-${padded.slice(-width)}`;
+}
+
+function userLabel(row) {
+  if (!row || typeof row !== 'object') return '—';
+  const clientId = row.client_id || row.clientId || null;
+  if (clientId) return toCode('U', clientId, 6);
+  const sessionId = row.session_id || row.sessionId || null;
+  return sessionId ? toCode('A', sessionId, 6) : '—';
+}
+
 export default function SessionIntelligenceTab({ store }) {
   const storeId = store?.id || 'shawq';
 
@@ -351,35 +376,42 @@ export default function SessionIntelligenceTab({ store }) {
         {abandonedSessions.length === 0 ? (
           <div className="si-empty">None yet. Once users add to cart and don’t purchase for {abandonAfterHours}h, they appear here.</div>
         ) : (
-          <table className="si-event-table">
-            <thead>
-              <tr>
-                <th>Last seen</th>
-                <th>Cart (last)</th>
-                <th>Drop‑off step</th>
-                <th>ATC</th>
-                <th>Session</th>
-              </tr>
-            </thead>
-            <tbody>
-              {abandonedSessions.map((s) => (
-                <tr key={s.session_id}>
-                  <td>{timeAgo(s.last_event_at || s.updated_at || s.created_at)}</td>
-                  <td title={getCartSummary(s.last_cart_json)}>{getCartSummary(s.last_cart_json)}</td>
+	          <table className="si-event-table">
+	            <thead>
+	              <tr>
+	                <th>Last seen</th>
+	                <th>Cart (last)</th>
+	                <th>Drop‑off step</th>
+	                <th>ATC</th>
+	                <th>User</th>
+	              </tr>
+	            </thead>
+	            <tbody>
+	              {abandonedSessions.map((s) => (
+	                <tr key={s.session_id}>
+	                  <td>{timeAgo(s.last_event_at || s.updated_at || s.created_at)}</td>
+	                  <td title={getCartSummary(s.last_cart_json)}>{getCartSummary(s.last_cart_json)}</td>
                   <td>
                     {s.last_checkout_step ? (
                       <span className="si-badge">{normalizeStepLabel(s.last_checkout_step)}</span>
                     ) : (
                       <span className="si-muted">Pre‑checkout</span>
                     )}
-                  </td>
-                  <td>{timeAgo(s.atc_at)}</td>
-                  <td title={s.session_id || ''}>{(s.session_id || '—').slice(0, 16)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+	                  </td>
+	                  <td>{timeAgo(s.atc_at)}</td>
+	                  <td
+	                    title={[
+	                      s.client_id ? `client_id: ${s.client_id}` : null,
+	                      s.session_id ? `session_id: ${s.session_id}` : null
+	                    ].filter(Boolean).join('\n')}
+	                  >
+	                    {userLabel(s)}
+	                  </td>
+	                </tr>
+	              ))}
+	            </tbody>
+	          </table>
+	        )}
       </div>
 
       <div className="si-sanity">
@@ -414,44 +446,51 @@ export default function SessionIntelligenceTab({ store }) {
                 <span className="si-badge">checkout_started</span>.
               </div>
             ) : (
-              <table className="si-event-table">
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Event</th>
-                    <th>Path</th>
-                    <th>Checkout step</th>
-                    <th>Session</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {events.slice(0, 30).map((event) => (
-                    <tr key={event.id}>
-                      <td>{timeAgo(event.created_at || event.event_ts)}</td>
+	              <table className="si-event-table">
+	                <thead>
+	                  <tr>
+	                    <th>When</th>
+	                    <th>Event</th>
+	                    <th>Path</th>
+	                    <th>Checkout step</th>
+	                    <th>User</th>
+	                  </tr>
+	                </thead>
+	                <tbody>
+	                  {events.slice(0, 30).map((event) => (
+	                    <tr key={event.id}>
+	                      <td>{timeAgo(event.created_at || event.event_ts)}</td>
                       <td>
                         <span className="si-event-name">
                           <Activity size={14} />
                           {event.event_name}
-                        </span>
-                      </td>
-                      <td title={event.page_path || ''}>{event.page_path || '—'}</td>
-                      <td>
-                        {event.checkout_step ? (
-                          <span className="si-badge">{normalizeStepLabel(event.checkout_step)}</span>
-                        ) : (
+	                        </span>
+	                      </td>
+	                      <td title={event.page_url || event.page_path || ''}>
+	                        {event.page_path || event.page_url || '—'}
+	                      </td>
+	                      <td>
+	                        {event.checkout_step ? (
+	                          <span className="si-badge">{normalizeStepLabel(event.checkout_step)}</span>
+	                        ) : (
                           '—'
                         )}
                       </td>
-                      <td title={event.session_id || ''}>
-                        {(event.session_id || '—').slice(0, 16)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
+	                      <td
+	                        title={[
+	                          event.client_id ? `client_id: ${event.client_id}` : null,
+	                          event.session_id ? `session_id: ${event.session_id}` : null
+	                        ].filter(Boolean).join('\n')}
+	                      >
+	                        {userLabel(event)}
+	                      </td>
+	                    </tr>
+	                  ))}
+	                </tbody>
+	              </table>
+	            )}
+	          </div>
+	        )}
       </div>
     </div>
   );

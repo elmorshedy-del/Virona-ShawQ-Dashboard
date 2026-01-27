@@ -106,13 +106,20 @@ function normalizeCheckoutStep(raw) {
 }
 
 function inferDeviceType(payload) {
+  const envelope = getEventEnvelope(payload);
   const ua =
     payload?.context?.navigator?.userAgent ||
     payload?.context?.navigator?.user_agent ||
     payload?.context?.userAgent ||
     payload?.context?.user_agent ||
+    envelope?.context?.navigator?.userAgent ||
+    envelope?.context?.navigator?.user_agent ||
+    envelope?.context?.userAgent ||
+    envelope?.context?.user_agent ||
     payload?.userAgent ||
     payload?.user_agent ||
+    envelope?.userAgent ||
+    envelope?.user_agent ||
     '';
 
   const agent = safeString(ua);
@@ -123,12 +130,18 @@ function inferDeviceType(payload) {
 }
 
 function extractCountryCode(payload) {
+  const envelope = getEventEnvelope(payload);
   const candidates = [
     payload?.geoipCountryCode,
     payload?.countryCode,
     payload?.country_code,
     payload?.data?.checkout?.shippingAddress?.countryCode,
-    payload?.data?.checkout?.billingAddress?.countryCode
+    payload?.data?.checkout?.billingAddress?.countryCode,
+    envelope?.geoipCountryCode,
+    envelope?.countryCode,
+    envelope?.country_code,
+    envelope?.data?.checkout?.shippingAddress?.countryCode,
+    envelope?.data?.checkout?.billingAddress?.countryCode
   ];
   for (const value of candidates) {
     if (typeof value === 'string' && /^[A-Za-z]{2}$/.test(value.trim())) {
@@ -205,13 +218,20 @@ function extractCheckoutTokenFromPath(pathname) {
 }
 
 function extractLocation(payload) {
+  const envelope = getEventEnvelope(payload);
   const candidates = [
     payload?.context?.document?.location?.href,
     payload?.context?.document?.location?.url,
     payload?.context?.document?.location?.pathname,
+    envelope?.context?.document?.location?.href,
+    envelope?.context?.document?.location?.url,
+    envelope?.context?.document?.location?.pathname,
     payload?.page_url,
     payload?.pageUrl,
-    payload?.url
+    payload?.url,
+    envelope?.page_url,
+    envelope?.pageUrl,
+    envelope?.url
   ];
 
   for (const value of candidates) {
@@ -253,18 +273,27 @@ function extractLocation(payload) {
 }
 
 function extractSessionIdentifiers(payload) {
+  const envelope = getEventEnvelope(payload);
   const sessionCandidates = [
     payload?.context?.sessionId,
     payload?.context?.session_id,
     payload?.sessionId,
-    payload?.session_id
+    payload?.session_id,
+    envelope?.context?.sessionId,
+    envelope?.context?.session_id,
+    envelope?.sessionId,
+    envelope?.session_id
   ];
 
   const clientCandidates = [
     payload?.context?.clientId,
     payload?.context?.client_id,
     payload?.clientId,
-    payload?.client_id
+    payload?.client_id,
+    envelope?.context?.clientId,
+    envelope?.context?.client_id,
+    envelope?.clientId,
+    envelope?.client_id
   ];
 
   let sessionId = null;
