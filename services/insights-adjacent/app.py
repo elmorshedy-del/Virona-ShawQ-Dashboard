@@ -95,8 +95,10 @@ def predict(payload: AdjacentPayload):
 
     adj = build_graph(edges, len(items))
     model = GraphSAGE(len(items))
+    # Model should be loaded or initialized globally and reused for inference.
+    # If training is required per request, consider an asynchronous background task or caching mechanism.
+    # For demonstration, keeping it here, but it's a critical performance concern.
     with torch.no_grad():
-        embeds = model(adj)
 
     # graph scores = node degree weighted by embedding norm
     degrees = adj.sum(dim=1).numpy()
