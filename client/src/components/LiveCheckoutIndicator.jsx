@@ -19,6 +19,7 @@ export default function LiveCheckoutIndicator({
   pollMs = DEFAULT_POLL_MS
 }) {
   const [count, setCount] = useState(null);
+  const [byCountry, setByCountry] = useState(null);
   const [status, setStatus] = useState('idle');
 
   useEffect(() => {
@@ -75,6 +76,7 @@ export default function LiveCheckoutIndicator({
         }
         if (!active) return;
         setCount(Number.isFinite(data.count) ? data.count : 0);
+        setByCountry(data.byCountry && typeof data.byCountry === 'object' ? data.byCountry : null);
         setStatus('ok');
       } catch (error) {
         if (!active) return;
@@ -101,6 +103,20 @@ export default function LiveCheckoutIndicator({
 
   const hasCount = Number.isFinite(count);
   const displayCount = hasCount ? count : '--';
+  const countryEntries = byCountry && typeof byCountry === 'object'
+    ? Object.entries(byCountry).filter(([, v]) => Number.isFinite(v) && v > 0)
+    : [];
+  countryEntries.sort((a, b) => (b[1] || 0) - (a[1] || 0));
+  const countryInline = (() => {
+    if (!hasCount || count <= 0 || countryEntries.length === 0) return null;
+    const top = countryEntries.slice(0, 2).map(([code, n]) => `${code} ${n}`);
+    const rest = countryEntries.length - top.length;
+    return rest > 0 ? `${top.join(' • ')} • +${rest}` : top.join(' • ');
+  })();
+  const countryTooltip = (() => {
+    if (!hasCount || count <= 0 || countryEntries.length === 0) return null;
+    return countryEntries.map(([code, n]) => `${code}: ${n}`).join(', ');
+  })();
   const dotClass = hasCount && count > 0
     ? 'live-dot'
     : status === 'error'
@@ -110,11 +126,17 @@ export default function LiveCheckoutIndicator({
   return (
     <div
       className="flex items-center gap-2 px-3 py-2 bg-gray-100 rounded-lg text-sm font-medium text-gray-700"
-      title={`Live checkouts (last ${Math.round(windowSeconds / 60)} min)`}
+      title={
+        `Live checkouts (last ${Math.round(windowSeconds / 60)} min)` +
+        (countryTooltip ? `\nBy country: ${countryTooltip}` : '')
+      }
     >
       <span className={dotClass} />
       <span className="tabular-nums text-gray-900">{displayCount}</span>
       <span className="text-gray-500">{formatLabel(hasCount ? count : 0)}</span>
+      {countryInline && (
+        <span className="text-[11px] text-gray-500 font-normal">{countryInline}</span>
+      )}
     </div>
   );
 }
