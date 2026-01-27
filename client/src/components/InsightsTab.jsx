@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   ArrowDownRight,
@@ -12,6 +12,7 @@ import {
   TrendingUp,
   Users,
   Wallet,
+  X,
   Zap
 } from 'lucide-react';
 import {
@@ -25,7 +26,7 @@ import {
   YAxis,
   ZAxis
 } from 'recharts';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import './InsightsTab.css';
 
 const INSIGHT_META = {
@@ -68,6 +69,34 @@ const INSIGHT_META = {
 
 const easeOut = [0.22, 1, 0.36, 1];
 
+const CARD_SUMMARIES = {
+  persona: 'Creative guidance by segment.',
+  geo: 'New markets worth testing.',
+  adjacent: 'Products to add next.',
+  peaks: 'Upcoming demand shifts.',
+  anomalies: 'Unexpected spikes or drops.',
+  pricing: 'Price band moves to test.'
+};
+
+const BUDGET_SUMMARIES = {
+  startPlan: 'How to start budgets in new geos.',
+  reallocation: 'Where to shift spend now.',
+  incrementality: 'Scale vs cut by true lift.'
+};
+
+const SECTION_INDEX = [
+  { id: 'insight-summary', title: 'Executive Summary', summary: 'Key drivers and risks.' },
+  { id: 'insight-signal-fusion', title: 'Signal Fusion', summary: 'Confidence from combined signals.' },
+  { id: 'insight-opportunity-radar', title: 'Opportunity Radar', summary: 'Demand vs competition by geo.' },
+  { id: 'insight-narrative', title: 'Narrative Brief', summary: 'Weekly decision memo.' },
+  { id: 'insight-persona-heatmap', title: 'Persona Heatmap', summary: 'Segments vs geos.' },
+  { id: 'insight-demand-simulation', title: 'Demand Simulation', summary: 'Price vs demand curve.' },
+  { id: 'insight-competitor-motion', title: 'Competitor Motion', summary: 'What changed in market.' },
+  { id: 'insight-action-feed', title: 'Action Feed', summary: 'Most actionable moves.' },
+  { id: 'insight-budget-guidance', title: 'Budget Guidance', summary: 'Start, shift, scale.' },
+  { id: 'insight-launch-readiness', title: 'Launch Readiness', summary: 'Operational checklist.' }
+];
+
 const confidenceLabel = (value) => {
   if (value >= 0.75) return 'High';
   if (value >= 0.5) return 'Medium';
@@ -75,6 +104,14 @@ const confidenceLabel = (value) => {
 };
 
 const getGaugeDegrees = (value) => `${Math.round(Math.max(0, Math.min(1, value)) * 360)}deg`;
+
+const slugify = (value = '') =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+
+const getAnchorId = (value) => `insight-${slugify(value || 'card')}`;
 
 const createBaselinePayload = (store) => {
   const storeName = store?.name || 'Store';
@@ -304,13 +341,14 @@ function ConfidencePill({ value }) {
   );
 }
 
-function InsightCard({ card }) {
+function InsightCard({ card, anchorId, flash, onAsk }) {
   const meta = INSIGHT_META[card.type] || INSIGHT_META.persona;
   const Icon = meta.icon;
 
   return (
     <motion.div
-      className="insights-card-border"
+      id={anchorId}
+      className={`insights-card-border insights-anchor ${flash ? 'insights-flash' : ''}`}
       whileHover={{ y: -4 }}
       transition={{ duration: 0.25, ease: easeOut }}
     >
@@ -325,7 +363,13 @@ function InsightCard({ card }) {
               <div className="mt-2 text-base font-semibold text-slate-900">{card.title}</div>
             </div>
           </div>
-          <ConfidencePill value={card.confidence} />
+          <div className="flex items-center gap-2">
+            <button type="button" className="insights-ask" aria-label="Ask AI" title="Ask AI" onClick={() => onAsk?.(card, meta)}>
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>Ask AI</span>
+            </button>
+            <ConfidencePill value={card.confidence} />
+          </div>
         </div>
 
         <div className="mt-4 space-y-3 text-sm text-slate-600">
@@ -361,13 +405,19 @@ function InsightCard({ card }) {
   );
 }
 
-function BudgetCard({ card }) {
+function BudgetCard({ card, anchorId, flash, onAsk }) {
   return (
-    <div className="insights-card-border">
+    <div id={anchorId} className={`insights-card-border insights-anchor ${flash ? 'insights-flash' : ''}`}>
       <div className="insights-card p-4">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold text-slate-900">{card.title}</div>
-          <ConfidencePill value={card.confidence} />
+          <div className="flex items-center gap-2">
+            <button type="button" className="insights-ask" aria-label="Ask AI" title="Ask AI" onClick={() => onAsk?.(card, { label: 'Budget Guidance', accent: '#14b8a6' })}>
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>Ask AI</span>
+            </button>
+            <ConfidencePill value={card.confidence} />
+          </div>
         </div>
         <div className="mt-3 text-sm text-slate-600">{card.finding}</div>
         <div className="mt-3 text-sm font-semibold text-slate-900">Action: {card.action}</div>
@@ -394,6 +444,30 @@ export default function InsightsTab({ store, formatCurrency }) {
   const [payload, setPayload] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [flashId, setFlashId] = useState('');
+  const flashTimer = useRef(null);
+  const [askContext, setAskContext] = useState(null);
+  const [askLoading, setAskLoading] = useState(false);
+  const [askError, setAskError] = useState('');
+
+  useEffect(() => {
+    return () => {
+      if (flashTimer.current) {
+        clearTimeout(flashTimer.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!askContext) return;
+    const handleKey = (event) => {
+      if (event.key === 'Escape') {
+        setAskContext(null);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [askContext]);
 
   useEffect(() => {
     if (!store?.id) return;
@@ -416,6 +490,91 @@ export default function InsightsTab({ store, formatCurrency }) {
   }, [store?.id]);
 
   const insights = useMemo(() => payload || createBaselinePayload(store), [payload, store]);
+  const navItems = useMemo(() => {
+    if (!insights) return [];
+    const entries = (insights.cards || []).map((card) => ({
+      id: getAnchorId(card.id || card.type || card.title),
+      title: card.title,
+      summary: CARD_SUMMARIES[card.type] || 'Actionable insight.'
+    }));
+    const budget = insights.budget || {};
+    const budgetEntries = ['startPlan', 'reallocation', 'incrementality']
+      .filter((key) => budget[key])
+      .map((key) => ({
+        id: getAnchorId(`budget-${key}`),
+        title: budget[key].title,
+        summary: BUDGET_SUMMARIES[key] || 'Budget guidance.'
+      }));
+    return [...SECTION_INDEX, ...entries, ...budgetEntries];
+  }, [insights]);
+
+  const buildAskPrompt = (card, meta) => {
+    const storeName = store?.name || store?.id || 'store';
+    const signals = (card?.signals || card?.sources || []).join(', ') || 'internal performance signals';
+    const models = (card?.models || []).map((model) => model.name).join(', ') || 'ensemble heuristics';
+    return `You are an insights analyst for ${storeName}. Explain the insight in plain language but scientific tone (max 120 words). Include: what changed, why it matters, and the action. Add one sentence about confidence and limits. No bullet points.\n\nTitle: ${card?.title}\nFinding: ${card?.finding}\nWhy: ${card?.why}\nAction: ${card?.action}\nConfidence: ${Math.round((card?.confidence || 0) * 100)}%\nSignals: ${signals}\nModels: ${models}`;
+  };
+
+  const handleJump = (targetId) => {
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setFlashId(targetId);
+    if (flashTimer.current) {
+      clearTimeout(flashTimer.current);
+    }
+    flashTimer.current = setTimeout(() => setFlashId(''), 1400);
+  };
+
+  const handleAskOpen = async (card, meta = {}) => {
+    if (!card) return;
+    const label = meta.label || 'Insight';
+    const accent = meta.accent || '#38bdf8';
+    const signals = card.signals || card.sources || [];
+    const logic = card.logic || card.why || card.finding || 'This insight comes from recent performance shifts plus market signals.';
+    const limits = card.limits || 'Accuracy depends on tracking coverage, sample size, and signal freshness.';
+    setAskContext({
+      ...card,
+      label,
+      accent,
+      signals,
+      logic,
+      limits,
+      response: 'Generating explanation...'
+    });
+    setAskLoading(true);
+    setAskError('');
+
+    try {
+      const question = buildAskPrompt(card, meta);
+      const res = await fetch('/api/ai/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          store: store?.id || store?.name || 'shawq'
+        })
+      });
+      const data = await res.json();
+      if (!data || data.success === false) {
+        throw new Error(data?.error || 'AI unavailable.');
+      }
+      const answer = data.answer || data.text || 'AI response unavailable.';
+      setAskContext((prev) => (prev ? { ...prev, response: answer } : prev));
+    } catch (error) {
+      const message = error?.message || 'AI unavailable.';
+      setAskError(message);
+      setAskContext((prev) => (prev ? { ...prev, response: 'AI is unavailable. Add an API key to enable Ask AI.' } : prev));
+    } finally {
+      setAskLoading(false);
+    }
+  };
+
+  const handleAskClose = () => {
+    setAskContext(null);
+    setAskLoading(false);
+    setAskError('');
+  };
 
   if (!store) return null;
 
@@ -450,6 +609,23 @@ export default function InsightsTab({ store, formatCurrency }) {
             </div>
           </div>
 
+          {navItems.length > 0 && (
+            <div className="insights-index">
+              {navItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="insights-index-card"
+                  onClick={() => handleJump(item.id)}
+                >
+                  <span className="insights-index-label">See:</span>
+                  <span className="insights-index-title">{item.title}</span>
+                  <span className="insights-index-sub">{item.summary}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           {error && (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
               {error}
@@ -457,7 +633,7 @@ export default function InsightsTab({ store, formatCurrency }) {
           )}
 
           <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
-            <div className="insights-glass p-6">
+            <div id="insight-summary" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-summary' ? 'insights-flash' : ''}`}>
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
                 <Compass className="h-4 w-4" />
                 Executive summary
@@ -491,7 +667,7 @@ export default function InsightsTab({ store, formatCurrency }) {
               </div>
             </div>
 
-            <div className="insights-glass p-6">
+            <div id="insight-signal-fusion" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-signal-fusion' ? 'insights-flash' : ''}`}>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Signal Fusion</div>
@@ -535,7 +711,7 @@ export default function InsightsTab({ store, formatCurrency }) {
           </div>
 
           <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
-            <div className="insights-glass p-6">
+            <div id="insight-opportunity-radar" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-opportunity-radar' ? 'insights-flash' : ''}`}>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Opportunity Radar</div>
@@ -567,7 +743,7 @@ export default function InsightsTab({ store, formatCurrency }) {
               </div>
             </div>
 
-            <div className="insights-glass p-6">
+            <div id="insight-narrative" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-narrative' ? 'insights-flash' : ''}`}>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Narrative brief</div>
@@ -592,7 +768,7 @@ export default function InsightsTab({ store, formatCurrency }) {
           </div>
 
           <div className="grid gap-6 xl:grid-cols-[1fr_1.2fr]">
-            <div className="insights-glass p-6">
+            <div id="insight-persona-heatmap" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-persona-heatmap' ? 'insights-flash' : ''}`}>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Persona heatmap</div>
@@ -631,7 +807,7 @@ export default function InsightsTab({ store, formatCurrency }) {
             </div>
 
             <div className="grid gap-6">
-              <div className="insights-glass p-6">
+              <div id="insight-demand-simulation" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-demand-simulation' ? 'insights-flash' : ''}`}>
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Demand simulation</div>
@@ -652,7 +828,7 @@ export default function InsightsTab({ store, formatCurrency }) {
                 <div className="mt-3 text-xs text-slate-500">Suggested price band near {formatCurrency ? formatCurrency(insights.demandSimulation.bestPrice, 0) : insights.demandSimulation.bestPrice}.</div>
               </div>
 
-              <div className="insights-glass p-6">
+              <div id="insight-competitor-motion" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-competitor-motion' ? 'insights-flash' : ''}`}>
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Competitor motion</div>
@@ -676,7 +852,7 @@ export default function InsightsTab({ store, formatCurrency }) {
             </div>
           </div>
 
-          <div className="insights-glass p-6">
+          <div id="insight-action-feed" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-action-feed' ? 'insights-flash' : ''}`}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Action feed</div>
@@ -685,14 +861,23 @@ export default function InsightsTab({ store, formatCurrency }) {
               <span className="insights-chip">Updated hourly</span>
             </div>
             <div className="mt-6 grid gap-6 lg:grid-cols-2">
-              {insights.cards.map((card) => (
-                <InsightCard key={card.id} card={card} />
-              ))}
+              {insights.cards.map((card) => {
+                const anchorId = getAnchorId(card.id || card.type || card.title);
+                return (
+                  <InsightCard
+                    key={card.id}
+                    card={card}
+                    anchorId={anchorId}
+                    flash={flashId === anchorId}
+                    onAsk={handleAskOpen}
+                  />
+                );
+              })}
             </div>
           </div>
 
           <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
-            <div className="insights-glass p-6">
+            <div id="insight-budget-guidance" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-budget-guidance' ? 'insights-flash' : ''}`}>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Budget guidance</div>
@@ -704,13 +889,24 @@ export default function InsightsTab({ store, formatCurrency }) {
                 </div>
               </div>
               <div className="mt-5 grid gap-4">
-                <BudgetCard card={insights.budget.startPlan} />
-                <BudgetCard card={insights.budget.reallocation} />
-                <BudgetCard card={insights.budget.incrementality} />
+                {['startPlan', 'reallocation', 'incrementality'].map((key) => {
+                  const value = insights.budget[key];
+                  if (!value) return null;
+                  const anchorId = getAnchorId(`budget-${key}`);
+                  return (
+                    <BudgetCard
+                      key={key}
+                      card={value}
+                      anchorId={anchorId}
+                      flash={flashId === anchorId}
+                      onAsk={handleAskOpen}
+                    />
+                  );
+                })}
               </div>
             </div>
 
-            <div className="insights-glass p-6">
+            <div id="insight-launch-readiness" className={`insights-glass insights-anchor p-6 ${flashId === 'insight-launch-readiness' ? 'insights-flash' : ''}`}>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Launch readiness</div>
@@ -739,6 +935,89 @@ export default function InsightsTab({ store, formatCurrency }) {
             </div>
           </div>
         </div>
+
+        <AnimatePresence>
+          {askContext && (
+            <>
+              <motion.div
+                className="insights-ask-backdrop"
+                onClick={handleAskClose}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              />
+              <motion.aside
+                className="insights-ask-drawer"
+                initial={{ x: '100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '100%' }}
+                transition={{ duration: 0.35, ease: easeOut }}
+              >
+                <div className="insights-ask-header">
+                  <div className="insights-ask-title">
+                    <Sparkles className="h-4 w-4" style={{ color: askContext.accent }} />
+                    Ask AI
+                  </div>
+                  <button type="button" className="insights-ask-close" onClick={handleAskClose} aria-label="Close">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="insights-ask-meta">
+                  <span className="insights-chip">{askContext.label}</span>
+                  {askContext.confidence !== undefined && (
+                    <ConfidencePill value={askContext.confidence} />
+                  )}
+                </div>
+
+                <h3 className="mt-3 text-lg font-semibold text-slate-900">{askContext.title}</h3>
+                <p className="mt-2 text-sm text-slate-600">{askContext.finding}</p>
+
+                <div className="insights-ask-block">
+                  <div className="insights-ask-label">AI summary</div>
+                  <div className="text-sm text-slate-700">{askContext.response}</div>
+                  {askLoading && (
+                    <div className="insights-ask-status">Analyzing signals...</div>
+                  )}
+                  {askError && (
+                    <div className="insights-ask-status insights-ask-error">{askError}</div>
+                  )}
+                </div>
+
+                <div className="insights-ask-block">
+                  <div className="insights-ask-label">Signals used</div>
+                  <div className="insights-ask-list">
+                    {(askContext.signals || []).map((signal) => (
+                      <span key={signal} className="insights-chip">{signal}</span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="insights-ask-block">
+                  <div className="insights-ask-label">Models</div>
+                  <div className="space-y-2 text-xs text-slate-600">
+                    {(askContext.models || []).map((model) => (
+                      <div key={model.name} className="rounded-xl border border-slate-200 bg-white/70 p-2">
+                        <div className="font-semibold text-slate-800">{model.name}</div>
+                        <div>{model.description}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="insights-ask-block">
+                  <div className="insights-ask-label">Decision logic</div>
+                  <div className="text-sm text-slate-600">{askContext.logic}</div>
+                </div>
+
+                <div className="insights-ask-block">
+                  <div className="insights-ask-label">Limits</div>
+                  <div className="text-sm text-slate-600">{askContext.limits}</div>
+                </div>
+              </motion.aside>
+            </>
+          )}
+        </AnimatePresence>
 
         {loading && (
           <div className="absolute inset-0 z-20 flex items-center justify-center rounded-[36px] bg-white/60 text-sm text-slate-500 backdrop-blur">

@@ -182,3 +182,205 @@
   background-size: 200% 100%;
   animation: shimmer 6s ease-in-out infinite;
 }
+
+
+.insights-index {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scroll-snap-type: x mandatory;
+}
+
+.insights-index::-webkit-scrollbar {
+  height: 6px;
+}
+
+.insights-index::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
+}
+
+.insights-index-card {
+  min-width: 220px;
+  text-align: left;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(255, 255, 255, 0.8);
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+  scroll-snap-align: start;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.insights-index-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.12);
+}
+
+.insights-index-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: rgba(100, 116, 139, 0.8);
+}
+
+.insights-index-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.insights-index-sub {
+  font-size: 11px;
+  color: rgba(100, 116, 139, 0.85);
+}
+
+.insights-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.7);
+  background: linear-gradient(135deg, rgba(186, 230, 253, 0.7), rgba(224, 231, 255, 0.6));
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f172a;
+  box-shadow: 0 8px 20px rgba(56, 189, 248, 0.25);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.insights-ask:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(56, 189, 248, 0.35);
+}
+
+.insights-flash {
+  animation: flashPulse 1.4s ease;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.6), 0 26px 60px rgba(15, 23, 42, 0.16);
+}
+
+@keyframes flashPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.0), 0 20px 45px rgba(15, 23, 42, 0.12);
+  }
+  35% {
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.75), 0 24px 60px rgba(15, 23, 42, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.0), 0 20px 45px rgba(15, 23, 42, 0.12);
+  }
+}
+
+@media (max-width: 640px) {
+  .insights-ask span {
+    display: none;
+  }
+}
+
+.insights-anchor {
+  scroll-margin-top: 120px;
+}
+
+
+.insights-ask-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.25);
+  backdrop-filter: blur(4px);
+  z-index: 24;
+}
+
+.insights-ask-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: min(420px, 92vw);
+  background: rgba(255, 255, 255, 0.95);
+  border-left: 1px solid rgba(148, 163, 184, 0.4);
+  box-shadow: -30px 0 60px rgba(15, 23, 42, 0.18);
+  padding: 20px 18px 24px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  backdrop-filter: blur(18px);
+}
+
+.insights-ask-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.insights-ask-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.7);
+}
+
+.insights-ask-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.insights-ask-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.insights-ask-block {
+  display: grid;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.4);
+}
+
+.insights-ask-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-weight: 700;
+  color: rgba(100, 116, 139, 0.8);
+}
+
+.insights-ask-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+@media (max-width: 768px) {
+  .insights-ask-drawer {
+    width: 100%;
+    border-left: none;
+  }
+}
+
+
+.insights-ask-status {
+  font-size: 11px;
+  color: rgba(100, 116, 139, 0.9);
+}
+
+.insights-ask-error {
+  color: #ef4444;
+}

@@ -30,6 +30,16 @@ export async function fetchSallaOrders(dateStart, dateEnd) {
           const orderDate = order.date?.date?.split(' ')[0] || order.created_at?.split('T')[0];
           
           if (orderDate >= dateStart && orderDate <= dateEnd) {
+            const lineItems = Array.isArray(order.items) ? order.items.map((item) => ({
+              product_id: item.product_id != null ? item.product_id.toString() : null,
+              variant_id: item.variant_id != null ? item.variant_id.toString() : null,
+              sku: item.sku || item.product_sku || null,
+              name: item.name || item.product_name || item.title || null,
+              quantity: item.quantity || 1,
+              price: parseFloat(item.price || item.amount?.amount || item.total?.amount || 0) || 0,
+              currency: order.currency || 'SAR'
+            })) : [];
+
             orders.push({
               order_id: order.id.toString(),
               date: orderDate,
@@ -44,7 +54,8 @@ export async function fetchSallaOrders(dateStart, dateEnd) {
               items_count: order.items?.length || 1,
               status: order.status?.name || 'completed',
               payment_method: order.payment_method || 'unknown',
-              currency: order.currency || 'SAR'
+              currency: order.currency || 'SAR',
+              line_items: lineItems
             });
           }
         }
@@ -83,6 +94,16 @@ export async function syncSallaOrders() {
       VALUES ('vironax', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    const itemInsertStmt = db.prepare(`
+      INSERT INTO salla_order_items
+      (store, order_id, order_date, product_id, variant_id, sku, name, quantity, price, currency)
+      VALUES ('vironax', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const itemDeleteStmt = db.prepare(`
+      DELETE FROM salla_order_items WHERE store = 'vironax' AND order_id = ?
+    `);
+
     let recordsInserted = 0;
     for (const order of orders) {
       insertStmt.run(
@@ -101,6 +122,24 @@ export async function syncSallaOrders() {
         order.payment_method,
         order.currency
       );
+
+      itemDeleteStmt.run(order.order_id);
+      if (Array.isArray(order.line_items)) {
+        for (const item of order.line_items) {
+          itemInsertStmt.run(
+            order.order_id,
+            order.date,
+            item.product_id,
+            item.variant_id,
+            item.sku,
+            item.name,
+            item.quantity,
+            item.price,
+            item.currency || order.currency
+          );
+        }
+      }
+
       recordsInserted++;
     }
 

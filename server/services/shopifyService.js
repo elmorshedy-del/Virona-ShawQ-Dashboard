@@ -88,6 +88,16 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
           const attribution = extractAttributionAttributes(order.note_attributes);
           const attributionJson = Object.keys(attribution).length ? JSON.stringify(attribution) : null;
 
+          const lineItems = Array.isArray(order.line_items) ? order.line_items.map((item) => ({
+            product_id: item.product_id != null ? item.product_id.toString() : null,
+            variant_id: item.variant_id != null ? item.variant_id.toString() : null,
+            sku: item.sku || null,
+            name: item.title || item.name || null,
+            quantity: item.quantity || 1,
+            price: parseFloat(item.price) || 0,
+            currency: order.currency || 'USD'
+          })) : [];
+
           orders.push({
             order_id: order.id.toString(),
             date: dateGmt3,
@@ -108,7 +118,8 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             currency: order.currency || 'USD',
             order_created_at: createdAtUtc,
             attribution_json: attributionJson,
-            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
+            createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null,
+            line_items: lineItems
           });
         }
       }
@@ -162,6 +173,16 @@ export async function syncShopifyOrders() {
       VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    const itemInsertStmt = db.prepare(`
+      INSERT INTO shopify_order_items
+      (store, order_id, order_date, product_id, variant_id, sku, name, quantity, price, currency)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const itemDeleteStmt = db.prepare(`
+      DELETE FROM shopify_order_items WHERE store = 'shawq' AND order_id = ?
+    `);
+
     let recordsInserted = 0;
 
     for (const order of orders) {
@@ -186,6 +207,24 @@ export async function syncShopifyOrders() {
         order.order_created_at,
         order.attribution_json
       );
+
+      itemDeleteStmt.run(order.order_id);
+      if (Array.isArray(order.line_items)) {
+        for (const item of order.line_items) {
+          itemInsertStmt.run(
+            order.order_id,
+            order.date,
+            item.product_id,
+            item.variant_id,
+            item.sku,
+            item.name,
+            item.quantity,
+            item.price,
+            item.currency || order.currency
+          );
+        }
+      }
+
       recordsInserted++;
     }
 
