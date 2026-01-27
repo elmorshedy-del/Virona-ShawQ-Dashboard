@@ -1,4 +1,4 @@
-x// client/src/App.jsx
+// client/src/App.jsx
 
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
