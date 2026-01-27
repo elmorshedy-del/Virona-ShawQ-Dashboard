@@ -3195,7 +3195,7 @@ function DashboardTab({
         // Floor: never project below 50% of average
         const avg = arr.reduce((a, b) => a + b, 0) / n;
         const projected = level + phi * trend;
-        return Math.max(avg * 0.5, projected);
+        return Math.max(avg * 1.5, projected);
       };
       
       console.log('DEBUG pace:', {
