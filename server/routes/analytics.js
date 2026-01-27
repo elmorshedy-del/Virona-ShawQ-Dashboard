@@ -13,7 +13,6 @@ import {
   getCountryTrends,
   getNewYorkTrends,
   getCampaignTrends,
-  getCtrTrends,
   getCampaignsByAgeGender,
   getShopifyTimeOfDay,
   getTimeOfDay,
@@ -133,11 +132,6 @@ router.get('/recommendations', (req, res) => {
 
 router.get('/countries', (req, res) => {
   try { res.json(getAvailableCountries(req.query.store)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-router.get('/ctr-trends', (req, res) => {
-  try { res.json(getCtrTrends(req.query.store || 'vironax', req.query)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
