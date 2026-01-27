@@ -3154,63 +3154,31 @@ function DashboardTab({
     const msInDay = 1000 * 60 * 60 * 24;
 
     const getWeightedPace = () => {
-      const alpha = 0.3;
-      const beta = 0.05;
-      const phi = 0.98;
+      // Simple: average of last 7 days (or available days)
+      let totalOrders = 0, totalRevenue = 0, totalSpend = 0;
+      let dayCount = 0;
 
-      const values = { orders: [], revenue: [], spend: [] };
-
-      // Only include days that have actual data
-      for (let offset = 7; offset >= 1; offset -= 1) {
+      for (let offset = 1; offset <= 7; offset += 1) {
         const day = new Date(today);
         day.setDate(day.getDate() - offset);
         const dayKey = getLocalDateString(day);
         const entry = dailyMap?.get(dayKey);
         if (entry) {
-          values.orders.push(toNumber(entry.orders));
-          values.revenue.push(toNumber(entry.revenue));
-          values.spend.push(toNumber(entry.spend));
+          totalOrders += toNumber(entry.orders);
+          totalRevenue += toNumber(entry.revenue);
+          totalSpend += toNumber(entry.spend);
+          dayCount += 1;
         }
       }
 
-      const holtPace = (arr) => {
-        const n = arr.length;
-        if (n === 0) return 0;
-        if (n === 1) return arr[0];
-        
-        // For very few data points, just use average
-        if (n < 3) {
-          return arr.reduce((a, b) => a + b, 0) / n;
-        }
+      if (dayCount === 0) {
+        return { orders: 0, revenue: 0, spend: 0 };
+      }
 
-        let level = arr[0];
-        let trend = arr[1] - arr[0];
-
-        for (let i = 1; i < n; i++) {
-          const prevLevel = level;
-          level = alpha * arr[i] + (1 - alpha) * (prevLevel + phi * trend);
-          trend = beta * (level - prevLevel) + (1 - beta) * phi * trend;
-        }
-
-        // Floor: never project below 50% of average
-        const avg = arr.reduce((a, b) => a + b, 0) / n;
-        const projected = level + phi * trend;
-        return Math.max(avg * 1.5, projected);
-      };
-      
-      console.log('DEBUG pace:', {
-        valuesOrders: values.orders,
-        valuesLen: values.orders.length,
-        dailyMapSize: dailyMap?.size,
-        dailyMapKeys: dailyMap ? Array.from(dailyMap.keys()).slice(0, 10) : [],
-        today: today,
-        sampleDayKey: getLocalDateString(new Date(today.getTime() - 86400000))
-      });
-  
       return {
-        orders: holtPace(values.orders),
-        revenue: holtPace(values.revenue),
-        spend: holtPace(values.spend)
+        orders: totalOrders / dayCount,
+        revenue: totalRevenue / dayCount,
+        spend: totalSpend / dayCount
       };
     };
 
