@@ -1770,7 +1770,8 @@ function DashboardTab({
   const [ctrTrendIncludeInactive, setCtrTrendIncludeInactive] = useState(false);
   const [ctrTrendCountry, setCtrTrendCountry] = useState('ALL');
   const [ctrTrendAdId, setCtrTrendAdId] = useState('ALL');
-  const [ctrTrendCompareIds, setCtrTrendCompareIds] = useState([]);
+  // null = auto (derived from selectors); array = user-selected compare set
+  const [ctrTrendCompareIds, setCtrTrendCompareIds] = useState(null);
   const [ctrTrendSeries, setCtrTrendSeries] = useState([]);
   const [ctrTrendLoading, setCtrTrendLoading] = useState(false);
   const [ctrTrendError, setCtrTrendError] = useState('');
@@ -1945,16 +1946,26 @@ function DashboardTab({
     return [];
   }, [ctrAdOptions, ctrCountryOptions, ctrTrendMode]);
 
-  useEffect(() => {
-    setCtrTrendCompareIds((prev) => {
-      const validIds = new Set(ctrCompareOptions.map(option => option.id));
-      const filtered = prev.filter(id => validIds.has(id));
-      if (filtered.length > 0) return filtered;
-      if (ctrTrendMode === 'country' && ctrTrendCountry !== 'ALL') return [ctrTrendCountry];
-      if ((ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') && ctrTrendAdId !== 'ALL') return [ctrTrendAdId];
-      return [];
-    });
-  }, [ctrCompareOptions, ctrTrendMode, ctrTrendCountry, ctrTrendAdId]);
+  const ctrTrendDefaultCompareIds = useMemo(() => {
+    if (ctrTrendMode === 'country' && ctrTrendCountry !== 'ALL') return [ctrTrendCountry];
+    if ((ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') && ctrTrendAdId !== 'ALL') return [ctrTrendAdId];
+    return [];
+  }, [ctrTrendAdId, ctrTrendCountry, ctrTrendMode]);
+
+  const ctrTrendEffectiveCompareIds = useMemo(() => {
+    const validIds = new Set(ctrCompareOptions.map(option => option.id));
+    const manual = Array.isArray(ctrTrendCompareIds)
+      ? ctrTrendCompareIds.filter(id => validIds.has(id)).slice(0, CTR_COMPARE_LIMIT)
+      : null;
+
+    if (manual && manual.length > 0) return manual;
+    return ctrTrendDefaultCompareIds.filter(id => validIds.has(id)).slice(0, CTR_COMPARE_LIMIT);
+  }, [ctrCompareOptions, ctrTrendCompareIds, ctrTrendDefaultCompareIds]);
+
+  // Used for effects; avoids re-fetching when ids are equal but array refs differ.
+  const ctrTrendEffectiveCompareKey = useMemo(() => (
+    JSON.stringify(ctrTrendEffectiveCompareIds)
+  ), [ctrTrendEffectiveCompareIds]);
 
   useEffect(() => {
     if (dateRange?.startDate && dateRange?.endDate) {
@@ -2141,17 +2152,11 @@ function DashboardTab({
     if (ctrTrendMode === 'campaign') {
       targets.push({ key: campaignId || 'all', campaignId });
     } else if (ctrTrendMode === 'country') {
-      const ids = ctrTrendCompareIds.length > 0
-        ? ctrTrendCompareIds
-        : (ctrTrendCountry !== 'ALL' ? [ctrTrendCountry] : []);
-      ids.forEach((code) => {
+      ctrTrendEffectiveCompareIds.forEach((code) => {
         targets.push({ key: `country:${code}`, campaignId, country: code });
       });
     } else if (ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') {
-      const ids = ctrTrendCompareIds.length > 0
-        ? ctrTrendCompareIds
-        : (ctrTrendAdId !== 'ALL' ? [ctrTrendAdId] : []);
-      ids.forEach((id) => {
+      ctrTrendEffectiveCompareIds.forEach((id) => {
         targets.push({
           key: `ad:${id}:${ctrTrendMode === 'ad_country' ? ctrTrendCountry : 'all'}`,
           campaignId,
@@ -2192,7 +2197,7 @@ function DashboardTab({
     ctrCampaignId,
     ctrResolvedRange,
     ctrTrendAdId,
-    ctrTrendCompareIds,
+    ctrTrendEffectiveCompareKey,
     ctrTrendCountry,
     ctrTrendMode,
     ctrTrendIncludeInactive,
@@ -2413,14 +2418,18 @@ function DashboardTab({
   const toggleCtrCompareId = useCallback((id) => {
     setCtrTrendCompareError('');
     setCtrTrendCompareIds((prev) => {
-      if (prev.includes(id)) return prev.filter(item => item !== id);
-      if (prev.length >= CTR_COMPARE_LIMIT) {
+      const base = Array.isArray(prev) ? prev : ctrTrendEffectiveCompareIds;
+      if (base.includes(id)) {
+        const next = base.filter(item => item !== id);
+        return next.length > 0 ? next : null;
+      }
+      if (base.length >= CTR_COMPARE_LIMIT) {
         setCtrTrendCompareError(`Select up to ${CTR_COMPARE_LIMIT}.`);
         return prev;
       }
-      return [...prev, id];
+      return [...base, id];
     });
-  }, []);
+  }, [ctrTrendEffectiveCompareIds]);
 
   const ctrTrendChartData = useMemo(() => {
     if (!ctrTrendSeries || ctrTrendSeries.length === 0) return [];
@@ -5404,7 +5413,11 @@ function DashboardTab({
               <span className="font-semibold text-gray-700">Campaign</span>
               <select
                 value={selectedCreativeCampaignId || ''}
-                onChange={(e) => setSelectedCreativeCampaignId(e.target.value)}
+                onChange={(e) => {
+                  setSelectedCreativeCampaignId(e.target.value);
+                  setCtrTrendCompareIds(null);
+                  setCtrTrendCompareError('');
+                }}
                 className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white"
               >
                 {creativeCampaignOptions.map((campaign) => (
@@ -5419,7 +5432,11 @@ function DashboardTab({
               <span className="font-semibold text-gray-700">Country</span>
               <select
                 value={ctrTrendCountry}
-                onChange={(e) => setCtrTrendCountry(e.target.value)}
+                onChange={(e) => {
+                  setCtrTrendCountry(e.target.value);
+                  setCtrTrendCompareIds(null);
+                  setCtrTrendCompareError('');
+                }}
                 className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white min-w-[160px]"
               >
                 <option value="ALL">All countries</option>
@@ -5435,7 +5452,11 @@ function DashboardTab({
               <span className="font-semibold text-gray-700">Ad</span>
               <select
                 value={ctrTrendAdId}
-                onChange={(e) => setCtrTrendAdId(e.target.value)}
+                onChange={(e) => {
+                  setCtrTrendAdId(e.target.value);
+                  setCtrTrendCompareIds(null);
+                  setCtrTrendCompareError('');
+                }}
                 className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white min-w-[200px]"
               >
                 <option value="ALL">All ads</option>
@@ -5641,7 +5662,7 @@ function DashboardTab({
                       <label key={option.id} className="flex items-center gap-2 text-sm text-gray-700">
                         <input
                           type="checkbox"
-                          checked={ctrTrendCompareIds.includes(option.id)}
+                          checked={ctrTrendEffectiveCompareIds.includes(option.id)}
                           onChange={() => toggleCtrCompareId(option.id)}
                           className="accent-indigo-600"
                         />
