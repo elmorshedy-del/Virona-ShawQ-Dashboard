@@ -51,11 +51,19 @@ export default function LiveCheckoutIndicator({
 
         if (!res.ok) {
           const apiMessage = (data && (data.error || data.message)) ? (data.error || data.message) : null;
-          throw new Error(
+          const err = new Error(
             apiMessage
               ? `HTTP ${res.status}${requestId ? ` [${requestId}]` : ''}: ${apiMessage}`
               : `HTTP ${res.status}${requestId ? ` [${requestId}]` : ''} (non-JSON: ${contentType}): ${snippet}`
           );
+          err.meta = {
+            status: res.status,
+            contentType,
+            requestId,
+            bodySnippet: snippet,
+            bodyJson: data
+          };
+          throw err;
         }
 
         if (!contentType.includes('application/json')) {
@@ -75,6 +83,8 @@ export default function LiveCheckoutIndicator({
           store,
           windowSeconds,
           requestId,
+          message: error?.message || String(error),
+          meta: error?.meta,
           error
         });
         setStatus('error');
