@@ -118,7 +118,7 @@ export default function CampaignLauncher({ store }) {
         <input
           type="text"
           value={formData.campaignName}
-          onChange={e => setFormData({ ...formData, campaignName: e.target.value })}
+          onChange={e => setFormData(prev => ({ ...prev, campaignName: e.target.value }))}
           className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
         />
       </div>
