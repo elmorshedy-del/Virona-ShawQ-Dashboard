@@ -1,6 +1,11 @@
 import crypto from 'crypto';
 import fetch from 'node-fetch';
 import { searchByBrand as searchMetaAds } from './apifyService.js';
+import {
+  analyzeProductRadarTimeseries,
+  isProductRadarAiConfigured,
+  rankProductRadarCandidates
+} from './productRadarAiClient.js';
 
 const GOOGLE_TRENDS_API = 'https://trends.google.com/trends/api';
 const GOOGLE_TRENDS_UA =
@@ -13,6 +18,8 @@ const DEFAULT_MAX_CANDIDATES = 12;
 const DEFAULT_MAX_META_CHECKS = 6;
 const DEFAULT_META_COUNTRY = 'ALL';
 const DEFAULT_META_LIMIT = 25;
+const DEFAULT_USE_AI_MODELS = process.env.PRODUCT_RADAR_USE_AI_MODELS !== '0';
+const DEFAULT_FORECAST_HORIZON_POINTS = 14;
 const EPS = 1e-6;
 
 const cache = new Map();
@@ -70,6 +77,25 @@ function confidenceFromSeries(values) {
   const lengthFactor = clamp(0.4, values.length / 30, 1);
   const score = coverage * 100 * lengthFactor;
   return Math.round(clamp(5, score, 95));
+}
+
+function geoSpreadScoreFromCountries(countries) {
+  const values = (countries || [])
+    .map((c) => Number(c?.value))
+    .filter((v) => Number.isFinite(v) && v > 0);
+
+  if (values.length === 0) return 0;
+  if (values.length === 1) return 15;
+
+  const sum = values.reduce((acc, v) => acc + v, 0);
+  if (!Number.isFinite(sum) || sum <= 0) return 0;
+
+  const probs = values.map((v) => v / sum);
+  const entropy = -probs.reduce((acc, p) => acc + p * Math.log(Math.max(EPS, p)), 0);
+  const maxEntropy = Math.log(values.length);
+  const normalized = maxEntropy > 0 ? entropy / maxEntropy : 0;
+
+  return Math.round(clamp(0, normalized * 100, 100));
 }
 
 function uniqueStrings(values) {
@@ -220,6 +246,63 @@ async function getRelatedQueryCandidates(seedQuery, { geo, startTime, endTime, h
   const rising = rankedList[1] ? extract(rankedList[1]) : [];
 
   return uniqueStrings([...top, ...rising]);
+}
+
+async function getRelatedTopicCandidates(seedQuery, { geo, startTime, endTime, hl }) {
+  const time = toTimeRange(startTime, endTime);
+
+  const explore = await withRetry(() =>
+    trendsExplore({
+      comparisonItem: [{ keyword: seedQuery, geo, time }],
+      hl,
+      tz: 0
+    })
+  );
+
+  const widget = pickWidget(explore, 'RELATED_TOPICS');
+  if (!widget?.token || !widget?.request) return [];
+
+  const url = `${GOOGLE_TRENDS_API}/widgetdata/relatedsearches?hl=${encodeURIComponent(hl)}&tz=0&req=${encodeURIComponent(
+    JSON.stringify(widget.request)
+  )}&token=${encodeURIComponent(widget.token)}`;
+
+  const data = await withRetry(() => fetchTrendsJson(url));
+
+  const rankedList = data?.default?.rankedList || [];
+  const extract = (rankedEntry) =>
+    (rankedEntry?.rankedKeyword || [])
+      .map((kw) => normalizeCandidate(kw?.topic?.title || kw?.query))
+      .filter(shouldKeepCandidate);
+
+  const top = rankedList[0] ? extract(rankedList[0]) : [];
+  const rising = rankedList[1] ? extract(rankedList[1]) : [];
+
+  return uniqueStrings([...top, ...rising]);
+}
+
+async function getGoogleSuggestCandidates(seedQuery, { hl = 'en-US' } = {}) {
+  const url = `https://suggestqueries.google.com/complete/search?client=firefox&hl=${encodeURIComponent(hl)}&q=${encodeURIComponent(
+    seedQuery
+  )}`;
+
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': GOOGLE_TRENDS_UA,
+      'Accept-Language': 'en-US,en;q=0.9'
+    }
+  });
+
+  if (!res.ok) return [];
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+
+  const suggestions = Array.isArray(data?.[1]) ? data[1] : [];
+  return uniqueStrings(suggestions.map((s) => normalizeCandidate(s)).filter(shouldKeepCandidate));
 }
 
 async function getInterestPairSeries(seedQuery, candidateQuery, { geo, startTime, endTime, hl }) {
@@ -424,7 +507,9 @@ export async function runProductRadarScan(options) {
     maxMetaChecks = DEFAULT_MAX_META_CHECKS,
     includeMetaAds = true,
     metaCountry = DEFAULT_META_COUNTRY,
-    metaLimit = DEFAULT_META_LIMIT
+    metaLimit = DEFAULT_META_LIMIT,
+    useAiModels = DEFAULT_USE_AI_MODELS,
+    includeGeoSpread = true
   } = options || {};
 
   const seed = String(query || '').trim();
@@ -446,7 +531,9 @@ export async function runProductRadarScan(options) {
     maxMetaChecks,
     includeMetaAds,
     metaCountry,
-    metaLimit
+    metaLimit,
+    useAiModels,
+    includeGeoSpread
   });
 
   const cached = cache.get(cacheKey);
@@ -454,31 +541,114 @@ export async function runProductRadarScan(options) {
     return { ...cached.value, cached: true };
   }
 
+  const aiConfigured = isProductRadarAiConfigured();
+
   const sources = {
     googleTrends: { available: true, configured: true },
-    metaAdLibrary: { available: true, configured: !!process.env.APIFY_API_TOKEN }
+    metaAdLibrary: { available: true, configured: !!process.env.APIFY_API_TOKEN },
+    aiModels: useAiModels
+      ? {
+          available: aiConfigured,
+          configured: aiConfigured,
+          reason: aiConfigured ? null : 'PRODUCT_RADAR_AI_URL not set'
+        }
+      : { available: false, configured: false, reason: 'useAiModels=false' }
   };
 
-  let candidates = [];
+  // 1) Candidate generation (multi-source)
+  let relatedQueries = [];
+  let relatedTopics = [];
+  let googleSuggest = [];
+
   try {
-    candidates = await getRelatedQueryCandidates(seed, { geo, startTime, endTime, hl });
+    relatedQueries = await getRelatedQueryCandidates(seed, { geo, startTime, endTime, hl });
   } catch (error) {
     console.warn('[ProductRadar] relatedQueries failed:', error?.message || error);
   }
 
-  candidates = uniqueStrings(candidates)
+  try {
+    relatedTopics = await getRelatedTopicCandidates(seed, { geo, startTime, endTime, hl });
+  } catch (error) {
+    console.warn('[ProductRadar] relatedTopics failed:', error?.message || error);
+  }
+
+  try {
+    googleSuggest = await getGoogleSuggestCandidates(seed, { hl });
+  } catch (error) {
+    console.warn('[ProductRadar] googleSuggest failed:', error?.message || error);
+  }
+
+  const candidateSourceCounts = {
+    trendsRelatedQueries: relatedQueries.length,
+    trendsRelatedTopics: relatedTopics.length,
+    googleSuggest: googleSuggest.length
+  };
+
+  let candidates = uniqueStrings([...relatedQueries, ...relatedTopics, ...googleSuggest])
     .map(normalizeCandidate)
     .filter(shouldKeepCandidate)
-    .filter((c) => c.toLowerCase() !== seed.toLowerCase())
-    .slice(0, clamp(4, maxCandidates, 25));
+    .filter((c) => c.toLowerCase() !== seed.toLowerCase());
+
+  // 2) Hybrid semantic ranking + diversity (optional)
+  const evaluationCount = clamp(6, Math.round(maxCandidates * 2), 40);
+  const discoveryByKeyword = new Map();
+
+  if (useAiModels && aiConfigured && candidates.length) {
+    try {
+      const ranked = await rankProductRadarCandidates({
+        query: seed,
+        candidates,
+        maxSelected: evaluationCount,
+        topN: 120,
+        rerankN: 40,
+        diversify: true
+      });
+
+      if (ranked?.success && Array.isArray(ranked.selected)) {
+        candidates = ranked.selected
+          .map((it) => String(it?.text || '').trim())
+          .filter(Boolean)
+          .slice(0, evaluationCount);
+
+        for (const it of ranked.selected) {
+          const key = String(it?.text || '').toLowerCase();
+          if (key) discoveryByKeyword.set(key, it);
+        }
+
+        sources.aiModels = {
+          ...sources.aiModels,
+          available: true,
+          configured: true,
+          models: ranked.models || null
+        };
+      } else {
+        candidates = candidates.slice(0, evaluationCount);
+      }
+    } catch (error) {
+      sources.aiModels = {
+        ...sources.aiModels,
+        available: false,
+        configured: true,
+        reason: error?.message || 'AI ranking failed'
+      };
+      candidates = candidates.slice(0, evaluationCount);
+    }
+  } else {
+    candidates = candidates.slice(0, evaluationCount);
+  }
 
   const results = [];
+  const rawSeriesByKeyword = new Map();
 
+  // 3) Pull time-series evidence from Trends + compute baseline scores
   for (const candidate of candidates) {
     try {
       const points = await getInterestPairSeries(seed, candidate, { geo, startTime, endTime, hl });
+      if (!points.length) continue;
+
       const candidateSeries = points.map((p) => p.candidate);
       const seedSeries = points.map((p) => p.seed);
+      rawSeriesByKeyword.set(candidate, { candidateSeries, seedSeries, points });
 
       const w = Math.min(DEFAULT_RECENT_WINDOW_POINTS, Math.max(3, Math.floor(candidateSeries.length / 3)));
       const { recent, prev } = splitWindows(candidateSeries, w);
@@ -491,24 +661,38 @@ export async function runProductRadarScan(options) {
       const pct = percentChange(recentMean, prevMean);
       const ratio = recentMean / Math.max(EPS, seedRecentMean);
 
-      const demand = demandScoreFromRatio(ratio);
-      const momentum = momentumScoreFromPercentChange(pct);
-      const confidence = confidenceFromSeries(candidateSeries);
+      const demandLevel = demandScoreFromRatio(ratio);
+      const momentumBase = momentumScoreFromPercentChange(pct);
+      const confidenceBase = confidenceFromSeries(candidateSeries);
       const risk = inferRiskHeuristics(candidate);
+
+      const discovery = discoveryByKeyword.get(candidate.toLowerCase()) || null;
 
       results.push({
         id: `pr_${crypto.randomUUID()}`,
         keyword: candidate,
         scores: {
-          demand,
-          momentum,
+          demand: demandLevel,
+          momentum: momentumBase,
           competition: null,
           margin: null,
           risk: risk.score,
-          confidence,
+          confidence: confidenceBase,
           overall: null
         },
         evidence: {
+          discovery: discovery
+            ? {
+                source: 'product_radar_ai',
+                bm25: discovery?.bm25 ?? null,
+                embedSim: discovery?.embedSim ?? null,
+                rerank: discovery?.rerank ?? null,
+                clusterId: discovery?.clusterId ?? null
+              }
+            : {
+                source: 'google_trends',
+                detail: 'related queries/topics + autocomplete'
+              },
           demand: {
             source: 'google_trends',
             timeframeDays,
@@ -517,12 +701,16 @@ export async function runProductRadarScan(options) {
             recentMean: Number.isFinite(recentMean) ? Number(recentMean.toFixed(1)) : null,
             prevMean: Number.isFinite(prevMean) ? Number(prevMean.toFixed(1)) : null,
             percentChange: Number.isFinite(pct) ? Number(pct.toFixed(1)) : null,
+            demandLevel,
+            geoSpread: null,
+            geoTopCountries: null,
             series: points.slice(-Math.min(points.length, 60)).map((p) => ({
               t: p.time,
               v: p.candidate
             })),
             url: buildGoogleTrendsExploreUrl(candidate, { geo, timeframeDays })
           },
+          momentum: null,
           competition: null,
           margin: null,
           risk: {
@@ -540,6 +728,38 @@ export async function runProductRadarScan(options) {
     }
   }
 
+  // 3b) Geo spread (optional, limited to top candidates to reduce throttling)
+  if (includeGeoSpread && results.length > 0) {
+    const topForGeo = [...results]
+      .sort((a, b) => b.scores.demand + b.scores.momentum - (a.scores.demand + a.scores.momentum))
+      .slice(0, Math.min(8, results.length));
+
+    const geoByKeyword = new Map();
+    for (const item of topForGeo) {
+      try {
+        const countries = await getInterestByCountry(item.keyword, { geo, startTime, endTime, hl });
+        geoByKeyword.set(item.keyword, countries);
+        await new Promise((r) => setTimeout(r, 200));
+      } catch (error) {
+        console.warn('[ProductRadar] candidate geo failed:', item.keyword, error?.message || error);
+      }
+    }
+
+    for (const item of results) {
+      const countries = geoByKeyword.get(item.keyword) || null;
+      if (!countries) continue;
+      const spread = geoSpreadScoreFromCountries(countries);
+
+      // Demand = level + geo spread (weighted)
+      const level = Number(item.evidence?.demand?.demandLevel ?? item.scores.demand);
+      const blended = Math.round(clamp(0, 0.75 * level + 0.25 * spread, 100));
+      item.scores.demand = blended;
+
+      item.evidence.demand.geoSpread = spread;
+      item.evidence.demand.geoTopCountries = countries;
+    }
+  }
+
   // Seed geo context (where interest is concentrated)
   let seedRegions = [];
   try {
@@ -548,7 +768,88 @@ export async function runProductRadarScan(options) {
     console.warn('[ProductRadar] interestByRegion failed:', error?.message || error);
   }
 
-  // Add Meta Ad Library evidence for top candidates (optional + requires APIFY token)
+  // 3c) Advanced momentum features (forecasting + change-point detection)
+  if (useAiModels && aiConfigured && results.length > 0) {
+    try {
+      const series = results.map((item) => {
+        const raw = rawSeriesByKeyword.get(item.keyword);
+        const values = raw?.candidateSeries || [];
+        return { id: item.keyword, values };
+      });
+
+      const analysis = await analyzeProductRadarTimeseries({
+        series,
+        horizon: DEFAULT_FORECAST_HORIZON_POINTS
+      });
+
+      const analysisById = new Map(
+        (analysis?.results || [])
+          .filter((r) => r?.id)
+          .map((r) => [String(r.id), r])
+      );
+
+      for (const item of results) {
+        const a = analysisById.get(item.keyword);
+        if (!a) continue;
+
+        item.evidence.momentum = {
+          source: 'product_radar_ai',
+          ...a
+        };
+
+        if (!a.ok) continue;
+
+        let momentum = Number(item.scores.momentum) || 0;
+        const pct = Number(item.evidence?.demand?.percentChange);
+
+        // Forecast lift (ETS/Holt)
+        const f = Number(a?.forecast?.pctChangeFromLast);
+        if (Number.isFinite(f)) {
+          momentum += 12 * Math.tanh(f / 40);
+        }
+
+        // Change-point bonus/penalty
+        const cp = a?.changePoint;
+        if (cp?.recent && cp?.direction === 'up' && Number.isFinite(cp?.magnitudePct)) {
+          momentum += clamp(0, Math.abs(cp.magnitudePct) / 10, 15);
+        }
+        if (cp?.recent && cp?.direction === 'down' && Number.isFinite(cp?.magnitudePct)) {
+          momentum -= clamp(0, Math.abs(cp.magnitudePct) / 12, 12);
+        }
+
+        // Tail slope nudges
+        if (Number.isFinite(a?.slope)) {
+          momentum += 6 * Math.tanh(a.slope / 4);
+        }
+
+        // Penalize if it looks like an outlier spike
+        if (a?.anomaly?.isAnomaly) {
+          momentum -= 6;
+        }
+
+        item.scores.momentum = Math.round(clamp(0, momentum, 100));
+
+        // Confidence: downweight anomalous/noisy series
+        if (a?.anomaly?.isAnomaly) {
+          item.scores.confidence = Math.max(5, (Number(item.scores.confidence) || 50) - 12);
+        }
+
+        // If raw % change is unavailable but models ran, give a small neutral explanation.
+        if (!Number.isFinite(pct)) {
+          item.evidence.demand.percentChange = null;
+        }
+      }
+    } catch (error) {
+      sources.aiModels = {
+        ...sources.aiModels,
+        available: false,
+        configured: true,
+        reason: error?.message || 'AI time-series analysis failed'
+      };
+    }
+  }
+
+  // 4) Meta Ad Library evidence for top candidates (optional + requires APIFY token)
   if (includeMetaAds && sources.metaAdLibrary.configured && results.length > 0) {
     const topForCompetition = [...results]
       .sort((a, b) => b.scores.demand + b.scores.momentum - (a.scores.demand + a.scores.momentum))
@@ -576,7 +877,7 @@ export async function runProductRadarScan(options) {
     sources.metaAdLibrary = { available: false, configured: false, reason: 'APIFY_API_TOKEN not set' };
   }
 
-  // Final scoring + explanations
+  // 5) Final scoring + explanations
   for (const item of results) {
     item.scores.overall = computeOverallScore({
       demand: item.scores.demand,
@@ -587,16 +888,44 @@ export async function runProductRadarScan(options) {
     });
 
     const demandRatio = item.evidence?.demand?.ratioVsSeed;
-    const pct = item.evidence?.demand?.percentChange;
+    const geoSpread = item.evidence?.demand?.geoSpread;
 
-    item.explanation.push(`Discovered as a related query to “${seed}”.`);
+    const discoveredViaAi = item.evidence?.discovery?.source === 'product_radar_ai';
+    item.explanation.push(
+      discoveredViaAi
+        ? `Discovered via hybrid retrieval (BM25 + embeddings) + diversity clustering.`
+        : `Discovered as a related search to “${seed}” (Trends + autocomplete).`
+    );
+
     if (Number.isFinite(demandRatio)) {
-      item.explanation.push(`Demand signal: ~${demandRatio}× vs seed query (Google Trends, last ${timeframeDays}d).`);
+      item.explanation.push(`Demand level: ~${demandRatio}× vs seed query (Google Trends, last ${timeframeDays}d).`);
     }
-    if (Number.isFinite(pct)) {
-      const dir = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
-      item.explanation.push(`Momentum: ${dir} ${Math.abs(pct).toFixed(0)}% vs prior window (recent vs previous).`);
+    if (Number.isFinite(geoSpread)) {
+      item.explanation.push(`Geo spread: ${Math.round(geoSpread)}/100 (more spread = more cross-market potential).`);
     }
+
+    const m = item.evidence?.momentum;
+    if (m?.ok) {
+      const f = m?.forecast?.pctChangeFromLast;
+      const cp = m?.changePoint;
+      if (Number.isFinite(f)) {
+        const dir = f > 0 ? 'up' : f < 0 ? 'down' : 'flat';
+        item.explanation.push(`Forecast (ETS): ${dir} ${Math.abs(f).toFixed(0)}% over the next ~${DEFAULT_FORECAST_HORIZON_POINTS} points.`);
+      }
+      if (cp?.recent && Number.isFinite(cp?.magnitudePct)) {
+        item.explanation.push(`Change-point (PELT): ${cp.direction} shift ~${Math.abs(cp.magnitudePct).toFixed(0)}% near the end of the window.`);
+      }
+      if (m?.anomaly?.isAnomaly) {
+        item.explanation.push('Anomaly flag: recent points look spiky/noisy — confidence reduced.');
+      }
+    } else {
+      const pct = item.evidence?.demand?.percentChange;
+      if (Number.isFinite(pct)) {
+        const dir = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+        item.explanation.push(`Momentum: ${dir} ${Math.abs(pct).toFixed(0)}% vs prior window (recent vs previous).`);
+      }
+    }
+
     if (item.scores.competition != null) {
       const meta = item.evidence?.competition;
       if (meta?.sampleSize != null && meta?.uniqueAdvertisers != null) {
@@ -607,6 +936,7 @@ export async function runProductRadarScan(options) {
     } else {
       item.explanation.push('Competition proxy: not available (Meta Ad Library not connected).');
     }
+
     if (Array.isArray(item.evidence?.risk?.drivers) && item.evidence.risk.drivers.length) {
       item.explanation.push(`Risk heuristic: ${item.evidence.risk.drivers.join(', ')}.`);
     }
@@ -618,7 +948,10 @@ export async function runProductRadarScan(options) {
     timeframeDays,
     generatedAt: new Date().toISOString(),
     cached: false,
-    sources,
+    sources: {
+      ...sources,
+      candidateGeneration: candidateSourceCounts
+    },
     seedContext: {
       topCountries: seedRegions,
       googleTrendsUrl: buildGoogleTrendsExploreUrl(seed, { geo, timeframeDays })
@@ -626,15 +959,20 @@ export async function runProductRadarScan(options) {
     methodology: {
       layman: [
         'We start from your niche, then expand to nearby product angles people actually search for.',
+        useAiModels
+          ? 'We use hybrid retrieval (BM25 + embeddings, optional reranking) to keep results relevant and diverse.'
+          : 'We expand using Google Trends related queries/topics plus Google autocomplete suggestions.',
         'We use Google Trends to estimate demand + momentum, and optionally sample the Meta Ad Library to approximate competition.',
         'Each result shows the signals used, the timeframe, and direct links to sources.'
-      ],
+      ].filter(Boolean),
       scoring: {
-        demand: 'Google Trends ratio vs your seed query (same timeframe).',
-        momentum: 'Recent window % change vs previous window (same query).',
+        demand: 'Google Trends ratio vs your seed query + optional geo spread (top countries entropy).',
+        momentum: useAiModels
+          ? 'Forecasting (ETS/Holt) + change-point detection (PELT) + tail slope, all as features.'
+          : 'Recent window % change vs previous window (same query).',
         competition: 'Meta Ad Library sample density (how quickly we hit the sample limit + unique advertisers).',
         risk: 'Transparent keyword-based heuristic (not a classifier).',
-        confidence: 'How much non-zero signal we see in the trend series.'
+        confidence: 'How much consistent non-zero signal we see in the trend series (downweighted if spiky).'
       }
     },
     results: results
