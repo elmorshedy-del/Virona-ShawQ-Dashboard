@@ -82,8 +82,16 @@ function toCode(prefix, raw, width = 6) {
   return `${prefix}-${padded.slice(-width)}`;
 }
 
+function formatShopperNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return `Shopper-${String(Math.trunc(n)).padStart(4, '0')}`;
+}
+
 function userLabel(row) {
   if (!row || typeof row !== 'object') return '—';
+  const shopper = formatShopperNumber(row.shopper_number ?? row.shopperNumber);
+  if (shopper) return shopper;
   const clientId = row.client_id || row.clientId || null;
   if (clientId) return toCode('U', clientId, 6);
   const sessionId = row.session_id || row.sessionId || null;
