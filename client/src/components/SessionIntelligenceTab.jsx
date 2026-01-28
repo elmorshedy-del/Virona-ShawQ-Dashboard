@@ -240,9 +240,9 @@ export default function SessionIntelligenceTab({ store }) {
   const filteredLibrarySessions = useMemo(() => {
     if (!highIntentOnly) return librarySessions;
     return librarySessions.filter((s) =>
-      (Number(s.atc_events) || 0) > 0 ||
-      (Number(s.checkout_started_events) || 0) > 0 ||
-      (Number(s.purchase_events) || 0) > 0
+      Number(s.atc_events) > 0 ||
+      Number(s.checkout_started_events) > 0 ||
+      Number(s.purchase_events) > 0
     );
   }, [librarySessions, highIntentOnly]);
 

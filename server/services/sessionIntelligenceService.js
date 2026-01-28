@@ -15,6 +15,7 @@ const CHECKOUT_STEP_LABELS = {
   thank_you: 'Thank you'
 };
 
+const SHOPPER_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 const lastShopperBackfillByStore = new Map();
 
 function normalizeSqliteDateTime(value) {
@@ -106,7 +107,7 @@ function ensureRecentShopperNumbers(store) {
   const normalizedStore = safeString(store).trim() || 'shawq';
   const now = Date.now();
   const last = lastShopperBackfillByStore.get(normalizedStore) || 0;
-  if (now - last < 5 * 60 * 1000) return;
+  if (now - last < SHOPPER_BACKFILL_COOLDOWN_MS) return;
   lastShopperBackfillByStore.set(normalizedStore, now);
 
   const db = getDb();
