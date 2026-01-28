@@ -18,8 +18,15 @@ const client = new OpenAI({
 const EFFORT_OPTIONS_BY_MODEL = {
   'gpt-5.2': ['none', 'medium', 'xhigh'],
   'gpt-5.2-pro': ['none', 'medium', 'xhigh'],
-  'gpt-5.1-chat-latest': ['medium']
+  'gpt-5.1-chat-latest': ['medium'],
+  'gpt-4o-mini': ['medium']
 };
+
+function normalizeReasoningEffort(model, reasoningEffort) {
+  if (!reasoningEffort) return reasoningEffort;
+  if (model === 'gpt-4o-mini' && reasoningEffort === 'low') return 'medium';
+  return reasoningEffort;
+}
 
 export async function askOpenAIChat({
   model,
@@ -29,10 +36,11 @@ export async function askOpenAIChat({
   maxOutputTokens = 3600,
   verbosity = 'medium'
 }) {
+  const normalizedEffort = normalizeReasoningEffort(model, reasoningEffort);
   const allowed = EFFORT_OPTIONS_BY_MODEL[model] || ['medium'];
-  if (reasoningEffort && !allowed.includes(reasoningEffort)) {
+  if (normalizedEffort && !allowed.includes(normalizedEffort)) {
     throw new Error(
-      `Unsupported reasoningEffort "${reasoningEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
+      `Unsupported reasoningEffort "${normalizedEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
     );
   }
 
@@ -43,7 +51,7 @@ export async function askOpenAIChat({
 
   const resp = await client.responses.create({
     model,
-    reasoning: reasoningEffort ? { effort: reasoningEffort } : undefined,
+    reasoning: normalizedEffort ? { effort: normalizedEffort } : undefined,
     input,
     max_output_tokens: maxOutputTokens,
     text: { verbosity }
@@ -61,10 +69,11 @@ export async function streamOpenAIChat({
   verbosity = 'medium',
   onDelta
 }) {
+  const normalizedEffort = normalizeReasoningEffort(model, reasoningEffort);
   const allowed = EFFORT_OPTIONS_BY_MODEL[model] || ['medium'];
-  if (reasoningEffort && !allowed.includes(reasoningEffort)) {
+  if (normalizedEffort && !allowed.includes(normalizedEffort)) {
     throw new Error(
-      `Unsupported reasoningEffort "${reasoningEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
+      `Unsupported reasoningEffort "${normalizedEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
     );
   }
 
@@ -75,7 +84,7 @@ export async function streamOpenAIChat({
 
   const stream = await client.responses.create({
     model,
-    reasoning: reasoningEffort ? { effort: reasoningEffort } : undefined,
+    reasoning: normalizedEffort ? { effort: normalizedEffort } : undefined,
     input,
     max_output_tokens: maxOutputTokens,
     text: { verbosity },
@@ -113,7 +122,7 @@ const TOKEN_LIMITS = {
 
 const DEPTH_TO_EFFORT = {
   instant: 'none',
-  fast: 'medium',
+  fast: 'low',
   balanced: 'medium',
   deep: 'high'
 };
