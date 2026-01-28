@@ -2175,8 +2175,7 @@ function DashboardTab({
 
     return kpis.map((kpi) => {
       const value = getMetricValue(monthContext.activeTotals, kpi.key);
-      const prevValue = getMetricValue(monthContext.prevTotals, kpi.key);
-      const deltaPct = prevValue > 0 ? ((value - prevValue) / prevValue) * 100 : null;
+      const deltaPct = getDeltaPct(kpi.key);
       const formattedDelta = deltaPct == null
         ? '—'
         : `${deltaPct > 0 ? '+' : ''}${deltaPct.toFixed(0)}%`;
