@@ -2027,9 +2027,9 @@ function DashboardTab({
     if (metricKey === 'revenue') return toNumber(totals.revenue);
     if (metricKey === 'spend') return toNumber(totals.spend);
     if (metricKey === 'orders') return toNumber(totals.orders);
-    if (metricKey === 'aov') return totals.orders > 0 ? toNumber(totals.revenue) / toNumber(totals.orders) : 0;
-    if (metricKey === 'cac') return totals.orders > 0 ? toNumber(totals.spend) / toNumber(totals.orders) : 0;
-    if (metricKey === 'roas') return totals.spend > 0 ? toNumber(totals.revenue) / toNumber(totals.spend) : 0;
+    if (metricKey === 'aov') return totals.orders > 0 ? totals.revenue / totals.orders : 0;
+    if (metricKey === 'cac') return totals.orders > 0 ? totals.spend / totals.orders : 0;
+    if (metricKey === 'roas') return totals.spend > 0 ? totals.revenue / totals.spend : 0;
     return 0;
   }, []);
 
