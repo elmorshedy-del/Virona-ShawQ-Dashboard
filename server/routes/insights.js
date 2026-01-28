@@ -3,10 +3,10 @@ import { getInsightsPayload } from '../services/insightsService.js';
 
 const router = express.Router();
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const store = req.query.store || 'shawq';
-    const data = getInsightsPayload(store, req.query);
+    const data = await getInsightsPayload(store, req.query);
     res.json({
       success: true,
       data

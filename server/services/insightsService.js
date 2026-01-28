@@ -165,22 +165,32 @@ const getTopAdCreatives = async (store, startDate, endDate, limit = 6) => {
     }));
   }
 
-  const assets = [];
-  for (const row of rows) {
-    const creativeResult = await fetchMetaJson(`/${row.ad_id}`, accessToken, {
+  const creativePromises = rows.map((row) =>
+    fetchMetaJson(`/${row.ad_id}`, accessToken, {
       fields: 'creative{thumbnail_url,image_url,object_story_spec{video_data,link_data,photo_data},asset_feed_spec{videos,images}}'
-    });
+    })
+  );
+  const creativeResults = await Promise.all(creativePromises);
+
+  const videoPromises = creativeResults.map((creativeResult) => {
     const creative = creativeResult?.creative || creativeResult?.data?.creative || creativeResult?.creative;
     const videoId = extractVideoId(creative);
-    let videoUrl = null;
     if (videoId) {
-      const videoResult = await fetchMetaJson(`/${videoId}`, accessToken, {
+      return fetchMetaJson(`/${videoId}`, accessToken, {
         fields: 'source,picture,thumbnails{uri}'
       });
-      videoUrl = videoResult?.source || null;
     }
+    return Promise.resolve(null);
+  });
+  const videoResults = await Promise.all(videoPromises);
+
+  const assets = rows.map((row, index) => {
+    const creativeResult = creativeResults[index];
+    const creative = creativeResult?.creative || creativeResult?.data?.creative || creativeResult?.creative;
+    const videoResult = videoResults[index];
+    const videoUrl = videoResult?.source || null;
     const imageUrl = extractThumbnailUrl(creative);
-    assets.push({
+    return {
       ad_id: row.ad_id,
       ad_name: row.ad_name,
       image_url: imageUrl,
@@ -190,8 +200,8 @@ const getTopAdCreatives = async (store, startDate, endDate, limit = 6) => {
         conversions: row.conversions,
         impressions: row.impressions
       }
-    });
-  }
+    };
+  });
   return assets;
 };
 
@@ -669,29 +679,64 @@ async function buildCards({
     forecastSeries
   };
 
+  const insightPromises = [];
+
   const personaIndex = cards.findIndex((card) => card.type === 'persona');
-  if (personaIndex != -1) {
-    const override = await fetchPersonaInsight({ ...context, assets: creativeAssets, history: creativeHistory, baseCard: cards[personaIndex], method: methodOverrides.persona });
-    cards[personaIndex] = mergeCard(cards[personaIndex], override);
+  if (personaIndex !== -1) {
+    insightPromises.push(
+      fetchPersonaInsight({
+        ...context,
+        assets: creativeAssets,
+        history: creativeHistory,
+        baseCard: cards[personaIndex],
+        method: methodOverrides.persona
+      }).then((override) => ({ index: personaIndex, override }))
+    );
   }
 
   const geoIndex = cards.findIndex((card) => card.type === 'geo');
-  if (geoIndex != -1) {
-    const override = await fetchGeoInsight({ ...context, geos: geoFeatures, baseCard: cards[geoIndex], method: methodOverrides.geo });
-    cards[geoIndex] = mergeCard(cards[geoIndex], override);
+  if (geoIndex !== -1) {
+    insightPromises.push(
+      fetchGeoInsight({
+        ...context,
+        geos: geoFeatures,
+        baseCard: cards[geoIndex],
+        method: methodOverrides.geo
+      }).then((override) => ({ index: geoIndex, override }))
+    );
   }
 
   const adjacentIndex = cards.findIndex((card) => card.type === 'adjacent');
-  if (adjacentIndex != -1) {
-    const override = await fetchAdjacentInsight({ ...context, orders: adjacentData.orders, edges: adjacentData.edges, baseCard: cards[adjacentIndex], method: methodOverrides.adjacent });
-    cards[adjacentIndex] = mergeCard(cards[adjacentIndex], override);
+  if (adjacentIndex !== -1) {
+    insightPromises.push(
+      fetchAdjacentInsight({
+        ...context,
+        orders: adjacentData.orders,
+        edges: adjacentData.edges,
+        baseCard: cards[adjacentIndex],
+        method: methodOverrides.adjacent
+      }).then((override) => ({ index: adjacentIndex, override }))
+    );
   }
 
   const peaksIndex = cards.findIndex((card) => card.type === 'peaks');
-  if (peaksIndex != -1) {
-    const override = await fetchPeaksInsight({ ...context, series: forecastSeries, baseCard: cards[peaksIndex], method: methodOverrides.peaks });
-    cards[peaksIndex] = mergeCard(cards[peaksIndex], override);
+  if (peaksIndex !== -1) {
+    insightPromises.push(
+      fetchPeaksInsight({
+        ...context,
+        series: forecastSeries,
+        baseCard: cards[peaksIndex],
+        method: methodOverrides.peaks
+      }).then((override) => ({ index: peaksIndex, override }))
+    );
   }
+
+  const settledInsights = await Promise.all(insightPromises);
+  settledInsights.forEach(({ index, override }) => {
+    if (index !== -1) {
+      cards[index] = mergeCard(cards[index], override);
+    }
+  });
 
   return cards;
 }
