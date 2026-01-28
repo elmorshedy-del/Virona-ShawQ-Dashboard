@@ -175,7 +175,7 @@ export default function SessionIntelligenceTab({ store }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [eventsStatus, setEventsStatus] = useState('idle');
-  const [sanityOpen, setSanityOpen] = useState(true);
+  const [sanityOpen, setSanityOpen] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
   const [libraryDays, setLibraryDays] = useState([]);
@@ -186,6 +186,7 @@ export default function SessionIntelligenceTab({ store }) {
   const [libraryError, setLibraryError] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeLimit, setAnalyzeLimit] = useState(20);
+  const [highIntentOnly, setHighIntentOnly] = useState(false);
 
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
@@ -235,6 +236,15 @@ export default function SessionIntelligenceTab({ store }) {
       setLibraryDay((current) => current || days[0].day);
     }
   }, [storeId]);
+
+  const filteredLibrarySessions = useMemo(() => {
+    if (!highIntentOnly) return librarySessions;
+    return librarySessions.filter((s) =>
+      (Number(s.atc_events) || 0) > 0 ||
+      (Number(s.checkout_started_events) || 0) > 0 ||
+      (Number(s.purchase_events) || 0) > 0
+    );
+  }, [librarySessions, highIntentOnly]);
 
   const loadLibrarySessions = useCallback(async (day) => {
     if (!day) return;
@@ -478,7 +488,7 @@ export default function SessionIntelligenceTab({ store }) {
 	            <strong>Live feed (updates every second):</strong> it receives behavior signals from our Shopify Custom Pixel, so you’re not guessing — you’re watching real intent form in real time.
 	          </li>
 	          <li>
-	            <strong>Full journey per shopper:</strong> each shopper gets a private “codename”, and we track their path step‑by‑step across the entire session (page → product → add to cart → checkout steps → purchase or drop‑off).
+	            <strong>Full journey per shopper:</strong> each shopper gets a private <em>Shopper‑0001</em> style ID, and we track their path step‑by‑step across the entire session (page → product → add to cart → checkout steps → purchase or drop‑off).
 	          </li>
 	          <li>
 	            <strong>Checkout clarity:</strong> we pinpoint exactly where checkout stalls (Contact / Shipping / Payment) so you know what to fix first.
@@ -675,85 +685,6 @@ export default function SessionIntelligenceTab({ store }) {
 	        )}
       </div>
 
-      <div className="si-sanity">
-        <div
-          className="si-sanity-header"
-          role="button"
-          tabIndex={0}
-          onClick={() => setSanityOpen((v) => !v)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') setSanityOpen((v) => !v);
-          }}
-        >
-          <div className="si-sanity-title">
-            <span>Sanity panel (events from Shopify)</span>
-            <small>
-              {eventsStatus === 'ok'
-                ? `Last event ${latestEventAt ? timeAgo(latestEventAt) : '—'} • Updated ${lastUpdatedAt ? timeAgo(lastUpdatedAt) : '—'}`
-                : 'Waiting for events…'}
-            </small>
-          </div>
-
-          <div className="si-chevron" data-open={sanityOpen ? 'true' : 'false'}>
-            <ChevronDown size={16} />
-          </div>
-        </div>
-
-        {sanityOpen && (
-          <div className="si-sanity-body">
-            {events.length === 0 ? (
-              <div className="si-empty">
-                No events yet. Open Shopify and trigger <span className="si-badge">page_viewed</span> or{' '}
-                <span className="si-badge">checkout_started</span>.
-              </div>
-            ) : (
-	              <table className="si-event-table">
-	                <thead>
-	                  <tr>
-	                    <th>When</th>
-	                    <th>Event</th>
-	                    <th>Path</th>
-	                    <th>Checkout step</th>
-	                    <th>User</th>
-	                  </tr>
-	                </thead>
-	                <tbody>
-	                  {events.slice(0, 30).map((event) => (
-	                    <tr key={event.id}>
-	                      <td>{timeAgo(event.created_at || event.event_ts)}</td>
-                      <td>
-                        <span className="si-event-name">
-                          <Activity size={14} />
-                          {event.event_name}
-	                        </span>
-	                      </td>
-	                      <td title={event.page_url || event.page_path || ''}>
-	                        {event.page_path || event.page_url || '—'}
-	                      </td>
-	                      <td>
-	                        {event.checkout_step ? (
-	                          <span className="si-badge">{normalizeStepLabel(event.checkout_step)}</span>
-	                        ) : (
-                          '—'
-                        )}
-                      </td>
-	                      <td
-	                        title={[
-	                          event.client_id ? `client_id: ${event.client_id}` : null,
-	                          event.session_id ? `session_id: ${event.session_id}` : null
-	                        ].filter(Boolean).join('\n')}
-	                      >
-	                        {userLabel(event)}
-	                      </td>
-	                    </tr>
-	                  ))}
-	                </tbody>
-	              </table>
-	            )}
-	          </div>
-	        )}
-      </div>
-
       <div className="si-card" style={{ marginTop: 14 }}>
         <div className="si-card-title">
           <h3>Events library (last {overview?.retentionHours ?? 72}h)</h3>
@@ -794,6 +725,15 @@ export default function SessionIntelligenceTab({ store }) {
                 style={{ width: 90 }}
               />
             </label>
+            <button
+              className={`si-button ${highIntentOnly ? 'si-button-active' : ''}`}
+              type="button"
+              aria-pressed={highIntentOnly}
+              onClick={() => setHighIntentOnly((v) => !v)}
+              disabled={librarySessions.length === 0}
+            >
+              High intent
+            </button>
             <button className="si-button" type="button" onClick={() => analyzeDay('high_intent')} disabled={analyzing || !libraryDay}>
               Analyze high intent
             </button>
@@ -807,7 +747,7 @@ export default function SessionIntelligenceTab({ store }) {
           <div className="si-empty" style={{ color: '#b42318' }}>{libraryError}</div>
         ) : null}
 
-        {librarySessions.length === 0 ? (
+        {filteredLibrarySessions.length === 0 ? (
           <div className="si-empty" style={{ marginTop: 10 }}>
             No sessions for this day yet.
           </div>
@@ -815,7 +755,7 @@ export default function SessionIntelligenceTab({ store }) {
           <table className="si-event-table" style={{ marginTop: 10 }}>
             <thead>
               <tr>
-                <th>Codename</th>
+                <th>Shopper</th>
                 <th>Last seen</th>
                 <th>Signals</th>
                 <th>Checkout</th>
@@ -827,7 +767,7 @@ export default function SessionIntelligenceTab({ store }) {
               </tr>
             </thead>
             <tbody>
-              {librarySessions.map((s) => {
+              {filteredLibrarySessions.map((s) => {
                 const selected = librarySessionId === s.session_id;
                 const signals = [
                   s.atc_events ? `ATC×${s.atc_events}` : null,
@@ -837,7 +777,7 @@ export default function SessionIntelligenceTab({ store }) {
                 const ai = s.summary ? `${s.primary_reason || 'Insight'} (${Math.round((s.confidence || 0) * 100)}%)` : '—';
                 return (
                   <tr key={s.session_id} className={selected ? 'si-row-selected' : ''}>
-                    <td title={s.session_id}>{s.codename || userLabel(s)}</td>
+                    <td title={s.session_id}>{userLabel(s)}</td>
                     <td>{timeAgo(s.last_seen)}</td>
                     <td>{signals}</td>
                     <td>{s.last_checkout_step ? <span className="si-badge">{normalizeStepLabel(s.last_checkout_step)}</span> : '—'}</td>
@@ -879,7 +819,7 @@ export default function SessionIntelligenceTab({ store }) {
             <div className="si-card-title" style={{ marginBottom: 8 }}>
               <h3 style={{ fontSize: 14, margin: 0 }}>Session timeline</h3>
               <span className="si-muted">
-                {selectedLibrarySession?.codename || userLabel({ session_id: librarySessionId })}
+                {userLabel(selectedLibrarySession || { session_id: librarySessionId })}
               </span>
             </div>
 
@@ -933,6 +873,85 @@ export default function SessionIntelligenceTab({ store }) {
                 </div>
                 <div className="si-muted">{selectedLibrarySession.summary}</div>
               </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="si-sanity">
+        <div
+          className="si-sanity-header"
+          role="button"
+          tabIndex={0}
+          onClick={() => setSanityOpen((v) => !v)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') setSanityOpen((v) => !v);
+          }}
+        >
+          <div className="si-sanity-title">
+            <span>Sanity panel (events from Shopify)</span>
+            <small>
+              {eventsStatus === 'ok'
+                ? `Last event ${latestEventAt ? timeAgo(latestEventAt) : '—'} • Updated ${lastUpdatedAt ? timeAgo(lastUpdatedAt) : '—'}`
+                : 'Waiting for events…'}
+            </small>
+          </div>
+
+          <div className="si-chevron" data-open={sanityOpen ? 'true' : 'false'}>
+            <ChevronDown size={16} />
+          </div>
+        </div>
+
+        {sanityOpen && (
+          <div className="si-sanity-body">
+            {events.length === 0 ? (
+              <div className="si-empty">
+                No events yet. Open Shopify and trigger <span className="si-badge">page_viewed</span> or{' '}
+                <span className="si-badge">checkout_started</span>.
+              </div>
+            ) : (
+              <table className="si-event-table">
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Event</th>
+                    <th>Path</th>
+                    <th>Checkout step</th>
+                    <th>User</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {events.slice(0, 30).map((event) => (
+                    <tr key={event.id}>
+                      <td>{timeAgo(event.created_at || event.event_ts)}</td>
+                      <td>
+                        <span className="si-event-name">
+                          <Activity size={14} />
+                          {event.event_name}
+                        </span>
+                      </td>
+                      <td title={event.page_url || event.page_path || ''}>
+                        {event.page_path || event.page_url || '—'}
+                      </td>
+                      <td>
+                        {event.checkout_step ? (
+                          <span className="si-badge">{normalizeStepLabel(event.checkout_step)}</span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td
+                        title={[
+                          event.client_id ? `client_id: ${event.client_id}` : null,
+                          event.session_id ? `session_id: ${event.session_id}` : null
+                        ].filter(Boolean).join('\n')}
+                      >
+                        {userLabel(event)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </div>
         )}
