@@ -2214,7 +2214,7 @@ function DashboardTab({
           else if (performanceSignal < 0) tone = 'negative';
           else tone = 'neutral';
         } else {
-          tone = deltaPct >= 0 ? 'positive' : 'negative';
+          tone = deltaPct > 0 ? 'positive' : (deltaPct < 0 ? 'negative' : 'neutral');
         }
       }
 
