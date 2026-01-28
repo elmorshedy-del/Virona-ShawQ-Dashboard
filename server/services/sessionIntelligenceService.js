@@ -127,6 +127,56 @@ function makeSessionCodename(sessionId) {
   return `S-${code.slice(0, 4)}-${code.slice(4, 8)}`;
 }
 
+function extractProductIdsFromCart(cartJson) {
+  if (!cartJson || typeof cartJson !== 'string') return new Set();
+  const parsed = safeJsonParse(cartJson);
+  if (!parsed || typeof parsed !== 'object') return new Set();
+
+  const items =
+    parsed?.lines ||
+    parsed?.lineItems ||
+    parsed?.items ||
+    parsed?.cartLines ||
+    parsed?.cart_lines ||
+    null;
+
+  const list = Array.isArray(items) ? items : [];
+  const ids = new Set();
+  for (const line of list) {
+    const productId =
+      normalizeShopifyId(line?.merchandise?.product?.id) ||
+      normalizeShopifyId(line?.product?.id) ||
+      normalizeShopifyId(line?.productId) ||
+      normalizeShopifyId(line?.product_id) ||
+      null;
+    if (productId) ids.add(productId);
+  }
+  return ids;
+}
+
+function extractSizeLabelFromDataJson(dataJson) {
+  if (!dataJson || typeof dataJson !== 'string') return null;
+  const parsed = safeJsonParse(dataJson);
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  const candidate =
+    parsed?.size ||
+    parsed?.selectedSize ||
+    parsed?.selected_size ||
+    parsed?.variantTitle ||
+    parsed?.variant_title ||
+    parsed?.option1 ||
+    parsed?.option2 ||
+    parsed?.option3 ||
+    (Array.isArray(parsed?.options) ? parsed.options.join(' / ') : null) ||
+    null;
+
+  if (!candidate) return null;
+  const str = safeString(candidate).trim();
+  if (!str) return null;
+  return str.length > 80 ? str.slice(0, 80) : str;
+}
+
 function getEventEnvelope(payload) {
   if (!payload || typeof payload !== 'object') return {};
   if (payload.event && typeof payload.event === 'object') return payload.event;
@@ -993,6 +1043,123 @@ export function getSessionIntelligenceOverview(store) {
     dropoffsByStep[step] = Number(entry.count) || 0;
   }
 
+  const retentionWindow = `-${RAW_RETENTION_HOURS} hours`;
+
+  const purchaseRows = db.prepare(`
+    SELECT session_id, last_cart_json
+    FROM si_sessions
+    WHERE store = ?
+      AND purchase_at IS NOT NULL
+      AND purchase_at >= datetime('now', ?)
+  `).all(store, retentionWindow);
+
+  const purchasedSessionIds = new Set();
+  const purchasedProductsBySession = new Map();
+  for (const row of purchaseRows) {
+    if (!row?.session_id) continue;
+    purchasedSessionIds.add(row.session_id);
+    const ids = extractProductIdsFromCart(row.last_cart_json);
+    if (ids.size > 0) {
+      purchasedProductsBySession.set(row.session_id, ids);
+    }
+  }
+
+  const purchaseEventRows = db.prepare(`
+    SELECT session_id, product_id
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= datetime('now', ?)
+      AND product_id IS NOT NULL
+      AND lower(event_name) IN ('checkout_completed','purchase','order_completed','order_placed')
+  `).all(store, retentionWindow);
+
+  for (const row of purchaseEventRows) {
+    if (!row?.session_id || !row?.product_id) continue;
+    const set = purchasedProductsBySession.get(row.session_id) || new Set();
+    set.add(row.product_id);
+    purchasedProductsBySession.set(row.session_id, set);
+    purchasedSessionIds.add(row.session_id);
+  }
+
+  const viewEventRows = db.prepare(`
+    SELECT session_id, product_id, page_path
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= datetime('now', ?)
+      AND product_id IS NOT NULL
+      AND lower(event_name) IN ('product_viewed','product_view','view_item','product_detail_viewed')
+  `).all(store, retentionWindow);
+
+  const viewedNotBought = new Map();
+  for (const row of viewEventRows) {
+    if (!row?.session_id || !row?.product_id) continue;
+    if (!purchasedSessionIds.has(row.session_id)) continue;
+    const purchasedSet = purchasedProductsBySession.get(row.session_id);
+    if (!purchasedSet || purchasedSet.size === 0) continue;
+    if (purchasedSet.has(row.product_id)) continue;
+
+    const entry = viewedNotBought.get(row.product_id) || {
+      product_id: row.product_id,
+      product_path: row.page_path || null,
+      views: 0,
+      sessions: new Set()
+    };
+    entry.views += 1;
+    entry.sessions.add(row.session_id);
+    if (!entry.product_path && row.page_path) entry.product_path = row.page_path;
+    viewedNotBought.set(row.product_id, entry);
+  }
+
+  const mostViewedNotBought = Array.from(viewedNotBought.values())
+    .map((entry) => ({
+      product_id: entry.product_id,
+      product_path: entry.product_path,
+      views: entry.views,
+      sessions: entry.sessions.size
+    }))
+    .sort((a, b) => (b.views || 0) - (a.views || 0))
+    .slice(0, 6);
+
+  const oosEvents = db.prepare(`
+    SELECT product_id, variant_id, data_json
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= datetime('now', ?)
+      AND lower(event_name) IN (
+        'out_of_stock_size_clicked',
+        'oos_size_clicked',
+        'size_out_of_stock_clicked',
+        'variant_out_of_stock_clicked',
+        'variant_unavailable_clicked',
+        'out_of_stock_click',
+        'oos_clicked'
+      )
+    LIMIT 5000
+  `).all(store, retentionWindow);
+
+  const oosCounts = new Map();
+  for (const row of oosEvents) {
+    const sizeLabel = extractSizeLabelFromDataJson(row?.data_json);
+    const key = [
+      sizeLabel || '',
+      row?.variant_id || '',
+      row?.product_id || ''
+    ].join('|');
+    if (!key) continue;
+    const entry = oosCounts.get(key) || {
+      size_label: sizeLabel || null,
+      variant_id: row?.variant_id || null,
+      product_id: row?.product_id || null,
+      clicks: 0
+    };
+    entry.clicks += 1;
+    oosCounts.set(key, entry);
+  }
+
+  const outOfStockSizesClicked = Array.from(oosCounts.values())
+    .sort((a, b) => (b.clicks || 0) - (a.clicks || 0))
+    .slice(0, 6);
+
   return {
     store,
     retentionHours: RAW_RETENTION_HOURS,
@@ -1010,7 +1177,11 @@ export function getSessionIntelligenceOverview(store) {
       checkoutInProgress: row?.checkout_in_progress || 0,
       atcAbandoned: row?.atc_abandoned || 0
     },
-    checkoutDropoffsByStep: dropoffsByStep
+    checkoutDropoffsByStep: dropoffsByStep,
+    insights: {
+      mostViewedNotBought,
+      outOfStockSizesClicked
+    }
   };
 }
 

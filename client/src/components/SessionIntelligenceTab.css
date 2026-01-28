@@ -407,3 +407,46 @@
 .si-ai-card {
   background: rgba(255, 255, 255, 0.82);
 }
+
+.si-insights-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 980px) {
+  .si-insights-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.si-insight-block {
+  border: 1px dashed rgba(79, 70, 229, 0.2);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(238, 242, 255, 0.2);
+}
+
+.si-insight-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--si-text);
+  margin-bottom: 8px;
+}
+
+.si-insight-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.si-insight-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}

@@ -351,6 +351,9 @@ export default function SessionIntelligenceTab({ store }) {
     return librarySessions.find((s) => s.session_id === librarySessionId) || null;
   }, [librarySessionId, librarySessions]);
 
+  const mostViewedNotBought = overview?.insights?.mostViewedNotBought || [];
+  const outOfStockSizesClicked = overview?.insights?.outOfStockSizesClicked || [];
+
   const abandonedSessions = useMemo(() => {
     if (!Array.isArray(sessions) || sessions.length === 0) return [];
     return sessions
@@ -576,6 +579,51 @@ export default function SessionIntelligenceTab({ store }) {
             {brief?.content
               ? brief.content
               : 'Next step: enable AI review for abandoned ATC sessions (10/day) to turn these events into reasons & fixes.'}
+          </div>
+        </div>
+      </div>
+
+      <div className="si-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Product signals (last {overview?.retentionHours ?? 72}h)</h3>
+          <span className="si-muted">Only sessions with a purchase</span>
+        </div>
+
+        <div className="si-insights-grid">
+          <div className="si-insight-block">
+            <div className="si-insight-title">Most viewed, not bought</div>
+            {mostViewedNotBought.length === 0 ? (
+              <div className="si-empty">No qualified sessions yet.</div>
+            ) : (
+              <ul className="si-insight-list">
+                {mostViewedNotBought.map((item) => (
+                  <li key={item.product_id} className="si-insight-item">
+                    <span title={item.product_path || item.product_id}>
+                      {item.product_path ? formatPathLabel(item.product_path) : item.product_id}
+                    </span>
+                    <span className="si-muted">{item.views} views • {item.sessions} buyers</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="si-insight-block">
+            <div className="si-insight-title">Out‑of‑stock sizes clicked</div>
+            {outOfStockSizesClicked.length === 0 ? (
+              <div className="si-empty">No OOS clicks captured yet.</div>
+            ) : (
+              <ul className="si-insight-list">
+                {outOfStockSizesClicked.map((item, idx) => (
+                  <li key={`${item.size_label || 'size'}-${item.variant_id || idx}`} className="si-insight-item">
+                    <span title={[item.size_label, item.variant_id, item.product_id].filter(Boolean).join(' • ')}>
+                      {item.size_label || item.variant_id || item.product_id || 'Unknown size'}
+                    </span>
+                    <span className="si-muted">{item.clicks} clicks</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       </div>
