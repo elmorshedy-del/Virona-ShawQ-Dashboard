@@ -361,3 +361,41 @@
   font-size: 13px;
   color: var(--si-muted);
 }
+
+.si-row {
+  display: flex;
+  align-items: center;
+}
+
+.si-select,
+.si-input {
+  appearance: none;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--si-text);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
+.si-select:focus,
+.si-input:focus {
+  border-color: rgba(79, 70, 229, 0.35);
+  box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12);
+}
+
+.si-button.si-button-small {
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.si-row-selected td {
+  background: rgba(238, 242, 255, 0.50);
+}
+
+.si-ai-card {
+  background: rgba(255, 255, 255, 0.82);
+}

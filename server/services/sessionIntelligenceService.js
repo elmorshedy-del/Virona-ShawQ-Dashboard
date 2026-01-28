@@ -1,5 +1,6 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { getDb } from '../db/database.js';
+import { askOpenAIChat } from './openaiService.js';
 
 const RAW_RETENTION_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_RAW_RETENTION_HOURS || '72', 10);
 const ABANDON_AFTER_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_ABANDON_AFTER_HOURS || '24', 10);
@@ -30,6 +31,39 @@ function safeString(value) {
   if (typeof value === 'string') return value;
   if (value === null || value === undefined) return '';
   return String(value);
+}
+
+function safeTruncate(value, max = 240) {
+  const str = safeString(value);
+  if (!str) return null;
+  return str.length > max ? str.slice(0, max) : str;
+}
+
+function safeJsonParse(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
+function extractJsonObjectFromText(text) {
+  const raw = safeString(text).trim();
+  if (!raw) return null;
+  const direct = safeJsonParse(raw);
+  if (direct && typeof direct === 'object') return direct;
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  return safeJsonParse(match[0]);
+}
+
+function makeSessionCodename(sessionId) {
+  const raw = safeString(sessionId).trim();
+  if (!raw) return 'S-UNKNOWN';
+  const hex = createHash('sha256').update(raw).digest('hex').slice(0, 10);
+  const code = BigInt(`0x${hex}`).toString(36).toUpperCase().padStart(8, '0');
+  return `S-${code.slice(0, 4)}-${code.slice(4, 8)}`;
 }
 
 function getEventEnvelope(payload) {
@@ -103,6 +137,26 @@ function normalizeCheckoutStep(raw) {
   if (step === 'payment_method') return 'payment';
 
   return step.slice(0, 48);
+}
+
+function inferCheckoutStepFromEvent(eventName, eventDataRaw) {
+  const name = safeString(eventName).toLowerCase().trim();
+  const fromData =
+    normalizeCheckoutStep(eventDataRaw?.checkout?.step) ||
+    normalizeCheckoutStep(eventDataRaw?.checkout?.checkoutStep) ||
+    normalizeCheckoutStep(eventDataRaw?.checkoutStep) ||
+    null;
+  if (fromData) return fromData;
+
+  if (name === 'checkout_started' || name === 'checkout_initiated' || name === 'begin_checkout') return 'contact';
+  if (name.includes('contact') && name.includes('submitted')) return 'contact';
+  if (name.includes('shipping') && name.includes('submitted')) return 'shipping';
+  if (name.includes('payment') && name.includes('submitted')) return 'payment';
+  if (name === 'checkout_completed' || name === 'purchase' || name === 'order_completed' || name === 'order_placed') {
+    return 'thank_you';
+  }
+
+  return null;
 }
 
 function inferDeviceType(payload) {
@@ -201,6 +255,40 @@ function extractCampaign(url) {
     if (value) out[key] = value.slice(0, 240);
   }
   return Object.keys(out).length ? out : null;
+}
+
+function extractAttributionFields(campaign) {
+  if (!campaign || typeof campaign !== 'object') {
+    return {
+      utm_source: null,
+      utm_medium: null,
+      utm_campaign: null,
+      utm_content: null,
+      utm_term: null,
+      fbclid: null,
+      gclid: null,
+      ttclid: null,
+      msclkid: null,
+      wbraid: null,
+      gbraid: null,
+      irclickid: null
+    };
+  }
+
+  return {
+    utm_source: safeTruncate(campaign.utm_source),
+    utm_medium: safeTruncate(campaign.utm_medium),
+    utm_campaign: safeTruncate(campaign.utm_campaign),
+    utm_content: safeTruncate(campaign.utm_content),
+    utm_term: safeTruncate(campaign.utm_term),
+    fbclid: safeTruncate(campaign.fbclid),
+    gclid: safeTruncate(campaign.gclid),
+    ttclid: safeTruncate(campaign.ttclid),
+    msclkid: safeTruncate(campaign.msclkid),
+    wbraid: safeTruncate(campaign.wbraid),
+    gbraid: safeTruncate(campaign.gbraid),
+    irclickid: safeTruncate(campaign.irclickid)
+  };
 }
 
 function extractCheckoutTokenFromPath(pathname) {
@@ -355,6 +443,51 @@ function extractCartSnapshot(eventData) {
   return null;
 }
 
+function normalizeShopifyId(id) {
+  const raw = safeString(id).trim();
+  if (!raw) return null;
+  if (raw.startsWith('gid://')) return raw.slice(0, 120);
+  return raw.slice(0, 64);
+}
+
+function extractProductIdentifiers(eventDataRaw) {
+  if (!eventDataRaw || typeof eventDataRaw !== 'object') return { productId: null, variantId: null };
+
+  const pv = eventDataRaw.productVariant || eventDataRaw.product_variant || null;
+  const productFromPv = pv?.product || null;
+
+  const productId =
+    normalizeShopifyId(productFromPv?.id) ||
+    normalizeShopifyId(eventDataRaw?.product?.id) ||
+    normalizeShopifyId(eventDataRaw?.productId) ||
+    normalizeShopifyId(eventDataRaw?.product_id) ||
+    null;
+
+  const variantId =
+    normalizeShopifyId(pv?.id) ||
+    normalizeShopifyId(eventDataRaw?.variant?.id) ||
+    normalizeShopifyId(eventDataRaw?.variantId) ||
+    normalizeShopifyId(eventDataRaw?.variant_id) ||
+    null;
+
+  if (productId || variantId) return { productId, variantId };
+
+  const line =
+    eventDataRaw?.cartLine ||
+    eventDataRaw?.lineItem ||
+    eventDataRaw?.line_item ||
+    eventDataRaw?.cart_line ||
+    null;
+
+  const merch = line?.merchandise || line?.variant || null;
+  const productFromMerch = merch?.product || null;
+
+  return {
+    productId: normalizeShopifyId(productFromMerch?.id) || null,
+    variantId: normalizeShopifyId(merch?.id) || null
+  };
+}
+
 function getOrCreateSessionId(store, clientId, eventTs) {
   if (!store || !clientId) return null;
   const db = getDb();
@@ -433,10 +566,16 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
   const identifiers = extractSessionIdentifiers(payload);
   const deviceType = inferDeviceType(payload);
   const countryCode = extractCountryCode(payload);
+  const attribution = extractAttributionFields(location?.campaign);
+  const product = extractProductIdentifiers(eventDataRaw);
   const checkoutTokenFromData =
     safeString(eventDataRaw?.checkout?.token || eventDataRaw?.checkout?.id || eventDataRaw?.checkoutToken).trim() ||
     null;
   const checkoutToken = location.checkoutToken || checkoutTokenFromData;
+  const checkoutStep =
+    location.checkoutStep ||
+    inferCheckoutStepFromEvent(eventName, eventDataRaw) ||
+    null;
 
   const clientId = identifiers.clientId || null;
   const sessionId =
@@ -452,6 +591,8 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
   if (deviceType) siMeta.device_type = deviceType;
   if (countryCode) siMeta.country_code = countryCode;
   if (location?.campaign) siMeta.campaign = location.campaign;
+  if (product?.productId) siMeta.product_id = product.productId;
+  if (product?.variantId) siMeta.variant_id = product.variantId;
 
   const dataToStore = (() => {
     if (eventData && typeof eventData === 'object' && !Array.isArray(eventData)) {
@@ -473,12 +614,29 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       page_path,
       checkout_token,
       checkout_step,
+      device_type,
+      country_code,
+      product_id,
+      variant_id,
+      utm_source,
+      utm_medium,
+      utm_campaign,
+      utm_content,
+      utm_term,
+      fbclid,
+      gclid,
+      ttclid,
+      msclkid,
+      wbraid,
+      gbraid,
+      irclickid,
       data_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const now = normalizeSqliteDateTime();
+  const lastCampaignJson = location?.campaign ? JSON.stringify(location.campaign) : null;
 
   const upsertSession = db.prepare(`
     INSERT INTO si_sessions (
@@ -493,10 +651,20 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       last_checkout_token,
       last_checkout_step,
       last_cart_json,
+      last_device_type,
+      last_country_code,
+      last_product_id,
+      last_variant_id,
+      last_campaign_json,
       status,
       updated_at
     )
     VALUES (
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
       ?,
       ?,
       ?,
@@ -546,6 +714,11 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       last_checkout_token = COALESCE(excluded.last_checkout_token, si_sessions.last_checkout_token),
       last_checkout_step = COALESCE(excluded.last_checkout_step, si_sessions.last_checkout_step),
       last_cart_json = COALESCE(excluded.last_cart_json, si_sessions.last_cart_json),
+      last_device_type = COALESCE(excluded.last_device_type, si_sessions.last_device_type),
+      last_country_code = COALESCE(excluded.last_country_code, si_sessions.last_country_code),
+      last_product_id = COALESCE(excluded.last_product_id, si_sessions.last_product_id),
+      last_variant_id = COALESCE(excluded.last_variant_id, si_sessions.last_variant_id),
+      last_campaign_json = COALESCE(excluded.last_campaign_json, si_sessions.last_campaign_json),
       status = CASE
         WHEN (
           CASE
@@ -594,7 +767,23 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       location.pageUrl,
       location.pagePath,
       checkoutToken,
-      location.checkoutStep,
+      checkoutStep,
+      deviceType,
+      countryCode,
+      product?.productId || null,
+      product?.variantId || null,
+      attribution.utm_source,
+      attribution.utm_medium,
+      attribution.utm_campaign,
+      attribution.utm_content,
+      attribution.utm_term,
+      attribution.fbclid,
+      attribution.gclid,
+      attribution.ttclid,
+      attribution.msclkid,
+      attribution.wbraid,
+      attribution.gbraid,
+      attribution.irclickid,
       dataToStore ? JSON.stringify(dataToStore) : null
     );
 
@@ -608,8 +797,13 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       checkoutStartedAt,
       purchaseAt,
       checkoutToken,
-      location.checkoutStep,
+      checkoutStep,
       cartJson,
+      deviceType,
+      countryCode,
+      product?.productId || null,
+      product?.variantId || null,
+      lastCampaignJson,
       status,
       now
     );
@@ -622,7 +816,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     eventName,
     eventTs,
     checkoutToken,
-    checkoutStep: location.checkoutStep || null
+    checkoutStep
   };
 }
 
@@ -768,6 +962,22 @@ export function getSessionIntelligenceRecentEvents(store, limit = 80) {
       page_path,
       checkout_token,
       checkout_step,
+      device_type,
+      country_code,
+      product_id,
+      variant_id,
+      utm_source,
+      utm_medium,
+      utm_campaign,
+      utm_content,
+      utm_term,
+      fbclid,
+      gclid,
+      ttclid,
+      msclkid,
+      wbraid,
+      gbraid,
+      irclickid,
       created_at
     FROM si_events
     WHERE store = ?
@@ -793,6 +1003,11 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
       last_checkout_token,
       last_checkout_step,
       last_cart_json,
+      last_device_type,
+      last_country_code,
+      last_product_id,
+      last_variant_id,
+      last_campaign_json,
       status,
       analyzed_at,
       primary_reason,
@@ -822,4 +1037,365 @@ export function formatCheckoutStepLabel(step) {
   const key = normalizeCheckoutStep(step);
   if (!key) return '—';
   return CHECKOUT_STEP_LABELS[key] || key;
+}
+
+function requireIsoDay(dateStr) {
+  const raw = safeString(dateStr).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  return raw;
+}
+
+function dayRangeUtc(dateStr) {
+  const iso = requireIsoDay(dateStr);
+  if (!iso) return null;
+  const start = `${iso} 00:00:00`;
+  const end = normalizeSqliteDateTime(new Date(Date.parse(`${iso}T00:00:00Z`) + 24 * 60 * 60 * 1000));
+  return { start, end };
+}
+
+export function listSessionIntelligenceDays(store, limit = 10) {
+  const db = getDb();
+  const max = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
+  return db.prepare(`
+    SELECT
+      substr(created_at, 1, 10) AS day,
+      COUNT(*) AS events,
+      COUNT(DISTINCT session_id) AS sessions
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= datetime('now', ?)
+    GROUP BY substr(created_at, 1, 10)
+    ORDER BY day DESC
+    LIMIT ?
+  `).all(store, `-${RAW_RETENTION_HOURS} hours`, max);
+}
+
+export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200) {
+  const db = getDb();
+  const max = Math.min(Math.max(parseInt(limit, 10) || 200, 1), 1000);
+  const range = dayRangeUtc(dateStr);
+  if (!range) return [];
+
+  return db.prepare(`
+    WITH day_events AS (
+      SELECT
+        session_id,
+        MIN(created_at) AS first_seen,
+        MAX(created_at) AS last_seen,
+        SUM(CASE WHEN lower(event_name) IN ('product_added_to_cart','add_to_cart','added_to_cart','cart_add','atc') THEN 1 ELSE 0 END) AS atc_events,
+        SUM(CASE WHEN lower(event_name) IN ('checkout_started','checkout_initiated','begin_checkout') THEN 1 ELSE 0 END) AS checkout_started_events,
+        SUM(CASE WHEN lower(event_name) IN ('checkout_completed','purchase','order_completed','order_placed') THEN 1 ELSE 0 END) AS purchase_events,
+        MAX(COALESCE(checkout_step, '')) AS last_checkout_step,
+        MAX(COALESCE(device_type, '')) AS device_type,
+        MAX(COALESCE(country_code, '')) AS country_code,
+        MAX(COALESCE(product_id, '')) AS product_id,
+        MAX(COALESCE(variant_id, '')) AS variant_id,
+        MAX(COALESCE(utm_campaign, '')) AS utm_campaign,
+        MAX(COALESCE(utm_source, '')) AS utm_source
+      FROM si_events
+      WHERE store = ?
+        AND created_at >= ?
+        AND created_at < ?
+      GROUP BY session_id
+    )
+    SELECT
+      d.session_id,
+      d.first_seen,
+      d.last_seen,
+      d.atc_events,
+      d.checkout_started_events,
+      d.purchase_events,
+      NULLIF(d.last_checkout_step, '') AS last_checkout_step,
+      NULLIF(d.device_type, '') AS device_type,
+      NULLIF(d.country_code, '') AS country_code,
+      NULLIF(d.product_id, '') AS product_id,
+      NULLIF(d.variant_id, '') AS variant_id,
+      NULLIF(d.utm_campaign, '') AS utm_campaign,
+      NULLIF(d.utm_source, '') AS utm_source,
+      s.status,
+      s.analyzed_at,
+      s.primary_reason,
+      s.confidence,
+      s.summary
+    FROM day_events d
+    LEFT JOIN si_sessions s
+      ON s.store = ? AND s.session_id = d.session_id
+    ORDER BY d.last_seen DESC
+    LIMIT ?
+  `).all(store, range.start, range.end, store, max).map((row) => ({
+    ...row,
+    codename: makeSessionCodename(row.session_id)
+  }));
+}
+
+export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId = null, limit = 800 } = {}) {
+  const db = getDb();
+  const max = Math.min(Math.max(parseInt(limit, 10) || 800, 1), 5000);
+  const range = dayRangeUtc(dateStr);
+  if (!range) return [];
+
+  if (sessionId) {
+    return db.prepare(`
+      SELECT
+        id,
+        store,
+        session_id,
+        event_name,
+        event_ts,
+        page_path,
+        checkout_step,
+        device_type,
+        country_code,
+        product_id,
+        variant_id,
+        utm_source,
+        utm_medium,
+        utm_campaign,
+        utm_content,
+        utm_term,
+        fbclid,
+        gclid,
+        ttclid,
+        msclkid,
+        wbraid,
+        gbraid,
+        irclickid,
+        created_at
+      FROM si_events
+      WHERE store = ?
+        AND session_id = ?
+        AND created_at >= ?
+        AND created_at < ?
+      ORDER BY created_at ASC
+      LIMIT ?
+    `).all(store, sessionId, range.start, range.end, max);
+  }
+
+  return db.prepare(`
+    SELECT
+      id,
+      store,
+      session_id,
+      event_name,
+      event_ts,
+      page_path,
+      checkout_step,
+      device_type,
+      country_code,
+      product_id,
+      variant_id,
+      utm_source,
+      utm_medium,
+      utm_campaign,
+      utm_content,
+      utm_term,
+      fbclid,
+      gclid,
+      ttclid,
+      msclkid,
+      wbraid,
+      gbraid,
+      irclickid,
+      created_at
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= ?
+      AND created_at < ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(store, range.start, range.end, max);
+}
+
+export function getSessionIntelligenceEventsForSession(store, sessionId, limit = 1200) {
+  const db = getDb();
+  const max = Math.min(Math.max(parseInt(limit, 10) || 1200, 1), 5000);
+  return db.prepare(`
+    SELECT
+      id,
+      store,
+      session_id,
+      event_name,
+      event_ts,
+      page_path,
+      checkout_step,
+      device_type,
+      country_code,
+      product_id,
+      variant_id,
+      utm_source,
+      utm_medium,
+      utm_campaign,
+      utm_content,
+      utm_term,
+      fbclid,
+      gclid,
+      ttclid,
+      msclkid,
+      wbraid,
+      gbraid,
+      irclickid,
+      created_at
+    FROM si_events
+    WHERE store = ?
+      AND session_id = ?
+    ORDER BY created_at ASC
+    LIMIT ?
+  `).all(store, sessionId, max);
+}
+
+function buildAiTimeline(events) {
+  return events.map((e) => ({
+    t: e.created_at || e.event_ts,
+    event: e.event_name,
+    path: e.page_path || null,
+    checkout_step: e.checkout_step || null,
+    product_id: e.product_id || null,
+    variant_id: e.variant_id || null,
+    device: e.device_type || null,
+    country: e.country_code || null,
+    utm_campaign: e.utm_campaign || null,
+    utm_source: e.utm_source || null
+  }));
+}
+
+export async function analyzeSessionIntelligenceSession({
+  store,
+  sessionId,
+  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || 'gpt-4o-mini'
+}) {
+  const db = getDb();
+  const events = getSessionIntelligenceEventsForSession(store, sessionId, 1200);
+  if (!events.length) {
+    return { success: false, error: 'No events found for this session.' };
+  }
+
+  db.prepare(`
+    UPDATE si_sessions
+    SET analysis_state = 'running', updated_at = datetime('now')
+    WHERE store = ? AND session_id = ?
+  `).run(store, sessionId);
+
+  const codename = makeSessionCodename(sessionId);
+  const timeline = buildAiTimeline(events);
+
+  const systemPrompt = [
+    'You are an e-commerce UX analyst.',
+    'You will be given a single shopper session timeline (privacy-safe: no PII, no typed input values).',
+    'Infer likely drop-off reasons (if any), and suggest concrete fixes that move revenue.',
+    '',
+    'Output STRICT JSON only (no markdown), with this schema:',
+    '{',
+    '  \"primary_reason\": string,',
+    '  \"confidence\": number,',
+    '  \"summary\": string,',
+    '  \"reasons\": [ { \"reason\": string, \"confidence\": number, \"evidence\": string[], \"fixes\": string[] } ]',
+    '}',
+    '',
+    'Rules:',
+    '- If the data is insufficient, say so in \"summary\" and keep confidence low.',
+    '- Never invent products, prices, or user intent beyond what events show.',
+    '- Evidence must reference concrete events/steps (e.g. \"checkout_started then no further checkout step\").'
+  ].join('\n');
+
+  let text = '';
+  try {
+    text = await askOpenAIChat({
+      model,
+      systemPrompt,
+      messages: [
+        {
+          role: 'user',
+          content: JSON.stringify({ store, session_codename: codename, session_id: sessionId, timeline })
+        }
+      ],
+      maxOutputTokens: 900,
+      verbosity: 'low'
+    });
+  } catch (error) {
+    db.prepare(`
+      UPDATE si_sessions
+      SET analysis_state = 'error', updated_at = datetime('now')
+      WHERE store = ? AND session_id = ?
+    `).run(store, sessionId);
+    return { success: false, error: error?.message || 'AI request failed.' };
+  }
+
+  const parsed = extractJsonObjectFromText(text);
+  if (!parsed) {
+    db.prepare(`
+      UPDATE si_sessions
+      SET analysis_state = 'error', updated_at = datetime('now')
+      WHERE store = ? AND session_id = ?
+    `).run(store, sessionId);
+    return { success: false, error: 'AI response was not valid JSON.' };
+  }
+
+  const primaryReason = safeTruncate(parsed.primary_reason, 160);
+  const confidence = Number.isFinite(parsed.confidence) ? Math.max(0, Math.min(1, parsed.confidence)) : null;
+  const summary = safeTruncate(parsed.summary, 900);
+  const reasons = Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 6) : [];
+
+  db.prepare(`
+    UPDATE si_sessions
+    SET
+      analysis_state = 'done',
+      analyzed_at = datetime('now'),
+      primary_reason = ?,
+      confidence = ?,
+      summary = ?,
+      reasons_json = ?,
+      model = ?,
+      updated_at = datetime('now')
+    WHERE store = ? AND session_id = ?
+  `).run(
+    primaryReason,
+    confidence,
+    summary,
+    JSON.stringify(reasons),
+    model,
+    store,
+    sessionId
+  );
+
+  return {
+    success: true,
+    store,
+    sessionId,
+    codename,
+    analysis: { primaryReason, confidence, summary, reasons, model }
+  };
+}
+
+export async function analyzeSessionIntelligenceDay({
+  store,
+  date,
+  mode = 'high_intent',
+  limit = 20,
+  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || 'gpt-4o-mini'
+}) {
+  const sessions = getSessionIntelligenceSessionsForDay(store, date, 1000);
+  const max = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+
+  const selected = (() => {
+    if (mode === 'all') return sessions;
+    if (mode === 'checkout_no_purchase') {
+      return sessions.filter((s) => (s.checkout_started_events || 0) > 0 && (s.purchase_events || 0) === 0);
+    }
+    return sessions.filter((s) => (s.atc_events || 0) > 0 && (s.purchase_events || 0) === 0);
+  })().slice(0, max);
+
+  const results = [];
+  for (const session of selected) {
+    // eslint-disable-next-line no-await-in-loop
+    const result = await analyzeSessionIntelligenceSession({ store, sessionId: session.session_id, model });
+    results.push({
+      session_id: session.session_id,
+      codename: session.codename,
+      success: result.success,
+      error: result.error || null,
+      analysis: result.analysis || null
+    });
+  }
+
+  return { success: true, store, date, mode, limit: max, analyzed: results.length, results };
 }
