@@ -185,6 +185,11 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_shopper_number
+    ON si_sessions(store, shopper_number)
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS si_daily_briefs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,

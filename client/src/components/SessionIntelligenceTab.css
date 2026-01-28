@@ -104,6 +104,13 @@
   box-shadow: none;
 }
 
+.si-button.si-button-active {
+  border-color: rgba(79, 70, 229, 0.45);
+  background: rgba(224, 231, 255, 0.8);
+  color: var(--si-indigo-700);
+  box-shadow: 0 8px 18px rgba(79, 70, 229, 0.18);
+}
+
 .si-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

@@ -15,6 +15,9 @@ const CHECKOUT_STEP_LABELS = {
   thank_you: 'Thank you'
 };
 
+const SHOPPER_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
+const lastShopperBackfillByStore = new Map();
+
 function normalizeSqliteDateTime(value) {
   const date = value ? new Date(value) : new Date();
   const ts = Number.isFinite(date.getTime()) ? date : new Date();
@@ -98,6 +101,61 @@ function getOrCreateShopperNumber(store, clientId, eventTs) {
     `).get(normalizedStore, normalizedClientId);
     return row?.shopper_number ? Number(row.shopper_number) : null;
   }
+}
+
+function ensureRecentShopperNumbers(store) {
+  const normalizedStore = safeString(store).trim() || 'shawq';
+  const now = Date.now();
+  const last = lastShopperBackfillByStore.get(normalizedStore) || 0;
+  if (now - last < SHOPPER_BACKFILL_COOLDOWN_MS) return;
+  lastShopperBackfillByStore.set(normalizedStore, now);
+
+  const db = getDb();
+  const retentionWindow = `-${RAW_RETENTION_HOURS} hours`;
+
+  const clients = db.prepare(`
+    SELECT client_id, MIN(created_at) AS first_seen
+    FROM si_events
+    WHERE store = ?
+      AND client_id IS NOT NULL
+      AND client_id != ''
+      AND created_at >= datetime('now', ?)
+    GROUP BY client_id
+    ORDER BY first_seen ASC
+  `).all(normalizedStore, retentionWindow);
+
+  for (const row of clients) {
+    getOrCreateShopperNumber(normalizedStore, row.client_id, row.first_seen);
+  }
+
+  db.prepare(`
+    UPDATE si_events
+    SET shopper_number = (
+      SELECT shopper_number
+      FROM si_shoppers s
+      WHERE s.store = si_events.store
+        AND s.client_id = si_events.client_id
+    )
+    WHERE store = ?
+      AND shopper_number IS NULL
+      AND client_id IS NOT NULL
+      AND client_id != ''
+      AND created_at >= datetime('now', ?)
+  `).run(normalizedStore, retentionWindow);
+
+  db.prepare(`
+    UPDATE si_sessions
+    SET shopper_number = (
+      SELECT shopper_number
+      FROM si_shoppers s
+      WHERE s.store = si_sessions.store
+        AND s.client_id = si_sessions.client_id
+    )
+    WHERE store = ?
+      AND shopper_number IS NULL
+      AND client_id IS NOT NULL
+      AND client_id != ''
+  `).run(normalizedStore);
 }
 
 function safeJsonParse(value) {
@@ -962,6 +1020,7 @@ export function cleanupSessionIntelligenceRaw({ retentionHours = RAW_RETENTION_H
 
 export function getSessionIntelligenceOverview(store) {
   const db = getDb();
+  ensureRecentShopperNumbers(store);
 
   const checkoutDropMinutes = Number.isFinite(CHECKOUT_DROP_MINUTES) && CHECKOUT_DROP_MINUTES > 0
     ? CHECKOUT_DROP_MINUTES
@@ -1187,6 +1246,7 @@ export function getSessionIntelligenceOverview(store) {
 
 export function getSessionIntelligenceRecentEvents(store, limit = 80) {
   const db = getDb();
+  ensureRecentShopperNumbers(store);
   const max = Math.min(Math.max(parseInt(limit, 10) || 80, 1), 500);
   return db.prepare(`
     SELECT
@@ -1228,6 +1288,7 @@ export function getSessionIntelligenceRecentEvents(store, limit = 80) {
 
 export function getSessionIntelligenceSessions(store, limit = 60) {
   const db = getDb();
+  ensureRecentShopperNumbers(store);
   const max = Math.min(Math.max(parseInt(limit, 10) || 60, 1), 500);
   return db.prepare(`
     SELECT
@@ -1296,6 +1357,7 @@ function dayRangeUtc(dateStr) {
 
 export function listSessionIntelligenceDays(store, limit = 10) {
   const db = getDb();
+  ensureRecentShopperNumbers(store);
   const max = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
   return db.prepare(`
     SELECT
@@ -1313,6 +1375,7 @@ export function listSessionIntelligenceDays(store, limit = 10) {
 
 export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200) {
   const db = getDb();
+  ensureRecentShopperNumbers(store);
   const max = Math.min(Math.max(parseInt(limit, 10) || 200, 1), 1000);
   const range = dayRangeUtc(dateStr);
   if (!range) return [];
@@ -1373,6 +1436,7 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
 
 export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId = null, limit = 800 } = {}) {
   const db = getDb();
+  ensureRecentShopperNumbers(store);
   const max = Math.min(Math.max(parseInt(limit, 10) || 800, 1), 5000);
   const range = dayRangeUtc(dateStr);
   if (!range) return [];
