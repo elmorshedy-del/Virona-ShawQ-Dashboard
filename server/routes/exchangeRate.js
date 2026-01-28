@@ -359,4 +359,175 @@ router.post('/backfill-single', async (req, res) => {
   });
 });
 
+
+const MAX_MANUAL_DAYS_RANGE = 370;
+
+function parsePositiveNumber(value) {
+  const parsed = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function validateDateString(dateStr) {
+  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const parsed = new Date(`${dateStr}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime());
+}
+
+function buildDateRange(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const diffMs = end.getTime() - start.getTime();
+  const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+
+  if (diffDays < 0) return null;
+  if (diffDays + 1 > MAX_MANUAL_DAYS_RANGE) {
+    return { error: `Please keep ranges to ${MAX_MANUAL_DAYS_RANGE} days or fewer.` };
+  }
+
+  const dates = [];
+  for (let i = 0; i <= diffDays; i += 1) {
+    const d = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+
+  return { dates };
+}
+
+// POST /api/exchange-rates/manual - Save a manual rate for a date (or date range)
+router.post('/manual', (req, res) => {
+  const { date, startDate, endDate, tryToUsd, usdToTry, overwrite } = req.body || {};
+
+  const dateStr = typeof date === 'string' ? date.trim() : '';
+  const startStr = typeof startDate === 'string' ? startDate.trim() : '';
+  const endStr = typeof endDate === 'string' ? endDate.trim() : '';
+
+  const isSingle = Boolean(dateStr);
+  const isRange = Boolean(startStr || endStr);
+
+  if (!isSingle && !isRange) {
+    return res.status(400).json({ success: false, error: 'Please provide either "date" or "startDate/endDate".' });
+  }
+
+  if (isSingle && isRange) {
+    return res.status(400).json({
+      success: false,
+      error: 'Please provide either a single "date" or a "startDate/endDate" range (not both).'
+    });
+  }
+
+  if (isSingle && !validateDateString(dateStr)) {
+    return res.status(400).json({ success: false, error: 'Please select a valid date (YYYY-MM-DD).' });
+  }
+
+  if (isRange) {
+    if (!startStr || !endStr) {
+      return res.status(400).json({ success: false, error: 'Please provide both "startDate" and "endDate".' });
+    }
+
+    if (!validateDateString(startStr) || !validateDateString(endStr)) {
+      return res.status(400).json({ success: false, error: 'Please select a valid start/end date (YYYY-MM-DD).' });
+    }
+  }
+
+  const parsedTryToUsd = parsePositiveNumber(tryToUsd);
+  const parsedUsdToTry = parsePositiveNumber(usdToTry);
+
+  if (!parsedTryToUsd && !parsedUsdToTry) {
+    return res.status(400).json({
+      success: false,
+      error: 'Please provide a valid exchange rate ("tryToUsd" or "usdToTry").'
+    });
+  }
+
+  const rate = parsedTryToUsd || (1 / parsedUsdToTry);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    return res.status(400).json({ success: false, error: 'Please provide a valid positive exchange rate.' });
+  }
+
+  const db = getDb();
+  const allowOverwrite = Boolean(overwrite);
+
+  const selectExisting = db.prepare(`
+    SELECT rate, source FROM exchange_rates
+    WHERE from_currency = 'TRY' AND to_currency = 'USD' AND date = ?
+  `);
+
+  const upsert = db.prepare(`
+    INSERT OR REPLACE INTO exchange_rates (from_currency, to_currency, rate, date, source)
+    VALUES ('TRY', 'USD', ?, ?, 'manual')
+  `);
+
+  if (isSingle) {
+    const existing = selectExisting.get(dateStr);
+    if (existing && !allowOverwrite) {
+      return res.status(409).json({
+        success: false,
+        error: 'A rate already exists for this date. Enable overwrite to replace it.',
+        date: dateStr,
+        existing: {
+          rate: existing.rate,
+          usdToTry: 1 / existing.rate,
+          source: existing.source
+        }
+      });
+    }
+
+    upsert.run(rate, dateStr);
+
+    return res.json({
+      success: true,
+      mode: 'single',
+      date: dateStr,
+      rate,
+      usdToTry: 1 / rate,
+      source: 'manual',
+      overwritten: Boolean(existing && allowOverwrite)
+    });
+  }
+
+  const range = buildDateRange(startStr, endStr);
+  if (!range) {
+    return res.status(400).json({ success: false, error: 'Start date must be before or equal to end date.' });
+  }
+  if (range.error) {
+    return res.status(400).json({ success: false, error: range.error });
+  }
+
+  let inserted = 0;
+  let skippedExisting = 0;
+  let overwritten = 0;
+
+  const txn = db.transaction(() => {
+    for (const day of range.dates) {
+      const existing = selectExisting.get(day);
+      if (existing && !allowOverwrite) {
+        skippedExisting += 1;
+        continue;
+      }
+      if (existing && allowOverwrite) {
+        overwritten += 1;
+      }
+      upsert.run(rate, day);
+      inserted += 1;
+    }
+  });
+
+  txn();
+
+  return res.json({
+    success: true,
+    mode: 'range',
+    startDate: startStr,
+    endDate: endStr,
+    rate,
+    usdToTry: 1 / rate,
+    source: 'manual',
+    overwrite: allowOverwrite,
+    inserted,
+    skippedExisting,
+    overwritten
+  });
+});
+
 export default router;
