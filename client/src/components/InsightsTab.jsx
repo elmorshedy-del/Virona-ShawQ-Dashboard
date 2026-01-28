@@ -97,6 +97,30 @@ const SECTION_INDEX = [
   { id: 'insight-launch-readiness', title: 'Launch Readiness', summary: 'Operational checklist.' }
 ];
 
+const METHOD_OPTIONS = {
+  persona: [
+    { value: 'auto', label: 'Auto (recommended)' },
+    { value: 'heuristic', label: 'Fatigue heuristic (fast)', note: 'Needs basic CTR history.' },
+    { value: 'deepsurv', label: 'DeepSurv (survival model)', note: 'Recommended >=10 creatives with fatigue events.' }
+  ],
+  geo: [
+    { value: 'auto', label: 'Auto (recommended)' },
+    { value: 'scorer', label: 'Opportunity scorer + cosine', note: 'Lightweight baseline.' },
+    { value: 'tabpfn', label: 'TabPFN', note: 'Recommended >=6 geos with conversions.' },
+    { value: 'tabpfn+siamese', label: 'TabPFN + Siamese', note: 'Recommended >=10 geos for embeddings.' }
+  ],
+  adjacent: [
+    { value: 'auto', label: 'Auto (recommended)' },
+    { value: 'copurchase', label: 'Co-purchase lift + transitions', note: 'Best for small catalogs.' },
+    { value: 'graphsage', label: 'GraphSAGE (offline)', note: 'Recommended >=200 SKUs + embeddings.' },
+    { value: 'sasrec', label: 'SASRec (offline)', note: 'Recommended >=5000 sessions + scores.' }
+  ],
+  peaks: [
+    { value: 'auto', label: 'Auto (recommended)' },
+    { value: 'chronos', label: 'Chronos-2', note: 'Foundation forecasting model.' },
+    { value: 'linear', label: 'Linear trend heuristic', note: 'Fast fallback.' }
+  ]
+};
 const confidenceLabel = (value) => {
   if (value >= 0.75) return 'High';
   if (value >= 0.5) return 'Medium';
@@ -217,10 +241,16 @@ const createBaselinePayload = (store) => {
         confidence: 0.78,
         sources: ['Meta Ads performance', 'Review topic mining'],
         models: [
-          { name: 'CLIP ViT-L/14', description: 'Embeds creative visuals and copy to cluster style.' },
-          { name: 'HDBSCAN', description: 'Groups creatives into themes without manual labels.' },
-          { name: 'DeepSurv', description: 'Forecasts creative fatigue timing.' }
-        ]
+          { name: 'CLIP ViT-L/14', description: 'Embeds creative visuals into semantic vectors.' },
+          { name: 'HDBSCAN', description: 'Clusters creatives by visual similarity.' },
+          { name: 'Fatigue Heuristic', description: 'Rule-based fatigue estimate using CTR decay vs peak.' }
+        ],
+        models_available: [
+          { name: 'DeepSurv (optional)', description: 'Enable when you have >= 10 creatives and fatigue events.' }
+        ],
+        method_used: 'heuristic',
+        logic: 'Winning creative clusters are identified by higher conversion-weighted scores.',
+        limits: 'Needs enough creatives and stable targeting. DeepSurv is optional.'
       },
       {
         id: 'card-geo',
@@ -232,9 +262,16 @@ const createBaselinePayload = (store) => {
         confidence: 0.71,
         sources: ['Search trends', 'Ad density scan'],
         models: [
-          { name: 'PatchTST', description: 'Forecasts demand using multi-signal trends.' },
-          { name: 'Siamese Metric Learning', description: 'Finds markets that behave like your best geos.' }
-        ]
+          { name: 'Geo Opportunity Scorer', description: 'Weighted scoring on demand, readiness, and competition.' },
+          { name: 'Cosine Similarity', description: 'Matches geos by similarity to top performers.' }
+        ],
+        models_available: [
+          { name: 'TabPFN (optional)', description: 'Enable with >= 6 geos for stronger low-data prediction.' },
+          { name: 'Siamese Similarity (optional)', description: 'Enable with >= 10 geos for learned embeddings.' }
+        ],
+        method_used: 'scorer',
+        logic: 'Candidate geo ranks top in opportunity score while matching winning markets.',
+        limits: 'Add external market data for stronger geo discovery.'
       },
       {
         id: 'card-adjacent',
@@ -246,9 +283,16 @@ const createBaselinePayload = (store) => {
         confidence: 0.66,
         sources: ['Marketplace scan', 'Review clustering'],
         models: [
-          { name: 'GraphSAGE', description: 'Learns adjacency from co-purchase graphs.' },
-          { name: 'SASRec', description: 'Predicts next-item interest from browsing sequences.' }
-        ]
+          { name: 'Directional Co-purchase Lift', description: 'Computes P(Y|X) + lift to avoid popularity bias.' },
+          { name: 'Markov Transition Model', description: 'Counts next-step transitions from sessions when available.' }
+        ],
+        models_available: [
+          { name: 'GraphSAGE (optional)', description: 'Enable with >= 200 SKUs and offline-trained embeddings.' },
+          { name: 'SASRec (optional)', description: 'Enable with >= 5000 sessions and offline-trained scores.' }
+        ],
+        method_used: 'copurchase',
+        logic: 'Rank directional pairs by lift then support, optionally boosted by transitions.',
+        limits: 'Small catalogs rarely benefit from deep graph/sequence models.'
       },
       {
         id: 'card-peaks',
@@ -260,9 +304,14 @@ const createBaselinePayload = (store) => {
         confidence: 0.74,
         sources: ['Demand forecast', 'Seasonality model'],
         models: [
-          { name: 'TFT', description: 'Multi-signal demand forecasting with seasonality.' },
-          { name: 'N-HiTS', description: 'Short-term peak forecasting.' }
-        ]
+          { name: 'Linear Trend', description: 'Slope-based short-term forecast.' }
+        ],
+        models_available: [
+          { name: 'Chronos-2 (optional)', description: 'Enable when Chronos weights are available.' }
+        ],
+        method_used: 'linear',
+        logic: 'Positive slope and forecasted uplift point to a short-term peak window.',
+        limits: 'Short history or volatile spend can reduce forecast stability.'
       },
       {
         id: 'card-anomaly',
@@ -341,9 +390,41 @@ function ConfidencePill({ value }) {
   );
 }
 
-function InsightCard({ card, anchorId, flash, onAsk }) {
+function InsightCard({ card, anchorId, flash, onAsk, override, onOverrideChange }) {
   const meta = INSIGHT_META[card.type] || INSIGHT_META.persona;
   const Icon = meta.icon;
+  const [flipped, setFlipped] = useState(false);
+
+  const methodOptions = METHOD_OPTIONS[card.type] || [{ value: 'auto', label: 'Auto (recommended)' }];
+  const mode = override?.mode || 'auto';
+  const selectedMethod = override?.method || 'auto';
+  const selectedOption = methodOptions.find((option) => option.value === (mode === 'manual' ? selectedMethod : 'auto'));
+  const methodUsed = card.method_used || (card.models || []).map((model) => model.name).join(', ') || 'Auto';
+  const methodRequested = mode === 'manual' ? selectedMethod : 'auto';
+  const warnings = card.warnings || [];
+  const logic = card.logic;
+  const limits = card.limits;
+  const modelsAvailable = card.models_available || [];
+
+  const modelTag = (name = '') => {
+    const heuristicPattern = /(heuristic|scorer|lift|cosine|trend|linear|propensity)/i;
+    return heuristicPattern.test(name) ? 'Heuristic' : 'Model';
+  };
+
+  const handleModeChange = (nextMode) => {
+    if (!onOverrideChange) return;
+    if (nextMode === 'auto') {
+      onOverrideChange(card.type, { mode: 'auto', method: 'auto' });
+      return;
+    }
+    const fallback = methodOptions.find((option) => option.value !== 'auto')?.value || 'auto';
+    onOverrideChange(card.type, { mode: 'manual', method: selectedMethod !== 'auto' ? selectedMethod : fallback });
+  };
+
+  const handleMethodChange = (event) => {
+    if (!onOverrideChange) return;
+    onOverrideChange(card.type, { mode: 'manual', method: event.target.value });
+  };
 
   return (
     <motion.div
@@ -352,53 +433,152 @@ function InsightCard({ card, anchorId, flash, onAsk }) {
       whileHover={{ y: -4 }}
       transition={{ duration: 0.25, ease: easeOut }}
     >
-      <div className="insights-card p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="insights-icon" style={{ boxShadow: `0 0 18px ${meta.accent}` }}>
-              <Icon className="h-5 w-5" style={{ color: meta.accent }} />
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">{meta.label}</div>
-              <div className="mt-2 text-base font-semibold text-slate-900">{card.title}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" className="insights-ask" aria-label="Ask AI" title="Ask AI" onClick={() => onAsk?.(card, meta)}>
-              <Sparkles className="h-3.5 w-3.5" />
-              <span>Ask AI</span>
-            </button>
-            <ConfidencePill value={card.confidence} />
-          </div>
-        </div>
-
-        <div className="mt-4 space-y-3 text-sm text-slate-600">
-          <div><span className="font-semibold text-slate-800">Finding:</span> {card.finding}</div>
-          <div><span className="font-semibold text-slate-800">Why it matters:</span> {card.why}</div>
-          <div className="text-slate-900"><span className="font-semibold">Action:</span> {card.action}</div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {(card.sources || []).map((source) => (
-            <span key={source} className="insights-chip">{source}</span>
-          ))}
-        </div>
-
-        <div className="mt-5 grid gap-3 text-xs text-slate-500">
-          <details className="insights-details rounded-xl border border-slate-200 bg-white/60 p-3">
-            <summary className="font-semibold text-slate-700">Model details</summary>
-            <div className="mt-3 space-y-2">
-              {(card.models || []).map((model) => (
-                <div key={model.name} className="flex items-start gap-2">
-                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-400" />
+      <div className="insights-card-flip">
+        <div className={`insights-card-inner ${flipped ? 'is-flipped' : ''}`}>
+          <div className="insights-card-face insights-card-front">
+            <div className="insights-card p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="insights-icon" style={{ boxShadow: `0 0 18px ${meta.accent}` }}>
+                    <Icon className="h-5 w-5" style={{ color: meta.accent }} />
+                  </div>
                   <div>
-                    <div className="text-slate-800 font-semibold">{model.name}</div>
-                    <div>{model.description}</div>
+                    <div className="text-xs uppercase tracking-[0.2em] text-slate-400">{meta.label}</div>
+                    <div className="mt-2 text-base font-semibold text-slate-900">{card.title}</div>
                   </div>
                 </div>
-              ))}
+                <div className="flex items-center gap-2">
+                  <button type="button" className="insights-ask" aria-label="Ask AI" title="Ask AI" onClick={() => onAsk?.(card, meta)}>
+                    <Sparkles className="h-3.5 w-3.5" />
+                    <span>Ask AI</span>
+                  </button>
+                  <button type="button" className="insights-ask insights-explain" onClick={() => setFlipped(true)}>
+                    <Zap className="h-3.5 w-3.5" />
+                    <span>Explain</span>
+                  </button>
+                  <ConfidencePill value={card.confidence} />
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-3 text-sm text-slate-600">
+                <div><span className="font-semibold text-slate-800">Finding:</span> {card.finding}</div>
+                <div><span className="font-semibold text-slate-800">Why it matters:</span> {card.why}</div>
+                <div className="text-slate-900"><span className="font-semibold">Action:</span> {card.action}</div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {(card.sources || []).map((source) => (
+                  <span key={source} className="insights-chip">{source}</span>
+                ))}
+              </div>
             </div>
-          </details>
+          </div>
+
+          <div className="insights-card-face insights-card-back">
+            <div className="insights-card p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Method & evidence</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">{meta.label}</div>
+                  <div className="mt-1 text-xs text-slate-500">Used: {methodUsed}</div>
+                </div>
+                <button type="button" className="insights-ask insights-explain" onClick={() => setFlipped(false)}>
+                  <Zap className="h-3.5 w-3.5" />
+                  <span>Back</span>
+                </button>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-700">Mode</span>
+                  <div className="inline-flex rounded-full border border-slate-200 bg-white/80 p-0.5">
+                    <button
+                      type="button"
+                      className={`insights-toggle ${mode === 'auto' ? 'is-active' : ''}`}
+                      onClick={() => handleModeChange('auto')}
+                    >
+                      Auto
+                    </button>
+                    <button
+                      type="button"
+                      className={`insights-toggle ${mode === 'manual' ? 'is-active' : ''}`}
+                      onClick={() => handleModeChange('manual')}
+                    >
+                      Manual
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <label className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Method override</label>
+                  <select
+                    className="insights-select"
+                    disabled={mode !== 'manual'}
+                    value={mode === 'manual' ? selectedMethod : 'auto'}
+                    onChange={handleMethodChange}
+                  >
+                    {methodOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  {mode === 'manual' && methodRequested !== 'auto' && (
+                    <div className="mt-2 text-[11px] text-slate-500">Requested: {methodRequested}</div>
+                  )}
+                {selectedOption?.note && (
+                  <div className="mt-1 text-[11px] text-slate-500">{selectedOption.note}</div>
+                )}
+                </div>
+              </div>
+
+              {warnings.length > 0 && (
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+                  {warnings.map((warning) => (
+                    <div key={warning}>• {warning}</div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-4 space-y-3 text-xs text-slate-600">
+                <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Models used</div>
+                {(card.models || []).map((model) => (
+                  <div key={model.name} className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-400" />
+                    <div>
+                      <div className="text-slate-800 font-semibold">{model.name} <span className="text-[10px] uppercase text-slate-400">({modelTag(model.name)})</span></div>
+                      <div>{model.description}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {modelsAvailable.length > 0 && (
+                <div className="mt-4">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Available upgrades</div>
+                  <div className="mt-2 space-y-2 text-xs text-slate-600">
+                    {modelsAvailable.map((model) => (
+                      <div key={model.name} className="flex items-start gap-2">
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-400" />
+                        <div>
+                          <div className="text-slate-800 font-semibold">{model.name}</div>
+                          <div>{model.description}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(logic || limits) && (
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
+                  {logic && (
+                    <div><span className="font-semibold text-slate-700">Logic:</span> {logic}</div>
+                  )}
+                  {limits && (
+                    <div className="mt-2"><span className="font-semibold text-slate-700">Limits:</span> {limits}</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </motion.div>
@@ -449,6 +629,7 @@ export default function InsightsTab({ store, formatCurrency }) {
   const [askContext, setAskContext] = useState(null);
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState('');
+  const [methodOverrides, setMethodOverrides] = useState({});
 
   useEffect(() => {
     return () => {
@@ -469,12 +650,32 @@ export default function InsightsTab({ store, formatCurrency }) {
     return () => window.removeEventListener('keydown', handleKey);
   }, [askContext]);
 
+
+  const handleOverrideChange = (type, next) => {
+    setMethodOverrides((prev) => ({
+      ...prev,
+      [type]: {
+        ...(prev[type] || { mode: 'auto', method: 'auto' }),
+        ...next
+      }
+    }));
+  };
   useEffect(() => {
     if (!store?.id) return;
     setLoading(true);
     setError('');
 
-    fetch(`/api/insights?store=${store.id}`)
+    const overridePayload = Object.entries(methodOverrides).reduce((acc, [type, cfg]) => {
+      if (cfg?.mode === 'manual' && cfg.method && cfg.method !== 'auto') {
+        acc[type] = cfg.method;
+      }
+      return acc;
+    }, {});
+    const methodsParam = Object.keys(overridePayload).length
+      ? `&methods=${encodeURIComponent(JSON.stringify(overridePayload))}`
+      : '';
+
+    fetch(`/api/insights?store=${store.id}${methodsParam}`)
       .then((res) => res.json())
       .then((data) => {
         if (!data || data.success === false) {
@@ -487,7 +688,7 @@ export default function InsightsTab({ store, formatCurrency }) {
         setPayload(null);
       })
       .finally(() => setLoading(false));
-  }, [store?.id]);
+  }, [store?.id, methodOverrides]);
 
   const insights = useMemo(() => payload || createBaselinePayload(store), [payload, store]);
   const navItems = useMemo(() => {
@@ -870,6 +1071,8 @@ export default function InsightsTab({ store, formatCurrency }) {
                     anchorId={anchorId}
                     flash={flashId === anchorId}
                     onAsk={handleAskOpen}
+                    override={methodOverrides[card.type] || { mode: 'auto', method: 'auto' }}
+                    onOverrideChange={handleOverrideChange}
                   />
                 );
               })}

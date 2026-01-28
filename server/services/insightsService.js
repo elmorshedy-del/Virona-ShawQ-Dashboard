@@ -505,7 +505,8 @@ async function buildCards({
   radarPoints,
   recentStart,
   priorStart,
-  endDate
+  endDate,
+  methodOverrides = {}
 }) {
   const cards = [
     {
@@ -518,10 +519,16 @@ async function buildCards({
       confidence: 0.78,
       sources: ['Meta Ads performance', 'Review topic mining'],
       models: [
-        { name: 'CLIP ViT-L/14', description: 'Embeds visuals and copy to cluster creative styles.' },
-        { name: 'HDBSCAN', description: 'Groups creatives into themes without manual labels.' },
-        { name: 'DeepSurv', description: 'Forecasts creative fatigue timing.' }
-      ]
+        { name: 'CLIP ViT-L/14', description: 'Embeds creative visuals into semantic vectors.' },
+        { name: 'HDBSCAN', description: 'Clusters creatives by visual similarity.' },
+        { name: 'Fatigue Heuristic', description: 'Rule-based fatigue estimate using CTR decay vs peak.' }
+      ],
+      models_available: [
+        { name: 'DeepSurv (optional)', description: 'Enable when you have >= 10 creatives and fatigue events.' }
+      ],
+      method_used: 'heuristic',
+      logic: 'Winning creative clusters are identified by higher conversion-weighted scores.',
+      limits: 'Needs enough creatives and stable targeting. DeepSurv is optional.'
     },
     {
       id: 'geo',
@@ -533,9 +540,16 @@ async function buildCards({
       confidence: 0.71,
       sources: ['Search trends', 'Ad density scan'],
       models: [
-        { name: 'PatchTST', description: 'Forecasts demand using multi-signal trends.' },
-        { name: 'Siamese Metric Learning', description: 'Finds markets that behave like your best geos.' }
-      ]
+        { name: 'Geo Opportunity Scorer', description: 'Weighted scoring on demand, readiness, and competition.' },
+        { name: 'Cosine Similarity', description: 'Matches geos by similarity to top performers.' }
+      ],
+      models_available: [
+        { name: 'TabPFN (optional)', description: 'Enable with >= 6 geos for stronger low-data prediction.' },
+        { name: 'Siamese Similarity (optional)', description: 'Enable with >= 10 geos for learned embeddings.' }
+      ],
+      method_used: 'scorer',
+      logic: 'Candidate geo ranks top in opportunity score while matching winning markets.',
+      limits: 'Add external market data for stronger geo discovery.'
     },
     {
       id: 'adjacent',
@@ -547,9 +561,16 @@ async function buildCards({
       confidence: 0.66,
       sources: ['Marketplace scan', 'Review clustering'],
       models: [
-        { name: 'GraphSAGE', description: 'Learns adjacency from co-purchase graphs.' },
-        { name: 'SASRec', description: 'Predicts next-item interest from browsing sequences.' }
-      ]
+        { name: 'Directional Co-purchase Lift', description: 'Computes P(Y|X) + lift to avoid popularity bias.' },
+        { name: 'Markov Transition Model', description: 'Counts next-step transitions from sessions when available.' }
+      ],
+      models_available: [
+        { name: 'GraphSAGE (optional)', description: 'Enable with >= 200 SKUs and offline-trained embeddings.' },
+        { name: 'SASRec (optional)', description: 'Enable with >= 5000 sessions and offline-trained scores.' }
+      ],
+      method_used: 'copurchase',
+      logic: 'Rank directional pairs by lift then support, optionally boosted by transitions.',
+      limits: 'Small catalogs rarely benefit from deep graph/sequence models.'
     },
     {
       id: 'peaks',
@@ -565,9 +586,14 @@ async function buildCards({
       confidence: 0.72,
       sources: ['Demand forecast', 'Seasonality model'],
       models: [
-        { name: 'TFT', description: 'Multi-signal demand forecasting with seasonality.' },
-        { name: 'N-HiTS', description: 'Short-term peak forecasting.' }
-      ]
+        { name: 'Linear Trend', description: 'Slope-based short-term forecast.' }
+      ],
+      models_available: [
+        { name: 'Chronos-2 (optional)', description: 'Enable when Chronos weights are available.' }
+      ],
+      method_used: 'linear',
+      logic: 'Positive slope and forecasted uplift point to a short-term peak window.',
+      limits: 'Short history or volatile spend can reduce forecast stability.'
     },
     {
       id: 'anomaly',
@@ -645,25 +671,25 @@ async function buildCards({
 
   const personaIndex = cards.findIndex((card) => card.type === 'persona');
   if (personaIndex != -1) {
-    const override = await fetchPersonaInsight({ ...context, assets: creativeAssets, history: creativeHistory, baseCard: cards[personaIndex] });
+    const override = await fetchPersonaInsight({ ...context, assets: creativeAssets, history: creativeHistory, baseCard: cards[personaIndex], method: methodOverrides.persona });
     cards[personaIndex] = mergeCard(cards[personaIndex], override);
   }
 
   const geoIndex = cards.findIndex((card) => card.type === 'geo');
   if (geoIndex != -1) {
-    const override = await fetchGeoInsight({ ...context, geos: geoFeatures, baseCard: cards[geoIndex] });
+    const override = await fetchGeoInsight({ ...context, geos: geoFeatures, baseCard: cards[geoIndex], method: methodOverrides.geo });
     cards[geoIndex] = mergeCard(cards[geoIndex], override);
   }
 
   const adjacentIndex = cards.findIndex((card) => card.type === 'adjacent');
   if (adjacentIndex != -1) {
-    const override = await fetchAdjacentInsight({ ...context, orders: adjacentData.orders, edges: adjacentData.edges, baseCard: cards[adjacentIndex] });
+    const override = await fetchAdjacentInsight({ ...context, orders: adjacentData.orders, edges: adjacentData.edges, baseCard: cards[adjacentIndex], method: methodOverrides.adjacent });
     cards[adjacentIndex] = mergeCard(cards[adjacentIndex], override);
   }
 
   const peaksIndex = cards.findIndex((card) => card.type === 'peaks');
   if (peaksIndex != -1) {
-    const override = await fetchPeaksInsight({ ...context, series: forecastSeries, baseCard: cards[peaksIndex] });
+    const override = await fetchPeaksInsight({ ...context, series: forecastSeries, baseCard: cards[peaksIndex], method: methodOverrides.peaks });
     cards[peaksIndex] = mergeCard(cards[peaksIndex], override);
   }
 
@@ -721,6 +747,15 @@ export async function getInsightsPayload(store, params = {}) {
   const recentStart = getDateString(addDays(end, -13));
   const priorStart = getDateString(addDays(end, -27));
 
+  let methodOverrides = {};
+  if (params?.methods) {
+    try {
+      methodOverrides = typeof params.methods === 'string' ? JSON.parse(params.methods) : params.methods;
+    } catch (error) {
+      methodOverrides = {};
+    }
+  }
+
   const metaRows = db.prepare(`
     SELECT country, date, SUM(conversions) as conversions, SUM(conversion_value) as revenue, SUM(spend) as spend
     FROM meta_daily_metrics
@@ -767,7 +802,8 @@ export async function getInsightsPayload(store, params = {}) {
     radarPoints,
     recentStart,
     priorStart,
-    endDate
+    endDate,
+    methodOverrides
   });
 
   const avgWeeklySpend = taggedRows.reduce((sum, row) => sum + toNumber(row.spend), 0) / 2;

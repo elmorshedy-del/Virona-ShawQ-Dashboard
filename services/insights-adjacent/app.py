@@ -48,6 +48,7 @@ class AdjacentPayload(BaseModel):
     transitions: List[Transition] = []  # optional session-based transitions
     anchor: Optional[str] = None
     session_count: Optional[int] = 0  # optional, for gating SASRec
+    method: Optional[str] = None
 
 
 def _lru_put(key: int, value: dict) -> None:
@@ -160,7 +161,10 @@ def predict(payload: AdjacentPayload):
     anchor = payload.anchor
     session_count = int(payload.session_count or 0)
 
-    cache_key = hash(str(orders) + str(edges_in) + str(transitions_in) + str(anchor) + str(session_count))
+    requested = (payload.method or 'auto').lower()
+    warnings = []
+
+    cache_key = hash(str(orders) + str(edges_in) + str(transitions_in) + str(anchor) + str(session_count) + requested)
     cached = CACHE.get(cache_key)
     if cached is not None:
         return {"insight": cached}
@@ -209,6 +213,35 @@ def predict(payload: AdjacentPayload):
             (src, tgt), prob = sorted(candidates, key=lambda kv: kv[1], reverse=True)[0]
             top_trans = {"from": src, "to": tgt, "p_next": float(prob)}
 
+    use_graphsage = False
+    use_sasrec = False
+
+    if requested in ('graphsage', 'sasrec'):
+        if requested == 'graphsage':
+            if not ENABLE_GRAPHSAGE:
+                warnings.append('GraphSAGE disabled (ENABLE_GRAPHSAGE=0).')
+            elif len(items) < MIN_ITEMS_FOR_GRAPHSAGE:
+                warnings.append(f'GraphSAGE needs at least {MIN_ITEMS_FOR_GRAPHSAGE} items.')
+            elif not os.path.exists(GRAPHSAGE_EMB_PATH):
+                warnings.append('GraphSAGE embeddings not found.')
+            else:
+                use_graphsage = True
+        if requested == 'sasrec':
+            if not ENABLE_SASREC:
+                warnings.append('SASRec disabled (ENABLE_SASREC=0).')
+            elif session_count < MIN_SESSIONS_FOR_SASREC:
+                warnings.append(f'SASRec needs about {MIN_SESSIONS_FOR_SASREC} sessions.')
+            elif not os.path.exists(SASREC_TRANS_PATH):
+                warnings.append('SASRec scores not found.')
+            else:
+                use_sasrec = True
+    elif requested == 'auto':
+        use_graphsage = ENABLE_GRAPHSAGE and len(items) >= MIN_ITEMS_FOR_GRAPHSAGE and os.path.exists(GRAPHSAGE_EMB_PATH)
+        use_sasrec = ENABLE_SASREC and session_count >= MIN_SESSIONS_FOR_SASREC and os.path.exists(SASREC_TRANS_PATH)
+    elif requested == 'copurchase':
+        use_graphsage = False
+        use_sasrec = False
+
     models_used = [{"name": "Directional Co-purchase Lift", "description": "Computes P(Y|X) + lift to avoid popularity bias."}]
     signals = ["Order line items (co-purchase)"]
     if transitions_in:
@@ -230,7 +263,7 @@ def predict(payload: AdjacentPayload):
         },
     ]
 
-    if ENABLE_GRAPHSAGE and len(items) >= MIN_ITEMS_FOR_GRAPHSAGE:
+    if use_graphsage:
         emb = _try_load_npy(GRAPHSAGE_EMB_PATH)
         if emb is not None and emb.shape[0] >= len(items):
             vecs = emb[: len(items)]
@@ -241,8 +274,10 @@ def predict(payload: AdjacentPayload):
             rec_item = items[best_idx]
             models_used = [{"name": "GraphSAGE (offline-trained)", "description": "Uses precomputed item embeddings from the co-purchase graph."}]
             signals = ["Offline-trained graph embeddings"]
+        else:
+            warnings.append('GraphSAGE embeddings unavailable; using co-purchase.')
 
-    if ENABLE_SASREC and session_count >= MIN_SESSIONS_FOR_SASREC:
+    if use_sasrec:
         scores = _try_load_npy(SASREC_TRANS_PATH)
         if scores is not None and scores.shape[0] >= len(items) and scores.shape[1] >= len(items):
             idx = items.index(anchor) if anchor in items else 0
@@ -250,6 +285,8 @@ def predict(payload: AdjacentPayload):
             rec_item = items[best_idx]
             models_used = [{"name": "SASRec (offline-trained)", "description": "Uses precomputed next-item scores from session sequences."}]
             signals = ["Offline-trained sequence model scores"]
+        else:
+            warnings.append('SASRec scores unavailable; using co-purchase.')
 
     support = int(best["support"])
     confidence = float(min(0.9, 0.45 + 0.08 * np.log10(max(2, support))))
@@ -262,7 +299,15 @@ def predict(payload: AdjacentPayload):
         f"support={support} orders",
     ]
     if top_trans:
-        finding_bits.append(f"top next-step: {top_trans['from']}→{top_trans['to']} ({top_trans['p_next']*100:.0f}%)")
+        finding_bits.append(f"top next-step: {top_trans['from']}->{top_trans['to']} ({top_trans['p_next']*100:.0f}%)")
+
+    method_used = 'copurchase'
+    if use_sasrec:
+        method_used = 'sasrec'
+    elif use_graphsage:
+        method_used = 'graphsage'
+    elif transitions_in:
+        method_used = 'copurchase+transitions'
 
     insight = {
         "title": f"{rec_item} is the strongest adjacent product",
@@ -273,6 +318,9 @@ def predict(payload: AdjacentPayload):
         "signals": signals,
         "models": models_used,
         "models_available": models_available,
+        "method_requested": requested,
+        "method_used": method_used,
+        "warnings": warnings,
         "logic": "Rank directional pairs by lift then support; optionally boost with session transitions.",
         "limits": "Small catalogs rarely benefit from deep graph/sequence models; use co-purchase + transitions first.",
     }

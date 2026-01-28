@@ -29,6 +29,18 @@ const normalizeInsight = (payload) => {
   return null;
 };
 
+const applyMethodMeta = (insight, requested, fallbackUsed, fallbackWarnings = []) => {
+  if (!insight || typeof insight !== 'object') return insight;
+  const next = { ...insight };
+  if (!next.method_requested) next.method_requested = requested;
+  if (!next.method_used && fallbackUsed) next.method_used = fallbackUsed;
+  if (fallbackWarnings.length) {
+    next.warnings = [...(next.warnings || []), ...fallbackWarnings];
+  }
+  return next;
+};
+
+
 const postJson = async (url, body) => {
   if (!url) return null;
   const controller = new AbortController();
@@ -357,8 +369,10 @@ export async function fetchPersonaInsight({
   endDate,
   baseCard,
   assets = [],
-  history = []
+  history = [],
+  method
 }) {
+  const requested = method || 'auto';
   const url = getServiceUrl('INSIGHTS_CREATIVE_EMBED_SERVICE_URL');
   if (url) {
     const payload = {
@@ -369,19 +383,26 @@ export async function fetchPersonaInsight({
       heatmap,
       assets,
       history,
-      base: baseCard
+      base: baseCard,
+      method: requested
     };
     const response = await postJson(url, payload);
     const normalized = normalizeInsight(response);
-    if (normalized) return normalized;
+    if (normalized) return applyMethodMeta(normalized, requested);
   }
   try {
-    return await localPersonaInsight({ store, topGeo, topSegment, recentStart, endDate });
+    const fallbackWarnings = [];
+    if (requested === 'deepsurv') {
+      fallbackWarnings.push('DeepSurv unavailable in fallback; using heuristic.');
+    }
+    const local = await localPersonaInsight({ store, topGeo, topSegment, recentStart, endDate });
+    return applyMethodMeta(local, requested, 'heuristic', fallbackWarnings);
   } catch (error) {
     console.warn('[InsightsModel] local persona failed:', error?.message || error);
     return null;
   }
 }
+
 
 export async function fetchGeoInsight({
   store,
@@ -390,8 +411,10 @@ export async function fetchGeoInsight({
   radarPoints,
   recentStart,
   endDate,
-  baseCard
+  baseCard,
+  method
 }) {
+  const requested = method || 'auto';
   const url = getServiceUrl('INSIGHTS_GEO_SIM_SERVICE_URL');
   if (url) {
     const payload = {
@@ -400,19 +423,26 @@ export async function fetchGeoInsight({
       topGeo,
       geos,
       radarPoints,
-      base: baseCard
+      base: baseCard,
+      method: requested
     };
     const response = await postJson(url, payload);
     const normalized = normalizeInsight(response);
-    if (normalized) return normalized;
+    if (normalized) return applyMethodMeta(normalized, requested);
   }
   try {
-    return await localGeoInsight({ store, topGeo, radarPoints, recentStart, endDate });
+    const fallbackWarnings = [];
+    if (['tabpfn', 'tabpfn+siamese', 'siamese'].includes(requested)) {
+      fallbackWarnings.push('Requested model unavailable in fallback; using opportunity scorer.');
+    }
+    const local = await localGeoInsight({ store, topGeo, radarPoints, recentStart, endDate });
+    return applyMethodMeta(local, requested, 'scorer', fallbackWarnings);
   } catch (error) {
     console.warn('[InsightsModel] local geo failed:', error?.message || error);
     return null;
   }
 }
+
 
 export async function fetchAdjacentInsight({
   store,
@@ -423,8 +453,12 @@ export async function fetchAdjacentInsight({
   endDate,
   baseCard,
   orders = [],
-  edges = []
+  edges = [],
+  transitions = [],
+  sessionCount = 0,
+  method
 }) {
+  const requested = method || 'auto';
   const url = getServiceUrl('INSIGHTS_ADJACENT_SERVICE_URL');
   if (url) {
     const payload = {
@@ -435,19 +469,28 @@ export async function fetchAdjacentInsight({
       seed: adjacentSuggestion,
       orders,
       edges,
-      base: baseCard
+      transitions,
+      session_count: sessionCount,
+      base: baseCard,
+      method: requested
     };
     const response = await postJson(url, payload);
     const normalized = normalizeInsight(response);
-    if (normalized) return normalized;
+    if (normalized) return applyMethodMeta(normalized, requested);
   }
   try {
-    return await localAdjacentInsight({ store, adjacentSuggestion, recentStart, endDate });
+    const fallbackWarnings = [];
+    if (['graphsage', 'sasrec'].includes(requested)) {
+      fallbackWarnings.push('Requested model unavailable in fallback; using co-purchase lift.');
+    }
+    const local = await localAdjacentInsight({ store, adjacentSuggestion, recentStart, endDate });
+    return applyMethodMeta(local, requested, 'copurchase', fallbackWarnings);
   } catch (error) {
     console.warn('[InsightsModel] local adjacent failed:', error?.message || error);
     return null;
   }
 }
+
 
 export async function fetchPeaksInsight({
   store,
@@ -455,8 +498,10 @@ export async function fetchPeaksInsight({
   recentStart,
   endDate,
   baseCard,
-  series = []
+  series = [],
+  method
 }) {
+  const requested = method || 'auto';
   const url = getServiceUrl('INSIGHTS_FORECAST_SERVICE_URL');
   if (url) {
     const payload = {
@@ -464,16 +509,23 @@ export async function fetchPeaksInsight({
       window: { start: recentStart, end: endDate },
       trendDirection,
       series,
-      base: baseCard
+      base: baseCard,
+      method: requested
     };
     const response = await postJson(url, payload);
     const normalized = normalizeInsight(response);
-    if (normalized) return normalized;
+    if (normalized) return applyMethodMeta(normalized, requested);
   }
   try {
-    return await localPeaksInsight({ store, trendDirection, recentStart, endDate });
+    const fallbackWarnings = [];
+    if (requested === 'chronos') {
+      fallbackWarnings.push('Chronos unavailable in fallback; using linear trend.');
+    }
+    const local = await localPeaksInsight({ store, trendDirection, recentStart, endDate });
+    return applyMethodMeta(local, requested, 'linear', fallbackWarnings);
   } catch (error) {
     console.warn('[InsightsModel] local peaks failed:', error?.message || error);
     return null;
   }
 }
+

@@ -22,7 +22,6 @@ MODEL_ID = os.getenv('CHRONOS_MODEL_ID', 'amazon/chronos-t5-small')
 PRED_LEN = int(os.getenv('CHRONOS_PRED_LEN', '21'))
 
 PIPE = None
-PIPE_LOCK = None
 
 class SeriesPoint(BaseModel):
     date: str
@@ -31,6 +30,7 @@ class SeriesPoint(BaseModel):
 class ForecastPayload(BaseModel):
     store: Optional[str] = None
     series: List[SeriesPoint] = []
+    method: Optional[str] = None
 
 
 @app.get('/health')
@@ -44,10 +44,24 @@ def predict(payload: ForecastPayload):
     if len(series) < 10:
         return {"insight": None}
 
+    requested = (payload.method or 'auto').lower()
+    warnings = []
+
     values = np.array([p.value for p in series], dtype=np.float32)
     last_avg = np.mean(values[-7:]) if len(values) >= 7 else np.mean(values)
 
-    if CHRONOS_AVAILABLE:
+    use_chronos = False
+    if requested == 'chronos':
+        if not CHRONOS_AVAILABLE:
+            warnings.append('Chronos unavailable in this service; using linear trend.')
+        else:
+            use_chronos = True
+    elif requested == 'linear':
+        use_chronos = False
+    else:
+        use_chronos = CHRONOS_AVAILABLE
+
+    if use_chronos:
         global PIPE
         if PIPE is None:
             with PIPE_LOCK:
@@ -64,18 +78,26 @@ def predict(payload: ForecastPayload):
     peak_value = float(pred[peak_idx])
     uplift = (peak_value - last_avg) / max(1e-6, last_avg)
 
+    method_used = 'chronos' if use_chronos else 'linear'
+
     insight = {
         "title": f"Peak window expected in {peak_idx + 1} days",
         "finding": f"Forecast suggests {uplift * 100:.0f}% change vs last 7-day average.",
-        "why": "Chronos-2 forecasts near-term demand using learned temporal dynamics.",
+        "why": "Chronos-2 forecasts near-term demand using learned temporal dynamics." if use_chronos else "Linear trend projects near-term demand from recent slope.",
         "action": "Increase inventory buffer and ramp creatives 7-10 days before the peak.",
         "confidence": min(0.85, 0.5 + abs(uplift) * 0.2),
         "signals": ["Daily conversions", "Short-term demand forecast"],
         "models": [
-            {"name": "Chronos-2", "description": "Foundation model for time series forecasting."}
+            {"name": "Chronos-2", "description": "Foundation model for time series forecasting."} if use_chronos else {"name": "Linear Trend", "description": "Slope-based short-term forecast using recent conversions."}
         ],
+        "models_available": [
+            {"name": "Chronos-2 (optional)", "description": "Enable if the service has Chronos weights available.", "enabled": CHRONOS_AVAILABLE}
+        ],
+        "method_requested": requested,
+        "method_used": method_used,
+        "warnings": warnings,
         "logic": "Forecast peak above recent mean triggers the preparation window.",
-        "limits": "Requires consistent daily data; major spend shocks can shift the forecast."
+        "limits": "Requires consistent daily data; major spend shocks can shift the forecast.",
     }
 
     return {"insight": insight}

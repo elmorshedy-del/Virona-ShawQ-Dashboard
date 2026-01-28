@@ -48,6 +48,7 @@ class GeoPayload(BaseModel):
     store: Optional[str] = None
     top_geo: Optional[str] = None
     geos: List[GeoFeature] = []
+    method: Optional[str] = None
 
 class SiameseNet(torch.nn.Module):
     def __init__(self, input_dim: int):
@@ -88,9 +89,33 @@ def train_siamese(features, labels, epochs=60):
     return model
 
 
+def _opportunity_score(features: np.ndarray) -> np.ndarray:
+    def norm(col):
+        min_val = float(col.min())
+        max_val = float(col.max())
+        if max_val == min_val:
+            return np.full_like(col, 0.5, dtype=np.float32)
+        return (col - min_val) / (max_val - min_val)
+
+    demand = norm(features[:, 6])
+    competition = norm(features[:, 7])
+    readiness = norm(features[:, 8])
+    growth = norm(features[:, 5])
+    conversions = norm(features[:, 1])
+    score = demand * 0.35 + readiness * 0.2 + growth * 0.2 + conversions * 0.15 - competition * 0.2
+    return score.astype(np.float32)
+
+
 @app.get('/health')
 def health():
-    return {"ok": True, "tabpfn": TABPFN_AVAILABLE}
+    return {
+        "ok": True,
+        "tabpfn": TABPFN_AVAILABLE,
+        "tabpfn_enabled": ENABLE_TABPFN,
+        "siamese_enabled": ENABLE_SIAMESE_TRAIN,
+        "min_geos_for_tabpfn": MIN_GEOS_FOR_TABPFN,
+        "min_geos_for_siamese": MIN_GEOS_FOR_SIAMESE,
+    }
 
 
 @app.post('/predict')
@@ -109,9 +134,45 @@ def predict(payload: GeoPayload):
     features_scaled = scaler.fit_transform(features)
 
     target = np.array([g.conversions or g.demand or 0 for g in geos], dtype=np.float32)
+    baseline_score = _opportunity_score(features)
 
-    preds = target.copy()
-    if TABPFN_AVAILABLE and ENABLE_TABPFN and len(geos) >= 4:
+    requested = (payload.method or 'auto').lower()
+    warnings = []
+
+    use_tabpfn = False
+    use_siamese = False
+
+    if requested in ('tabpfn', 'tabpfn+siamese'):
+        if not TABPFN_AVAILABLE:
+            warnings.append('TabPFN not installed in this service.')
+        elif not ENABLE_TABPFN:
+            warnings.append('TabPFN disabled (ENABLE_TABPFN=0).')
+        elif len(geos) < MIN_GEOS_FOR_TABPFN:
+            warnings.append(f'TabPFN needs at least {MIN_GEOS_FOR_TABPFN} geos with data.')
+        else:
+            use_tabpfn = True
+    if requested in ('siamese', 'tabpfn+siamese'):
+        if not ENABLE_SIAMESE_TRAIN:
+            warnings.append('Siamese embeddings disabled (ENABLE_SIAMESE_TRAIN=0).')
+        elif len(geos) < MIN_GEOS_FOR_SIAMESE:
+            warnings.append(f'Siamese embeddings need at least {MIN_GEOS_FOR_SIAMESE} geos.')
+        else:
+            use_siamese = True
+
+    if requested == 'scorer':
+        use_tabpfn = False
+        use_siamese = False
+    elif requested == 'tabpfn':
+        use_siamese = False
+    elif requested == 'siamese':
+        use_tabpfn = False
+
+    if requested == 'auto':
+        use_tabpfn = TABPFN_AVAILABLE and ENABLE_TABPFN and len(geos) >= MIN_GEOS_FOR_TABPFN
+        use_siamese = ENABLE_SIAMESE_TRAIN and len(geos) >= MIN_GEOS_FOR_SIAMESE
+
+    preds = baseline_score.copy()
+    if use_tabpfn:
         cache_key = hash(features_scaled.tobytes() + target.tobytes())
         cached = PRED_CACHE.get(cache_key)
         if cached is None:
@@ -122,12 +183,11 @@ def predict(payload: GeoPayload):
         else:
             preds = cached
 
-    # labels for siamese (top vs bottom)
     threshold = np.median(preds)
     labels = (preds >= threshold).astype(int)
 
     embeddings = features_scaled
-    if ENABLE_SIAMESE_TRAIN and len(geos) >= MIN_GEOS_FOR_SIAMESE:
+    if use_siamese:
         embed_key = hash(features_scaled.tobytes() + labels.tobytes())
         cached_embed = EMBED_CACHE.get(embed_key)
         if cached_embed is None:
@@ -139,7 +199,6 @@ def predict(payload: GeoPayload):
         else:
             embeddings = cached_embed
 
-    # choose candidate not top_geo
     ranked = sorted(zip(geos, preds, embeddings), key=lambda x: x[1], reverse=True)
     candidate = ranked[0]
     if payload.top_geo and ranked[0][0].geo == payload.top_geo and len(ranked) > 1:
@@ -149,41 +208,52 @@ def predict(payload: GeoPayload):
     sim = cosine_similarity(candidate[2].reshape(1, -1), embeddings[geos.index(top_geo)].reshape(1, -1))[0][0]
     confidence = min(0.85, 0.55 + float(np.std(preds)) / (np.mean(preds) + 1e-6))
 
+    method_used = 'scorer'
+    if use_tabpfn and use_siamese:
+        method_used = 'tabpfn+siamese'
+    elif use_tabpfn:
+        method_used = 'tabpfn'
+    elif use_siamese:
+        method_used = 'scorer+siamese'
+
     used_models = []
     used_models.append({
-        "name": "TabPFN" if (TABPFN_AVAILABLE and ENABLE_TABPFN and len(geos) >= MIN_GEOS_FOR_TABPFN) else "Geo Opportunity Scorer",
-        "description": "Tabular foundation model for low-data geo prediction." if (TABPFN_AVAILABLE and ENABLE_TABPFN and len(geos) >= MIN_GEOS_FOR_TABPFN) else "Weighted scoring on spend/conversions/CTR/CVR/growth."
+        "name": "TabPFN" if use_tabpfn else "Geo Opportunity Scorer",
+        "description": "Tabular foundation model for low-data geo prediction." if use_tabpfn else "Weighted scoring on demand, readiness, growth, conversions, and competition.",
     })
 
     used_models.append({
-        "name": "Siamese Similarity" if (ENABLE_SIAMESE_TRAIN and len(geos) >= MIN_GEOS_FOR_SIAMESE) else "Cosine Similarity",
-        "description": "Learns geo embeddings to match winning markets." if (ENABLE_SIAMESE_TRAIN and len(geos) >= MIN_GEOS_FOR_SIAMESE) else "Matches geos by cosine similarity over normalized features."
+        "name": "Siamese Similarity" if use_siamese else "Cosine Similarity",
+        "description": "Learns geo embeddings to match winning markets." if use_siamese else "Matches geos by cosine similarity over normalized features.",
     })
 
     models_available = [
         {
             "name": "TabPFN (optional)",
-            "description": f"Enable when you have >= {MIN_GEOS_FOR_TABPFN} geos and you can afford heavier inference.",
-            "enabled": bool(TABPFN_AVAILABLE and ENABLE_TABPFN)
+            "description": f"Enable when you have >= {MIN_GEOS_FOR_TABPFN} geos and can afford heavier inference.",
+            "enabled": bool(TABPFN_AVAILABLE and ENABLE_TABPFN),
         },
         {
             "name": "Siamese Similarity (optional)",
             "description": f"Enable when you have >= {MIN_GEOS_FOR_SIAMESE} geos and want learned embeddings.",
-            "enabled": bool(ENABLE_SIAMESE_TRAIN)
-        }
+            "enabled": bool(ENABLE_SIAMESE_TRAIN),
+        },
     ]
 
     insight = {
         "title": f"{candidate[0].geo} shows the strongest geo opportunity",
         "finding": f"Predicted conversion potential ranks {candidate[0].geo} above peers; similarity to {top_geo.geo} is {sim*100:.0f}%.",
-        "why": "Tabular foundation model scores each geo on performance signals; siamese embedding matches to winning markets.",
+        "why": "Geo scoring compares demand, readiness, and competition; similarity matches to winning markets.",
         "action": f"Run a 14-day test in {candidate[0].geo} with localized creatives.",
         "confidence": confidence,
         "signals": ["Geo spend & conversion profile", "CTR/CVR lift", "Demand/competition balance"],
         "models": used_models,
         "models_available": models_available,
+        "method_requested": requested,
+        "method_used": method_used,
+        "warnings": warnings,
         "logic": "Candidate geo ranks top in predicted conversions while remaining similar to best-performing markets.",
-        "limits": "If TabPFN/Siamese are disabled, this uses a lightweight scorer + cosine similarity. Add external market data for stronger geo discovery."
+        "limits": "If TabPFN/Siamese are disabled, this uses a lightweight scorer + cosine similarity. Add external market data for stronger geo discovery.",
     }
 
     return {"insight": insight}
