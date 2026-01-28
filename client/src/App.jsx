@@ -3212,7 +3212,14 @@ function DashboardTab({
       }
 
       if (dayCount === 0) {
-        return { orders: 0, revenue: 0, spend: 0 };
+        // Fallback: use bucket data / elapsed days
+        const elapsedDays = Math.floor((today - parseLocalDate(lastPoint.bucketStartDate)) / (1000 * 60 * 60 * 24)) + 1;
+        const safeElapsed = Math.max(elapsedDays, 1);
+        return {
+          orders: toNumber(lastPoint.orders) / safeElapsed,
+          revenue: toNumber(lastPoint.revenue) / safeElapsed,
+          spend: toNumber(lastPoint.spend) / safeElapsed
+        };
       }
 
       return {
