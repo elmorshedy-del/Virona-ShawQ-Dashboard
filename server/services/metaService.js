@@ -150,7 +150,7 @@ export async function getExchangeRateForDate(dateStr) {
   }
 
   const cachedRate = getCachedDateRate(lookupDate);
-  if (cachedRate !== undefined) {
+  if (cachedRate !== undefined && cachedRate !== null) {
     return cachedRate;
   }
 
@@ -163,6 +163,10 @@ export async function getExchangeRateForDate(dateStr) {
   if (cached) {
     setCachedDateRate(lookupDate, cached.rate);
     return cached.rate;
+  }
+
+  if (cachedRate === null) {
+    return null;
   }
 
   // Use CurrencyFreaks for the latest finalized day (yesterday in GMT+3)
