@@ -29,6 +29,7 @@ import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
 import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
 import CampaignLauncher from './components/CampaignLauncher';
+import ProductRadar from './components/ProductRadar';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -396,7 +397,8 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher', 'Product Radar'];
+const PRODUCT_RADAR_TAB_INDEX = TABS.indexOf('Product Radar');
 const TABS_VERSION = '2026-01-27-session-intelligence-v1';
 
 export default function App() {
@@ -1770,6 +1772,10 @@ export default function App() {
 
         {activeTab === 16 && (
           <CampaignLauncher store={store} />
+        )}
+
+        {activeTab === PRODUCT_RADAR_TAB_INDEX && (
+          <ProductRadar />
         )}
       </div>
 
