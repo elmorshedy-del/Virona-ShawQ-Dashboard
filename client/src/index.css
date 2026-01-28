@@ -205,14 +205,29 @@ tbody td {
 @keyframes confettiBurst {
   0% {
     opacity: 0;
-    transform: translateY(6px) scale(0.6);
+    transform: translateY(10px) scale(0.6);
   }
-  30% {
+  40% {
     opacity: 1;
   }
   100% {
     opacity: 0;
-    transform: translateY(-8px) scale(1);
+    transform: translateY(-16px) scale(1.4);
+  }
+}
+
+@keyframes emojiPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.5) rotate(-8deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.3) rotate(6deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
   }
 }
 
@@ -220,49 +235,88 @@ tbody td {
   overflow: hidden;
 }
 
+.summary-pill-intense {
+  box-shadow: 0 10px 24px rgba(16, 185, 129, 0.25);
+}
+
+.summary-emoji {
+  margin-left: 6px;
+  display: inline-block;
+  animation: emojiPop 0.7s ease-out;
+}
+
 .summary-confetti {
   position: absolute;
   right: 8px;
   top: 50%;
-  width: 18px;
-  height: 18px;
+  width: 26px;
+  height: 26px;
   transform: translateY(-50%);
   pointer-events: none;
 }
 
 .summary-confetti-dot {
   position: absolute;
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
   border-radius: 9999px;
   opacity: 0;
-  animation: confettiBurst 0.6s ease-out forwards;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.15));
+  animation: confettiBurst 0.9s ease-out forwards;
 }
 
 .confetti-dot-1 {
   background: #34d399;
-  left: 2px;
-  top: 10px;
+  left: 1px;
+  top: 14px;
   animation-delay: 0s;
 }
 
 .confetti-dot-2 {
   background: #fbbf24;
-  left: 10px;
-  top: 6px;
-  animation-delay: 0.05s;
+  left: 12px;
+  top: 4px;
+  animation-delay: 0.04s;
 }
 
 .confetti-dot-3 {
   background: #60a5fa;
   left: 6px;
-  top: 2px;
-  animation-delay: 0.1s;
+  top: 1px;
+  animation-delay: 0.08s;
 }
 
 .confetti-dot-4 {
   background: #f472b6;
-  left: 12px;
+  left: 16px;
+  top: 16px;
+  animation-delay: 0.06s;
+}
+
+.confetti-dot-5 {
+  background: #a78bfa;
+  left: 4px;
+  top: 20px;
+  animation-delay: 0.1s;
+}
+
+.confetti-dot-6 {
+  background: #fb7185;
+  left: 19px;
+  top: 8px;
+  animation-delay: 0.12s;
+}
+
+.confetti-dot-7 {
+  background: #22c55e;
+  left: 9px;
   top: 12px;
-  animation-delay: 0.08s;
+  animation-delay: 0.14s;
+}
+
+.confetti-dot-8 {
+  background: #38bdf8;
+  left: 20px;
+  top: 20px;
+  animation-delay: 0.16s;
 }

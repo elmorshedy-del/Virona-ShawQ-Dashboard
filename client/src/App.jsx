@@ -451,6 +451,28 @@ export default function App() {
     }
     return options;
   }, []);
+
+  const applyMonthSelection = useCallback((monthKey, mode) => {
+    const bounds = getMonthBounds(monthKey);
+    if (!bounds) return;
+    const todayKey = getLocalDateString();
+    const isCurrentMonth = monthKey === getMonthKey();
+    const start = bounds.startDate;
+    const end = (mode === 'mtd' && isCurrentMonth) ? todayKey : bounds.endDate;
+    setDateRange({ type: 'custom', start, end });
+    setCustomRange({ start, end });
+    setShowCustomPicker(false);
+  }, [setCustomRange, setDateRange, setShowCustomPicker]);
+
+  const handleMonthChange = useCallback((nextKey) => {
+    setSelectedMonthKey(nextKey);
+    applyMonthSelection(nextKey, monthMode);
+  }, [applyMonthSelection, monthMode]);
+
+  const handleMonthModeChange = useCallback((nextMode) => {
+    setMonthMode(nextMode);
+    applyMonthSelection(selectedMonthKey, nextMode);
+  }, [applyMonthSelection, selectedMonthKey]);
   
   const [dashboard, setDashboard] = useState(null);
   const [efficiency, setEfficiency] = useState(null);
@@ -1397,6 +1419,47 @@ export default function App() {
             </button>
           ))}
 
+          {/* Month Selector */}
+          <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Month</span>
+            <select
+              value={selectedMonthKey}
+              onChange={(e) => handleMonthChange(e.target.value)}
+              className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {monthOptions.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <div className="flex rounded-lg bg-gray-100 p-1">
+              <button
+                type="button"
+                onClick={() => handleMonthModeChange('mtd')}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  monthMode === 'mtd'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500'
+                }`}
+              >
+                MTD
+              </button>
+              <button
+                type="button"
+                onClick={() => handleMonthModeChange('projection')}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  monthMode === 'projection'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500'
+                }`}
+                title="Full-month projection"
+              >
+                Full-month
+              </button>
+            </div>
+          </div>
+
           {/* Custom Range */}
           <div className="relative">
             <button
@@ -1462,46 +1525,6 @@ export default function App() {
                 </div>
               </div>
             )}
-          </div>
-
-          <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Month</span>
-            <select
-              value={selectedMonthKey}
-              onChange={(e) => setSelectedMonthKey(e.target.value)}
-              className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              {monthOptions.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <div className="flex rounded-lg bg-gray-100 p-1">
-              <button
-                type="button"
-                onClick={() => setMonthMode('mtd')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                  monthMode === 'mtd'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500'
-                }`}
-              >
-                MTD
-              </button>
-              <button
-                type="button"
-                onClick={() => setMonthMode('projection')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                  monthMode === 'projection'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500'
-                }`}
-                title="Full-month projection"
-              >
-                Full-month
-              </button>
-            </div>
           </div>
 
           <div className="flex items-center gap-2 text-sm">
@@ -1971,7 +1994,9 @@ function DashboardTab({
     (Array.isArray(monthHistoryTrends) ? monthHistoryTrends : []).forEach((point) => {
       if (!point?.date) return;
       map.set(point.date, {
-        revenue: toNumber(point.revenue)
+        orders: toNumber(point.orders),
+        revenue: toNumber(point.revenue),
+        spend: toNumber(point.spend)
       });
     });
     return map;
@@ -1983,10 +2008,12 @@ function DashboardTab({
       if (!point?.date) return;
       const monthKey = String(point.date).slice(0, 7);
       if (!map.has(monthKey)) {
-        map.set(monthKey, { monthKey, revenue: 0 });
+        map.set(monthKey, { monthKey, revenue: 0, spend: 0, orders: 0 });
       }
       const entry = map.get(monthKey);
       entry.revenue += toNumber(point.revenue);
+      entry.spend += toNumber(point.spend);
+      entry.orders += toNumber(point.orders);
     });
     return Array.from(map.values()).sort((a, b) => a.monthKey.localeCompare(b.monthKey));
   }, [monthHistoryTrends]);
@@ -1995,40 +2022,79 @@ function DashboardTab({
     new Map(monthlyTotals.map((item) => [item.monthKey, item]))
   ), [monthlyTotals]);
 
-  const monthSummary = useMemo(() => {
+  const getMetricValue = useCallback((totals = {}, metricKey = '') => {
+    if (!totals) return 0;
+    if (metricKey === 'revenue') return toNumber(totals.revenue);
+    if (metricKey === 'spend') return toNumber(totals.spend);
+    if (metricKey === 'orders') return toNumber(totals.orders);
+    if (metricKey === 'aov') return totals.orders > 0 ? toNumber(totals.revenue) / toNumber(totals.orders) : 0;
+    if (metricKey === 'cac') return totals.orders > 0 ? toNumber(totals.spend) / toNumber(totals.orders) : 0;
+    if (metricKey === 'roas') return totals.spend > 0 ? toNumber(totals.revenue) / toNumber(totals.spend) : 0;
+    return 0;
+  }, []);
+
+  const formatMetricValue = useCallback((metricKey, value) => {
+    if (metricKey === 'roas') return `${(Number(value) || 0).toFixed(2)}x`;
+    if (metricKey === 'orders') {
+      const safe = Number.isFinite(Number(value)) ? Number(value) : 0;
+      return formatNumber ? formatNumber(safe) : Math.round(safe).toString();
+    }
+    if (['revenue', 'spend', 'aov', 'cac'].includes(metricKey)) {
+      return formatCurrency ? formatCurrency(Number(value) || 0) : `${Number(value) || 0}`;
+    }
+    return `${Number(value) || 0}`;
+  }, [formatCurrency, formatNumber]);
+
+  const monthContext = useMemo(() => {
     const bounds = getMonthBounds(selectedMonthKey);
     if (!bounds) return null;
 
-    const label = bounds.label;
-    const todayKey = getLocalDateString();
-    const currentMonthKey = getMonthKey();
-    const isCurrentMonth = selectedMonthKey === currentMonthKey;
-    const monthEnd = isCurrentMonth ? todayKey : bounds.endDate;
+    const monthPrefix = `${MONTH_NAMES[bounds.monthIndex]} ${monthMode === 'projection' ? 'Projection' : 'MTD'}`;
+    const prevKey = getPreviousMonthKey(selectedMonthKey);
+    const prevParsed = parseMonthKey(prevKey);
+    const prevLabel = prevParsed
+      ? (prevParsed.year === bounds.year
+        ? MONTH_NAMES[prevParsed.monthIndex]
+        : `${MONTH_NAMES[prevParsed.monthIndex]} ${prevParsed.year}`)
+      : 'last month';
 
-    if (monthHistoryError || !monthHistoryTrends.length) {
+    const emptyTotals = { revenue: 0, spend: 0, orders: 0 };
+
+    if (monthHistoryError || (monthHistoryLoading && !monthHistoryTrends.length) || !monthHistoryTrends.length) {
       return {
-        text: `${label} ${monthMode === 'mtd' ? 'MTD' : 'projection'}: —`,
-        tone: 'neutral',
-        isCelebrating: false
+        prefix: monthPrefix,
+        prevLabel,
+        activeTotals: emptyTotals,
+        prevTotals: monthlyTotalsMap.get(prevKey) || emptyTotals,
+        hasData: false,
+        bounds
       };
     }
+
+    const today = new Date();
+    const todayKey = getLocalDateString(today);
+    const isCurrentMonth = selectedMonthKey === getMonthKey(today);
+    const monthEnd = isCurrentMonth ? todayKey : bounds.endDate;
 
     const monthPoints = monthHistoryTrends.filter((point) => (
       point?.date && point.date >= bounds.startDate && point.date <= monthEnd
     ));
 
     const totals = monthPoints.reduce((acc, point) => ({
-      revenue: acc.revenue + toNumber(point.revenue)
-    }), { revenue: 0 });
+      orders: acc.orders + toNumber(point.orders),
+      revenue: acc.revenue + toNumber(point.revenue),
+      spend: acc.spend + toNumber(point.spend)
+    }), { orders: 0, revenue: 0, spend: 0 });
 
-    let projectedRevenue = totals.revenue;
+    let activeTotals = totals;
 
     if (isCurrentMonth && monthMode === 'projection') {
-      const today = new Date();
       const remainingDays = Math.max(bounds.daysInMonth - today.getDate(), 0);
 
       if (remainingDays > 0) {
+        let paceOrders = 0;
         let paceRevenue = 0;
+        let paceSpend = 0;
         let dayCount = 0;
 
         for (let offset = 1; offset <= 7; offset += 1) {
@@ -2037,58 +2103,39 @@ function DashboardTab({
           const dayKey = getLocalDateString(day);
           const entry = monthHistoryDailyMap.get(dayKey);
           if (entry) {
+            paceOrders += toNumber(entry.orders);
             paceRevenue += toNumber(entry.revenue);
+            paceSpend += toNumber(entry.spend);
             dayCount += 1;
           }
         }
 
         if (dayCount > 0) {
+          paceOrders /= dayCount;
           paceRevenue /= dayCount;
+          paceSpend /= dayCount;
         }
 
-        projectedRevenue = totals.revenue + paceRevenue * remainingDays;
+        activeTotals = {
+          orders: totals.orders + paceOrders * remainingDays,
+          revenue: totals.revenue + paceRevenue * remainingDays,
+          spend: totals.spend + paceSpend * remainingDays
+        };
       }
     }
 
-    const activeRevenue = (monthMode === 'mtd' || !isCurrentMonth) ? totals.revenue : projectedRevenue;
-    const prevKey = getPreviousMonthKey(selectedMonthKey);
-    const prevLabel = getMonthLabel(prevKey) || 'last month';
-    const prevRevenue = monthlyTotalsMap.get(prevKey)?.revenue || 0;
-    const deltaPct = prevRevenue > 0 ? ((activeRevenue - prevRevenue) / prevRevenue) * 100 : null;
-
-    const formattedDelta = deltaPct == null
-      ? '—'
-      : `${deltaPct >= 0 ? '+' : ''}${Math.abs(deltaPct).toFixed(0)}%`;
-
-    let text = `${label} ${monthMode === 'mtd' ? 'MTD' : 'projection'}: ${formattedDelta} vs ${prevLabel}`;
-
-    const comparableTotals = monthlyTotals.filter((item) => item.monthKey !== selectedMonthKey && item.revenue > 0);
-    let isAllTimeHigh = false;
-    let isAllTimeLow = false;
-
-    if (comparableTotals.length > 0) {
-      const maxRevenue = Math.max(...comparableTotals.map((item) => item.revenue));
-      const minRevenue = Math.min(...comparableTotals.map((item) => item.revenue));
-      if (activeRevenue >= maxRevenue) isAllTimeHigh = true;
-      if (activeRevenue <= minRevenue) isAllTimeLow = true;
-    }
-
-    if (isAllTimeHigh) {
-      text += ' · All-time high';
-    } else if (isAllTimeLow) {
-      text += ' · All-time low';
-    }
-
-    const isStrongUplift = deltaPct != null && deltaPct >= 15;
-    const tone = deltaPct == null ? 'neutral' : (deltaPct >= 0 ? 'positive' : 'negative');
+    const prevTotals = monthlyTotalsMap.get(prevKey) || emptyTotals;
 
     return {
-      text,
-      tone,
-      isCelebrating: isStrongUplift || isAllTimeHigh
+      prefix: monthPrefix,
+      prevLabel,
+      activeTotals,
+      prevTotals,
+      hasData: true,
+      bounds
     };
-  }, [monthHistoryDailyMap, monthHistoryError, monthHistoryLoading, monthHistoryTrends, monthlyTotals, monthlyTotalsMap, monthMode, selectedMonthKey]);
-  
+  }, [monthHistoryDailyMap, monthHistoryError, monthHistoryLoading, monthHistoryTrends, monthMode, selectedMonthKey, monthlyTotalsMap]);
+
   const kpis = [
     { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6' },
     { key: 'spend', label: 'Ad Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1' },
@@ -2097,6 +2144,54 @@ function DashboardTab({
     { key: 'cac', label: 'CAC', value: overview.cac, change: overview.cacChange, format: 'currency', color: '#ef4444' },
     { key: 'roas', label: 'ROAS', value: overview.roas, change: overview.roasChange, format: 'roas', color: '#10b981' },
   ];
+
+  const kpiMonthSummaries = useMemo(() => {
+    if (!monthContext) return [];
+
+    return kpis.map((kpi) => {
+      if (!monthContext.hasData) {
+        return {
+          key: kpi.key,
+          text: `${monthContext.prefix}: — · — vs ${monthContext.prevLabel}`,
+          tone: 'neutral',
+          isCelebrating: false
+        };
+      }
+
+      const value = getMetricValue(monthContext.activeTotals, kpi.key);
+      const prevValue = getMetricValue(monthContext.prevTotals, kpi.key);
+      const deltaPct = prevValue > 0 ? ((value - prevValue) / prevValue) * 100 : null;
+      const formattedDelta = deltaPct == null
+        ? '—'
+        : `${deltaPct >= 0 ? '+' : ''}${Math.abs(deltaPct).toFixed(0)}%`;
+      const formattedValue = formatMetricValue(kpi.key, value);
+
+      let text = `${monthContext.prefix}: ${formattedValue} · ${formattedDelta} vs ${monthContext.prevLabel}`;
+
+      const historyValues = monthlyTotals
+        .filter((item) => item.monthKey !== selectedMonthKey)
+        .map((item) => getMetricValue(item, kpi.key))
+        .filter((val) => Number.isFinite(val) && val > 0);
+
+      const maxValue = historyValues.length ? Math.max(...historyValues) : null;
+      const minValue = historyValues.length ? Math.min(...historyValues) : null;
+      const isAllTimeHigh = maxValue != null && value >= maxValue;
+      const isAllTimeLow = minValue != null && value <= minValue;
+
+      if (isAllTimeHigh) {
+        text += ' · All-time high';
+      } else if (isAllTimeLow) {
+        text += ' · All-time low';
+      }
+
+      const isStrongUplift = deltaPct != null && deltaPct >= 15;
+      const isCelebrating = isStrongUplift || isAllTimeHigh;
+
+      const tone = deltaPct == null ? 'neutral' : (deltaPct >= 0 ? 'positive' : 'negative');
+
+      return { key: kpi.key, text, tone, isCelebrating };
+    });
+  }, [formatMetricValue, getMetricValue, kpis, monthContext, monthlyTotals, selectedMonthKey]);
 
   const getCampaignEmoji = (name = '') => {
     const n = name.toLowerCase();
@@ -4933,28 +5028,41 @@ function DashboardTab({
         <div className="px-3 py-1 bg-white rounded-lg shadow-sm text-sm text-gray-700">
           Scope: <span className="font-semibold text-gray-900">{campaignScopeLabel}</span>
         </div>
-        {monthSummary && (
-          <div
-            className={`relative inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${
-              monthSummary.tone === 'positive'
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                : monthSummary.tone === 'negative'
-                  ? 'bg-rose-50 text-rose-700 border-rose-200'
-                  : 'bg-gray-50 text-gray-700 border-gray-200'
-            } ${monthSummary.isCelebrating ? 'summary-pill-celebrate pr-8' : ''}`}
-          >
-            <span>{monthSummary.text}</span>
-            {monthSummary.isCelebrating && (
-              <span className="summary-confetti" aria-hidden="true">
-                <span className="summary-confetti-dot confetti-dot-1" />
-                <span className="summary-confetti-dot confetti-dot-2" />
-                <span className="summary-confetti-dot confetti-dot-3" />
-                <span className="summary-confetti-dot confetti-dot-4" />
-              </span>
-            )}
-          </div>
-        )}
       </div>
+
+      {kpiMonthSummaries.length > 0 && (
+        <div className="grid grid-cols-6 gap-4">
+          {kpiMonthSummaries.map((summary) => (
+            <div
+              key={summary.key}
+              className={`relative rounded-full border px-3 py-1 text-[11px] font-semibold ${
+                summary.tone === 'positive'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : summary.tone === 'negative'
+                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                    : 'bg-gray-50 text-gray-700 border-gray-200'
+              } ${summary.isCelebrating ? 'summary-pill-celebrate summary-pill-intense pr-8' : ''}`}
+            >
+              <span>{summary.text}</span>
+              {summary.isCelebrating && (
+                <>
+                  <span className="summary-emoji" aria-hidden="true">🎉</span>
+                  <span className="summary-confetti" aria-hidden="true">
+                    <span className="summary-confetti-dot confetti-dot-1" />
+                    <span className="summary-confetti-dot confetti-dot-2" />
+                    <span className="summary-confetti-dot confetti-dot-3" />
+                    <span className="summary-confetti-dot confetti-dot-4" />
+                    <span className="summary-confetti-dot confetti-dot-5" />
+                    <span className="summary-confetti-dot confetti-dot-6" />
+                    <span className="summary-confetti-dot confetti-dot-7" />
+                    <span className="summary-confetti-dot confetti-dot-8" />
+                  </span>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* KPI CARDS */}
       <div className="grid grid-cols-6 gap-4">
