@@ -40,7 +40,7 @@ export default function CampaignLauncher({ store }) {
   const [error, setError] = useState(null);
 
   const [formData, setFormData] = useState(() => ({
-    campaignName: `New Campaign - ${new Date().toLocaleDateString()}`,
+    campaignName: `New Campaign - ${new Date().toISOString().split('T')[0]}`,
     objective: 'OUTCOME_SALES',
     dailyBudget: 50,
     country: defaultCountry,
