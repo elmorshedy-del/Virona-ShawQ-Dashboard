@@ -1,0 +1,269 @@
+import os
+from io import BytesIO
+from typing import List, Optional, Tuple
+
+import numpy as np
+import requests
+from fastapi import FastAPI
+from pydantic import BaseModel
+from PIL import Image
+
+import torch
+import open_clip
+import hdbscan
+
+try:
+    import torchtuples as tt
+    from pycox.models import CoxPH
+    PYCOX_AVAILABLE = True
+except Exception:
+    PYCOX_AVAILABLE = False
+
+SURV_CACHE = {
+    'hash': None,
+    'model': None,
+}
+
+ENABLE_DEEPSURV_TRAIN = os.getenv('ENABLE_DEEPSURV_TRAIN', '0') == '1'
+MIN_CREATIVES_FOR_DEEPSURV = int(os.getenv('MIN_CREATIVES_FOR_DEEPSURV', '10'))
+MIN_EVENTS_FOR_DEEPSURV = int(os.getenv('MIN_EVENTS_FOR_DEEPSURV', '6'))
+
+app = FastAPI()
+
+MODEL_NAME = os.getenv('CLIP_MODEL', 'ViT-L-14')
+MODEL_PRETRAIN = os.getenv('CLIP_PRETRAIN', 'openai')
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+model, preprocess, _ = open_clip.create_model_and_transforms(MODEL_NAME, pretrained=MODEL_PRETRAIN)
+model = model.to(DEVICE)
+model.eval()
+
+class CreativeMetrics(BaseModel):
+    ctr: Optional[float] = None
+    conversions: Optional[float] = None
+    impressions: Optional[float] = None
+
+class CreativeAsset(BaseModel):
+    ad_id: Optional[str] = None
+    ad_name: Optional[str] = None
+    image_url: Optional[str] = None
+    video_url: Optional[str] = None
+    metrics: Optional[CreativeMetrics] = None
+
+class CreativeHistoryPoint(BaseModel):
+    ad_id: Optional[str] = None
+    day_index: Optional[int] = None
+    ctr: Optional[float] = None
+    conversions: Optional[float] = None
+
+class CreativePayload(BaseModel):
+    store: Optional[str] = None
+    top_geo: Optional[str] = None
+    top_segment: Optional[str] = None
+    assets: List[CreativeAsset] = []
+    history: List[CreativeHistoryPoint] = []
+    method: Optional[str] = None
+
+
+def fetch_image(url: str) -> Optional[Image.Image]:
+    if not url:
+        return None
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code != 200:
+            return None
+        return Image.open(BytesIO(res.content)).convert('RGB')
+    except Exception:
+        return None
+
+
+def embed_images(images: List[Image.Image]) -> np.ndarray:
+    if not images:
+        return np.empty((0, 768))
+    batch = torch.stack([preprocess(image) for image in images]).to(DEVICE)
+    with torch.no_grad():
+        feats = model.encode_image(batch)
+        feats = feats / feats.norm(dim=-1, keepdim=True)
+    return feats.cpu().numpy()
+
+
+def tokenize_name(name: Optional[str]) -> List[str]:
+    if not name:
+        return []
+    tokens = [t for t in ''.join([c.lower() if c.isalnum() else ' ' for c in name]).split() if len(t) > 2]
+    return tokens
+
+
+def compute_fatigue_days(history: List[CreativeHistoryPoint], allow_deepsurv: bool) -> Tuple[Optional[float], str, int]:
+    if not history:
+        return None, 'heuristic', 0
+
+    grouped = {}
+    for row in history:
+        if not row.ad_id or row.ctr is None or row.day_index is None:
+            continue
+        grouped.setdefault(row.ad_id, []).append((row.day_index, row.ctr))
+
+    events = []
+    features = []
+    fatigue_days = []
+    for ad_id, points in grouped.items():
+        points.sort(key=lambda x: x[0])
+        ctrs = [p[1] for p in points]
+        peak = max(ctrs) if ctrs else 0
+        if peak <= 0:
+            continue
+        fatigue_day = None
+        for day, ctr in points:
+            if ctr < 0.6 * peak:
+                fatigue_day = day
+                break
+        duration = points[-1][0]
+        event = 1 if fatigue_day is not None else 0
+        time = fatigue_day if fatigue_day is not None else duration
+        events.append((time, event))
+        mean_ctr = float(sum(ctrs)) / len(ctrs)
+        variance = float(sum((c - mean_ctr) ** 2 for c in ctrs) / max(1, len(ctrs) - 1))
+        features.append([peak, mean_ctr, variance ** 0.5])
+        if fatigue_day is not None:
+            fatigue_days.append(fatigue_day)
+
+    avg_fatigue = float(sum(fatigue_days) / len(fatigue_days)) if fatigue_days else None
+    if len(events) < MIN_EVENTS_FOR_DEEPSURV or not allow_deepsurv or not PYCOX_AVAILABLE:
+        return avg_fatigue, 'heuristic', len(events)
+
+    x = np.array(features, dtype=np.float32)
+    durations = np.array([e[0] for e in events], dtype=np.float32)
+    events_arr = np.array([e[1] for e in events], dtype=np.int64)
+
+    data_hash = hash(x.tobytes() + durations.tobytes() + events_arr.tobytes())
+    if SURV_CACHE['model'] is None or SURV_CACHE['hash'] != data_hash:
+        if not ENABLE_DEEPSURV_TRAIN:
+            return avg_fatigue, 'heuristic', len(events)
+        in_features = x.shape[1]
+        net = tt.practical.MLPVanilla(in_features, [16, 16], 1, batch_norm=True, dropout=0.1)
+        model_surv = CoxPH(net, tt.optim.Adam)
+        model_surv.fit(x, (durations, events_arr), batch_size=16, epochs=20, verbose=False)
+        SURV_CACHE['model'] = model_surv
+        SURV_CACHE['hash'] = data_hash
+
+    model_surv = SURV_CACHE['model']
+    surv = model_surv.predict_surv_df(x)
+    median_surv = surv.apply(lambda col: col[col <= 0.5].index.min() if (col <= 0.5).any() else col.index.max())
+    return float(np.nanmedian(median_surv.values)), 'deepsurv', len(events)
+
+
+@app.get('/health')
+def health():
+    return {
+        "ok": True,
+        "model": MODEL_NAME,
+        "device": DEVICE,
+        "pycox": PYCOX_AVAILABLE,
+        "deepsurv_enabled": ENABLE_DEEPSURV_TRAIN,
+        "min_creatives_for_deepsurv": MIN_CREATIVES_FOR_DEEPSURV,
+        "min_events_for_deepsurv": MIN_EVENTS_FOR_DEEPSURV,
+    }
+
+
+@app.post('/predict')
+def predict(payload: CreativePayload):
+    assets = payload.assets or []
+    images = []
+    kept = []
+    for asset in assets:
+        img = fetch_image(asset.image_url or '')
+        if img is None:
+            continue
+        images.append(img)
+        kept.append(asset)
+
+    if not images:
+        return {"insight": None}
+
+    embeddings = embed_images(images)
+    if embeddings.shape[0] < 2:
+        labels = np.zeros(embeddings.shape[0], dtype=int)
+    else:
+        labels = hdbscan.HDBSCAN(min_cluster_size=2).fit_predict(embeddings)
+
+    cluster_scores = {}
+    for idx, asset in enumerate(kept):
+        label = int(labels[idx]) if idx < len(labels) else -1
+        metric = asset.metrics.conversions if asset.metrics and asset.metrics.conversions is not None else 0
+        metric += (asset.metrics.ctr or 0) * 100 if asset.metrics else 0
+        cluster_scores.setdefault(label, []).append(metric)
+
+    top_cluster = max(cluster_scores.items(), key=lambda x: np.mean(x[1]))[0]
+
+    top_assets = [kept[i] for i, label in enumerate(labels) if int(label) == int(top_cluster)]
+    keywords = []
+    for asset in top_assets:
+        keywords += tokenize_name(asset.ad_name)
+    keyword = max(set(keywords), key=keywords.count) if keywords else 'premium'
+
+    requested = (payload.method or 'auto').lower()
+    warnings = []
+    creative_count = len({row.ad_id for row in payload.history or [] if row.ad_id})
+
+    allow_deepsurv = False
+    if requested == 'deepsurv':
+        if not PYCOX_AVAILABLE:
+            warnings.append('DeepSurv unavailable (pycox not installed).')
+        elif not ENABLE_DEEPSURV_TRAIN:
+            warnings.append('DeepSurv disabled (ENABLE_DEEPSURV_TRAIN=0).')
+        else:
+            allow_deepsurv = True
+    elif requested == 'heuristic':
+        allow_deepsurv = False
+    else:
+        allow_deepsurv = ENABLE_DEEPSURV_TRAIN and PYCOX_AVAILABLE
+
+    if requested == 'deepsurv' and creative_count < MIN_CREATIVES_FOR_DEEPSURV:
+        warnings.append(f'DeepSurv needs about {MIN_CREATIVES_FOR_DEEPSURV} creatives with history.')
+        allow_deepsurv = False
+
+    fatigue_days, fatigue_method, event_count = compute_fatigue_days(payload.history, allow_deepsurv)
+    if requested == 'deepsurv' and event_count < MIN_EVENTS_FOR_DEEPSURV:
+        warnings.append(f'DeepSurv needs about {MIN_EVENTS_FOR_DEEPSURV} fatigue events; using heuristic.')
+
+    confidence = min(0.9, 0.5 + 0.08 * len(top_assets))
+    if fatigue_days is None:
+        fatigue_text = 'Fatigue timing is still stabilizing.'
+    else:
+        fatigue_text = f'Estimated creative fatigue around day {fatigue_days:.0f}.'
+
+    method_used = 'deepsurv' if fatigue_method == 'deepsurv' else 'heuristic'
+
+    models = [
+        {"name": "CLIP ViT-L/14", "description": "Embeds creative visuals into semantic vectors."},
+        {"name": "HDBSCAN", "description": "Clusters creatives by visual similarity."},
+    ]
+    if method_used == 'deepsurv':
+        models.append({"name": "DeepSurv", "description": "Estimates creative fatigue timing from performance history."})
+    else:
+        models.append({"name": "Fatigue Heuristic", "description": "Rule-based fatigue estimate using CTR decay vs peak."})
+
+    insight = {
+        "title": f"{payload.top_segment or 'Top segment'} responds to {keyword} creatives",
+        "finding": f"Cluster {top_cluster} creatives show the strongest conversion density; {fatigue_text}",
+        "why": "CLIP embeddings clustered similar visuals, and the winning cluster aligns with higher response.",
+        "action": f"Double down on {keyword} visual cues and refresh before predicted fatigue.",
+        "confidence": confidence,
+        "signals": ["Creative embeddings", "Cluster performance lift", "CTR/conversion history"],
+        "models": models,
+        "models_available": [
+            {
+                "name": "DeepSurv (optional)",
+                "description": f"Enable when you have >= {MIN_CREATIVES_FOR_DEEPSURV} creatives and {MIN_EVENTS_FOR_DEEPSURV} fatigue events.",
+                "enabled": bool(ENABLE_DEEPSURV_TRAIN and PYCOX_AVAILABLE),
+            }
+        ],
+        "method_requested": requested,
+        "method_used": method_used,
+        "warnings": warnings,
+        "logic": "Winning creative clusters are identified by higher conversion-weighted scores.",
+        "limits": "Needs enough creatives and stable targeting. DeepSurv is optional; otherwise a fast heuristic is used.",
+    }
+
+    return {"insight": insight}

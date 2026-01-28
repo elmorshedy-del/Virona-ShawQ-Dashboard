@@ -66,6 +66,35 @@
   background: linear-gradient(135deg, rgba(15, 23, 42, 0.08), rgba(148, 163, 184, 0.4), rgba(255, 255, 255, 0.6));
 }
 
+.insights-card-flip {
+  perspective: 1400px;
+}
+
+.insights-card-inner {
+  position: relative;
+  min-height: 320px;
+  transform-style: preserve-3d;
+  transition: transform 0.6s ease;
+}
+
+.insights-card-inner.is-flipped {
+  transform: rotateY(180deg);
+}
+
+.insights-card-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+}
+
+.insights-card-front {
+  position: relative;
+}
+
+.insights-card-back {
+  transform: rotateY(180deg);
+}
+
 .insights-card {
   border-radius: 23px;
   background: rgba(255, 255, 255, 0.88);
@@ -78,6 +107,41 @@
 .insights-card:hover {
   transform: translateY(-4px);
   box-shadow: 0 24px 50px rgba(15, 23, 42, 0.14);
+}
+
+.insights-ask.insights-explain {
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--insights-ink);
+}
+
+.insights-toggle {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--insights-muted);
+  transition: all 0.2s ease;
+}
+
+.insights-toggle.is-active {
+  background: rgba(15, 23, 42, 0.9);
+  color: #fff;
+}
+
+.insights-select {
+  width: 100%;
+  margin-top: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--insights-ink);
+}
+
+.insights-select:disabled {
+  background: rgba(226, 232, 240, 0.6);
+  color: var(--insights-muted);
 }
 
 .insights-icon {
