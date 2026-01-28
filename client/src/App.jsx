@@ -82,7 +82,7 @@ const getMonthKey = (date = new Date()) => {
 const parseMonthKey = (key) => {
   if (!key || !/^\d{4}-\d{2}$/.test(key)) return null;
   const [year, month] = key.split('-').map(Number);
-  if (!year || !month) return null;
+  if (!year || month < 1 || month > 12) return null;
   return { year, monthIndex: month - 1 };
 };
 
