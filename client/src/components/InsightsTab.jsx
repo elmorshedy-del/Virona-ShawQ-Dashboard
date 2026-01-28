@@ -429,7 +429,7 @@ function InsightCard({ card, anchorId, flash, onAsk, override, onOverrideChange 
   return (
     <motion.div
       id={anchorId}
-      className={`insights-card-border insights-anchor ${flash ? 'insights-flash' : ''}`}
+      className={`insights-card-border insights-anchor insights-card-shell ${flash ? 'insights-flash' : ''}`}
       whileHover={{ y: -4 }}
       transition={{ duration: 0.25, ease: easeOut }}
     >
@@ -437,26 +437,26 @@ function InsightCard({ card, anchorId, flash, onAsk, override, onOverrideChange 
         <div className={`insights-card-inner ${flipped ? 'is-flipped' : ''}`}>
           <div className="insights-card-face insights-card-front">
             <div className="insights-card p-5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-3">
-                  <div className="insights-icon" style={{ boxShadow: `0 0 18px ${meta.accent}` }}>
-                    <Icon className="h-5 w-5" style={{ color: meta.accent }} />
-                  </div>
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.2em] text-slate-400">{meta.label}</div>
-                    <div className="mt-2 text-base font-semibold text-slate-900">{card.title}</div>
-                  </div>
+              <div className="insights-card-actions">
+                <button
+                  type="button"
+                  className="insights-action-pill"
+                  aria-label="Explain"
+                  title="Explain"
+                  onClick={() => setFlipped(true)}
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  <span>Explain</span>
+                </button>
+                <ConfidencePill value={card.confidence} />
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="insights-icon" style={{ boxShadow: `0 0 18px ${meta.accent}` }}>
+                  <Icon className="h-5 w-5" style={{ color: meta.accent }} />
                 </div>
-                <div className="flex items-center gap-2">
-                  <button type="button" className="insights-ask" aria-label="Ask AI" title="Ask AI" onClick={() => onAsk?.(card, meta)}>
-                    <Sparkles className="h-3.5 w-3.5" />
-                    <span>Ask AI</span>
-                  </button>
-                  <button type="button" className="insights-ask insights-explain" onClick={() => setFlipped(true)}>
-                    <Zap className="h-3.5 w-3.5" />
-                    <span>Explain</span>
-                  </button>
-                  <ConfidencePill value={card.confidence} />
+                <div>
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-400">{meta.label}</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">{card.title}</div>
                 </div>
               </div>
 
@@ -471,6 +471,16 @@ function InsightCard({ card, anchorId, flash, onAsk, override, onOverrideChange 
                   <span key={source} className="insights-chip">{source}</span>
                 ))}
               </div>
+              <button
+                type="button"
+                className="insights-ask insights-ask-floating"
+                aria-label="Ask AI"
+                title="Ask AI"
+                onClick={() => onAsk?.(card, meta)}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                <span>Ask AI</span>
+              </button>
             </div>
           </div>
 
@@ -482,13 +492,14 @@ function InsightCard({ card, anchorId, flash, onAsk, override, onOverrideChange 
                   <div className="mt-2 text-base font-semibold text-slate-900">{meta.label}</div>
                   <div className="mt-1 text-xs text-slate-500">Used: {methodUsed}</div>
                 </div>
-                <button type="button" className="insights-ask insights-explain" onClick={() => setFlipped(false)}>
+                <button type="button" className="insights-action-pill" onClick={() => setFlipped(false)} aria-label="Back" title="Back">
                   <Zap className="h-3.5 w-3.5" />
                   <span>Back</span>
                 </button>
               </div>
 
-              <div className="mt-4 rounded-xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
+              <div className="insights-card-scroll">
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-slate-700">Mode</span>
                   <div className="inline-flex rounded-full border border-slate-200 bg-white/80 p-0.5">
@@ -577,6 +588,7 @@ function InsightCard({ card, anchorId, flash, onAsk, override, onOverrideChange 
                   )}
                 </div>
               )}
+              </div>
             </div>
           </div>
         </div>
@@ -587,17 +599,11 @@ function InsightCard({ card, anchorId, flash, onAsk, override, onOverrideChange 
 
 function BudgetCard({ card, anchorId, flash, onAsk }) {
   return (
-    <div id={anchorId} className={`insights-card-border insights-anchor ${flash ? 'insights-flash' : ''}`}>
-      <div className="insights-card p-4">
+    <div id={anchorId} className={`insights-card-border insights-anchor insights-card-shell ${flash ? 'insights-flash' : ''}`}>
+      <div className="insights-card insights-card-budget p-4">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold text-slate-900">{card.title}</div>
-          <div className="flex items-center gap-2">
-            <button type="button" className="insights-ask" aria-label="Ask AI" title="Ask AI" onClick={() => onAsk?.(card, { label: 'Budget Guidance', accent: '#14b8a6' })}>
-              <Sparkles className="h-3.5 w-3.5" />
-              <span>Ask AI</span>
-            </button>
-            <ConfidencePill value={card.confidence} />
-          </div>
+          <ConfidencePill value={card.confidence} />
         </div>
         <div className="mt-3 text-sm text-slate-600">{card.finding}</div>
         <div className="mt-3 text-sm font-semibold text-slate-900">Action: {card.action}</div>
@@ -615,6 +621,16 @@ function BudgetCard({ card, anchorId, flash, onAsk }) {
             ))}
           </div>
         </details>
+        <button
+          type="button"
+          className="insights-ask insights-ask-floating"
+          aria-label="Ask AI"
+          title="Ask AI"
+          onClick={() => onAsk?.(card, { label: 'Budget Guidance', accent: '#14b8a6' })}
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          <span>Ask AI</span>
+        </button>
       </div>
     </div>
   );
@@ -1061,7 +1077,7 @@ export default function InsightsTab({ store, formatCurrency }) {
               </div>
               <span className="insights-chip">Updated hourly</span>
             </div>
-            <div className="mt-6 grid gap-6 lg:grid-cols-2">
+            <div className="mt-6 grid gap-6 lg:grid-cols-2 insights-card-grid">
               {insights.cards.map((card) => {
                 const anchorId = getAnchorId(card.id || card.type || card.title);
                 return (
