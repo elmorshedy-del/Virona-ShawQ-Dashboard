@@ -2154,22 +2154,32 @@ function DashboardTab({
   const kpiMonthSummaries = useMemo(() => {
     if (!monthContext) return [];
 
-    return kpis.map((kpi) => {
-      if (!monthContext.hasData) {
-        return {
-          key: kpi.key,
-          text: `${monthContext.prefix}: — · — vs ${monthContext.prevLabel}`,
-          tone: 'neutral',
-          isCelebrating: false
-        };
-      }
+    if (!monthContext.hasData) {
+      return kpis.map((kpi) => ({
+        key: kpi.key,
+        text: `${monthContext.prefix}: — · — vs ${monthContext.prevLabel}`,
+        tone: 'neutral',
+        isCelebrating: false
+      }));
+    }
 
+    const getDeltaPct = (metricKey) => {
+      const current = getMetricValue(monthContext.activeTotals, metricKey);
+      const previous = getMetricValue(monthContext.prevTotals, metricKey);
+      if (previous <= 0) return null;
+      return ((current - previous) / previous) * 100;
+    };
+
+    const revenueDelta = getDeltaPct('revenue');
+    const roasDelta = getDeltaPct('roas');
+
+    return kpis.map((kpi) => {
       const value = getMetricValue(monthContext.activeTotals, kpi.key);
       const prevValue = getMetricValue(monthContext.prevTotals, kpi.key);
       const deltaPct = prevValue > 0 ? ((value - prevValue) / prevValue) * 100 : null;
       const formattedDelta = deltaPct == null
         ? '—'
-        : `${deltaPct >= 0 ? '+' : ''}${Math.abs(deltaPct).toFixed(0)}%`;
+        : `${deltaPct > 0 ? '+' : ''}${deltaPct.toFixed(0)}%`;
       const formattedValue = formatMetricValue(kpi.key, value);
 
       let text = `${monthContext.prefix}: ${formattedValue} · ${formattedDelta} vs ${monthContext.prevLabel}`;
@@ -2193,7 +2203,21 @@ function DashboardTab({
       const isStrongUplift = deltaPct != null && deltaPct >= 15;
       const isCelebrating = isStrongUplift || isAllTimeHigh;
 
-      const tone = deltaPct == null ? 'neutral' : (deltaPct >= 0 ? 'positive' : 'negative');
+      let tone = 'neutral';
+      if (deltaPct != null) {
+        if (kpi.key === 'cac') {
+          tone = deltaPct < 0 ? 'positive' : (deltaPct > 0 ? 'negative' : 'neutral');
+        } else if (kpi.key === 'spend') {
+          const revenueSignal = revenueDelta == null ? 0 : Math.sign(revenueDelta);
+          const roasSignal = roasDelta == null ? 0 : Math.sign(roasDelta);
+          const performanceSignal = revenueSignal + roasSignal;
+          if (performanceSignal > 0) tone = 'positive';
+          else if (performanceSignal < 0) tone = 'negative';
+          else tone = 'neutral';
+        } else {
+          tone = deltaPct >= 0 ? 'positive' : 'negative';
+        }
+      }
 
       return { key: kpi.key, text, tone, isCelebrating };
     });
