@@ -615,7 +615,7 @@ export default function SessionIntelligenceTab({ store }) {
             ) : (
               <ul className="si-insight-list">
                 {outOfStockSizesClicked.map((item, idx) => (
-                  <li key={`${item.size_label || 'size'}-${item.variant_id || idx}`} className="si-insight-item">
+                  <li key={[item.size_label, item.variant_id, item.product_id].filter(Boolean).join('-') || idx} className="si-insight-item">
                     <span title={[item.size_label, item.variant_id, item.product_id].filter(Boolean).join(' • ')}>
                       {item.size_label || item.variant_id || item.product_id || 'Unknown size'}
                     </span>
