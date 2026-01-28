@@ -88,7 +88,7 @@ function getOrCreateShopperNumber(store, clientId, eventTs) {
   });
 
   try {
-    return tx();
+    return tx.immediate();
   } catch (e) {
     // If we raced on unique(store, client_id), read it back.
     const row = db.prepare(`
