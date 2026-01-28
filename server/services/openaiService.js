@@ -122,7 +122,7 @@ const TOKEN_LIMITS = {
 
 const DEPTH_TO_EFFORT = {
   instant: 'none',
-  fast: 'low',
+  fast: 'medium',
   balanced: 'medium',
   deep: 'high'
 };
