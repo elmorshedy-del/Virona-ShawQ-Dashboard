@@ -27,7 +27,7 @@ const buildMockPages = (storeId) => {
   ];
 };
 
-const makeId = (prefix) => `${prefix}_${Math.random().toString(16).slice(2, 10)}`;
+const makeId = (prefix) => `${prefix}_${crypto.randomUUID().slice(0, 10)}`;
 
 export default function CampaignLauncher({ store }) {
   const pages = useMemo(() => buildMockPages(store?.id), [store?.id]);
