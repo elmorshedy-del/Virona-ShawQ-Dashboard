@@ -344,7 +344,7 @@ export default function ExchangeRateDebug() {
                   <div>
                     <div className="font-medium">Rate saved</div>
                     <div className="mt-1 font-mono">
-                      {backfillResult.date}: TRY-&gt;USD = {backfillResult.rate?.toFixed(6)} (1 USD = {backfillResult.usdToTry?.toFixed(2)} TRY)
+                      {backfillResult.date}: TRY→USD = {backfillResult.rate?.toFixed(6)} (1 USD = {backfillResult.usdToTry?.toFixed(2)} TRY)
                     </div>
                     {backfillResult.source && (
                       <div className="mt-1 text-xs text-green-700">Source: {providerLabel(backfillResult.source)}</div>
