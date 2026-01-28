@@ -1375,6 +1375,10 @@ export async function analyzeSessionIntelligenceDay({
 }) {
   const sessions = getSessionIntelligenceSessionsForDay(store, date, 1000);
   const max = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+  const concurrency = Math.min(
+    Math.max(parseInt(process.env.SESSION_INTELLIGENCE_AI_CONCURRENCY || '3', 10) || 3, 1),
+    10
+  );
 
   const selected = (() => {
     if (mode === 'all') return sessions;
@@ -1384,18 +1388,29 @@ export async function analyzeSessionIntelligenceDay({
     return sessions.filter((s) => (s.atc_events || 0) > 0 && (s.purchase_events || 0) === 0);
   })().slice(0, max);
 
-  const results = [];
-  for (const session of selected) {
-    // eslint-disable-next-line no-await-in-loop
-    const result = await analyzeSessionIntelligenceSession({ store, sessionId: session.session_id, model });
-    results.push({
-      session_id: session.session_id,
-      codename: session.codename,
-      success: result.success,
-      error: result.error || null,
-      analysis: result.analysis || null
-    });
-  }
+  const results = new Array(selected.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (true) {
+      const idx = cursor;
+      cursor += 1;
+      if (idx >= selected.length) return;
+
+      const session = selected[idx];
+      // eslint-disable-next-line no-await-in-loop
+      const result = await analyzeSessionIntelligenceSession({ store, sessionId: session.session_id, model });
+      results[idx] = {
+        session_id: session.session_id,
+        codename: session.codename,
+        success: result.success,
+        error: result.error || null,
+        analysis: result.analysis || null
+      };
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, selected.length) }, () => worker()));
 
   return { success: true, store, date, mode, limit: max, analyzed: results.length, results };
 }

@@ -154,8 +154,10 @@ export default function SessionIntelligenceTab({ store }) {
     const data = await fetchJson(url);
     const days = Array.isArray(data.days) ? data.days : [];
     setLibraryDays(days);
-    if (!libraryDay && days.length) setLibraryDay(days[0].day);
-  }, [libraryDay, storeId]);
+    if (days.length > 0) {
+      setLibraryDay((current) => current || days[0].day);
+    }
+  }, [storeId]);
 
   const loadLibrarySessions = useCallback(async (day) => {
     if (!day) return;
@@ -260,6 +262,11 @@ export default function SessionIntelligenceTab({ store }) {
   const abandonAfterHours = overview?.abandonAfterHours ?? 24;
   const checkoutDropMinutes = overview?.checkoutDropMinutes ?? 30;
   const abandonCutoffMs = Date.now() - abandonAfterHours * 60 * 60 * 1000;
+
+  const selectedLibrarySession = useMemo(() => {
+    if (!librarySessionId) return null;
+    return librarySessions.find((s) => s.session_id === librarySessionId) || null;
+  }, [librarySessionId, librarySessions]);
 
   const abandonedSessions = useMemo(() => {
     if (!Array.isArray(sessions) || sessions.length === 0) return [];
@@ -739,7 +746,7 @@ export default function SessionIntelligenceTab({ store }) {
             <div className="si-card-title" style={{ marginBottom: 8 }}>
               <h3 style={{ fontSize: 14, margin: 0 }}>Session timeline</h3>
               <span className="si-muted">
-                {librarySessions.find((s) => s.session_id === librarySessionId)?.codename || userLabel({ session_id: librarySessionId })}
+                {selectedLibrarySession?.codename || userLabel({ session_id: librarySessionId })}
               </span>
             </div>
 
@@ -780,21 +787,18 @@ export default function SessionIntelligenceTab({ store }) {
               </table>
             )}
 
-            {(() => {
-              const session = librarySessions.find((s) => s.session_id === librarySessionId);
-              if (!session?.summary) return null;
-              return (
-                <div className="si-card si-ai-card" style={{ marginTop: 12 }}>
-                  <div className="si-card-title">
-                    <h3>AI summary</h3>
-                    <span className="si-muted">
-                      {session.primary_reason || '—'} • {session.confidence != null ? `${Math.round(session.confidence * 100)}%` : '—'}
-                    </span>
-                  </div>
-                  <div className="si-muted">{session.summary}</div>
+            {selectedLibrarySession?.summary && (
+              <div className="si-card si-ai-card" style={{ marginTop: 12 }}>
+                <div className="si-card-title">
+                  <h3>AI summary</h3>
+                  <span className="si-muted">
+                    {selectedLibrarySession.primary_reason || '—'} •{' '}
+                    {selectedLibrarySession.confidence != null ? `${Math.round(selectedLibrarySession.confidence * 100)}%` : '—'}
+                  </span>
                 </div>
-              );
-            })()}
+                <div className="si-muted">{selectedLibrarySession.summary}</div>
+              </div>
+            )}
           </div>
         )}
       </div>
