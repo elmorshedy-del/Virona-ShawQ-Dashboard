@@ -1145,7 +1145,7 @@ export function getSessionIntelligenceOverview(store) {
       row?.variant_id || '',
       row?.product_id || ''
     ].join('|');
-    if (!key) continue;
+    if (key === '||') continue;
     const entry = oosCounts.get(key) || {
       size_label: sizeLabel || null,
       variant_id: row?.variant_id || null,
