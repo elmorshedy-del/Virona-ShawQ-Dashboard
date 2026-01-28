@@ -67,7 +67,7 @@ Notes:
 
 ## 3) Optional: Theme snippet for extra click tracking
 
-If you want extra UI clicks (e.g. “Size chart” open), add this just before `</body>` in `layout/theme.liquid`:
+If you want extra UI clicks (e.g. “Size chart” open **and out‑of‑stock size clicks**), add this just before `</body>` in `layout/theme.liquid`:
 
 ```html
 <script>
@@ -94,8 +94,38 @@ If you want extra UI clicks (e.g. “Size chart” open), add this just before `
 
     document.addEventListener("click", function (e) {
       var el = e.target && e.target.closest ? e.target.closest("[data-size-chart], .size-chart, a[href*='size-chart']") : null;
-      if (!el) return;
-      send("size_chart_opened", { text: (el.textContent || "").trim().slice(0, 80) });
+      if (el) {
+        send("size_chart_opened", { text: (el.textContent || "").trim().slice(0, 80) });
+        return;
+      }
+
+      // Out‑of‑stock size clicks (customize selectors per theme if needed)
+      var sizeEl = e.target && e.target.closest
+        ? e.target.closest("[data-option-value], [data-value], [data-size], .size, .swatch, .swatch-element, .product-form__input label")
+        : null;
+      if (!sizeEl) return;
+
+      var isOos =
+        sizeEl.hasAttribute("disabled") ||
+        sizeEl.getAttribute("aria-disabled") === "true" ||
+        sizeEl.classList.contains("disabled") ||
+        sizeEl.classList.contains("is-disabled") ||
+        sizeEl.classList.contains("sold-out") ||
+        sizeEl.classList.contains("is-unavailable") ||
+        sizeEl.getAttribute("data-available") === "false";
+
+      if (!isOos) return;
+
+      var sizeText =
+        (sizeEl.getAttribute("data-option-value") ||
+         sizeEl.getAttribute("data-value") ||
+         sizeEl.getAttribute("data-size") ||
+         sizeEl.textContent || "").trim().slice(0, 80);
+
+      send("out_of_stock_size_clicked", {
+        size: sizeText || null,
+        product_path: location.pathname
+      });
     }, true);
   })();
 </script>
@@ -103,3 +133,4 @@ If you want extra UI clicks (e.g. “Size chart” open), add this just before `
 
 This is optional; the Custom Pixel already covers the key funnel events.
 
+Tip: If your theme uses different markup for size swatches, adjust the selectors in `sizeEl` to match your DOM.
