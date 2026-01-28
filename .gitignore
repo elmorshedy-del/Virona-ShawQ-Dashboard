@@ -5,3 +5,7 @@ client/dist/
 data/
 .DS_Store
 npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
