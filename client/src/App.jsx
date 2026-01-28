@@ -73,49 +73,6 @@ const getLocalDateString = (date = new Date()) => {
 const getIstanbulDateString = (date = new Date()) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(date);
 
-const getMonthKey = (date = new Date()) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  return `${year}-${month}`;
-};
-
-const parseMonthKey = (key) => {
-  if (!key || !/^\d{4}-\d{2}$/.test(key)) return null;
-  const [year, month] = key.split('-').map(Number);
-  if (!year || !month) return null;
-  return { year, monthIndex: month - 1 };
-};
-
-const getMonthLabel = (key) => {
-  const parsed = parseMonthKey(key);
-  if (!parsed) return '';
-  return `${MONTH_NAMES[parsed.monthIndex]} ${parsed.year}`;
-};
-
-const getMonthBounds = (key) => {
-  const parsed = parseMonthKey(key);
-  if (!parsed) return null;
-  const { year, monthIndex } = parsed;
-  const start = new Date(year, monthIndex, 1);
-  const end = new Date(year, monthIndex + 1, 0);
-  return {
-    startDate: getLocalDateString(start),
-    endDate: getLocalDateString(end),
-    year,
-    monthIndex,
-    daysInMonth: end.getDate(),
-    label: `${MONTH_NAMES[monthIndex]} ${year}`
-  };
-};
-
-const getPreviousMonthKey = (key) => {
-  const parsed = parseMonthKey(key);
-  if (!parsed) return null;
-  const { year, monthIndex } = parsed;
-  const prev = new Date(year, monthIndex - 1, 1);
-  return getMonthKey(prev);
-};
-
 const EPSILON = 1e-6;
 const K_PRIOR = 50;
 const CREATIVE_SAMPLES = 2000;
@@ -133,7 +90,6 @@ const REGION_COMPARE_COLORS = {
 };
 const CTR_TREND_COLORS = ['#2563eb', '#f97316', '#10b981'];
 const CTR_COMPARE_LIMIT = 3;
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -437,20 +393,6 @@ export default function App() {
     end: getLocalDateString()
   });
   const [showCustomPicker, setShowCustomPicker] = useState(false);
-
-  const [selectedMonthKey, setSelectedMonthKey] = useState(() => getMonthKey());
-  const [monthMode, setMonthMode] = useState('projection');
-
-  const monthOptions = useMemo(() => {
-    const options = [];
-    const now = new Date();
-    for (let i = 0; i < 12; i += 1) {
-      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const key = getMonthKey(date);
-      options.push({ key, label: getMonthLabel(key) });
-    }
-    return options;
-  }, []);
   
   const [dashboard, setDashboard] = useState(null);
   const [efficiency, setEfficiency] = useState(null);
@@ -1464,46 +1406,6 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Month</span>
-            <select
-              value={selectedMonthKey}
-              onChange={(e) => setSelectedMonthKey(e.target.value)}
-              className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              {monthOptions.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <div className="flex rounded-lg bg-gray-100 p-1">
-              <button
-                type="button"
-                onClick={() => setMonthMode('mtd')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                  monthMode === 'mtd'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500'
-                }`}
-              >
-                MTD
-              </button>
-              <button
-                type="button"
-                onClick={() => setMonthMode('projection')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                  monthMode === 'projection'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500'
-                }`}
-                title="Full-month projection"
-              >
-                Full-month
-              </button>
-            </div>
-          </div>
-
           <div className="flex items-center gap-2 text-sm">
             <span className="text-gray-500">Trend:</span>
             <div className="flex rounded-lg bg-gray-100 p-1">
@@ -1626,10 +1528,7 @@ export default function App() {
             showHiddenDropdown={showHiddenDropdown}
             setShowHiddenDropdown={setShowHiddenDropdown}
             includeInactive={includeInactive}
-            selectedCampaignId={selectedCampaignId}
             setIncludeInactive={setIncludeInactive}
-            selectedMonthKey={selectedMonthKey}
-            monthMode={monthMode}
             dateRange={dashboard?.dateRange}
             chartMode={chartMode}
           />
@@ -1837,9 +1736,6 @@ function DashboardTab({
   setShowHiddenDropdown = () => {},
   includeInactive = false,
   setIncludeInactive = () => {},
-  selectedCampaignId = '',
-  selectedMonthKey = '',
-  monthMode = 'projection',
   dateRange = {},
   chartMode = 'bucket',
   diagnosticsCampaignOptions = [],
@@ -1906,9 +1802,6 @@ function DashboardTab({
   const [ctrTrendError, setCtrTrendError] = useState('');
   const [ctrTrendCompareError, setCtrTrendCompareError] = useState('');
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
-  const [monthHistoryTrends, setMonthHistoryTrends] = useState([]);
-  const [monthHistoryLoading, setMonthHistoryLoading] = useState(false);
-  const [monthHistoryError, setMonthHistoryError] = useState('');
   const countryTrendQuickOptions = [
     { label: '1W', type: 'weeks', value: 1 },
     { label: '2W', type: 'weeks', value: 2 },
@@ -1916,178 +1809,10 @@ function DashboardTab({
     { label: '1M', type: 'months', value: 1 }
   ];
 
-  useEffect(() => {
-    let isActive = true;
-
-    const loadMonthHistory = async () => {
-      if (!store?.id) return;
-      setMonthHistoryLoading(true);
-      setMonthHistoryError('');
-
-      const today = getLocalDateString();
-      const params = new URLSearchParams({
-        store: store.id,
-        startDate: '2000-01-01',
-        endDate: today
-      });
-
-      if (includeInactive) {
-        params.set('includeInactive', 'true');
-      }
-
-      if (selectedCampaignId) {
-        params.set('campaignId', selectedCampaignId);
-      }
-
-      try {
-        const data = await fetchJson(`${API_BASE}/analytics/dashboard?${params}`, {});
-        if (!isActive) return;
-        const trendsData = Array.isArray(data?.trends) ? data.trends : [];
-        setMonthHistoryTrends(trendsData);
-        setMonthHistoryError('');
-      } catch (error) {
-        if (!isActive) return;
-        setMonthHistoryTrends([]);
-        setMonthHistoryError(error?.message || 'Failed to load month history');
-      } finally {
-        if (isActive) setMonthHistoryLoading(false);
-      }
-    };
-
-    loadMonthHistory();
-
-    return () => {
-      isActive = false;
-    };
-  }, [store?.id, includeInactive, selectedCampaignId]);
-
   // Note: toggleHideCampaign, showAllCampaigns, and handleCampaignSelect
   // are now implemented in the UnifiedAnalytics component
 
   const ecomLabel = store.ecommerce;
-
-  const monthHistoryDailyMap = useMemo(() => {
-    const map = new Map();
-    (Array.isArray(monthHistoryTrends) ? monthHistoryTrends : []).forEach((point) => {
-      if (!point?.date) return;
-      map.set(point.date, {
-        revenue: toNumber(point.revenue)
-      });
-    });
-    return map;
-  }, [monthHistoryTrends]);
-
-  const monthlyTotals = useMemo(() => {
-    const map = new Map();
-    (Array.isArray(monthHistoryTrends) ? monthHistoryTrends : []).forEach((point) => {
-      if (!point?.date) return;
-      const monthKey = String(point.date).slice(0, 7);
-      if (!map.has(monthKey)) {
-        map.set(monthKey, { monthKey, revenue: 0 });
-      }
-      const entry = map.get(monthKey);
-      entry.revenue += toNumber(point.revenue);
-    });
-    return Array.from(map.values()).sort((a, b) => a.monthKey.localeCompare(b.monthKey));
-  }, [monthHistoryTrends]);
-
-  const monthlyTotalsMap = useMemo(() => (
-    new Map(monthlyTotals.map((item) => [item.monthKey, item]))
-  ), [monthlyTotals]);
-
-  const monthSummary = useMemo(() => {
-    const bounds = getMonthBounds(selectedMonthKey);
-    if (!bounds) return null;
-
-    const label = bounds.label;
-    const todayKey = getLocalDateString();
-    const currentMonthKey = getMonthKey();
-    const isCurrentMonth = selectedMonthKey === currentMonthKey;
-    const monthEnd = isCurrentMonth ? todayKey : bounds.endDate;
-
-    if (monthHistoryError || !monthHistoryTrends.length) {
-      return {
-        text: `${label} ${monthMode === 'mtd' ? 'MTD' : 'projection'}: —`,
-        tone: 'neutral',
-        isCelebrating: false
-      };
-    }
-
-    const monthPoints = monthHistoryTrends.filter((point) => (
-      point?.date && point.date >= bounds.startDate && point.date <= monthEnd
-    ));
-
-    const totals = monthPoints.reduce((acc, point) => ({
-      revenue: acc.revenue + toNumber(point.revenue)
-    }), { revenue: 0 });
-
-    let projectedRevenue = totals.revenue;
-
-    if (isCurrentMonth && monthMode === 'projection') {
-      const today = new Date();
-      const remainingDays = Math.max(bounds.daysInMonth - today.getDate(), 0);
-
-      if (remainingDays > 0) {
-        let paceRevenue = 0;
-        let dayCount = 0;
-
-        for (let offset = 1; offset <= 7; offset += 1) {
-          const day = new Date(today);
-          day.setDate(day.getDate() - offset);
-          const dayKey = getLocalDateString(day);
-          const entry = monthHistoryDailyMap.get(dayKey);
-          if (entry) {
-            paceRevenue += toNumber(entry.revenue);
-            dayCount += 1;
-          }
-        }
-
-        if (dayCount > 0) {
-          paceRevenue /= dayCount;
-        }
-
-        projectedRevenue = totals.revenue + paceRevenue * remainingDays;
-      }
-    }
-
-    const activeRevenue = (monthMode === 'mtd' || !isCurrentMonth) ? totals.revenue : projectedRevenue;
-    const prevKey = getPreviousMonthKey(selectedMonthKey);
-    const prevLabel = getMonthLabel(prevKey) || 'last month';
-    const prevRevenue = monthlyTotalsMap.get(prevKey)?.revenue || 0;
-    const deltaPct = prevRevenue > 0 ? ((activeRevenue - prevRevenue) / prevRevenue) * 100 : null;
-
-    const formattedDelta = deltaPct == null
-      ? '—'
-      : `${deltaPct >= 0 ? '+' : ''}${Math.abs(deltaPct).toFixed(0)}%`;
-
-    let text = `${label} ${monthMode === 'mtd' ? 'MTD' : 'projection'}: ${formattedDelta} vs ${prevLabel}`;
-
-    const comparableTotals = monthlyTotals.filter((item) => item.monthKey !== selectedMonthKey && item.revenue > 0);
-    let isAllTimeHigh = false;
-    let isAllTimeLow = false;
-
-    if (comparableTotals.length > 0) {
-      const maxRevenue = Math.max(...comparableTotals.map((item) => item.revenue));
-      const minRevenue = Math.min(...comparableTotals.map((item) => item.revenue));
-      if (activeRevenue >= maxRevenue) isAllTimeHigh = true;
-      if (activeRevenue <= minRevenue) isAllTimeLow = true;
-    }
-
-    if (isAllTimeHigh) {
-      text += ' · All-time high';
-    } else if (isAllTimeLow) {
-      text += ' · All-time low';
-    }
-
-    const isStrongUplift = deltaPct != null && deltaPct >= 15;
-    const tone = deltaPct == null ? 'neutral' : (deltaPct >= 0 ? 'positive' : 'negative');
-
-    return {
-      text,
-      tone,
-      isCelebrating: isStrongUplift || isAllTimeHigh
-    };
-  }, [monthHistoryDailyMap, monthHistoryError, monthHistoryLoading, monthHistoryTrends, monthlyTotals, monthlyTotalsMap, monthMode, selectedMonthKey]);
   
   const kpis = [
     { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6' },
@@ -4936,31 +4661,10 @@ function DashboardTab({
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="flex items-center justify-between">
         <div className="px-3 py-1 bg-white rounded-lg shadow-sm text-sm text-gray-700">
           Scope: <span className="font-semibold text-gray-900">{campaignScopeLabel}</span>
         </div>
-        {monthSummary && (
-          <div
-            className={`relative inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${
-              monthSummary.tone === 'positive'
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                : monthSummary.tone === 'negative'
-                  ? 'bg-rose-50 text-rose-700 border-rose-200'
-                  : 'bg-gray-50 text-gray-700 border-gray-200'
-            } ${monthSummary.isCelebrating ? 'summary-pill-celebrate pr-8' : ''}`}
-          >
-            <span>{monthSummary.text}</span>
-            {monthSummary.isCelebrating && (
-              <span className="summary-confetti" aria-hidden="true">
-                <span className="summary-confetti-dot confetti-dot-1" />
-                <span className="summary-confetti-dot confetti-dot-2" />
-                <span className="summary-confetti-dot confetti-dot-3" />
-                <span className="summary-confetti-dot confetti-dot-4" />
-              </span>
-            )}
-          </div>
-        )}
       </div>
 
       {/* KPI CARDS */}
