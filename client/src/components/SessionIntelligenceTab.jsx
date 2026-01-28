@@ -112,6 +112,7 @@ export default function SessionIntelligenceTab({ store }) {
   const [analyzeLimit, setAnalyzeLimit] = useState(20);
 
   const latestEventIdRef = useRef(null);
+  const libraryTimelineRef = useRef(null);
 
   const loadOverview = useCallback(async () => {
     const url = `/api/session-intelligence/overview?store=${encodeURIComponent(storeId)}`;
@@ -249,6 +250,12 @@ export default function SessionIntelligenceTab({ store }) {
     });
   }, [libraryDay, librarySessionId, loadLibraryEvents]);
 
+  useEffect(() => {
+    if (!librarySessionId) return;
+    // Make "View" feel instant even if the timeline is below the fold.
+    libraryTimelineRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [librarySessionId]);
+
   const dropoffChips = useMemo(() => {
     const byStep = overview?.checkoutDropoffsByStep || {};
     const entries = Object.entries(byStep)
@@ -370,7 +377,7 @@ export default function SessionIntelligenceTab({ store }) {
             <span className="si-pill-dot" />
             {eventsStatus === 'ok' ? 'Connected' : eventsStatus === 'error' ? 'Degraded' : 'Loading'}
           </div>
-          <button className="si-button" onClick={manualRefresh} disabled={loading}>
+          <button className="si-button" type="button" onClick={manualRefresh} disabled={loading}>
             <span className="inline-flex items-center gap-2">
               <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />
               Refresh
@@ -663,10 +670,10 @@ export default function SessionIntelligenceTab({ store }) {
                 style={{ width: 90 }}
               />
             </label>
-            <button className="si-button" onClick={() => analyzeDay('high_intent')} disabled={analyzing || !libraryDay}>
+            <button className="si-button" type="button" onClick={() => analyzeDay('high_intent')} disabled={analyzing || !libraryDay}>
               Analyze high intent
             </button>
-            <button className="si-button" onClick={() => analyzeDay('all')} disabled={analyzing || !libraryDay}>
+            <button className="si-button" type="button" onClick={() => analyzeDay('all')} disabled={analyzing || !libraryDay}>
               Analyze all
             </button>
           </div>
@@ -719,6 +726,7 @@ export default function SessionIntelligenceTab({ store }) {
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <button
                         className="si-button si-button-small"
+                        type="button"
                         onClick={() => {
                           setLibrarySessionId(s.session_id);
                         }}
@@ -728,6 +736,7 @@ export default function SessionIntelligenceTab({ store }) {
                       </button>{' '}
                       <button
                         className="si-button si-button-small"
+                        type="button"
                         onClick={() => analyzeSession(s.session_id)}
                         disabled={analyzing}
                       >
@@ -742,7 +751,7 @@ export default function SessionIntelligenceTab({ store }) {
         )}
 
         {librarySessionId && (
-          <div style={{ marginTop: 14 }}>
+          <div style={{ marginTop: 14 }} ref={libraryTimelineRef}>
             <div className="si-card-title" style={{ marginBottom: 8 }}>
               <h3 style={{ fontSize: 14, margin: 0 }}>Session timeline</h3>
               <span className="si-muted">
