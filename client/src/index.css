@@ -200,3 +200,69 @@ tbody td {
 .animate-slideLeft {
   animation: slideLeft 0.4s ease-out forwards;
 }
+
+/* Summary pill celebration */
+@keyframes confettiBurst {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.6);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px) scale(1);
+  }
+}
+
+.summary-pill-celebrate {
+  overflow: hidden;
+}
+
+.summary-confetti {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.summary-confetti-dot {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  opacity: 0;
+  animation: confettiBurst 0.6s ease-out forwards;
+}
+
+.confetti-dot-1 {
+  background: #34d399;
+  left: 2px;
+  top: 10px;
+  animation-delay: 0s;
+}
+
+.confetti-dot-2 {
+  background: #fbbf24;
+  left: 10px;
+  top: 6px;
+  animation-delay: 0.05s;
+}
+
+.confetti-dot-3 {
+  background: #60a5fa;
+  left: 6px;
+  top: 2px;
+  animation-delay: 0.1s;
+}
+
+.confetti-dot-4 {
+  background: #f472b6;
+  left: 12px;
+  top: 12px;
+  animation-delay: 0.08s;
+}
