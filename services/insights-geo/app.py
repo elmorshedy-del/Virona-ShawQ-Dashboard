@@ -17,8 +17,18 @@ except Exception:
 
 PRED_CACHE = {}
 EMBED_CACHE = {}
-ENABLE_TABPFN = os.getenv('ENABLE_TABPFN', '1') == '1'
-ENABLE_SIAMESE_TRAIN = os.getenv('ENABLE_SIAMESE_TRAIN', '1') == '1'
+CACHE_MAX = int(os.getenv('MODEL_CACHE_MAX', '64'))
+ENABLE_TABPFN = os.getenv('ENABLE_TABPFN', '0') == '1'
+ENABLE_SIAMESE_TRAIN = os.getenv('ENABLE_SIAMESE_TRAIN', '0') == '1'
+MIN_GEOS_FOR_TABPFN = int(os.getenv('MIN_GEOS_FOR_TABPFN', '6'))
+MIN_GEOS_FOR_SIAMESE = int(os.getenv('MIN_GEOS_FOR_SIAMESE', '10'))
+
+
+def _lru_put(cache: dict, key: int, value):
+    cache[key] = value
+    if len(cache) > CACHE_MAX:
+        cache.pop(next(iter(cache)))
+
 
 app = FastAPI()
 
@@ -108,7 +118,7 @@ def predict(payload: GeoPayload):
             model = TabPFNRegressor(device='cpu', n_estimators=16)
             model.fit(features_scaled, target)
             preds = model.predict(features_scaled)
-            PRED_CACHE[cache_key] = preds
+            _lru_put(PRED_CACHE, cache_key, preds)
         else:
             preds = cached
 
@@ -117,7 +127,7 @@ def predict(payload: GeoPayload):
     labels = (preds >= threshold).astype(int)
 
     embeddings = features_scaled
-    if ENABLE_SIAMESE_TRAIN:
+    if ENABLE_SIAMESE_TRAIN and len(geos) >= MIN_GEOS_FOR_SIAMESE:
         embed_key = hash(features_scaled.tobytes() + labels.tobytes())
         cached_embed = EMBED_CACHE.get(embed_key)
         if cached_embed is None:
@@ -125,7 +135,7 @@ def predict(payload: GeoPayload):
             if siamese_model is not None:
                 with torch.no_grad():
                     embeddings = siamese_model(torch.tensor(features_scaled, dtype=torch.float32)).numpy()
-            EMBED_CACHE[embed_key] = embeddings
+            _lru_put(EMBED_CACHE, embed_key, embeddings)
         else:
             embeddings = cached_embed
 
@@ -139,6 +149,30 @@ def predict(payload: GeoPayload):
     sim = cosine_similarity(candidate[2].reshape(1, -1), embeddings[geos.index(top_geo)].reshape(1, -1))[0][0]
     confidence = min(0.85, 0.55 + float(np.std(preds)) / (np.mean(preds) + 1e-6))
 
+    used_models = []
+    used_models.append({
+        "name": "TabPFN" if (TABPFN_AVAILABLE and ENABLE_TABPFN and len(geos) >= MIN_GEOS_FOR_TABPFN) else "Geo Opportunity Scorer",
+        "description": "Tabular foundation model for low-data geo prediction." if (TABPFN_AVAILABLE and ENABLE_TABPFN and len(geos) >= MIN_GEOS_FOR_TABPFN) else "Weighted scoring on spend/conversions/CTR/CVR/growth."
+    })
+
+    used_models.append({
+        "name": "Siamese Similarity" if (ENABLE_SIAMESE_TRAIN and len(geos) >= MIN_GEOS_FOR_SIAMESE) else "Cosine Similarity",
+        "description": "Learns geo embeddings to match winning markets." if (ENABLE_SIAMESE_TRAIN and len(geos) >= MIN_GEOS_FOR_SIAMESE) else "Matches geos by cosine similarity over normalized features."
+    })
+
+    models_available = [
+        {
+            "name": "TabPFN (optional)",
+            "description": f"Enable when you have >= {MIN_GEOS_FOR_TABPFN} geos and you can afford heavier inference.",
+            "enabled": bool(TABPFN_AVAILABLE and ENABLE_TABPFN)
+        },
+        {
+            "name": "Siamese Similarity (optional)",
+            "description": f"Enable when you have >= {MIN_GEOS_FOR_SIAMESE} geos and want learned embeddings.",
+            "enabled": bool(ENABLE_SIAMESE_TRAIN)
+        }
+    ]
+
     insight = {
         "title": f"{candidate[0].geo} shows the strongest geo opportunity",
         "finding": f"Predicted conversion potential ranks {candidate[0].geo} above peers; similarity to {top_geo.geo} is {sim*100:.0f}%.",
@@ -146,12 +180,10 @@ def predict(payload: GeoPayload):
         "action": f"Run a 14-day test in {candidate[0].geo} with localized creatives.",
         "confidence": confidence,
         "signals": ["Geo spend & conversion profile", "CTR/CVR lift", "Demand/competition balance"],
-        "models": [
-            {"name": "TabPFN", "description": "Tabular foundation model for low-data geo prediction."},
-            {"name": "Siamese Similarity", "description": "Learns geo embeddings to match with winning markets."}
-        ],
+        "models": used_models,
+        "models_available": models_available,
         "logic": "Candidate geo ranks top in predicted conversions while remaining similar to best-performing markets.",
-        "limits": "Limited geo history reduces generalization; external market data not included yet."
+        "limits": "If TabPFN/Siamese are disabled, this uses a lightweight scorer + cosine similarity. Add external market data for stronger geo discovery."
     }
 
     return {"insight": insight}

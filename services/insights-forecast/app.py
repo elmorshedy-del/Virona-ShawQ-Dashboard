@@ -2,6 +2,9 @@ import os
 from typing import List, Optional
 
 import numpy as np
+import threading
+
+import torch
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -13,8 +16,13 @@ except Exception:
 
 app = FastAPI()
 
+PIPE_LOCK = threading.Lock()
+
 MODEL_ID = os.getenv('CHRONOS_MODEL_ID', 'amazon/chronos-t5-small')
 PRED_LEN = int(os.getenv('CHRONOS_PRED_LEN', '21'))
+
+PIPE = None
+PIPE_LOCK = None
 
 class SeriesPoint(BaseModel):
     date: str
@@ -40,8 +48,13 @@ def predict(payload: ForecastPayload):
     last_avg = np.mean(values[-7:]) if len(values) >= 7 else np.mean(values)
 
     if CHRONOS_AVAILABLE:
-        pipe = ChronosPipeline.from_pretrained(MODEL_ID, device_map='auto')
-        forecast = pipe.predict(values, prediction_length=PRED_LEN)
+        global PIPE
+        if PIPE is None:
+            with PIPE_LOCK:
+                if PIPE is None:
+                    device_map = 'auto' if torch.cuda.is_available() else None
+                    PIPE = ChronosPipeline.from_pretrained(MODEL_ID, device_map=device_map)
+        forecast = PIPE.predict(values, prediction_length=PRED_LEN)
         pred = np.array(forecast[0])
     else:
         slope = (values[-1] - values[-8]) / 7 if len(values) >= 8 else 0

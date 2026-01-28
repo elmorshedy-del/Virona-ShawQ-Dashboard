@@ -64,7 +64,7 @@ class CreativePayload(BaseModel):
 
 def fetch_image(url: str) -> Optional[Image.Image]:
     if not url:
-        return None
+        return None, "no_history"
     try:
         res = requests.get(url, timeout=10)
         if res.status_code != 200:
@@ -91,7 +91,7 @@ def tokenize_name(name: Optional[str]) -> List[str]:
     return tokens
 
 
-def compute_fatigue_days(history: List[CreativeHistoryPoint]) -> Optional[float]:
+def compute_fatigue_days(history: List[CreativeHistoryPoint]) -> tuple[Optional[float], str]:
     if not history:
         return None
 
@@ -124,11 +124,11 @@ def compute_fatigue_days(history: List[CreativeHistoryPoint]) -> Optional[float]
             fatigue_days.append(fatigue_day)
 
     if len(events) < 6:
-        return float(sum(fatigue_days) / len(fatigue_days)) if fatigue_days else None
+        return (float(sum(fatigue_days) / len(fatigue_days)) if fatigue_days else None), "heuristic"
 
     # Heuristic fallback (no training) unless enabled.
     if not PYCOX_AVAILABLE or not ENABLE_DEEPSURV_TRAIN:
-        return float(sum(fatigue_days) / len(fatigue_days)) if fatigue_days else None
+        return (float(sum(fatigue_days) / len(fatigue_days)) if fatigue_days else None), "heuristic"
 
     x = np.array(features, dtype=np.float32)
     durations = np.array([e[0] for e in events], dtype=np.float32)
@@ -146,7 +146,7 @@ def compute_fatigue_days(history: List[CreativeHistoryPoint]) -> Optional[float]
     model_surv = SURV_CACHE['model']
     surv = model_surv.predict_surv_df(x)
     median_surv = surv.apply(lambda col: col[col <= 0.5].index.min() if (col <= 0.5).any() else col.index.max())
-    return float(np.nanmedian(median_surv.values))
+    return float(np.nanmedian(median_surv.values)), "deepsurv"
 
 
 @app.get('/health')
@@ -190,7 +190,7 @@ def predict(payload: CreativePayload):
         keywords += tokenize_name(asset.ad_name)
     keyword = max(set(keywords), key=keywords.count) if keywords else 'premium'
 
-    fatigue_days = compute_fatigue_days(payload.history)
+    fatigue_days, fatigue_method = compute_fatigue_days(payload.history)
 
     confidence = min(0.9, 0.5 + 0.08 * len(top_assets))
     if fatigue_days is None:
@@ -208,10 +208,13 @@ def predict(payload: CreativePayload):
         "models": [
             {"name": "CLIP ViT-L/14", "description": "Embeds creative visuals into semantic vectors."},
             {"name": "HDBSCAN", "description": "Clusters creatives by visual similarity."},
-            {"name": "DeepSurv", "description": "Estimates creative fatigue timing from performance history."}
+            *([ {"name": "DeepSurv", "description": "Estimates creative fatigue timing from performance history."} ] if fatigue_method == 'deepsurv' else [ {"name": "Fatigue Heuristic", "description": "Rule-based fatigue estimate using CTR decay vs peak."} ])
+        ],
+        "models_available": [
+            {"name": "DeepSurv (optional)", "description": "Enable cached training by setting ENABLE_DEEPSURV_TRAIN=1. Recommended only with enough creative history.", "enabled": bool(ENABLE_DEEPSURV_TRAIN and PYCOX_AVAILABLE)}
         ],
         "logic": "Winning creative clusters are identified by higher conversion-weighted scores.",
-        "limits": "Needs sufficient creative volume and stable naming/targeting to be precise."
+        "limits": "Needs enough creatives + stable targeting. DeepSurv is optional; by default we use a fast heuristic unless ENABLE_DEEPSURV_TRAIN=1."
     }
 
     return {"insight": insight}
