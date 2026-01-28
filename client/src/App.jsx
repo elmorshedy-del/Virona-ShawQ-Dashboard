@@ -2005,23 +2005,7 @@ function DashboardTab({
     const isCurrentMonth = selectedMonthKey === currentMonthKey;
     const monthEnd = isCurrentMonth ? todayKey : bounds.endDate;
 
-    if (monthHistoryError) {
-      return {
-        text: `${label} ${monthMode === 'mtd' ? 'MTD' : 'projection'}: —`,
-        tone: 'neutral',
-        isCelebrating: false
-      };
-    }
-
-    if (monthHistoryLoading && !monthHistoryTrends.length) {
-      return {
-        text: `${label} ${monthMode === 'mtd' ? 'MTD' : 'projection'}: —`,
-        tone: 'neutral',
-        isCelebrating: false
-      };
-    }
-
-    if (!monthHistoryTrends.length) {
+    if (monthHistoryError || !monthHistoryTrends.length) {
       return {
         text: `${label} ${monthMode === 'mtd' ? 'MTD' : 'projection'}: —`,
         tone: 'neutral',
