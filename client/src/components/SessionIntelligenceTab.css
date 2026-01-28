@@ -344,6 +344,14 @@
   gap: 8px;
 }
 
+.si-path-label {
+  display: inline-block;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .si-badge {
   display: inline-flex;
   align-items: center;

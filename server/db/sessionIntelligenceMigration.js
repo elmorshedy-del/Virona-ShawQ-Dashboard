@@ -21,11 +21,31 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS si_shoppers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      shopper_number INTEGER NOT NULL,
+      first_seen_at TEXT,
+      last_seen_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, client_id),
+      UNIQUE(store, shopper_number)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_shoppers_store_last_seen
+    ON si_shoppers(store, last_seen_at)
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS si_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,
       session_id TEXT NOT NULL,
       client_id TEXT,
+      shopper_number INTEGER,
       source TEXT,
       event_name TEXT NOT NULL,
       event_ts TEXT NOT NULL,
@@ -61,6 +81,7 @@ export function runSessionIntelligenceMigration() {
   try {
     db.exec(`ALTER TABLE si_events ADD COLUMN checkout_step TEXT`);
   } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN shopper_number INTEGER`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN device_type TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN country_code TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN product_id TEXT`); } catch (e) { /* column exists */ }
@@ -112,6 +133,7 @@ export function runSessionIntelligenceMigration() {
       last_checkout_token TEXT,
       last_checkout_step TEXT,
       last_cart_json TEXT,
+      shopper_number INTEGER,
       last_device_type TEXT,
       last_country_code TEXT,
       last_product_id TEXT,
@@ -140,6 +162,7 @@ export function runSessionIntelligenceMigration() {
   try {
     db.exec(`ALTER TABLE si_sessions ADD COLUMN last_cart_json TEXT`);
   } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN shopper_number INTEGER`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_device_type TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_country_code TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_product_id TEXT`); } catch (e) { /* column exists */ }

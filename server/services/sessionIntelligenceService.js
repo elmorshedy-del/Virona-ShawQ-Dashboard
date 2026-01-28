@@ -39,6 +39,67 @@ function safeTruncate(value, max = 240) {
   return str.length > max ? str.slice(0, max) : str;
 }
 
+function getOrCreateShopperNumber(store, clientId, eventTs) {
+  if (!store || !clientId) return null;
+  const db = getDb();
+
+  const normalizedStore = safeString(store).trim() || 'shawq';
+  const normalizedClientId = safeString(clientId).trim();
+  if (!normalizedClientId) return null;
+
+  const now = normalizeSqliteDateTime();
+  const seenAt = eventTs || now;
+
+  const tx = db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT shopper_number
+      FROM si_shoppers
+      WHERE store = ? AND client_id = ?
+    `).get(normalizedStore, normalizedClientId);
+
+    if (existing?.shopper_number) {
+      db.prepare(`
+        UPDATE si_shoppers
+        SET last_seen_at = CASE
+          WHEN last_seen_at IS NULL THEN ?
+          WHEN ? > last_seen_at THEN ?
+          ELSE last_seen_at
+        END
+        WHERE store = ? AND client_id = ?
+      `).run(seenAt, seenAt, seenAt, normalizedStore, normalizedClientId);
+
+      return Number(existing.shopper_number) || null;
+    }
+
+    const next = db.prepare(`
+      SELECT COALESCE(MAX(shopper_number), 0) + 1 AS next
+      FROM si_shoppers
+      WHERE store = ?
+    `).get(normalizedStore)?.next;
+
+    const shopperNumber = Number(next) || 1;
+
+    db.prepare(`
+      INSERT INTO si_shoppers (store, client_id, shopper_number, first_seen_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(normalizedStore, normalizedClientId, shopperNumber, seenAt, seenAt);
+
+    return shopperNumber;
+  });
+
+  try {
+    return tx.immediate();
+  } catch (e) {
+    // If we raced on unique(store, client_id), read it back.
+    const row = db.prepare(`
+      SELECT shopper_number
+      FROM si_shoppers
+      WHERE store = ? AND client_id = ?
+    `).get(normalizedStore, normalizedClientId);
+    return row?.shopper_number ? Number(row.shopper_number) : null;
+  }
+}
+
 function safeJsonParse(value) {
   if (!value || typeof value !== 'string') return null;
   try {
@@ -578,6 +639,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     null;
 
   const clientId = identifiers.clientId || null;
+  const shopperNumber = clientId ? getOrCreateShopperNumber(store, clientId, eventTs) : null;
   const sessionId =
     identifiers.sessionId ||
     (clientId ? getOrCreateSessionId(store, clientId, eventTs) : null) ||
@@ -607,6 +669,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       store,
       session_id,
       client_id,
+      shopper_number,
       source,
       event_name,
       event_ts,
@@ -632,7 +695,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       irclickid,
       data_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const now = normalizeSqliteDateTime();
@@ -651,6 +714,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       last_checkout_token,
       last_checkout_step,
       last_cart_json,
+      shopper_number,
       last_device_type,
       last_country_code,
       last_product_id,
@@ -660,6 +724,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       updated_at
     )
     VALUES (
+      ?,
       ?,
       ?,
       ?,
@@ -714,6 +779,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       last_checkout_token = COALESCE(excluded.last_checkout_token, si_sessions.last_checkout_token),
       last_checkout_step = COALESCE(excluded.last_checkout_step, si_sessions.last_checkout_step),
       last_cart_json = COALESCE(excluded.last_cart_json, si_sessions.last_cart_json),
+      shopper_number = COALESCE(excluded.shopper_number, si_sessions.shopper_number),
       last_device_type = COALESCE(excluded.last_device_type, si_sessions.last_device_type),
       last_country_code = COALESCE(excluded.last_country_code, si_sessions.last_country_code),
       last_product_id = COALESCE(excluded.last_product_id, si_sessions.last_product_id),
@@ -761,6 +827,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       store,
       sessionId,
       clientId,
+      shopperNumber,
       source,
       eventName,
       eventTs,
@@ -799,6 +866,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       checkoutToken,
       checkoutStep,
       cartJson,
+      shopperNumber,
       deviceType,
       countryCode,
       product?.productId || null,
@@ -955,6 +1023,7 @@ export function getSessionIntelligenceRecentEvents(store, limit = 80) {
       store,
       session_id,
       client_id,
+      shopper_number,
       source,
       event_name,
       event_ts,
@@ -995,6 +1064,7 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
       store,
       session_id,
       client_id,
+      shopper_number,
       started_at,
       last_event_at,
       atc_at,
@@ -1080,6 +1150,7 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
     WITH day_events AS (
       SELECT
         session_id,
+        MAX(shopper_number) AS shopper_number,
         MIN(created_at) AS first_seen,
         MAX(created_at) AS last_seen,
         SUM(CASE WHEN lower(event_name) IN ('product_added_to_cart','add_to_cart','added_to_cart','cart_add','atc') THEN 1 ELSE 0 END) AS atc_events,
@@ -1100,6 +1171,7 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
     )
     SELECT
       d.session_id,
+      d.shopper_number,
       d.first_seen,
       d.last_seen,
       d.atc_events,

@@ -65,6 +65,74 @@ function normalizeStepLabel(step) {
   return STEP_LABELS[key] || key;
 }
 
+function safeDecodePath(value) {
+  const raw = (value || '').toString();
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch (e) {
+    return raw;
+  }
+}
+
+function stripLocalePrefix(path) {
+  const p = (path || '').toString();
+  if (!p.startsWith('/')) return p;
+  const parts = p.split('?')[0].split('#')[0].split('/').filter(Boolean);
+  if (parts.length === 0) return '/';
+  const first = parts[0];
+  if (/^[a-z]{2}$/i.test(first)) {
+    const rest = parts.slice(1).join('/');
+    return `/${rest}`;
+  }
+  return `/${parts.join('/')}`;
+}
+
+function titleFromHandle(handle) {
+  const decoded = safeDecodePath(handle).replace(/[-_]+/g, ' ').trim();
+  if (!decoded) return null;
+  const words = decoded.split(/\s+/);
+  const capped = words
+    .slice(0, 10)
+    .map((w) => (/^[A-Za-z]/.test(w) ? `${w.charAt(0).toUpperCase()}${w.slice(1)}` : w))
+    .join(' ');
+  return capped;
+}
+
+function formatPathLabel(path, checkoutStep) {
+  const raw = (path || '').toString();
+  if (!raw) return '—';
+
+  const cleaned = stripLocalePrefix(raw);
+  const withoutQuery = cleaned.split('?')[0].split('#')[0];
+  if (withoutQuery === '/' || withoutQuery === '') return 'Home';
+
+  if (withoutQuery.startsWith('/checkouts/')) {
+    const step = checkoutStep ? ` • ${normalizeStepLabel(checkoutStep)}` : '';
+    return `Checkout${step}`;
+  }
+
+  if (withoutQuery === '/cart' || withoutQuery.startsWith('/cart/')) return 'Cart';
+  if (withoutQuery === '/search' || withoutQuery.startsWith('/search')) return 'Search';
+
+  const parts = withoutQuery.split('/').filter(Boolean);
+  if (parts[0] === 'products' && parts[1]) {
+    const title = titleFromHandle(parts[1]);
+    return title ? `Product • ${title}` : 'Product';
+  }
+  if (parts[0] === 'collections' && parts[1]) {
+    const title = titleFromHandle(parts[1]);
+    return title ? `Collection • ${title}` : 'Collection';
+  }
+  if (parts[0] === 'pages' && parts[1]) {
+    const title = titleFromHandle(parts[1]);
+    return title ? `Page • ${title}` : 'Page';
+  }
+
+  const title = titleFromHandle(parts[0]);
+  return title ? title : withoutQuery;
+}
+
 function fnv1a32(input) {
   const str = (input || '').toString();
   let hash = 0x811c9dc5;
@@ -82,8 +150,16 @@ function toCode(prefix, raw, width = 6) {
   return `${prefix}-${padded.slice(-width)}`;
 }
 
+function formatShopperNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return `Shopper-${String(Math.trunc(n)).padStart(4, '0')}`;
+}
+
 function userLabel(row) {
   if (!row || typeof row !== 'object') return '—';
+  const shopper = formatShopperNumber(row.shopper_number ?? row.shopperNumber);
+  if (shopper) return shopper;
   const clientId = row.client_id || row.clientId || null;
   if (clientId) return toCode('U', clientId, 6);
   const sessionId = row.session_id || row.sessionId || null;
@@ -780,7 +856,9 @@ export default function SessionIntelligenceTab({ store }) {
                     <tr key={e.id}>
                       <td title={e.created_at || e.event_ts}>{formatShort(e.created_at || e.event_ts)}</td>
                       <td>{e.event_name}</td>
-                      <td title={e.page_path || ''}>{e.page_path || '—'}</td>
+                      <td title={e.page_path || ''}>
+                        <span className="si-path-label">{formatPathLabel(e.page_path, e.checkout_step)}</span>
+                      </td>
                       <td>{e.checkout_step ? <span className="si-badge">{normalizeStepLabel(e.checkout_step)}</span> : '—'}</td>
                       <td title={[e.product_id, e.variant_id].filter(Boolean).join('\n')}>
                         {e.variant_id ? 'variant' : e.product_id ? 'product' : '—'}
