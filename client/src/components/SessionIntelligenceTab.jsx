@@ -102,6 +102,15 @@ export default function SessionIntelligenceTab({ store }) {
   const [sanityOpen, setSanityOpen] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
+  const [libraryDays, setLibraryDays] = useState([]);
+  const [libraryDay, setLibraryDay] = useState('');
+  const [librarySessions, setLibrarySessions] = useState([]);
+  const [librarySessionId, setLibrarySessionId] = useState('');
+  const [libraryEvents, setLibraryEvents] = useState([]);
+  const [libraryError, setLibraryError] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeLimit, setAnalyzeLimit] = useState(20);
+
   const latestEventIdRef = useRef(null);
 
   const loadOverview = useCallback(async () => {
@@ -140,21 +149,45 @@ export default function SessionIntelligenceTab({ store }) {
     setSessions(list);
   }, [storeId]);
 
+  const loadLibraryDays = useCallback(async () => {
+    const url = `/api/session-intelligence/days?store=${encodeURIComponent(storeId)}&limit=10`;
+    const data = await fetchJson(url);
+    const days = Array.isArray(data.days) ? data.days : [];
+    setLibraryDays(days);
+    if (days.length > 0) {
+      setLibraryDay((current) => current || days[0].day);
+    }
+  }, [storeId]);
+
+  const loadLibrarySessions = useCallback(async (day) => {
+    if (!day) return;
+    const url = `/api/session-intelligence/sessions-by-day?store=${encodeURIComponent(storeId)}&date=${encodeURIComponent(day)}&limit=200`;
+    const data = await fetchJson(url);
+    setLibrarySessions(Array.isArray(data.sessions) ? data.sessions : []);
+  }, [storeId]);
+
+  const loadLibraryEvents = useCallback(async (day, sessionId) => {
+    if (!day || !sessionId) return;
+    const url = `/api/session-intelligence/events-by-day?store=${encodeURIComponent(storeId)}&date=${encodeURIComponent(day)}&sessionId=${encodeURIComponent(sessionId)}&limit=1200`;
+    const data = await fetchJson(url);
+    setLibraryEvents(Array.isArray(data.events) ? data.events : []);
+  }, [storeId]);
+
   const manualRefresh = useCallback(async () => {
     setLoading(true);
     try {
-      await Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents()]);
+      await Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays()]);
     } finally {
       setLoading(false);
     }
-  }, [loadBrief, loadEvents, loadOverview, loadSessions]);
+  }, [loadBrief, loadEvents, loadLibraryDays, loadOverview, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents()])
+    Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -189,7 +222,32 @@ export default function SessionIntelligenceTab({ store }) {
       clearInterval(eventsTimer);
       clearInterval(overviewTimer);
     };
-  }, [loadBrief, loadEvents, loadOverview, loadSessions]);
+  }, [loadBrief, loadEvents, loadLibraryDays, loadOverview, loadSessions]);
+
+  useEffect(() => {
+    setLibraryError('');
+    setLibrarySessions([]);
+    setLibraryEvents([]);
+    setLibrarySessionId('');
+
+    if (!libraryDay) return;
+
+    loadLibrarySessions(libraryDay).catch((error) => {
+      console.error('[SessionIntelligenceTab] library sessions load failed:', error);
+      setLibraryError(error?.message || 'Failed to load day sessions');
+    });
+  }, [libraryDay, loadLibrarySessions]);
+
+  useEffect(() => {
+    setLibraryError('');
+    setLibraryEvents([]);
+    if (!libraryDay || !librarySessionId) return;
+
+    loadLibraryEvents(libraryDay, librarySessionId).catch((error) => {
+      console.error('[SessionIntelligenceTab] library events load failed:', error);
+      setLibraryError(error?.message || 'Failed to load session events');
+    });
+  }, [libraryDay, librarySessionId, loadLibraryEvents]);
 
   const dropoffChips = useMemo(() => {
     const byStep = overview?.checkoutDropoffsByStep || {};
@@ -204,6 +262,11 @@ export default function SessionIntelligenceTab({ store }) {
   const abandonAfterHours = overview?.abandonAfterHours ?? 24;
   const checkoutDropMinutes = overview?.checkoutDropMinutes ?? 30;
   const abandonCutoffMs = Date.now() - abandonAfterHours * 60 * 60 * 1000;
+
+  const selectedLibrarySession = useMemo(() => {
+    if (!librarySessionId) return null;
+    return librarySessions.find((s) => s.session_id === librarySessionId) || null;
+  }, [librarySessionId, librarySessions]);
 
   const abandonedSessions = useMemo(() => {
     if (!Array.isArray(sessions) || sessions.length === 0) return [];
@@ -249,6 +312,48 @@ export default function SessionIntelligenceTab({ store }) {
       return '—';
     }
   }, []);
+
+  const formatShort = useCallback((ts) => {
+    const date = parseSqliteTimestamp(ts);
+    if (!date) return '—';
+    return date.toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }, []);
+
+  const analyzeSession = useCallback(async (sessionId) => {
+    if (!sessionId) return;
+    setAnalyzing(true);
+    setLibraryError('');
+    try {
+      await fetchJson('/api/session-intelligence/analyze-session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ store: storeId, sessionId })
+      });
+      await loadLibrarySessions(libraryDay);
+    } catch (error) {
+      setLibraryError(error?.message || 'Failed to analyze session');
+    } finally {
+      setAnalyzing(false);
+    }
+  }, [libraryDay, loadLibrarySessions, storeId]);
+
+  const analyzeDay = useCallback(async (mode) => {
+    if (!libraryDay) return;
+    setAnalyzing(true);
+    setLibraryError('');
+    try {
+      await fetchJson('/api/session-intelligence/analyze-day', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ store: storeId, date: libraryDay, mode, limit: analyzeLimit })
+      });
+      await loadLibrarySessions(libraryDay);
+    } catch (error) {
+      setLibraryError(error?.message || 'Failed to analyze day');
+    } finally {
+      setAnalyzing(false);
+    }
+  }, [analyzeLimit, libraryDay, loadLibrarySessions, storeId]);
 
   return (
 	    <div className="si-root">
@@ -516,6 +621,186 @@ export default function SessionIntelligenceTab({ store }) {
 	            )}
 	          </div>
 	        )}
+      </div>
+
+      <div className="si-card" style={{ marginTop: 14 }}>
+        <div className="si-card-title">
+          <h3>Events library (last {overview?.retentionHours ?? 72}h)</h3>
+          <span className="si-muted">Browse by day • Pick a session • Run AI</span>
+        </div>
+
+        <div className="si-row" style={{ gap: 10, flexWrap: 'wrap' }}>
+          <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            Day (UTC)
+            <select
+              className="si-select"
+              value={libraryDay}
+              onChange={(e) => setLibraryDay(e.target.value)}
+              disabled={libraryDays.length === 0}
+            >
+              {libraryDays.length === 0 ? (
+                <option value="">No days yet</option>
+              ) : (
+                libraryDays.map((d) => (
+                  <option key={d.day} value={d.day}>
+                    {d.day} • {d.sessions} sessions • {d.events} events
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+
+          <div className="si-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              Limit
+              <input
+                className="si-input"
+                type="number"
+                min={1}
+                max={100}
+                value={analyzeLimit}
+                onChange={(e) => setAnalyzeLimit(parseInt(e.target.value, 10) || 20)}
+                style={{ width: 90 }}
+              />
+            </label>
+            <button className="si-button" onClick={() => analyzeDay('high_intent')} disabled={analyzing || !libraryDay}>
+              Analyze high intent
+            </button>
+            <button className="si-button" onClick={() => analyzeDay('all')} disabled={analyzing || !libraryDay}>
+              Analyze all
+            </button>
+          </div>
+        </div>
+
+        {libraryError ? (
+          <div className="si-empty" style={{ color: '#b42318' }}>{libraryError}</div>
+        ) : null}
+
+        {librarySessions.length === 0 ? (
+          <div className="si-empty" style={{ marginTop: 10 }}>
+            No sessions for this day yet.
+          </div>
+        ) : (
+          <table className="si-event-table" style={{ marginTop: 10 }}>
+            <thead>
+              <tr>
+                <th>Codename</th>
+                <th>Last seen</th>
+                <th>Signals</th>
+                <th>Checkout</th>
+                <th>Device</th>
+                <th>Country</th>
+                <th>Campaign</th>
+                <th>AI</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {librarySessions.map((s) => {
+                const selected = librarySessionId === s.session_id;
+                const signals = [
+                  s.atc_events ? `ATC×${s.atc_events}` : null,
+                  s.checkout_started_events ? `Checkout×${s.checkout_started_events}` : null,
+                  s.purchase_events ? `Purchase×${s.purchase_events}` : null
+                ].filter(Boolean).join(' • ') || '—';
+                const ai = s.summary ? `${s.primary_reason || 'Insight'} (${Math.round((s.confidence || 0) * 100)}%)` : '—';
+                return (
+                  <tr key={s.session_id} className={selected ? 'si-row-selected' : ''}>
+                    <td title={s.session_id}>{s.codename || userLabel(s)}</td>
+                    <td>{timeAgo(s.last_seen)}</td>
+                    <td>{signals}</td>
+                    <td>{s.last_checkout_step ? <span className="si-badge">{normalizeStepLabel(s.last_checkout_step)}</span> : '—'}</td>
+                    <td>{s.device_type || '—'}</td>
+                    <td>{s.country_code || '—'}</td>
+                    <td title={[s.utm_source, s.utm_campaign].filter(Boolean).join(' / ')}>
+                      {s.utm_campaign || s.utm_source || '—'}
+                    </td>
+                    <td title={s.summary || ''}>{ai}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button
+                        className="si-button si-button-small"
+                        onClick={() => {
+                          setLibrarySessionId(s.session_id);
+                        }}
+                        disabled={!libraryDay}
+                      >
+                        View
+                      </button>{' '}
+                      <button
+                        className="si-button si-button-small"
+                        onClick={() => analyzeSession(s.session_id)}
+                        disabled={analyzing}
+                      >
+                        Analyze
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+
+        {librarySessionId && (
+          <div style={{ marginTop: 14 }}>
+            <div className="si-card-title" style={{ marginBottom: 8 }}>
+              <h3 style={{ fontSize: 14, margin: 0 }}>Session timeline</h3>
+              <span className="si-muted">
+                {selectedLibrarySession?.codename || userLabel({ session_id: librarySessionId })}
+              </span>
+            </div>
+
+            {libraryEvents.length === 0 ? (
+              <div className="si-empty">No events loaded for this session.</div>
+            ) : (
+              <table className="si-event-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Path</th>
+                    <th>Step</th>
+                    <th>Product</th>
+                    <th>Campaign</th>
+                    <th>Device</th>
+                    <th>Country</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {libraryEvents.slice(0, 200).map((e) => (
+                    <tr key={e.id}>
+                      <td title={e.created_at || e.event_ts}>{formatShort(e.created_at || e.event_ts)}</td>
+                      <td>{e.event_name}</td>
+                      <td title={e.page_path || ''}>{e.page_path || '—'}</td>
+                      <td>{e.checkout_step ? <span className="si-badge">{normalizeStepLabel(e.checkout_step)}</span> : '—'}</td>
+                      <td title={[e.product_id, e.variant_id].filter(Boolean).join('\n')}>
+                        {e.variant_id ? 'variant' : e.product_id ? 'product' : '—'}
+                      </td>
+                      <td title={[e.utm_source, e.utm_campaign].filter(Boolean).join(' / ')}>
+                        {e.utm_campaign || e.utm_source || '—'}
+                      </td>
+                      <td>{e.device_type || '—'}</td>
+                      <td>{e.country_code || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {selectedLibrarySession?.summary && (
+              <div className="si-card si-ai-card" style={{ marginTop: 12 }}>
+                <div className="si-card-title">
+                  <h3>AI summary</h3>
+                  <span className="si-muted">
+                    {selectedLibrarySession.primary_reason || '—'} •{' '}
+                    {selectedLibrarySession.confidence != null ? `${Math.round(selectedLibrarySession.confidence * 100)}%` : '—'}
+                  </span>
+                </div>
+                <div className="si-muted">{selectedLibrarySession.summary}</div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

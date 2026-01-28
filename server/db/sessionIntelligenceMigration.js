@@ -33,6 +33,22 @@ export function runSessionIntelligenceMigration() {
       page_path TEXT,
       checkout_token TEXT,
       checkout_step TEXT,
+      device_type TEXT,
+      country_code TEXT,
+      product_id TEXT,
+      variant_id TEXT,
+      utm_source TEXT,
+      utm_medium TEXT,
+      utm_campaign TEXT,
+      utm_content TEXT,
+      utm_term TEXT,
+      fbclid TEXT,
+      gclid TEXT,
+      ttclid TEXT,
+      msclkid TEXT,
+      wbraid TEXT,
+      gbraid TEXT,
+      irclickid TEXT,
       data_json TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     )
@@ -45,6 +61,22 @@ export function runSessionIntelligenceMigration() {
   try {
     db.exec(`ALTER TABLE si_events ADD COLUMN checkout_step TEXT`);
   } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN device_type TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN country_code TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN product_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN variant_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN utm_source TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN utm_medium TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN utm_campaign TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN utm_content TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN utm_term TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN fbclid TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN gclid TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN ttclid TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN msclkid TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN wbraid TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN gbraid TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN irclickid TEXT`); } catch (e) { /* column exists */ }
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_events_store_created_at
@@ -54,6 +86,16 @@ export function runSessionIntelligenceMigration() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_events_store_session_ts
     ON si_events(store, session_id, event_ts)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_events_store_event_created_at
+    ON si_events(store, event_name, created_at)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_events_store_campaign
+    ON si_events(store, utm_campaign, created_at)
   `);
 
   db.exec(`
@@ -70,6 +112,11 @@ export function runSessionIntelligenceMigration() {
       last_checkout_token TEXT,
       last_checkout_step TEXT,
       last_cart_json TEXT,
+      last_device_type TEXT,
+      last_country_code TEXT,
+      last_product_id TEXT,
+      last_variant_id TEXT,
+      last_campaign_json TEXT,
       status TEXT DEFAULT 'active',
       analysis_state TEXT,
       analyzed_at TEXT,
@@ -93,6 +140,11 @@ export function runSessionIntelligenceMigration() {
   try {
     db.exec(`ALTER TABLE si_sessions ADD COLUMN last_cart_json TEXT`);
   } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_device_type TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_country_code TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_product_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_variant_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_campaign_json TEXT`); } catch (e) { /* column exists */ }
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_sessions_store_status
