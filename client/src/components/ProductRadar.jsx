@@ -56,6 +56,13 @@ const getJson = async (url) => {
   return json;
 };
 
+const shortModelName = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const parts = raw.split('/');
+  return parts[parts.length - 1] || raw;
+};
+
 function ScorePill({ label, value, intent = 'neutral' }) {
   const v = Number.isFinite(value) ? Math.round(value) : null;
   const color =
@@ -140,6 +147,9 @@ export default function ProductRadar() {
   const [includeMetaAds, setIncludeMetaAds] = useState(true);
   const [metaCountry, setMetaCountry] = useState('ALL');
 
+  const [useAiModels, setUseAiModels] = useState(true);
+  const [includeGeoSpread, setIncludeGeoSpread] = useState(true);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
@@ -169,6 +179,14 @@ export default function ProductRadar() {
 
   const sources = data?.sources || health?.sources || null;
 
+  const ai = sources?.aiModels || null;
+  const aiEmbed = ai?.models?.embed?.short || shortModelName(ai?.models?.embed?.name || ai?.models?.embed);
+  const aiRerank = ai?.models?.rerank?.short || shortModelName(ai?.models?.rerank?.name || ai?.models?.rerank);
+  const aiStatus = ai?.configured ? (ai?.available ? 'on' : 'warn') : (ai ? 'warn' : 'off');
+  const aiDetail = ai?.available
+    ? `Semantic: ${aiEmbed || 'embeddings'}${aiRerank ? ` + ${aiRerank}` : ''} • PELT + ETS`
+    : (ai?.reason || 'Not connected');
+
   const plannedSources = useMemo(
     () => [
       'Amazon Best Sellers / Movers & Shakers',
@@ -197,7 +215,9 @@ export default function ProductRadar() {
         maxMetaChecks: 6,
         includeMetaAds,
         metaCountry,
-        metaLimit: 25
+        metaLimit: 25,
+        useAiModels,
+        includeGeoSpread
       });
 
       setData(res?.data || null);
@@ -245,8 +265,16 @@ export default function ProductRadar() {
               <div className="flex items-start gap-2">
                 <span className="mt-0.5 w-2 h-2 rounded-full bg-cyan-400" />
                 <div>
-                  <div className="font-semibold text-slate-100">Demand + momentum</div>
+                  <div className="font-semibold text-slate-100">Demand + geo</div>
                   <div className="text-slate-300">Google Trends (time series + regions).</div>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 w-2 h-2 rounded-full bg-cyan-400" />
+                <div>
+                  <div className="font-semibold text-slate-100">Semantic discovery + forecasting</div>
+                  <div className="text-slate-300">BM25 + embeddings (+ change-points + ETS forecast if connected).</div>
                 </div>
               </div>
 
@@ -289,7 +317,13 @@ export default function ProductRadar() {
             <SourceRow
               name="Google Trends"
               status={sources?.googleTrends?.configured ? 'on' : 'off'}
-              detail="Demand + momentum"
+              detail="Demand + momentum + geo"
+            />
+            <div className="border-t border-white/10" />
+            <SourceRow
+              name="AI models"
+              status={aiStatus}
+              detail={aiDetail}
             />
             <div className="border-t border-white/10" />
             <SourceRow
@@ -395,6 +429,28 @@ export default function ProductRadar() {
 
         <div className="mt-3 text-xs text-slate-400">
           Tip: the more specific the seed query, the more actionable the angles (e.g., “moissanite rings” vs “jewelry”).
+        </div>
+
+        <div className="mt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3 text-sm">
+          <label className="text-slate-200 flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={useAiModels}
+              onChange={(e) => setUseAiModels(e.target.checked)}
+              disabled={!ai?.available}
+            />
+            Use AI models
+            {!ai?.available && <span className="text-xs text-slate-400">(not connected)</span>}
+          </label>
+
+          <label className="text-slate-200 flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={includeGeoSpread}
+              onChange={(e) => setIncludeGeoSpread(e.target.checked)}
+            />
+            Include geo spread
+          </label>
         </div>
       </div>
 
@@ -525,10 +581,42 @@ export default function ProductRadar() {
                         <div className="text-xs text-slate-300 mt-1">Google Trends · last {data.timeframeDays} days</div>
                         <div className="mt-3 space-y-1 text-sm text-slate-200">
                           <div>Ratio vs seed: <span className="font-semibold">{r.evidence?.demand?.ratioVsSeed ?? '—'}</span>×</div>
+                          <div>Demand level score: <span className="font-semibold">{r.evidence?.demand?.demandLevel ?? '—'}</span></div>
+                          <div>Geo spread: <span className="font-semibold">{r.evidence?.demand?.geoSpread ?? '—'}</span></div>
                           <div>Recent avg: <span className="font-semibold">{r.evidence?.demand?.recentMean ?? '—'}</span></div>
                           <div>Prev avg: <span className="font-semibold">{r.evidence?.demand?.prevMean ?? '—'}</span></div>
                           <div>Δ: <span className="font-semibold">{r.evidence?.demand?.percentChange ?? '—'}</span>%</div>
                         </div>
+
+                        {Array.isArray(r.evidence?.demand?.geoTopCountries) && r.evidence.demand.geoTopCountries.length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {r.evidence.demand.geoTopCountries.slice(0, 6).map((c) => (
+                              <span
+                                key={`${r.keyword}-${c.geoCode || c.geoName}`}
+                                className="px-2 py-1 text-xs rounded-full bg-white/5 border border-white/10 text-slate-200"
+                              >
+                                {c.geoName} · {Math.round(c.value)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="bg-slate-950/40 border border-white/10 rounded-xl p-4">
+                        <div className="text-sm font-semibold text-slate-100">Momentum</div>
+                        <div className="text-xs text-slate-300 mt-1">Forecast + change-points (if connected)</div>
+
+                        {r.evidence?.momentum?.ok ? (
+                          <div className="mt-3 space-y-1 text-sm text-slate-200">
+                            <div>Forecast Δ: <span className="font-semibold">{Number.isFinite(r.evidence?.momentum?.forecast?.pctChangeFromLast) ? Math.round(r.evidence.momentum.forecast.pctChangeFromLast) : '—'}</span>%</div>
+                            <div>Change-point: <span className="font-semibold">{r.evidence?.momentum?.changePoint?.recent ? (r.evidence.momentum.changePoint.direction + ' ' + Math.abs(r.evidence.momentum.changePoint.magnitudePct || 0).toFixed(0) + '%') : '—'}</span></div>
+                            <div>Anomaly: <span className="font-semibold">{r.evidence?.momentum?.anomaly?.isAnomaly ? 'Yes' : 'No'}</span></div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 text-sm text-slate-300">
+                            {ai?.configured ? 'Not available for this result.' : 'Not connected (set PRODUCT_RADAR_AI_URL).'}
+                          </div>
+                        )}
                       </div>
 
                       <div className="bg-slate-950/40 border border-white/10 rounded-xl p-4">
@@ -581,7 +669,8 @@ export default function ProductRadar() {
                       </div>
 
                       <div className="lg:col-span-3 text-xs text-slate-400">
-                        Methodology: {data.methodology?.scoring?.demand || '—'}
+                        <div>Demand: {data.methodology?.scoring?.demand || '—'}</div>
+                        <div>Momentum: {data.methodology?.scoring?.momentum || '—'}</div>
                       </div>
                     </div>
                   )}
