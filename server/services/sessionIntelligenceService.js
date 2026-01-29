@@ -1605,6 +1605,7 @@ export async function analyzeSessionIntelligenceSession({
   ].join('\n');
 
   let text = '';
+  let usedModel = model;
   try {
     text = await askOpenAIChat({
       model,
@@ -1619,12 +1620,37 @@ export async function analyzeSessionIntelligenceSession({
       verbosity: 'low'
     });
   } catch (error) {
-    db.prepare(`
-      UPDATE si_sessions
-      SET analysis_state = 'error', updated_at = datetime('now')
-      WHERE store = ? AND session_id = ?
-    `).run(store, sessionId);
-    return { success: false, error: error?.message || 'AI request failed.' };
+    if (model !== 'gpt-4o-mini') {
+      try {
+        usedModel = 'gpt-4o-mini';
+        text = await askOpenAIChat({
+          model: usedModel,
+          systemPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: JSON.stringify({ store, session_codename: codename, session_id: sessionId, timeline })
+            }
+          ],
+          maxOutputTokens: 900,
+          verbosity: 'low'
+        });
+      } catch (fallbackError) {
+        db.prepare(`
+          UPDATE si_sessions
+          SET analysis_state = 'error', updated_at = datetime('now')
+          WHERE store = ? AND session_id = ?
+        `).run(store, sessionId);
+        return { success: false, error: fallbackError?.message || error?.message || 'AI request failed.' };
+      }
+    } else {
+      db.prepare(`
+        UPDATE si_sessions
+        SET analysis_state = 'error', updated_at = datetime('now')
+        WHERE store = ? AND session_id = ?
+      `).run(store, sessionId);
+      return { success: false, error: error?.message || 'AI request failed.' };
+    }
   }
 
   const parsed = extractJsonObjectFromText(text);
@@ -1659,7 +1685,7 @@ export async function analyzeSessionIntelligenceSession({
     confidence,
     summary,
     JSON.stringify(reasons),
-    model,
+    usedModel,
     store,
     sessionId
   );
@@ -1669,7 +1695,7 @@ export async function analyzeSessionIntelligenceSession({
     store,
     sessionId,
     codename,
-    analysis: { primaryReason, confidence, summary, reasons, model }
+    analysis: { primaryReason, confidence, summary, reasons, model: usedModel }
   };
 }
 
