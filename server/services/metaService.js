@@ -638,8 +638,21 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       }
 
       // Parse specific funnel steps
-      const purchases = getActionValue(row.actions, 'purchase') || getActionValue(row.actions, 'offsite_conversion.fb_pixel_purchase');
-      const revenue = getActionValue(row.action_values, 'purchase') || getActionValue(row.action_values, 'offsite_conversion.fb_pixel_purchase');
+      // Meta frequently reports purchases under different action_type keys depending on account/objective.
+      // Prefer omni_purchase when present to better match Ads Manager "Purchases".
+      const purchases =
+        getActionValue(row.actions, 'omni_purchase') ||
+        getActionValue(row.actions, 'purchase') ||
+        getActionValue(row.actions, 'offsite_conversion.fb_pixel_purchase') ||
+        getActionValue(row.actions, 'offsite_conversion.purchase') ||
+        getActionValue(row.actions, 'onsite_conversion.purchase');
+
+      const revenue =
+        getActionValue(row.action_values, 'omni_purchase') ||
+        getActionValue(row.action_values, 'purchase') ||
+        getActionValue(row.action_values, 'offsite_conversion.fb_pixel_purchase') ||
+        getActionValue(row.action_values, 'offsite_conversion.purchase') ||
+        getActionValue(row.action_values, 'onsite_conversion.purchase');
       const lpv = getActionValue(row.actions, 'landing_page_view');
       const atc = getActionValue(row.actions, 'add_to_cart');
       const checkout = getActionValue(row.actions, 'initiate_checkout');
