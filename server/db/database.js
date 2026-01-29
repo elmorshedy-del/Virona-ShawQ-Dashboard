@@ -83,6 +83,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN order_created_at TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN attribution_json TEXT`);
+  } catch (e) { /* column exists */ }
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -168,9 +171,27 @@ export function initDb() {
       payment_method TEXT,
       currency TEXT DEFAULT 'USD',
       order_created_at TEXT,
+      attribution_json TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, order_id)
     )
+  `);
+
+  // Shopify pixel events (session-level / live behavior)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_pixel_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      event_type TEXT NOT NULL,
+      event_ts TEXT NOT NULL,
+      payload_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_pixel_events_store_created_at
+    ON shopify_pixel_events(store, created_at)
   `);
 
   // Manual orders - with store column
@@ -313,6 +334,23 @@ export function initDb() {
     db.exec('ALTER TABLE exchange_rates ADD COLUMN fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP');
   } catch (e) { /* column exists */ }
 
+  // Exchange rate API usage log (tracks actual external calls; not number of rows inserted)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exchange_rate_api_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      date TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      status TEXT NOT NULL,
+      http_status INTEGER,
+      error_code TEXT,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -371,6 +409,35 @@ export function initDb() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store)
+    )
+  `);
+
+  // Meta OAuth tokens - stores encrypted user access token for Ad Library
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_auth_tokens (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      access_token_encrypted TEXT,
+      access_token_iv TEXT,
+      access_token_tag TEXT,
+      is_encrypted INTEGER DEFAULT 0,
+      token_type TEXT,
+      scopes TEXT,
+      expires_at TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_api_status TEXT,
+      last_api_error TEXT,
+      last_api_at TEXT,
+      last_fbtrace_id TEXT
+    )
+  `);
+
+  // OAuth state storage for CSRF protection
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      return_to TEXT
     )
   `);
 
@@ -555,6 +622,37 @@ export function initDb() {
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_conversations_store ON ai_conversations(store)`);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      verbosity TEXT NOT NULL DEFAULT 'low',
+      content TEXT NOT NULL,
+      model TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      source TEXT DEFAULT 'manual',
+      period TEXT DEFAULT 'custom',
+      generated_at TEXT DEFAULT (datetime('now')),
+      dismissed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summary_settings (
+      store TEXT PRIMARY KEY,
+      auto_enabled INTEGER DEFAULT 1,
+      analyze_prompt TEXT,
+      summarize_prompt TEXT,
+      analyze_verbosity TEXT DEFAULT 'low',
+      summarize_verbosity TEXT DEFAULT 'low',
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
 
   console.log('✅ Database initialized');
   return db;

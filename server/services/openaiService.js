@@ -15,6 +15,89 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
+const EFFORT_OPTIONS_BY_MODEL = {
+  'gpt-5.2': ['none', 'medium', 'xhigh'],
+  'gpt-5.2-pro': ['none', 'medium', 'xhigh'],
+  'gpt-5.1-chat-latest': ['medium'],
+  'gpt-4o-mini': ['medium']
+};
+
+function normalizeReasoningEffort(model, reasoningEffort) {
+  if (!reasoningEffort) return reasoningEffort;
+  if (model === 'gpt-4o-mini' && reasoningEffort === 'low') return 'medium';
+  return reasoningEffort;
+}
+
+export async function askOpenAIChat({
+  model,
+  reasoningEffort,
+  systemPrompt,
+  messages,
+  maxOutputTokens = 3600,
+  verbosity = 'medium'
+}) {
+  const normalizedEffort = normalizeReasoningEffort(model, reasoningEffort);
+  const allowed = EFFORT_OPTIONS_BY_MODEL[model] || ['medium'];
+  if (normalizedEffort && !allowed.includes(normalizedEffort)) {
+    throw new Error(
+      `Unsupported reasoningEffort "${normalizedEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
+    );
+  }
+
+  const input = [
+    ...(systemPrompt ? [{ role: 'developer', content: systemPrompt }] : []),
+    ...messages.map((message) => ({ role: message.role, content: message.content }))
+  ];
+
+  const resp = await client.responses.create({
+    model,
+    reasoning: normalizedEffort ? { effort: normalizedEffort } : undefined,
+    input,
+    max_output_tokens: maxOutputTokens,
+    text: { verbosity }
+  });
+
+  return resp.output_text;
+}
+
+export async function streamOpenAIChat({
+  model,
+  reasoningEffort,
+  systemPrompt,
+  messages,
+  maxOutputTokens = 3600,
+  verbosity = 'medium',
+  onDelta
+}) {
+  const normalizedEffort = normalizeReasoningEffort(model, reasoningEffort);
+  const allowed = EFFORT_OPTIONS_BY_MODEL[model] || ['medium'];
+  if (normalizedEffort && !allowed.includes(normalizedEffort)) {
+    throw new Error(
+      `Unsupported reasoningEffort "${normalizedEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
+    );
+  }
+
+  const input = [
+    ...(systemPrompt ? [{ role: 'developer', content: systemPrompt }] : []),
+    ...messages.map((message) => ({ role: message.role, content: message.content }))
+  ];
+
+  const stream = await client.responses.create({
+    model,
+    reasoning: normalizedEffort ? { effort: normalizedEffort } : undefined,
+    input,
+    max_output_tokens: maxOutputTokens,
+    text: { verbosity },
+    stream: true
+  });
+
+  for await (const event of stream) {
+    if (event.type === 'response.output_text.delta') {
+      onDelta(event.delta);
+    }
+  }
+}
+
 const MODELS = {
   ASK: 'gpt-4o',           // Fast, direct answers - no fallback needed
   NANO: 'gpt-5-nano',
@@ -39,7 +122,7 @@ const TOKEN_LIMITS = {
 
 const DEPTH_TO_EFFORT = {
   instant: 'none',
-  fast: 'low',
+  fast: 'medium',
   balanced: 'medium',
   deep: 'high'
 };
@@ -1266,6 +1349,43 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
   return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta, MODE_TEMPERATURES.decide);
+}
+
+export async function generateCreativeFunnelSummary({
+  store,
+  mode,
+  prompt,
+  verbosity = 'low',
+  startDate = null,
+  endDate = null,
+  onDelta = null
+}) {
+  const data = getRelevantData(store, prompt, startDate, endDate);
+  const systemPrompt = buildSystemPrompt(store, mode, data, prompt);
+  const messages = [{ role: 'user', content: prompt }];
+
+  if (onDelta) {
+    await streamOpenAIChat({
+      model: MODELS.STRATEGIST,
+      reasoningEffort: 'medium',
+      systemPrompt,
+      messages,
+      maxOutputTokens: TOKEN_LIMITS.fast,
+      verbosity,
+      onDelta
+    });
+    return { model: MODELS.STRATEGIST, reasoning: 'medium' };
+  }
+
+  const text = await askOpenAIChat({
+    model: MODELS.STRATEGIST,
+    reasoningEffort: 'medium',
+    systemPrompt,
+    messages,
+    maxOutputTokens: TOKEN_LIMITS.fast,
+    verbosity
+  });
+  return { text, model: MODELS.STRATEGIST, reasoning: 'medium' };
 }
 
 // Streaming versions for Analyze and Summarize
