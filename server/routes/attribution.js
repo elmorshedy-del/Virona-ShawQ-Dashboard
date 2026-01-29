@@ -1,10 +1,17 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { askOpenAIChat, streamOpenAIChat } from '../services/openaiService.js';
+import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 const router = express.Router();
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DEFAULT_RANGE_DAYS = 14;
+
+// Attribution signals should not treat yesterday as "final" immediately.
+// Meta reporting can lag after midnight; we consider a day finalized only after this grace period.
+const FINALIZE_GRACE_MINUTES = Number.parseInt(process.env.ATTRIBUTION_FINALIZE_GRACE_MINUTES || '60', 10);
+
+const GMT3_OFFSET_MS = 3 * 60 * 60 * 1000;
 
 function resolveOrderSource(db, store) {
   const sources = [
@@ -101,6 +108,117 @@ function getPeriodLabel(start, end) {
 function safeDivide(numerator, denominator) {
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null;
   return numerator / denominator;
+}
+
+function minDateStr(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return a < b ? a : b;
+}
+
+function maxDateStr(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return a > b ? a : b;
+}
+
+function clampDateStr(value, minValue, maxValue) {
+  if (!value) return null;
+  const lowerBound = minValue || null;
+  const upperBound = maxValue || null;
+  let result = value;
+  if (lowerBound && result < lowerBound) result = lowerBound;
+  if (upperBound && result > upperBound) result = upperBound;
+  return result;
+}
+
+function getFinalizedEndDateStr(graceMinutes = FINALIZE_GRACE_MINUTES) {
+  const minutes = Number.isFinite(graceMinutes) ? Math.max(0, graceMinutes) : 60;
+  const gmt3Now = new Date(Date.now() + GMT3_OFFSET_MS);
+  const minutesSinceMidnight = gmt3Now.getUTCHours() * 60 + gmt3Now.getUTCMinutes();
+
+  // Before +grace minutes after midnight (GMT+3), treat "yesterday" as still settling.
+  const daysBack = minutesSinceMidnight < minutes ? 2 : 1;
+  return formatDateAsGmt3(new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000));
+}
+
+function buildOrderWhereClause(orderTable) {
+  // For Shopify attribution comparisons, count paid orders only.
+  if (orderTable === 'shopify_orders') {
+    return ` AND (financial_status = 'paid' OR financial_status = 'partially_paid')`;
+  }
+  return '';
+}
+
+function coverageRateFromCounts(metaOrders, shopifyOrders) {
+  if (!Number.isFinite(metaOrders) || !Number.isFinite(shopifyOrders) || shopifyOrders <= 0) return null;
+  const covered = Math.min(shopifyOrders, Math.max(0, metaOrders));
+  return safeDivide(covered, shopifyOrders);
+}
+
+// Meta rows can exist in two shapes depending on how insights were fetched:
+// - country breakdown rows (country != 'ALL')
+// - aggregate rows (country = 'ALL' or missing)
+// We compute per-campaign totals without double-counting: if a campaign has country rows for a day,
+// we ignore its ALL row for that day; otherwise we use its ALL row.
+function buildMetaDailyTotals(db, { store, start, end }) {
+  const rows = db.prepare(`
+    SELECT
+      date,
+      SUM(CASE WHEN has_country = 1 THEN country_sum ELSE all_sum END) as orders
+    FROM (
+      SELECT
+        date,
+        campaign_id,
+        MAX(CASE WHEN country IS NOT NULL AND country != '' AND country != 'ALL' THEN 1 ELSE 0 END) as has_country,
+        SUM(CASE WHEN country IS NOT NULL AND country != '' AND country != 'ALL' THEN conversions ELSE 0 END) as country_sum,
+        SUM(CASE WHEN country IS NULL OR country = '' OR country = 'ALL' THEN conversions ELSE 0 END) as all_sum
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ?
+      GROUP BY date, campaign_id
+    )
+    GROUP BY date
+  `).all(store, start, end);
+
+  return new Map(rows.map((row) => [row.date, row.orders || 0]));
+}
+
+function buildMetaDailyByCountry(db, { store, start, end }) {
+  const rows = db.prepare(`
+    SELECT date, country as country_code, SUM(conversions) as orders
+    FROM meta_daily_metrics
+    WHERE store = ? AND date BETWEEN ? AND ? AND country IS NOT NULL AND country != '' AND country != 'ALL'
+    GROUP BY date, country
+  `).all(store, start, end);
+
+  const map = new Map();
+  rows.forEach((row) => {
+    if (!row.country_code) return;
+    map.set(`${row.date}|${row.country_code}`, row.orders || 0);
+  });
+  return map;
+}
+
+function buildWindowStats(rows) {
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc.shopifyOrders += row.shopifyOrders || 0;
+      acc.metaOrders += row.metaOrders || 0;
+      acc.unattributed += row.unattributed || 0;
+      if ((row.shopifyOrders || 0) > 0 && (row.metaOrders || 0) === 0) acc.zeroMetaDays += 1;
+      return acc;
+    },
+    { shopifyOrders: 0, metaOrders: 0, unattributed: 0, zeroMetaDays: 0 }
+  );
+
+  const missedRate = totals.shopifyOrders >= 3 ? safeDivide(totals.unattributed, totals.shopifyOrders) : null;
+  const coverageRate = totals.shopifyOrders > 0 ? safeDivide(totals.shopifyOrders - totals.unattributed, totals.shopifyOrders) : null;
+
+  return {
+    ...totals,
+    missedRate,
+    coverageRate
+  };
 }
 
 function parseAttribution(raw) {
@@ -241,81 +359,104 @@ function buildOrderReason({ attrs, orderDate, metaForDate, metaForDateCountry, h
 }
 
 function buildAlerts({
-  current,
-  previous,
-  missingIdRate,
-  prevMissingIdRate,
-  consentRate,
-  prevConsentRate,
-  zeroMetaDays,
-  totalDays,
-  topCountryGap,
-  topCountryLabel,
-  periodLabel,
-  compareLabel
+  current7,
+  previous7,
+  missingIdRate7,
+  prevMissingIdRate7,
+  consentRate7,
+  prevConsentRate7,
+  stuckCountries,
+  periodLabel
 }) {
   const alerts = [];
 
-  const coverageDelta = current.coverageRate != null && previous.coverageRate != null
-    ? current.coverageRate - previous.coverageRate
-    : null;
+  const hasCurrent = current7?.shopifyOrders >= 3 && current7?.missedRate != null;
+  const hasPrevious = previous7?.shopifyOrders >= 3 && previous7?.missedRate != null;
 
-  if (coverageDelta != null && coverageDelta <= -0.15) {
+  if (hasCurrent && current7.missedRate >= 0.3) {
     alerts.push({
-      id: 'coverage_drop',
-      title: 'Coverage dropped',
-      message: `Coverage fell to ${Math.round(current.coverageRate * 100)}% in ${periodLabel} vs ${Math.round(previous.coverageRate * 100)}% in ${compareLabel}.`,
-      fix: 'Check pixel/CAPI delivery and consent rates to recover attribution.',
+      id: 'high_missed_rate',
+      title: 'High missed attribution rate',
+      message: `Missed attribution is ${Math.round(current7.missedRate * 100)}% in the last 7 days (${current7.unattributed}/${current7.shopifyOrders} orders).`,
+      fix: 'Audit Pixel + CAPI delivery, consent rates, and ensure Meta IDs (fbp/fbc/fbclid) are captured.',
       severity: 'high'
     });
   }
 
-  if (coverageDelta != null && coverageDelta >= 0.15) {
-    alerts.push({
-      id: 'coverage_up',
-      title: 'Coverage improved',
-      message: `Coverage rose to ${Math.round(current.coverageRate * 100)}% in ${periodLabel} vs ${Math.round(previous.coverageRate * 100)}% in ${compareLabel}.`,
-      fix: 'Keep current tracking setup and monitor for consistency.',
-      severity: 'medium'
-    });
+  if (hasCurrent && hasPrevious) {
+    const rateDelta = previous7.missedRate - current7.missedRate; // positive = improved
+    const missedDelta = previous7.unattributed - current7.unattributed;
+    const relative = previous7.missedRate > 0 ? rateDelta / previous7.missedRate : null;
+
+    const meaningfulRateMove = rateDelta >= 0.05 && relative != null && relative >= 0.3;
+    const meaningfulCountMove = missedDelta >= 2;
+
+    if (meaningfulRateMove && meaningfulCountMove) {
+      alerts.push({
+        id: 'missed_rate_improved',
+        title: 'Attribution improved',
+        message: `Missed attribution dropped from ${Math.round(previous7.missedRate * 100)}% to ${Math.round(current7.missedRate * 100)}% (last 7d vs prior 7d).`,
+        fix: 'Keep monitoring tracking stability and replicate what changed (consent, pixel, CAPI, checkout).',
+        severity: 'medium'
+      });
+    }
+
+    const worsenDelta = current7.missedRate - previous7.missedRate;
+    const worsenRel = previous7.missedRate > 0 ? worsenDelta / previous7.missedRate : null;
+    const worsenRateMove = worsenDelta >= 0.05 && (worsenRel == null ? current7.missedRate >= 0.15 : worsenRel >= 0.3);
+    const worsenCountMove = (current7.unattributed - previous7.unattributed) >= 2;
+
+    if (worsenRateMove && worsenCountMove) {
+      alerts.push({
+        id: 'missed_rate_worsened',
+        title: 'Attribution worsened',
+        message: `Missed attribution rose from ${Math.round(previous7.missedRate * 100)}% to ${Math.round(current7.missedRate * 100)}% (last 7d vs prior 7d).`,
+        fix: 'Investigate recent changes: pixel/CAPI outages, consent banner changes, checkout scripts, or domain issues.',
+        severity: 'high'
+      });
+    }
   }
 
-  if (missingIdRate != null && prevMissingIdRate != null && missingIdRate - prevMissingIdRate >= 0.1 && missingIdRate >= 0.15) {
+  if (missingIdRate7 != null && prevMissingIdRate7 != null && missingIdRate7 - prevMissingIdRate7 >= 0.1 && missingIdRate7 >= 0.15) {
     alerts.push({
       id: 'missing_ids_spike',
       title: 'Missing Meta IDs spiked',
-      message: `Orders missing Meta IDs rose to ${Math.round(missingIdRate * 100)}% in ${periodLabel} vs ${Math.round(prevMissingIdRate * 100)}% in ${compareLabel}.`,
+      message: `Orders missing Meta IDs rose to ${Math.round(missingIdRate7 * 100)}% in the last 7 days vs ${Math.round(prevMissingIdRate7 * 100)}% in the prior 7 days.`,
       fix: 'Confirm pixel fires on every product and checkout page.',
       severity: 'high'
     });
   }
 
-  if (consentRate != null && prevConsentRate != null && consentRate - prevConsentRate >= 0.08 && consentRate >= 0.12) {
+  if (consentRate7 != null && prevConsentRate7 != null && consentRate7 - prevConsentRate7 >= 0.08 && consentRate7 >= 0.12) {
     alerts.push({
       id: 'consent_decline',
       title: 'Consent declines increased',
-      message: `Consent declines hit ${Math.round(consentRate * 100)}% in ${periodLabel} vs ${Math.round(prevConsentRate * 100)}% in ${compareLabel}.`,
+      message: `Consent declines hit ${Math.round(consentRate7 * 100)}% in the last 7 days vs ${Math.round(prevConsentRate7 * 100)}% in the prior 7 days.`,
       fix: 'Review consent banner placement and reduce friction at checkout.',
       severity: 'medium'
     });
   }
 
-  if (zeroMetaDays >= 2 && totalDays > 0 && zeroMetaDays / totalDays >= 0.3) {
+  if (current7?.zeroMetaDays >= 2) {
     alerts.push({
       id: 'meta_zero_days',
       title: 'Meta reported zero orders on multiple days',
-      message: `Meta reported zero orders on ${zeroMetaDays} of ${totalDays} days in ${periodLabel}.`,
+      message: `Meta reported zero orders on ${current7.zeroMetaDays} of 7 days in ${periodLabel}.`,
       fix: 'Audit pixel/CAPI health and confirm tokens are active.',
       severity: 'high'
     });
   }
 
-  if (topCountryGap >= 10 && topCountryLabel) {
+  if (Array.isArray(stuckCountries) && stuckCountries.length) {
+    const list = stuckCountries
+      .slice(0, 3)
+      .map((row) => `${row.countryCode} ${Math.round(row.missedRate * 100)}%`)
+      .join(', ');
     alerts.push({
-      id: 'country_gap',
-      title: 'Unattributed orders concentrated in one country',
-      message: `${topCountryLabel} shows the largest gap with ${topCountryGap} more Shopify orders than Meta in ${periodLabel}.`,
-      fix: 'Check localized tracking scripts, currency, and consent settings.',
+      id: 'countries_stuck_high_missed',
+      title: 'Countries stuck with high missed attribution',
+      message: `${list} missed attribution (last 7d, unimproving).`,
+      fix: 'Prioritize these markets: verify localized checkout scripts, consent, pixel + CAPI match quality, and domain verification.',
       severity: 'medium'
     });
   }
@@ -329,16 +470,44 @@ router.get('/summary', (req, res) => {
     const startParam = req.query.start;
     const endParam = req.query.end;
 
-    const range = startParam && endParam
+    const requestedRange = startParam && endParam
       ? normalizeRange(startParam, endParam)
-      : normalizeRange(addDays(formatDate(new Date()), -(DEFAULT_RANGE_DAYS - 1)), formatDate(new Date()));
+      : normalizeRange(addDays(formatDateAsGmt3(new Date()), -(DEFAULT_RANGE_DAYS - 1)), formatDateAsGmt3(new Date()));
 
-    if (!range) {
+    if (!requestedRange) {
       return res.status(400).json({
         success: false,
         error: 'Please select a valid start and end date for attribution reporting.'
       });
     }
+
+    const db = getDb();
+
+    const orderSource = resolveOrderSource(db, store);
+    const orderTable = orderSource.table;
+    const attributionDataAvailable = orderSource.supportsAttribution;
+    const orderWhere = buildOrderWhereClause(orderTable);
+
+    const metaMinDate = db.prepare(`
+      SELECT MIN(date) as date
+      FROM meta_daily_metrics
+      WHERE store = ?
+    `).get(store)?.date || null;
+
+    const ordersMinDate = db.prepare(`
+      SELECT MIN(date) as date
+      FROM ${orderTable}
+      WHERE store = ?${orderWhere}
+    `).get(store)?.date || null;
+
+    // Start at the first day where both sources exist to avoid misleading 100%/0% periods.
+    const dataStart = metaMinDate && ordersMinDate
+      ? maxDateStr(metaMinDate, ordersMinDate)
+      : (metaMinDate || ordersMinDate);
+
+    const range = dataStart && requestedRange.start < dataStart
+      ? { ...requestedRange, start: dataStart }
+      : requestedRange;
 
     const compareRange = req.query.compareStart && req.query.compareEnd
       ? normalizeRange(req.query.compareStart, req.query.compareEnd)
@@ -356,41 +525,21 @@ router.get('/summary', (req, res) => {
       });
     }
 
-    const db = getDb();
-
-    const orderSource = resolveOrderSource(db, store);
-    const orderTable = orderSource.table;
-    const attributionDataAvailable = orderSource.supportsAttribution;
-
-    const rangeMin = range.start < compareRange.start ? range.start : compareRange.start;
-    const rangeMax = range.end > compareRange.end ? range.end : compareRange.end;
+    const rangeMin = minDateStr(range.start, compareRange.start);
+    const rangeMax = maxDateStr(range.end, compareRange.end);
 
     const hasCountryRows = db.prepare(`
       SELECT COUNT(*) as count
       FROM meta_daily_metrics
-      WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+      WHERE store = ? AND date BETWEEN ? AND ?
+        AND country IS NOT NULL AND country != '' AND country != 'ALL'
     `).get(store, rangeMin, rangeMax)?.count > 0;
 
     const shopifyDaily = db.prepare(`
       SELECT date, COUNT(*) as orders
       FROM ${orderTable}
       WHERE store = ? AND date BETWEEN ? AND ?
-      GROUP BY date
-    `).all(store, range.start, range.end);
-
-    const metaDailyCountry = hasCountryRows
-      ? db.prepare(`
-          SELECT date, SUM(conversions) as orders
-          FROM meta_daily_metrics
-          WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
-          GROUP BY date
-        `).all(store, range.start, range.end)
-      : [];
-
-    const metaDailyAll = db.prepare(`
-      SELECT date, SUM(conversions) as orders
-      FROM meta_daily_metrics
-      WHERE store = ? AND date BETWEEN ? AND ? AND (country = 'ALL' OR country IS NULL OR country = '')
+      ${orderWhere}
       GROUP BY date
     `).all(store, range.start, range.end);
 
@@ -398,57 +547,21 @@ router.get('/summary', (req, res) => {
       SELECT date, COUNT(*) as orders
       FROM ${orderTable}
       WHERE store = ? AND date BETWEEN ? AND ?
-      GROUP BY date
-    `).all(store, compareRange.start, compareRange.end);
-
-    const metaDailyCountryCompare = hasCountryRows
-      ? db.prepare(`
-          SELECT date, SUM(conversions) as orders
-          FROM meta_daily_metrics
-          WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
-          GROUP BY date
-        `).all(store, compareRange.start, compareRange.end)
-      : [];
-
-    const metaDailyAllCompare = db.prepare(`
-      SELECT date, SUM(conversions) as orders
-      FROM meta_daily_metrics
-      WHERE store = ? AND date BETWEEN ? AND ? AND (country = 'ALL' OR country IS NULL OR country = '')
+      ${orderWhere}
       GROUP BY date
     `).all(store, compareRange.start, compareRange.end);
 
     const shopifyByDate = new Map(shopifyDaily.map((row) => [row.date, row.orders || 0]));
-
-    const metaByDateCountry = new Map(metaDailyCountry.map((row) => [row.date, row.orders || 0]));
-    const metaByDateAll = new Map(metaDailyAll.map((row) => [row.date, row.orders || 0]));
-
-    const metaByDate = new Map();
-    enumerateDates(range.start, range.end).forEach((date) => {
-      if (hasCountryRows && metaByDateCountry.has(date)) {
-        metaByDate.set(date, metaByDateCountry.get(date) || 0);
-        return;
-      }
-      metaByDate.set(date, metaByDateAll.get(date) || 0);
-    });
-
     const compareShopifyByDate = new Map(shopifyDailyCompare.map((row) => [row.date, row.orders || 0]));
 
-    const compareMetaByDateCountry = new Map(metaDailyCountryCompare.map((row) => [row.date, row.orders || 0]));
-    const compareMetaByDateAll = new Map(metaDailyAllCompare.map((row) => [row.date, row.orders || 0]));
-    const compareMetaByDate = new Map();
-    enumerateDates(compareRange.start, compareRange.end).forEach((date) => {
-      if (hasCountryRows && compareMetaByDateCountry.has(date)) {
-        compareMetaByDate.set(date, compareMetaByDateCountry.get(date) || 0);
-        return;
-      }
-      compareMetaByDate.set(date, compareMetaByDateAll.get(date) || 0);
-    });
+    const metaByDate = buildMetaDailyTotals(db, { store, start: range.start, end: range.end });
+    const compareMetaByDate = buildMetaDailyTotals(db, { store, start: compareRange.start, end: compareRange.end });
 
     const series = enumerateDates(range.start, range.end).map((date) => {
       const shopifyOrders = shopifyByDate.get(date) || 0;
       const metaOrders = metaByDate.get(date) || 0;
       const unattributed = Math.max(0, shopifyOrders - metaOrders);
-      const coverageRate = safeDivide(metaOrders, shopifyOrders);
+      const coverageRate = coverageRateFromCounts(metaOrders, shopifyOrders);
 
       return {
         date,
@@ -462,10 +575,15 @@ router.get('/summary', (req, res) => {
     const compareSeries = enumerateDates(compareRange.start, compareRange.end).map((date) => {
       const shopifyOrders = compareShopifyByDate.get(date) || 0;
       const metaOrders = compareMetaByDate.get(date) || 0;
+      const unattributed = Math.max(0, shopifyOrders - metaOrders);
+      const coverageRate = coverageRateFromCounts(metaOrders, shopifyOrders);
+
       return {
         date,
         shopifyOrders,
-        metaOrders
+        metaOrders,
+        unattributed,
+        coverageRate
       };
     });
 
@@ -483,18 +601,20 @@ router.get('/summary', (req, res) => {
       (acc, row) => {
         acc.shopifyOrders += row.shopifyOrders;
         acc.metaOrders += row.metaOrders;
+        acc.unattributed += row.unattributed;
         return acc;
       },
-      { shopifyOrders: 0, metaOrders: 0 }
+      { shopifyOrders: 0, metaOrders: 0, unattributed: 0 }
     );
 
-    const currentCoverageRate = safeDivide(totals.metaOrders, totals.shopifyOrders);
-    const previousCoverageRate = safeDivide(compareTotals.metaOrders, compareTotals.shopifyOrders);
+    const currentCoverageRate = coverageRateFromCounts(totals.metaOrders, totals.shopifyOrders);
+    const previousCoverageRate = coverageRateFromCounts(compareTotals.metaOrders, compareTotals.shopifyOrders);
 
     const shopifyByCountry = db.prepare(`
       SELECT COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
       FROM ${orderTable}
       WHERE store = ? AND date BETWEEN ? AND ?
+      ${orderWhere}
       GROUP BY COALESCE(NULLIF(country_code, ''), 'UN')
     `).all(store, range.start, range.end);
 
@@ -502,7 +622,8 @@ router.get('/summary', (req, res) => {
       ? db.prepare(`
           SELECT country as country_code, SUM(conversions) as orders
           FROM meta_daily_metrics
-          WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
+          WHERE store = ? AND date BETWEEN ? AND ?
+            AND country IS NOT NULL AND country != '' AND country != 'ALL'
           GROUP BY country
         `).all(store, range.start, range.end)
       : [];
@@ -514,7 +635,8 @@ router.get('/summary', (req, res) => {
     );
 
     const countryGaps = hasCountryRows
-      ? shopifyByCountry.map((row) => {
+      ? shopifyByCountry
+        .map((row) => {
           const metaOrders = metaCountryMap.get(row.country_code) || 0;
           const shopifyOrders = row.orders || 0;
           const gap = Math.max(0, shopifyOrders - metaOrders);
@@ -523,43 +645,71 @@ router.get('/summary', (req, res) => {
             shopifyOrders,
             metaOrders,
             gap,
-            coverageRate: safeDivide(metaOrders, shopifyOrders)
+            coverageRate: coverageRateFromCounts(metaOrders, shopifyOrders)
           };
-        }).sort((a, b) => b.gap - a.gap)
+        })
+        .sort((a, b) => b.gap - a.gap)
       : [];
+
+    const metaByDateCountryMap = hasCountryRows
+      ? buildMetaDailyByCountry(db, { store, start: range.start, end: range.end })
+      : new Map();
+
+    const shopifyDailyByCountry = hasCountryRows
+      ? db.prepare(`
+          SELECT date, COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
+          FROM ${orderTable}
+          WHERE store = ? AND date BETWEEN ? AND ?
+          ${orderWhere}
+          GROUP BY date, COALESCE(NULLIF(country_code, ''), 'UN')
+        `).all(store, range.start, range.end)
+      : [];
+
+    const gapByBucket = new Map();
+    if (hasCountryRows) {
+      shopifyDailyByCountry.forEach((row) => {
+        const countryCode = row.country_code || 'UN';
+        const key = `${row.date}|${countryCode}`;
+        const shopifyOrdersForBucket = row.orders || 0;
+        const metaOrdersForBucket = metaByDateCountryMap.get(key) || 0;
+        gapByBucket.set(key, Math.max(0, shopifyOrdersForBucket - metaOrdersForBucket));
+      });
+    } else {
+      series.forEach((row) => {
+        gapByBucket.set(row.date, row.unattributed || 0);
+      });
+    }
 
     const ordersRaw = attributionDataAvailable
       ? db.prepare(`
           SELECT order_id, date, country, country_code, order_total, attribution_json
           FROM ${orderTable}
           WHERE store = ? AND date BETWEEN ? AND ?
+          ${orderWhere}
           ORDER BY date DESC
         `).all(store, range.start, range.end)
       : [];
 
-    const metaDailyByCountry = hasCountryRows
-      ? db.prepare(`
-          SELECT date, country as country_code, SUM(conversions) as orders
-          FROM meta_daily_metrics
-          WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'
-          GROUP BY date, country
-        `).all(store, range.start, range.end)
-      : [];
-
-    const metaByDateCountryMap = new Map();
-    metaDailyByCountry.forEach((row) => {
-      if (!row.country_code) return;
-      const key = `${row.date}|${row.country_code}`;
-      metaByDateCountryMap.set(key, row.orders || 0);
-    });
-
     let missingIdsCount = 0;
     let consentDeniedCount = 0;
 
-    const unattributedOrders = ordersRaw.map((order) => {
+    // Build a constrained "unattributed orders" list:
+    // show no more rows than the computed gap per date/country bucket.
+    const bucketOrders = new Map();
+
+    ordersRaw.forEach((order) => {
       const attrs = parseAttribution(order.attribution_json);
+      const metaIds = getMetaIdStatus(attrs);
+      if (!metaIds.hasMetaIds) missingIdsCount += 1;
+      if (parseConsentStatus(attrs.consent) === 'denied') consentDeniedCount += 1;
+
+      const countryCode = order.country_code || 'UN';
+      const bucketKey = hasCountryRows ? `${order.date}|${countryCode}` : order.date;
+      const gapForBucket = gapByBucket.get(bucketKey) || 0;
+      if (!gapForBucket) return;
+
       const metaForDate = metaByDate.get(order.date) || 0;
-      const metaForDateCountry = metaByDateCountryMap.get(`${order.date}|${order.country_code || 'UN'}`) || 0;
+      const metaForDateCountry = hasCountryRows ? (metaByDateCountryMap.get(`${order.date}|${countryCode}`) || 0) : 0;
       const reason = buildOrderReason({
         attrs,
         orderDate: order.date,
@@ -568,81 +718,211 @@ router.get('/summary', (req, res) => {
         hasCountryBreakdown: hasCountryRows
       });
 
-      const metaIds = getMetaIdStatus(attrs);
-      if (!metaIds.hasMetaIds) missingIdsCount += 1;
-      if (parseConsentStatus(attrs.consent) === 'denied') consentDeniedCount += 1;
-
-      const shopifyOrdersForDate = shopifyByDate.get(order.date) || 0;
-      const metaOrdersForDate = metaByDate.get(order.date) || 0;
-      const hasGapForDate = shopifyOrdersForDate > metaOrdersForDate;
-      if (!hasGapForDate) return null;
-
-      return {
+      const entry = {
         orderId: order.order_id,
         date: order.date,
         country: order.country,
-        countryCode: order.country_code || 'UN',
+        countryCode,
         orderTotal: order.order_total,
         reason: reason.reason,
         fix: reason.fix,
+        priority: reason.priority,
         firstTouch: buildTouchLabel(attrs, 'first'),
         lastTouch: buildTouchLabel(attrs, 'last')
       };
-    }).filter(Boolean).sort((a, b) => {
-      const dateCompare = String(b.date).localeCompare(String(a.date));
-      if (dateCompare !== 0) return dateCompare;
-      return String(a.orderId).localeCompare(String(b.orderId));
+
+      const list = bucketOrders.get(bucketKey) || [];
+      list.push(entry);
+      bucketOrders.set(bucketKey, list);
     });
 
-    const limitedUnattributed = unattributedOrders.slice(0, 50);
+    const unattributedOrders = [];
+    bucketOrders.forEach((orders, bucketKey) => {
+      const gap = gapByBucket.get(bucketKey) || 0;
+      if (!gap) return;
 
-    const missingIdRate = attributionDataAvailable && totals.shopifyOrders ? missingIdsCount / totals.shopifyOrders : null;
-    const consentRate = attributionDataAvailable && totals.shopifyOrders ? consentDeniedCount / totals.shopifyOrders : null;
+      const sorted = [...orders].sort((a, b) => {
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        const dateCompare = String(b.date).localeCompare(String(a.date));
+        if (dateCompare !== 0) return dateCompare;
+        return String(a.orderId).localeCompare(String(b.orderId));
+      });
 
-    const compareOrdersRaw = attributionDataAvailable
-      ? db.prepare(`
-          SELECT order_id, date, attribution_json
-          FROM ${orderTable}
-          WHERE store = ? AND date BETWEEN ? AND ?
-        `).all(store, compareRange.start, compareRange.end)
+      unattributedOrders.push(...sorted.slice(0, gap));
+    });
+
+    const limitedUnattributed = unattributedOrders
+      .sort((a, b) => {
+        const dateCompare = String(b.date).localeCompare(String(a.date));
+        if (dateCompare !== 0) return dateCompare;
+        return String(a.orderId).localeCompare(String(b.orderId));
+      })
+      .slice(0, 50)
+      .map(({ priority, ...rest }) => rest);
+
+    const missingIdRate = attributionDataAvailable && totals.shopifyOrders
+      ? missingIdsCount / totals.shopifyOrders
+      : null;
+
+    const consentRate = attributionDataAvailable && totals.shopifyOrders
+      ? consentDeniedCount / totals.shopifyOrders
+      : null;
+
+    // Signals: use finalized days only.
+    const finalizedEndDate = clampDateStr(range.end, null, getFinalizedEndDateStr());
+    const finalizedSeries = finalizedEndDate
+      ? series.filter((row) => row.date <= finalizedEndDate)
       : [];
 
-    let prevMissingIds = 0;
-    let prevConsentDenied = 0;
+    const last7 = finalizedSeries.slice(-7);
+    const current7 = last7.length === 7 ? buildWindowStats(last7) : null;
+    const current7Start = current7 ? last7[0]?.date : null;
 
-    compareOrdersRaw.forEach((order) => {
-      const attrs = parseAttribution(order.attribution_json);
-      const metaIds = getMetaIdStatus(attrs);
-      if (!metaIds.hasMetaIds) prevMissingIds += 1;
-      if (parseConsentStatus(attrs.consent) === 'denied') prevConsentDenied += 1;
-    });
+    const prevWindowEnd = current7Start ? addDays(current7Start, -1) : null;
+    const prevWindowStart = prevWindowEnd ? addDays(prevWindowEnd, -6) : null;
 
-    const prevMissingIdRate = attributionDataAvailable && compareTotals.shopifyOrders ? prevMissingIds / compareTotals.shopifyOrders : null;
-    const prevConsentRate = attributionDataAvailable && compareTotals.shopifyOrders ? prevConsentDenied / compareTotals.shopifyOrders : null;
+    const previousRows = finalizedSeries.length >= 14
+      ? finalizedSeries.slice(-14, -7)
+      : (compareSeries.length === 7 ? compareSeries : []);
 
-    const zeroMetaDays = series.filter((row) => row.shopifyOrders > 0 && row.metaOrders === 0).length;
-    const totalDays = series.length;
-    const topCountryGap = hasCountryRows ? (countryGaps[0]?.gap || 0) : 0;
-    const topCountryCode = hasCountryRows ? (countryGaps[0]?.countryCode || null) : null;
-    const topCountryLabel = topCountryCode ? getCountryLabel(topCountryCode) : null;
+    const previous7 = previousRows.length === 7 ? buildWindowStats(previousRows) : null;
+
+    const computeOrderDiagnostics = (windowStart, windowEnd) => {
+      if (!attributionDataAvailable || !windowStart || !windowEnd) {
+        return {
+          orders: 0,
+          missingIds: 0,
+          consentDenied: 0,
+          missingIdRate: null,
+          consentRate: null
+        };
+      }
+
+      const rows = db.prepare(`
+        SELECT attribution_json
+        FROM ${orderTable}
+        WHERE store = ? AND date BETWEEN ? AND ?
+        ${orderWhere}
+      `).all(store, windowStart, windowEnd);
+
+      let missingIds = 0;
+      let consentDenied = 0;
+
+      rows.forEach((row) => {
+        const attrs = parseAttribution(row.attribution_json);
+        const metaIds = getMetaIdStatus(attrs);
+        if (!metaIds.hasMetaIds) missingIds += 1;
+        if (parseConsentStatus(attrs.consent) === 'denied') consentDenied += 1;
+      });
+
+      const orders = rows.length;
+      return {
+        orders,
+        missingIds,
+        consentDenied,
+        missingIdRate: orders >= 3 ? safeDivide(missingIds, orders) : null,
+        consentRate: orders >= 3 ? safeDivide(consentDenied, orders) : null
+      };
+    };
+
+    const currentDiag = computeOrderDiagnostics(current7Start, finalizedEndDate);
+    const previousDiag = computeOrderDiagnostics(prevWindowStart, prevWindowEnd);
+
+    const missingIdRate7 = currentDiag.missingIdRate;
+    const prevMissingIdRate7 = previousDiag.missingIdRate;
+    const consentRate7 = currentDiag.consentRate;
+    const prevConsentRate7 = previousDiag.consentRate;
+
+    const stuckCountries = [];
+    if (hasCountryRows && current7Start && finalizedEndDate && prevWindowStart && prevWindowEnd) {
+      const currCountryShopify = db.prepare(`
+        SELECT COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
+        FROM ${orderTable}
+        WHERE store = ? AND date BETWEEN ? AND ?
+        ${orderWhere}
+        GROUP BY COALESCE(NULLIF(country_code, ''), 'UN')
+      `).all(store, current7Start, finalizedEndDate);
+
+      const prevCountryShopify = db.prepare(`
+        SELECT COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
+        FROM ${orderTable}
+        WHERE store = ? AND date BETWEEN ? AND ?
+        ${orderWhere}
+        GROUP BY COALESCE(NULLIF(country_code, ''), 'UN')
+      `).all(store, prevWindowStart, prevWindowEnd);
+
+      const currCountryMeta = db.prepare(`
+        SELECT country as country_code, SUM(conversions) as orders
+        FROM meta_daily_metrics
+        WHERE store = ? AND date BETWEEN ? AND ?
+          AND country IS NOT NULL AND country != '' AND country != 'ALL'
+        GROUP BY country
+      `).all(store, current7Start, finalizedEndDate);
+
+      const prevCountryMeta = db.prepare(`
+        SELECT country as country_code, SUM(conversions) as orders
+        FROM meta_daily_metrics
+        WHERE store = ? AND date BETWEEN ? AND ?
+          AND country IS NOT NULL AND country != '' AND country != 'ALL'
+        GROUP BY country
+      `).all(store, prevWindowStart, prevWindowEnd);
+
+      const toMap = (rows) => new Map(rows.filter((r) => r.country_code).map((r) => [r.country_code, r.orders || 0]));
+      const currMetaMap = toMap(currCountryMeta);
+      const prevMetaMap = toMap(prevCountryMeta);
+      const prevShopifyMap = new Map(prevCountryShopify.map((r) => [r.country_code, r.orders || 0]));
+
+      currCountryShopify.forEach((row) => {
+        const code = row.country_code;
+        const shopifyOrders = row.orders || 0;
+        if (shopifyOrders < 3) return;
+
+        const metaOrders = currMetaMap.get(code) || 0;
+        const missed = Math.max(0, shopifyOrders - metaOrders);
+        const missedRate = safeDivide(missed, shopifyOrders);
+        if (missedRate == null || missedRate < 0.3) return;
+
+        const prevShopifyOrders = prevShopifyMap.get(code) || 0;
+        if (prevShopifyOrders < 3) return;
+
+        const prevMetaOrders = prevMetaMap.get(code) || 0;
+        const prevMissed = Math.max(0, prevShopifyOrders - prevMetaOrders);
+        const prevMissedRate = safeDivide(prevMissed, prevShopifyOrders);
+        if (prevMissedRate == null) return;
+
+        const rateDrop = prevMissedRate - missedRate;
+        const relativeDrop = prevMissedRate > 0 ? rateDrop / prevMissedRate : 0;
+        const meaningfulImprovement = rateDrop >= 0.05 && relativeDrop >= 0.3 && (prevMissed - missed) >= 2;
+        if (meaningfulImprovement) return;
+
+        stuckCountries.push({
+          countryCode: code,
+          missedRate,
+          missed,
+          shopifyOrders
+        });
+      });
+
+      stuckCountries.sort((a, b) => b.missedRate - a.missedRate);
+    }
 
     const alerts = buildAlerts({
-      current: { coverageRate: currentCoverageRate },
-      previous: { coverageRate: previousCoverageRate },
-      missingIdRate,
-      prevMissingIdRate,
-      consentRate,
-      prevConsentRate,
-      zeroMetaDays,
-      totalDays,
-      topCountryGap,
-      topCountryLabel,
-      periodLabel: getPeriodLabel(range.start, range.end),
-      compareLabel: getPeriodLabel(compareRange.start, compareRange.end)
+      current7,
+      previous7,
+      missingIdRate7,
+      prevMissingIdRate7,
+      consentRate7,
+      prevConsentRate7,
+      stuckCountries,
+      periodLabel: current7Start && finalizedEndDate
+        ? getPeriodLabel(current7Start, finalizedEndDate)
+        : getPeriodLabel(range.start, range.end)
     });
 
     return res.json({
       success: true,
+      requestedPeriod: requestedRange,
+      dataStart,
       period: range,
       compare: compareRange,
       totals: {
@@ -659,11 +939,13 @@ router.get('/summary', (req, res) => {
       alerts,
       countryBreakdownAvailable: hasCountryRows,
       attributionDataAvailable,
+      finalizedEndDate,
+      signalWindow: current7Start && finalizedEndDate ? { start: current7Start, end: finalizedEndDate } : null,
       diagnostics: {
         missingIdRate,
         consentRate,
-        zeroMetaDays,
-        totalDays
+        missingIdRate7,
+        consentRate7
       }
     });
   } catch (error) {
@@ -671,6 +953,121 @@ router.get('/summary', (req, res) => {
     return res.status(500).json({
       success: false,
       error: 'We could not load attribution insights right now. Please try again in a moment.'
+    });
+  }
+});
+
+router.get('/country-series', (req, res) => {
+  try {
+    const store = (req.query.store || 'shawq').toString();
+    const country = (req.query.country || '').toString().trim().toUpperCase();
+    const startParam = req.query.start;
+    const endParam = req.query.end;
+
+    if (!country) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide a country code.'
+      });
+    }
+
+    const requestedRange = startParam && endParam
+      ? normalizeRange(startParam, endParam)
+      : normalizeRange(addDays(formatDateAsGmt3(new Date()), -(DEFAULT_RANGE_DAYS - 1)), formatDateAsGmt3(new Date()));
+
+    if (!requestedRange) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please select a valid start and end date.'
+      });
+    }
+
+    const db = getDb();
+    const orderSource = resolveOrderSource(db, store);
+    const orderTable = orderSource.table;
+    const orderWhere = buildOrderWhereClause(orderTable);
+
+    const metaMinDate = db.prepare(`
+      SELECT MIN(date) as date
+      FROM meta_daily_metrics
+      WHERE store = ?
+    `).get(store)?.date || null;
+
+    const ordersMinDate = db.prepare(`
+      SELECT MIN(date) as date
+      FROM ${orderTable}
+      WHERE store = ?${orderWhere}
+    `).get(store)?.date || null;
+
+    const dataStart = metaMinDate && ordersMinDate
+      ? maxDateStr(metaMinDate, ordersMinDate)
+      : (metaMinDate || ordersMinDate);
+
+    const range = dataStart && requestedRange.start < dataStart
+      ? { ...requestedRange, start: dataStart }
+      : requestedRange;
+
+    const shopifyDaily = db.prepare(`
+      SELECT date, COUNT(*) as orders
+      FROM ${orderTable}
+      WHERE store = ? AND date BETWEEN ? AND ?
+        AND COALESCE(NULLIF(country_code, ''), 'UN') = ?
+      ${orderWhere}
+      GROUP BY date
+    `).all(store, range.start, range.end, country);
+
+    const metaDaily = db.prepare(`
+      SELECT date, SUM(conversions) as orders
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ? AND country = ?
+      GROUP BY date
+    `).all(store, range.start, range.end, country);
+
+    const shopifyByDate = new Map(shopifyDaily.map((row) => [row.date, row.orders || 0]));
+    const metaByDate = new Map(metaDaily.map((row) => [row.date, row.orders || 0]));
+
+    const series = enumerateDates(range.start, range.end).map((date) => {
+      const shopifyOrders = shopifyByDate.get(date) || 0;
+      const metaOrders = metaByDate.get(date) || 0;
+      const unattributed = Math.max(0, shopifyOrders - metaOrders);
+      const coverageRate = coverageRateFromCounts(metaOrders, shopifyOrders);
+
+      return {
+        date,
+        shopifyOrders,
+        metaOrders,
+        unattributed,
+        coverageRate
+      };
+    });
+
+    const totals = series.reduce(
+      (acc, row) => {
+        acc.shopifyOrders += row.shopifyOrders;
+        acc.metaOrders += row.metaOrders;
+        acc.unattributed += row.unattributed;
+        return acc;
+      },
+      { shopifyOrders: 0, metaOrders: 0, unattributed: 0 }
+    );
+
+    return res.json({
+      success: true,
+      country,
+      requestedPeriod: requestedRange,
+      dataStart,
+      period: range,
+      totals: {
+        ...totals,
+        coverageRate: coverageRateFromCounts(totals.metaOrders, totals.shopifyOrders)
+      },
+      series
+    });
+  } catch (error) {
+    console.error('[Attribution] Country series error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'We could not load country attribution right now. Please try again in a moment.'
     });
   }
 });
