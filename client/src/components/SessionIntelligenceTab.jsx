@@ -396,13 +396,13 @@ export default function SessionIntelligenceTab({ store }) {
     return librarySessions.find((s) => s.session_id === librarySessionId) || null;
   }, [librarySessionId, librarySessions]);
 
-  const timelineLabel = (() => {
+  const timelineLabel = useMemo(() => {
     if (!librarySessionId) return '—';
     const shopper = formatShopperNumber(selectedLibrarySession?.shopper_number ?? selectedLibrarySession?.shopperNumber);
     const sessionCode = toCode('Session', selectedLibrarySession?.session_id || librarySessionId, 6);
     if (shopper) return `${shopper} • ${sessionCode}`;
     return userLabel(selectedLibrarySession || { session_id: librarySessionId });
-  })();
+  }, [librarySessionId, selectedLibrarySession]);
 
   const mostViewedNotBought = overview?.insights?.mostViewedNotBought || [];
   const outOfStockSizesClicked = overview?.insights?.outOfStockSizesClicked || [];
