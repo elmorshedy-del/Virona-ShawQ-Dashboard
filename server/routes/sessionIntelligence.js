@@ -7,6 +7,7 @@ import {
   getSessionIntelligenceSessionsForDay,
   getSessionIntelligenceLatestBrief,
   getSessionIntelligenceOverview,
+  getSessionIntelligencePurchasesByCampaign,
   getSessionIntelligenceRecentEvents,
   getSessionIntelligenceSessions,
   listSessionIntelligenceDays
@@ -69,6 +70,25 @@ router.get('/days', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] days error:', error);
     res.status(500).json({ success: false, error: 'Failed to load days' });
+  }
+});
+
+router.get('/purchases-by-campaign', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : 250;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ success: false, error: 'Missing startDate/endDate (YYYY-MM-DD)' });
+    }
+
+    const report = getSessionIntelligencePurchasesByCampaign(store, { startDate, endDate, limit });
+    res.json({ success: true, ...report });
+  } catch (error) {
+    console.error('[SessionIntelligence] purchases-by-campaign error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load purchases by campaign' });
   }
 });
 

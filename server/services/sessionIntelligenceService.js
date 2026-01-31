@@ -6,6 +6,9 @@ const RAW_RETENTION_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_RAW_RETENT
 const ABANDON_AFTER_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_ABANDON_AFTER_HOURS || '24', 10);
 const SESSION_IDLE_MINUTES = parseInt(process.env.SESSION_INTELLIGENCE_SESSION_IDLE_MINUTES || '30', 10);
 const CHECKOUT_DROP_MINUTES = parseInt(process.env.SESSION_INTELLIGENCE_CHECKOUT_DROP_MINUTES || '30', 10);
+const RAW_CLEANUP_ENABLED = safeString(process.env.SESSION_INTELLIGENCE_RAW_CLEANUP_ENABLED)
+  .toLowerCase()
+  .trim() === 'true';
 
 const CHECKOUT_STEP_LABELS = {
   contact: 'Contact',
@@ -997,6 +1000,10 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
 }
 
 export function cleanupSessionIntelligenceRaw({ retentionHours = RAW_RETENTION_HOURS } = {}) {
+  if (!RAW_CLEANUP_ENABLED) {
+    return { deletedEvents: 0, retentionHours: null, cleanupEnabled: false };
+  }
+
   const db = getDb();
   const hours = Number.isFinite(retentionHours) && retentionHours > 0 ? retentionHours : RAW_RETENTION_HOURS;
   const cutoff = `-${hours} hours`;
@@ -1015,7 +1022,7 @@ export function cleanupSessionIntelligenceRaw({ retentionHours = RAW_RETENTION_H
     // Ignore; table might not exist yet on very early boot.
   }
 
-  return { deletedEvents: result.changes || 0, retentionHours: hours };
+  return { deletedEvents: result.changes || 0, retentionHours: hours, cleanupEnabled: true };
 }
 
 export function getSessionIntelligenceOverview(store) {
@@ -1353,6 +1360,81 @@ function dayRangeUtc(dateStr) {
   const start = `${iso} 00:00:00`;
   const end = normalizeSqliteDateTime(new Date(Date.parse(`${iso}T00:00:00Z`) + 24 * 60 * 60 * 1000));
   return { start, end };
+}
+
+function rangeUtcFromStartEnd(startDay, endDay) {
+  const startIso = requireIsoDay(startDay);
+  const endIso = requireIsoDay(endDay);
+  if (!startIso || !endIso) return null;
+
+  const start = `${startIso} 00:00:00`;
+  const endMs = Date.parse(`${endIso}T00:00:00Z`) + 24 * 60 * 60 * 1000;
+  const end = normalizeSqliteDateTime(new Date(endMs));
+  return { start, end, startIso, endIso };
+}
+
+function safeParseJson(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return null;
+  }
+}
+
+function campaignLabelFromJson(json) {
+  const obj = safeParseJson(json);
+  if (!obj || typeof obj !== 'object') return null;
+  const utmCampaign = safeString(obj.utm_campaign).trim();
+  if (utmCampaign) return safeTruncate(utmCampaign, 160);
+  const utmSource = safeString(obj.utm_source).trim();
+  if (utmSource) return safeTruncate(utmSource, 160);
+  return null;
+}
+
+export function getSessionIntelligencePurchasesByCampaign(store, { startDate, endDate, limit = 250 } = {}) {
+  const db = getDb();
+  ensureRecentShopperNumbers(store);
+
+  const range = rangeUtcFromStartEnd(startDate, endDate);
+  if (!range) return { store, period: null, rows: [], totalPurchases: 0 };
+
+  const max = Math.min(Math.max(parseInt(limit, 10) || 250, 1), 2000);
+
+  const sessions = db.prepare(`
+    SELECT
+      session_id,
+      purchase_at,
+      COALESCE(last_country_code, '') AS country_code,
+      last_campaign_json
+    FROM si_sessions
+    WHERE store = ?
+      AND purchase_at IS NOT NULL
+      AND purchase_at >= ?
+      AND purchase_at < ?
+    ORDER BY purchase_at DESC
+  `).all(store, range.start, range.end);
+
+  const totals = new Map();
+  for (const row of sessions) {
+    const campaign = campaignLabelFromJson(row.last_campaign_json) || '—';
+    const country = safeString(row.country_code).trim() || '—';
+    const key = `${campaign}||${country}`;
+    const entry = totals.get(key) || { campaign, country, purchases: 0 };
+    entry.purchases += 1;
+    totals.set(key, entry);
+  }
+
+  const rows = Array.from(totals.values())
+    .sort((a, b) => (b.purchases || 0) - (a.purchases || 0))
+    .slice(0, max);
+
+  return {
+    store,
+    period: { start: range.startIso, end: range.endIso },
+    totalPurchases: sessions.length,
+    rows
+  };
 }
 
 export function listSessionIntelligenceDays(store, limit = 10) {
