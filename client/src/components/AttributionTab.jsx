@@ -72,6 +72,28 @@ const computeRateDomain = (points, { padding = 0.05, minSpan = 0.15 } = {}) => {
   return [min, max];
 };
 
+const getMean = (values = []) => {
+  const nums = values.filter((value) => Number.isFinite(value));
+  if (!nums.length) return null;
+  return nums.reduce((sum, value) => sum + value, 0) / nums.length;
+};
+
+const getMovingAverage = (values = [], windowSize = 7) => {
+  if (!Array.isArray(values) || values.length === 0) return [];
+  const window = Math.max(1, Math.floor(windowSize));
+  const result = [];
+
+  for (let i = 0; i < values.length; i += 1) {
+    const start = Math.max(0, i - window + 1);
+    const slice = values.slice(start, i + 1);
+    const avg = getMean(slice);
+    result.push(avg);
+  }
+
+  return result;
+};
+
+
 
 const ALERT_TONES = {
   high: {
@@ -99,6 +121,7 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
     start: getGmt3DateString(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000)),
     end: getGmt3DateString()
   });
+  const [showAverage, setShowAverage] = useState(false);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -220,10 +243,21 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
   const isReady = Boolean(summary);
   const series = summary?.series || [];
 
-  const coverageDomain = useMemo(() => {
-    const values = series.map((row) => row.coverageRate);
-    return computeRateDomain(values, { padding: 0.06, minSpan: 0.18 });
+  const seriesWithAverage = useMemo(() => {
+    if (!series.length) return [];
+    const avgValues = getMovingAverage(series.map((row) => row.coverageRate), 7);
+    return series.map((row, index) => ({ ...row, coverageRate7d: avgValues[index] }));
   }, [series]);
+
+  const coverageDomain = useMemo(() => {
+    const values = seriesWithAverage.map((row) => row.coverageRate);
+    return computeRateDomain(values, { padding: 0.06, minSpan: 0.18 });
+  }, [seriesWithAverage]);
+
+  const averageDomain = useMemo(() => {
+    const values = seriesWithAverage.map((row) => row.coverageRate7d);
+    return computeRateDomain(values, { padding: 0.06, minSpan: 0.18 });
+  }, [seriesWithAverage]);
   const alerts = summary?.alerts || [];
   const countryGaps = summary?.countryGaps || [];
   const unattributedOrders = summary?.unattributedOrders || [];
@@ -290,6 +324,20 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
       </div>
     );
   };
+  const renderAverageTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const point = payload[0]?.payload || {};
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 shadow-lg">
+        <div className="text-[11px] text-slate-500">{label}</div>
+        <div className="mt-1 flex flex-col gap-1">
+          <span>7D Avg: {formatPercent(point.coverageRate7d)}</span>
+          <span>Actual: {formatPercent(point.coverageRate)}</span>
+        </div>
+      </div>
+    );
+  };
+
 
   const countrySeries = countrySummary?.series || [];
   const countryTotals = countrySummary?.totals || {};
@@ -409,12 +457,25 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
 
         <div className="mt-8 grid grid-cols-1 gap-6 xl:grid-cols-12">
           <div className="xl:col-span-8 rounded-2xl border border-slate-200/70 bg-white p-6 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-slate-900">Attribution coverage rate</div>
                 <div className="text-xs text-slate-500">Coverage = Meta purchases / Shopify paid orders (capped at 100%).</div>
               </div>
-              <div className="text-xs text-slate-400">{summary?.period?.start} to {summary?.period?.end}</div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowAverage((prev) => !prev)}
+                  disabled={isSingleDay}
+                  className={`inline-flex items-center gap-2 rounded-full border px-2 py-1 text-[11px] font-semibold transition ${showAverage ? 'border-[#007AFF] bg-[#007AFF]/10 text-[#007AFF]' : 'border-slate-200 text-slate-500'} ${isSingleDay ? 'cursor-not-allowed opacity-50' : 'hover:border-slate-300'}`}
+                >
+                  <span>7D Avg</span>
+                  <span className={`relative inline-flex h-4 w-8 items-center rounded-full transition ${showAverage ? 'bg-[#007AFF]' : 'bg-slate-200'}`}>
+                    <span className={`absolute h-3 w-3 rounded-full bg-white shadow-sm transition ${showAverage ? 'translate-x-4' : 'translate-x-1'}`} />
+                  </span>
+                </button>
+                <div className="text-xs text-slate-400">{summary?.period?.start} to {summary?.period?.end}</div>
+              </div>
             </div>
 
             {!isSingleDay && (
@@ -428,7 +489,7 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
                 <div className="flex h-full items-center justify-center text-sm text-slate-400">Loading insights...</div>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={series} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                  <LineChart data={seriesWithAverage} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                     <XAxis dataKey="date" tick={{ fontSize: 10 }} />
                     <YAxis
                       tick={{ fontSize: 10 }}
@@ -448,6 +509,41 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
                 </ResponsiveContainer>
               )}
             </div>
+
+
+            {showAverage && !isSingleDay && (
+              <div className="mt-6 border-t border-slate-200/70 pt-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-slate-700">7-day average coverage</div>
+                  <div className="text-[11px] text-slate-400">Hover to compare avg vs daily</div>
+                </div>
+                <div className="mt-4 h-44">
+                  {loading ? (
+                    <div className="flex h-full items-center justify-center text-sm text-slate-400">Loading averages...</div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={seriesWithAverage} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                        <YAxis
+                          tick={{ fontSize: 10 }}
+                          domain={averageDomain}
+                          tickFormatter={(v) => `${Math.round(v * 100)}%`}
+                        />
+                        <Tooltip content={renderAverageTooltip} />
+                        <Line
+                          type="monotone"
+                          dataKey="coverageRate7d"
+                          stroke="#007AFF"
+                          strokeWidth={3}
+                          dot={false}
+                          connectNulls={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+            )}
 
             {isSingleDay && (
               <div className="mt-6 rounded-xl border border-slate-200/70 bg-slate-50/60 px-4 py-3 text-sm text-slate-600">
@@ -503,7 +599,7 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
                   View any country
                 </button>
               </div>
-              <div className="mt-4 space-y-3">
+              <div className="mt-4 space-y-3 max-h-[480px] overflow-y-auto pr-1">
                 {loading ? (
                   <div className="text-xs text-slate-500">Loading country gaps...</div>
                 ) : !countryBreakdownAvailable ? (
@@ -527,7 +623,12 @@ export default function AttributionTab({ store, formatNumber, formatCurrency }) 
                     >
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-xs font-semibold text-slate-900">{name}</span>
-                        <span className="text-xs font-semibold text-slate-700">{coveragePct == null ? '-' : `${coveragePct}%`} coverage</span>
+                        <div className="flex items-center gap-2">
+                          {(row.shopifyOrders || 0) < 3 && (
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-500">Low data</span>
+                          )}
+                          <span className="text-xs font-semibold text-slate-700">{coveragePct == null ? '-' : `${coveragePct}%`} coverage</span>
+                        </div>
                       </div>
                       <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
                         <span>{formatNumber(row.metaOrders || 0)}/{formatNumber(row.shopifyOrders || 0)} attributed</span>
