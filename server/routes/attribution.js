@@ -11,6 +11,12 @@ const DEFAULT_RANGE_DAYS = 14;
 // Meta reporting can lag after midnight; we consider a day finalized only after this grace period.
 const FINALIZE_GRACE_MINUTES = Number.parseInt(process.env.ATTRIBUTION_FINALIZE_GRACE_MINUTES || '60', 10);
 
+// Signal tuning (keep signals meaningful; avoid small-sample noise).
+const SIGNAL_Z_THRESHOLD = 1.64; // ~90% confidence for two-proportion z-test
+const COUNTRY_SIGNAL_MIN_ORDERS = 5;
+const COUNTRY_SIGNAL_MIN_SHARE = 0.1;
+const COUNTRY_WORST_MISSED_RATE_THRESHOLD = 0.15;
+
 const GMT3_OFFSET_MS = 3 * 60 * 60 * 1000;
 
 function resolveOrderSource(db, store) {
@@ -245,6 +251,20 @@ function getCountryLabel(code) {
   }
 }
 
+function twoProportionZScore(successA, totalA, successB, totalB) {
+  if (!Number.isFinite(successA) || !Number.isFinite(totalA) || totalA <= 0) return null;
+  if (!Number.isFinite(successB) || !Number.isFinite(totalB) || totalB <= 0) return null;
+
+  const pA = successA / totalA;
+  const pB = successB / totalB;
+  const pooled = (successA + successB) / (totalA + totalB);
+
+  const se = Math.sqrt(pooled * (1 - pooled) * (1 / totalA + 1 / totalB));
+  if (!Number.isFinite(se) || se === 0) return null;
+
+  return (pA - pB) / se;
+}
+
 function parseConsentStatus(value) {
   if (value == null) return 'unknown';
   const normalized = String(value).trim().toLowerCase();
@@ -366,12 +386,51 @@ function buildAlerts({
   consentRate7,
   prevConsentRate7,
   stuckCountries,
+  worstCountry,
+  worstCountryDiagnostics,
   periodLabel
 }) {
   const alerts = [];
 
   const hasCurrent = current7?.shopifyOrders >= 3 && current7?.missedRate != null;
   const hasPrevious = previous7?.shopifyOrders >= 3 && previous7?.missedRate != null;
+
+  // Country-level callout: highlight the lowest coverage market (ex: France).
+  const worstCountryGap = hasCurrent && worstCountry?.missedRate != null
+    ? worstCountry.missedRate - current7.missedRate
+    : null;
+
+  const shouldCalloutWorstCountry = hasCurrent && worstCountry?.missedRate != null && (
+    worstCountry.missedRate >= COUNTRY_WORST_MISSED_RATE_THRESHOLD
+    || (worstCountryGap != null && worstCountryGap >= 0.1 && worstCountry.missedRate >= 0.08)
+  );
+
+  if (shouldCalloutWorstCountry) {
+    const countryLabel = getCountryLabel(worstCountry.countryCode);
+    const coverageRate = worstCountry.coverageRate != null ? worstCountry.coverageRate : (1 - worstCountry.missedRate);
+    const coveragePct = coverageRate != null ? Math.round(coverageRate * 100) : null;
+    const missedPct = Math.round(worstCountry.missedRate * 100);
+
+    const drivers = [];
+    if (worstCountryDiagnostics?.missingIdRate != null) {
+      drivers.push(`${Math.round(worstCountryDiagnostics.missingIdRate * 100)}% missing Meta IDs`);
+    }
+    if (worstCountryDiagnostics?.consentRate != null) {
+      drivers.push(`${Math.round(worstCountryDiagnostics.consentRate * 100)}% consent denied`);
+    }
+
+    const severity = worstCountry.missedRate >= 0.3 || (worstCountryGap != null && worstCountryGap >= 0.15)
+      ? 'high'
+      : (worstCountry.missedRate >= 0.2 ? 'medium' : 'low');
+
+    alerts.push({
+      id: 'worst_country_coverage',
+      title: `Lowest country coverage: ${countryLabel}`,
+      message: `${countryLabel} has the lowest coverage in the last 7 days: ${coveragePct == null ? '-' : `${coveragePct}%`} (${worstCountry.metaOrders}/${worstCountry.shopifyOrders}). Missed ${worstCountry.missed} orders (${missedPct}%).${worstCountryGap != null && worstCountryGap >= 0.1 ? ` That is ${Math.round(worstCountryGap * 100)}% worse than overall.` : ''}${drivers.length ? ` Drivers: ${drivers.join(', ')}.` : ''}`,
+      fix: 'Start with Meta IDs (fbp/fbc/fbclid) capture + consent, then verify Pixel/CAPI delivery and domain verification for that market.',
+      severity
+    });
+  }
 
   if (hasCurrent && current7.missedRate >= 0.3) {
     alerts.push({
@@ -388,10 +447,18 @@ function buildAlerts({
     const missedDelta = previous7.unattributed - current7.unattributed;
     const relative = previous7.missedRate > 0 ? rateDelta / previous7.missedRate : null;
 
+    const improvementZ = twoProportionZScore(
+      previous7.unattributed,
+      previous7.shopifyOrders,
+      current7.unattributed,
+      current7.shopifyOrders
+    );
+
     const meaningfulRateMove = rateDelta >= 0.05 && relative != null && relative >= 0.3;
     const meaningfulCountMove = missedDelta >= 2;
+    const statisticallyMeaningful = improvementZ != null && improvementZ >= SIGNAL_Z_THRESHOLD;
 
-    if (meaningfulRateMove && meaningfulCountMove) {
+    if (meaningfulRateMove && meaningfulCountMove && statisticallyMeaningful) {
       alerts.push({
         id: 'missed_rate_improved',
         title: 'Attribution improved',
@@ -403,10 +470,19 @@ function buildAlerts({
 
     const worsenDelta = current7.missedRate - previous7.missedRate;
     const worsenRel = previous7.missedRate > 0 ? worsenDelta / previous7.missedRate : null;
+
+    const worseningZ = twoProportionZScore(
+      current7.unattributed,
+      current7.shopifyOrders,
+      previous7.unattributed,
+      previous7.shopifyOrders
+    );
+
     const worsenRateMove = worsenDelta >= 0.05 && (worsenRel == null ? current7.missedRate >= 0.15 : worsenRel >= 0.3);
     const worsenCountMove = (current7.unattributed - previous7.unattributed) >= 2;
+    const statisticallyMeaningfulWorsen = worseningZ != null && worseningZ >= SIGNAL_Z_THRESHOLD;
 
-    if (worsenRateMove && worsenCountMove) {
+    if (worsenRateMove && worsenCountMove && statisticallyMeaningfulWorsen) {
       alerts.push({
         id: 'missed_rate_worsened',
         title: 'Attribution worsened',
@@ -462,9 +538,7 @@ function buildAlerts({
   }
 
   return alerts;
-}
-
-router.get('/summary', (req, res) => {
+}router.get('/summary', (req, res) => {
   try {
     const store = (req.query.store || 'shawq').toString();
     const startParam = req.query.start;
@@ -645,10 +719,12 @@ router.get('/summary', (req, res) => {
             shopifyOrders,
             metaOrders,
             gap,
+            missedRate: shopifyOrders >= 3 ? safeDivide(gap, shopifyOrders) : null,
             coverageRate: coverageRateFromCounts(metaOrders, shopifyOrders)
           };
         })
-        .sort((a, b) => b.gap - a.gap)
+        .filter((row) => (row.shopifyOrders || 0) >= 3)
+        .sort((a, b) => (b.missedRate ?? -1) - (a.missedRate ?? -1))
       : [];
 
     const metaByDateCountryMap = hasCountryRows
@@ -834,22 +910,20 @@ router.get('/summary', (req, res) => {
     const prevConsentRate7 = previousDiag.consentRate;
 
     const stuckCountries = [];
-    if (hasCountryRows && current7Start && finalizedEndDate && prevWindowStart && prevWindowEnd) {
-      const currCountryShopify = db.prepare(`
+    let worstCountry = null;
+    let worstCountryDiagnostics = null;
+
+    let currCountryShopify = [];
+    let currMetaMap = new Map();
+
+    if (hasCountryRows && current7Start && finalizedEndDate) {
+      currCountryShopify = db.prepare(`
         SELECT COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
         FROM ${orderTable}
         WHERE store = ? AND date BETWEEN ? AND ?
         ${orderWhere}
         GROUP BY COALESCE(NULLIF(country_code, ''), 'UN')
       `).all(store, current7Start, finalizedEndDate);
-
-      const prevCountryShopify = db.prepare(`
-        SELECT COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
-        FROM ${orderTable}
-        WHERE store = ? AND date BETWEEN ? AND ?
-        ${orderWhere}
-        GROUP BY COALESCE(NULLIF(country_code, ''), 'UN')
-      `).all(store, prevWindowStart, prevWindowEnd);
 
       const currCountryMeta = db.prepare(`
         SELECT country as country_code, SUM(conversions) as orders
@@ -858,6 +932,74 @@ router.get('/summary', (req, res) => {
           AND country IS NOT NULL AND country != '' AND country != 'ALL'
         GROUP BY country
       `).all(store, current7Start, finalizedEndDate);
+
+      const toMap = (rows) => new Map(rows.filter((r) => r.country_code).map((r) => [r.country_code, r.orders || 0]));
+      currMetaMap = toMap(currCountryMeta);
+
+      const countryStats = currCountryShopify
+        .map((row) => {
+          const code = row.country_code;
+          const shopifyOrders = row.orders || 0;
+          const metaOrders = currMetaMap.get(code) || 0;
+          const missed = Math.max(0, shopifyOrders - metaOrders);
+          const missedRate = shopifyOrders >= 3 ? safeDivide(missed, shopifyOrders) : null;
+          const coverageRate = coverageRateFromCounts(metaOrders, shopifyOrders);
+          return {
+            countryCode: code,
+            shopifyOrders,
+            metaOrders,
+            missed,
+            missedRate,
+            coverageRate
+          };
+        })
+        .filter((row) => row.missedRate != null)
+        .sort((a, b) => (b.missedRate ?? -1) - (a.missedRate ?? -1));
+
+      worstCountry = countryStats[0] || null;
+
+      const computeCountryOrderDiagnostics = (countryCode, windowStart, windowEnd) => {
+        if (!attributionDataAvailable || !countryCode || !windowStart || !windowEnd) return null;
+
+        const rows = db.prepare(`
+          SELECT attribution_json
+          FROM ${orderTable}
+          WHERE store = ? AND date BETWEEN ? AND ?
+            AND COALESCE(NULLIF(country_code, ''), 'UN') = ?
+          ${orderWhere}
+        `).all(store, windowStart, windowEnd, countryCode);
+
+        let missingIds = 0;
+        let consentDenied = 0;
+
+        rows.forEach((row) => {
+          const attrs = parseAttribution(row.attribution_json);
+          const metaIds = getMetaIdStatus(attrs);
+          if (!metaIds.hasMetaIds) missingIds += 1;
+          if (parseConsentStatus(attrs.consent) === 'denied') consentDenied += 1;
+        });
+
+        const orders = rows.length;
+        return {
+          orders,
+          missingIdRate: orders >= 3 ? safeDivide(missingIds, orders) : null,
+          consentRate: orders >= 3 ? safeDivide(consentDenied, orders) : null
+        };
+      };
+
+      if (worstCountry) {
+        worstCountryDiagnostics = computeCountryOrderDiagnostics(worstCountry.countryCode, current7Start, finalizedEndDate);
+      }
+    }
+    if (hasCountryRows && current7Start && finalizedEndDate && prevWindowStart && prevWindowEnd && currCountryShopify.length) {
+
+      const prevCountryShopify = db.prepare(`
+        SELECT COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
+        FROM ${orderTable}
+        WHERE store = ? AND date BETWEEN ? AND ?
+        ${orderWhere}
+        GROUP BY COALESCE(NULLIF(country_code, ''), 'UN')
+      `).all(store, prevWindowStart, prevWindowEnd);
 
       const prevCountryMeta = db.prepare(`
         SELECT country as country_code, SUM(conversions) as orders
@@ -868,7 +1010,6 @@ router.get('/summary', (req, res) => {
       `).all(store, prevWindowStart, prevWindowEnd);
 
       const toMap = (rows) => new Map(rows.filter((r) => r.country_code).map((r) => [r.country_code, r.orders || 0]));
-      const currMetaMap = toMap(currCountryMeta);
       const prevMetaMap = toMap(prevCountryMeta);
       const prevShopifyMap = new Map(prevCountryShopify.map((r) => [r.country_code, r.orders || 0]));
 
@@ -882,6 +1023,11 @@ router.get('/summary', (req, res) => {
         const missedRate = safeDivide(missed, shopifyOrders);
         if (missedRate == null || missedRate < 0.3) return;
 
+        const share = safeDivide(shopifyOrders, current7?.shopifyOrders || 0);
+        const isSignificantMarket = shopifyOrders >= COUNTRY_SIGNAL_MIN_ORDERS || (share != null && share >= COUNTRY_SIGNAL_MIN_SHARE);
+        const isSevere = missedRate >= 0.5;
+        if (!isSignificantMarket && !isSevere) return;
+
         const prevShopifyOrders = prevShopifyMap.get(code) || 0;
         if (prevShopifyOrders < 3) return;
 
@@ -892,7 +1038,9 @@ router.get('/summary', (req, res) => {
 
         const rateDrop = prevMissedRate - missedRate;
         const relativeDrop = prevMissedRate > 0 ? rateDrop / prevMissedRate : 0;
-        const meaningfulImprovement = rateDrop >= 0.05 && relativeDrop >= 0.3 && (prevMissed - missed) >= 2;
+        const improveZ = twoProportionZScore(prevMissed, prevShopifyOrders, missed, shopifyOrders);
+        const statisticallyMeaningful = improveZ != null && improveZ >= SIGNAL_Z_THRESHOLD;
+        const meaningfulImprovement = rateDrop >= 0.05 && relativeDrop >= 0.3 && (prevMissed - missed) >= 2 && statisticallyMeaningful;
         if (meaningfulImprovement) return;
 
         stuckCountries.push({
@@ -914,6 +1062,8 @@ router.get('/summary', (req, res) => {
       consentRate7,
       prevConsentRate7,
       stuckCountries,
+      worstCountry,
+      worstCountryDiagnostics,
       periodLabel: current7Start && finalizedEndDate
         ? getPeriodLabel(current7Start, finalizedEndDate)
         : getPeriodLabel(range.start, range.end)
