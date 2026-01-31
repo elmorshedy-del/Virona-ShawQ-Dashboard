@@ -15,6 +15,33 @@ export function isShopifyConfigured() {
   return Boolean(shopifyStore && accessToken);
 }
 
+const ATTRIBUTION_KEY_PREFIXES = ['utm_', 'fb', 'landing_page', 'referrer', 'consent'];
+
+function isAttributionKey(key) {
+  if (!key) return false;
+  const normalized = key.toLowerCase();
+  if (normalized === 'consent') return true;
+  return ATTRIBUTION_KEY_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function extractAttributionAttributes(noteAttributes = []) {
+  const attributes = {};
+  if (!Array.isArray(noteAttributes)) return attributes;
+
+  noteAttributes.forEach((entry) => {
+    if (!entry) return;
+    const name = typeof entry.name === 'string' ? entry.name : (typeof entry.key === 'string' ? entry.key : null);
+    const value = entry.value != null ? entry.value : (entry.val != null ? entry.val : (Array.isArray(entry) ? entry[1] : null));
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed || !isAttributionKey(trimmed)) return;
+    if (value == null || value == '') return;
+    attributes[trimmed.toLowerCase()] = String(value);
+  });
+
+  return attributes;
+}
+
 export async function fetchShopifyOrders(dateStart, dateEnd) {
   const { shopifyStore, accessToken } = getShopifyCredentials();
 
@@ -58,6 +85,9 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
               ? formatDateAsGmt3(createdAtDate)
               : (createdAtIso?.split('T')[0] || null);
 
+          const attribution = extractAttributionAttributes(order.note_attributes);
+          const attributionJson = Object.keys(attribution).length ? JSON.stringify(attribution) : null;
+
           orders.push({
             order_id: order.id.toString(),
             date: dateGmt3,
@@ -77,6 +107,7 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             payment_method: order.payment_gateway_names?.[0] || 'unknown',
             currency: order.currency || 'USD',
             order_created_at: createdAtUtc,
+            attribution_json: attributionJson,
             createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
           });
         }
@@ -127,8 +158,8 @@ export async function syncShopifyOrders() {
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_orders
       (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount,
-       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at, attribution_json)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let recordsInserted = 0;
@@ -152,7 +183,8 @@ export async function syncShopifyOrders() {
         order.fulfillment_status,
         order.payment_method,
         order.currency,
-        order.order_created_at
+        order.order_created_at,
+        order.attribution_json
       );
       recordsInserted++;
     }

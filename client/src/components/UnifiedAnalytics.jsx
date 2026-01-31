@@ -71,6 +71,7 @@ export default function UnifiedAnalytics({
   dashboard = {},
   countriesDataSource = '',
   metaAdManagerData = [],
+  metaAdManagerNotice = '',
   adManagerBreakdown = 'none',
   setAdManagerBreakdown = () => {},
   hiddenCampaigns = new Set(),
@@ -487,6 +488,11 @@ export default function UnifiedAnalytics({
             <p className="text-sm text-gray-500 mt-0.5">
               Meta Ad Manager hierarchy with breakdowns. All data from Meta pixel.
             </p>
+            {metaAdManagerNotice ? (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {metaAdManagerNotice}
+              </div>
+            ) : null}
           </div>
 
           {/* Date info - keeping date visible */}
