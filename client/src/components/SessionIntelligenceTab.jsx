@@ -39,6 +39,11 @@ function timeAgo(ts) {
   return `${diffDay}d ago`;
 }
 
+function isoDayUtc(date) {
+  if (!(date instanceof Date)) return '';
+  return date.toISOString().slice(0, 10);
+}
+
 async function fetchJson(url, options) {
   const res = await fetch(url, { cache: 'no-store', ...options });
   const contentType = res.headers.get('content-type') || '';
@@ -161,9 +166,9 @@ function userLabel(row) {
   const shopper = formatShopperNumber(row.shopper_number ?? row.shopperNumber);
   if (shopper) return shopper;
   const clientId = row.client_id || row.clientId || null;
-  if (clientId) return toCode('U', clientId, 6);
+  if (clientId) return toCode('Visitor', clientId, 6);
   const sessionId = row.session_id || row.sessionId || null;
-  return sessionId ? toCode('A', sessionId, 6) : '—';
+  return sessionId ? toCode('Session', sessionId, 6) : '—';
 }
 
 export default function SessionIntelligenceTab({ store }) {
@@ -187,6 +192,12 @@ export default function SessionIntelligenceTab({ store }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeLimit, setAnalyzeLimit] = useState(20);
   const [highIntentOnly, setHighIntentOnly] = useState(false);
+
+  const [campaignStartDate, setCampaignStartDate] = useState(() => isoDayUtc(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
+  const [campaignEndDate, setCampaignEndDate] = useState(() => isoDayUtc(new Date()));
+  const [campaignPurchasesReport, setCampaignPurchasesReport] = useState(null);
+  const [campaignPurchasesLoading, setCampaignPurchasesLoading] = useState(false);
+  const [campaignPurchasesError, setCampaignPurchasesError] = useState('');
 
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
@@ -260,21 +271,45 @@ export default function SessionIntelligenceTab({ store }) {
     setLibraryEvents(Array.isArray(data.events) ? data.events : []);
   }, [storeId]);
 
+  const loadCampaignPurchases = useCallback(async (startDate = campaignStartDate, endDate = campaignEndDate) => {
+    if (!startDate || !endDate) return;
+    setCampaignPurchasesLoading(true);
+    setCampaignPurchasesError('');
+    try {
+      const url = `/api/session-intelligence/purchases-by-campaign?store=${encodeURIComponent(storeId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&limit=500`;
+      const data = await fetchJson(url);
+      setCampaignPurchasesReport(data);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] purchases-by-campaign load failed:', error);
+      setCampaignPurchasesError(error?.message || 'Failed to load purchases by campaign');
+      setCampaignPurchasesReport(null);
+    } finally {
+      setCampaignPurchasesLoading(false);
+    }
+  }, [campaignEndDate, campaignStartDate, storeId]);
+
   const manualRefresh = useCallback(async () => {
     setLoading(true);
     try {
-      await Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays()]);
+      await Promise.all([
+        loadOverview(),
+        loadBrief(),
+        loadSessions(),
+        loadEvents(),
+        loadLibraryDays(),
+        loadCampaignPurchases()
+      ]);
     } finally {
       setLoading(false);
     }
-  }, [loadBrief, loadEvents, loadLibraryDays, loadOverview, loadSessions]);
+  }, [loadBrief, loadCampaignPurchases, loadEvents, loadLibraryDays, loadOverview, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays()])
+    Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays(), loadCampaignPurchases()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -309,7 +344,7 @@ export default function SessionIntelligenceTab({ store }) {
       clearInterval(eventsTimer);
       clearInterval(overviewTimer);
     };
-  }, [loadBrief, loadEvents, loadLibraryDays, loadOverview, loadSessions]);
+  }, [loadBrief, loadCampaignPurchases, loadEvents, loadLibraryDays, loadOverview, loadSessions]);
 
   useEffect(() => {
     setLibraryError('');
@@ -360,6 +395,14 @@ export default function SessionIntelligenceTab({ store }) {
     if (!librarySessionId) return null;
     return librarySessions.find((s) => s.session_id === librarySessionId) || null;
   }, [librarySessionId, librarySessions]);
+
+  const timelineLabel = useMemo(() => {
+    if (!librarySessionId) return '—';
+    const shopper = formatShopperNumber(selectedLibrarySession?.shopper_number ?? selectedLibrarySession?.shopperNumber);
+    const sessionCode = toCode('Session', selectedLibrarySession?.session_id || librarySessionId, 6);
+    if (shopper) return `${shopper} • ${sessionCode}`;
+    return userLabel(selectedLibrarySession || { session_id: librarySessionId });
+  }, [librarySessionId, selectedLibrarySession]);
 
   const mostViewedNotBought = overview?.insights?.mostViewedNotBought || [];
   const outOfStockSizesClicked = overview?.insights?.outOfStockSizesClicked || [];
@@ -685,6 +728,77 @@ export default function SessionIntelligenceTab({ store }) {
 	        )}
       </div>
 
+      <div className="si-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Purchases by campaign & country</h3>
+          <span className="si-muted">From our Shopify tracking (UTC)</span>
+        </div>
+
+        <div className="si-row" style={{ gap: 10, flexWrap: 'wrap' }}>
+          <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            Start
+            <input
+              className="si-input"
+              type="date"
+              value={campaignStartDate}
+              onChange={(e) => setCampaignStartDate(e.target.value)}
+            />
+          </label>
+          <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            End
+            <input
+              className="si-input"
+              type="date"
+              value={campaignEndDate}
+              onChange={(e) => setCampaignEndDate(e.target.value)}
+            />
+          </label>
+
+          <button className="si-button" type="button" onClick={() => loadCampaignPurchases()} disabled={campaignPurchasesLoading}>
+            {campaignPurchasesLoading ? 'Loading…' : 'Load'}
+          </button>
+
+          <span className="si-muted">
+            Purchases: {campaignPurchasesReport?.totalPurchases ?? '—'}
+          </span>
+        </div>
+
+        {campaignPurchasesError ? (
+          <div className="si-empty" style={{ color: '#b42318', marginTop: 10 }}>
+            {campaignPurchasesError}
+          </div>
+        ) : null}
+
+        {campaignPurchasesLoading && !campaignPurchasesReport ? (
+          <div className="si-empty" style={{ marginTop: 10 }}>
+            Loading purchases…
+          </div>
+        ) : Array.isArray(campaignPurchasesReport?.rows) && campaignPurchasesReport.rows.length > 0 ? (
+          <table className="si-event-table" style={{ marginTop: 10 }}>
+            <thead>
+              <tr>
+                <th>Campaign</th>
+                <th>Country</th>
+                <th style={{ textAlign: 'right' }}>Purchases</th>
+              </tr>
+            </thead>
+            <tbody>
+              {campaignPurchasesReport.rows.map((row) => (
+                <tr key={`${row.campaign}||${row.country}`}>
+                  <td title={row.campaign}>{row.campaign}</td>
+                  <td>{row.country}</td>
+                  <td style={{ textAlign: 'right' }}>{row.purchases}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="si-empty" style={{ marginTop: 10 }}>
+            No purchases found in this date range.
+          </div>
+        )}
+      </div>
+
       <div className="si-card" style={{ marginTop: 14 }}>
         <div className="si-card-title">
           <h3>Events library (last {overview?.retentionHours ?? 72}h)</h3>
@@ -815,12 +929,10 @@ export default function SessionIntelligenceTab({ store }) {
         )}
 
         {librarySessionId && (
-          <div style={{ marginTop: 14 }} ref={libraryTimelineRef}>
+            <div style={{ marginTop: 14 }} ref={libraryTimelineRef}>
             <div className="si-card-title" style={{ marginBottom: 8 }}>
               <h3 style={{ fontSize: 14, margin: 0 }}>Session timeline</h3>
-              <span className="si-muted">
-                {userLabel(selectedLibrarySession || { session_id: librarySessionId })}
-              </span>
+              <span className="si-muted">{timelineLabel}</span>
             </div>
 
             {libraryEvents.length === 0 ? (
