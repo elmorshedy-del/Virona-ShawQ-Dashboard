@@ -771,6 +771,9 @@ function buildAlerts({
         })
         .filter((row) => (row.shopifyOrders || 0) >= 1)
         .sort((a, b) => {
+          const aLow = (a.shopifyOrders || 0) < 3;
+          const bLow = (b.shopifyOrders || 0) < 3;
+          if (aLow != bLow) return aLow ? 1 : -1;
           const aRate = a.missedRate ?? -1;
           const bRate = b.missedRate ?? -1;
           if (bRate != aRate) return bRate - aRate;
