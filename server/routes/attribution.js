@@ -765,7 +765,7 @@ function buildAlerts({
             shopifyOrders,
             metaOrders,
             gap,
-            missedRate: shopifyOrders >= 3 ? safeDivide(gap, shopifyOrders) : null,
+            missedRate: shopifyOrders > 0 ? safeDivide(gap, shopifyOrders) : null,
             coverageRate: coverageRateFromCounts(metaOrders, shopifyOrders)
           };
         })
