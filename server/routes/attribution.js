@@ -17,6 +17,15 @@ const COUNTRY_SIGNAL_MIN_ORDERS = 5;
 const COUNTRY_SIGNAL_MIN_SHARE = 0.1;
 const COUNTRY_WORST_MISSED_RATE_THRESHOLD = 0.15;
 
+// Country signal thresholds (tuned for meaningful time + percent signals).
+const COUNTRY_LOW_COVERAGE_THRESHOLD = 0.7;
+const COUNTRY_HIGH_COVERAGE_THRESHOLD = 0.85;
+const COUNTRY_SIGNAL_MIN_ACTIVE_DAYS = 4;
+const COUNTRY_SIGNAL_MIN_LOW_DAYS = 4;
+const COUNTRY_SIGNAL_MIN_HIGH_DAYS = 4;
+const COUNTRY_SIGNAL_IMPROVE_DELTA = 0.1;
+const COUNTRY_SIGNAL_WORSEN_DELTA = 0.1;
+
 const GMT3_OFFSET_MS = 3 * 60 * 60 * 1000;
 
 function resolveOrderSource(db, store) {
@@ -385,7 +394,9 @@ function buildAlerts({
   prevMissingIdRate7,
   consentRate7,
   prevConsentRate7,
-  stuckCountries,
+  constantlyLowCountries,
+  improvingCountries,
+  worseningCountries,
   worstCountry,
   worstCountryDiagnostics,
   periodLabel
@@ -400,7 +411,12 @@ function buildAlerts({
     ? worstCountry.missedRate - current7.missedRate
     : null;
 
-  const shouldCalloutWorstCountry = hasCurrent && worstCountry?.missedRate != null && (
+  const worstCountryShare = hasCurrent && worstCountry?.shopifyOrders
+    ? safeDivide(worstCountry.shopifyOrders, current7?.shopifyOrders || 0)
+    : null;
+  const worstCountryEnoughOrders = worstCountry?.shopifyOrders >= 3 || (worstCountryShare != null && worstCountryShare >= COUNTRY_SIGNAL_MIN_SHARE);
+
+  const shouldCalloutWorstCountry = hasCurrent && worstCountry?.missedRate != null && worstCountryEnoughOrders && (
     worstCountry.missedRate >= COUNTRY_WORST_MISSED_RATE_THRESHOLD
     || (worstCountryGap != null && worstCountryGap >= 0.1 && worstCountry.missedRate >= 0.08)
   );
@@ -523,17 +539,47 @@ function buildAlerts({
     });
   }
 
-  if (Array.isArray(stuckCountries) && stuckCountries.length) {
-    const list = stuckCountries
+  if (Array.isArray(constantlyLowCountries) && constantlyLowCountries.length) {
+    const list = constantlyLowCountries
       .slice(0, 3)
-      .map((row) => `${row.countryCode} ${Math.round(row.missedRate * 100)}%`)
+      .map((row) => `${row.countryCode} ${Math.round(row.coverageRate * 100)}%`)
+      .join(', ');
+    const worst = constantlyLowCountries[0];
+    const severity = worst && worst.coverageRate <= 0.6 ? 'high' : 'medium';
+    alerts.push({
+      id: 'countries_constantly_low',
+      title: 'Countries with consistently low coverage',
+      message: `${list} coverage in the last 7 days. These markets are persistently below ${Math.round(COUNTRY_LOW_COVERAGE_THRESHOLD * 100)}%.`,
+      fix: 'Prioritize these markets: verify localized checkout scripts, consent, pixel + CAPI match quality, and domain verification.',
+      severity
+    });
+  }
+
+  if (Array.isArray(improvingCountries) && improvingCountries.length) {
+    const list = improvingCountries
+      .slice(0, 3)
+      .map((row) => `${row.countryCode} +${Math.round(row.delta * 100)}%`)
       .join(', ');
     alerts.push({
-      id: 'countries_stuck_high_missed',
-      title: 'Countries stuck with high missed attribution',
-      message: `${list} missed attribution (last 7d, unimproving).`,
-      fix: 'Prioritize these markets: verify localized checkout scripts, consent, pixel + CAPI match quality, and domain verification.',
+      id: 'countries_improving',
+      title: 'Countries improving from low coverage',
+      message: `${list} improved coverage vs the prior 7 days after being consistently low.`,
+      fix: 'Keep the changes that improved coverage (consent, pixel, CAPI) and monitor stability.',
       severity: 'medium'
+    });
+  }
+
+  if (Array.isArray(worseningCountries) && worseningCountries.length) {
+    const list = worseningCountries
+      .slice(0, 3)
+      .map((row) => `${row.countryCode} -${Math.round(Math.abs(row.delta) * 100)}%`)
+      .join(', ');
+    alerts.push({
+      id: 'countries_worsening',
+      title: 'Countries falling back',
+      message: `${list} dropped from previously strong coverage in the last 7 days.`,
+      fix: 'Investigate market-specific changes: consent rates, pixel/CAPI outages, localized checkout scripts, or domain/currency issues.',
+      severity: 'high'
     });
   }
 
@@ -719,12 +765,20 @@ function buildAlerts({
             shopifyOrders,
             metaOrders,
             gap,
-            missedRate: shopifyOrders >= 3 ? safeDivide(gap, shopifyOrders) : null,
+            missedRate: shopifyOrders > 0 ? safeDivide(gap, shopifyOrders) : null,
             coverageRate: coverageRateFromCounts(metaOrders, shopifyOrders)
           };
         })
-        .filter((row) => (row.shopifyOrders || 0) >= 3)
-        .sort((a, b) => (b.missedRate ?? -1) - (a.missedRate ?? -1))
+        .filter((row) => (row.shopifyOrders || 0) >= 1)
+        .sort((a, b) => {
+          const aLow = (a.shopifyOrders || 0) < 3;
+          const bLow = (b.shopifyOrders || 0) < 3;
+          if (aLow != bLow) return aLow ? 1 : -1;
+          const aRate = a.missedRate ?? -1;
+          const bRate = b.missedRate ?? -1;
+          if (bRate != aRate) return bRate - aRate;
+          return (b.shopifyOrders || 0) - (a.shopifyOrders || 0);
+        })
       : [];
 
     const metaByDateCountryMap = hasCountryRows
@@ -909,7 +963,10 @@ function buildAlerts({
     const consentRate7 = currentDiag.consentRate;
     const prevConsentRate7 = previousDiag.consentRate;
 
-    const stuckCountries = [];
+
+    const constantlyLowCountries = [];
+    const improvingCountries = [];
+    const worseningCountries = [];
     let worstCountry = null;
     let worstCountryDiagnostics = null;
 
@@ -942,7 +999,7 @@ function buildAlerts({
           const shopifyOrders = row.orders || 0;
           const metaOrders = currMetaMap.get(code) || 0;
           const missed = Math.max(0, shopifyOrders - metaOrders);
-          const missedRate = shopifyOrders >= 3 ? safeDivide(missed, shopifyOrders) : null;
+          const missedRate = shopifyOrders > 0 ? safeDivide(missed, shopifyOrders) : null;
           const coverageRate = coverageRateFromCounts(metaOrders, shopifyOrders);
           return {
             countryCode: code,
@@ -991,67 +1048,115 @@ function buildAlerts({
         worstCountryDiagnostics = computeCountryOrderDiagnostics(worstCountry.countryCode, current7Start, finalizedEndDate);
       }
     }
-    if (hasCountryRows && current7Start && finalizedEndDate && prevWindowStart && prevWindowEnd && currCountryShopify.length) {
 
-      const prevCountryShopify = db.prepare(`
-        SELECT COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
+    if (hasCountryRows && current7Start && finalizedEndDate) {
+      const signalStart = prevWindowStart || current7Start;
+      const signalEnd = finalizedEndDate;
+
+      const countryDailyRows = db.prepare(`
+        SELECT date, COALESCE(NULLIF(country_code, ''), 'UN') as country_code, COUNT(*) as orders
         FROM ${orderTable}
         WHERE store = ? AND date BETWEEN ? AND ?
         ${orderWhere}
-        GROUP BY COALESCE(NULLIF(country_code, ''), 'UN')
-      `).all(store, prevWindowStart, prevWindowEnd);
+        GROUP BY date, COALESCE(NULLIF(country_code, ''), 'UN')
+      `).all(store, signalStart, signalEnd);
 
-      const prevCountryMeta = db.prepare(`
-        SELECT country as country_code, SUM(conversions) as orders
-        FROM meta_daily_metrics
-        WHERE store = ? AND date BETWEEN ? AND ?
-          AND country IS NOT NULL AND country != '' AND country != 'ALL'
-        GROUP BY country
-      `).all(store, prevWindowStart, prevWindowEnd);
+      const countryMetaDailyMap = buildMetaDailyByCountry(db, { store, start: signalStart, end: signalEnd });
 
-      const toMap = (rows) => new Map(rows.filter((r) => r.country_code).map((r) => [r.country_code, r.orders || 0]));
-      const prevMetaMap = toMap(prevCountryMeta);
-      const prevShopifyMap = new Map(prevCountryShopify.map((r) => [r.country_code, r.orders || 0]));
+      const buildCountryWindowStats = (rows, metaMap, windowStart, windowEnd) => {
+        const stats = new Map();
+        rows.forEach((row) => {
+          if (!row.date || row.date < windowStart || row.date > windowEnd) return;
+          const countryCode = row.country_code || 'UN';
+          const shopifyOrders = row.orders || 0;
+          const metaOrders = metaMap.get(`${row.date}|${countryCode}`) || 0;
+          const covered = Math.min(shopifyOrders, Math.max(0, metaOrders));
 
-      currCountryShopify.forEach((row) => {
-        const code = row.country_code;
-        const shopifyOrders = row.orders || 0;
-        if (shopifyOrders < 3) return;
+          if (!stats.has(countryCode)) {
+            stats.set(countryCode, {
+              countryCode,
+              totalShopify: 0,
+              totalMeta: 0,
+              covered: 0,
+              daysWithOrders: 0,
+              lowDays: 0,
+              highDays: 0
+            });
+          }
 
-        const metaOrders = currMetaMap.get(code) || 0;
-        const missed = Math.max(0, shopifyOrders - metaOrders);
-        const missedRate = safeDivide(missed, shopifyOrders);
-        if (missedRate == null || missedRate < 0.3) return;
+          const stat = stats.get(countryCode);
+          stat.totalShopify += shopifyOrders;
+          stat.totalMeta += metaOrders;
+          stat.covered += covered;
 
-        const share = safeDivide(shopifyOrders, current7?.shopifyOrders || 0);
-        const isSignificantMarket = shopifyOrders >= COUNTRY_SIGNAL_MIN_ORDERS || (share != null && share >= COUNTRY_SIGNAL_MIN_SHARE);
-        const isSevere = missedRate >= 0.5;
-        if (!isSignificantMarket && !isSevere) return;
-
-        const prevShopifyOrders = prevShopifyMap.get(code) || 0;
-        if (prevShopifyOrders < 3) return;
-
-        const prevMetaOrders = prevMetaMap.get(code) || 0;
-        const prevMissed = Math.max(0, prevShopifyOrders - prevMetaOrders);
-        const prevMissedRate = safeDivide(prevMissed, prevShopifyOrders);
-        if (prevMissedRate == null) return;
-
-        const rateDrop = prevMissedRate - missedRate;
-        const relativeDrop = prevMissedRate > 0 ? rateDrop / prevMissedRate : 0;
-        const improveZ = twoProportionZScore(prevMissed, prevShopifyOrders, missed, shopifyOrders);
-        const statisticallyMeaningful = improveZ != null && improveZ >= SIGNAL_Z_THRESHOLD;
-        const meaningfulImprovement = rateDrop >= 0.05 && relativeDrop >= 0.3 && (prevMissed - missed) >= 2 && statisticallyMeaningful;
-        if (meaningfulImprovement) return;
-
-        stuckCountries.push({
-          countryCode: code,
-          missedRate,
-          missed,
-          shopifyOrders
+          if (shopifyOrders > 0) {
+            stat.daysWithOrders += 1;
+            const coverage = covered / shopifyOrders;
+            if (coverage <= COUNTRY_LOW_COVERAGE_THRESHOLD) stat.lowDays += 1;
+            if (coverage >= COUNTRY_HIGH_COVERAGE_THRESHOLD) stat.highDays += 1;
+          }
         });
+
+        stats.forEach((stat) => {
+          stat.coverageRate = stat.totalShopify > 0 ? safeDivide(stat.covered, stat.totalShopify) : null;
+          stat.missedRate = stat.coverageRate == null ? null : 1 - stat.coverageRate;
+        });
+
+        return stats;
+      };
+
+      const currentStatsByCountry = buildCountryWindowStats(countryDailyRows, countryMetaDailyMap, current7Start, finalizedEndDate);
+      const prevStatsByCountry = prevWindowStart && prevWindowEnd
+        ? buildCountryWindowStats(countryDailyRows, countryMetaDailyMap, prevWindowStart, prevWindowEnd)
+        : new Map();
+
+      currentStatsByCountry.forEach((stat, code) => {
+        if (stat.totalShopify < COUNTRY_SIGNAL_MIN_ORDERS) return;
+        if (stat.daysWithOrders < COUNTRY_SIGNAL_MIN_ACTIVE_DAYS) return;
+        if (stat.coverageRate == null) return;
+
+        if (stat.coverageRate <= COUNTRY_LOW_COVERAGE_THRESHOLD && stat.lowDays >= COUNTRY_SIGNAL_MIN_LOW_DAYS) {
+          constantlyLowCountries.push({
+            countryCode: code,
+            coverageRate: stat.coverageRate,
+            shopifyOrders: stat.totalShopify
+          });
+        }
+
+        const prev = prevStatsByCountry.get(code);
+        if (!prev) return;
+        if (prev.totalShopify < COUNTRY_SIGNAL_MIN_ORDERS) return;
+        if (prev.daysWithOrders < COUNTRY_SIGNAL_MIN_ACTIVE_DAYS) return;
+        if (prev.coverageRate == null) return;
+
+        const improveDelta = stat.coverageRate - prev.coverageRate;
+        const improveZ = twoProportionZScore(stat.covered, stat.totalShopify, prev.covered, prev.totalShopify);
+        const improvedFromLow = prev.coverageRate <= COUNTRY_LOW_COVERAGE_THRESHOLD && prev.lowDays >= COUNTRY_SIGNAL_MIN_LOW_DAYS;
+
+        if (improvedFromLow && improveDelta >= COUNTRY_SIGNAL_IMPROVE_DELTA && improveZ != null && improveZ >= SIGNAL_Z_THRESHOLD) {
+          improvingCountries.push({
+            countryCode: code,
+            delta: improveDelta,
+            coverageRate: stat.coverageRate
+          });
+        }
+
+        const worsenDelta = prev.coverageRate - stat.coverageRate;
+        const worsenZ = twoProportionZScore(prev.covered, prev.totalShopify, stat.covered, stat.totalShopify);
+        const fellFromHigh = prev.coverageRate >= COUNTRY_HIGH_COVERAGE_THRESHOLD && prev.highDays >= COUNTRY_SIGNAL_MIN_HIGH_DAYS;
+
+        if (fellFromHigh && worsenDelta >= COUNTRY_SIGNAL_WORSEN_DELTA && worsenZ != null && worsenZ >= SIGNAL_Z_THRESHOLD) {
+          worseningCountries.push({
+            countryCode: code,
+            delta: -worsenDelta,
+            coverageRate: stat.coverageRate
+          });
+        }
       });
 
-      stuckCountries.sort((a, b) => b.missedRate - a.missedRate);
+      constantlyLowCountries.sort((a, b) => a.coverageRate - b.coverageRate);
+      improvingCountries.sort((a, b) => b.delta - a.delta);
+      worseningCountries.sort((a, b) => a.delta - b.delta);
     }
 
     const alerts = buildAlerts({
@@ -1061,7 +1166,9 @@ function buildAlerts({
       prevMissingIdRate7,
       consentRate7,
       prevConsentRate7,
-      stuckCountries,
+      constantlyLowCountries,
+      improvingCountries,
+      worseningCountries,
       worstCountry,
       worstCountryDiagnostics,
       periodLabel: current7Start && finalizedEndDate
@@ -1084,7 +1191,7 @@ function buildAlerts({
         coverageRate: previousCoverageRate
       },
       series,
-      countryGaps: countryGaps.slice(0, 8),
+      countryGaps,
       unattributedOrders: limitedUnattributed,
       alerts,
       countryBreakdownAvailable: hasCountryRows,
