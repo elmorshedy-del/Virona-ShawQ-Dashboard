@@ -42,15 +42,7 @@ const sectionIcons = {
   activation: Sparkles
 };
 
-const kpiThemes = [
-  'border-indigo-200/80 from-indigo-50 via-white to-white shadow-indigo-100/80',
-  'border-violet-200/80 from-violet-50 via-white to-white shadow-violet-100/80',
-  'border-sky-200/80 from-sky-50 via-white to-white shadow-sky-100/80',
-  'border-emerald-200/80 from-emerald-50 via-white to-white shadow-emerald-100/80',
-  'border-amber-200/80 from-amber-50 via-white to-white shadow-amber-100/80',
-  'border-fuchsia-200/80 from-fuchsia-50 via-white to-white shadow-fuchsia-100/80',
-  'border-rose-200/80 from-rose-50 via-white to-white shadow-rose-100/80'
-];
+
 
 function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
   const displayValue = useMemo(() => {
@@ -60,26 +52,38 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
     return value || '—';
   }, [format, value, formatter]);
 
-  // Unified color scheme with a modern, professional look
-  const theme = 'bg-gray-800/90 border-gray-700/60 shadow-2xl shadow-indigo-500/10';
-
   return (
     <div
-      className={`relative overflow-hidden rounded-3xl border p-5 transition-all duration-300 ease-in-out hover:shadow-indigo-500/20 hover:-translate-y-1 ${theme}`}
+      className="group relative overflow-hidden rounded-2xl border border-white/20 bg-white/60 p-4 shadow-lg shadow-black/5 transition-all duration-300 ease-in-out hover:-translate-y-1 hover:shadow-xl hover:shadow-black/10"
+      style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
     >
-      <div className="relative z-10 flex flex-col h-full">
+      {/* Inner highlight for glass effect */}
+      <div className="absolute inset-0 rounded-2xl border border-white/50" />
+      
+      {/* Purple accent stroke */}
+      <div className="absolute top-0 left-0 h-full w-0.5 bg-indigo-500/50 opacity-60 transition-all duration-300 group-hover:w-1 group-hover:opacity-100" />
+      
+      {/* Content */}
+      <div className="relative z-10 flex h-full flex-col">
         <div className="flex-shrink-0">
-          <div className="text-xs font-medium uppercase tracking-wider text-gray-400">{label}</div>
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-700/90">
+            {label}
+          </div>
         </div>
-        <div className="flex-grow flex items-end mt-4">
-          <div className="text-4xl font-bold text-white leading-none tracking-tight">
+        <div className="mt-2 flex-grow">
+          <div className="text-3xl font-bold leading-tight text-gray-900 line-clamp-2" style={{ textWrap: 'balance' }}>
             {displayValue}
           </div>
         </div>
-        {hint && <div className="mt-3 text-sm text-gray-400/80">{hint}</div>}
+        {hint && (
+          <div className="mt-2 text-xs text-gray-600/90 line-clamp-2">
+            {hint}
+          </div>
+        )}
       </div>
-      {/* Subtle glow effect */}
-      <div className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2 w-48 h-48 bg-indigo-600/20 blur-3xl opacity-50" />
+
+      {/* Faint outer glow on hover */}
+      <div className="absolute -inset-2 rounded-3xl border-2 border-indigo-400/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
     </div>
   );
 }
