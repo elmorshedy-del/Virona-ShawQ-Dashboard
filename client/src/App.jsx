@@ -30,6 +30,7 @@ import CurrencyToggle from './components/CurrencyToggle';
 import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
 import CampaignLauncher from './components/CampaignLauncher';
 import ProductRadar from './components/ProductRadar';
+import CustomerInsightsTab from './components/CustomerInsightsTab';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -397,9 +398,9 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher', 'Product Radar'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher', 'Product Radar'];
 const PRODUCT_RADAR_TAB_INDEX = TABS.indexOf('Product Radar');
-const TABS_VERSION = '2026-01-27-session-intelligence-v1';
+const TABS_VERSION = '2026-01-31-customer-insights-after-neometa-v1';
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -413,15 +414,10 @@ export default function App() {
         if (idx >= 0) return idx;
       }
 
-      const version = localStorage.getItem('tabsVersion');
       const saved = localStorage.getItem('activeTab');
       const parsed = Number(saved);
       if (Number.isInteger(parsed) && parsed >= 0 && parsed < TABS.length) {
-        // Migration: inserted Session Intelligence after Insights (index 4).
-        if (version !== TABS_VERSION && parsed >= 4) {
-          const shifted = parsed + 1;
-          if (shifted >= 0 && shifted < TABS.length) return shifted;
-        }
+        // Migration: rely on stored tab label for reordering.
         return parsed;
       }
     } catch (e) {
@@ -481,6 +477,8 @@ export default function App() {
   const [efficiencyTrends, setEfficiencyTrends] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [budgetIntelligence, setBudgetIntelligence] = useState(null);
+  const [customerInsights, setCustomerInsights] = useState(null);
+  const [customerInsightsLoading, setCustomerInsightsLoading] = useState(false);
   const [manualOrders, setManualOrders] = useState([]);
   const [manualSpendOverrides, setManualSpendOverrides] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
@@ -917,6 +915,42 @@ export default function App() {
       loadData();
     }
   }, [loadData, storeLoaded]);
+
+
+  useEffect(() => {
+    if (!storeLoaded) return;
+    let ignore = false;
+
+    const loadCustomerInsights = async () => {
+      try {
+        setCustomerInsightsLoading(true);
+        const params = new URLSearchParams({ store: currentStore });
+        if (dateRange.type === 'custom') {
+          params.set('startDate', dateRange.start);
+          params.set('endDate', dateRange.end);
+        } else if (dateRange.type === 'yesterday') {
+          params.set('yesterday', '1');
+        } else {
+          params.set(dateRange.type, dateRange.value);
+        }
+
+        const response = await fetchJson(`${API_BASE}/customer-insights?${params}`);
+        if (!ignore) {
+          setCustomerInsights(response?.data || null);
+        }
+      } catch (error) {
+        console.error('Error loading customer insights:', error);
+        if (!ignore) setCustomerInsights(null);
+      } finally {
+        if (!ignore) setCustomerInsightsLoading(false);
+      }
+    };
+
+    loadCustomerInsights();
+    return () => {
+      ignore = true;
+    };
+  }, [currentStore, dateRange, storeLoaded]);
 
   // Load breakdown data for Section 2 (pure meta)
   useEffect(() => {
@@ -1694,7 +1728,15 @@ export default function App() {
           <NeoMetaTab />
         )}
 
-        {activeTab === 6 && efficiency && (
+        {activeTab === 6 && (
+          <CustomerInsightsTab
+            data={customerInsights}
+            loading={customerInsightsLoading}
+            formatCurrency={formatCurrency}
+          />
+        )}
+
+        {activeTab === 7 && efficiency && (
           <EfficiencyTab
             efficiency={efficiency}
             trends={efficiencyTrends}
@@ -1703,7 +1745,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 7 && budgetIntelligence && (
+        {activeTab === 8 && budgetIntelligence && (
           <BudgetIntelligenceTab
             data={budgetIntelligence}
             formatCurrency={formatCurrency}
@@ -1711,7 +1753,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === 9 && (
           <ManualDataTab
             orders={manualOrders}
             form={orderForm}
@@ -1730,35 +1772,35 @@ export default function App() {
           />
         )}
 
-        {activeTab === 9 && (
+        {activeTab === 10 && (
           <FatigueDetector
             store={store}
             formatCurrency={formatCurrency}
           />
         )}
 
-        {activeTab === 10 && (
+        {activeTab === 11 && (
           <>
             <CreativeIntelligence store={currentStore} />
             <CreativeAnalysis store={store} />
           </>
         )}
 
-        {activeTab === 11 && (
+        {activeTab === 12 && (
           <CreativeStudio store={currentStore} />
         )}
 
-        {activeTab === 12 && (
+        {activeTab === 13 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 13 && (
+        {activeTab === 14 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 14 && (
+        {activeTab === 15 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1766,11 +1808,11 @@ export default function App() {
           />
         )}
 
-        {activeTab === 15 && (
+        {activeTab === 16 && (
           <ExchangeRateDebug />
         )}
 
-        {activeTab === 16 && (
+        {activeTab === 17 && (
           <CampaignLauncher store={store} />
         )}
 

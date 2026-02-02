@@ -1,13 +1,30 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 import { createOrderNotifications } from './notificationService.js';
+import { getLatestShopifyAccessToken, getShopifyAccessToken, getShopifyTokenRecord } from './shopifyAuthService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 function getShopifyCredentials() {
-  return {
-    shopifyStore: process.env.SHAWQ_SHOPIFY_STORE,
-    accessToken: process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN
-  };
+  const envStore = process.env.SHAWQ_SHOPIFY_STORE;
+  const envToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
+
+  if (envStore && envToken) {
+    return { shopifyStore: envStore, accessToken: envToken, source: 'env' };
+  }
+
+  if (envStore) {
+    const oauthToken = getShopifyAccessToken(envStore);
+    if (oauthToken) {
+      return { shopifyStore: envStore, accessToken: oauthToken, source: 'oauth' };
+    }
+  }
+
+  const latest = getLatestShopifyAccessToken();
+  if (latest?.token) {
+    return { shopifyStore: latest.shop, accessToken: latest.token, source: 'oauth' };
+  }
+
+  return { shopifyStore: envStore || null, accessToken: envToken || null, source: 'missing' };
 }
 
 export function isShopifyConfigured() {
@@ -87,6 +104,19 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
 
           const attribution = extractAttributionAttributes(order.note_attributes);
           const attributionJson = Object.keys(attribution).length ? JSON.stringify(attribution) : null;
+          const customerId = order.customer?.id ? order.customer.id.toString() : null;
+          const customerEmail = order.customer?.email || order.email || null;
+          const lineItems = Array.isArray(order.line_items)
+            ? order.line_items.map((item) => ({
+                product_id: item.product_id ? item.product_id.toString() : null,
+                variant_id: item.variant_id ? item.variant_id.toString() : null,
+                sku: item.sku || null,
+                title: item.title || item.name || null,
+                quantity: item.quantity || 1,
+                price: parseFloat(item.price) || 0,
+                discount: parseFloat(item.total_discount) || 0
+              }))
+            : [];
 
           orders.push({
             order_id: order.id.toString(),
@@ -108,6 +138,9 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             currency: order.currency || 'USD',
             order_created_at: createdAtUtc,
             attribution_json: attributionJson,
+            customer_id: customerId,
+            customer_email: customerEmail,
+            line_items: lineItems,
             createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
           });
         }
@@ -158,36 +191,71 @@ export async function syncShopifyOrders() {
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_orders
       (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount,
-       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at, attribution_json)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at, attribution_json, customer_id, customer_email)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const deleteItemsStmt = db.prepare(`
+      DELETE FROM shopify_order_items
+      WHERE store = 'shawq' AND order_id = ?
+    `);
+
+    const insertItemStmt = db.prepare(`
+      INSERT OR REPLACE INTO shopify_order_items
+      (store, order_id, product_id, variant_id, sku, title, quantity, price, discount)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let recordsInserted = 0;
 
-    for (const order of orders) {
-      insertStmt.run(
-        order.order_id,
-        order.date,
-        order.country,
-        order.country_code,
-        order.city,
-        order.state,
-        order.order_total,
-        order.subtotal,
-        order.shipping,
-        order.tax,
-        order.discount,
-        order.items_count,
-        order.status,
-        order.financial_status,
-        order.fulfillment_status,
-        order.payment_method,
-        order.currency,
-        order.order_created_at,
-        order.attribution_json
-      );
-      recordsInserted++;
-    }
+    const insertOrders = db.transaction((ordersToInsert) => {
+      for (const order of ordersToInsert) {
+        insertStmt.run(
+          order.order_id,
+          order.date,
+          order.country,
+          order.country_code,
+          order.city,
+          order.state,
+          order.order_total,
+          order.subtotal,
+          order.shipping,
+          order.tax,
+          order.discount,
+          order.items_count,
+          order.status,
+          order.financial_status,
+          order.fulfillment_status,
+          order.payment_method,
+          order.currency,
+          order.order_created_at,
+          order.attribution_json,
+          order.customer_id,
+          order.customer_email
+        );
+
+        deleteItemsStmt.run(order.order_id);
+
+        if (Array.isArray(order.line_items)) {
+          for (const item of order.line_items) {
+            insertItemStmt.run(
+              order.order_id,
+              item.product_id,
+              item.variant_id,
+              item.sku,
+              item.title,
+              item.quantity,
+              item.price,
+              item.discount
+            );
+          }
+        }
+
+        recordsInserted++;
+      }
+    });
+
+    insertOrders(orders);
 
     db.prepare(`
       INSERT INTO sync_log (store, source, status, records_synced)
@@ -210,7 +278,7 @@ export async function syncShopifyOrders() {
 
 export function getShopifyConnectionStatus() {
   const db = getDb();
-  const { shopifyStore, accessToken } = getShopifyCredentials();
+  const { shopifyStore, accessToken, source } = getShopifyCredentials();
   const configured = Boolean(shopifyStore && accessToken);
 
   const lastSync = db
@@ -237,12 +305,18 @@ export function getShopifyConnectionStatus() {
     .prepare(`SELECT COUNT(*) as count FROM shopify_orders WHERE store = 'shawq'`)
     .get()?.count || 0;
 
+  const oauthRecord = shopifyStore ? getShopifyTokenRecord(shopifyStore) : null;
+
   return {
     configured,
-    storeDomain: shopifyStore || null,
+    storeDomain: shopifyStore || oauthRecord?.shop || null,
+    authSource: source || (accessToken ? 'oauth' : 'missing'),
     lastSync: lastSync || null,
     latestOrder: latestOrder || null,
-    totalOrders
+    totalOrders,
+    lastSyncStatus: lastSync?.status || null,
+    lastSyncError: lastSync?.error_message || null,
+    lastSyncRecords: lastSync?.records_synced || 0
   };
 }
 

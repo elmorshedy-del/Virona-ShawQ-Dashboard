@@ -86,6 +86,12 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN attribution_json TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN customer_id TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN customer_email TEXT`);
+  } catch (e) { /* column exists */ }
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -172,12 +178,43 @@ export function initDb() {
       currency TEXT DEFAULT 'USD',
       order_created_at TEXT,
       attribution_json TEXT,
+      customer_id TEXT,
+      customer_email TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, order_id)
     )
   `);
 
-  // Shopify pixel events (session-level / live behavior)
+  
+  // Shopify order items (line items)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      order_id TEXT NOT NULL,
+      product_id TEXT,
+      variant_id TEXT,
+      sku TEXT,
+      title TEXT,
+      quantity INTEGER DEFAULT 1,
+      price REAL DEFAULT 0,
+      discount REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, order_id, product_id, variant_id, sku, title)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_order_items_order
+    ON shopify_order_items(store, order_id)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_order_items_product
+    ON shopify_order_items(store, product_id)
+  `);
+
+// Shopify pixel events (session-level / live behavior)
   db.exec(`
     CREATE TABLE IF NOT EXISTS shopify_pixel_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -436,6 +473,30 @@ export function initDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta_oauth_states (
       state TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      return_to TEXT
+    )
+  `);
+
+  // Shopify OAuth tokens
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_auth_tokens (
+      shop TEXT PRIMARY KEY,
+      access_token_encrypted TEXT,
+      access_token_iv TEXT,
+      access_token_tag TEXT,
+      is_encrypted INTEGER DEFAULT 0,
+      scopes TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )
+  `);
+
+  // Shopify OAuth state storage
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_oauth_states (
+      state TEXT PRIMARY KEY,
+      shop TEXT NOT NULL,
       created_at TEXT NOT NULL,
       return_to TEXT
     )
