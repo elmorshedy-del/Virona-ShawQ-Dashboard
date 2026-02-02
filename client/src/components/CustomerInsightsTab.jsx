@@ -76,12 +76,8 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
 
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl border border-white/10 p-4 transition-all duration-300 ease-out hover:-translate-y-0.5 shadow-[0_8px_22px_rgba(15,23,42,0.10),_0_2px_6px_rgba(15,23,42,0.08),_0_0_18px_rgba(79,70,229,0.10)] hover:shadow-[0_12px_32px_rgba(15,23,42,0.14),_0_4px_10px_rgba(15,23,42,0.10),_0_0_26px_rgba(79,70,229,0.18)]"
-      style={{
-        background: 'rgba(255,255,255,0.06)',
-        backdropFilter: 'blur(10px)',
-        WebkitBackdropFilter: 'blur(10px)',
-        }}
+      className="group relative min-h-[124px] overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_12px_30px_rgba(79,70,229,0.20)]"
+      style={{ backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' }}
     >
       <div className="pointer-events-none absolute inset-0 rounded-2xl border border-white/10" />
       <div className="absolute left-0 top-0 h-full w-0.5 bg-indigo-500/40 opacity-70 transition-all duration-300 group-hover:w-1 group-hover:opacity-100" />
@@ -96,39 +92,12 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
           {label}
         </div>
         <div className="mt-2 flex-grow">
-          <div
-            ref={valueRef}
-            className="font-semibold text-gray-900"
-            style={{
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-              wordBreak: 'normal',
-              overflowWrap: 'normal',
-              hyphens: 'none',
-              fontSize: 'clamp(24px, 2.4vw, 36px)',
-              lineHeight: 1.1
-            }}
-            title={displayValue}
-          >
+          <div className="min-h-[3.2rem] text-[20px] sm:text-[22px] md:text-[24px] font-semibold leading-tight text-gray-900 line-clamp-2 whitespace-normal break-words">
             {displayValue}
           </div>
         </div>
         {hint && (
-          <div
-            className="mt-2 text-xs text-gray-600/90"
-            style={{
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-              wordBreak: 'normal',
-              overflowWrap: 'normal',
-              hyphens: 'none'
-            }}
-            title={hint}
-          >
+          <div className="mt-2 text-xs text-gray-600/90 line-clamp-2 whitespace-normal break-words">
             {hint}
           </div>
         )}
