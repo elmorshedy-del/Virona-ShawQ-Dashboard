@@ -192,6 +192,7 @@ export function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL DEFAULT 'shawq',
       order_id TEXT NOT NULL,
+      line_item_id TEXT,
       product_id TEXT,
       variant_id TEXT,
       sku TEXT,
@@ -200,9 +201,90 @@ export function initDb() {
       price REAL DEFAULT 0,
       discount REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(store, order_id, product_id, variant_id, sku, title)
+      UNIQUE(store, order_id, line_item_id)
     )
   `);
+
+  // Ensure the schema uses a stable unique key (Shopify line_item_id).
+  try {
+    const columns = db
+      .prepare("PRAGMA table_info('shopify_order_items')")
+      .all()
+      .map((col) => col.name);
+
+    const hasLineItemId = columns.includes('line_item_id');
+
+    const desiredUniqueColumns = ['store', 'order_id', 'line_item_id'];
+    const indexList = db.prepare("PRAGMA index_list('shopify_order_items')").all();
+    const uniqueIndexes = indexList.filter((idx) => idx.unique);
+
+    const hasDesiredUnique = uniqueIndexes.some((idx) => {
+      const cols = db
+        .prepare(`PRAGMA index_info('${idx.name}')`)
+        .all()
+        .map((col) => col.name);
+      return (
+        cols.length === desiredUniqueColumns.length &&
+        cols.every((col, i) => col === desiredUniqueColumns[i])
+      );
+    });
+
+    if (!hasLineItemId || !hasDesiredUnique) {
+      const backupTable = `shopify_order_items_backup_${Date.now()}`;
+
+      db.exec('BEGIN');
+
+      db.exec(`ALTER TABLE shopify_order_items RENAME TO "${backupTable}"`);
+
+      db.exec(`
+        CREATE TABLE shopify_order_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          store TEXT NOT NULL DEFAULT 'shawq',
+          order_id TEXT NOT NULL,
+          line_item_id TEXT,
+          product_id TEXT,
+          variant_id TEXT,
+          sku TEXT,
+          title TEXT,
+          quantity INTEGER DEFAULT 1,
+          price REAL DEFAULT 0,
+          discount REAL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(store, order_id, line_item_id)
+        )
+      `);
+
+      const lineItemSelect = hasLineItemId ? 'line_item_id' : 'NULL AS line_item_id';
+
+      db.exec(`
+        INSERT INTO shopify_order_items
+          (store, order_id, line_item_id, product_id, variant_id, sku, title, quantity, price, discount, created_at)
+        SELECT
+          store,
+          order_id,
+          ${lineItemSelect},
+          product_id,
+          variant_id,
+          sku,
+          title,
+          quantity,
+          price,
+          discount,
+          created_at
+        FROM "${backupTable}"
+      `);
+
+      db.exec(`DROP TABLE "${backupTable}"`);
+
+      db.exec('COMMIT');
+    }
+  } catch (e) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (_) {
+      /* noop */
+    }
+  }
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_shopify_order_items_order

@@ -108,6 +108,7 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
           const customerEmail = order.customer?.email || order.email || null;
           const lineItems = Array.isArray(order.line_items)
             ? order.line_items.map((item) => ({
+                line_item_id: item.id ? item.id.toString() : null,
                 product_id: item.product_id ? item.product_id.toString() : null,
                 variant_id: item.variant_id ? item.variant_id.toString() : null,
                 sku: item.sku || null,
@@ -202,8 +203,8 @@ export async function syncShopifyOrders() {
 
     const insertItemStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_order_items
-      (store, order_id, product_id, variant_id, sku, title, quantity, price, discount)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?)
+      (store, order_id, line_item_id, product_id, variant_id, sku, title, quantity, price, discount)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let recordsInserted = 0;
@@ -240,6 +241,7 @@ export async function syncShopifyOrders() {
           for (const item of order.line_items) {
             insertItemStmt.run(
               order.order_id,
+              item.line_item_id,
               item.product_id,
               item.variant_id,
               item.sku,

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Sparkles,
   Users,
@@ -61,7 +61,7 @@ function KpiCard({ label, value, format, hint, formatter }) {
   );
 }
 
-function InsightCard({ insight }) {
+function InsightCard({ insight, onInvestigate }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
       <div className="flex items-center justify-between">
@@ -71,7 +71,11 @@ function InsightCard({ insight }) {
       <div className="mt-2 text-sm text-gray-600">{insight.detail}</div>
       <div className="mt-3 flex items-center justify-between text-xs text-gray-400">
         <span>{insight.confidence ? `Confidence: ${confidenceLabel(insight.confidence)}` : 'Confidence: —'}</span>
-        <button className="flex items-center gap-1 font-medium text-indigo-600 hover:text-indigo-700">
+        <button
+          type="button"
+          onClick={() => onInvestigate?.(insight)}
+          className="flex items-center gap-1 font-medium text-indigo-600 hover:text-indigo-700"
+        >
           Investigate <ArrowUpRight className="h-3 w-3" />
         </button>
       </div>
@@ -120,9 +124,28 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency }) {
   const insights = data?.insights || [];
   const sections = data?.sections || {};
   const dataQuality = data?.dataQuality || {};
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+
+  const showToast = (message) => {
+    setToast(message);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2600);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    };
+  }, []);
 
   return (
     <div className="space-y-6">
+      {toast ? (
+        <div className="fixed bottom-6 right-6 z-50 max-w-sm rounded-2xl border border-gray-200 bg-white/90 px-4 py-3 text-sm text-gray-900 shadow-lg backdrop-blur">
+          {toast}
+        </div>
+      ) : null}
       <div className="rounded-3xl border border-indigo-100 bg-gradient-to-br from-white via-white to-indigo-50 px-6 py-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -155,7 +178,11 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency }) {
         <div className="mb-3 text-sm font-semibold text-gray-700">Top Insights</div>
         <div className="grid gap-4 md:grid-cols-3">
           {insights.map((insight) => (
-            <InsightCard key={insight.id} insight={insight} />
+            <InsightCard
+              key={insight.id}
+              insight={insight}
+              onInvestigate={() => showToast('Investigate is coming soon — this will open the underlying orders, segments, and recommended next actions.')}
+            />
           ))}
           {insights.length === 0 && (
             <div className="col-span-full rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500">
@@ -348,7 +375,11 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency }) {
                   <div className="font-semibold text-gray-900">{row.label}</div>
                   <div className="text-xs text-gray-400">{row.type} · {formatNumber(row.size)} signals</div>
                 </div>
-                <button className="rounded-lg border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-600 hover:border-indigo-300">
+                <button
+                  type="button"
+                  onClick={() => showToast('Create audience is coming soon — this will export the segment into Meta as a Custom Audience / Lookalike seed.')}
+                  className="rounded-lg border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-600 hover:border-indigo-300"
+                >
                   Create audience
                 </button>
               </div>

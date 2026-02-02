@@ -8,6 +8,26 @@ const safeDivide = (num, den) => (den ? num / den : 0);
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+const DEFAULT_STORE_TIMEZONE = process.env.STORE_TIMEZONE_DEFAULT || 'UTC';
+
+const normalizeStoreEnvKey = (store) =>
+  String(store || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '_');
+
+function getStoreTimeZone(store) {
+  const key = `STORE_TIMEZONE_${normalizeStoreEnvKey(store)}`;
+  const fallback = DEFAULT_STORE_TIMEZONE;
+  const configured = process.env[key] || fallback;
+
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: configured });
+    return configured;
+  } catch (e) {
+    return fallback;
+  }
+}
+
 function getDateRange(params) {
   const now = new Date();
   const today = formatDateAsGmt3(now);
@@ -258,28 +278,56 @@ function getTopTiming(orders, store) {
   const hourCounts = new Array(24).fill(0);
   const dayCounts = new Array(7).fill(0);
 
-  const offset = store === 'vironax' ? 3 : -6; // Riyadh vs Chicago
+  const timeZone = getStoreTimeZone(store);
+  let formatter;
+
+  try {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour: '2-digit',
+      hour12: false,
+      weekday: 'long'
+    });
+  } catch (e) {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: DEFAULT_STORE_TIMEZONE,
+      hour: '2-digit',
+      hour12: false,
+      weekday: 'long'
+    });
+  }
 
   orders.forEach((row) => {
     if (!row.order_ts) return;
     const ts = new Date(row.order_ts);
     if (Number.isNaN(ts.getTime())) return;
-    let hour = ts.getUTCHours() + offset;
-    if (hour < 0) hour += 24;
-    if (hour >= 24) hour -= 24;
-    hourCounts[hour] += 1;
-    const day = ts.getUTCDay();
-    dayCounts[day] += 1;
+
+    const parts = formatter.formatToParts(ts);
+    const hourPart = parts.find((part) => part.type === 'hour')?.value;
+    const weekdayPart = parts.find((part) => part.type === 'weekday')?.value;
+
+    const hour = hourPart != null ? parseInt(hourPart, 10) : Number.NaN;
+    if (!Number.isNaN(hour)) hourCounts[clamp(hour, 0, 23)] += 1;
+
+    const dayIndex = weekdayPart ? DAY_NAMES.indexOf(weekdayPart) : -1;
+    if (dayIndex >= 0) dayCounts[dayIndex] += 1;
   });
 
-  const topHour = hourCounts.reduce((best, count, hour) => (count > best.count ? { hour, count } : best), { hour: 0, count: 0 });
-  const topDay = dayCounts.reduce((best, count, day) => (count > best.count ? { day, count } : best), { day: 0, count: 0 });
+  const topHour = hourCounts.reduce(
+    (best, count, hour) => (count > best.count ? { hour, count } : best),
+    { hour: 0, count: 0 }
+  );
+  const topDay = dayCounts.reduce(
+    (best, count, day) => (count > best.count ? { day, count } : best),
+    { day: 0, count: 0 }
+  );
 
   return {
     hourCounts,
     dayCounts,
     topHour,
-    topDay
+    topDay,
+    timeZone
   };
 }
 
@@ -652,7 +700,8 @@ export function getCustomerInsightsPayload(store, params = {}) {
       notes: [
         customerStats.customerCount ? null : 'Customer IDs missing for full repeat analysis.',
         items.length ? null : 'Line items not yet synced for bundles and paths.',
-        metaSegment ? null : 'Meta age/gender breakdowns not available.'
+        metaSegment ? null : 'Meta age/gender breakdowns not available.',
+        timing.timeZone ? `Order timing shown in ${timing.timeZone}.` : null
       ].filter(Boolean)
     }
   };
