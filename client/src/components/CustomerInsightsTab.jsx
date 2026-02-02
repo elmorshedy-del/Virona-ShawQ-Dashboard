@@ -54,7 +54,7 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
 
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_12px_30px_rgba(79,70,229,0.20)]"
+      className="group relative min-h-[124px] overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_12px_30px_rgba(79,70,229,0.20)]"
       style={{ backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' }}
     >
       {/* Inner highlight for glass effect */}
@@ -72,12 +72,12 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
           </div>
         </div>
         <div className="mt-2 flex-grow">
-          <div className="text-[22px] sm:text-[24px] md:text-[26px] font-semibold leading-snug text-gray-900 line-clamp-2 whitespace-normal break-words">
+          <div className="min-h-[3.2rem] text-[20px] sm:text-[22px] md:text-[24px] font-semibold leading-tight text-gray-900 line-clamp-2 whitespace-normal break-words">
             {displayValue}
           </div>
         </div>
         {hint && (
-          <div className="mt-2 text-xs text-gray-600/90 line-clamp-2 whitespace-normal">
+          <div className="mt-2 text-xs text-gray-600/90 line-clamp-2 whitespace-normal break-words">
             {hint}
           </div>
         )}
