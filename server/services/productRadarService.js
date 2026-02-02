@@ -12,6 +12,10 @@ const GOOGLE_TRENDS_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const TRENDS_CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2h
+const TRENDS_CACHE_MAX = 400;
+const TRENDS_MAX_COMPARISON_ITEMS = 5; // Google Trends comparisonItem limit (empirically 5)
+const TRENDS_MIN_DELAY_MS = 450; // pacing to reduce 429s
 const DEFAULT_TIMEFRAME_DAYS = 90;
 const DEFAULT_RECENT_WINDOW_POINTS = 14;
 const DEFAULT_MAX_CANDIDATES = 12;
@@ -23,9 +27,39 @@ const DEFAULT_FORECAST_HORIZON_POINTS = 14;
 const EPS = 1e-6;
 
 const cache = new Map();
+const trendsCache = new Map();
+
+let trendsQueue = Promise.resolve();
+let trendsLastAt = 0;
+let trendsBlockedUntil = 0;
 
 function clamp(min, value, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function scheduleTrendsRequest(fn) {
+  trendsQueue = trendsQueue
+    .catch(() => {})
+    .then(async () => {
+      const now = Date.now();
+      if (trendsBlockedUntil > now) {
+        const err = new Error('Google Trends temporarily rate-limited');
+        err.status = 429;
+        err.retryAfterMs = trendsBlockedUntil - now;
+        throw err;
+      }
+
+      const wait = Math.max(0, TRENDS_MIN_DELAY_MS - (now - trendsLastAt));
+      if (wait) await sleep(wait);
+      trendsLastAt = Date.now();
+      return fn();
+    });
+
+  return trendsQueue;
 }
 
 function mean(values) {
@@ -155,23 +189,41 @@ function stripXssi(text) {
 }
 
 async function fetchTrendsJson(url) {
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': GOOGLE_TRENDS_UA,
-      'Accept-Language': 'en-US,en;q=0.9'
+  const now = Date.now();
+  const cached = trendsCache.get(url);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const value = await scheduleTrendsRequest(async () => {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': GOOGLE_TRENDS_UA,
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const err = new Error(`Google Trends HTTP ${res.status}`);
+      err.status = res.status;
+      err.body = body?.slice?.(0, 2000) || '';
+      if (res.status === 429) {
+        trendsBlockedUntil = Date.now() + 10 * 60 * 1000;
+      }
+      throw err;
     }
+
+    const text = await res.text();
+    return JSON.parse(stripXssi(text));
   });
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    const err = new Error(`Google Trends HTTP ${res.status}`);
-    err.status = res.status;
-    err.body = body?.slice?.(0, 2000) || '';
-    throw err;
+  trendsCache.set(url, { expiresAt: now + TRENDS_CACHE_TTL_MS, value });
+  while (trendsCache.size > TRENDS_CACHE_MAX) {
+    const firstKey = trendsCache.keys().next().value;
+    if (!firstKey) break;
+    trendsCache.delete(firstKey);
   }
 
-  const text = await res.text();
-  return JSON.parse(stripXssi(text));
+  return value;
 }
 
 function toDateString(date) {
@@ -189,6 +241,9 @@ async function withRetry(fn, { attempts = 2, delayMs = 700 } = {}) {
       return await fn();
     } catch (error) {
       lastError = error;
+      if (error?.status === 429) {
+        throw error;
+      }
       if (i < attempts - 1) {
         await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
       }
@@ -340,6 +395,65 @@ async function getInterestPairSeries(seedQuery, candidateQuery, { geo, startTime
       };
     })
     .filter((point) => point.time);
+}
+
+function chunk(values, size) {
+  const out = [];
+  const s = Math.max(1, Math.floor(size));
+  for (let i = 0; i < (values || []).length; i += s) {
+    out.push(values.slice(i, i + s));
+  }
+  return out;
+}
+
+async function getInterestMultiSeries(seedQuery, candidateQueries, { geo, startTime, endTime, hl }) {
+  const candidates = (candidateQueries || []).filter(Boolean);
+  if (!candidates.length) return new Map();
+
+  const maxCandidatesPerReq = Math.max(1, TRENDS_MAX_COMPARISON_ITEMS - 1);
+  const limited = candidates.slice(0, maxCandidatesPerReq);
+
+  const time = toTimeRange(startTime, endTime);
+  const explore = await withRetry(() =>
+    trendsExplore({
+      comparisonItem: [{ keyword: seedQuery, geo, time }, ...limited.map((keyword) => ({ keyword, geo, time }))],
+      hl,
+      tz: 0
+    })
+  );
+
+  const widget = pickWidget(explore, 'TIMESERIES');
+  if (!widget?.token || !widget?.request) return new Map();
+
+  const url = `${GOOGLE_TRENDS_API}/widgetdata/multiline?hl=${encodeURIComponent(hl)}&tz=0&req=${encodeURIComponent(
+    JSON.stringify(widget.request)
+  )}&token=${encodeURIComponent(widget.token)}`;
+
+  const data = await withRetry(() => fetchTrendsJson(url));
+  const timeline = data?.default?.timelineData || [];
+
+  const out = new Map();
+  for (const c of limited) out.set(c, []);
+
+  for (const entry of timeline) {
+    const values = Array.isArray(entry?.value) ? entry.value : [];
+    const timeMs = entry?.time ? Number(entry.time) * 1000 : null;
+    if (!timeMs) continue;
+    const seedVal = Number(values[0] ?? 0);
+
+    for (let i = 0; i < limited.length; i += 1) {
+      const candidate = limited[i];
+      const candidateVal = Number(values[i + 1] ?? 0);
+      out.get(candidate).push({
+        time: timeMs,
+        formattedTime: entry?.formattedTime || '',
+        seed: seedVal,
+        candidate: candidateVal
+      });
+    }
+  }
+
+  return out;
 }
 
 async function getInterestByCountry(keyword, { geo, startTime, endTime, hl }) {
@@ -590,7 +704,7 @@ export async function runProductRadarScan(options) {
     .filter((c) => c.toLowerCase() !== seed.toLowerCase());
 
   // 2) Hybrid semantic ranking + diversity (optional)
-  const evaluationCount = clamp(6, Math.round(maxCandidates * 2), 40);
+  const evaluationCount = clamp(6, Math.round(maxCandidates * 1.25), 24);
   const discoveryByKeyword = new Map();
 
   if (useAiModels && aiConfigured && candidates.length) {
@@ -639,45 +753,124 @@ export async function runProductRadarScan(options) {
 
   const results = [];
   const rawSeriesByKeyword = new Map();
+  const warnings = [];
+  let trendsRateLimited = false;
 
-  // 3) Pull time-series evidence from Trends + compute baseline scores
-  for (const candidate of candidates) {
+  // 3) Pull time-series evidence from Trends (batched) + compute baseline scores
+  const batchSize = Math.max(1, TRENDS_MAX_COMPARISON_ITEMS - 1);
+  for (const batch of chunk(candidates, batchSize)) {
     try {
-      const points = await getInterestPairSeries(seed, candidate, { geo, startTime, endTime, hl });
-      if (!points.length) continue;
+      const seriesByCandidate = await getInterestMultiSeries(seed, batch, { geo, startTime, endTime, hl });
 
-      const candidateSeries = points.map((p) => p.candidate);
-      const seedSeries = points.map((p) => p.seed);
-      rawSeriesByKeyword.set(candidate, { candidateSeries, seedSeries, points });
+      for (const candidate of batch) {
+        const points = seriesByCandidate.get(candidate) || [];
+        if (!points.length) continue;
 
-      const w = Math.min(DEFAULT_RECENT_WINDOW_POINTS, Math.max(3, Math.floor(candidateSeries.length / 3)));
-      const { recent, prev } = splitWindows(candidateSeries, w);
-      const { recent: seedRecent } = splitWindows(seedSeries, w);
+        const candidateSeries = points.map((p) => p.candidate);
+        const seedSeries = points.map((p) => p.seed);
+        rawSeriesByKeyword.set(candidate, { candidateSeries, seedSeries, points });
 
-      const recentMean = mean(recent);
-      const prevMean = mean(prev);
-      const seedRecentMean = mean(seedRecent);
+        const w = Math.min(DEFAULT_RECENT_WINDOW_POINTS, Math.max(3, Math.floor(candidateSeries.length / 3)));
+        const { recent, prev } = splitWindows(candidateSeries, w);
+        const { recent: seedRecent } = splitWindows(seedSeries, w);
 
-      const pct = percentChange(recentMean, prevMean);
-      const ratio = recentMean / Math.max(EPS, seedRecentMean);
+        const recentMean = mean(recent);
+        const prevMean = mean(prev);
+        const seedRecentMean = mean(seedRecent);
 
-      const demandLevel = demandScoreFromRatio(ratio);
-      const momentumBase = momentumScoreFromPercentChange(pct);
-      const confidenceBase = confidenceFromSeries(candidateSeries);
+        const pct = percentChange(recentMean, prevMean);
+        const ratio = recentMean / Math.max(EPS, seedRecentMean);
+
+        const demandLevel = demandScoreFromRatio(ratio);
+        const momentumBase = momentumScoreFromPercentChange(pct);
+        const confidenceBase = confidenceFromSeries(candidateSeries);
+        const risk = inferRiskHeuristics(candidate);
+
+        const discovery = discoveryByKeyword.get(candidate.toLowerCase()) || null;
+
+        results.push({
+          id: `pr_${crypto.randomUUID()}`,
+          keyword: candidate,
+          scores: {
+            demand: demandLevel,
+            momentum: momentumBase,
+            competition: null,
+            margin: null,
+            risk: risk.score,
+            confidence: confidenceBase,
+            overall: null
+          },
+          evidence: {
+            discovery: discovery
+              ? {
+                  source: 'product_radar_ai',
+                  bm25: discovery?.bm25 ?? null,
+                  embedSim: discovery?.embedSim ?? null,
+                  rerank: discovery?.rerank ?? null,
+                  clusterId: discovery?.clusterId ?? null
+                }
+              : {
+                  source: 'google_trends',
+                  detail: 'related queries/topics + autocomplete'
+                },
+            demand: {
+              source: 'google_trends',
+              timeframeDays,
+              geo: geo || 'WORLD',
+              ratioVsSeed: Number.isFinite(ratio) ? Number(ratio.toFixed(2)) : null,
+              recentMean: Number.isFinite(recentMean) ? Number(recentMean.toFixed(1)) : null,
+              prevMean: Number.isFinite(prevMean) ? Number(prevMean.toFixed(1)) : null,
+              percentChange: Number.isFinite(pct) ? Number(pct.toFixed(1)) : null,
+              demandLevel,
+              geoSpread: null,
+              geoTopCountries: null,
+              series: points.slice(-Math.min(points.length, 60)).map((p) => ({
+                t: p.time,
+                v: p.candidate
+              })),
+              url: buildGoogleTrendsExploreUrl(candidate, { geo, timeframeDays })
+            },
+            momentum: null,
+            competition: null,
+            margin: null,
+            risk: {
+              source: 'heuristic',
+              drivers: risk.drivers
+            }
+          },
+          explanation: []
+        });
+      }
+    } catch (error) {
+      if (error?.status === 429) {
+        trendsRateLimited = true;
+        warnings.push(
+          'Google Trends is rate-limiting requests right now (HTTP 429). Returning autocomplete-based angles; try again later for demand & momentum scores.'
+        );
+        break;
+      }
+      console.warn('[ProductRadar] candidate batch failed:', error?.message || error);
+    }
+  }
+
+  if (trendsRateLimited) {
+    sources.googleTrends = { available: false, configured: true, reason: 'Google Trends HTTP 429 (rate limited)' };
+  }
+
+  if (trendsRateLimited && results.length === 0) {
+    const fallback = candidates.slice(0, clamp(6, maxCandidates, 24)).map((candidate) => {
       const risk = inferRiskHeuristics(candidate);
-
       const discovery = discoveryByKeyword.get(candidate.toLowerCase()) || null;
-
-      results.push({
+      return {
         id: `pr_${crypto.randomUUID()}`,
         keyword: candidate,
         scores: {
-          demand: demandLevel,
-          momentum: momentumBase,
+          demand: 50,
+          momentum: 50,
           competition: null,
           margin: null,
           risk: risk.score,
-          confidence: confidenceBase,
+          confidence: 20,
           overall: null
         },
         evidence: {
@@ -690,56 +883,37 @@ export async function runProductRadarScan(options) {
                 clusterId: discovery?.clusterId ?? null
               }
             : {
-                source: 'google_trends',
-                detail: 'related queries/topics + autocomplete'
+                source: 'google_autocomplete',
+                detail: 'google suggest'
               },
-          demand: {
-            source: 'google_trends',
-            timeframeDays,
-            geo: geo || 'WORLD',
-            ratioVsSeed: Number.isFinite(ratio) ? Number(ratio.toFixed(2)) : null,
-            recentMean: Number.isFinite(recentMean) ? Number(recentMean.toFixed(1)) : null,
-            prevMean: Number.isFinite(prevMean) ? Number(prevMean.toFixed(1)) : null,
-            percentChange: Number.isFinite(pct) ? Number(pct.toFixed(1)) : null,
-            demandLevel,
-            geoSpread: null,
-            geoTopCountries: null,
-            series: points.slice(-Math.min(points.length, 60)).map((p) => ({
-              t: p.time,
-              v: p.candidate
-            })),
-            url: buildGoogleTrendsExploreUrl(candidate, { geo, timeframeDays })
-          },
+          demand: { source: 'unavailable', note: 'Google Trends rate-limited (HTTP 429).', series: [] },
           momentum: null,
           competition: null,
           margin: null,
-          risk: {
-            source: 'heuristic',
-            drivers: risk.drivers
-          }
+          risk: { source: 'heuristic', drivers: risk.drivers }
         },
-        explanation: []
-      });
+        explanation: [
+          'Google Trends is rate-limiting (HTTP 429), so demand/momentum scores are temporarily unavailable.',
+          'Showing autocomplete-derived angles people type into Google (great for enriching your catalog).',
+          'Retry later (or reduce breadth) to get demand + momentum scoring.'
+        ]
+      };
+    });
 
-      // Gentle pacing to reduce Trends throttling.
-      await new Promise((r) => setTimeout(r, 180));
-    } catch (error) {
-      console.warn('[ProductRadar] candidate failed:', candidate, error?.message || error);
-    }
+    results.push(...fallback);
   }
 
   // 3b) Geo spread (optional, limited to top candidates to reduce throttling)
   if (includeGeoSpread && results.length > 0) {
     const topForGeo = [...results]
       .sort((a, b) => b.scores.demand + b.scores.momentum - (a.scores.demand + a.scores.momentum))
-      .slice(0, Math.min(8, results.length));
+      .slice(0, Math.min(4, results.length));
 
     const geoByKeyword = new Map();
     for (const item of topForGeo) {
       try {
         const countries = await getInterestByCountry(item.keyword, { geo, startTime, endTime, hl });
         geoByKeyword.set(item.keyword, countries);
-        await new Promise((r) => setTimeout(r, 200));
       } catch (error) {
         console.warn('[ProductRadar] candidate geo failed:', item.keyword, error?.message || error);
       }
@@ -766,6 +940,10 @@ export async function runProductRadarScan(options) {
     seedRegions = await getInterestByCountry(seed, { geo, startTime, endTime, hl });
   } catch (error) {
     console.warn('[ProductRadar] interestByRegion failed:', error?.message || error);
+    if (error?.status === 429) {
+      sources.googleTrends = { available: false, configured: true, reason: 'Google Trends HTTP 429 (rate limited)' };
+      warnings.push('Google Trends geo breakdown temporarily unavailable due to rate limiting (HTTP 429).');
+    }
   }
 
   // 3c) Advanced momentum features (forecasting + change-point detection)
@@ -948,6 +1126,7 @@ export async function runProductRadarScan(options) {
     timeframeDays,
     generatedAt: new Date().toISOString(),
     cached: false,
+    warnings: warnings.length ? warnings : undefined,
     sources: {
       ...sources,
       candidateGeneration: candidateSourceCounts
