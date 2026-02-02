@@ -197,6 +197,7 @@ export function initDb() {
       variant_id TEXT,
       sku TEXT,
       title TEXT,
+      image_url TEXT,
       quantity INTEGER DEFAULT 1,
       price REAL DEFAULT 0,
       discount REAL DEFAULT 0,
@@ -246,6 +247,7 @@ export function initDb() {
           variant_id TEXT,
           sku TEXT,
           title TEXT,
+          image_url TEXT,
           quantity INTEGER DEFAULT 1,
           price REAL DEFAULT 0,
           discount REAL DEFAULT 0,
@@ -255,10 +257,11 @@ export function initDb() {
       `);
 
       const lineItemSelect = hasLineItemId ? 'line_item_id' : 'NULL AS line_item_id';
+      const imageUrlSelect = columns.includes('image_url') ? 'image_url' : 'NULL AS image_url';
 
       db.exec(`
         INSERT INTO shopify_order_items
-          (store, order_id, line_item_id, product_id, variant_id, sku, title, quantity, price, discount, created_at)
+          (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount, created_at)
         SELECT
           store,
           order_id,
@@ -267,6 +270,7 @@ export function initDb() {
           variant_id,
           sku,
           title,
+          ${imageUrlSelect},
           quantity,
           price,
           discount,
@@ -286,6 +290,10 @@ export function initDb() {
     }
   }
 
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN image_url TEXT`);
+  } catch (e) { /* column exists */ }
+
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_shopify_order_items_order
     ON shopify_order_items(store, order_id)
@@ -294,6 +302,24 @@ export function initDb() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_shopify_order_items_product
     ON shopify_order_items(store, product_id)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_products_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      product_id TEXT NOT NULL,
+      title TEXT,
+      image_url TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, product_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_products_cache_store_product
+    ON shopify_products_cache(store, product_id)
   `);
 
 // Shopify pixel events (session-level / live behavior)

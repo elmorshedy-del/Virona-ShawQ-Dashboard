@@ -1,6 +1,7 @@
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { getCountryInfo } from '../utils/countryData.js';
+import { ensureShopifyProductsCached } from './shopifyService.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const toNumber = (value) => (Number.isFinite(value) ? value : 0);
@@ -26,6 +27,44 @@ function getStoreTimeZone(store) {
   } catch (e) {
     return fallback;
   }
+}
+
+function getMinSegmentOrders(totalOrders) {
+  const configured = parseInt(process.env.CUSTOMER_INSIGHTS_MIN_SEGMENT_ORDERS || '', 10);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  if (!totalOrders) return 3;
+  return Math.max(3, Math.min(10, Math.round(totalOrders * 0.05)));
+}
+
+function getItemIdentity(row) {
+  const key = row?.variant_id || row?.product_id || row?.sku || row?.title;
+  if (!key) return { key: null, label: null };
+
+  const title = typeof row?.title === 'string' ? row.title.trim() : '';
+  const cacheTitle = typeof row?.cache_title === 'string' ? row.cache_title.trim() : '';
+  const sku = typeof row?.sku === 'string' ? row.sku.trim() : '';
+
+  let label = title || sku || '';
+  if ((!label || /^\d+$/.test(label)) && cacheTitle && !/^\d+$/.test(cacheTitle)) {
+    label = cacheTitle;
+  }
+
+  if (!label || /^\d+$/.test(label)) {
+    if (row?.sku && !/^\d+$/.test(String(row.sku))) {
+      label = String(row.sku);
+    } else if (row?.product_id) {
+      label = `Product ${row.product_id}`;
+    } else if (row?.variant_id) {
+      label = `Variant ${row.variant_id}`;
+    } else {
+      label = String(key);
+    }
+  }
+
+  return {
+    key: String(key),
+    label: String(label)
+  };
 }
 
 function getDateRange(params) {
@@ -109,7 +148,9 @@ function getOrderItems(db, store, startDate, endDate) {
       oi.product_id,
       oi.variant_id,
       oi.sku,
-      oi.title,
+      COALESCE(NULLIF(oi.title, ''), pc.title) as title,
+      COALESCE(NULLIF(oi.image_url, ''), pc.image_url) as image_url,
+      pc.title as cache_title,
       oi.quantity,
       oi.price,
       oi.discount,
@@ -119,6 +160,8 @@ function getOrderItems(db, store, startDate, endDate) {
     FROM shopify_order_items oi
     JOIN shopify_orders o
       ON o.order_id = oi.order_id AND o.store = oi.store
+    LEFT JOIN shopify_products_cache pc
+      ON pc.store = oi.store AND pc.product_id = oi.product_id
     WHERE o.store = ? AND o.date BETWEEN ? AND ?
   `).all(store, startDate, endDate);
 }
@@ -258,13 +301,24 @@ function getMetaTopSegment(db, store, startDate, endDate) {
 
   if (!row || !row.country || row.country === 'ALL') return null;
 
+  const age = (row.age || '').trim();
+  const gender = (row.gender || '').toLowerCase().trim();
+
+  const genderLabel = gender === 'female' ? 'Women' : gender === 'male' ? 'Men' : null;
+  const ageLabel = age || null;
+
+  // Ignore "All ages / All genders" rows; we only surface meaningful breakdowns.
+  if (!genderLabel && !ageLabel) return null;
+
   const country = getCountryInfo(row.country);
-  const gender = (row.gender || '').toLowerCase();
-  const genderLabel = gender === 'female' ? 'Women' : gender === 'male' ? 'Men' : 'All genders';
-  const ageLabel = row.age || 'All ages';
+
+  const labelParts = [];
+  if (genderLabel) labelParts.push(genderLabel);
+  if (ageLabel) labelParts.push(ageLabel);
+  labelParts.push(`in ${country.name}`);
 
   return {
-    label: `${genderLabel} ${ageLabel} in ${country.name}`,
+    label: labelParts.join(' '),
     country: country.name,
     age: ageLabel,
     gender: genderLabel,
@@ -340,11 +394,16 @@ function describeDaypart(hour) {
 
 function computeBundles(items) {
   const orderMap = new Map();
+  const labelByKey = new Map();
+
   items.forEach((row) => {
     if (!row.order_id) return;
+    const { key, label } = getItemIdentity(row);
+    if (!key) return;
+    if (label && !labelByKey.has(key)) labelByKey.set(key, label);
+
     const entry = orderMap.get(row.order_id) || new Set();
-    const key = row.product_id || row.title;
-    if (key) entry.add(String(key));
+    entry.add(key);
     orderMap.set(row.order_id, entry);
   });
 
@@ -372,7 +431,18 @@ function computeBundles(items) {
     const support = safeDivide(count, totalOrders);
     const attach = safeDivide(count, itemCounts.get(a) || 0);
     const lift = attach && totalOrders ? attach / safeDivide(itemCounts.get(b) || 0, totalOrders) : 0;
-    pairs.push({ pair: [a, b], count, support, attach, lift });
+
+    const labelA = labelByKey.get(a) || a;
+    const labelB = labelByKey.get(b) || b;
+
+    pairs.push({
+      pair: [labelA, labelB],
+      pairKeys: [a, b],
+      count,
+      support,
+      attach,
+      lift
+    });
   });
 
   return pairs.sort((a, b) => b.lift - a.lift).slice(0, 8);
@@ -380,16 +450,23 @@ function computeBundles(items) {
 
 function computeRepeatPaths(items) {
   const ordersById = new Map();
+  const labelByKey = new Map();
+
   items.forEach((row) => {
     if (!row.order_id) return;
     const entry = ordersById.get(row.order_id) || {
       order_id: row.order_id,
       customer_id: row.customer_id,
       ts: row.order_created_at ? new Date(row.order_created_at) : null,
-      products: new Set()
+      products: new Map()
     };
-    const key = row.product_id || row.title;
-    if (key) entry.products.add(String(key));
+
+    const { key, label } = getItemIdentity(row);
+    if (!key) return;
+    if (label && !labelByKey.has(key)) labelByKey.set(key, label);
+
+    const revenue = toNumber(row.price) * toNumber(row.quantity || 1);
+    entry.products.set(key, (entry.products.get(key) || 0) + revenue);
     ordersById.set(row.order_id, entry);
   });
 
@@ -403,6 +480,18 @@ function computeRepeatPaths(items) {
 
   const transitions = new Map();
 
+  const pickPrimaryProduct = (products) => {
+    let bestKey = null;
+    let bestRevenue = -1;
+    products.forEach((revenue, key) => {
+      if (revenue > bestRevenue) {
+        bestRevenue = revenue;
+        bestKey = key;
+      }
+    });
+    return bestKey;
+  };
+
   customerOrders.forEach((list) => {
     list.sort((a, b) => {
       const at = a.ts ? a.ts.getTime() : 0;
@@ -411,29 +500,95 @@ function computeRepeatPaths(items) {
     });
 
     for (let i = 0; i < list.length - 1; i += 1) {
-      const from = Array.from(list[i].products).sort()[0];
-      const to = Array.from(list[i + 1].products).sort()[0];
-      if (!from || !to) continue;
-      const key = `${from}||${to}`;
+      const fromKey = pickPrimaryProduct(list[i].products);
+      const toKey = pickPrimaryProduct(list[i + 1].products);
+      if (!fromKey || !toKey) continue;
+      const key = `${fromKey}||${toKey}`;
       transitions.set(key, (transitions.get(key) || 0) + 1);
     }
   });
 
   return Array.from(transitions.entries())
     .map(([key, count]) => {
-      const [from, to] = key.split('||');
-      return { from, to, count };
+      const [fromKey, toKey] = key.split('||');
+      return {
+        from: labelByKey.get(fromKey) || fromKey,
+        to: labelByKey.get(toKey) || toKey,
+        fromKey,
+        toKey,
+        count
+      };
     })
     .sort((a, b) => b.count - a.count)
     .slice(0, 8);
 }
 
+function computeTopProducts(items) {
+  const byProduct = new Map();
+
+  items.forEach((row) => {
+    const { key, label } = getItemIdentity(row);
+    if (!key || !row.order_id) return;
+
+    const entry = byProduct.get(key) || {
+      key,
+      title: label || 'Product',
+      image_url: row.image_url || null,
+      quantity: 0,
+      revenue: 0,
+      orderIds: new Set()
+    };
+
+    if (!entry.image_url && row.image_url) entry.image_url = row.image_url;
+    if ((!entry.title || /^Product\s\d+$/.test(entry.title)) && label) entry.title = label;
+
+    const quantity = toNumber(row.quantity || 1);
+    const revenue = toNumber(row.price) * quantity;
+
+    entry.quantity += quantity;
+    entry.revenue += revenue;
+    entry.orderIds.add(row.order_id);
+
+    byProduct.set(key, entry);
+  });
+
+  return Array.from(byProduct.values())
+    .map((row) => ({
+      key: row.key,
+      title: row.title,
+      image_url: row.image_url,
+      quantity: row.quantity,
+      revenue: row.revenue,
+      orders: row.orderIds.size
+    }))
+    .sort((a, b) => {
+      if (b.revenue !== a.revenue) return b.revenue - a.revenue;
+      if (b.orders !== a.orders) return b.orders - a.orders;
+      return b.quantity - a.quantity;
+    })
+    .slice(0, 12);
+}
+
 function computeDiscountSkus(items) {
   const bySku = new Map();
   items.forEach((row) => {
-    const key = row.title || row.product_id || row.sku;
-    if (!key) return;
-    const entry = bySku.get(key) || { title: key, orders: 0, revenue: 0, discountedRevenue: 0, discountCount: 0 };
+    const { key, label } = getItemIdentity(row);
+    const itemKey = key || row.title || row.product_id || row.sku;
+    const itemLabel = label || row.title || row.product_id || row.sku;
+    if (!itemKey || !itemLabel) return;
+
+    const lookupKey = String(itemKey);
+    const displayLabel = String(itemLabel);
+
+    const entry = bySku.get(lookupKey) || {
+      key: lookupKey,
+      title: displayLabel,
+      orders: 0,
+      revenue: 0,
+      discountedRevenue: 0,
+      discountCount: 0
+    };
+
     const revenue = toNumber(row.price) * toNumber(row.quantity || 1);
     entry.orders += 1;
     entry.revenue += revenue;
@@ -441,7 +596,7 @@ function computeDiscountSkus(items) {
       entry.discountedRevenue += revenue;
       entry.discountCount += 1;
     }
-    bySku.set(key, entry);
+    bySku.set(lookupKey, entry);
   });
 
   return Array.from(bySku.values())
@@ -525,12 +680,20 @@ function buildInsights({ discountMetrics, repeatRate, topDay, topHour, bundleTop
   return insights.slice(0, 3);
 }
 
-export function getCustomerInsightsPayload(store, params = {}) {
+export async function getCustomerInsightsPayload(store, params = {}) {
   const db = getDb();
   const { startDate, endDate, days } = getDateRange(params);
 
   const orders = getOrderRows(db, store, startDate, endDate);
-  const items = getOrderItems(db, store, startDate, endDate);
+  let items = getOrderItems(db, store, startDate, endDate);
+
+  if (store === 'shawq' && items.length) {
+    const productIds = Array.from(new Set(items.map((row) => row.product_id).filter(Boolean).map((id) => String(id))));
+    if (productIds.length) {
+      await ensureShopifyProductsCached(store, productIds);
+      items = getOrderItems(db, store, startDate, endDate);
+    }
+  }
 
   const totalOrders = orders.length;
   const totalRevenue = orders.reduce((sum, row) => sum + toNumber(row.order_total), 0);
@@ -542,6 +705,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
   const timing = getTopTiming(orders, store);
   const bundles = computeBundles(items);
   const repeatPaths = computeRepeatPaths(items);
+  const topProducts = computeTopProducts(items);
   const discountSkus = computeDiscountSkus(items);
 
   const topCountry = orders.reduce((best, row) => {
@@ -586,19 +750,30 @@ export function getCustomerInsightsPayload(store, params = {}) {
       aov: safeDivide(row.revenue, row.orders)
     }));
 
+  const minSegmentOrders = getMinSegmentOrders(totalOrders);
+
   const topCity = cityRows[0];
   const topCountryRow = countryRows[0];
+
+  const reliableCity = cityRows.find((row) => row.orders >= minSegmentOrders) || null;
+  const reliableCountry = countryRows.find((row) => row.orders >= minSegmentOrders) || null;
+
+  const bestCustomerSegment = reliableCity
+    ? { type: 'city', label: reliableCity.city, orders: reliableCity.orders }
+    : (reliableCountry
+      ? { type: 'country', label: reliableCountry.name, orders: reliableCountry.orders }
+      : (topCountryRow ? { type: 'country', label: topCountryRow.name, orders: topCountryRow.orders } : null));
+
+  const bestCustomerLabel = bestCustomerSegment?.label || null;
+  const segmentOrders = bestCustomerSegment?.orders || 0;
+
   const topDay = timing.topDay.count ? timing.topDay : null;
   const topHour = timing.topHour.count ? timing.topHour : null;
 
-  const segmentLabel = metaSegment?.label
-    || (topCity ? `${topCity.city}` : topCountryRow ? topCountryRow.name : null);
-
-  const segmentOrders = topCity?.orders || topCountryRow?.orders || metaSegment?.conversions || totalOrders;
   const confidence = scoreConfidence(segmentOrders);
 
   const hero = {
-    title: segmentLabel ? `Best customers: ${segmentLabel}` : 'Customer insights are building',
+    title: bestCustomerLabel ? `Best customers: ${bestCustomerLabel}` : 'Customer insights are building',
     subtitle: topDay && topHour
       ? `Peak orders on ${DAY_NAMES[topDay.day]} ${describeDaypart(topHour.hour)}.`
       : `Window: ${startDate} → ${endDate}`,
@@ -610,7 +785,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
   };
 
   const kpis = [
-    { id: 'best-segment', label: 'Best Segment', value: segmentLabel || '—', format: 'text' },
+    { id: 'best-segment', label: 'Best Customers', value: bestCustomerLabel || '—', format: 'text' },
     { id: 'ltv90', label: '90-Day LTV', value: customerStats.avgLtv90 ?? avgOrderValue, format: 'currency' },
     { id: 'repeat-rate', label: 'Repeat Rate', value: customerStats.repeatRate, format: 'percent' },
     { id: 'discount-reliance', label: 'Discount Reliance', value: discountMetrics.discountRevenueShare, format: 'percent' },
@@ -625,7 +800,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
     topDay,
     topHour,
     bundleTop: bundles[0],
-    segmentLabel
+    segmentLabel: metaSegment?.label
   });
 
   const windowLabel = params.startDate && params.endDate
@@ -645,13 +820,15 @@ export function getCustomerInsightsPayload(store, params = {}) {
     insights,
     sections: {
       segments: {
-        summary: segmentLabel ? `Top segment: ${segmentLabel}` : 'Segment rankings will appear once data flows in.',
-        countries: countryRows,
-        cities: cityRows,
+        summary: bestCustomerLabel ? `Top customers: ${bestCustomerLabel}` : 'Segment rankings will appear once data flows in.',
         timing: {
           topDay: topDay ? DAY_NAMES[topDay.day] : null,
           topHour: topHour ? topHour.hour : null
         }
+      },
+      topProducts: {
+        summary: topProducts.length ? 'Top products by revenue and order count.' : 'Top products will appear once line-item data is synced.',
+        products: topProducts
       },
       cohorts: {
         summary: customerStats.customerCount
@@ -687,7 +864,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
         summary: metaSegment ? 'Audience actions ready for activation.' : 'Connect Meta breakdowns to enable activation.',
         readySegments: [
           metaSegment ? { label: metaSegment.label, size: metaSegment.conversions, type: 'Meta breakdown' } : null,
-          topCity ? { label: `${topCity.city} buyers`, size: topCity.orders, type: 'Geo' } : null
+          bestCustomerSegment ? { label: `${bestCustomerSegment.label} buyers`, size: bestCustomerSegment.orders, type: 'Geo' } : null
         ].filter(Boolean)
       }
     },

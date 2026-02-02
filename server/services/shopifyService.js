@@ -32,6 +32,132 @@ export function isShopifyConfigured() {
   return Boolean(shopifyStore && accessToken);
 }
 
+function getShopifyHeaders(accessToken) {
+  return {
+    'X-Shopify-Access-Token': accessToken,
+    'Content-Type': 'application/json'
+  };
+}
+
+function extractProductImageUrl(product) {
+  if (!product) return null;
+  if (product.image?.src) return product.image.src;
+  if (product.image?.url) return product.image.url;
+  if (Array.isArray(product.images) && product.images.length > 0) {
+    return product.images[0]?.src || product.images[0]?.url || null;
+  }
+  return null;
+}
+
+async function fetchShopifyProductSnapshot(productId, credentials) {
+  const { shopifyStore, accessToken } = credentials || {};
+  if (!shopifyStore || !accessToken || !productId) return null;
+
+  const url = `https://${shopifyStore}/admin/api/2024-01/products/${productId}.json?fields=id,title,image,images`;
+  const response = await fetch(url, { headers: getShopifyHeaders(accessToken) });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const json = await response.json();
+  const product = json?.product;
+  if (!product?.id) return null;
+
+  return {
+    product_id: String(product.id),
+    title: product.title || null,
+    image_url: extractProductImageUrl(product)
+  };
+}
+
+function getProductCacheRows(db, store, productIds = []) {
+  if (!productIds.length) return [];
+  const placeholders = productIds.map(() => '?').join(', ');
+  return db
+    .prepare(`
+      SELECT product_id, title, image_url, updated_at
+      FROM shopify_products_cache
+      WHERE store = ? AND product_id IN (${placeholders})
+    `)
+    .all(store, ...productIds);
+}
+
+function upsertProductCacheRows(db, store, rows = []) {
+  if (!rows.length) return;
+
+  const stmt = db.prepare(`
+    INSERT INTO shopify_products_cache (store, product_id, title, image_url, updated_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(store, product_id) DO UPDATE SET
+      title = COALESCE(excluded.title, shopify_products_cache.title),
+      image_url = COALESCE(excluded.image_url, shopify_products_cache.image_url),
+      updated_at = excluded.updated_at
+  `);
+
+  const tx = db.transaction((items) => {
+    items.forEach((item) => {
+      stmt.run(store, item.product_id, item.title || null, item.image_url || null);
+    });
+  });
+
+  tx(rows);
+}
+
+export function getShopifyProductCacheMap(store = 'shawq', productIds = []) {
+  const ids = Array.from(new Set((productIds || []).map((id) => (id != null ? String(id) : null)).filter(Boolean)));
+  if (!ids.length) return new Map();
+
+  const db = getDb();
+  const rows = getProductCacheRows(db, store, ids);
+  return new Map(rows.map((row) => [String(row.product_id), { title: row.title || null, image_url: row.image_url || null }]));
+}
+
+export async function ensureShopifyProductsCached(store = 'shawq', productIds = []) {
+  const ids = Array.from(new Set((productIds || []).map((id) => (id != null ? String(id) : null)).filter(Boolean)));
+  if (!ids.length) return new Map();
+
+  const db = getDb();
+  const existingRows = getProductCacheRows(db, store, ids);
+  const existingMap = new Map(existingRows.map((row) => [String(row.product_id), row]));
+
+  const staleHours = parseInt(process.env.SHOPIFY_PRODUCT_CACHE_STALE_HOURS || '168', 10);
+  const staleCutoffMs = Date.now() - Math.max(staleHours, 1) * 60 * 60 * 1000;
+
+  const missingOrStale = ids.filter((id) => {
+    const row = existingMap.get(id);
+    if (!row) return true;
+    const updatedAtMs = row.updated_at ? new Date(row.updated_at).getTime() : 0;
+    const stale = !updatedAtMs || Number.isNaN(updatedAtMs) || updatedAtMs < staleCutoffMs;
+    const empty = !row.title && !row.image_url;
+    return stale || empty;
+  });
+
+  if (missingOrStale.length) {
+    const credentials = getShopifyCredentials();
+    if (credentials.shopifyStore && credentials.accessToken) {
+      const fetchLimit = parseInt(process.env.SHOPIFY_PRODUCT_CACHE_FETCH_LIMIT || '60', 10);
+      const toFetch = missingOrStale.slice(0, Math.max(fetchLimit, 1));
+      const fetchedRows = [];
+
+      for (const productId of toFetch) {
+        try {
+          const snapshot = await fetchShopifyProductSnapshot(productId, credentials);
+          if (snapshot) fetchedRows.push(snapshot);
+        } catch (error) {
+          console.warn(`[Shopify] Product cache fetch failed for ${productId}: ${error.message}`);
+        }
+      }
+
+      if (fetchedRows.length) {
+        upsertProductCacheRows(db, store, fetchedRows);
+      }
+    }
+  }
+
+  return getShopifyProductCacheMap(store, ids);
+}
+
 const ATTRIBUTION_KEY_PREFIXES = ['utm_', 'fb', 'landing_page', 'referrer', 'consent'];
 
 function isAttributionKey(key) {
@@ -73,10 +199,7 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
 
     while (url) {
       const response = await fetch(url, {
-        headers: {
-          'X-Shopify-Access-Token': accessToken,
-          'Content-Type': 'application/json'
-        }
+        headers: getShopifyHeaders(accessToken)
       });
 
       const data = await response.json();
@@ -203,9 +326,18 @@ export async function syncShopifyOrders() {
 
     const insertItemStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_order_items
-      (store, order_id, line_item_id, product_id, variant_id, sku, title, quantity, price, discount)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+
+    const productIds = Array.from(new Set(orders
+      .flatMap((order) => (Array.isArray(order.line_items) ? order.line_items : []))
+      .map((item) => item.product_id)
+      .filter(Boolean)
+      .map((id) => String(id))
+    ));
+
+    const productCacheMap = await ensureShopifyProductsCached('shawq', productIds);
 
     let recordsInserted = 0;
 
@@ -239,13 +371,18 @@ export async function syncShopifyOrders() {
 
         if (Array.isArray(order.line_items)) {
           for (const item of order.line_items) {
+            const productCache = item.product_id ? productCacheMap.get(String(item.product_id)) : null;
+            const itemTitle = item.title || productCache?.title || null;
+            const itemImageUrl = productCache?.image_url || null;
+
             insertItemStmt.run(
               order.order_id,
               item.line_item_id,
               item.product_id,
               item.variant_id,
               item.sku,
-              item.title,
+              itemTitle,
+              itemImageUrl,
               item.quantity,
               item.price,
               item.discount
