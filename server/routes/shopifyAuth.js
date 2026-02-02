@@ -36,7 +36,12 @@ function verifyShopifyHmac(query, secret) {
 
   const message = Object.keys(rest)
     .sort()
-    .map((key) => `${key}=${Array.isArray(rest[key]) ? rest[key].join(',') : rest[key]}`)
+    .map((key) => {
+      const value = Array.isArray(rest[key]) ? rest[key].join(',') : rest[key];
+      // Escape '&' and '%' in values to prevent parameter injection, as per Shopify docs.
+      const escapedValue = String(value).replace(/%/g, '%25').replace(/&/g, '%26');
+      return `${key}=${escapedValue}`;
+    })
     .join('&');
 
   const digest = crypto.createHmac('sha256', secret).update(message).digest('hex');
