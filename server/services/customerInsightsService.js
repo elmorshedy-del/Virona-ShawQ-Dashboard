@@ -63,7 +63,7 @@ function getItemIdentity(row) {
 
   return {
     key: String(key),
-    label
+    label: String(label)
   };
 }
 
