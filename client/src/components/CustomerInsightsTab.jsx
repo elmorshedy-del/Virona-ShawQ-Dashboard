@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Sparkles,
   TrendingUp,
@@ -52,39 +52,92 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
     return value || '—';
   }, [format, value, formatter]);
 
+  const valueRef = useRef(null);
+
+  useLayoutEffect(() => {
+    const el = valueRef.current;
+    if (!el) return;
+
+    const baseSize = parseFloat(el.dataset.baseSize || '0') || parseFloat(getComputedStyle(el).fontSize || '0');
+    if (baseSize) el.style.fontSize = `${baseSize}px`;
+
+    let currentSize = baseSize || parseFloat(getComputedStyle(el).fontSize || '0');
+    const minSize = 18;
+    let guard = 10;
+
+    while (el.scrollHeight > el.clientHeight && currentSize > minSize && guard > 0) {
+      currentSize -= 2;
+      el.style.fontSize = `${currentSize}px`;
+      guard -= 1;
+    }
+
+    el.dataset.baseSize = `${baseSize || currentSize}`;
+  }, [displayValue, label]);
+
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_12px_30px_rgba(79,70,229,0.20)]"
-      style={{ backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' }}
+      className="group relative overflow-hidden rounded-2xl border border-white/10 p-4 transition-all duration-300 ease-out hover:-translate-y-0.5 shadow-[0_8px_22px_rgba(15,23,42,0.10),_0_2px_6px_rgba(15,23,42,0.08),_0_0_18px_rgba(79,70,229,0.10)] hover:shadow-[0_12px_32px_rgba(15,23,42,0.14),_0_4px_10px_rgba(15,23,42,0.10),_0_0_26px_rgba(79,70,229,0.18)]"
+      style={{
+        background: 'rgba(255,255,255,0.06)',
+        backdropFilter: 'blur(10px)',
+        WebkitBackdropFilter: 'blur(10px)',
+        }}
     >
-      {/* Inner highlight for glass effect */}
-      <div className="pointer-events-none absolute inset-0 rounded-2xl border border-white/80" />
-      
-      {/* Purple accent stroke */}
+      <div className="pointer-events-none absolute inset-0 rounded-2xl border border-white/10" />
       <div className="absolute left-0 top-0 h-full w-0.5 bg-indigo-500/40 opacity-70 transition-all duration-300 group-hover:w-1 group-hover:opacity-100" />
       <div className="absolute left-0 top-0 h-0.5 w-full bg-indigo-500/30 opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
-      
-      {/* Content */}
+
       <div className="relative z-10 flex h-full flex-col">
-        <div className="flex-shrink-0">
-          <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-700">
-            {label}
-          </div>
+        <div
+          className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-700"
+          style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', wordBreak: 'normal', overflowWrap: 'normal', hyphens: 'none' }}
+          title={label}
+        >
+          {label}
         </div>
         <div className="mt-2 flex-grow">
-          <div className="text-[22px] sm:text-[24px] md:text-[26px] font-semibold leading-snug text-gray-900 line-clamp-2 whitespace-normal break-words">
+          <div
+            ref={valueRef}
+            className="font-semibold text-gray-900"
+            style={{
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              wordBreak: 'normal',
+              overflowWrap: 'normal',
+              hyphens: 'none',
+              fontSize: 'clamp(24px, 2.4vw, 36px)',
+              lineHeight: 1.1
+            }}
+            title={displayValue}
+          >
             {displayValue}
           </div>
         </div>
         {hint && (
-          <div className="mt-2 text-xs text-gray-600/90 line-clamp-2 whitespace-normal">
+          <div
+            className="mt-2 text-xs text-gray-600/90"
+            style={{
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              wordBreak: 'normal',
+              overflowWrap: 'normal',
+              hyphens: 'none'
+            }}
+            title={hint}
+          >
             {hint}
           </div>
         )}
       </div>
 
-      {/* Faint outer glow on hover */}
-      <div className="pointer-events-none absolute -inset-3 rounded-[28px] border border-indigo-400/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+      <div
+        className="pointer-events-none absolute -inset-3 rounded-[28px] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+        style={{ boxShadow: '0 0 24px rgba(79,70,229,0.18)' }}
+      />
     </div>
   );
 }
