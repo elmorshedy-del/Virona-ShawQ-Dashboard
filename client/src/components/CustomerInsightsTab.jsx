@@ -54,29 +54,30 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
 
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl border border-white/20 bg-white/60 p-4 shadow-lg shadow-black/5 transition-all duration-300 ease-in-out hover:-translate-y-1 hover:shadow-xl hover:shadow-black/10"
+      className="group relative overflow-hidden rounded-2xl border border-white/60 bg-white/70 p-4 shadow-[0_6px_20px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_10px_28px_rgba(79,70,229,0.18)]"
       style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
     >
       {/* Inner highlight for glass effect */}
-      <div className="absolute inset-0 rounded-2xl border border-white/50" />
+      <div className="pointer-events-none absolute inset-0 rounded-2xl border border-white/70" />
       
       {/* Purple accent stroke */}
-      <div className="absolute top-0 left-0 h-full w-0.5 bg-indigo-500/50 opacity-60 transition-all duration-300 group-hover:w-1 group-hover:opacity-100" />
+      <div className="absolute left-0 top-0 h-full w-0.5 bg-indigo-500/40 opacity-70 transition-all duration-300 group-hover:w-1 group-hover:opacity-100" />
+      <div className="absolute left-0 top-0 h-0.5 w-full bg-indigo-500/30 opacity-60 transition-opacity duration-300 group-hover:opacity-100" />
       
       {/* Content */}
       <div className="relative z-10 flex h-full flex-col">
         <div className="flex-shrink-0">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-700/90">
+          <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-700">
             {label}
           </div>
         </div>
         <div className="mt-2 flex-grow">
-          <div className="text-3xl font-bold leading-tight text-gray-900 line-clamp-2" style={{ textWrap: 'balance' }}>
+          <div className="text-[22px] sm:text-[24px] md:text-[26px] font-semibold leading-snug text-gray-900 line-clamp-2 whitespace-normal break-words">
             {displayValue}
           </div>
         </div>
         {hint && (
-          <div className="mt-2 text-xs text-gray-600/90 line-clamp-2">
+          <div className="mt-2 text-xs text-gray-600/90 line-clamp-2 whitespace-normal">
             {hint}
           </div>
         )}
@@ -232,7 +233,7 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency }) {
                 <div key={row.key} className="flex items-center gap-3 rounded-xl border border-gray-100 bg-white px-3 py-3 shadow-sm">
                   <ProductThumbnail src={row.image_url} title={row.title} />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold text-gray-900">{row.title}</div>
+                    <div className="line-clamp-2 text-sm font-semibold text-gray-900 whitespace-normal break-words">{row.title}</div>
                     <div className="mt-1 text-xs text-gray-500">{formatNumber(row.orders)} orders · {formatNumber(row.quantity)} units</div>
                   </div>
                   <div className="text-right text-sm font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</div>

@@ -8,6 +8,8 @@ const toNumber = (value) => (Number.isFinite(value) ? value : 0);
 const safeDivide = (num, den) => (den ? num / den : 0);
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const ARABIC_REGEX = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/g;
+const TIP_REGEX = /\btip\b|gratuity/i;
 
 const DEFAULT_STORE_TIMEZONE = process.env.STORE_TIMEZONE_DEFAULT || 'UTC';
 
@@ -36,9 +38,23 @@ function getMinSegmentOrders(totalOrders) {
   return Math.max(3, Math.min(10, Math.round(totalOrders * 0.05)));
 }
 
+function sanitizeProductLabel(label) {
+  if (!label || typeof label !== 'string') return label;
+  const cleaned = label.replace(ARABIC_REGEX, '').replace(/\s+/g, ' ').trim();
+  return cleaned || label.trim();
+}
+
+function isTipItem(row) {
+  const text = [row?.title, row?.cache_title, row?.sku].filter(Boolean).join(' ').toLowerCase();
+  if (!text) return false;
+  return TIP_REGEX.test(text);
+}
+
 function getItemIdentity(row) {
   const key = row?.variant_id || row?.product_id || row?.sku || row?.title;
   if (!key) return { key: null, label: null };
+
+  if (isTipItem(row)) return { key: null, label: null };
 
   const title = typeof row?.title === 'string' ? row.title.trim() : '';
   const cacheTitle = typeof row?.cache_title === 'string' ? row.cache_title.trim() : '';
@@ -63,8 +79,18 @@ function getItemIdentity(row) {
 
   return {
     key: String(key),
-    label: String(label)
+    label: sanitizeProductLabel(label)
   };
+}
+
+function getProductKey(row) {
+  if (isTipItem(row)) return null;
+  return row?.product_id || row?.variant_id || row?.sku || row?.title || null;
+}
+
+function getProductLabel(row) {
+  const identity = getItemIdentity(row);
+  return identity.label;
 }
 
 function getDateRange(params) {
@@ -93,6 +119,12 @@ function getDateRange(params) {
   const startDate = formatDateAsGmt3(new Date(startMs));
 
   return { startDate, endDate, days };
+}
+
+function shiftDate(dateStr, deltaDays) {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + deltaDays);
+  return formatDateAsGmt3(d);
 }
 
 function getOrdersTable(store) {
@@ -398,12 +430,13 @@ function computeBundles(items) {
 
   items.forEach((row) => {
     if (!row.order_id) return;
-    const { key, label } = getItemIdentity(row);
-    if (!key) return;
-    if (label && !labelByKey.has(key)) labelByKey.set(key, label);
+    const productKey = getProductKey(row);
+    if (!productKey) return;
+    const label = getProductLabel(row);
+    if (label && !labelByKey.has(productKey)) labelByKey.set(productKey, label);
 
     const entry = orderMap.get(row.order_id) || new Set();
-    entry.add(key);
+    entry.add(String(productKey));
     orderMap.set(row.order_id, entry);
   });
 
@@ -461,12 +494,13 @@ function computeRepeatPaths(items) {
       products: new Map()
     };
 
-    const { key, label } = getItemIdentity(row);
-    if (!key) return;
-    if (label && !labelByKey.has(key)) labelByKey.set(key, label);
+    const productKey = getProductKey(row);
+    if (!productKey) return;
+    const label = getProductLabel(row);
+    if (label && !labelByKey.has(productKey)) labelByKey.set(productKey, label);
 
     const revenue = toNumber(row.price) * toNumber(row.quantity || 1);
-    entry.products.set(key, (entry.products.get(key) || 0) + revenue);
+    entry.products.set(String(productKey), (entry.products.get(String(productKey)) || 0) + revenue);
     ordersById.set(row.order_id, entry);
   });
 
@@ -502,7 +536,7 @@ function computeRepeatPaths(items) {
     for (let i = 0; i < list.length - 1; i += 1) {
       const fromKey = pickPrimaryProduct(list[i].products);
       const toKey = pickPrimaryProduct(list[i + 1].products);
-      if (!fromKey || !toKey) continue;
+      if (!fromKey || !toKey || fromKey === toKey) continue;
       const key = `${fromKey}||${toKey}`;
       transitions.set(key, (transitions.get(key) || 0) + 1);
     }
@@ -527,12 +561,13 @@ function computeTopProducts(items) {
   const byProduct = new Map();
 
   items.forEach((row) => {
-    const { key, label } = getItemIdentity(row);
-    if (!key || !row.order_id) return;
+    const productKey = getProductKey(row);
+    if (!productKey || !row.order_id) return;
+    const label = getProductLabel(row) || 'Product';
 
-    const entry = byProduct.get(key) || {
-      key,
-      title: label || 'Product',
+    const entry = byProduct.get(productKey) || {
+      key: String(productKey),
+      title: label,
       image_url: row.image_url || null,
       quantity: 0,
       revenue: 0,
@@ -540,7 +575,7 @@ function computeTopProducts(items) {
     };
 
     if (!entry.image_url && row.image_url) entry.image_url = row.image_url;
-    if ((!entry.title || /^Product\s\d+$/.test(entry.title)) && label) entry.title = label;
+    if ((!entry.title || /^Productsd+$/.test(entry.title)) && label) entry.title = label;
 
     const quantity = toNumber(row.quantity || 1);
     const revenue = toNumber(row.price) * quantity;
@@ -549,7 +584,7 @@ function computeTopProducts(items) {
     entry.revenue += revenue;
     entry.orderIds.add(row.order_id);
 
-    byProduct.set(key, entry);
+    byProduct.set(productKey, entry);
   });
 
   return Array.from(byProduct.values())
@@ -568,6 +603,150 @@ function computeTopProducts(items) {
     })
     .slice(0, 12);
 }
+
+function computeProductMetrics(items) {
+  const byProduct = new Map();
+
+  items.forEach((row) => {
+    const productKey = getProductKey(row);
+    if (!productKey || !row.order_id) return;
+    const label = getProductLabel(row) || 'Product';
+
+    const entry = byProduct.get(productKey) || {
+      key: String(productKey),
+      title: label,
+      revenue: 0,
+      orders: 0,
+      orderIds: new Set()
+    };
+
+    if ((!entry.title || /^Product\s\d+$/.test(entry.title)) && label) entry.title = label;
+
+    const quantity = toNumber(row.quantity || 1);
+    const revenue = toNumber(row.price) * quantity;
+
+    entry.revenue += revenue;
+    entry.orderIds.add(row.order_id);
+
+    byProduct.set(productKey, entry);
+  });
+
+  return new Map(Array.from(byProduct.entries()).map(([key, row]) => [key, {
+    ...row,
+    orders: row.orderIds.size
+  }]));
+}
+
+function rankProducts(metricsMap) {
+  const sorted = Array.from(metricsMap.values())
+    .sort((a, b) => {
+      if (b.revenue !== a.revenue) return b.revenue - a.revenue;
+      if (b.orders !== a.orders) return b.orders - a.orders;
+      return a.title.localeCompare(b.title);
+    });
+
+  const ranks = new Map();
+  sorted.forEach((row, index) => {
+    ranks.set(row.key, index + 1);
+  });
+
+  return { sorted, ranks };
+}
+
+function computeProductShiftInsights(currentItems, previousItems, minOrders = 2) {
+  const currentMetrics = computeProductMetrics(currentItems);
+  const previousMetrics = computeProductMetrics(previousItems);
+
+  if (!currentMetrics.size) return [];
+
+  const { ranks: currentRanks } = rankProducts(currentMetrics);
+  const { ranks: previousRanks } = rankProducts(previousMetrics);
+
+  const candidates = [];
+
+  currentMetrics.forEach((current) => {
+    const prev = previousMetrics.get(current.key);
+    const prevRank = previousRanks.get(current.key) || null;
+    const currRank = currentRanks.get(current.key) || null;
+    const prevRevenue = prev?.revenue || 0;
+    const currRevenue = current.revenue || 0;
+    const revenueDelta = currRevenue - prevRevenue;
+    const revenueLift = prevRevenue > 0 ? revenueDelta / prevRevenue : null;
+    const rankDelta = prevRank ? prevRank - currRank : null;
+    const isNew = !prevRank && current.orders >= minOrders;
+
+    if (current.orders < minOrders && (!prev || prev.orders < minOrders)) return;
+
+    const significant = isNew || (prevRank && (Math.abs(rankDelta || 0) >= 3 || (revenueLift != null && Math.abs(revenueLift) >= 0.5)));
+    if (!significant) return;
+
+    candidates.push({
+      key: current.key,
+      title: current.title,
+      currRank,
+      prevRank,
+      rankDelta,
+      revenueDelta,
+      revenueLift,
+      currOrders: current.orders,
+      prevOrders: prev?.orders || 0,
+      isNew
+    });
+  });
+
+  if (!candidates.length) return [];
+
+  const gainers = candidates.filter((c) => c.isNew || (c.rankDelta != null && c.rankDelta > 0) || (c.revenueLift != null && c.revenueLift > 0));
+  const decliners = candidates.filter((c) => (c.rankDelta != null && c.rankDelta < 0) || (c.revenueLift != null && c.revenueLift < -0.25));
+
+  gainers.sort((a, b) => {
+    if (a.isNew !== b.isNew) return a.isNew ? -1 : 1;
+    if ((b.rankDelta || 0) !== (a.rankDelta || 0)) return (b.rankDelta || 0) - (a.rankDelta || 0);
+    return (b.revenueLift || 0) - (a.revenueLift || 0);
+  });
+
+  decliners.sort((a, b) => {
+    if ((a.rankDelta || 0) !== (b.rankDelta || 0)) return (a.rankDelta || 0) - (b.rankDelta || 0);
+    return (a.revenueLift || 0) - (b.revenueLift || 0);
+  });
+
+  const insights = [];
+  const topGainer = gainers[0];
+  const topDecliner = decliners[0];
+
+  if (topGainer) {
+    const moveLabel = topGainer.isNew
+      ? 'New entrant at #' + topGainer.currRank
+      : 'Up ' + topGainer.rankDelta + ' spots to #' + topGainer.currRank;
+    const liftLabel = topGainer.revenueLift != null
+      ? 'Revenue ' + (topGainer.revenueLift >= 0 ? 'up' : 'down') + ' ' + Math.abs(topGainer.revenueLift * 100).toFixed(0) + '%'
+      : 'Revenue +' + topGainer.revenueDelta.toFixed(0);
+    insights.push({
+      id: 'product-mover-up',
+      title: topGainer.title + ' surged',
+      detail: moveLabel + '. ' + liftLabel + ' vs last window.',
+      impact: 'Product momentum',
+      confidence: scoreConfidence(Math.max(topGainer.currOrders, topGainer.prevOrders))
+    });
+  }
+
+  if (topDecliner) {
+    const moveLabel = 'Down ' + Math.abs(topDecliner.rankDelta || 0) + ' spots to #' + topDecliner.currRank;
+    const liftLabel = topDecliner.revenueLift != null
+      ? 'Revenue down ' + Math.abs(topDecliner.revenueLift * 100).toFixed(0) + '%'
+      : 'Revenue ' + topDecliner.revenueDelta.toFixed(0);
+    insights.push({
+      id: 'product-mover-down',
+      title: topDecliner.title + ' softened',
+      detail: moveLabel + '. ' + liftLabel + ' vs last window.',
+      impact: 'Product watch',
+      confidence: scoreConfidence(Math.max(topDecliner.currOrders, topDecliner.prevOrders))
+    });
+  }
+
+  return insights;
+}
+
 
 function computeDiscountSkus(items) {
   const bySku = new Map();
@@ -616,7 +795,7 @@ function scoreConfidence(sampleSize) {
   return clamp(sampleSize / 80, 0.35, 0.95);
 }
 
-function buildInsights({ discountMetrics, repeatRate, topDay, topHour, bundleTop, segmentLabel }) {
+function buildInsights({ discountMetrics, repeatRate, topDay, topHour, bundleTop, segmentLabel, productShiftInsights }) {
   const insights = [];
 
   if (discountMetrics.discountRevenueShare > 0.35) {
@@ -667,6 +846,10 @@ function buildInsights({ discountMetrics, repeatRate, topDay, topHour, bundleTop
     });
   }
 
+  if (productShiftInsights?.length) {
+    insights.push(...productShiftInsights);
+  }
+
   if (segmentLabel) {
     insights.push({
       id: 'segment',
@@ -687,11 +870,21 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const orders = getOrderRows(db, store, startDate, endDate);
   let items = getOrderItems(db, store, startDate, endDate);
 
-  if (store === 'shawq' && items.length) {
-    const productIds = Array.from(new Set(items.map((row) => row.product_id).filter(Boolean).map((id) => String(id))));
+  const prevStartDate = shiftDate(startDate, -days);
+  const prevEndDate = shiftDate(endDate, -days);
+  let previousItems = store === 'shawq' ? getOrderItems(db, store, prevStartDate, prevEndDate) : [];
+
+  if (store === 'shawq' && (items.length || previousItems.length)) {
+    const productIds = Array.from(new Set(
+      items.concat(previousItems)
+        .map((row) => row.product_id)
+        .filter(Boolean)
+        .map((id) => String(id))
+    ));
     if (productIds.length) {
       await ensureShopifyProductsCached(store, productIds);
       items = getOrderItems(db, store, startDate, endDate);
+      previousItems = getOrderItems(db, store, prevStartDate, prevEndDate);
     }
   }
 
@@ -707,6 +900,7 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const repeatPaths = computeRepeatPaths(items);
   const topProducts = computeTopProducts(items);
   const discountSkus = computeDiscountSkus(items);
+  const productShiftInsights = computeProductShiftInsights(items, previousItems, 2);
 
   const topCountry = orders.reduce((best, row) => {
     if (!row.country_code && !row.country) return best;
@@ -800,7 +994,8 @@ export async function getCustomerInsightsPayload(store, params = {}) {
     topDay,
     topHour,
     bundleTop: bundles[0],
-    segmentLabel: metaSegment?.label
+    segmentLabel: metaSegment?.label,
+    productShiftInsights
   });
 
   const windowLabel = params.startDate && params.endDate
