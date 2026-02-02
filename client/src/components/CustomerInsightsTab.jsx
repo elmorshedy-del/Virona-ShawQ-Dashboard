@@ -241,9 +241,14 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency }) {
               <div className="text-xs font-semibold uppercase text-gray-400">Top Countries</div>
               <div className="mt-2 space-y-2">
                 {(sections.segments?.countries || []).map((row) => (
-                  <div key={row.code} className="flex items-center justify-between text-sm">
-                    <span className="text-gray-700">{row.name}</span>
-                    <span className="font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</span>
+                  <div key={row.code} className="flex items-start justify-between gap-3 text-sm">
+                    <div>
+                      <div className="text-gray-700">{row.name}</div>
+                      <div className="mt-0.5 text-xs text-gray-400">
+                        {formatNumber(row.orders)} orders · {formatCurrency(row.aov, 0)} AOV
+                      </div>
+                    </div>
+                    <div className="text-right font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</div>
                   </div>
                 ))}
               </div>
@@ -252,9 +257,14 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency }) {
               <div className="text-xs font-semibold uppercase text-gray-400">Top Cities</div>
               <div className="mt-2 space-y-2">
                 {(sections.segments?.cities || []).map((row) => (
-                  <div key={row.city} className="flex items-center justify-between text-sm">
-                    <span className="text-gray-700">{row.city}</span>
-                    <span className="font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</span>
+                  <div key={row.city} className="flex items-start justify-between gap-3 text-sm">
+                    <div>
+                      <div className="text-gray-700">{row.city}</div>
+                      <div className="mt-0.5 text-xs text-gray-400">
+                        {formatNumber(row.orders)} orders · {formatCurrency(row.aov, 0)} AOV
+                      </div>
+                    </div>
+                    <div className="text-right font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</div>
                   </div>
                 ))}
               </div>

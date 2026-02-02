@@ -28,6 +28,23 @@ function getStoreTimeZone(store) {
   }
 }
 
+function getMinSegmentOrders(totalOrders) {
+  const configured = parseInt(process.env.CUSTOMER_INSIGHTS_MIN_SEGMENT_ORDERS || '', 10);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  if (!totalOrders) return 3;
+  return Math.max(3, Math.min(10, Math.round(totalOrders * 0.05)));
+}
+
+function getItemIdentity(row) {
+  const key = row?.variant_id || row?.product_id || row?.sku || row?.title;
+  if (!key) return { key: null, label: null };
+  const label = row?.title || row?.sku || row?.product_id || row?.variant_id;
+  return {
+    key: String(key),
+    label: label != null ? String(label) : String(key)
+  };
+}
+
 function getDateRange(params) {
   const now = new Date();
   const today = formatDateAsGmt3(now);
@@ -258,13 +275,24 @@ function getMetaTopSegment(db, store, startDate, endDate) {
 
   if (!row || !row.country || row.country === 'ALL') return null;
 
+  const age = (row.age || '').trim();
+  const gender = (row.gender || '').toLowerCase().trim();
+
+  const genderLabel = gender === 'female' ? 'Women' : gender === 'male' ? 'Men' : null;
+  const ageLabel = age || null;
+
+  // Ignore "All ages / All genders" rows; we only surface meaningful breakdowns.
+  if (!genderLabel && !ageLabel) return null;
+
   const country = getCountryInfo(row.country);
-  const gender = (row.gender || '').toLowerCase();
-  const genderLabel = gender === 'female' ? 'Women' : gender === 'male' ? 'Men' : 'All genders';
-  const ageLabel = row.age || 'All ages';
+
+  const labelParts = [];
+  if (genderLabel) labelParts.push(genderLabel);
+  if (ageLabel) labelParts.push(ageLabel);
+  labelParts.push(`in ${country.name}`);
 
   return {
-    label: `${genderLabel} ${ageLabel} in ${country.name}`,
+    label: labelParts.join(' '),
     country: country.name,
     age: ageLabel,
     gender: genderLabel,
@@ -340,11 +368,16 @@ function describeDaypart(hour) {
 
 function computeBundles(items) {
   const orderMap = new Map();
+  const labelByKey = new Map();
+
   items.forEach((row) => {
     if (!row.order_id) return;
+    const { key, label } = getItemIdentity(row);
+    if (!key) return;
+    if (label && !labelByKey.has(key)) labelByKey.set(key, label);
+
     const entry = orderMap.get(row.order_id) || new Set();
-    const key = row.product_id || row.title;
-    if (key) entry.add(String(key));
+    entry.add(key);
     orderMap.set(row.order_id, entry);
   });
 
@@ -372,7 +405,18 @@ function computeBundles(items) {
     const support = safeDivide(count, totalOrders);
     const attach = safeDivide(count, itemCounts.get(a) || 0);
     const lift = attach && totalOrders ? attach / safeDivide(itemCounts.get(b) || 0, totalOrders) : 0;
-    pairs.push({ pair: [a, b], count, support, attach, lift });
+
+    const labelA = labelByKey.get(a) || a;
+    const labelB = labelByKey.get(b) || b;
+
+    pairs.push({
+      pair: [labelA, labelB],
+      pairKeys: [a, b],
+      count,
+      support,
+      attach,
+      lift
+    });
   });
 
   return pairs.sort((a, b) => b.lift - a.lift).slice(0, 8);
@@ -380,16 +424,23 @@ function computeBundles(items) {
 
 function computeRepeatPaths(items) {
   const ordersById = new Map();
+  const labelByKey = new Map();
+
   items.forEach((row) => {
     if (!row.order_id) return;
     const entry = ordersById.get(row.order_id) || {
       order_id: row.order_id,
       customer_id: row.customer_id,
       ts: row.order_created_at ? new Date(row.order_created_at) : null,
-      products: new Set()
+      products: new Map()
     };
-    const key = row.product_id || row.title;
-    if (key) entry.products.add(String(key));
+
+    const { key, label } = getItemIdentity(row);
+    if (!key) return;
+    if (label && !labelByKey.has(key)) labelByKey.set(key, label);
+
+    const revenue = toNumber(row.price) * toNumber(row.quantity || 1);
+    entry.products.set(key, (entry.products.get(key) || 0) + revenue);
     ordersById.set(row.order_id, entry);
   });
 
@@ -403,6 +454,18 @@ function computeRepeatPaths(items) {
 
   const transitions = new Map();
 
+  const pickPrimaryProduct = (products) => {
+    let bestKey = null;
+    let bestRevenue = -1;
+    products.forEach((revenue, key) => {
+      if (revenue > bestRevenue) {
+        bestRevenue = revenue;
+        bestKey = key;
+      }
+    });
+    return bestKey;
+  };
+
   customerOrders.forEach((list) => {
     list.sort((a, b) => {
       const at = a.ts ? a.ts.getTime() : 0;
@@ -411,18 +474,24 @@ function computeRepeatPaths(items) {
     });
 
     for (let i = 0; i < list.length - 1; i += 1) {
-      const from = Array.from(list[i].products).sort()[0];
-      const to = Array.from(list[i + 1].products).sort()[0];
-      if (!from || !to) continue;
-      const key = `${from}||${to}`;
+      const fromKey = pickPrimaryProduct(list[i].products);
+      const toKey = pickPrimaryProduct(list[i + 1].products);
+      if (!fromKey || !toKey) continue;
+      const key = `${fromKey}||${toKey}`;
       transitions.set(key, (transitions.get(key) || 0) + 1);
     }
   });
 
   return Array.from(transitions.entries())
     .map(([key, count]) => {
-      const [from, to] = key.split('||');
-      return { from, to, count };
+      const [fromKey, toKey] = key.split('||');
+      return {
+        from: labelByKey.get(fromKey) || fromKey,
+        to: labelByKey.get(toKey) || toKey,
+        fromKey,
+        toKey,
+        count
+      };
     })
     .sort((a, b) => b.count - a.count)
     .slice(0, 8);
@@ -586,19 +655,30 @@ export function getCustomerInsightsPayload(store, params = {}) {
       aov: safeDivide(row.revenue, row.orders)
     }));
 
+  const minSegmentOrders = getMinSegmentOrders(totalOrders);
+
   const topCity = cityRows[0];
   const topCountryRow = countryRows[0];
+
+  const reliableCity = cityRows.find((row) => row.orders >= minSegmentOrders) || null;
+  const reliableCountry = countryRows.find((row) => row.orders >= minSegmentOrders) || null;
+
+  const bestCustomerSegment = reliableCity
+    ? { type: 'city', label: reliableCity.city, orders: reliableCity.orders }
+    : (reliableCountry
+      ? { type: 'country', label: reliableCountry.name, orders: reliableCountry.orders }
+      : (topCountryRow ? { type: 'country', label: topCountryRow.name, orders: topCountryRow.orders } : null));
+
+  const bestCustomerLabel = bestCustomerSegment?.label || null;
+  const segmentOrders = bestCustomerSegment?.orders || 0;
+
   const topDay = timing.topDay.count ? timing.topDay : null;
   const topHour = timing.topHour.count ? timing.topHour : null;
 
-  const segmentLabel = metaSegment?.label
-    || (topCity ? `${topCity.city}` : topCountryRow ? topCountryRow.name : null);
-
-  const segmentOrders = topCity?.orders || topCountryRow?.orders || metaSegment?.conversions || totalOrders;
   const confidence = scoreConfidence(segmentOrders);
 
   const hero = {
-    title: segmentLabel ? `Best customers: ${segmentLabel}` : 'Customer insights are building',
+    title: bestCustomerLabel ? `Best customers: ${bestCustomerLabel}` : 'Customer insights are building',
     subtitle: topDay && topHour
       ? `Peak orders on ${DAY_NAMES[topDay.day]} ${describeDaypart(topHour.hour)}.`
       : `Window: ${startDate} → ${endDate}`,
@@ -610,7 +690,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
   };
 
   const kpis = [
-    { id: 'best-segment', label: 'Best Segment', value: segmentLabel || '—', format: 'text' },
+    { id: 'best-segment', label: 'Best Customers', value: bestCustomerLabel || '—', format: 'text' },
     { id: 'ltv90', label: '90-Day LTV', value: customerStats.avgLtv90 ?? avgOrderValue, format: 'currency' },
     { id: 'repeat-rate', label: 'Repeat Rate', value: customerStats.repeatRate, format: 'percent' },
     { id: 'discount-reliance', label: 'Discount Reliance', value: discountMetrics.discountRevenueShare, format: 'percent' },
@@ -625,7 +705,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
     topDay,
     topHour,
     bundleTop: bundles[0],
-    segmentLabel
+    segmentLabel: metaSegment?.label
   });
 
   const windowLabel = params.startDate && params.endDate
@@ -645,7 +725,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
     insights,
     sections: {
       segments: {
-        summary: segmentLabel ? `Top segment: ${segmentLabel}` : 'Segment rankings will appear once data flows in.',
+        summary: bestCustomerLabel ? `Top customers: ${bestCustomerLabel}` : 'Segment rankings will appear once data flows in.',
         countries: countryRows,
         cities: cityRows,
         timing: {
@@ -687,7 +767,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
         summary: metaSegment ? 'Audience actions ready for activation.' : 'Connect Meta breakdowns to enable activation.',
         readySegments: [
           metaSegment ? { label: metaSegment.label, size: metaSegment.conversions, type: 'Meta breakdown' } : null,
-          topCity ? { label: `${topCity.city} buyers`, size: topCity.orders, type: 'Geo' } : null
+          bestCustomerSegment ? { label: `${bestCustomerSegment.label} buyers`, size: bestCustomerSegment.orders, type: 'Geo' } : null
         ].filter(Boolean)
       }
     },
