@@ -54,15 +54,15 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
 
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl border border-white/60 bg-white/70 p-4 shadow-[0_6px_20px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_10px_28px_rgba(79,70,229,0.18)]"
-      style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
+      className="group relative overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_12px_30px_rgba(79,70,229,0.20)]"
+      style={{ backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' }}
     >
       {/* Inner highlight for glass effect */}
-      <div className="pointer-events-none absolute inset-0 rounded-2xl border border-white/70" />
+      <div className="pointer-events-none absolute inset-0 rounded-2xl border border-white/80" />
       
       {/* Purple accent stroke */}
       <div className="absolute left-0 top-0 h-full w-0.5 bg-indigo-500/40 opacity-70 transition-all duration-300 group-hover:w-1 group-hover:opacity-100" />
-      <div className="absolute left-0 top-0 h-0.5 w-full bg-indigo-500/30 opacity-60 transition-opacity duration-300 group-hover:opacity-100" />
+      <div className="absolute left-0 top-0 h-0.5 w-full bg-indigo-500/30 opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
       
       {/* Content */}
       <div className="relative z-10 flex h-full flex-col">
@@ -84,7 +84,7 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
       </div>
 
       {/* Faint outer glow on hover */}
-      <div className="absolute -inset-2 rounded-3xl border-2 border-indigo-400/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+      <div className="pointer-events-none absolute -inset-3 rounded-[28px] border border-indigo-400/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
     </div>
   );
 }

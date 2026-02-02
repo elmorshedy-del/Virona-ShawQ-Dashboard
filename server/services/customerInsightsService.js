@@ -10,6 +10,7 @@ const safeDivide = (num, den) => (den ? num / den : 0);
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const ARABIC_REGEX = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/g;
 const TIP_REGEX = /\btip\b|gratuity/i;
+const TEST_REGEX = /\btest\b/i;
 
 const DEFAULT_STORE_TIMEZONE = process.env.STORE_TIMEZONE_DEFAULT || 'UTC';
 
@@ -50,11 +51,17 @@ function isTipItem(row) {
   return TIP_REGEX.test(text);
 }
 
+function isExcludedProduct(row) {
+  const text = [row?.title, row?.cache_title, row?.sku].filter(Boolean).join(' ').toLowerCase();
+  if (!text) return false;
+  return TIP_REGEX.test(text) || TEST_REGEX.test(text);
+}
+
 function getItemIdentity(row) {
   const key = row?.variant_id || row?.product_id || row?.sku || row?.title;
   if (!key) return { key: null, label: null };
 
-  if (isTipItem(row)) return { key: null, label: null };
+  if (isExcludedProduct(row)) return { key: null, label: null };
 
   const title = typeof row?.title === 'string' ? row.title.trim() : '';
   const cacheTitle = typeof row?.cache_title === 'string' ? row.cache_title.trim() : '';
@@ -84,7 +91,7 @@ function getItemIdentity(row) {
 }
 
 function getProductKey(row) {
-  if (isTipItem(row)) return null;
+  if (isExcludedProduct(row)) return null;
   return row?.product_id || row?.variant_id || row?.sku || row?.title || null;
 }
 
