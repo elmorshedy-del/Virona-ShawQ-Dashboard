@@ -498,6 +498,31 @@ export default function ProductRadar() {
             )}
           </div>
 
+          {Array.isArray(data.warnings) && data.warnings.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-400/30 text-amber-100 rounded-2xl p-4">
+              <div className="text-sm font-semibold">Heads up</div>
+              <ul className="mt-2 space-y-1 text-sm list-disc pl-5">
+                {data.warnings.slice(0, 3).map((w, idx) => (
+                  <li key={idx}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {(data.results || []).length === 0 && (
+            <div className="bg-white/5 rounded-2xl border border-white/10 p-5 backdrop-blur-xl">
+              <div className="text-sm font-semibold text-slate-100">No results yet</div>
+              <div className="mt-2 text-sm text-slate-300">
+                This usually happens when Google Trends throttles requests (HTTP 429) or the seed is too narrow.
+              </div>
+              <ul className="mt-3 space-y-1 text-sm text-slate-200 list-disc pl-5">
+                <li>Try again in a few minutes.</li>
+                <li>Reduce breadth, or turn off geo spread to make it faster.</li>
+                <li>Use a more specific seed (e.g. "Palestinian hoodie embroidered").</li>
+              </ul>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-4">
             {(data.results || []).map((r) => {
               const isOpen = openId === r.id;
