@@ -575,7 +575,7 @@ function computeTopProducts(items) {
     };
 
     if (!entry.image_url && row.image_url) entry.image_url = row.image_url;
-    if ((!entry.title || /^Productsd+$/.test(entry.title)) && label) entry.title = label;
+    if ((!entry.title || /^Product\s\d+$/.test(entry.title)) && label) entry.title = label;
 
     const quantity = toNumber(row.quantity || 1);
     const revenue = toNumber(row.price) * quantity;
