@@ -60,13 +60,26 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
     return value || '—';
   }, [format, value, formatter]);
 
-  const theme = kpiThemes[index % kpiThemes.length];
+  // Unified color scheme with a modern, professional look
+  const theme = 'bg-gray-800/90 border-gray-700/60 shadow-2xl shadow-indigo-500/10';
 
   return (
-    <div className={`rounded-2xl border bg-gradient-to-br px-4 py-4 shadow-lg ${theme}`}>
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">{label}</div>
-      <div className="mt-2 text-3xl font-semibold leading-tight text-gray-900">{displayValue}</div>
-      {hint && <div className="mt-2 text-xs text-gray-500">{hint}</div>}
+    <div
+      className={`relative overflow-hidden rounded-3xl border p-5 transition-all duration-300 ease-in-out hover:shadow-indigo-500/20 hover:-translate-y-1 ${theme}`}
+    >
+      <div className="relative z-10 flex flex-col h-full">
+        <div className="flex-shrink-0">
+          <div className="text-xs font-medium uppercase tracking-wider text-gray-400">{label}</div>
+        </div>
+        <div className="flex-grow flex items-end mt-4">
+          <div className="text-4xl font-bold text-white leading-none tracking-tight">
+            {displayValue}
+          </div>
+        </div>
+        {hint && <div className="mt-3 text-sm text-gray-400/80">{hint}</div>}
+      </div>
+      {/* Subtle glow effect */}
+      <div className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2 w-48 h-48 bg-indigo-600/20 blur-3xl opacity-50" />
     </div>
   );
 }
