@@ -1,6 +1,7 @@
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { getCountryInfo } from '../utils/countryData.js';
+import { ensureShopifyProductsCached } from './shopifyService.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const toNumber = (value) => (Number.isFinite(value) ? value : 0);
@@ -38,10 +39,31 @@ function getMinSegmentOrders(totalOrders) {
 function getItemIdentity(row) {
   const key = row?.variant_id || row?.product_id || row?.sku || row?.title;
   if (!key) return { key: null, label: null };
-  const label = row?.title || row?.sku || row?.product_id || row?.variant_id;
+
+  const title = typeof row?.title === 'string' ? row.title.trim() : '';
+  const cacheTitle = typeof row?.cache_title === 'string' ? row.cache_title.trim() : '';
+  const sku = typeof row?.sku === 'string' ? row.sku.trim() : '';
+
+  let label = title || sku || '';
+  if ((!label || /^\d+$/.test(label)) && cacheTitle && !/^\d+$/.test(cacheTitle)) {
+    label = cacheTitle;
+  }
+
+  if (!label || /^\d+$/.test(label)) {
+    if (row?.sku && !/^\d+$/.test(String(row.sku))) {
+      label = String(row.sku);
+    } else if (row?.product_id) {
+      label = `Product ${row.product_id}`;
+    } else if (row?.variant_id) {
+      label = `Variant ${row.variant_id}`;
+    } else {
+      label = String(key);
+    }
+  }
+
   return {
     key: String(key),
-    label: label != null ? String(label) : String(key)
+    label
   };
 }
 
@@ -126,7 +148,9 @@ function getOrderItems(db, store, startDate, endDate) {
       oi.product_id,
       oi.variant_id,
       oi.sku,
-      oi.title,
+      COALESCE(NULLIF(oi.title, ''), pc.title) as title,
+      COALESCE(NULLIF(oi.image_url, ''), pc.image_url) as image_url,
+      pc.title as cache_title,
       oi.quantity,
       oi.price,
       oi.discount,
@@ -136,6 +160,8 @@ function getOrderItems(db, store, startDate, endDate) {
     FROM shopify_order_items oi
     JOIN shopify_orders o
       ON o.order_id = oi.order_id AND o.store = oi.store
+    LEFT JOIN shopify_products_cache pc
+      ON pc.store = oi.store AND pc.product_id = oi.product_id
     WHERE o.store = ? AND o.date BETWEEN ? AND ?
   `).all(store, startDate, endDate);
 }
@@ -497,12 +523,72 @@ function computeRepeatPaths(items) {
     .slice(0, 8);
 }
 
+function computeTopProducts(items) {
+  const byProduct = new Map();
+
+  items.forEach((row) => {
+    const { key, label } = getItemIdentity(row);
+    if (!key || !row.order_id) return;
+
+    const entry = byProduct.get(key) || {
+      key,
+      title: label || 'Product',
+      image_url: row.image_url || null,
+      quantity: 0,
+      revenue: 0,
+      orderIds: new Set()
+    };
+
+    if (!entry.image_url && row.image_url) entry.image_url = row.image_url;
+    if ((!entry.title || /^Product\s\d+$/.test(entry.title)) && label) entry.title = label;
+
+    const quantity = toNumber(row.quantity || 1);
+    const revenue = toNumber(row.price) * quantity;
+
+    entry.quantity += quantity;
+    entry.revenue += revenue;
+    entry.orderIds.add(row.order_id);
+
+    byProduct.set(key, entry);
+  });
+
+  return Array.from(byProduct.values())
+    .map((row) => ({
+      key: row.key,
+      title: row.title,
+      image_url: row.image_url,
+      quantity: row.quantity,
+      revenue: row.revenue,
+      orders: row.orderIds.size
+    }))
+    .sort((a, b) => {
+      if (b.revenue !== a.revenue) return b.revenue - a.revenue;
+      if (b.orders !== a.orders) return b.orders - a.orders;
+      return b.quantity - a.quantity;
+    })
+    .slice(0, 12);
+}
+
 function computeDiscountSkus(items) {
   const bySku = new Map();
   items.forEach((row) => {
-    const key = row.title || row.product_id || row.sku;
-    if (!key) return;
-    const entry = bySku.get(key) || { title: key, orders: 0, revenue: 0, discountedRevenue: 0, discountCount: 0 };
+    const { key, label } = getItemIdentity(row);
+    const itemKey = key || row.title || row.product_id || row.sku;
+    const itemLabel = label || row.title || row.product_id || row.sku;
+    if (!itemKey || !itemLabel) return;
+
+    const lookupKey = String(itemKey);
+    const displayLabel = String(itemLabel);
+
+    const entry = bySku.get(lookupKey) || {
+      key: lookupKey,
+      title: displayLabel,
+      orders: 0,
+      revenue: 0,
+      discountedRevenue: 0,
+      discountCount: 0
+    };
+
     const revenue = toNumber(row.price) * toNumber(row.quantity || 1);
     entry.orders += 1;
     entry.revenue += revenue;
@@ -510,7 +596,7 @@ function computeDiscountSkus(items) {
       entry.discountedRevenue += revenue;
       entry.discountCount += 1;
     }
-    bySku.set(key, entry);
+    bySku.set(lookupKey, entry);
   });
 
   return Array.from(bySku.values())
@@ -594,12 +680,20 @@ function buildInsights({ discountMetrics, repeatRate, topDay, topHour, bundleTop
   return insights.slice(0, 3);
 }
 
-export function getCustomerInsightsPayload(store, params = {}) {
+export async function getCustomerInsightsPayload(store, params = {}) {
   const db = getDb();
   const { startDate, endDate, days } = getDateRange(params);
 
   const orders = getOrderRows(db, store, startDate, endDate);
-  const items = getOrderItems(db, store, startDate, endDate);
+  let items = getOrderItems(db, store, startDate, endDate);
+
+  if (store === 'shawq' && items.length) {
+    const productIds = Array.from(new Set(items.map((row) => row.product_id).filter(Boolean).map((id) => String(id))));
+    if (productIds.length) {
+      await ensureShopifyProductsCached(store, productIds);
+      items = getOrderItems(db, store, startDate, endDate);
+    }
+  }
 
   const totalOrders = orders.length;
   const totalRevenue = orders.reduce((sum, row) => sum + toNumber(row.order_total), 0);
@@ -611,6 +705,7 @@ export function getCustomerInsightsPayload(store, params = {}) {
   const timing = getTopTiming(orders, store);
   const bundles = computeBundles(items);
   const repeatPaths = computeRepeatPaths(items);
+  const topProducts = computeTopProducts(items);
   const discountSkus = computeDiscountSkus(items);
 
   const topCountry = orders.reduce((best, row) => {
@@ -726,12 +821,14 @@ export function getCustomerInsightsPayload(store, params = {}) {
     sections: {
       segments: {
         summary: bestCustomerLabel ? `Top customers: ${bestCustomerLabel}` : 'Segment rankings will appear once data flows in.',
-        countries: countryRows,
-        cities: cityRows,
         timing: {
           topDay: topDay ? DAY_NAMES[topDay.day] : null,
           topHour: topHour ? topHour.hour : null
         }
+      },
+      topProducts: {
+        summary: topProducts.length ? 'Top products by revenue and order count.' : 'Top products will appear once line-item data is synced.',
+        products: topProducts
       },
       cohorts: {
         summary: customerStats.customerCount

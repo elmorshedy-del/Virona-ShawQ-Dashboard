@@ -3,10 +3,10 @@ import { getCustomerInsightsPayload } from '../services/customerInsightsService.
 
 const router = express.Router();
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const store = req.query.store || 'shawq';
-    const data = getCustomerInsightsPayload(store, req.query);
+    const data = await getCustomerInsightsPayload(store, req.query);
     res.json({ success: true, data });
   } catch (error) {
     console.error('Customer insights error:', error);
