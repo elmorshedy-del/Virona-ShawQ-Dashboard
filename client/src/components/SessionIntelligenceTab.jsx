@@ -155,6 +155,57 @@ function formatDurationSeconds(value) {
   return mins ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
+let regionDisplayNames = null;
+function countryNameFromCode(value) {
+  const code = (value || '').toString().trim().toUpperCase();
+  if (!code) return '—';
+  if (!/^[A-Z]{2}$/.test(code)) return code;
+
+  try {
+    if (!regionDisplayNames && typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function') {
+      regionDisplayNames = new Intl.DisplayNames(undefined, { type: 'region' });
+    }
+    const resolved = regionDisplayNames?.of(code);
+    return resolved || code;
+  } catch (_error) {
+    return code;
+  }
+}
+
+const EVENT_LABEL_OVERRIDES = {
+  page_viewed: 'Page viewed',
+  page_view: 'Page viewed',
+  view_item: 'Product viewed',
+  product_viewed: 'Product viewed',
+  cart_viewed: 'Cart viewed',
+  view_cart: 'Cart viewed',
+  product_added_to_cart: 'Add to cart',
+  add_to_cart: 'Add to cart',
+  added_to_cart: 'Add to cart',
+  cart_add: 'Add to cart',
+  atc: 'Add to cart',
+  checkout_started: 'Checkout started',
+  checkout_initiated: 'Checkout started',
+  begin_checkout: 'Checkout started',
+  payment_info_submitted: 'Payment info submitted',
+  checkout_completed: 'Purchase',
+  purchase: 'Purchase',
+  order_completed: 'Purchase',
+  order_placed: 'Purchase'
+};
+
+function normalizeEventLabel(value) {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '—';
+  const key = raw.toLowerCase();
+  if (EVENT_LABEL_OVERRIDES[key]) return EVENT_LABEL_OVERRIDES[key];
+
+  // Fallback: "some_event-name" -> "Some event name"
+  const cleaned = key.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return raw;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
 function safeDecodePath(value) {
   const raw = (value || '').toString();
   if (!raw) return '';
@@ -709,6 +760,7 @@ export default function SessionIntelligenceTab({ store }) {
 
   const realtimeCountries = realtime?.breakdowns?.countries || [];
   const realtimeFocusCountry = realtimeCountries?.[0]?.value || null;
+  const realtimeFocusCountryName = realtimeFocusCountry ? countryNameFromCode(realtimeFocusCountry) : null;
   const realtimeMapRegion = realtimeMapMode === 'focus' && realtimeFocusCountry ? realtimeFocusCountry : 'WORLD';
 
   return (
@@ -747,7 +799,9 @@ export default function SessionIntelligenceTab({ store }) {
           <button className="si-button si-button-small" type="button" onClick={loadRealtime} disabled={realtimeLoading}>
             {realtimeLoading ? 'Updating…' : 'Update'}
           </button>
-          <span className="si-muted">Auto-updates every {Math.round(POLL_REALTIME_MS / 1000)}s.</span>
+          {realtime?.updatedAt ? (
+            <span className="si-muted">Updated {timeAgo(realtime.updatedAt)}</span>
+          ) : null}
           <span className="si-spacer" />
           <span className="si-muted">Map</span>
           <button
@@ -762,7 +816,7 @@ export default function SessionIntelligenceTab({ store }) {
             type="button"
             onClick={() => setRealtimeMapMode('focus')}
             disabled={!realtimeFocusCountry}
-            title={realtimeFocusCountry ? `Focus on ${realtimeFocusCountry}` : 'No geo data yet'}
+            title={realtimeFocusCountryName ? `Focus on ${realtimeFocusCountryName}` : 'No geo data yet'}
           >
             Focus
           </button>
@@ -809,12 +863,17 @@ export default function SessionIntelligenceTab({ store }) {
             </div>
             <GeoHotspotsMap countries={realtimeCountries} focusRegion={realtimeMapRegion} height={260} />
             <div className="si-realtime-mini-list">
-              {(realtimeCountries || []).slice(0, 8).map((row, idx) => (
-                <div key={row.value || idx} className="si-realtime-mini-row">
-                  <span>{row.value || '—'}</span>
-                  <span className="si-muted">{formatNumber(row.count)}</span>
-                </div>
-              ))}
+              {(realtimeCountries || []).slice(0, 8).map((row, idx) => {
+                const label = countryNameFromCode(row.value);
+                const code = (row.value || '').toString().trim().toUpperCase();
+                const title = code && label ? `${label} (${code})` : label || code || '—';
+                return (
+                  <div key={`${code || '—'}-${idx}`} className="si-realtime-mini-row" title={title}>
+                    <span>{label}</span>
+                    <span className="si-muted">{formatNumber(row.count)}</span>
+                  </div>
+                );
+              })}
               {(realtimeCountries || []).length === 0 ? (
                 <div className="si-empty" style={{ padding: 10 }}>No geo data yet.</div>
               ) : null}
@@ -880,9 +939,10 @@ export default function SessionIntelligenceTab({ store }) {
               {(realtime?.topEvents || []).slice(0, 8).map((row, idx, list) => {
                 const max = Math.max(...list.map((r) => Number(r.count) || 0), 1);
                 const width = Math.round(((Number(row.count) || 0) / max) * 100);
+                const label = normalizeEventLabel(row.name);
                 return (
-                  <div key={row.name || idx} className="si-realtime-bar-row" title={row.name || ''}>
-                    <div className="si-realtime-bar-label">{row.name || '—'}</div>
+                  <div key={`${row.name || '—'}-${idx}`} className="si-realtime-bar-row" title={row.name || ''}>
+                    <div className="si-realtime-bar-label">{label}</div>
                     <div className="si-realtime-bar-track">
                       <div className="si-realtime-bar-fill" style={{ width: `${width}%` }} />
                     </div>
