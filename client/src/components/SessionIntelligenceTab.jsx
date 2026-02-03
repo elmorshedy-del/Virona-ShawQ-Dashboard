@@ -155,6 +155,122 @@ function formatDurationSeconds(value) {
   return mins ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
+let regionDisplayNames = null;
+function countryNameFromCode(value) {
+  const code = (value || '').toString().trim().toUpperCase();
+  if (!code) return '—';
+  if (!/^[A-Z]{2}$/.test(code)) return code;
+
+  try {
+    if (!regionDisplayNames && typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function') {
+      regionDisplayNames = new Intl.DisplayNames(undefined, { type: 'region' });
+    }
+    const resolved = regionDisplayNames?.of(code);
+    return resolved || code;
+  } catch (_error) {
+    return code;
+  }
+}
+
+const EVENT_LABEL_OVERRIDES = {
+  page_viewed: 'Page Viewed',
+  page_view: 'Page Viewed',
+  view_item: 'Product Viewed',
+  product_viewed: 'Product Viewed',
+  cart_viewed: 'Cart Viewed',
+  view_cart: 'Cart Viewed',
+  product_added_to_cart: 'Add to Cart',
+  add_to_cart: 'Add to Cart',
+  added_to_cart: 'Add to Cart',
+  cart_add: 'Add to Cart',
+  atc: 'Add to Cart',
+  checkout_started: 'Checkout Started',
+  checkout_initiated: 'Checkout Started',
+  begin_checkout: 'Checkout Started',
+  payment_info_submitted: 'Payment Info Submitted',
+  checkout_completed: 'Purchase',
+  purchase: 'Purchase',
+  order_completed: 'Purchase',
+  order_placed: 'Purchase'
+};
+
+function normalizeEventLabel(value) {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '—';
+  const key = raw.toLowerCase();
+  if (EVENT_LABEL_OVERRIDES[key]) return EVENT_LABEL_OVERRIDES[key];
+
+  // Fallback: "some_event-name" -> "Some event name"
+  const cleaned = key.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return raw;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+function normalizeTrafficSourceLabel(value) {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '—';
+
+  const lower = raw.toLowerCase().trim();
+  const host = lower
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0];
+  const key = host || lower;
+
+  if (key === 'direct' || key === '(direct)' || key === '(none)' || key === 'none') return 'Direct';
+  if (key === '(not set)' || key === 'not set' || key === '(not_set)' || key === 'not_set') return 'Not set';
+
+  if (key === 'ig' || key.includes('instagram')) return 'Instagram';
+  if (key === 'fb' || key.includes('facebook') || key.includes('meta')) return 'Facebook';
+  if (key === 'tt' || key.includes('tiktok')) return 'TikTok';
+  if (key === 'snap' || key.includes('snapchat')) return 'Snapchat';
+  if (key.includes('google') || key.includes('adwords') || key.includes('gads')) return 'Google';
+
+  const cleaned = lower
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleaned) return raw;
+
+  const ACRONYMS = new Set(['sms', 'seo', 'ppc', 'cpc', 'ga', 'api', 'ai']);
+  return cleaned
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => {
+      if (ACRONYMS.has(word)) return word.toUpperCase();
+      if (word === 'ads') return 'Ads';
+      if (word === 'ad') return 'Ad';
+      return `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+    })
+    .join(' ');
+}
+
+function normalizeTrafficSourceTitle(value) {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '';
+  const label = normalizeTrafficSourceLabel(raw);
+  if (!label || label === raw) return label || raw;
+  return `${label} (${raw})`;
+}
+
+function campaignCellProps(utmSource, utmCampaign) {
+  const sourceRaw = (utmSource || '').toString().trim();
+  const campaignRaw = (utmCampaign || '').toString().trim();
+
+  const sourceLabel = sourceRaw ? normalizeTrafficSourceLabel(sourceRaw) : '';
+  const titleParts = [];
+  if (sourceRaw) titleParts.push(normalizeTrafficSourceTitle(sourceRaw));
+  if (campaignRaw) titleParts.push(campaignRaw);
+
+  return {
+    display: campaignRaw || sourceLabel || '—',
+    title: titleParts.join(' / ')
+  };
+}
+
 function safeDecodePath(value) {
   const raw = (value || '').toString();
   if (!raw) return '';
@@ -709,6 +825,7 @@ export default function SessionIntelligenceTab({ store }) {
 
   const realtimeCountries = realtime?.breakdowns?.countries || [];
   const realtimeFocusCountry = realtimeCountries?.[0]?.value || null;
+  const realtimeFocusCountryName = realtimeFocusCountry ? countryNameFromCode(realtimeFocusCountry) : null;
   const realtimeMapRegion = realtimeMapMode === 'focus' && realtimeFocusCountry ? realtimeFocusCountry : 'WORLD';
 
   return (
@@ -745,9 +862,11 @@ export default function SessionIntelligenceTab({ store }) {
 
         <div className="si-row si-realtime-controls">
           <button className="si-button si-button-small" type="button" onClick={loadRealtime} disabled={realtimeLoading}>
-            {realtimeLoading ? 'Updating…' : 'Update'}
+            {realtimeLoading ? 'Refreshing…' : 'Refresh'}
           </button>
-          <span className="si-muted">Auto-updates every {Math.round(POLL_REALTIME_MS / 1000)}s.</span>
+          {realtime?.updatedAt ? (
+            <span className="si-muted">Last refreshed {timeAgo(realtime.updatedAt)}</span>
+          ) : null}
           <span className="si-spacer" />
           <span className="si-muted">Map</span>
           <button
@@ -762,7 +881,7 @@ export default function SessionIntelligenceTab({ store }) {
             type="button"
             onClick={() => setRealtimeMapMode('focus')}
             disabled={!realtimeFocusCountry}
-            title={realtimeFocusCountry ? `Focus on ${realtimeFocusCountry}` : 'No geo data yet'}
+            title={realtimeFocusCountryName ? `Focus on ${realtimeFocusCountryName}` : 'No geo data yet'}
           >
             Focus
           </button>
@@ -809,12 +928,17 @@ export default function SessionIntelligenceTab({ store }) {
             </div>
             <GeoHotspotsMap countries={realtimeCountries} focusRegion={realtimeMapRegion} height={260} />
             <div className="si-realtime-mini-list">
-              {(realtimeCountries || []).slice(0, 8).map((row, idx) => (
-                <div key={row.value || idx} className="si-realtime-mini-row">
-                  <span>{row.value || '—'}</span>
-                  <span className="si-muted">{formatNumber(row.count)}</span>
-                </div>
-              ))}
+              {(realtimeCountries || []).slice(0, 8).map((row, idx) => {
+                const label = countryNameFromCode(row.value);
+                const code = (row.value || '').toString().trim().toUpperCase();
+                const title = code && label ? `${label} (${code})` : label || code || '—';
+                return (
+                  <div key={`${code || '—'}-${idx}`} className="si-realtime-mini-row" title={title}>
+                    <span>{label}</span>
+                    <span className="si-muted">{formatNumber(row.count)}</span>
+                  </div>
+                );
+              })}
               {(realtimeCountries || []).length === 0 ? (
                 <div className="si-empty" style={{ padding: 10 }}>No geo data yet.</div>
               ) : null}
@@ -830,9 +954,11 @@ export default function SessionIntelligenceTab({ store }) {
               {(realtime?.breakdowns?.sources || []).slice(0, 8).map((row, idx, list) => {
                 const max = Math.max(...list.map((r) => Number(r.count) || 0), 1);
                 const width = Math.round(((Number(row.count) || 0) / max) * 100);
+                const label = normalizeTrafficSourceLabel(row.value);
+                const title = normalizeTrafficSourceTitle(row.value);
                 return (
-                  <div key={row.value || idx} className="si-realtime-bar-row" title={row.value || ''}>
-                    <div className="si-realtime-bar-label">{row.value || '—'}</div>
+                  <div key={row.value || idx} className="si-realtime-bar-row" title={title || ''}>
+                    <div className="si-realtime-bar-label">{label}</div>
                     <div className="si-realtime-bar-track">
                       <div className="si-realtime-bar-fill" style={{ width: `${width}%` }} />
                     </div>
@@ -880,9 +1006,10 @@ export default function SessionIntelligenceTab({ store }) {
               {(realtime?.topEvents || []).slice(0, 8).map((row, idx, list) => {
                 const max = Math.max(...list.map((r) => Number(r.count) || 0), 1);
                 const width = Math.round(((Number(row.count) || 0) / max) * 100);
+                const label = normalizeEventLabel(row.name);
                 return (
-                  <div key={row.name || idx} className="si-realtime-bar-row" title={row.name || ''}>
-                    <div className="si-realtime-bar-label">{row.name || '—'}</div>
+                  <div key={`${row.name || '—'}-${idx}`} className="si-realtime-bar-row" title={row.name || ''}>
+                    <div className="si-realtime-bar-label">{label}</div>
                     <div className="si-realtime-bar-track">
                       <div className="si-realtime-bar-fill" style={{ width: `${width}%` }} />
                     </div>
@@ -908,7 +1035,7 @@ export default function SessionIntelligenceTab({ store }) {
 	        </div>
 	        <ul className="si-list">
 	          <li>
-	            <strong>Live feed (updates every second):</strong> it receives behavior signals from our Shopify Custom Pixel, so you’re not guessing — you’re watching real intent form in real time.
+	            <strong>Live feed:</strong> it receives behavior signals from our Shopify Custom Pixel, so you’re not guessing — you’re watching real intent form in real time.
 	          </li>
 	          <li>
 	            <strong>Full journey per shopper:</strong> each shopper gets a private <em>Shopper‑0001</em> style ID, and we track their path step‑by‑step across the entire session (page → product → add to cart → checkout steps → purchase or drop‑off).
@@ -1497,6 +1624,7 @@ export default function SessionIntelligenceTab({ store }) {
                 ].filter(Boolean).join(' • ') || '—';
                 const inferredStage = inferDropoffStageFromSummary(s);
                 const ai = s.summary ? `${s.primary_reason || 'Insight'} (${Math.round((s.confidence || 0) * 100)}%)` : '—';
+                const campaignCell = campaignCellProps(s.utm_source, s.utm_campaign);
                 return (
                   <tr key={s.session_id} className={selected ? 'si-row-selected' : ''}>
                     <td title={s.session_id}>{userLabel(s)}</td>
@@ -1510,8 +1638,8 @@ export default function SessionIntelligenceTab({ store }) {
                     <td>{s.last_checkout_step ? <span className="si-badge">{normalizeStepLabel(s.last_checkout_step)}</span> : '—'}</td>
                     <td>{s.device_type || '—'}</td>
                     <td>{s.country_code || '—'}</td>
-                    <td title={[s.utm_source, s.utm_campaign].filter(Boolean).join(' / ')}>
-                      {s.utm_campaign || s.utm_source || '—'}
+                    <td title={campaignCell.title}>
+                      {campaignCell.display}
                     </td>
                     <td title={s.summary || ''}>{ai}</td>
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -1565,24 +1693,27 @@ export default function SessionIntelligenceTab({ store }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {libraryEvents.slice(0, 200).map((e) => (
-                    <tr key={e.id}>
-                      <td title={e.created_at || e.event_ts}>{formatShort(e.created_at || e.event_ts)}</td>
-                      <td>{e.event_name}</td>
-                      <td title={e.page_path || ''}>
-                        <span className="si-path-label">{formatPathLabel(e.page_path, e.checkout_step)}</span>
-                      </td>
-                      <td>{e.checkout_step ? <span className="si-badge">{normalizeStepLabel(e.checkout_step)}</span> : '—'}</td>
-                      <td title={[e.product_id, e.variant_id].filter(Boolean).join('\n')}>
-                        {e.variant_id ? 'variant' : e.product_id ? 'product' : '—'}
-                      </td>
-                      <td title={[e.utm_source, e.utm_campaign].filter(Boolean).join(' / ')}>
-                        {e.utm_campaign || e.utm_source || '—'}
-                      </td>
-                      <td>{e.device_type || '—'}</td>
-                      <td>{e.country_code || '—'}</td>
-                    </tr>
-                  ))}
+                  {libraryEvents.slice(0, 200).map((e) => {
+                    const campaignCell = campaignCellProps(e.utm_source, e.utm_campaign);
+                    return (
+                      <tr key={e.id}>
+                        <td title={e.created_at || e.event_ts}>{formatShort(e.created_at || e.event_ts)}</td>
+                        <td>{e.event_name}</td>
+                        <td title={e.page_path || ''}>
+                          <span className="si-path-label">{formatPathLabel(e.page_path, e.checkout_step)}</span>
+                        </td>
+                        <td>{e.checkout_step ? <span className="si-badge">{normalizeStepLabel(e.checkout_step)}</span> : '—'}</td>
+                        <td title={[e.product_id, e.variant_id].filter(Boolean).join('\n')}>
+                          {e.variant_id ? 'variant' : e.product_id ? 'product' : '—'}
+                        </td>
+                        <td title={campaignCell.title}>
+                          {campaignCell.display}
+                        </td>
+                        <td>{e.device_type || '—'}</td>
+                        <td>{e.country_code || '—'}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             )}
