@@ -1959,6 +1959,21 @@ function DashboardTab({
   const [creativeInsightLoading, setCreativeInsightLoading] = useState(false);
   const [creativeInsightStreamingText, setCreativeInsightStreamingText] = useState('');
   const [creativeInsightError, setCreativeInsightError] = useState('');
+  const [creativeInsightLlm, setCreativeInsightLlm] = useState(() => {
+    try {
+      const raw = localStorage.getItem('creativeInsightLlm');
+      if (!raw) return { provider: 'openai', model: '', temperature: 1.0 };
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return { provider: 'openai', model: '', temperature: 1.0 };
+      return {
+        provider: typeof parsed.provider === 'string' ? parsed.provider : 'openai',
+        model: typeof parsed.model === 'string' ? parsed.model : '',
+        temperature: Number.isFinite(Number(parsed.temperature)) ? Number(parsed.temperature) : 1.0
+      };
+    } catch (e) {
+      return { provider: 'openai', model: '', temperature: 1.0 };
+    }
+  });
   const [showCreativeSummaryTable, setShowCreativeSummaryTable] = useState(true);
   const [showCreativeFunnelSummary, setShowCreativeFunnelSummary] = useState(true);
   const [ctrTrendRangeMode, setCtrTrendRangeMode] = useState('dashboard'); // 'dashboard' | 'local'
@@ -2724,6 +2739,14 @@ function DashboardTab({
     loadCreativeInsightSummary();
   }, [creativeInsightMode, loadCreativeInsightSummary]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('creativeInsightLlm', JSON.stringify(creativeInsightLlm));
+    } catch (e) {
+      // ignore
+    }
+  }, [creativeInsightLlm]);
+
   const handleCreativeInsightGenerate = useCallback(async () => {
     if (!store?.id || creativeInsightLoading) return;
     const prompt = creativeInsightPrompts[creativeInsightMode] || '';
@@ -2748,6 +2771,7 @@ function DashboardTab({
         body: JSON.stringify({
           store: store.id,
           mode: creativeInsightMode,
+          llm: creativeInsightLlm,
           question: prompt.trim(),
           summaryType: 'creative-funnel',
           verbosity: creativeInsightVerbosity[creativeInsightMode] || 'low',
@@ -2786,6 +2810,7 @@ function DashboardTab({
   }, [
     creativeInsightAutoEnabled,
     creativeInsightLoading,
+    creativeInsightLlm,
     creativeInsightMode,
     creativeInsightPrompts,
     creativeInsightVerbosity,
@@ -6876,7 +6901,11 @@ function DashboardTab({
                         Creative funnel AI summary
                       </div>
                       <div className="text-xs text-gray-500">
-                        GPT‑5.1 medium effort • auto end of day/week or manual
+                        {creativeInsightLlm.provider === 'deepseek'
+                          ? (creativeInsightLlm.model === 'deepseek-reasoner'
+                            ? 'DeepSeek Reasoner (Thinking)'
+                            : 'DeepSeek Chat (Non-thinking)')
+                          : 'OpenAI (auto)'} • auto end of day/week or manual
                       </div>
                     </div>
                     <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${creativeInsightPanelOpen ? 'rotate-180' : ''}`} />
@@ -6900,6 +6929,47 @@ function DashboardTab({
                             {mode === 'analyze' ? 'Analyze' : 'Summarize'}
                           </button>
                         ))}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+                        <span className="text-gray-500">Model:</span>
+                        <select
+                          value={`${creativeInsightLlm.provider}:${creativeInsightLlm.model || 'auto'}`}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (value === 'openai:auto') {
+                              setCreativeInsightLlm((prev) => ({ ...prev, provider: 'openai', model: '' }));
+                              return;
+                            }
+                            if (value === 'deepseek:deepseek-chat') {
+                              setCreativeInsightLlm((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-chat' }));
+                              return;
+                            }
+                            if (value === 'deepseek:deepseek-reasoner') {
+                              setCreativeInsightLlm((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-reasoner' }));
+                            }
+                          }}
+                          className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+                          title="AI model"
+                        >
+                          <option value="openai:auto">OpenAI (auto)</option>
+                          <option value="deepseek:deepseek-chat">DeepSeek Chat (Non-thinking)</option>
+                          <option value="deepseek:deepseek-reasoner">DeepSeek Reasoner (Thinking)</option>
+                        </select>
+
+                        {creativeInsightLlm.provider === 'deepseek' && (
+                          <select
+                            value={String(creativeInsightLlm.temperature ?? 1.0)}
+                            onChange={(event) => setCreativeInsightLlm((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
+                            className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+                            title="Temperature"
+                          >
+                            <option value="0">0.0</option>
+                            <option value="1">1.0</option>
+                            <option value="1.3">1.3</option>
+                            <option value="1.5">1.5</option>
+                          </select>
+                        )}
                       </div>
 
                       <div className="space-y-2">
