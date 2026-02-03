@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 const GOOGLE_CHARTS_SRC = 'https://www.gstatic.com/charts/loader.js';
-const MIN_REDRAW_MS = 30000;
 
 let googleChartsLoaderPromise = null;
 let geoChartReadyPromise = null;
@@ -48,19 +47,30 @@ function ensureGeoChartReady() {
   return geoChartReadyPromise;
 }
 
-function buildDataTable(google, tableRows) {
-  const rows = Array.isArray(tableRows) ? tableRows : [];
+function buildDataTable(google, countries) {
+  const rows = Array.isArray(countries) ? countries : [];
   const data = new google.visualization.DataTable();
   data.addColumn('string', 'Country');
   data.addColumn('number', 'Active sessions');
 
-  if (rows.length === 0) {
+  const tableRows = rows
+    .filter((row) => row && typeof row === 'object')
+    .map((row) => {
+      const code = (row.value || '').toString().trim().toUpperCase();
+      const count = Number(row.count);
+      if (!code) return null;
+      if (!Number.isFinite(count) || count <= 0) return null;
+      return [code, count];
+    })
+    .filter(Boolean);
+
+  if (tableRows.length === 0) {
     // GeoChart errors on empty tables; draw a tiny placeholder.
     data.addRow(['', 0]);
     return data;
   }
 
-  data.addRows(rows);
+  data.addRows(tableRows);
   return data;
 }
 
@@ -70,9 +80,6 @@ export default function GeoHotspotsMap({
   height = 260
 }) {
   const containerRef = useRef(null);
-  const chartRef = useRef(null);
-  const lastDrawAtRef = useRef(0);
-  const redrawTimeoutRef = useRef(null);
   const [error, setError] = useState('');
 
   const regionCode = useMemo(() => {
@@ -81,29 +88,6 @@ export default function GeoHotspotsMap({
     if (/^[A-Z]{2}$/.test(raw)) return raw;
     return null;
   }, [focusRegion]);
-
-  const tableRows = useMemo(() => {
-    const rows = Array.isArray(countries) ? countries : [];
-    return rows
-      .filter((row) => row && typeof row === 'object')
-      .map((row) => {
-        const code = (row.value || '').toString().trim().toUpperCase();
-        const count = Number(row.count);
-        if (!code) return null;
-        if (!Number.isFinite(count) || count <= 0) return null;
-        return [code, count];
-      })
-      .filter(Boolean);
-  }, [countries]);
-
-  // A stable signature prevents re-drawing the map just because the input array got recreated.
-  const dataSignature = useMemo(() => (
-    tableRows
-      .slice()
-      .sort((a, b) => String(a?.[0]).localeCompare(String(b?.[0])))
-      .map((row) => `${row[0]}:${row[1]}`)
-      .join('|')
-  ), [tableRows]);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,9 +102,8 @@ export default function GeoHotspotsMap({
         const google = await ensureGeoChartReady();
         if (cancelled) return;
 
-        const data = buildDataTable(google, tableRows);
-        const chart = chartRef.current || new google.visualization.GeoChart(node);
-        chartRef.current = chart;
+        const data = buildDataTable(google, countries);
+        const chart = new google.visualization.GeoChart(node);
 
         const options = {
           backgroundColor: 'transparent',
@@ -136,7 +119,6 @@ export default function GeoHotspotsMap({
         }
 
         chart.draw(data, options);
-        lastDrawAtRef.current = Date.now();
         setError('');
       } catch (e) {
         if (cancelled) return;
@@ -144,34 +126,18 @@ export default function GeoHotspotsMap({
       }
     };
 
-    const scheduleDraw = () => {
-      if (redrawTimeoutRef.current) {
-        clearTimeout(redrawTimeoutRef.current);
-        redrawTimeoutRef.current = null;
-      }
-
-      const now = Date.now();
-      const elapsed = now - (lastDrawAtRef.current || 0);
-      const delay = elapsed >= MIN_REDRAW_MS ? 0 : MIN_REDRAW_MS - elapsed;
-
-      redrawTimeoutRef.current = setTimeout(() => {
-        redrawTimeoutRef.current = null;
-        draw();
-      }, delay);
-    };
-
-    scheduleDraw();
+    draw();
 
     if (typeof ResizeObserver !== 'undefined') {
       observer = new ResizeObserver(() => {
         cancelAnimationFrame(raf);
         raf = requestAnimationFrame(() => {
-          scheduleDraw();
+          draw();
         });
       });
       if (containerRef.current) observer.observe(containerRef.current);
     } else {
-      const onResize = () => scheduleDraw();
+      const onResize = () => draw();
       window.addEventListener('resize', onResize);
       observer = { disconnect: () => window.removeEventListener('resize', onResize) };
     }
@@ -179,13 +145,9 @@ export default function GeoHotspotsMap({
     return () => {
       cancelled = true;
       if (observer) observer.disconnect();
-      if (redrawTimeoutRef.current) {
-        clearTimeout(redrawTimeoutRef.current);
-        redrawTimeoutRef.current = null;
-      }
       cancelAnimationFrame(raf);
     };
-  }, [dataSignature, regionCode]);
+  }, [countries, regionCode]);
 
   return (
     <div className="si-geo-map">
@@ -202,3 +164,4 @@ export default function GeoHotspotsMap({
     </div>
   );
 }
+
