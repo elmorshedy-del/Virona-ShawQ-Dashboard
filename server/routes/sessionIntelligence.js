@@ -9,6 +9,7 @@ import {
   getSessionIntelligenceFlowForDay,
   getSessionIntelligenceLatestBrief,
   getSessionIntelligenceOverview,
+  getSessionIntelligenceRealtimeOverview,
   getSessionIntelligencePurchasesByCampaign,
   getSessionIntelligenceRecentEvents,
   getSessionIntelligenceSessions,
@@ -26,6 +27,19 @@ router.get('/overview', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] overview error:', error);
     res.status(500).json({ success: false, error: 'Failed to load overview' });
+  }
+});
+
+router.get('/realtime', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const windowMinutes = req.query.windowMinutes ?? req.query.window ?? 30;
+    const limit = req.query.limit ?? 10;
+    const data = getSessionIntelligenceRealtimeOverview(store, { windowMinutes, limit });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[SessionIntelligence] realtime error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load realtime overview' });
   }
 });
 

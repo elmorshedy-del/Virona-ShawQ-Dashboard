@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ChevronDown, RefreshCw } from 'lucide-react';
+import GeoHotspotsMap from './GeoHotspotsMap';
 import './SessionIntelligenceTab.css';
 
 const POLL_EVENTS_MS = 1000;
+const POLL_REALTIME_MS = 5000;
 const POLL_OVERVIEW_MS = 20000;
+const REALTIME_WINDOW_MINUTES = 30;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -75,6 +78,12 @@ function timeAgo(ts) {
 function isoDayUtc(date) {
   if (!(date instanceof Date)) return '';
   return date.toISOString().slice(0, 10);
+}
+
+function formatNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return new Intl.NumberFormat().format(n);
 }
 
 async function fetchJson(url, options) {
@@ -252,6 +261,10 @@ export default function SessionIntelligenceTab({ store }) {
 
   const [overview, setOverview] = useState(null);
   const [brief, setBrief] = useState(null);
+  const [realtime, setRealtime] = useState(null);
+  const [realtimeLoading, setRealtimeLoading] = useState(false);
+  const [realtimeError, setRealtimeError] = useState('');
+  const [realtimeMapMode, setRealtimeMapMode] = useState('world');
   const [flowMode, setFlowMode] = useState('all');
   const [flowData, setFlowData] = useState(null);
   const [flowLoading, setFlowLoading] = useState(false);
@@ -291,6 +304,26 @@ export default function SessionIntelligenceTab({ store }) {
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
   }, [analysisLlm]);
+
+  const loadRealtime = useCallback(async () => {
+    setRealtimeLoading(true);
+    setRealtimeError('');
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        windowMinutes: String(REALTIME_WINDOW_MINUTES),
+        limit: '10'
+      });
+      const payload = await fetchJson(`/api/session-intelligence/realtime?${params.toString()}`);
+      setRealtime(payload?.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] realtime load failed:', error);
+      setRealtimeError(error?.message || 'Failed to load realtime overview');
+      setRealtime(null);
+    } finally {
+      setRealtimeLoading(false);
+    }
+  }, [storeId]);
 
   const loadFlow = useCallback(async (day, mode) => {
     if (!day) return;
@@ -427,6 +460,7 @@ export default function SessionIntelligenceTab({ store }) {
     setLoading(true);
     try {
       await Promise.all([
+        loadRealtime(),
         loadOverview(),
         loadBrief(),
         loadFlow(libraryDay, flowMode),
@@ -438,14 +472,14 @@ export default function SessionIntelligenceTab({ store }) {
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadCampaignPurchases, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadCampaignPurchases, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays(), loadCampaignPurchases()])
+    Promise.all([loadRealtime(), loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays(), loadCampaignPurchases()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -455,6 +489,13 @@ export default function SessionIntelligenceTab({ store }) {
         if (!active) return;
         setLoading(false);
       });
+
+    const realtimeTimer = setInterval(() => {
+      loadRealtime().catch((error) => {
+        if (!active) return;
+        console.error('[SessionIntelligenceTab] realtime poll failed:', error);
+      });
+    }, POLL_REALTIME_MS);
 
     const eventsTimer = setInterval(() => {
       loadEvents().catch((error) => {
@@ -477,10 +518,11 @@ export default function SessionIntelligenceTab({ store }) {
 
     return () => {
       active = false;
+      clearInterval(realtimeTimer);
       clearInterval(eventsTimer);
       clearInterval(overviewTimer);
     };
-  }, [loadBrief, loadCampaignPurchases, loadEvents, loadLibraryDays, loadOverview, loadSessions]);
+  }, [loadBrief, loadCampaignPurchases, loadEvents, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     setLibraryError('');
@@ -665,6 +707,10 @@ export default function SessionIntelligenceTab({ store }) {
   const flowStages = Array.isArray(flowData?.stages) ? flowData.stages : [];
   const flowClusters = Array.isArray(flowData?.clusters) ? flowData.clusters : [];
 
+  const realtimeCountries = realtime?.breakdowns?.countries || [];
+  const realtimeFocusCountry = realtimeCountries?.[0]?.value || null;
+  const realtimeMapRegion = realtimeMapMode === 'focus' && realtimeFocusCountry ? realtimeFocusCountry : 'WORLD';
+
   return (
 	    <div className="si-root">
 	      <div className="si-header">
@@ -688,6 +734,169 @@ export default function SessionIntelligenceTab({ store }) {
           </button>
         </div>
 	      </div>
+
+      <div className="si-card si-realtime-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Realtime overview</h3>
+          <span className="si-muted">
+            Last {REALTIME_WINDOW_MINUTES}m • {realtime?.lastEventAt ? `Last event ${timeAgo(realtime.lastEventAt)}` : '—'}
+          </span>
+        </div>
+
+        <div className="si-row si-realtime-controls">
+          <button className="si-button si-button-small" type="button" onClick={loadRealtime} disabled={realtimeLoading}>
+            {realtimeLoading ? 'Updating…' : 'Update'}
+          </button>
+          <span className="si-muted">Auto-updates every {Math.round(POLL_REALTIME_MS / 1000)}s.</span>
+          <span className="si-spacer" />
+          <span className="si-muted">Map</span>
+          <button
+            className={`si-button si-button-small ${realtimeMapMode === 'world' ? 'si-button-active' : ''}`}
+            type="button"
+            onClick={() => setRealtimeMapMode('world')}
+          >
+            World
+          </button>
+          <button
+            className={`si-button si-button-small ${realtimeMapMode === 'focus' ? 'si-button-active' : ''}`}
+            type="button"
+            onClick={() => setRealtimeMapMode('focus')}
+            disabled={!realtimeFocusCountry}
+            title={realtimeFocusCountry ? `Focus on ${realtimeFocusCountry}` : 'No geo data yet'}
+          >
+            Focus
+          </button>
+        </div>
+
+        {realtimeError ? (
+          <div className="si-empty" style={{ paddingTop: 10, color: '#b42318' }}>
+            {realtimeError}
+          </div>
+        ) : null}
+
+        <div className="si-realtime-kpis">
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Active sessions</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.activeSessions)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Active shoppers</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.activeShoppers)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Events</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.events)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">ATC</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.atc)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Checkout</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.checkout_started)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Purchase</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.purchase)}</div>
+          </div>
+        </div>
+
+        <div className="si-realtime-grid">
+          <div className="si-realtime-panel si-realtime-panel-map">
+            <div className="si-realtime-panel-title">
+              <span>Active sessions by country</span>
+              <span className="si-muted">Hotspots</span>
+            </div>
+            <GeoHotspotsMap countries={realtimeCountries} focusRegion={realtimeMapRegion} height={260} />
+            <div className="si-realtime-mini-list">
+              {(realtimeCountries || []).slice(0, 8).map((row, idx) => (
+                <div key={`${row.value || '—'}-${idx}`} className="si-realtime-mini-row">
+                  <span>{row.value || '—'}</span>
+                  <span className="si-muted">{formatNumber(row.count)}</span>
+                </div>
+              ))}
+              {(realtimeCountries || []).length === 0 ? (
+                <div className="si-empty" style={{ padding: 10 }}>No geo data yet.</div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="si-realtime-panel si-realtime-panel-source">
+            <div className="si-realtime-panel-title">
+              <span>Active sessions by source</span>
+              <span className="si-muted">Last touch</span>
+            </div>
+            <div className="si-realtime-bars">
+              {(realtime?.breakdowns?.sources || []).slice(0, 8).map((row, idx, list) => {
+                const max = Math.max(...list.map((r) => Number(r.count) || 0), 1);
+                const width = Math.round(((Number(row.count) || 0) / max) * 100);
+                return (
+                  <div key={`${row.value || '—'}-${idx}`} className="si-realtime-bar-row" title={row.value || ''}>
+                    <div className="si-realtime-bar-label">{row.value || '—'}</div>
+                    <div className="si-realtime-bar-track">
+                      <div className="si-realtime-bar-fill" style={{ width: `${width}%` }} />
+                    </div>
+                    <div className="si-realtime-bar-value">{formatNumber(row.count)}</div>
+                  </div>
+                );
+              })}
+              {(realtime?.breakdowns?.sources || []).length === 0 ? (
+                <div className="si-empty" style={{ padding: 10 }}>No source data yet.</div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="si-realtime-panel si-realtime-panel-pages">
+            <div className="si-realtime-panel-title">
+              <span>Current pages</span>
+              <span className="si-muted">Where users are</span>
+            </div>
+            <div className="si-realtime-bars">
+              {(realtime?.breakdowns?.pages || []).slice(0, 8).map((row, idx, list) => {
+                const max = Math.max(...list.map((r) => Number(r.count) || 0), 1);
+                const width = Math.round(((Number(row.count) || 0) / max) * 100);
+                return (
+                  <div key={`${row.value || '—'}-${idx}`} className="si-realtime-bar-row" title={row.value || ''}>
+                    <div className="si-realtime-bar-label">{formatPathLabel(row.value || '')}</div>
+                    <div className="si-realtime-bar-track">
+                      <div className="si-realtime-bar-fill" style={{ width: `${width}%` }} />
+                    </div>
+                    <div className="si-realtime-bar-value">{formatNumber(row.count)}</div>
+                  </div>
+                );
+              })}
+              {(realtime?.breakdowns?.pages || []).length === 0 ? (
+                <div className="si-empty" style={{ padding: 10 }}>No page data yet.</div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="si-realtime-panel si-realtime-panel-events">
+            <div className="si-realtime-panel-title">
+              <span>Events (last {REALTIME_WINDOW_MINUTES}m)</span>
+              <span className="si-muted">By event name</span>
+            </div>
+            <div className="si-realtime-bars">
+              {(realtime?.topEvents || []).slice(0, 8).map((row, idx, list) => {
+                const max = Math.max(...list.map((r) => Number(r.count) || 0), 1);
+                const width = Math.round(((Number(row.count) || 0) / max) * 100);
+                return (
+                  <div key={`${row.name || '—'}-${idx}`} className="si-realtime-bar-row" title={row.name || ''}>
+                    <div className="si-realtime-bar-label">{row.name || '—'}</div>
+                    <div className="si-realtime-bar-track">
+                      <div className="si-realtime-bar-fill" style={{ width: `${width}%` }} />
+                    </div>
+                    <div className="si-realtime-bar-value">{formatNumber(row.count)}</div>
+                  </div>
+                );
+              })}
+              {(realtime?.topEvents || []).length === 0 ? (
+                <div className="si-empty" style={{ padding: 10 }}>No events yet.</div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </div>
 
 	      <div className="si-card si-intro-card">
 	        <div className="si-card-title">

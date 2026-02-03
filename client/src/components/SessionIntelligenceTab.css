@@ -382,6 +382,10 @@
   align-items: center;
 }
 
+.si-spacer {
+  flex: 1;
+}
+
 .si-select,
 .si-input {
   appearance: none;
@@ -695,4 +699,179 @@
   transform: translateY(-1px);
   border-color: rgba(79, 70, 229, 0.28);
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.10);
+}
+
+.si-realtime-card {
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.si-realtime-controls {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.si-realtime-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+@media (max-width: 1180px) {
+  .si-realtime-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .si-realtime-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.si-realtime-kpi {
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(248, 250, 252, 0.6);
+}
+
+.si-realtime-kpi-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(71, 85, 105, 0.85);
+}
+
+.si-realtime-kpi-value {
+  margin-top: 6px;
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--si-text);
+  letter-spacing: -0.02em;
+}
+
+.si-realtime-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+@media (max-width: 1080px) {
+  .si-realtime-grid {
+    grid-template-columns: 1fr;
+  }
+  .si-realtime-panel-map,
+  .si-realtime-panel-source,
+  .si-realtime-panel-pages,
+  .si-realtime-panel-events {
+    grid-column: auto !important;
+  }
+}
+
+.si-realtime-panel {
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 18px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.si-realtime-panel-map {
+  grid-column: span 7;
+}
+
+.si-realtime-panel-source {
+  grid-column: span 5;
+}
+
+.si-realtime-panel-pages {
+  grid-column: span 6;
+}
+
+.si-realtime-panel-events {
+  grid-column: span 6;
+}
+
+.si-realtime-panel-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--si-text);
+  margin-bottom: 10px;
+}
+
+.si-realtime-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.si-realtime-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.si-realtime-bar-label {
+  font-size: 12px;
+  color: var(--si-text);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.si-realtime-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.20);
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.si-realtime-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(79, 70, 229, 0.95), rgba(99, 102, 241, 0.55));
+}
+
+.si-realtime-bar-value {
+  font-size: 12px;
+  font-weight: 800;
+  color: rgba(71, 85, 105, 0.95);
+  text-align: right;
+  min-width: 40px;
+}
+
+.si-geo-map {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: linear-gradient(180deg, rgba(238, 242, 255, 0.52), rgba(255, 255, 255, 0.25));
+  overflow: hidden;
+}
+
+.si-geo-map-canvas {
+  width: 100%;
+}
+
+.si-realtime-mini-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.si-realtime-mini-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--si-text);
 }
