@@ -58,7 +58,7 @@ export default function CreativeAnalysis({ store }) {
           <div className="text-xs text-gray-500 mt-1">Recent Meta Graph API failures (in-memory buffer).</div>
         </div>
         <div className="p-5">
-          <MetaDebug store={typeof store === 'string' ? { id: store } : store} />
+          <MetaDebug store={{ id: storeId }} />
         </div>
       </div>
     </div>
