@@ -15,6 +15,7 @@ export function runCreativeIntelligenceMigration() {
       video_url TEXT,
       thumbnail_url TEXT,
       duration TEXT,
+      gemini_model TEXT,
       script JSON,
       status TEXT DEFAULT 'pending',
       error_message TEXT,
@@ -25,12 +26,19 @@ export function runCreativeIntelligenceMigration() {
     )
   `);
 
+  const creativeScriptsColumns = db.prepare(`PRAGMA table_info(creative_scripts)`).all();
+  const hasCreativeScriptsGeminiModel = creativeScriptsColumns.some(column => column.name === 'gemini_model');
+  if (!hasCreativeScriptsGeminiModel) {
+    db.exec(`ALTER TABLE creative_scripts ADD COLUMN gemini_model TEXT`);
+  }
+
   // AI settings - user preferences for Claude
   db.exec(`
     CREATE TABLE IF NOT EXISTS ai_creative_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL UNIQUE,
       model TEXT DEFAULT 'sonnet-4.5',
+      gemini_analysis_model TEXT DEFAULT 'gemini-2.5-flash-lite',
       reasoning_effort TEXT DEFAULT 'medium',
       temperature REAL DEFAULT 1.0,
       streaming INTEGER DEFAULT 1,
@@ -44,6 +52,11 @@ export function runCreativeIntelligenceMigration() {
   `);
 
   const settingsColumns = db.prepare(`PRAGMA table_info(ai_creative_settings)`).all();
+  const hasGeminiAnalysisModel = settingsColumns.some(column => column.name === 'gemini_analysis_model');
+  if (!hasGeminiAnalysisModel) {
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN gemini_analysis_model TEXT DEFAULT 'gemini-2.5-flash-lite'`);
+  }
+
   const hasReasoningEffort = settingsColumns.some(column => column.name === 'reasoning_effort');
   if (!hasReasoningEffort) {
     db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN reasoning_effort TEXT DEFAULT 'medium'`);

@@ -1037,7 +1037,8 @@ export default function CreativeIntelligence({ store }) {
       campaignName: campaigns.find(c => c.id === selectedCampaign)?.name,
       sourceUrl: videoData.source_url,
       embedHtml: videoData.embed_html,
-      thumbnailUrl: videoData.thumbnail_url
+      thumbnailUrl: videoData.thumbnail_url,
+      gemini_analysis_model: settings?.gemini_analysis_model
     };
 
     try {
@@ -1069,7 +1070,7 @@ export default function CreativeIntelligence({ store }) {
           pathway: [
             'Creative tab → API',
             `${endpoint}`,
-            `Gemini: ${data.model || 'gemini-2.0-flash-exp'}`
+            `Gemini: ${data.model || settings?.gemini_analysis_model || 'gemini-2.5-flash-lite'}`
           ],
           details: {
             adId: selectedAd.id,
@@ -1090,7 +1091,7 @@ export default function CreativeIntelligence({ store }) {
           pathway: [
             'Creative tab → API',
             `${endpoint}`,
-            `Gemini: ${data?.model || 'gemini-2.0-flash-exp'}`
+            `Gemini: ${data?.model || settings?.gemini_analysis_model || 'gemini-2.5-flash-lite'}`
           ],
           details: {
             adId: selectedAd.id,
@@ -1112,7 +1113,7 @@ export default function CreativeIntelligence({ store }) {
         pathway: [
           'Creative tab → API',
           `${endpoint}`,
-          'Gemini: gemini-2.0-flash-exp'
+          `Gemini: ${settings?.gemini_analysis_model || 'gemini-2.5-flash-lite'}`
         ],
         details: {
           adId: selectedAd.id,
@@ -1989,6 +1990,7 @@ export default function CreativeIntelligence({ store }) {
 function SettingsModal({ settings, onSave, onClose }) {
   const [form, setForm] = useState({
     model: settings?.model || 'sonnet-4.5',
+    gemini_analysis_model: settings?.gemini_analysis_model || 'gemini-2.5-flash-lite',
     reasoning_effort: settings?.reasoning_effort || 'medium',
     temperature: settings?.temperature ?? 1.0,
     streaming: typeof settings?.model === 'string' && settings.model.startsWith('deepseek-') ? true : (settings?.streaming ?? true),
@@ -2048,6 +2050,39 @@ function SettingsModal({ settings, onSave, onClose }) {
                   style={{ borderColor: form.model === m.value ? colors.accent : colors.border, backgroundColor: form.model === m.value ? colors.accentLight : colors.card }}
                 >
                   <input type="radio" name="model" value={m.value} checked={form.model === m.value} onChange={(e) => updateModel(e.target.value)} className="mt-1 accent-indigo-500" />
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium" style={{ color: colors.text }}>{m.name}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: `${m.badgeColor}20`, color: m.badgeColor }}>{m.badge}</span>
+                    </div>
+                    <div className="text-sm mt-0.5" style={{ color: colors.textSecondary }}>{m.desc}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Gemini analysis model */}
+          <div>
+            <label className="block text-sm font-semibold mb-3" style={{ color: colors.text }}>Analyze button (Gemini)</label>
+            <div className="space-y-2">
+              {[
+                { value: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite', badge: 'Fast', badgeColor: colors.success, desc: 'Lower cost, great for most creatives' },
+                { value: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', badge: 'Stronger', badgeColor: colors.warning, desc: 'More capable analysis, slightly slower' }
+              ].map(m => (
+                <label
+                  key={m.value}
+                  className={`flex items-start gap-3 p-4 rounded-2xl border cursor-pointer transition-all ${form.gemini_analysis_model === m.value ? 'ci-shadow-soft' : 'hover:bg-gray-50'}`}
+                  style={{ borderColor: form.gemini_analysis_model === m.value ? colors.accent : colors.border, backgroundColor: form.gemini_analysis_model === m.value ? colors.accentLight : colors.card }}
+                >
+                  <input
+                    type="radio"
+                    name="gemini_analysis_model"
+                    value={m.value}
+                    checked={form.gemini_analysis_model === m.value}
+                    onChange={(e) => setForm(prev => ({ ...prev, gemini_analysis_model: e.target.value }))}
+                    className="mt-1 accent-indigo-500"
+                  />
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="font-medium" style={{ color: colors.text }}>{m.name}</span>
