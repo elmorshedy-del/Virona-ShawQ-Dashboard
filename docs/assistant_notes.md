@@ -54,7 +54,11 @@ I’ll keep it updated after each code change during this session.
 - Insights: “Insight Lab” research feed with signal fusion, radar, narrative brief, budget guidance, and Ask AI explainer. Endpoints: `GET /api/insights`, `POST /api/ai/analyze`.
 - Session Intelligence: Live session/event stream with polling, library replay, and AI analysis of sessions/days. Endpoints: `GET /api/session-intelligence/overview`, `/brief`, `/events`, `/sessions`, `/days`, `/sessions-by-day`, `/events-by-day`, `/purchases-by-campaign`; `POST /api/session-intelligence/analyze-session`, `/analyze-day`.
 - NeoMeta: Static “Blueprint” + “Control Deck” concept UI for Meta campaign planning. No backend calls.
-- Customer Insights: KPI + cohort/retention/bundle/discount sections with charts and insight cards. Data loaded in App via `GET /api/customer-insights`.
+<<<<<<< HEAD
+- Customer Insights: KPI + cohort/retention/bundle/discount sections with charts and insight cards. Includes Meta Demographics module (`GET /api/meta-demographics`). Customer data loaded via `GET /api/customer-insights`.
+=======
+- Customer Insights: KPI + cohort/retention/bundle/discount sections with charts and insight cards. Includes Meta Demographics module (`GET /api/meta-demographics`). Customer data loaded via `GET /api/customer-insights`.
+>>>>>>> 46ae564 (Add Meta Demographics module)
 - Budget Efficiency: Efficiency status, CAC/spend/ROAS trends, and recommendations. Endpoints: `GET /api/analytics/efficiency`, `GET /api/analytics/efficiency/trends`, `GET /api/analytics/recommendations`.
 - Budget Intelligence: Start budget planner + live scale/hold/cut guidance and learning map. Data loaded in App via `GET /api/budget-intelligence`.
 - Manual Data: Manual orders + spend overrides + CSV Meta import and bulk delete tools. Endpoints: `GET/POST/DELETE /api/manual`, `GET/POST/DELETE /api/manual/spend`, `POST /api/manual/delete-bulk`, `POST /api/analytics/meta/import`, `DELETE /api/analytics/meta/clear`.
@@ -133,3 +137,4 @@ flowchart LR
 - 2026-02-02: Added tab-by-tab technical specs and endpoints.
 - 2026-02-02: Added data flow diagram, API surface, and key DB tables.
 - 2026-02-02: Fixed KPI card text overflow/clamping in Customer Insights by adding `line-clamp-*` utilities and tightening KPI typography.
+- 2026-02-03: Added Meta Demographics module (API + UI) under Customer Insights.

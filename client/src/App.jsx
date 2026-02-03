@@ -1733,6 +1733,7 @@ export default function App() {
             data={customerInsights}
             loading={customerInsightsLoading}
             formatCurrency={formatCurrency}
+            store={store}
           />
         )}
 

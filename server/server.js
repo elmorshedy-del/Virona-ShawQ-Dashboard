@@ -25,6 +25,7 @@ import testimonialExtractorRouter from './routes/testimonialExtractor.js';
 import sessionIntelligenceRouter from './routes/sessionIntelligence.js';
 import productRadarRouter from './routes/productRadar.js';
 import customerInsightsRouter from './routes/customerInsights.js';
+import metaDemographicsRoutes from './routes/metaDemographics.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
@@ -231,6 +232,7 @@ app.use('/api/pixels', pixelsRouter);
 app.use('/api/session-intelligence', sessionIntelligenceRouter);
 app.use('/api/product-radar', productRadarRouter);
 app.use('/api/customer-insights', customerInsightsRouter);
+app.use('/api/meta-demographics', metaDemographicsRoutes);
 app.use('/api/fatigue', fatigueRouter);
 app.use('/api/testimonials', testimonialExtractorRouter);
 
