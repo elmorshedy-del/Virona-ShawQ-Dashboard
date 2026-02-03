@@ -215,8 +215,10 @@ export default function SessionIntelligenceTab({ store }) {
   const [analyzeLimit, setAnalyzeLimit] = useState(20);
   const [highIntentOnly, setHighIntentOnly] = useState(false);
   const [analysisLlm, setAnalysisLlm] = useState(() => (
-    loadSessionIntelligenceLlmSettings() || { model: 'gpt-4o-mini', temperature: 0.0 }
+    loadSessionIntelligenceLlmSettings() || { model: 'deepseek-reasoner', temperature: 1.0 }
   ));
+  const [briefGenerating, setBriefGenerating] = useState(false);
+  const [briefGenerateError, setBriefGenerateError] = useState('');
 
   const [campaignStartDate, setCampaignStartDate] = useState(() => isoDayUtc(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
   const [campaignEndDate, setCampaignEndDate] = useState(() => isoDayUtc(new Date()));
@@ -237,8 +239,10 @@ export default function SessionIntelligenceTab({ store }) {
     setOverview(data.data);
   }, [storeId]);
 
-  const loadBrief = useCallback(async () => {
-    const url = `/api/session-intelligence/brief?store=${encodeURIComponent(storeId)}`;
+  const loadBrief = useCallback(async (day = null) => {
+    const params = new URLSearchParams({ store: storeId });
+    if (day) params.set('date', day);
+    const url = `/api/session-intelligence/brief?${params.toString()}`;
     const data = await fetchJson(url);
     setBrief(data.brief || null);
   }, [storeId]);
@@ -276,6 +280,13 @@ export default function SessionIntelligenceTab({ store }) {
       setLibraryDay((current) => current || days[0].day);
     }
   }, [storeId]);
+
+  useEffect(() => {
+    if (!libraryDay) return;
+    loadBrief(libraryDay).catch((error) => {
+      console.error('[SessionIntelligenceTab] brief load failed:', error);
+    });
+  }, [libraryDay, loadBrief]);
 
   const filteredLibrarySessions = useMemo(() => {
     if (!highIntentOnly) return librarySessions;
@@ -530,6 +541,30 @@ export default function SessionIntelligenceTab({ store }) {
     }
   }, [analysisLlm.model, analysisLlm.temperature, analyzeLimit, libraryDay, loadLibrarySessions, storeId]);
 
+  const generateBrief = useCallback(async () => {
+    if (!libraryDay) return;
+    setBriefGenerateError('');
+    setBriefGenerating(true);
+    try {
+      const payload = await fetchJson('/api/session-intelligence/brief/generate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          store: storeId,
+          date: libraryDay,
+          model: analysisLlm.model,
+          temperature: analysisLlm.temperature,
+          limitSessions: 2500
+        })
+      });
+      setBrief(payload.brief || null);
+    } catch (error) {
+      setBriefGenerateError(error?.message || 'Failed to generate brief');
+    } finally {
+      setBriefGenerating(false);
+    }
+  }, [analysisLlm.model, analysisLlm.temperature, libraryDay, storeId]);
+
   return (
 	    <div className="si-root">
 	      <div className="si-header">
@@ -661,13 +696,31 @@ export default function SessionIntelligenceTab({ store }) {
 
         <div className="si-card">
           <div className="si-card-title">
-            <h3>Daily brief (coming online)</h3>
-            <span className="si-muted">{brief?.date || '—'}</span>
+            <h3>Daily brief</h3>
+            <span className="si-muted">{libraryDay || brief?.date || '—'}</span>
           </div>
+          <div className="si-row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            <button
+              className="si-button"
+              type="button"
+              onClick={generateBrief}
+              disabled={briefGenerating || !libraryDay}
+            >
+              {briefGenerating ? 'Generating…' : 'Generate brief'}
+            </button>
+            <span className="si-muted">
+              Uses {analysisLlm.model.startsWith('deepseek-') ? `DeepSeek ${analysisLlm.model}` : analysisLlm.model}.
+            </span>
+          </div>
+          {briefGenerateError ? (
+            <div className="si-empty" style={{ marginTop: 10, color: '#b42318' }}>
+              {briefGenerateError}
+            </div>
+          ) : null}
           <div className="si-muted">
             {brief?.content
               ? brief.content
-              : 'Next step: enable AI review for abandoned ATC sessions (10/day) to turn these events into reasons & fixes.'}
+              : 'Generate a daily brief to turn today’s high-intent sessions into friction clusters + fixes.'}
           </div>
         </div>
       </div>

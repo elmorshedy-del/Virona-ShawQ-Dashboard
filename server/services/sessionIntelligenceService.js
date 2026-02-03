@@ -1343,6 +1343,236 @@ export function getSessionIntelligenceLatestBrief(store) {
   `).get(store);
 }
 
+export function getSessionIntelligenceBriefForDay(store, date) {
+  const db = getDb();
+  const iso = requireIsoDay(date);
+  if (!iso) return null;
+  return db.prepare(`
+    SELECT id, store, date, content, top_reasons_json, model, generated_at, created_at
+    FROM si_daily_briefs
+    WHERE store = ? AND date = ?
+    LIMIT 1
+  `).get(store, iso);
+}
+
+function chunkArray(list, size) {
+  const chunks = [];
+  const chunkSize = Math.max(1, Math.floor(size));
+  for (let i = 0; i < list.length; i += chunkSize) {
+    chunks.push(list.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+function buildTopCounts(list, key, limit = 8) {
+  const map = new Map();
+  (list || []).forEach((row) => {
+    const value = row?.[key] || '—';
+    map.set(value, (map.get(value) || 0) + 1);
+  });
+  return Array.from(map.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([value, count]) => ({ value, count }));
+}
+
+function buildSessionRollup(session) {
+  if (!session || typeof session !== 'object') return null;
+  return {
+    codename: session.codename,
+    session_id: session.session_id,
+    first_seen: session.first_seen,
+    last_seen: session.last_seen,
+    device_type: session.device_type || null,
+    country_code: session.country_code || null,
+    utm_source: session.utm_source || null,
+    utm_campaign: session.utm_campaign || null,
+    atc_events: session.atc_events || 0,
+    checkout_started_events: session.checkout_started_events || 0,
+    purchase_events: session.purchase_events || 0,
+    last_checkout_step: session.last_checkout_step || null,
+    analysis: session.summary
+      ? {
+          primary_reason: session.primary_reason || null,
+          confidence: session.confidence ?? null,
+          summary: session.summary || null
+        }
+      : null
+  };
+}
+
+async function generateDailyBriefWithModel({
+  model,
+  temperature,
+  systemPrompt,
+  userPayload
+}) {
+  if (typeof model === 'string' && model.startsWith('deepseek-')) {
+    const resp = await askDeepSeekChat({
+      model,
+      systemPrompt,
+      messages: [{ role: 'user', content: userPayload }],
+      maxOutputTokens: 1200,
+      temperature: normalizeTemperature(temperature, 1.0)
+    });
+    return { text: resp.text, model: resp.model };
+  }
+
+  const text = await askOpenAIChat({
+    model,
+    systemPrompt,
+    messages: [{ role: 'user', content: userPayload }],
+    maxOutputTokens: 1200,
+    verbosity: 'low'
+  });
+  return { text, model };
+}
+
+export async function generateSessionIntelligenceDailyBrief({
+  store,
+  date,
+  model = process.env.SESSION_INTELLIGENCE_BRIEF_MODEL || process.env.SESSION_INTELLIGENCE_AI_MODEL || 'deepseek-reasoner',
+  temperature = 1.0,
+  limitSessions = 2500,
+  sampleSessions = 40
+}) {
+  const db = getDb();
+  const iso = requireIsoDay(date);
+  if (!iso) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+
+  const sessions = getSessionIntelligenceSessionsForDay(store, iso, limitSessions);
+
+  const highIntent = sessions.filter(
+    (s) => ((s.atc_events || 0) > 0 || (s.checkout_started_events || 0) > 0) && (s.purchase_events || 0) === 0
+  );
+  const checkoutNoPurchase = highIntent.filter((s) => (s.checkout_started_events || 0) > 0);
+  const atcNoPurchase = highIntent.filter((s) => (s.atc_events || 0) > 0);
+
+  // Pull event-name counts for high-intent sessions on that day (Clarity-style friction signals).
+  const range = dayRangeUtc(iso);
+  const sessionIds = highIntent.map((s) => s.session_id).filter(Boolean);
+  const eventCounts = new Map();
+  if (range && sessionIds.length) {
+    const chunks = chunkArray(sessionIds, 500);
+    for (const chunk of chunks) {
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = db.prepare(`
+        SELECT lower(event_name) AS event_name, COUNT(*) AS count
+        FROM si_events
+        WHERE store = ?
+          AND created_at >= ?
+          AND created_at < ?
+          AND session_id IN (${placeholders})
+        GROUP BY lower(event_name)
+      `).all(store, range.start, range.end, ...chunk);
+
+      rows.forEach((row) => {
+        const name = row?.event_name || '';
+        if (!name) return;
+        eventCounts.set(name, (eventCounts.get(name) || 0) + (Number(row.count) || 0));
+      });
+    }
+  }
+
+  const topEvents = Array.from(eventCounts.entries())
+    .map(([event_name, count]) => ({ event_name, count }))
+    .sort((a, b) => (b.count || 0) - (a.count || 0))
+    .slice(0, 14);
+
+  const context = {
+    store,
+    date: iso,
+    totals: {
+      sessions: sessions.length,
+      high_intent_no_purchase: highIntent.length,
+      checkout_no_purchase: checkoutNoPurchase.length,
+      atc_no_purchase: atcNoPurchase.length
+    },
+    breakdowns: {
+      last_checkout_step: buildTopCounts(highIntent, 'last_checkout_step', 8),
+      device_type: buildTopCounts(highIntent, 'device_type', 6),
+      country_code: buildTopCounts(highIntent, 'country_code', 8),
+      utm_source: buildTopCounts(highIntent, 'utm_source', 6),
+      utm_campaign: buildTopCounts(highIntent, 'utm_campaign', 8)
+    },
+    top_events: topEvents,
+    sample_sessions: highIntent.slice(0, Math.max(1, sampleSessions)).map(buildSessionRollup).filter(Boolean)
+  };
+
+  const systemPrompt = [
+    'You are a Microsoft Clarity-style e-commerce UX analyst.',
+    'You will be given a DAY-level summary of high-intent sessions (ATC and/or checkout started, but no purchase).',
+    'Your job is to produce a short, client-ready daily brief: what happened, the top friction clusters, and the fixes that move revenue.',
+    '',
+    'Output STRICT JSON only (no markdown), with this schema:',
+    '{',
+    '  "content": string,',
+    '  "top_reasons": [ { "reason": string, "confidence": number, "evidence": string[], "fixes": string[] } ]',
+    '}',
+    '',
+    'Rules:',
+    '- Be actionable and specific. Prefer "Change X on checkout shipping step" over vague advice.',
+    '- Reference evidence from the provided aggregates (drop-off step, device mix, top events, etc.).',
+    '- If sample is too small, say so clearly and keep confidence low.',
+    '- Do not invent errors; only infer likely causes supported by evidence.',
+    '- Keep content to ~10-18 lines with clear sections.',
+    '- Confidence must be 0..1.'
+  ].join('\n');
+
+  const userPayload = JSON.stringify(context, null, 2);
+
+  let completion;
+  try {
+    completion = await generateDailyBriefWithModel({
+      model,
+      temperature,
+      systemPrompt,
+      userPayload
+    });
+  } catch (error) {
+    return { success: false, error: error?.message || 'AI request failed.' };
+  }
+
+  const parsed = extractJsonObjectFromText(completion.text);
+  if (!parsed || typeof parsed !== 'object') {
+    console.warn('[SessionIntelligence] daily brief invalid JSON', {
+      store,
+      date: iso,
+      model: completion.model,
+      preview: String(completion.text || '').slice(0, 400)
+    });
+    return { success: false, error: 'AI response was not valid JSON.' };
+  }
+
+  const content = safeTruncate(parsed.content, 4000);
+  const topReasons = Array.isArray(parsed.top_reasons) ? parsed.top_reasons.slice(0, 6) : [];
+
+  const generatedAt = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO si_daily_briefs (store, date, content, top_reasons_json, model, generated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(store, date) DO UPDATE SET
+      content = excluded.content,
+      top_reasons_json = excluded.top_reasons_json,
+      model = excluded.model,
+      generated_at = excluded.generated_at,
+      created_at = datetime('now')
+  `).run(
+    store,
+    iso,
+    content || '',
+    JSON.stringify(topReasons),
+    completion.model,
+    generatedAt
+  );
+
+  const brief = getSessionIntelligenceBriefForDay(store, iso) || null;
+  return { success: true, store, date: iso, brief };
+}
+
 export function formatCheckoutStepLabel(step) {
   const key = normalizeCheckoutStep(step);
   if (!key) return '—';
@@ -1459,7 +1689,7 @@ export function listSessionIntelligenceDays(store, limit = 10) {
 export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200) {
   const db = getDb();
   ensureRecentShopperNumbers(store);
-  const max = Math.min(Math.max(parseInt(limit, 10) || 200, 1), 1000);
+  const max = Math.min(Math.max(parseInt(limit, 10) || 200, 1), 5000);
   const range = dayRangeUtc(dateStr);
   if (!range) return [];
 
@@ -1651,7 +1881,7 @@ function buildAiTimeline(events) {
 export async function analyzeSessionIntelligenceSession({
   store,
   sessionId,
-  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || 'gpt-4o-mini',
+  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || (process.env.DEEPSEEK_API_KEY ? 'deepseek-reasoner' : 'gpt-4o-mini'),
   temperature = null
 }) {
   const db = getDb();
@@ -1659,6 +1889,13 @@ export async function analyzeSessionIntelligenceSession({
   if (!events.length) {
     return { success: false, error: 'No events found for this session.' };
   }
+
+  console.log('[SessionIntelligence] analyze-session start', {
+    store,
+    sessionId,
+    model,
+    temperature
+  });
 
   db.prepare(`
     UPDATE si_sessions
@@ -1744,6 +1981,12 @@ export async function analyzeSessionIntelligenceSession({
 
   const parsed = extractJsonObjectFromText(text);
   if (!parsed) {
+    console.warn('[SessionIntelligence] analyze-session invalid JSON', {
+      store,
+      sessionId,
+      model: usedModel,
+      preview: String(text || '').slice(0, 400)
+    });
     db.prepare(`
       UPDATE si_sessions
       SET analysis_state = 'error', updated_at = datetime('now')
@@ -1793,7 +2036,7 @@ export async function analyzeSessionIntelligenceDay({
   date,
   mode = 'high_intent',
   limit = 20,
-  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || 'gpt-4o-mini',
+  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || (process.env.DEEPSEEK_API_KEY ? 'deepseek-reasoner' : 'gpt-4o-mini'),
   temperature = null
 }) {
   const sessions = getSessionIntelligenceSessionsForDay(store, date, 1000);

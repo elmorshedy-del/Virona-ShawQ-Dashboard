@@ -5,11 +5,13 @@ import {
   cleanupSessionIntelligenceRaw,
   getSessionIntelligenceEventsForDay,
   getSessionIntelligenceSessionsForDay,
+  getSessionIntelligenceBriefForDay,
   getSessionIntelligenceLatestBrief,
   getSessionIntelligenceOverview,
   getSessionIntelligencePurchasesByCampaign,
   getSessionIntelligenceRecentEvents,
   getSessionIntelligenceSessions,
+  generateSessionIntelligenceDailyBrief,
   listSessionIntelligenceDays
 } from '../services/sessionIntelligenceService.js';
 
@@ -53,11 +55,38 @@ router.get('/sessions', (req, res) => {
 router.get('/brief', (req, res) => {
   try {
     const store = req.query.store || 'shawq';
-    const brief = getSessionIntelligenceLatestBrief(store);
+    const date = req.query.date || null;
+    const brief = date ? getSessionIntelligenceBriefForDay(store, date) : getSessionIntelligenceLatestBrief(store);
     res.json({ success: true, store, brief: brief || null });
   } catch (error) {
     console.error('[SessionIntelligence] brief error:', error);
     res.status(500).json({ success: false, error: 'Failed to load brief' });
+  }
+});
+
+router.post('/brief/generate', async (req, res) => {
+  try {
+    const store = req.body?.store || 'shawq';
+    const date = req.body?.date;
+    const model = req.body?.model || null;
+    const temperature = req.body?.temperature ?? null;
+    const limitSessions = req.body?.limitSessions ?? req.body?.limit ?? null;
+
+    if (!date) return res.status(400).json({ success: false, error: 'Missing date (YYYY-MM-DD)' });
+
+    const result = await generateSessionIntelligenceDailyBrief({
+      store,
+      date,
+      model: model || undefined,
+      temperature,
+      limitSessions: limitSessions ?? undefined
+    });
+
+    if (!result.success) return res.status(500).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] generate brief error:', error);
+    res.status(500).json({ success: false, error: error?.message || 'Failed to generate brief' });
   }
 });
 
