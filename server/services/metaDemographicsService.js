@@ -19,6 +19,7 @@ const PURCHASE_ACTION_TYPES = [
 const GENDER_LABELS = {
   female: 'Female',
   male: 'Male',
+  all: 'All',
   unknown: 'Unknown'
 };
 
@@ -111,8 +112,21 @@ function redactAccessToken(url) {
   return url.replace(/access_token=[^&]+/g, 'access_token=[REDACTED]');
 }
 
-async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate, endDate, fields }) {
-  let url = buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate, fields });
+async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate, endDate, fields, filtering = null }) {
+  const urlParams = new URLSearchParams({
+    access_token: accessToken,
+    level: 'account',
+    time_range: JSON.stringify({ since: startDate, until: endDate }),
+    breakdowns: breakdowns.join(','),
+    fields,
+    limit: '500'
+  });
+
+  if (Array.isArray(filtering) && filtering.length > 0) {
+    urlParams.set('filtering', JSON.stringify(filtering));
+  }
+
+  let url = `${META_BASE_URL}/act_${accountId}/insights?${urlParams.toString()}`;
   const allRows = [];
   let page = 0;
 
@@ -128,6 +142,7 @@ async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate,
       error.metaDebug = {
         breakdowns,
         fields,
+        filtering,
         page,
         url: redactAccessToken(url),
         status: response.status
@@ -143,7 +158,7 @@ async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate,
   return allRows;
 }
 
-function normalizeSegmentRow(row, segmentType, currencyRate = 1, actionsAvailable = true) {
+function normalizeSegmentRow(row, segmentType, currencyRate = 1, actionsAvailable = true, defaults = {}) {
   const clicks = Math.round(toNumber(row.inline_link_clicks) || toNumber(row.clicks));
   const spend = toNumber(row.spend) * currencyRate;
   const impressions = Math.round(toNumber(row.impressions));
@@ -152,13 +167,15 @@ function normalizeSegmentRow(row, segmentType, currencyRate = 1, actionsAvailabl
   const checkout = actionsAvailable ? Math.round(getActionValue(row.actions, 'initiate_checkout')) : 0;
   const purchases = actionsAvailable ? Math.round(getFirstActionValue(row.actions, PURCHASE_ACTION_TYPES)) : 0;
 
-  const gender = normalizeGender(row.gender);
+  const gender = normalizeGender(row.gender ?? defaults.gender);
   const age = segmentType === 'age_gender' ? normalizeAge(row.age) : null;
-  const country = segmentType === 'country_gender' ? String(row.country || 'ALL').toUpperCase() : null;
+  const country = segmentType === 'country_gender'
+    ? String(row.country ?? defaults.country ?? 'ALL').toUpperCase()
+    : null;
 
-  const atcRate = safeDivide(atc, clicks);
-  const checkoutRate = safeDivide(checkout, clicks);
-  const purchaseRate = safeDivide(purchases, clicks);
+  const atcRate = actionsAvailable ? safeDivide(atc, clicks) : null;
+  const checkoutRate = actionsAvailable ? safeDivide(checkout, clicks) : null;
+  const purchaseRate = actionsAvailable ? safeDivide(purchases, clicks) : null;
 
   const eligible = clicks >= MIN_CLICKS;
 
@@ -196,6 +213,25 @@ function computeSpendShare(rows) {
     row.spendShare = totalSpend > 0 ? row.spend / totalSpend : 0;
   });
   return totalSpend;
+}
+
+async function mapWithConcurrencyLimit(items, concurrency, mapper) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const limit = Number.isFinite(Number(concurrency)) ? Math.max(1, Number(concurrency)) : 4;
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => (async () => {
+    while (true) {
+      const current = nextIndex;
+      nextIndex += 1;
+      if (current >= items.length) return;
+      results[current] = await mapper(items[current], current);
+    }
+  })());
+
+  await Promise.all(workers);
+  return results;
 }
 
 function computeMetricStats(rows, metricKey) {
@@ -314,7 +350,7 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
 
   const warnings = [];
 
-  const fetchWithFallback = async (breakdowns) => {
+  const fetchWithFallback = async (breakdowns, { filtering = null, context = null } = {}) => {
     const fieldsWithValues = 'spend,impressions,clicks,inline_link_clicks,actions,action_values';
     const fieldsNoValues = 'spend,impressions,clicks,inline_link_clicks,actions';
     const fieldsNoActions = 'spend,impressions,clicks,inline_link_clicks';
@@ -325,15 +361,20 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
         breakdowns,
         startDate,
         endDate,
-        fields: fieldsWithValues
+        fields: fieldsWithValues,
+        filtering
       });
       return { rows, actionsAvailable: true, actionValuesAvailable: true };
     } catch (error) {
       const message = error?.message || '';
       const debug = error?.metaDebug || {};
       console.warn('[MetaDemographics] Primary fetch failed', {
+        context,
         breakdowns,
         fields: fieldsWithValues,
+        code: error?.meta?.code,
+        type: error?.meta?.type,
+        fbtrace_id: error?.meta?.fbtrace_id,
         message,
         debug
       });
@@ -347,15 +388,20 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
             breakdowns,
             startDate,
             endDate,
-            fields: fieldsNoValues
+            fields: fieldsNoValues,
+            filtering
           });
           return { rows, actionsAvailable: true, actionValuesAvailable: false };
         } catch (innerError) {
           const innerMessage = innerError?.message || '';
           const innerDebug = innerError?.metaDebug || {};
           console.warn('[MetaDemographics] Fallback without action_values failed', {
+            context,
             breakdowns,
             fields: fieldsNoValues,
+            code: innerError?.meta?.code,
+            type: innerError?.meta?.type,
+            fbtrace_id: innerError?.meta?.fbtrace_id,
             message: innerMessage,
             debug: innerDebug
           });
@@ -368,7 +414,8 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
               breakdowns,
               startDate,
               endDate,
-              fields: fieldsNoActions
+              fields: fieldsNoActions,
+              filtering
             });
             return { rows, actionsAvailable: false, actionValuesAvailable: false };
           }
@@ -379,17 +426,75 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
     }
   };
 
-  const [ageGenderResult, countryGenderResult] = await Promise.all([
+  const [ageGenderResult, countryOnlyResult] = await Promise.all([
     fetchWithFallback(['age', 'gender']),
-    fetchWithFallback(['country', 'gender'])
+    fetchWithFallback(['country'])
   ]);
 
   const ageGenderSegments = ageGenderResult.rows.map((row) => (
     normalizeSegmentRow(row, 'age_gender', currencyRate, ageGenderResult.actionsAvailable)
   ));
-  const countryGenderSegments = countryGenderResult.rows.map((row) => (
-    normalizeSegmentRow(row, 'country_gender', currencyRate, countryGenderResult.actionsAvailable)
+  const countryOnlySegments = countryOnlyResult.rows.map((row) => (
+    normalizeSegmentRow(row, 'country_gender', currencyRate, countryOnlyResult.actionsAvailable, { gender: 'all' })
   ));
+
+  // Meta insights blocks breakdowns=country,gender (OAuthException #100), so we emulate the split by:
+  // 1) Fetching country totals (above).
+  // 2) For the top countries, fetching breakdowns=gender with a country filter.
+  let countryGenderSegments = [];
+  let countryGenderSplitAvailable = false;
+  let countryGenderSplitMode = 'unavailable';
+
+  const topCountries = Array.from(new Set(
+    [...countryOnlySegments]
+      .sort((a, b) => (b.spend || 0) - (a.spend || 0))
+      .map((row) => (row.country || '').toUpperCase())
+      .filter((code) => code && code !== 'ALL' && code !== 'UNKNOWN')
+      .slice(0, 18)
+  ));
+
+  if (topCountries.length > 0) {
+    try {
+      const perCountryResults = await mapWithConcurrencyLimit(topCountries, 4, async (country) => {
+        const filtering = [{ field: 'country', operator: 'IN', value: [country] }];
+        const result = await fetchWithFallback(['gender'], { filtering, context: { country } });
+        const segments = (result.rows || []).map((row) => (
+          normalizeSegmentRow(row, 'country_gender', currencyRate, result.actionsAvailable, { country })
+        ));
+        return { country, segments };
+      });
+
+      const combined = perCountryResults
+        .flatMap((entry) => entry?.segments || [])
+        .filter((row) => row?.country && row?.gender);
+
+      if (combined.length > 0) {
+        countryGenderSegments = combined;
+        countryGenderSplitAvailable = true;
+        countryGenderSplitMode = 'per_country_filter';
+      } else {
+        warnings.push('Meta did not return any country gender segments; showing country totals only.');
+        countryGenderSegments = countryOnlySegments;
+        countryGenderSplitAvailable = false;
+        countryGenderSplitMode = 'unavailable';
+      }
+    } catch (error) {
+      console.warn('[MetaDemographics] Country gender split fallback failed', {
+        message: error?.message || String(error),
+        meta: error?.meta || null,
+        debug: error?.metaDebug || null
+      });
+      warnings.push('Meta does not support country + gender breakdown; showing country totals only.');
+      countryGenderSegments = countryOnlySegments;
+      countryGenderSplitAvailable = false;
+      countryGenderSplitMode = 'unavailable';
+    }
+  } else {
+    warnings.push('Meta did not return country data; country breakdown unavailable.');
+    countryGenderSegments = [];
+    countryGenderSplitAvailable = false;
+    countryGenderSplitMode = 'unavailable';
+  }
 
   const totalSpendAge = computeSpendShare(ageGenderSegments);
   const totalSpendCountry = computeSpendShare(countryGenderSegments);
@@ -419,9 +524,9 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
   }, { spend: 0, impressions: 0, clicks: 0, atc: 0, checkout: 0, purchases: 0 });
 
   const totalsRates = {
-    atcRate: safeDivide(totals.atc, totals.clicks),
-    checkoutRate: safeDivide(totals.checkout, totals.clicks),
-    purchaseRate: safeDivide(totals.purchases, totals.clicks)
+    atcRate: ageGenderResult.actionsAvailable ? safeDivide(totals.atc, totals.clicks) : null,
+    checkoutRate: ageGenderResult.actionsAvailable ? safeDivide(totals.checkout, totals.clicks) : null,
+    purchaseRate: ageGenderResult.actionsAvailable ? safeDivide(totals.purchases, totals.clicks) : null
   };
 
   return {
@@ -432,9 +537,13 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
       warnings,
       flags: {
         ageActionsAvailable: ageGenderResult.actionsAvailable,
-        countryActionsAvailable: countryGenderResult.actionsAvailable,
+        countryActionsAvailable: countryGenderSegments.some((row) =>
+          row.atcRate !== null || row.checkoutRate !== null || row.purchaseRate !== null
+        ),
         ageActionValuesAvailable: ageGenderResult.actionValuesAvailable,
-        countryActionValuesAvailable: countryGenderResult.actionValuesAvailable
+        countryActionValuesAvailable: false,
+        countryGenderSplitAvailable,
+        countryGenderSplitMode
       },
       totals,
       totalsRates,
