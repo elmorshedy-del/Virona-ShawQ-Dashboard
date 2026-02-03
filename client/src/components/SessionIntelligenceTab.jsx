@@ -810,7 +810,7 @@ export default function SessionIntelligenceTab({ store }) {
             <GeoHotspotsMap countries={realtimeCountries} focusRegion={realtimeMapRegion} height={260} />
             <div className="si-realtime-mini-list">
               {(realtimeCountries || []).slice(0, 8).map((row, idx) => (
-                <div key={`${row.value || '—'}-${idx}`} className="si-realtime-mini-row">
+                <div key={row.value || idx} className="si-realtime-mini-row">
                   <span>{row.value || '—'}</span>
                   <span className="si-muted">{formatNumber(row.count)}</span>
                 </div>
