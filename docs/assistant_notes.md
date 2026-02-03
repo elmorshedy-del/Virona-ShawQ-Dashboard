@@ -138,3 +138,4 @@ flowchart LR
 - 2026-02-02: Added data flow diagram, API surface, and key DB tables.
 - 2026-02-02: Fixed KPI card text overflow/clamping in Customer Insights by adding `line-clamp-*` utilities and tightening KPI typography.
 - 2026-02-03: Added Meta Demographics module (API + UI) under Customer Insights.
+- 2026-02-03: Updated Customer Insights KPI cards to auto-scale value text based on length.
