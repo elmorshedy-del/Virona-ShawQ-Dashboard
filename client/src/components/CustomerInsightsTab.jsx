@@ -6,7 +6,10 @@ import {
   ShoppingBag,
   Activity,
   ArrowUpRight,
-  Package
+  Package,
+  Users,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import {
   LineChart,
@@ -16,6 +19,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts';
+import MetaDemographics from './MetaDemographics';
 
 const formatPercent = (value) => {
   if (value == null || Number.isNaN(value)) return '—';
@@ -39,7 +43,8 @@ const sectionIcons = {
   repeat: Activity,
   discount: ShoppingBag,
   bundles: Target,
-  activation: Sparkles
+  activation: Sparkles,
+  demographics: Users
 };
 
 
@@ -150,6 +155,35 @@ function SectionCard({ title, subtitle, icon: Icon, children }) {
   );
 }
 
+function CollapsibleSectionCard({ title, subtitle, icon: Icon, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="mt-1 flex h-9 w-9 items-center justify-center rounded-full bg-indigo-50 text-indigo-600">
+            <Icon className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">{title}</h3>
+            <p className="mt-1 text-sm text-gray-600">{subtitle}</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          className="flex items-center gap-1 rounded-full border border-gray-200 px-3 py-1 text-xs font-semibold text-gray-500 hover:border-gray-300 hover:text-gray-700"
+        >
+          {open ? 'Hide' : 'Show'}
+          {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        </button>
+      </div>
+      {open ? <div className="mt-4">{children}</div> : null}
+    </section>
+  );
+}
+
 function ProductThumbnail({ src, title }) {
   if (src) {
     return (
@@ -170,7 +204,7 @@ function ProductThumbnail({ src, title }) {
   );
 }
 
-export default function CustomerInsightsTab({ data, loading, formatCurrency }) {
+export default function CustomerInsightsTab({ data, loading, formatCurrency, store }) {
   const kpis = data?.kpis || [];
   const insights = data?.insights || [];
   const sections = data?.sections || {};
@@ -242,6 +276,18 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency }) {
           <div className="mt-4 text-xs font-semibold text-indigo-600">Export-ready segments</div>
         </div>
       </div>
+
+      <CollapsibleSectionCard
+        title="Meta Demographics"
+        subtitle="Age, gender, and country performance signals from Meta."
+        icon={sectionIcons.demographics}
+      >
+        <MetaDemographics
+          store={store}
+          dateParams={{ days: 30 }}
+          formatCurrency={formatCurrency}
+        />
+      </CollapsibleSectionCard>
 
       <div className="space-y-4">
         <SectionCard
