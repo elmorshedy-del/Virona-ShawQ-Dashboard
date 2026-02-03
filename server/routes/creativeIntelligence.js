@@ -97,22 +97,38 @@ router.post('/analyze-video', async (req, res) => {
       SELECT * FROM creative_scripts WHERE store = ? AND ad_id = ?
     `).get(store, adId);
 
-    if (existing && existing.status === 'complete') {
-      return res.json({ 
-        success: true, 
-        script: JSON.parse(existing.script),
-        cached: true,
-        method: existing.extraction_method || 'unknown',
-        model: resolvedGeminiModel
-      });
+    if (existing && existing.status === 'complete' && existing.script) {
+      let existingScript;
+      try {
+        existingScript = JSON.parse(existing.script);
+      } catch {
+        existingScript = null;
+      }
+
+      const existingModel = typeof existing.gemini_model === 'string' ? existing.gemini_model : null;
+      const cacheHit = !!existingScript && existingModel === resolvedGeminiModel;
+
+      if (cacheHit) {
+        return res.json({ 
+          success: true, 
+          script: existingScript,
+          cached: true,
+          method: existingScript?.method || 'unknown',
+          model: existingModel
+        });
+      }
     }
 
     // Mark as processing
     db.prepare(`
-      INSERT INTO creative_scripts (store, ad_id, ad_name, campaign_id, campaign_name, status)
-      VALUES (?, ?, ?, ?, ?, 'processing')
-      ON CONFLICT(store, ad_id) DO UPDATE SET status = 'processing', updated_at = datetime('now')
-    `).run(store, adId, adName || '', campaignId || '', campaignName || '');
+      INSERT INTO creative_scripts (store, ad_id, ad_name, campaign_id, campaign_name, gemini_model, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'processing')
+      ON CONFLICT(store, ad_id) DO UPDATE SET
+        status = 'processing',
+        gemini_model = excluded.gemini_model,
+        error_message = NULL,
+        updated_at = datetime('now')
+    `).run(store, adId, adName || '', campaignId || '', campaignName || '', resolvedGeminiModel);
 
     // Extract and download media using the robust extractor
     const media = await extractAndDownloadMedia({ sourceUrl, embedHtml, thumbnailUrl });
@@ -201,6 +217,7 @@ Return ONLY valid JSON array, no markdown:
 
     // Build script data structure
     const scriptData = {
+      model: resolvedGeminiModel,
       analysisType,
       frames: analysisType === 'video_frames' ? script : null,
       thumbnail: analysisType.startsWith('thumbnail') ? script : null,
@@ -214,6 +231,7 @@ Return ONLY valid JSON array, no markdown:
       SET script = ?, 
           video_url = ?, 
           thumbnail_url = ?, 
+          gemini_model = ?,
           status = 'complete', 
           analyzed_at = datetime('now'), 
           updated_at = datetime('now')
@@ -222,6 +240,7 @@ Return ONLY valid JSON array, no markdown:
       JSON.stringify(scriptData), 
       sourceUrl || null, 
       thumbnailUrl || null, 
+      resolvedGeminiModel,
       store, 
       adId
     );
@@ -275,6 +294,7 @@ router.get('/script/:adId', (req, res) => {
       exists: true,
       status: script.status,
       script: script.script ? JSON.parse(script.script) : null,
+      model: script.gemini_model || null,
       analyzedAt: script.analyzed_at,
       error: script.error_message
     });

@@ -15,6 +15,7 @@ export function runCreativeIntelligenceMigration() {
       video_url TEXT,
       thumbnail_url TEXT,
       duration TEXT,
+      gemini_model TEXT,
       script JSON,
       status TEXT DEFAULT 'pending',
       error_message TEXT,
@@ -24,6 +25,12 @@ export function runCreativeIntelligenceMigration() {
       UNIQUE(store, ad_id)
     )
   `);
+
+  const creativeScriptsColumns = db.prepare(`PRAGMA table_info(creative_scripts)`).all();
+  const hasCreativeScriptsGeminiModel = creativeScriptsColumns.some(column => column.name === 'gemini_model');
+  if (!hasCreativeScriptsGeminiModel) {
+    db.exec(`ALTER TABLE creative_scripts ADD COLUMN gemini_model TEXT`);
+  }
 
   // AI settings - user preferences for Claude
   db.exec(`
