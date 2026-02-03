@@ -94,11 +94,7 @@ function normalizeAccountId(accountId) {
   return accountId.replace(/^act_/, '');
 }
 
-function buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate, includeActions = true }) {
-  const fields = includeActions
-    ? 'spend,impressions,clicks,inline_link_clicks,actions'
-    : 'spend,impressions,clicks,inline_link_clicks';
-
+function buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate, fields }) {
   const params = new URLSearchParams({
     access_token: accessToken,
     level: 'account',
@@ -111,8 +107,8 @@ function buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDa
   return `${META_BASE_URL}/act_${accountId}/insights?${params.toString()}`;
 }
 
-async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate, endDate, includeActions = true }) {
-  let url = buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate, includeActions });
+async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate, endDate, fields }) {
+  let url = buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate, fields });
   const allRows = [];
 
   while (url) {
@@ -306,6 +302,8 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
   const warnings = [];
 
   const fetchWithFallback = async (breakdowns) => {
+    const fieldsWithValues = 'spend,impressions,clicks,inline_link_clicks,actions,action_values';
+    const fieldsNoValues = 'spend,impressions,clicks,inline_link_clicks,actions';
     try {
       const rows = await fetchAllInsights({
         accountId: normalizedAccountId,
@@ -313,22 +311,22 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
         breakdowns,
         startDate,
         endDate,
-        includeActions: true
+        fields: fieldsWithValues
       });
-      return { rows, actionsAvailable: true };
+      return { rows, actionsAvailable: true, actionValuesAvailable: true };
     } catch (error) {
       const message = error?.message || '';
       if (message.includes('action_type') || message.includes('breakdown columns')) {
-        warnings.push(`Meta does not allow actions with breakdowns: ${breakdowns.join(', ')}`);
+        warnings.push(`Meta does not allow action_values with breakdowns: ${breakdowns.join(', ')}`);
         const rows = await fetchAllInsights({
           accountId: normalizedAccountId,
           accessToken,
           breakdowns,
           startDate,
           endDate,
-          includeActions: false
+          fields: fieldsNoValues
         });
-        return { rows, actionsAvailable: false };
+        return { rows, actionsAvailable: true, actionValuesAvailable: false };
       }
       throw error;
     }
@@ -387,7 +385,9 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
       warnings,
       flags: {
         ageActionsAvailable: ageGenderResult.actionsAvailable,
-        countryActionsAvailable: countryGenderResult.actionsAvailable
+        countryActionsAvailable: countryGenderResult.actionsAvailable,
+        ageActionValuesAvailable: ageGenderResult.actionValuesAvailable,
+        countryActionValuesAvailable: countryGenderResult.actionValuesAvailable
       },
       totals,
       totalsRates,
