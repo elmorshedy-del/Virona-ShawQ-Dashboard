@@ -1959,19 +1959,20 @@ function DashboardTab({
   const [creativeInsightLoading, setCreativeInsightLoading] = useState(false);
   const [creativeInsightStreamingText, setCreativeInsightStreamingText] = useState('');
   const [creativeInsightError, setCreativeInsightError] = useState('');
+  const DEFAULT_CREATIVE_INSIGHT_LLM = { provider: 'openai', model: '', temperature: 1.0 };
   const [creativeInsightLlm, setCreativeInsightLlm] = useState(() => {
     try {
       const raw = localStorage.getItem('creativeInsightLlm');
-      if (!raw) return { provider: 'openai', model: '', temperature: 1.0 };
+      if (!raw) return DEFAULT_CREATIVE_INSIGHT_LLM;
       const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return { provider: 'openai', model: '', temperature: 1.0 };
+      if (!parsed || typeof parsed !== 'object') return DEFAULT_CREATIVE_INSIGHT_LLM;
       return {
-        provider: typeof parsed.provider === 'string' ? parsed.provider : 'openai',
-        model: typeof parsed.model === 'string' ? parsed.model : '',
-        temperature: Number.isFinite(Number(parsed.temperature)) ? Number(parsed.temperature) : 1.0
+        provider: typeof parsed.provider === 'string' ? parsed.provider : DEFAULT_CREATIVE_INSIGHT_LLM.provider,
+        model: typeof parsed.model === 'string' ? parsed.model : DEFAULT_CREATIVE_INSIGHT_LLM.model,
+        temperature: Number.isFinite(Number(parsed.temperature)) ? Number(parsed.temperature) : DEFAULT_CREATIVE_INSIGHT_LLM.temperature
       };
     } catch (e) {
-      return { provider: 'openai', model: '', temperature: 1.0 };
+      return DEFAULT_CREATIVE_INSIGHT_LLM;
     }
   });
   const [showCreativeSummaryTable, setShowCreativeSummaryTable] = useState(true);
