@@ -8,6 +8,7 @@ const router = express.Router();
 
 const GEMINI_ANALYSIS_MODELS = new Set(['gemini-2.5-flash-lite', 'gemini-2.5-flash']);
 const DEFAULT_GEMINI_ANALYSIS_MODEL = 'gemini-2.5-flash-lite';
+const MAX_CREATIVE_CHAT_CONTEXT_ADS = 5;
 
 // ============================================================================
 // TONE PRESETS
@@ -361,7 +362,7 @@ router.post('/chat', async (req, res) => {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
 
   try {
-    const { store, message, adId, conversationId, reasoning_effort } = req.body;
+    const { store, message, adId, adIds, conversationId, reasoning_effort } = req.body;
 
     const db = getDb();
 
@@ -385,12 +386,33 @@ router.post('/chat', async (req, res) => {
       };
     }
 
+    // Resolve ad context set (primary + comparisons)
+    const primaryAdId = typeof adId === 'string' ? adId.trim() : '';
+    const adIdList = [];
+    const seenAdIds = new Set();
+
+    const pushAdId = (candidate) => {
+      const next = typeof candidate === 'string' ? candidate.trim() : '';
+      if (!next) return;
+      if (seenAdIds.has(next)) return;
+      if (adIdList.length >= MAX_CREATIVE_CHAT_CONTEXT_ADS) return;
+      seenAdIds.add(next);
+      adIdList.push(next);
+    };
+
+    pushAdId(primaryAdId);
+    if (Array.isArray(adIds)) {
+      adIds.forEach(pushAdId);
+    }
+
+    const conversationAdId = adIdList[0] || null;
+
     // Get or create conversation
     let convId = conversationId;
     if (!convId) {
       const result = db.prepare(`
         INSERT INTO creative_conversations (store, ad_id, title) VALUES (?, ?, ?)
-      `).run(store, adId, message.slice(0, 50) + (message.length > 50 ? '...' : ''));
+      `).run(store, conversationAdId, message.slice(0, 50) + (message.length > 50 ? '...' : ''));
       convId = result.lastInsertRowid;
     }
 
@@ -404,44 +426,67 @@ router.post('/chat', async (req, res) => {
 
     // Get ad script if adId provided
     let adContext = '';
-    if (adId) {
-      const scriptRow = db.prepare(`
-        SELECT * FROM creative_scripts WHERE store = ? AND ad_id = ?
-      `).get(store, adId);
+    if (adIdList.length > 0) {
+      const clip = (value, maxChars = 900) => {
+        const text = typeof value === 'string' ? value : '';
+        if (!text) return text;
+        if (text.length <= maxChars) return text;
+        return `${text.slice(0, maxChars - 1)}…`;
+      };
 
-      if (scriptRow && scriptRow.script) {
-        const scriptData = JSON.parse(scriptRow.script);
-        
-        adContext = `\n\n--- CURRENT AD CONTEXT ---
-Ad Name: ${scriptRow.ad_name || adId}
-Campaign: ${scriptRow.campaign_name || 'Unknown'}
-Analysis Type: ${scriptData.analysisType || 'unknown'}
-Extraction Method: ${scriptData.method || 'unknown'}
-`;
+      adContext = `\n\n--- SELECTED AD CONTEXT (${adIdList.length} ad${adIdList.length === 1 ? '' : 's'}) ---\n`;
+      adContext += `You may compare ads. The first one is the PRIMARY ad.\n`;
 
-        if (scriptData.analysisType === 'video_frames' && scriptData.frames) {
-          adContext += `\nFRAME-BY-FRAME BREAKDOWN:\n`;
-          if (Array.isArray(scriptData.frames)) {
-            scriptData.frames.forEach((frame, i) => {
-              adContext += `\n[${frame.time || `Frame ${i+1}`}]
-  Visual: ${frame.visual || 'N/A'}
-  Text on screen: ${frame.text || 'None'}
-  Action/Movement: ${frame.action || 'N/A'}
-  Voiceover: ${frame.voiceover || 'None'}
-  Music: ${frame.music || 'N/A'}
-  Sound Effects: ${frame.sound_effects || 'None'}
-  Hook Element: ${frame.hook_element || 'N/A'}
-`;
-            });
-          }
-        } else if (scriptData.thumbnail) {
-          adContext += `\nTHUMBNAIL ANALYSIS:\n${JSON.stringify(scriptData.thumbnail, null, 2)}\n`;
-        } else if (scriptData.raw) {
-          adContext += `\nANALYSIS:\n${scriptData.raw}\n`;
+      const scriptLookup = db.prepare(`SELECT * FROM creative_scripts WHERE store = ? AND ad_id = ?`);
+
+      adIdList.forEach((contextAdId, index) => {
+        const label = index === 0 ? 'PRIMARY AD' : `COMPARE AD ${index + 1}`;
+        const frameLimit = index === 0 ? 40 : 16;
+
+        const scriptRow = scriptLookup.get(store, contextAdId);
+        if (!scriptRow || !scriptRow.script || scriptRow.status !== 'complete') {
+          adContext += `\n--- ${label} ---\nAd ID: ${contextAdId}\nStatus: ${scriptRow?.status || 'not_found'}\n(No completed analysis available.)\n`;
+          return;
         }
-        
-        adContext += `\n--- END AD CONTEXT ---\n`;
-      }
+
+        let scriptData;
+        try {
+          scriptData = JSON.parse(scriptRow.script);
+        } catch {
+          adContext += `\n--- ${label} ---\nAd ID: ${contextAdId}\nStatus: complete\n(Analysis payload is not valid JSON.)\n`;
+          return;
+        }
+
+        adContext += `\n--- ${label} ---\n`;
+        adContext += `Ad ID: ${contextAdId}\n`;
+        adContext += `Ad Name: ${scriptRow.ad_name || contextAdId}\n`;
+        adContext += `Campaign: ${scriptRow.campaign_name || 'Unknown'}\n`;
+        adContext += `Analysis Type: ${scriptData?.analysisType || 'unknown'}\n`;
+        adContext += `Extraction Method: ${scriptData?.method || 'unknown'}\n`;
+
+        if (scriptData?.analysisType === 'video_frames' && Array.isArray(scriptData.frames)) {
+          const frames = scriptData.frames.slice(0, frameLimit);
+          adContext += `\nFRAME-BY-FRAME BREAKDOWN (first ${frames.length} scene${frames.length === 1 ? '' : 's'}):\n`;
+          frames.forEach((frame, i) => {
+            adContext += `\n[${frame?.time || `Frame ${i + 1}`}]\n`;
+            adContext += `  Visual: ${clip(frame?.visual || 'N/A', 360)}\n`;
+            adContext += `  Text on screen: ${clip(frame?.text || 'None', 240)}\n`;
+            adContext += `  Action/Movement: ${clip(frame?.action || 'N/A', 240)}\n`;
+            adContext += `  Voiceover: ${clip(frame?.voiceover || 'None', 360)}\n`;
+            adContext += `  Music: ${clip(frame?.music || 'N/A', 220)}\n`;
+            adContext += `  Sound Effects: ${clip(frame?.sound_effects || 'None', 160)}\n`;
+            adContext += `  Hook Element: ${clip(frame?.hook_element || 'N/A', 220)}\n`;
+          });
+        } else if (scriptData?.thumbnail) {
+          adContext += `\nTHUMBNAIL ANALYSIS:\n${clip(JSON.stringify(scriptData.thumbnail, null, 2), 2400)}\n`;
+        } else if (scriptData?.raw) {
+          adContext += `\nANALYSIS:\n${clip(String(scriptData.raw), 2400)}\n`;
+        } else {
+          adContext += `\n(Analysis did not include frames/thumbnail/raw payload.)\n`;
+        }
+      });
+
+      adContext += `\n--- END SELECTED AD CONTEXT ---\n`;
     }
 
     // Build messages
