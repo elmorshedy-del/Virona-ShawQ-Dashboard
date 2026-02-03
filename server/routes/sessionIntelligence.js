@@ -6,6 +6,7 @@ import {
   getSessionIntelligenceEventsForDay,
   getSessionIntelligenceSessionsForDay,
   getSessionIntelligenceBriefForDay,
+  getSessionIntelligenceFlowForDay,
   getSessionIntelligenceLatestBrief,
   getSessionIntelligenceOverview,
   getSessionIntelligencePurchasesByCampaign,
@@ -61,6 +62,23 @@ router.get('/brief', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] brief error:', error);
     res.status(500).json({ success: false, error: 'Failed to load brief' });
+  }
+});
+
+router.get('/flow', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const date = req.query.date;
+    const mode = req.query.mode || 'all';
+    const limitSessions = req.query.limitSessions ? Number(req.query.limitSessions) : 5000;
+    if (!date) return res.status(400).json({ success: false, error: 'Missing date (YYYY-MM-DD)' });
+
+    const result = getSessionIntelligenceFlowForDay(store, date, { mode, limitSessions });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] flow error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load flow' });
   }
 });
 

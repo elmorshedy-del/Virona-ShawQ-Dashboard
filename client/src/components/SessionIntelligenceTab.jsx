@@ -36,6 +36,17 @@ const STEP_LABELS = {
   unknown: 'Unknown'
 };
 
+const FLOW_STAGE_LABELS = {
+  landing: 'Landing',
+  product: 'Product',
+  atc: 'Add to cart',
+  cart: 'Cart',
+  checkout_contact: 'Checkout (Contact)',
+  checkout_shipping: 'Checkout (Shipping)',
+  checkout_payment: 'Checkout (Payment)',
+  purchase: 'Purchase'
+};
+
 function parseSqliteTimestamp(ts) {
   if (!ts || typeof ts !== 'string') return null;
   if (ts.includes('T')) {
@@ -90,6 +101,49 @@ function normalizeStepLabel(step) {
   const key = (step || '').toString().toLowerCase().trim();
   if (!key) return '—';
   return STEP_LABELS[key] || key;
+}
+
+function normalizeCheckoutStepKey(step) {
+  const key = (step || '').toString().toLowerCase().trim();
+  if (!key) return null;
+  if (key === 'contact' || key === 'shipping' || key === 'payment' || key === 'review' || key === 'thank_you') return key;
+  return null;
+}
+
+function inferDropoffStageFromSummary(session) {
+  if (!session || typeof session !== 'object') return 'landing';
+  if (Number(session.purchase_events || 0) > 0) return 'purchase';
+
+  if (Number(session.checkout_started_events || 0) > 0) {
+    const step = normalizeCheckoutStepKey(session.last_checkout_step);
+    if (step === 'payment') return 'checkout_payment';
+    if (step === 'shipping') return 'checkout_shipping';
+    return 'checkout_contact';
+  }
+
+  if (Number(session.cart_events || 0) > 0) return 'cart';
+  if (Number(session.atc_events || 0) > 0) return 'atc';
+  if (Number(session.product_views || 0) > 0) return 'product';
+  return 'landing';
+}
+
+function formatPercent(value, digits = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return `${(n * 100).toFixed(digits)}%`;
+}
+
+function formatDurationSeconds(value) {
+  const sec = Number(value);
+  if (!Number.isFinite(sec)) return '—';
+  const rounded = Math.max(0, Math.round(sec));
+  if (rounded < 60) return `${rounded}s`;
+  const minutes = Math.floor(rounded / 60);
+  const seconds = rounded % 60;
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return mins ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
 function safeDecodePath(value) {
@@ -198,6 +252,11 @@ export default function SessionIntelligenceTab({ store }) {
 
   const [overview, setOverview] = useState(null);
   const [brief, setBrief] = useState(null);
+  const [flowMode, setFlowMode] = useState('all');
+  const [flowData, setFlowData] = useState(null);
+  const [flowLoading, setFlowLoading] = useState(false);
+  const [flowError, setFlowError] = useState('');
+  const [dropoffStageFilter, setDropoffStageFilter] = useState('');
   const [sessions, setSessions] = useState([]);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -232,6 +291,28 @@ export default function SessionIntelligenceTab({ store }) {
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
   }, [analysisLlm]);
+
+  const loadFlow = useCallback(async (day, mode) => {
+    if (!day) return;
+    setFlowLoading(true);
+    setFlowError('');
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        date: day,
+        mode: mode || 'all',
+        limitSessions: '5000'
+      });
+      const payload = await fetchJson(`/api/session-intelligence/flow?${params.toString()}`);
+      setFlowData(payload?.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] flow load failed:', error);
+      setFlowError(error?.message || 'Failed to load shop walk flow');
+      setFlowData(null);
+    } finally {
+      setFlowLoading(false);
+    }
+  }, [storeId]);
 
   const loadOverview = useCallback(async () => {
     const url = `/api/session-intelligence/overview?store=${encodeURIComponent(storeId)}`;
@@ -288,14 +369,28 @@ export default function SessionIntelligenceTab({ store }) {
     });
   }, [libraryDay, loadBrief]);
 
+  useEffect(() => {
+    if (!libraryDay) return;
+    loadFlow(libraryDay, flowMode);
+  }, [libraryDay, flowMode, loadFlow]);
+
   const filteredLibrarySessions = useMemo(() => {
-    if (!highIntentOnly) return librarySessions;
-    return librarySessions.filter((s) =>
-      Number(s.atc_events) > 0 ||
-      Number(s.checkout_started_events) > 0 ||
-      Number(s.purchase_events) > 0
-    );
-  }, [librarySessions, highIntentOnly]);
+    let list = librarySessions;
+
+    if (highIntentOnly) {
+      list = list.filter((s) =>
+        Number(s.atc_events) > 0 ||
+        Number(s.checkout_started_events) > 0 ||
+        Number(s.purchase_events) > 0
+      );
+    }
+
+    if (dropoffStageFilter) {
+      list = list.filter((s) => inferDropoffStageFromSummary(s) === dropoffStageFilter);
+    }
+
+    return list;
+  }, [dropoffStageFilter, highIntentOnly, librarySessions]);
 
   const loadLibrarySessions = useCallback(async (day) => {
     if (!day) return;
@@ -334,6 +429,7 @@ export default function SessionIntelligenceTab({ store }) {
       await Promise.all([
         loadOverview(),
         loadBrief(),
+        loadFlow(libraryDay, flowMode),
         loadSessions(),
         loadEvents(),
         loadLibraryDays(),
@@ -342,7 +438,7 @@ export default function SessionIntelligenceTab({ store }) {
     } finally {
       setLoading(false);
     }
-  }, [loadBrief, loadCampaignPurchases, loadEvents, loadLibraryDays, loadOverview, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadCampaignPurchases, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadSessions]);
 
   useEffect(() => {
     let active = true;
@@ -565,6 +661,10 @@ export default function SessionIntelligenceTab({ store }) {
     }
   }, [analysisLlm.model, analysisLlm.temperature, libraryDay, storeId]);
 
+  const flowTotals = flowData?.totals?.sessions ?? 0;
+  const flowStages = Array.isArray(flowData?.stages) ? flowData.stages : [];
+  const flowClusters = Array.isArray(flowData?.clusters) ? flowData.clusters : [];
+
   return (
 	    <div className="si-root">
 	      <div className="si-header">
@@ -723,6 +823,183 @@ export default function SessionIntelligenceTab({ store }) {
               : 'Generate a daily brief to turn today’s high-intent sessions into friction clusters + fixes.'}
           </div>
         </div>
+      </div>
+
+      <div className="si-card si-flow-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Shop walk</h3>
+          <span className="si-muted">
+            {libraryDay || flowData?.date || '—'}
+            {flowTotals ? ` • ${flowTotals} sessions` : ''}
+          </span>
+        </div>
+
+        <div className="si-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <button
+            className={`si-button ${flowMode === 'all' ? 'si-button-active' : ''}`}
+            type="button"
+            aria-pressed={flowMode === 'all'}
+            onClick={() => setFlowMode('all')}
+            disabled={!libraryDay}
+            title="Flow across all sessions for the selected day."
+          >
+            All sessions
+          </button>
+          <button
+            className={`si-button ${flowMode === 'high_intent_no_purchase' ? 'si-button-active' : ''}`}
+            type="button"
+            aria-pressed={flowMode === 'high_intent_no_purchase'}
+            onClick={() => setFlowMode('high_intent_no_purchase')}
+            disabled={!libraryDay}
+            title="Focus on sessions that added to cart / started checkout, but did not purchase."
+          >
+            High intent (no purchase)
+          </button>
+          <button
+            className="si-button"
+            type="button"
+            onClick={() => loadFlow(libraryDay, flowMode)}
+            disabled={!libraryDay || flowLoading}
+          >
+            {flowLoading ? 'Loading…' : 'Reload'}
+          </button>
+          {dropoffStageFilter ? (
+            <span className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              Filtering day sessions: <span className="si-badge">{FLOW_STAGE_LABELS[dropoffStageFilter] || dropoffStageFilter}</span>
+              <button className="si-button si-button-small" type="button" onClick={() => setDropoffStageFilter('')}>
+                Clear
+              </button>
+            </span>
+          ) : null}
+        </div>
+
+        {flowError ? (
+          <div className="si-empty" style={{ marginTop: 10, color: '#b42318' }}>
+            {flowError}
+          </div>
+        ) : null}
+
+        {!flowError && flowStages.length === 0 ? (
+          <div className="si-empty" style={{ marginTop: 10 }}>
+            {flowLoading ? 'Loading shop walk…' : 'No flow data for this day yet.'}
+          </div>
+        ) : null}
+
+        {flowStages.length > 0 ? (
+          <div className="si-flow">
+            <div className="si-flow-track" aria-hidden="true" />
+            <div className="si-flow-stations">
+              {flowStages.map((stage, idx) => {
+                const reached = Number(stage.reached || 0);
+                const dropoffs = Number(stage.dropoffs || 0);
+                const isLast = idx === flowStages.length - 1;
+                const share = flowTotals > 0 ? reached / flowTotals : 0;
+                const toNext = !isLast && reached > 0 ? Number(stage.advanceToNext || 0) / reached : null;
+                const dwell = stage.p50_dwell_sec ?? stage.avg_dwell_sec ?? null;
+                return (
+                  <div
+                    key={stage.stage || idx}
+                    className={`si-flow-stage ${dropoffStageFilter === stage.stage ? 'si-flow-stage-selected' : ''}`}
+                    title={`${stage.label || stage.stage}\nReached: ${reached}\nDrop-offs: ${dropoffs}\nMedian dwell: ${formatDurationSeconds(stage.p50_dwell_sec)}`}
+                  >
+                    <div className="si-flow-stage-top">
+                      <div className="si-flow-label">{stage.label || FLOW_STAGE_LABELS[stage.stage] || stage.stage}</div>
+                      <div className="si-flow-reached">{reached}</div>
+                    </div>
+                    <div className="si-flow-bar" aria-hidden="true">
+                      <div className="si-flow-bar-fill" style={{ width: `${Math.round(Math.min(1, share) * 100)}%` }} />
+                    </div>
+                    <div className="si-flow-metrics">
+                      <div className="si-flow-metric">
+                        <span className="si-flow-metric-label">To next</span>
+                        <span className="si-flow-metric-value">{toNext === null ? '—' : formatPercent(toNext)}</span>
+                      </div>
+                      <div className="si-flow-metric">
+                        <span className="si-flow-metric-label">Dwell p50</span>
+                        <span className="si-flow-metric-value">{formatDurationSeconds(dwell)}</span>
+                      </div>
+                    </div>
+                    <div className={`si-flow-dropoff ${dropoffs > 0 ? '' : 'si-flow-dropoff-none'}`}>
+                      Drop-offs: {dropoffs}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="si-flow-clusters">
+              <div className="si-card-title" style={{ marginTop: 14 }}>
+                <h3>Drop-off clusters</h3>
+                <span className="si-muted">Click a cluster to filter day sessions</span>
+              </div>
+
+              {flowClusters.length === 0 ? (
+                <div className="si-empty">No drop-off clusters yet.</div>
+              ) : (
+                <div className="si-cluster-grid">
+                  {flowClusters.map((cluster) => (
+                    <div key={cluster.stage} className="si-cluster-card">
+                      <div className="si-cluster-header">
+                        <div>
+                          <div className="si-cluster-title">{cluster.label || FLOW_STAGE_LABELS[cluster.stage] || cluster.stage}</div>
+                          <div className="si-muted" style={{ marginTop: 2 }}>
+                            Dropped <strong>{cluster.dropped}</strong>
+                            {cluster.drop_rate != null ? ` • ${formatPercent(cluster.drop_rate)}` : ''}
+                            {cluster.p50_dwell_sec != null ? ` • Dwell p50 ${formatDurationSeconds(cluster.p50_dwell_sec)}` : ''}
+                          </div>
+                        </div>
+                        <button
+                          className="si-button si-button-small"
+                          type="button"
+                          onClick={() => setDropoffStageFilter(cluster.stage)}
+                        >
+                          Filter
+                        </button>
+                      </div>
+
+                      <div className="si-cluster-chips">
+                        {(cluster.top_devices || []).slice(0, 3).map((item, idx) => (
+                          <span key={`dev-${item.value}-${idx}`} className="si-chip" title="Top device">
+                            {item.value} <strong>{item.count}</strong>
+                          </span>
+                        ))}
+                        {(cluster.top_countries || []).slice(0, 3).map((item, idx) => (
+                          <span key={`cty-${item.value}-${idx}`} className="si-chip" title="Top country">
+                            {item.value} <strong>{item.count}</strong>
+                          </span>
+                        ))}
+                        {(cluster.top_campaigns || []).slice(0, 2).map((item, idx) => (
+                          <span key={`cmp-${item.value}-${idx}`} className="si-chip" title="Top campaign">
+                            {item.value || '—'} <strong>{item.count}</strong>
+                          </span>
+                        ))}
+                      </div>
+
+                      {(cluster.sample_sessions || []).length > 0 ? (
+                        <div className="si-cluster-samples">
+                          {(cluster.sample_sessions || []).slice(0, 6).map((s) => (
+                            <button
+                              key={s.session_id || s.codename}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => {
+                                if (!s.session_id) return;
+                                setLibrarySessionId(s.session_id);
+                              }}
+                              title={s.session_id || ''}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="si-card" style={{ marginBottom: 12 }}>
@@ -986,15 +1263,16 @@ export default function SessionIntelligenceTab({ store }) {
         ) : (
           <table className="si-event-table" style={{ marginTop: 10 }}>
             <thead>
-              <tr>
-                <th>Shopper</th>
-                <th>Last seen</th>
-                <th>Signals</th>
-                <th>Checkout</th>
-                <th>Device</th>
-                <th>Country</th>
-                <th>Campaign</th>
-                <th>AI</th>
+                  <tr>
+                    <th>Shopper</th>
+                    <th>Last seen</th>
+                    <th>Flow</th>
+                    <th>Signals</th>
+                    <th>Checkout</th>
+                    <th>Device</th>
+                    <th>Country</th>
+                    <th>Campaign</th>
+                    <th>AI</th>
                 <th />
               </tr>
             </thead>
@@ -1002,15 +1280,23 @@ export default function SessionIntelligenceTab({ store }) {
               {filteredLibrarySessions.map((s) => {
                 const selected = librarySessionId === s.session_id;
                 const signals = [
+                  s.product_views ? `Product×${s.product_views}` : null,
+                  s.cart_events ? `Cart×${s.cart_events}` : null,
                   s.atc_events ? `ATC×${s.atc_events}` : null,
                   s.checkout_started_events ? `Checkout×${s.checkout_started_events}` : null,
                   s.purchase_events ? `Purchase×${s.purchase_events}` : null
                 ].filter(Boolean).join(' • ') || '—';
+                const inferredStage = inferDropoffStageFromSummary(s);
                 const ai = s.summary ? `${s.primary_reason || 'Insight'} (${Math.round((s.confidence || 0) * 100)}%)` : '—';
                 return (
                   <tr key={s.session_id} className={selected ? 'si-row-selected' : ''}>
                     <td title={s.session_id}>{userLabel(s)}</td>
                     <td>{timeAgo(s.last_seen)}</td>
+                    <td>
+                      <span className={`si-badge ${inferredStage === 'purchase' ? 'si-badge-success' : ''}`}>
+                        {FLOW_STAGE_LABELS[inferredStage] || inferredStage}
+                      </span>
+                    </td>
                     <td>{signals}</td>
                     <td>{s.last_checkout_step ? <span className="si-badge">{normalizeStepLabel(s.last_checkout_step)}</span> : '—'}</td>
                     <td>{s.device_type || '—'}</td>
