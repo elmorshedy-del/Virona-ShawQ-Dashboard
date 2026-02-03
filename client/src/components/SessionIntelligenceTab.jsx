@@ -831,7 +831,7 @@ export default function SessionIntelligenceTab({ store }) {
                 const max = Math.max(...list.map((r) => Number(r.count) || 0), 1);
                 const width = Math.round(((Number(row.count) || 0) / max) * 100);
                 return (
-                  <div key={`${row.value || '—'}-${idx}`} className="si-realtime-bar-row" title={row.value || ''}>
+                  <div key={row.value || idx} className="si-realtime-bar-row" title={row.value || ''}>
                     <div className="si-realtime-bar-label">{row.value || '—'}</div>
                     <div className="si-realtime-bar-track">
                       <div className="si-realtime-bar-fill" style={{ width: `${width}%` }} />
