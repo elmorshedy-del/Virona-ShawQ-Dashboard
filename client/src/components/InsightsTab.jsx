@@ -69,6 +69,28 @@ const INSIGHT_META = {
 
 const easeOut = [0.22, 1, 0.36, 1];
 
+const INSIGHTS_LLM_STORAGE_KEY = 'virona.insights.ask.llm.v1';
+
+function loadInsightsLlmSettings() {
+  try {
+    const raw = window.localStorage.getItem(INSIGHTS_LLM_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function persistInsightsLlmSettings(value) {
+  try {
+    window.localStorage.setItem(INSIGHTS_LLM_STORAGE_KEY, JSON.stringify(value));
+  } catch (_error) {
+    // ignore
+  }
+}
+
 const CARD_SUMMARIES = {
   persona: 'Creative guidance by segment.',
   geo: 'New markets worth testing.',
@@ -645,6 +667,9 @@ export default function InsightsTab({ store, formatCurrency }) {
   const [askContext, setAskContext] = useState(null);
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState('');
+  const [askLlmSettings, setAskLlmSettings] = useState(() => (
+    loadInsightsLlmSettings() || { provider: 'openai', model: '', temperature: 1.0 }
+  ));
   const [methodOverrides, setMethodOverrides] = useState({});
 
   useEffect(() => {
@@ -764,20 +789,61 @@ export default function InsightsTab({ store, formatCurrency }) {
 
     try {
       const question = buildAskPrompt(card, meta);
-      const res = await fetch('/api/ai/analyze', {
+      persistInsightsLlmSettings(askLlmSettings);
+
+      const res = await fetch('/api/ai/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question,
-          store: store?.id || store?.name || 'shawq'
+          store: store?.id || store?.name || 'shawq',
+          mode: 'analyze',
+          llm: askLlmSettings
         })
       });
-      const data = await res.json();
-      if (!data || data.success === false) {
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
         throw new Error(data?.error || 'AI unavailable.');
       }
-      const answer = data.answer || data.text || 'AI response unavailable.';
-      setAskContext((prev) => (prev ? { ...prev, response: answer } : prev));
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        throw new Error('Streaming response is not available.');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          if (!payload.trim()) continue;
+
+          try {
+            const data = JSON.parse(payload);
+            if (data.type === 'delta') {
+              fullText += data.text || '';
+              setAskContext((prev) => (prev ? { ...prev, response: fullText } : prev));
+            } else if (data.type === 'done') {
+              setAskContext((prev) => (prev ? { ...prev, response: fullText, model: data.model || null } : prev));
+            } else if (data.type === 'error') {
+              throw new Error(data.error || 'AI unavailable.');
+            }
+          } catch (_parseError) {
+            // ignore malformed lines
+          }
+        }
+      }
     } catch (error) {
       const message = error?.message || 'AI unavailable.';
       setAskError(message);
@@ -1180,6 +1246,46 @@ export default function InsightsTab({ store, formatCurrency }) {
                   <button type="button" className="insights-ask-close" onClick={handleAskClose} aria-label="Close">
                     <X className="h-4 w-4" />
                   </button>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <select
+                    value={`${askLlmSettings.provider}:${askLlmSettings.model || 'auto'}`}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      if (value === 'openai:auto') {
+                        setAskLlmSettings((prev) => ({ ...prev, provider: 'openai', model: '' }));
+                        return;
+                      }
+                      if (value === 'deepseek:deepseek-chat') {
+                        setAskLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-chat' }));
+                        return;
+                      }
+                      if (value === 'deepseek:deepseek-reasoner') {
+                        setAskLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-reasoner' }));
+                      }
+                    }}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+                    title="AI model"
+                  >
+                    <option value="openai:auto">OpenAI (auto)</option>
+                    <option value="deepseek:deepseek-chat">DeepSeek Chat (Non-thinking)</option>
+                    <option value="deepseek:deepseek-reasoner">DeepSeek Reasoner (Thinking)</option>
+                  </select>
+
+                  {askLlmSettings.provider === 'deepseek' && (
+                    <select
+                      value={String(askLlmSettings.temperature ?? 1.0)}
+                      onChange={(event) => setAskLlmSettings((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+                      title="Temperature"
+                    >
+                      <option value="0">Coding / Math (0.0)</option>
+                      <option value="1">Data Analysis (1.0)</option>
+                      <option value="1.3">General / Translation (1.3)</option>
+                      <option value="1.5">Creative Writing (1.5)</option>
+                    </select>
+                  )}
                 </div>
 
                 <div className="insights-ask-meta">

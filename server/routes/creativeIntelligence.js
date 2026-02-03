@@ -2,6 +2,7 @@ import express from 'express';
 import { getDb } from '../db/database.js';
 import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
 import { askOpenAIChat, streamOpenAIChat } from '../services/openaiService.js';
+import { streamDeepSeekChat } from '../services/deepseekService.js';
 
 const router = express.Router();
 
@@ -336,6 +337,7 @@ router.post('/chat', async (req, res) => {
       settings = {
         model: 'sonnet-4.5',
         reasoning_effort: 'medium',
+        temperature: 1.0,
         streaming: 1,
         verbosity: 'medium',
         tone: 'balanced',
@@ -424,6 +426,51 @@ Extraction Method: ${scriptData.method || 'unknown'}
       'gpt-5.1': 'gpt-5.1-chat-latest'
     };
     const openAIModel = openAIModelMap[modelSelection];
+    const deepSeekModels = new Set(['deepseek-chat', 'deepseek-reasoner']);
+    const deepSeekModel = deepSeekModels.has(modelSelection) ? modelSelection : null;
+    const temperature = Number.isFinite(Number(settings.temperature)) ? Number(settings.temperature) : 1.0;
+
+    if (deepSeekModel) {
+      if (!process.env.DEEPSEEK_API_KEY) {
+        return res.status(500).json({ error: 'DEEPSEEK_API_KEY not configured' });
+      }
+
+      // Always stream DeepSeek (client-side UX expects streaming when using DeepSeek).
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
+
+      let fullResponse = '';
+
+      try {
+        await streamDeepSeekChat({
+          model: deepSeekModel,
+          systemPrompt,
+          messages,
+          maxOutputTokens: 3600,
+          temperature,
+          onDelta: (text) => {
+            fullResponse += text;
+            res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+          }
+        });
+      } catch (err) {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, model: modelSelection })}\n\n`);
+        return res.end();
+      }
+
+      db.prepare(`
+        INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+      `).run(convId, fullResponse, modelSelection);
+
+      db.prepare(`
+        UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+      `).run(convId);
+
+      res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, model: modelSelection })}\n\n`);
+      return res.end();
+    }
 
     if (openAIModel) {
       if (!process.env.OPENAI_API_KEY) {
@@ -664,6 +711,7 @@ router.get('/settings', (req, res) => {
         store,
         model: 'sonnet-4.5',
         reasoning_effort: 'medium',
+        temperature: 1.0,
         streaming: 1,
         verbosity: 'medium',
         tone: 'balanced',
@@ -675,6 +723,7 @@ router.get('/settings', (req, res) => {
         ? JSON.parse(settings.capabilities)
         : settings.capabilities;
       settings.reasoning_effort = settings.reasoning_effort || 'medium';
+      settings.temperature = Number.isFinite(Number(settings.temperature)) ? Number(settings.temperature) : 1.0;
       settings.verbosity = settings.verbosity || 'medium';
     }
 
@@ -686,15 +735,16 @@ router.get('/settings', (req, res) => {
 
 router.put('/settings', (req, res) => {
   try {
-    const { store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities, verbosity } = req.body;
+    const { store, model, reasoning_effort, temperature, streaming, tone, custom_prompt, capabilities, verbosity } = req.body;
     const db = getDb();
 
     db.prepare(`
-      INSERT INTO ai_creative_settings (store, model, reasoning_effort, streaming, tone, custom_prompt, capabilities, verbosity)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO ai_creative_settings (store, model, reasoning_effort, temperature, streaming, tone, custom_prompt, capabilities, verbosity)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(store) DO UPDATE SET
         model = excluded.model,
         reasoning_effort = excluded.reasoning_effort,
+        temperature = excluded.temperature,
         streaming = excluded.streaming,
         tone = excluded.tone,
         custom_prompt = excluded.custom_prompt,
@@ -705,6 +755,7 @@ router.put('/settings', (req, res) => {
       store,
       model || 'sonnet-4.5',
       reasoning_effort || 'medium',
+      Number.isFinite(Number(temperature)) ? Number(temperature) : 1.0,
       streaming ? 1 : 0,
       tone || 'balanced',
       custom_prompt || null,

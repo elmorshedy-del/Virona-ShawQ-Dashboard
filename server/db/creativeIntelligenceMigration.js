@@ -32,6 +32,7 @@ export function runCreativeIntelligenceMigration() {
       store TEXT NOT NULL UNIQUE,
       model TEXT DEFAULT 'sonnet-4.5',
       reasoning_effort TEXT DEFAULT 'medium',
+      temperature REAL DEFAULT 1.0,
       streaming INTEGER DEFAULT 1,
       tone TEXT DEFAULT 'balanced',
       custom_prompt TEXT,
@@ -51,6 +52,11 @@ export function runCreativeIntelligenceMigration() {
   const hasVerbosity = settingsColumns.some(column => column.name === 'verbosity');
   if (!hasVerbosity) {
     db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN verbosity TEXT DEFAULT 'medium'`);
+  }
+
+  const hasTemperature = settingsColumns.some(column => column.name === 'temperature');
+  if (!hasTemperature) {
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN temperature REAL DEFAULT 1.0`);
   }
 
   // Creative chat conversations (separate from main AI chat)

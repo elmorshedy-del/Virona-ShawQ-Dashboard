@@ -256,6 +256,28 @@ ${followupContext}
 User request: ${request}`;
 }
 
+const BUDGET_CALCULATOR_LLM_KEY = 'virona.budgetCalculator.llm.v1';
+
+function loadBudgetCalculatorLlmSettings() {
+  try {
+    const raw = window.localStorage.getItem(BUDGET_CALCULATOR_LLM_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function persistBudgetCalculatorLlmSettings(value) {
+  try {
+    window.localStorage.setItem(BUDGET_CALCULATOR_LLM_KEY, JSON.stringify(value));
+  } catch (_error) {
+    // ignore
+  }
+}
+
 export default function BudgetCalculator({ campaigns = [], periodDays = 30, storeName = '' }) {
   const [inputs, setInputs] = useState({
     spend1: '',
@@ -280,6 +302,9 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   const [gptFollowup, setGptFollowup] = useState('');
   const [gptRequest, setGptRequest] = useState('');
   const [shikiHighlighter, setShikiHighlighter] = useState(null);
+  const [llmSettings, setLlmSettings] = useState(() => (
+    loadBudgetCalculatorLlmSettings() || { provider: 'openai', model: '', temperature: 1.0 }
+  ));
 
   useEffect(() => {
     let isMounted = true;
@@ -299,6 +324,10 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    persistBudgetCalculatorLlmSettings(llmSettings);
+  }, [llmSettings]);
 
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
@@ -673,7 +702,8 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       body: JSON.stringify({
         question: prompt,
         store: storeName || 'vironax',
-        depth: 'deep'
+        depth: 'deep',
+        llm: llmSettings
       })
     });
 
@@ -925,6 +955,45 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         <div className="border-b border-gray-100 px-6 py-4">
           <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (High Effort)</h2>
           <p className="text-xs text-gray-400 mt-1">Auto-insights trigger after campaign autofill, with markdown tables, equations, and comparison insights.</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <select
+              value={`${llmSettings.provider}:${llmSettings.model || 'auto'}`}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value === 'openai:auto') {
+                  setLlmSettings((prev) => ({ ...prev, provider: 'openai', model: '' }));
+                  return;
+                }
+                if (value === 'deepseek:deepseek-chat') {
+                  setLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-chat' }));
+                  return;
+                }
+                if (value === 'deepseek:deepseek-reasoner') {
+                  setLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-reasoner' }));
+                }
+              }}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700"
+              title="AI model"
+            >
+              <option value="openai:auto">OpenAI (auto)</option>
+              <option value="deepseek:deepseek-chat">DeepSeek Chat</option>
+              <option value="deepseek:deepseek-reasoner">DeepSeek Reasoner</option>
+            </select>
+
+            {llmSettings.provider === 'deepseek' && (
+              <select
+                value={String(llmSettings.temperature ?? 1.0)}
+                onChange={(event) => setLlmSettings((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700"
+                title="Temperature"
+              >
+                <option value="0">Coding / Math (0.0)</option>
+                <option value="1">Data Analysis (1.0)</option>
+                <option value="1.3">General / Translation (1.3)</option>
+                <option value="1.5">Creative Writing (1.5)</option>
+              </select>
+            )}
+          </div>
         </div>
         <div className="p-6 space-y-4">
           <div className="rounded-2xl border border-purple-100 bg-purple-50/60 p-4">

@@ -1,6 +1,8 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { askOpenAIChat, streamOpenAIChat } from '../services/openaiService.js';
+import { askDeepSeekChat, streamDeepSeekChat } from '../services/deepseekService.js';
+import { getSessionIntelligenceSessionsForDay } from '../services/sessionIntelligenceService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 const router = express.Router();
@@ -1329,16 +1331,77 @@ router.get('/country-series', (req, res) => {
   }
 });
 
+function isIsoDay(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function summarizeHighIntentSessions(store, dateStr, { limit = 200 } = {}) {
+  if (!store || !dateStr || !isIsoDay(dateStr)) return null;
+  try {
+    const sessions = getSessionIntelligenceSessionsForDay(store, dateStr, limit) || [];
+
+    const highIntent = sessions.filter((s) => ((s.atc_events || 0) > 0 || (s.checkout_started_events || 0) > 0) && (s.purchase_events || 0) === 0);
+    const checkoutNoPurchase = sessions.filter((s) => (s.checkout_started_events || 0) > 0 && (s.purchase_events || 0) === 0);
+    const atcNoPurchase = sessions.filter((s) => (s.atc_events || 0) > 0 && (s.purchase_events || 0) === 0);
+
+    const countBy = (list, key) => {
+      const map = new Map();
+      (list || []).forEach((row) => {
+        const value = row?.[key] || '—';
+        map.set(value, (map.get(value) || 0) + 1);
+      });
+      return Array.from(map.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([value, count]) => ({ value, count }));
+    };
+
+    const examples = highIntent.slice(0, 30).map((s) => ({
+      codename: s.codename,
+      first_seen: s.first_seen,
+      last_seen: s.last_seen,
+      country_code: s.country_code || null,
+      device_type: s.device_type || null,
+      utm_source: s.utm_source || null,
+      utm_campaign: s.utm_campaign || null,
+      atc_events: s.atc_events || 0,
+      checkout_started_events: s.checkout_started_events || 0,
+      purchase_events: s.purchase_events || 0,
+      last_checkout_step: s.last_checkout_step || null,
+      analysis: s.summary
+        ? {
+            primary_reason: s.primary_reason || null,
+            confidence: s.confidence ?? null,
+            summary: s.summary || null
+          }
+        : null
+    }));
+
+    return {
+      date: dateStr,
+      totals: {
+        sessions: sessions.length,
+        high_intent_no_purchase: highIntent.length,
+        atc_no_purchase: atcNoPurchase.length,
+        checkout_no_purchase: checkoutNoPurchase.length
+      },
+      breakdowns: {
+        device_type: countBy(highIntent, 'device_type'),
+        country_code: countBy(highIntent, 'country_code'),
+        last_checkout_step: countBy(highIntent, 'last_checkout_step'),
+        utm_source: countBy(highIntent, 'utm_source'),
+        utm_campaign: countBy(highIntent, 'utm_campaign')
+      },
+      examples
+    };
+  } catch (error) {
+    return { date: dateStr, error: error?.message || 'Failed to load sessions.' };
+  }
+}
+
 router.post('/assistant', async (req, res) => {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: 'AI assistant is not configured. Please add OPENAI_API_KEY and retry.'
-      });
-    }
-
-    const { question, context, stream } = req.body || {};
+    const { question, context, stream, llm, provider, model, temperature } = req.body || {};
     if (!question) {
       return res.status(400).json({
         success: false,
@@ -1346,11 +1409,47 @@ router.post('/assistant', async (req, res) => {
       });
     }
 
+    const llmConfig = llm || {};
+    const selectedProvider = (llmConfig.provider || provider || 'deepseek').toString().toLowerCase();
+    const selectedModel = (llmConfig.model || model || '').toString().trim();
+    const selectedTemperature = llmConfig.temperature ?? temperature;
+
+    const resolvedProvider = selectedProvider === 'openai' ? 'openai' : 'deepseek';
+    const resolvedModel = resolvedProvider === 'deepseek'
+      ? (selectedModel || 'deepseek-reasoner')
+      : 'gpt-4o-mini';
+
+    if (resolvedProvider === 'deepseek' && !process.env.DEEPSEEK_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'AI assistant is not configured. Please add DEEPSEEK_API_KEY and retry.'
+      });
+    }
+
+    if (resolvedProvider === 'openai' && !process.env.OPENAI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'AI assistant is not configured. Please add OPENAI_API_KEY and retry.'
+      });
+    }
+
+    const rawContext = context || {};
+    const store = rawContext.store || rawContext.storeId || rawContext.store_id || null;
+    const sessionDayCandidate =
+      rawContext.finalizedEndDate ||
+      rawContext.period?.end ||
+      rawContext.period?.endDate ||
+      rawContext.period?.until ||
+      rawContext.period?.to ||
+      null;
+    const sessionDay = isIsoDay(sessionDayCandidate) ? sessionDayCandidate : null;
+    const siContext = store && sessionDay ? summarizeHighIntentSessions(store, sessionDay, { limit: 250 }) : null;
+
     const systemPrompt = 'You are an analytics assistant for attribution. Be concise, customer-friendly, and actionable. If data is missing, say so clearly.';
     const messages = [
       {
         role: 'user',
-        content: `Question:\n${question}\n\nContext:\n${JSON.stringify(context || {}, null, 2)}`
+        content: `Question:\n${question}\n\nContext:\n${JSON.stringify({ ...rawContext, sessionIntelligence: siContext }, null, 2)}`
       }
     ];
 
@@ -1361,16 +1460,37 @@ router.post('/assistant', async (req, res) => {
       res.flushHeaders();
 
       try {
-        await streamOpenAIChat({
-          model: 'gpt-4o-mini',
-          systemPrompt,
-          messages,
-          maxOutputTokens: 1200,
-          verbosity: 'low',
-          onDelta: (text) => {
-            res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
-          }
+        console.log('[Attribution] Assistant request', {
+          provider: resolvedProvider,
+          model: resolvedModel,
+          temperature: resolvedProvider === 'deepseek' ? selectedTemperature : undefined,
+          store,
+          sessionDay
         });
+
+        if (resolvedProvider === 'deepseek') {
+          await streamDeepSeekChat({
+            model: resolvedModel,
+            systemPrompt,
+            messages,
+            maxOutputTokens: 1400,
+            temperature: selectedTemperature,
+            onDelta: (text) => {
+              res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+            }
+          });
+        } else {
+          await streamOpenAIChat({
+            model: resolvedModel,
+            systemPrompt,
+            messages,
+            maxOutputTokens: 1200,
+            verbosity: 'low',
+            onDelta: (text) => {
+              res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+            }
+          });
+        }
       } catch (err) {
         res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
         return res.end();
@@ -1380,13 +1500,21 @@ router.post('/assistant', async (req, res) => {
       return res.end();
     }
 
-    const response = await askOpenAIChat({
-      model: 'gpt-4o-mini',
-      systemPrompt,
-      messages,
-      maxOutputTokens: 1200,
-      verbosity: 'low'
-    });
+    const response = resolvedProvider === 'deepseek'
+      ? (await askDeepSeekChat({
+          model: resolvedModel,
+          systemPrompt,
+          messages,
+          maxOutputTokens: 1400,
+          temperature: selectedTemperature
+        })).text
+      : await askOpenAIChat({
+          model: resolvedModel,
+          systemPrompt,
+          messages,
+          maxOutputTokens: 1200,
+          verbosity: 'low'
+        });
 
     return res.json({
       success: true,

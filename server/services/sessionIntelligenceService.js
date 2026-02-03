@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { getDb } from '../db/database.js';
 import { askOpenAIChat } from './openaiService.js';
+import { askDeepSeekChat, normalizeTemperature } from './deepseekService.js';
 
 const RAW_RETENTION_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_RAW_RETENTION_HOURS || '72', 10);
 const ABANDON_AFTER_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_ABANDON_AFTER_HOURS || '24', 10);
@@ -1650,7 +1651,8 @@ function buildAiTimeline(events) {
 export async function analyzeSessionIntelligenceSession({
   store,
   sessionId,
-  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || 'gpt-4o-mini'
+  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || 'gpt-4o-mini',
+  temperature = null
 }) {
   const db = getDb();
   const events = getSessionIntelligenceEventsForSession(store, sessionId, 1200);
@@ -1686,53 +1688,58 @@ export async function analyzeSessionIntelligenceSession({
     '- Evidence must reference concrete events/steps (e.g. \"checkout_started then no further checkout step\").'
   ].join('\n');
 
-  let text = '';
-  let usedModel = model;
-  try {
-    text = await askOpenAIChat({
-      model,
+  const userPayload = JSON.stringify({ store, session_codename: codename, session_id: sessionId, timeline });
+
+  const askWithModel = async (modelToUse) => {
+    if (typeof modelToUse === 'string' && modelToUse.startsWith('deepseek-')) {
+      const safeTemp = normalizeTemperature(temperature, 0.0);
+      const resp = await askDeepSeekChat({
+        model: modelToUse,
+        systemPrompt,
+        messages: [{ role: 'user', content: userPayload }],
+        maxOutputTokens: 900,
+        temperature: safeTemp
+      });
+      return resp.text;
+    }
+
+    return await askOpenAIChat({
+      model: modelToUse,
       systemPrompt,
-      messages: [
-        {
-          role: 'user',
-          content: JSON.stringify({ store, session_codename: codename, session_id: sessionId, timeline })
-        }
-      ],
+      messages: [{ role: 'user', content: userPayload }],
       maxOutputTokens: 900,
       verbosity: 'low'
     });
-  } catch (error) {
-    if (model !== 'gpt-4o-mini') {
-      try {
-        usedModel = 'gpt-4o-mini';
-        text = await askOpenAIChat({
-          model: usedModel,
-          systemPrompt,
-          messages: [
-            {
-              role: 'user',
-              content: JSON.stringify({ store, session_codename: codename, session_id: sessionId, timeline })
-            }
-          ],
-          maxOutputTokens: 900,
-          verbosity: 'low'
-        });
-      } catch (fallbackError) {
-        db.prepare(`
-          UPDATE si_sessions
-          SET analysis_state = 'error', updated_at = datetime('now')
-          WHERE store = ? AND session_id = ?
-        `).run(store, sessionId);
-        return { success: false, error: fallbackError?.message || error?.message || 'AI request failed.' };
-      }
-    } else {
-      db.prepare(`
-        UPDATE si_sessions
-        SET analysis_state = 'error', updated_at = datetime('now')
-        WHERE store = ? AND session_id = ?
-      `).run(store, sessionId);
-      return { success: false, error: error?.message || 'AI request failed.' };
+  };
+
+  const candidates = [];
+  if (model) candidates.push(model);
+  if (model === 'deepseek-reasoner') candidates.push('deepseek-chat');
+  if (model !== 'gpt-4o-mini') candidates.push('gpt-4o-mini');
+
+  let text = '';
+  let usedModel = model;
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      usedModel = candidate;
+      // eslint-disable-next-line no-await-in-loop
+      text = await askWithModel(candidate);
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
     }
+  }
+
+  if (!text) {
+    db.prepare(`
+      UPDATE si_sessions
+      SET analysis_state = 'error', updated_at = datetime('now')
+      WHERE store = ? AND session_id = ?
+    `).run(store, sessionId);
+    return { success: false, error: lastError?.message || 'AI request failed.' };
   }
 
   const parsed = extractJsonObjectFromText(text);
@@ -1786,7 +1793,8 @@ export async function analyzeSessionIntelligenceDay({
   date,
   mode = 'high_intent',
   limit = 20,
-  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || 'gpt-4o-mini'
+  model = process.env.SESSION_INTELLIGENCE_AI_MODEL || 'gpt-4o-mini',
+  temperature = null
 }) {
   const sessions = getSessionIntelligenceSessionsForDay(store, date, 1000);
   const max = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -1814,7 +1822,7 @@ export async function analyzeSessionIntelligenceDay({
 
       const session = selected[idx];
       // eslint-disable-next-line no-await-in-loop
-      const result = await analyzeSessionIntelligenceSession({ store, sessionId: session.session_id, model });
+      const result = await analyzeSessionIntelligenceSession({ store, sessionId: session.session_id, model, temperature });
       results[idx] = {
         session_id: session.session_id,
         codename: session.codename,

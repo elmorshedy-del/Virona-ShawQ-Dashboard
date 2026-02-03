@@ -125,8 +125,10 @@ router.post('/analyze-session', async (req, res) => {
   try {
     const store = req.body?.store || 'shawq';
     const sessionId = req.body?.sessionId;
+    const model = req.body?.model;
+    const temperature = req.body?.temperature;
     if (!sessionId) return res.status(400).json({ success: false, error: 'Missing sessionId' });
-    const result = await analyzeSessionIntelligenceSession({ store, sessionId });
+    const result = await analyzeSessionIntelligenceSession({ store, sessionId, model, temperature });
     if (!result.success) return res.status(500).json(result);
     res.json(result);
   } catch (error) {
@@ -141,8 +143,10 @@ router.post('/analyze-day', async (req, res) => {
     const date = req.body?.date;
     const mode = req.body?.mode || 'high_intent';
     const limit = req.body?.limit ?? 20;
+    const model = req.body?.model;
+    const temperature = req.body?.temperature;
     if (!date) return res.status(400).json({ success: false, error: 'Missing date (YYYY-MM-DD)' });
-    const result = await analyzeSessionIntelligenceDay({ store, date, mode, limit });
+    const result = await analyzeSessionIntelligenceDay({ store, date, mode, limit, model, temperature });
     if (!result.success) return res.status(500).json(result);
     res.json(result);
   } catch (error) {

@@ -5,6 +5,28 @@ import './SessionIntelligenceTab.css';
 const POLL_EVENTS_MS = 1000;
 const POLL_OVERVIEW_MS = 20000;
 
+const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
+
+function loadSessionIntelligenceLlmSettings() {
+  try {
+    const raw = window.localStorage.getItem(SESSION_INTELLIGENCE_LLM_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function persistSessionIntelligenceLlmSettings(value) {
+  try {
+    window.localStorage.setItem(SESSION_INTELLIGENCE_LLM_KEY, JSON.stringify(value));
+  } catch (_error) {
+    // ignore
+  }
+}
+
 const STEP_LABELS = {
   contact: 'Contact',
   shipping: 'Shipping',
@@ -192,6 +214,9 @@ export default function SessionIntelligenceTab({ store }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeLimit, setAnalyzeLimit] = useState(20);
   const [highIntentOnly, setHighIntentOnly] = useState(false);
+  const [analysisLlm, setAnalysisLlm] = useState(() => (
+    loadSessionIntelligenceLlmSettings() || { model: 'gpt-4o-mini', temperature: 0.0 }
+  ));
 
   const [campaignStartDate, setCampaignStartDate] = useState(() => isoDayUtc(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
   const [campaignEndDate, setCampaignEndDate] = useState(() => isoDayUtc(new Date()));
@@ -201,6 +226,10 @@ export default function SessionIntelligenceTab({ store }) {
 
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
+
+  useEffect(() => {
+    persistSessionIntelligenceLlmSettings(analysisLlm);
+  }, [analysisLlm]);
 
   const loadOverview = useCallback(async () => {
     const url = `/api/session-intelligence/overview?store=${encodeURIComponent(storeId)}`;
@@ -466,7 +495,7 @@ export default function SessionIntelligenceTab({ store }) {
       await fetchJson('/api/session-intelligence/analyze-session', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ store: storeId, sessionId })
+        body: JSON.stringify({ store: storeId, sessionId, model: analysisLlm.model, temperature: analysisLlm.temperature })
       });
       await loadLibrarySessions(libraryDay);
     } catch (error) {
@@ -474,7 +503,7 @@ export default function SessionIntelligenceTab({ store }) {
     } finally {
       setAnalyzing(false);
     }
-  }, [libraryDay, loadLibrarySessions, storeId]);
+  }, [analysisLlm.model, analysisLlm.temperature, libraryDay, loadLibrarySessions, storeId]);
 
   const analyzeDay = useCallback(async (mode) => {
     if (!libraryDay) return;
@@ -484,7 +513,14 @@ export default function SessionIntelligenceTab({ store }) {
       await fetchJson('/api/session-intelligence/analyze-day', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ store: storeId, date: libraryDay, mode, limit: analyzeLimit })
+        body: JSON.stringify({
+          store: storeId,
+          date: libraryDay,
+          mode,
+          limit: analyzeLimit,
+          model: analysisLlm.model,
+          temperature: analysisLlm.temperature
+        })
       });
       await loadLibrarySessions(libraryDay);
     } catch (error) {
@@ -492,7 +528,7 @@ export default function SessionIntelligenceTab({ store }) {
     } finally {
       setAnalyzing(false);
     }
-  }, [analyzeLimit, libraryDay, loadLibrarySessions, storeId]);
+  }, [analysisLlm.model, analysisLlm.temperature, analyzeLimit, libraryDay, loadLibrarySessions, storeId]);
 
   return (
 	    <div className="si-root">
@@ -827,6 +863,35 @@ export default function SessionIntelligenceTab({ store }) {
           </label>
 
           <div className="si-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              AI Model
+              <select
+                className="si-select"
+                value={analysisLlm.model}
+                onChange={(e) => setAnalysisLlm((prev) => ({ ...prev, model: e.target.value }))}
+              >
+                <option value="gpt-4o-mini">OpenAI gpt-4o-mini</option>
+                <option value="deepseek-chat">DeepSeek Chat (Non-thinking)</option>
+                <option value="deepseek-reasoner">DeepSeek Reasoner (Thinking)</option>
+              </select>
+            </label>
+
+            {analysisLlm.model.startsWith('deepseek-') && (
+              <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                Temperature
+                <select
+                  className="si-select"
+                  value={String(analysisLlm.temperature ?? 0)}
+                  onChange={(e) => setAnalysisLlm((prev) => ({ ...prev, temperature: Number(e.target.value) }))}
+                >
+                  <option value="0">0.0</option>
+                  <option value="1">1.0</option>
+                  <option value="1.3">1.3</option>
+                  <option value="1.5">1.5</option>
+                </select>
+              </label>
+            )}
+
             <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
               Limit
               <input
