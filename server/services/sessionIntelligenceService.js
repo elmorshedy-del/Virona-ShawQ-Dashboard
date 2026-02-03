@@ -1328,6 +1328,157 @@ export function getSessionIntelligenceOverview(store) {
   };
 }
 
+function topCountsFromMap(map, limit = 10) {
+  const max = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
+  return Array.from(map.entries())
+    .filter(([key]) => key != null && String(key).trim() !== '')
+    .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+    .slice(0, max)
+    .map(([value, count]) => ({ value, count }));
+}
+
+export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 30, limit = 10 } = {}) {
+  const db = getDb();
+  const normalizedStore = safeString(store).trim() || 'shawq';
+
+  const window = Math.min(Math.max(parseInt(windowMinutes, 10) || 30, 1), 180);
+  const max = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
+  const windowExpr = `-${window} minutes`;
+
+  const totals = db.prepare(`
+    SELECT
+      COUNT(*) AS events,
+      COUNT(DISTINCT session_id) AS sessions,
+      MAX(created_at) AS last_event_at
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= datetime('now', ?)
+  `).get(normalizedStore, windowExpr);
+
+  const latest = db.prepare(`
+    WITH recent AS (
+      SELECT session_id, MAX(id) AS last_id
+      FROM si_events
+      WHERE store = ?
+        AND created_at >= datetime('now', ?)
+      GROUP BY session_id
+    )
+    SELECT
+      e.session_id,
+      e.client_id,
+      e.shopper_number,
+      e.event_name,
+      e.event_ts,
+      e.created_at,
+      e.page_path,
+      e.checkout_step,
+      e.device_type,
+      e.country_code,
+      e.utm_source,
+      e.utm_campaign
+    FROM si_events e
+    JOIN recent r ON r.last_id = e.id
+    WHERE e.store = ?
+    ORDER BY e.id DESC
+  `).all(normalizedStore, windowExpr, normalizedStore);
+
+  const visitors = new Set();
+  const stageCounts = new Map();
+  const pageCounts = new Map();
+  const sourceCounts = new Map();
+  const campaignCounts = new Map();
+  const deviceCounts = new Map();
+  const countryCounts = new Map();
+
+  for (const row of latest) {
+    const shopperNumber = Number(row?.shopper_number);
+    const shopperKey = Number.isFinite(shopperNumber) && shopperNumber > 0
+      ? `shopper:${shopperNumber}`
+      : row?.client_id
+        ? `client:${row.client_id}`
+        : row?.session_id
+          ? `session:${row.session_id}`
+          : null;
+    if (shopperKey) visitors.add(shopperKey);
+
+    const stage = stageFromEvent({
+      eventName: row?.event_name,
+      pagePath: row?.page_path,
+      checkoutStep: row?.checkout_step
+    }) || 'landing';
+    stageCounts.set(stage, (stageCounts.get(stage) || 0) + 1);
+
+    const page = safeString(row?.page_path).trim();
+    if (page) pageCounts.set(page, (pageCounts.get(page) || 0) + 1);
+
+    const source = safeString(row?.utm_source).trim() || 'Direct';
+    sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1);
+
+    const campaign = safeString(row?.utm_campaign).trim() || (source === 'Direct' ? 'Direct' : '(not set)');
+    campaignCounts.set(campaign, (campaignCounts.get(campaign) || 0) + 1);
+
+    const device = safeString(row?.device_type).trim() || '—';
+    deviceCounts.set(device, (deviceCounts.get(device) || 0) + 1);
+
+    const country = safeString(row?.country_code).trim().toUpperCase();
+    if (country) countryCounts.set(country, (countryCounts.get(country) || 0) + 1);
+  }
+
+  const topEvents = db.prepare(`
+    SELECT event_name AS name, COUNT(*) AS count
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= datetime('now', ?)
+    GROUP BY event_name
+    ORDER BY count DESC
+    LIMIT ?
+  `).all(normalizedStore, windowExpr, max);
+
+  const keyEventRows = db.prepare(`
+    SELECT lower(event_name) AS name, COUNT(*) AS count
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= datetime('now', ?)
+      AND lower(event_name) IN (
+        'product_added_to_cart','add_to_cart','added_to_cart','cart_add','atc',
+        'checkout_started','checkout_initiated','begin_checkout',
+        'checkout_completed','purchase','order_completed','order_placed'
+      )
+    GROUP BY lower(event_name)
+  `).all(normalizedStore, windowExpr);
+
+  const sumNamed = (names) => {
+    const set = new Set(names.map((n) => String(n).toLowerCase()));
+    return keyEventRows.reduce((sum, row) => (set.has(row.name) ? sum + (Number(row.count) || 0) : sum), 0);
+  };
+
+  const keyEvents = {
+    atc: sumNamed(['product_added_to_cart', 'add_to_cart', 'added_to_cart', 'cart_add', 'atc']),
+    checkout_started: sumNamed(['checkout_started', 'checkout_initiated', 'begin_checkout']),
+    purchase: sumNamed(['checkout_completed', 'purchase', 'order_completed', 'order_placed'])
+  };
+
+  return {
+    store: normalizedStore,
+    windowMinutes: window,
+    updatedAt: new Date().toISOString(),
+    lastEventAt: totals?.last_event_at || null,
+    activeSessions: latest.length,
+    activeShoppers: visitors.size,
+    events: Number(totals?.events) || 0,
+    breakdowns: {
+      stages: topCountsFromMap(stageCounts, 20).map((row) => ({ stage: row.value, count: row.count })),
+      pages: topCountsFromMap(pageCounts, max),
+      sources: topCountsFromMap(sourceCounts, max),
+      campaigns: topCountsFromMap(campaignCounts, max),
+      devices: topCountsFromMap(deviceCounts, max),
+      countries: topCountsFromMap(countryCounts, 30)
+    },
+    topEvents,
+    keyEvents
+  };
+}
+
 export function getSessionIntelligenceRecentEvents(store, limit = 80) {
   const db = getDb();
   ensureRecentShopperNumbers(store);
