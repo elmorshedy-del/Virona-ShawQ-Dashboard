@@ -1144,11 +1144,15 @@ export default function CreativeIntelligence({ store }) {
     const openAiModels = new Set(['gpt-5.1', 'gpt-5.2', 'gpt-5.2-pro']);
     const openAiStreamingModels = new Set(['gpt-5.2', 'gpt-5.2-pro']);
     const isOpenAI = openAiModels.has(selectedModel);
+    const isDeepSeek = typeof selectedModel === 'string' && selectedModel.startsWith('deepseek-');
     const shouldStream = (settings?.streaming && !isOpenAI) || openAiStreamingModels.has(selectedModel);
     const reasoningEffort = settings?.reasoning_effort || 'medium';
-    const buildModelLabel = (model = null) => (
-      isOpenAI ? `OpenAI ${model || selectedModel}` : `Claude: ${model || selectedModel}`
-    );
+    const buildModelLabel = (model = null) => {
+      const labelModel = model || selectedModel;
+      if (isOpenAI) return `OpenAI ${labelModel}`;
+      if (isDeepSeek) return `DeepSeek ${labelModel}`;
+      return `Claude: ${labelModel}`;
+    };
     const requestPayload = {
       store: storeId,
       message: userMessage,
@@ -1976,20 +1980,23 @@ function SettingsModal({ settings, onSave, onClose }) {
   const [form, setForm] = useState({
     model: settings?.model || 'sonnet-4.5',
     reasoning_effort: settings?.reasoning_effort || 'medium',
-    streaming: settings?.streaming ?? true,
+    temperature: settings?.temperature ?? 1.0,
+    streaming: typeof settings?.model === 'string' && settings.model.startsWith('deepseek-') ? true : (settings?.streaming ?? true),
     autoScroll: settings?.autoScroll ?? true,
     capabilities: settings?.capabilities || { analyze: true, clone: true, ideate: true, audit: true }
   });
 
   const openAiEffortOptions = { 'gpt-5.2': ['none', 'medium', 'xhigh'], 'gpt-5.2-pro': ['none', 'medium', 'xhigh'], 'gpt-5.1': ['medium'] };
   const isOpenAiModel = ['gpt-5.2', 'gpt-5.2-pro', 'gpt-5.1'].includes(form.model);
+  const isDeepSeekModel = typeof form.model === 'string' && form.model.startsWith('deepseek-');
   const allowedEfforts = openAiEffortOptions[form.model] || ['medium'];
 
   const updateModel = (value) => {
     setForm(prev => ({
       ...prev,
       model: value,
-      reasoning_effort: openAiEffortOptions[value]?.includes(prev.reasoning_effort) ? prev.reasoning_effort : (openAiEffortOptions[value]?.[0] || prev.reasoning_effort)
+      reasoning_effort: openAiEffortOptions[value]?.includes(prev.reasoning_effort) ? prev.reasoning_effort : (openAiEffortOptions[value]?.[0] || prev.reasoning_effort),
+      streaming: typeof value === 'string' && value.startsWith('deepseek-') ? true : prev.streaming
     }));
   };
 
@@ -2020,7 +2027,9 @@ function SettingsModal({ settings, onSave, onClose }) {
                 { value: 'sonnet-4.5', name: 'Claude Sonnet 4.5', badge: 'Recommended', badgeColor: colors.accent, desc: 'Fast, sharp insights' },
                 { value: 'opus-4.5', name: 'Claude Opus 4.5', badge: 'Premium', badgeColor: '#F59E0B', desc: 'Deep reasoning' },
                 { value: 'gpt-5.2', name: 'GPT-5.2', badge: 'OpenAI', badgeColor: '#10B981', desc: 'Balanced reasoning' },
-                { value: 'gpt-5.2-pro', name: 'GPT-5.2 Pro', badge: 'OpenAI Pro', badgeColor: '#10B981', desc: 'Maximum reasoning' }
+                { value: 'gpt-5.2-pro', name: 'GPT-5.2 Pro', badge: 'OpenAI Pro', badgeColor: '#10B981', desc: 'Maximum reasoning' },
+                { value: 'deepseek-chat', name: 'DeepSeek Chat', badge: 'DeepSeek', badgeColor: '#0EA5E9', desc: 'Non-thinking mode (fast)' },
+                { value: 'deepseek-reasoner', name: 'DeepSeek Reasoner', badge: 'DeepSeek', badgeColor: '#0EA5E9', desc: 'Thinking mode (best conclusions)' }
               ].map(m => (
                 <label
                   key={m.value}
@@ -2055,6 +2064,24 @@ function SettingsModal({ settings, onSave, onClose }) {
             </div>
           )}
 
+          {/* Temperature (DeepSeek only) */}
+          {isDeepSeekModel && (
+            <div>
+              <label className="block text-sm font-semibold mb-2" style={{ color: colors.text }}>Temperature</label>
+              <select
+                value={String(form.temperature)}
+                onChange={(e) => setForm(prev => ({ ...prev, temperature: Number(e.target.value) }))}
+                className="w-full px-4 py-3 text-sm rounded-xl border focus:outline-none"
+                style={{ borderColor: colors.border }}
+              >
+                <option value="0">Coding / Math (0.0)</option>
+                <option value="1">Data Analysis (1.0)</option>
+                <option value="1.3">General / Translation (1.3)</option>
+                <option value="1.5">Creative Writing (1.5)</option>
+              </select>
+            </div>
+          )}
+
           {/* Capabilities */}
           <div>
             <label className="block text-sm font-semibold mb-3" style={{ color: colors.text }}>Capabilities</label>
@@ -2082,9 +2109,17 @@ function SettingsModal({ settings, onSave, onClose }) {
           <label className="flex items-center justify-between p-4 rounded-2xl border cursor-pointer hover:bg-gray-50" style={{ borderColor: colors.border }}>
             <div>
               <div className="font-medium" style={{ color: colors.text }}>Streaming Responses</div>
-              <div className="text-sm" style={{ color: colors.textSecondary }}>See responses as they generate</div>
+              <div className="text-sm" style={{ color: colors.textSecondary }}>
+                {isDeepSeekModel ? 'DeepSeek always streams.' : 'See responses as they generate'}
+              </div>
             </div>
-            <input type="checkbox" checked={form.streaming} onChange={(e) => setForm(prev => ({ ...prev, streaming: e.target.checked }))} className="w-5 h-5 accent-indigo-500" />
+            <input
+              type="checkbox"
+              checked={form.streaming}
+              disabled={isDeepSeekModel}
+              onChange={(e) => setForm(prev => ({ ...prev, streaming: e.target.checked }))}
+              className="w-5 h-5 accent-indigo-500 disabled:opacity-60"
+            />
           </label>
 
           {/* Auto-scroll Toggle */}

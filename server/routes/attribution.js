@@ -1,6 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { askOpenAIChat, streamOpenAIChat } from '../services/openaiService.js';
+import { askDeepSeekChat, streamDeepSeekChat } from '../services/deepseekService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 
 const router = express.Router();
@@ -1331,14 +1332,7 @@ router.get('/country-series', (req, res) => {
 
 router.post('/assistant', async (req, res) => {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: 'AI assistant is not configured. Please add OPENAI_API_KEY and retry.'
-      });
-    }
-
-    const { question, context, stream } = req.body || {};
+    const { question, context, stream, llm, provider, model, temperature } = req.body || {};
     if (!question) {
       return res.status(400).json({
         success: false,
@@ -1346,11 +1340,38 @@ router.post('/assistant', async (req, res) => {
       });
     }
 
+    const llmConfig = llm || {};
+    const selectedProvider = (llmConfig.provider || provider || 'deepseek').toString().toLowerCase();
+    const selectedModel = (llmConfig.model || model || '').toString().trim();
+    const selectedTemperature = llmConfig.temperature ?? temperature;
+
+    const resolvedProvider = selectedProvider === 'openai' ? 'openai' : 'deepseek';
+    const resolvedModel = resolvedProvider === 'deepseek'
+      ? (selectedModel || 'deepseek-reasoner')
+      : 'gpt-4o-mini';
+
+    if (resolvedProvider === 'deepseek' && !process.env.DEEPSEEK_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'AI assistant is not configured. Please add DEEPSEEK_API_KEY and retry.'
+      });
+    }
+
+    if (resolvedProvider === 'openai' && !process.env.OPENAI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'AI assistant is not configured. Please add OPENAI_API_KEY and retry.'
+      });
+    }
+
+    const rawContext = context || {};
+    const store = rawContext.store || rawContext.storeId || rawContext.store_id || null;
+
     const systemPrompt = 'You are an analytics assistant for attribution. Be concise, customer-friendly, and actionable. If data is missing, say so clearly.';
     const messages = [
       {
         role: 'user',
-        content: `Question:\n${question}\n\nContext:\n${JSON.stringify(context || {}, null, 2)}`
+        content: `Question:\n${question}\n\nContext:\n${JSON.stringify(rawContext, null, 2)}`
       }
     ];
 
@@ -1361,16 +1382,36 @@ router.post('/assistant', async (req, res) => {
       res.flushHeaders();
 
       try {
-        await streamOpenAIChat({
-          model: 'gpt-4o-mini',
-          systemPrompt,
-          messages,
-          maxOutputTokens: 1200,
-          verbosity: 'low',
-          onDelta: (text) => {
-            res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
-          }
+        console.log('[Attribution] Assistant request', {
+          provider: resolvedProvider,
+          model: resolvedModel,
+          temperature: resolvedProvider === 'deepseek' ? selectedTemperature : undefined,
+          store
         });
+
+        if (resolvedProvider === 'deepseek') {
+          await streamDeepSeekChat({
+            model: resolvedModel,
+            systemPrompt,
+            messages,
+            maxOutputTokens: 1400,
+            temperature: selectedTemperature,
+            onDelta: (text) => {
+              res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+            }
+          });
+        } else {
+          await streamOpenAIChat({
+            model: resolvedModel,
+            systemPrompt,
+            messages,
+            maxOutputTokens: 1200,
+            verbosity: 'low',
+            onDelta: (text) => {
+              res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+            }
+          });
+        }
       } catch (err) {
         res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
         return res.end();
@@ -1380,13 +1421,21 @@ router.post('/assistant', async (req, res) => {
       return res.end();
     }
 
-    const response = await askOpenAIChat({
-      model: 'gpt-4o-mini',
-      systemPrompt,
-      messages,
-      maxOutputTokens: 1200,
-      verbosity: 'low'
-    });
+    const response = resolvedProvider === 'deepseek'
+      ? (await askDeepSeekChat({
+          model: resolvedModel,
+          systemPrompt,
+          messages,
+          maxOutputTokens: 1400,
+          temperature: selectedTemperature
+        })).text
+      : await askOpenAIChat({
+          model: resolvedModel,
+          systemPrompt,
+          messages,
+          maxOutputTokens: 1200,
+          verbosity: 'low'
+        });
 
     return res.json({
       success: true,

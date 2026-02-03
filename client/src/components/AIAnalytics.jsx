@@ -19,6 +19,28 @@ import {
   useReactivationCandidates
 } from '../features/meta-awareness';
 
+const AI_ANALYTICS_LLM_KEY = 'virona.aiAnalytics.llm.v1';
+
+function loadAiAnalyticsLlmSettings() {
+  try {
+    const raw = window.localStorage.getItem(AI_ANALYTICS_LLM_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function persistAiAnalyticsLlmSettings(value) {
+  try {
+    window.localStorage.setItem(AI_ANALYTICS_LLM_KEY, JSON.stringify(value));
+  } catch (_error) {
+    // ignore
+  }
+}
+
 export default function AIAnalytics({ store, selectedStore, startDate, endDate }) {
   // Support both 'store' and 'selectedStore' props for backward compatibility
   const activeStore = store?.id || selectedStore || 'vironax';
@@ -32,6 +54,9 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
   const [activeMode, setActiveMode] = useState('ask');
   const [insightMode, setInsightMode] = useState('balanced'); // 'instant', 'fast', 'balanced', 'max'
   const [showReactivation, setShowReactivation] = useState(true); // Show reactivation panel
+  const [llmSettings, setLlmSettings] = useState(() => (
+    loadAiAnalyticsLlmSettings() || { provider: 'openai', model: '', temperature: 1.0 }
+  ));
   const messagesEndRef = useRef(null);
 
   // Use reactivation candidates hook
@@ -51,6 +76,10 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
     const isAnyStreaming = messages.some(m => m.isStreaming);
     scrollToBottom(isAnyStreaming);
   }, [messages]);
+
+  useEffect(() => {
+    persistAiAnalyticsLlmSettings(llmSettings);
+  }, [llmSettings]);
 
   // Mode configurations with pillars
   // UPDATED: Added reactivation pillars to relevant modes
@@ -157,6 +186,7 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
         question: currentInput,
         store: activeStore,
         mode: streamMode,
+        llm: llmSettings,
         startDate: startDate || null,
         endDate: endDate || null
       };
@@ -519,6 +549,45 @@ export default function AIAnalytics({ store, selectedStore, startDate, endDate }
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <select
+                  value={`${llmSettings.provider}:${llmSettings.model || 'auto'}`}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (value === 'openai:auto') {
+                      setLlmSettings((prev) => ({ ...prev, provider: 'openai', model: '' }));
+                      return;
+                    }
+                    if (value === 'deepseek:deepseek-chat') {
+                      setLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-chat' }));
+                      return;
+                    }
+                    if (value === 'deepseek:deepseek-reasoner') {
+                      setLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-reasoner' }));
+                    }
+                  }}
+                  className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+                  title="AI model"
+                >
+                  <option value="openai:auto">OpenAI (auto)</option>
+                  <option value="deepseek:deepseek-chat">DeepSeek Chat</option>
+                  <option value="deepseek:deepseek-reasoner">DeepSeek Reasoner</option>
+                </select>
+
+                {llmSettings.provider === 'deepseek' && (
+                  <select
+                    value={String(llmSettings.temperature ?? 1.0)}
+                    onChange={(event) => setLlmSettings((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
+                    className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+                    title="Temperature"
+                  >
+                    <option value="0">0.0</option>
+                    <option value="1">1.0</option>
+                    <option value="1.3">1.3</option>
+                    <option value="1.5">1.5</option>
+                  </select>
+                )}
+              </div>
               {/* Reactivation indicator in header */}
               {hasReactivationCandidates && (
                 <button

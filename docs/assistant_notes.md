@@ -51,14 +51,10 @@ I’ll keep it updated after each code change during this session.
 - Dashboard: Core analytics hub with KPIs, funnel diagnostics, geo/campaign trends, time-of-day + day-of-week insights, and Meta breakdowns. Endpoints: `GET /api/analytics/dashboard`, `GET /api/analytics/countries`, `GET /api/analytics/countries/trends`, `GET /api/analytics/campaigns/trends`, `GET /api/analytics/newyork/trends`, `GET /api/analytics/time-of-day`, `GET /api/analytics/days-of-week`, `GET /api/analytics/funnel-diagnostics`, `GET /api/analytics/campaigns/by-*` (including age_gender), `GET /api/analytics/meta-ad-manager`.
 - Metrics Charts: Bar charts by campaign/ad/country using `metaAdManagerData` (CTR, CPC, ROAS, CAC, AOV, etc). No direct fetch; uses data already loaded by Dashboard.
 - Attribution: Date-ranged attribution dashboard with country drawer and chat assistant. Endpoints: `GET /api/attribution/summary`, `GET /api/attribution/country-series`.
-- Insights: “Insight Lab” research feed with signal fusion, radar, narrative brief, budget guidance, and Ask AI explainer. Endpoints: `GET /api/insights`, `POST /api/ai/analyze`.
-- Session Intelligence: Live session/event stream with polling, library replay, and AI analysis of sessions/days. Endpoints: `GET /api/session-intelligence/overview`, `/brief`, `/events`, `/sessions`, `/days`, `/sessions-by-day`, `/events-by-day`, `/purchases-by-campaign`; `POST /api/session-intelligence/analyze-session`, `/analyze-day`.
+- Insights: “Insight Lab” research feed with signal fusion, radar, narrative brief, budget guidance, and Ask AI explainer. Endpoints: `GET /api/insights`, `POST /api/ai/stream` (Ask AI).
+- Session Intelligence: Live session/event stream with polling, library replay, AI analysis of sessions/days, and an AI-generated daily brief (Clarity-style). Endpoints: `GET /api/session-intelligence/overview`, `/brief` (optional `?date=`), `/events`, `/sessions`, `/days`, `/sessions-by-day`, `/events-by-day`, `/purchases-by-campaign`; `POST /api/session-intelligence/analyze-session`, `/analyze-day`, `/brief/generate`.
 - NeoMeta: Static “Blueprint” + “Control Deck” concept UI for Meta campaign planning. No backend calls.
-<<<<<<< HEAD
 - Customer Insights: KPI + cohort/retention/bundle/discount sections with charts and insight cards. Includes Meta Demographics module (`GET /api/meta-demographics`). Customer data loaded via `GET /api/customer-insights`.
-=======
-- Customer Insights: KPI + cohort/retention/bundle/discount sections with charts and insight cards. Includes Meta Demographics module (`GET /api/meta-demographics`). Customer data loaded via `GET /api/customer-insights`.
->>>>>>> 46ae564 (Add Meta Demographics module)
 - Budget Efficiency: Efficiency status, CAC/spend/ROAS trends, and recommendations. Endpoints: `GET /api/analytics/efficiency`, `GET /api/analytics/efficiency/trends`, `GET /api/analytics/recommendations`.
 - Budget Intelligence: Start budget planner + live scale/hold/cut guidance and learning map. Data loaded in App via `GET /api/budget-intelligence`.
 - Manual Data: Manual orders + spend overrides + CSV Meta import and bulk delete tools. Endpoints: `GET/POST/DELETE /api/manual`, `GET/POST/DELETE /api/manual/spend`, `POST /api/manual/delete-bulk`, `POST /api/analytics/meta/import`, `DELETE /api/analytics/meta/clear`.
@@ -139,3 +135,5 @@ flowchart LR
 - 2026-02-02: Fixed KPI card text overflow/clamping in Customer Insights by adding `line-clamp-*` utilities and tightening KPI typography.
 - 2026-02-03: Added Meta Demographics module (API + UI) under Customer Insights.
 - 2026-02-03: Updated Customer Insights KPI cards to auto-scale value text based on length.
+- 2026-02-03: Added DeepSeek (OpenAI-compatible) as an additional AI provider (`deepseek-chat`, `deepseek-reasoner`) with streaming + temperature presets across Attribution Assistant, Insights Ask AI, AI Analytics, Budget Calculator, Creative Intelligence/Analysis settings, and Session Intelligence analysis. Added `ai_creative_settings.temperature` support.
+- 2026-02-03: Session Intelligence: added AI-generated daily brief generation (ingests all high-intent sessions for the selected day and outputs Clarity-style conclusions + fixes). Endpoint: `POST /api/session-intelligence/brief/generate`.

@@ -15,6 +15,28 @@ const MODE_CONFIG = {
   }
 };
 
+const LLM_STORAGE_KEY = 'virona.attribution.assistant.llm.v1';
+
+function loadLlmSettings() {
+  try {
+    const raw = window.localStorage.getItem(LLM_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function persistLlmSettings(value) {
+  try {
+    window.localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(value));
+  } catch (_error) {
+    // ignore
+  }
+}
+
 function buildEmptyMessage(role, content) {
   return { id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, role, content };
 }
@@ -85,6 +107,9 @@ export default function AttributionChatDrawer({
   const scrollRef = useRef(null);
 
   const modeConfig = MODE_CONFIG[mode] || MODE_CONFIG.assistant;
+  const [llmSettings, setLlmSettings] = useState(() => (
+    loadLlmSettings() || { provider: 'deepseek', model: 'deepseek-reasoner', temperature: 1.0 }
+  ));
 
   const promptContext = useMemo(() => context || {}, [context]);
 
@@ -103,6 +128,11 @@ export default function AttributionChatDrawer({
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, open]);
 
+  useEffect(() => {
+    if (!open) return;
+    persistLlmSettings(llmSettings);
+  }, [llmSettings, open]);
+
   const handleSend = useCallback(async (value) => {
     const content = value.trim();
     if (!content || streaming) return;
@@ -118,7 +148,11 @@ export default function AttributionChatDrawer({
     try {
       await streamSseResponse({
         endpoint: modeConfig.endpoint,
-        payload: { question: content, context: promptContext },
+        payload: {
+          question: content,
+          context: promptContext,
+          llm: mode === 'assistant' ? llmSettings : undefined
+        },
         onDelta: (delta) => {
           setMessages((prev) => {
             const next = [...prev];
@@ -143,7 +177,7 @@ export default function AttributionChatDrawer({
     } finally {
       setStreaming(false);
     }
-  }, [modeConfig.endpoint, promptContext, streaming]);
+  }, [mode, llmSettings, modeConfig.endpoint, promptContext, streaming]);
 
   useEffect(() => {
     if (!open || !autoPrompt || autoPromptRef.current || messages.length) return;
@@ -165,6 +199,47 @@ export default function AttributionChatDrawer({
                 <div className="text-xs text-slate-500 mt-1">
                   {subtitle || modeConfig.label}
                 </div>
+                {mode === 'assistant' && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <select
+                      value={`${llmSettings.provider}:${llmSettings.model || 'auto'}`}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        if (value === 'openai:auto') {
+                          setLlmSettings((prev) => ({ ...prev, provider: 'openai', model: '' }));
+                          return;
+                        }
+                        if (value === 'deepseek:deepseek-chat') {
+                          setLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-chat' }));
+                          return;
+                        }
+                        if (value === 'deepseek:deepseek-reasoner') {
+                          setLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-reasoner' }));
+                        }
+                      }}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+                      title="AI model"
+                    >
+                      <option value="deepseek:deepseek-reasoner">DeepSeek Reasoner (Thinking)</option>
+                      <option value="deepseek:deepseek-chat">DeepSeek Chat (Non-thinking)</option>
+                      <option value="openai:auto">OpenAI (gpt-4o-mini)</option>
+                    </select>
+
+                    {llmSettings.provider === 'deepseek' && (
+                      <select
+                        value={String(llmSettings.temperature ?? 1.0)}
+                        onChange={(event) => setLlmSettings((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+                        title="Temperature"
+                      >
+                        <option value="0">Coding / Math (0.0)</option>
+                        <option value="1">Data Analysis (1.0)</option>
+                        <option value="1.3">General / Translation (1.3)</option>
+                        <option value="1.5">Creative Writing (1.5)</option>
+                      </select>
+                    )}
+                  </div>
+                )}
               </div>
               <Dialog.Close
                 className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 shadow-sm transition hover:text-slate-900"
