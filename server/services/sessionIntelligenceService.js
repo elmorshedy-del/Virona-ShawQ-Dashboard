@@ -171,14 +171,90 @@ function safeJsonParse(value) {
   }
 }
 
+function stripCodeFences(text) {
+  return safeString(text)
+    .replace(/```json/gi, '```')
+    .replace(/```/g, '')
+    .trim();
+}
+
+function findFirstJsonObjectSubstring(text) {
+  const raw = safeString(text);
+  if (!raw) return null;
+
+  for (let start = 0; start < raw.length; start += 1) {
+    if (raw[start] !== '{') continue;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = start; i < raw.length; i += 1) {
+      const ch = raw[i];
+
+      if (inString) {
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escape = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (ch === '{') {
+        depth += 1;
+        continue;
+      }
+
+      if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return raw.slice(start, i + 1);
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function removeTrailingCommas(jsonText) {
+  // Best-effort cleanup for common model mistakes. This is not a full JSON5 parser.
+  return safeString(jsonText).replace(/,\s*([}\]])/g, '$1');
+}
+
 function extractJsonObjectFromText(text) {
   const raw = safeString(text).trim();
   if (!raw) return null;
   const direct = safeJsonParse(raw);
   if (direct && typeof direct === 'object') return direct;
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  return safeJsonParse(match[0]);
+
+  const cleaned = stripCodeFences(raw);
+  const cleanedDirect = safeJsonParse(cleaned);
+  if (cleanedDirect && typeof cleanedDirect === 'object') return cleanedDirect;
+
+  const candidate = findFirstJsonObjectSubstring(cleaned) || findFirstJsonObjectSubstring(raw);
+  if (!candidate) return null;
+
+  const parsed = safeJsonParse(candidate);
+  if (parsed && typeof parsed === 'object') return parsed;
+
+  const repaired = removeTrailingCommas(candidate);
+  const repairedParsed = safeJsonParse(repaired);
+  if (repairedParsed && typeof repairedParsed === 'object') return repairedParsed;
+
+  return null;
 }
 
 function makeSessionCodename(sessionId) {
@@ -1523,27 +1599,73 @@ export async function generateSessionIntelligenceDailyBrief({
 
   const userPayload = JSON.stringify(context, null, 2);
 
-  let completion;
-  try {
-    completion = await generateDailyBriefWithModel({
-      model,
-      temperature,
-      systemPrompt,
-      userPayload
-    });
-  } catch (error) {
-    return { success: false, error: error?.message || 'AI request failed.' };
+  const repairSystemPrompt = [
+    'You are a JSON repair tool.',
+    'Convert the input into STRICT valid JSON only (no markdown, no prose).',
+    'The output must match this schema exactly:',
+    '{',
+    '  "content": string,',
+    '  "top_reasons": [ { "reason": string, "confidence": number, "evidence": string[], "fixes": string[] } ]',
+    '}'
+  ].join('\n');
+
+  const candidates = [];
+  if (model) candidates.push(model);
+  if (model === 'deepseek-reasoner') candidates.push('deepseek-chat');
+  if (model !== 'gpt-4o-mini') candidates.push('gpt-4o-mini');
+
+  let completion = null;
+  let parsed = null;
+  let usedModel = model;
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      completion = await generateDailyBriefWithModel({
+        model: candidate,
+        temperature,
+        systemPrompt,
+        userPayload
+      });
+
+      usedModel = completion.model || candidate;
+      parsed = extractJsonObjectFromText(completion.text);
+      if (parsed && typeof parsed === 'object') break;
+
+      // One repair attempt, deterministic (helps DeepSeek Reasoner return strict JSON).
+      // eslint-disable-next-line no-await-in-loop
+      const repairCompletion = await generateDailyBriefWithModel({
+        model: candidate,
+        temperature: 0.0,
+        systemPrompt: repairSystemPrompt,
+        userPayload: `Fix the following output into valid JSON only:\n\n${completion.text}`
+      });
+
+      usedModel = repairCompletion.model || candidate;
+      parsed = extractJsonObjectFromText(repairCompletion.text);
+      if (parsed && typeof parsed === 'object') {
+        completion = repairCompletion;
+        break;
+      }
+
+      console.warn('[SessionIntelligence] daily brief invalid JSON', {
+        store,
+        date: iso,
+        model: usedModel,
+        preview: String(completion.text || '').slice(0, 400)
+      });
+      lastError = new Error('AI response was not valid JSON.');
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  const parsed = extractJsonObjectFromText(completion.text);
   if (!parsed || typeof parsed !== 'object') {
-    console.warn('[SessionIntelligence] daily brief invalid JSON', {
-      store,
-      date: iso,
-      model: completion.model,
-      preview: String(completion.text || '').slice(0, 400)
-    });
-    return { success: false, error: 'AI response was not valid JSON.' };
+    return {
+      success: false,
+      error: `${lastError?.message || 'AI request failed.'} Try DeepSeek Chat or set temperature to 0.0 for strict JSON.`
+    };
   }
 
   const content = safeTruncate(parsed.content, 4000);
@@ -1565,7 +1687,7 @@ export async function generateSessionIntelligenceDailyBrief({
     iso,
     content || '',
     JSON.stringify(topReasons),
-    completion.model,
+    completion?.model || usedModel || model,
     generatedAt
   );
 
