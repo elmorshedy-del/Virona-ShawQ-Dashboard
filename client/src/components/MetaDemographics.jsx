@@ -161,6 +161,7 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
   const ageGender = data?.segments?.ageGender || [];
   const countryGender = data?.segments?.countryGender || [];
   const minClicks = data?.rules?.minClicks || 30;
+  const countryActionsAvailable = data?.flags?.countryActionsAvailable !== false;
 
   const eligibleAgeSegments = useMemo(
     () => ageGender.filter((row) => row.eligible && Number.isFinite(row.atcRate)),
@@ -461,10 +462,10 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
                   </td>
                   <td className="py-2 text-right text-gray-700">{formatNumber(row.clicks)}</td>
                   <td className="py-2 text-right text-gray-700">
-                    {row.eligible ? formatPercent(row.atcRate) : '—'}
+                    {row.eligible && countryActionsAvailable ? formatPercent(row.atcRate) : '—'}
                   </td>
                   <td className="py-2 text-right text-gray-700">
-                    {row.eligible ? formatPercent(row.purchaseRate) : '—'}
+                    {row.eligible && countryActionsAvailable ? formatPercent(row.purchaseRate) : '—'}
                   </td>
                 </tr>
               ))}
@@ -473,6 +474,7 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
         </div>
         <div className="mt-3 text-xs text-gray-400">
           Rates only computed for segments with ≥ {minClicks} clicks.
+          {!countryActionsAvailable ? ' Meta API does not allow action breakdowns for country + gender; rates are hidden.' : ''}
         </div>
       </div>
     </div>

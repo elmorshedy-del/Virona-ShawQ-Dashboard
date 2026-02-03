@@ -94,21 +94,25 @@ function normalizeAccountId(accountId) {
   return accountId.replace(/^act_/, '');
 }
 
-function buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate }) {
+function buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate, includeActions = true }) {
+  const fields = includeActions
+    ? 'spend,impressions,clicks,inline_link_clicks,actions'
+    : 'spend,impressions,clicks,inline_link_clicks';
+
   const params = new URLSearchParams({
     access_token: accessToken,
     level: 'account',
     time_range: JSON.stringify({ since: startDate, until: endDate }),
     breakdowns: breakdowns.join(','),
-    fields: 'spend,impressions,clicks,inline_link_clicks,actions',
+    fields,
     limit: '500'
   });
 
   return `${META_BASE_URL}/act_${accountId}/insights?${params.toString()}`;
 }
 
-async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate, endDate }) {
-  let url = buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate });
+async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate, endDate, includeActions = true }) {
+  let url = buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate, includeActions });
   const allRows = [];
 
   while (url) {
@@ -116,7 +120,10 @@ async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate,
     const json = await response.json();
 
     if (json?.error) {
-      throw new Error(json.error.message || 'Meta API error');
+      const message = json.error.message || 'Meta API error';
+      const error = new Error(message);
+      error.meta = json.error;
+      throw error;
     }
 
     const data = Array.isArray(json?.data) ? json.data : [];
@@ -127,14 +134,14 @@ async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate,
   return allRows;
 }
 
-function normalizeSegmentRow(row, segmentType, currencyRate = 1) {
+function normalizeSegmentRow(row, segmentType, currencyRate = 1, actionsAvailable = true) {
   const clicks = Math.round(toNumber(row.inline_link_clicks) || toNumber(row.clicks));
   const spend = toNumber(row.spend) * currencyRate;
   const impressions = Math.round(toNumber(row.impressions));
 
-  const atc = Math.round(getActionValue(row.actions, 'add_to_cart'));
-  const checkout = Math.round(getActionValue(row.actions, 'initiate_checkout'));
-  const purchases = Math.round(getFirstActionValue(row.actions, PURCHASE_ACTION_TYPES));
+  const atc = actionsAvailable ? Math.round(getActionValue(row.actions, 'add_to_cart')) : 0;
+  const checkout = actionsAvailable ? Math.round(getActionValue(row.actions, 'initiate_checkout')) : 0;
+  const purchases = actionsAvailable ? Math.round(getFirstActionValue(row.actions, PURCHASE_ACTION_TYPES)) : 0;
 
   const gender = normalizeGender(row.gender);
   const age = segmentType === 'age_gender' ? normalizeAge(row.age) : null;
@@ -296,25 +303,48 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
     }
   }
 
-  const [ageGenderRows, countryGenderRows] = await Promise.all([
-    fetchAllInsights({
-      accountId: normalizedAccountId,
-      accessToken,
-      breakdowns: ['age', 'gender'],
-      startDate,
-      endDate
-    }),
-    fetchAllInsights({
-      accountId: normalizedAccountId,
-      accessToken,
-      breakdowns: ['country', 'gender'],
-      startDate,
-      endDate
-    })
+  const warnings = [];
+
+  const fetchWithFallback = async (breakdowns) => {
+    try {
+      const rows = await fetchAllInsights({
+        accountId: normalizedAccountId,
+        accessToken,
+        breakdowns,
+        startDate,
+        endDate,
+        includeActions: true
+      });
+      return { rows, actionsAvailable: true };
+    } catch (error) {
+      const message = error?.message || '';
+      if (message.includes('action_type') || message.includes('breakdown columns')) {
+        warnings.push(`Meta does not allow actions with breakdowns: ${breakdowns.join(', ')}`);
+        const rows = await fetchAllInsights({
+          accountId: normalizedAccountId,
+          accessToken,
+          breakdowns,
+          startDate,
+          endDate,
+          includeActions: false
+        });
+        return { rows, actionsAvailable: false };
+      }
+      throw error;
+    }
+  };
+
+  const [ageGenderResult, countryGenderResult] = await Promise.all([
+    fetchWithFallback(['age', 'gender']),
+    fetchWithFallback(['country', 'gender'])
   ]);
 
-  const ageGenderSegments = ageGenderRows.map((row) => normalizeSegmentRow(row, 'age_gender', currencyRate));
-  const countryGenderSegments = countryGenderRows.map((row) => normalizeSegmentRow(row, 'country_gender', currencyRate));
+  const ageGenderSegments = ageGenderResult.rows.map((row) => (
+    normalizeSegmentRow(row, 'age_gender', currencyRate, ageGenderResult.actionsAvailable)
+  ));
+  const countryGenderSegments = countryGenderResult.rows.map((row) => (
+    normalizeSegmentRow(row, 'country_gender', currencyRate, countryGenderResult.actionsAvailable)
+  ));
 
   const totalSpendAge = computeSpendShare(ageGenderSegments);
   const totalSpendCountry = computeSpendShare(countryGenderSegments);
@@ -354,6 +384,11 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
     data: {
       updatedAt: new Date().toISOString(),
       range: { startDate, endDate, days: safeDays },
+      warnings,
+      flags: {
+        ageActionsAvailable: ageGenderResult.actionsAvailable,
+        countryActionsAvailable: countryGenderResult.actionsAvailable
+      },
       totals,
       totalsRates,
       segmentCounts: {
