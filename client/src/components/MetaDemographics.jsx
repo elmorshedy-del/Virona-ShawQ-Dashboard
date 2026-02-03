@@ -162,6 +162,13 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
   const countryGender = data?.segments?.countryGender || [];
   const minClicks = data?.rules?.minClicks || 30;
   const countryActionsAvailable = data?.flags?.countryActionsAvailable !== false;
+  const countryGenderSplitAvailable = data?.flags?.countryGenderSplitAvailable !== false;
+
+  useEffect(() => {
+    if (!countryGenderSplitAvailable && splitByGender) {
+      setSplitByGender(false);
+    }
+  }, [countryGenderSplitAvailable, splitByGender]);
 
   const eligibleAgeSegments = useMemo(
     () => ageGender.filter((row) => row.eligible && Number.isFinite(row.atcRate)),
@@ -433,9 +440,17 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
           <button
             type="button"
             onClick={() => setSplitByGender((prev) => !prev)}
-            className={`rounded-full border px-3 py-1 text-xs font-semibold ${splitByGender ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 text-gray-600'}`}
+            disabled={!countryGenderSplitAvailable}
+            className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+              !countryGenderSplitAvailable
+                ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400'
+                : (splitByGender ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 text-gray-600')
+            }`}
+            title={!countryGenderSplitAvailable ? 'Meta does not support country + gender breakdown for this account.' : undefined}
           >
-            {splitByGender ? 'Gender split on' : 'Gender split off'}
+            {!countryGenderSplitAvailable
+              ? 'Gender split unavailable'
+              : (splitByGender ? 'Gender split on' : 'Gender split off')}
           </button>
         </div>
         <div className="mt-4 overflow-x-auto">
@@ -474,7 +489,8 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
         </div>
         <div className="mt-3 text-xs text-gray-400">
           Rates only computed for segments with ≥ {minClicks} clicks.
-          {!countryActionsAvailable ? ' Meta API does not allow action breakdowns for country + gender; rates are hidden.' : ''}
+          {!countryActionsAvailable ? ' Meta API does not allow actions for this breakdown; rates are hidden.' : ''}
+          {!countryGenderSplitAvailable ? ' Meta API does not support country + gender breakdown, so gender split is disabled.' : ''}
         </div>
       </div>
     </div>

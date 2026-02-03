@@ -19,6 +19,7 @@ const PURCHASE_ACTION_TYPES = [
 const GENDER_LABELS = {
   female: 'Female',
   male: 'Male',
+  all: 'All',
   unknown: 'Unknown'
 };
 
@@ -143,7 +144,7 @@ async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate,
   return allRows;
 }
 
-function normalizeSegmentRow(row, segmentType, currencyRate = 1, actionsAvailable = true) {
+function normalizeSegmentRow(row, segmentType, currencyRate = 1, actionsAvailable = true, defaults = {}) {
   const clicks = Math.round(toNumber(row.inline_link_clicks) || toNumber(row.clicks));
   const spend = toNumber(row.spend) * currencyRate;
   const impressions = Math.round(toNumber(row.impressions));
@@ -152,9 +153,11 @@ function normalizeSegmentRow(row, segmentType, currencyRate = 1, actionsAvailabl
   const checkout = actionsAvailable ? Math.round(getActionValue(row.actions, 'initiate_checkout')) : 0;
   const purchases = actionsAvailable ? Math.round(getFirstActionValue(row.actions, PURCHASE_ACTION_TYPES)) : 0;
 
-  const gender = normalizeGender(row.gender);
+  const gender = normalizeGender(row.gender ?? defaults.gender);
   const age = segmentType === 'age_gender' ? normalizeAge(row.age) : null;
-  const country = segmentType === 'country_gender' ? String(row.country || 'ALL').toUpperCase() : null;
+  const country = segmentType === 'country_gender'
+    ? String(row.country ?? defaults.country ?? 'ALL').toUpperCase()
+    : null;
 
   const atcRate = safeDivide(atc, clicks);
   const checkoutRate = safeDivide(checkout, clicks);
@@ -334,6 +337,9 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
       console.warn('[MetaDemographics] Primary fetch failed', {
         breakdowns,
         fields: fieldsWithValues,
+        code: error?.meta?.code,
+        type: error?.meta?.type,
+        fbtrace_id: error?.meta?.fbtrace_id,
         message,
         debug
       });
@@ -356,6 +362,9 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
           console.warn('[MetaDemographics] Fallback without action_values failed', {
             breakdowns,
             fields: fieldsNoValues,
+            code: innerError?.meta?.code,
+            type: innerError?.meta?.type,
+            fbtrace_id: innerError?.meta?.fbtrace_id,
             message: innerMessage,
             debug: innerDebug
           });
@@ -379,16 +388,22 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
     }
   };
 
+  // Meta insights does NOT support country+gender as a breakdown combination for this account (Meta returns
+  // "(#100) Current combination of data breakdown columns (action_type, country, gender) is invalid").
+  // We fetch country-only breakdowns and show a note in the UI (gender split disabled).
+  const countryGenderSplitAvailable = false;
+  warnings.push('Meta does not support country+gender breakdown in one insights call. Showing country totals only.');
+
   const [ageGenderResult, countryGenderResult] = await Promise.all([
     fetchWithFallback(['age', 'gender']),
-    fetchWithFallback(['country', 'gender'])
+    fetchWithFallback(['country'])
   ]);
 
   const ageGenderSegments = ageGenderResult.rows.map((row) => (
     normalizeSegmentRow(row, 'age_gender', currencyRate, ageGenderResult.actionsAvailable)
   ));
   const countryGenderSegments = countryGenderResult.rows.map((row) => (
-    normalizeSegmentRow(row, 'country_gender', currencyRate, countryGenderResult.actionsAvailable)
+    normalizeSegmentRow(row, 'country_gender', currencyRate, countryGenderResult.actionsAvailable, { gender: 'all' })
   ));
 
   const totalSpendAge = computeSpendShare(ageGenderSegments);
@@ -434,7 +449,8 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
         ageActionsAvailable: ageGenderResult.actionsAvailable,
         countryActionsAvailable: countryGenderResult.actionsAvailable,
         ageActionValuesAvailable: ageGenderResult.actionValuesAvailable,
-        countryActionValuesAvailable: countryGenderResult.actionValuesAvailable
+        countryActionValuesAvailable: countryGenderResult.actionValuesAvailable,
+        countryGenderSplitAvailable
       },
       totals,
       totalsRates,
