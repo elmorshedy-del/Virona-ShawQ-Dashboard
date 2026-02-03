@@ -15,8 +15,8 @@ export default function CreativeAnalysis({ store }) {
       const saved = localStorage.getItem(storageKey);
       if (saved === '0') return false;
       if (saved === '1') return true;
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to read 'previewOpen' state from localStorage.", err);
     }
     return true;
   });
