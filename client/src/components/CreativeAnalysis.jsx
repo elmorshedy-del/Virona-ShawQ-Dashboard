@@ -27,8 +27,8 @@ export default function CreativeAnalysis({ store }) {
       if (storageKey) {
         try {
           localStorage.setItem(storageKey, next ? '1' : '0');
-        } catch {
-          // ignore
+        } catch (err) {
+          console.error("Failed to save 'previewOpen' state to localStorage.", err);
         }
       }
       return next;
