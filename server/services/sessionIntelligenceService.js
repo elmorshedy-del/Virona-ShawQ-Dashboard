@@ -397,13 +397,11 @@ function inferCheckoutStepFromEvent(eventName, eventDataRaw) {
     null;
   if (fromData) return fromData;
 
-  if (name === 'checkout_started' || name === 'checkout_initiated' || name === 'begin_checkout') return 'contact';
+  if (isCheckoutStarted(name)) return 'contact';
   if (name.includes('contact') && name.includes('submitted')) return 'contact';
   if (name.includes('shipping') && name.includes('submitted')) return 'shipping';
   if (name.includes('payment') && name.includes('submitted')) return 'payment';
-  if (name === 'checkout_completed' || name === 'purchase' || name === 'order_completed' || name === 'order_placed') {
-    return 'thank_you';
-  }
+  if (isPurchase(name)) return 'thank_you';
 
   return null;
 }
@@ -653,30 +651,100 @@ function extractSessionIdentifiers(payload) {
 }
 
 function isAddToCart(eventName) {
-  const name = safeString(eventName).toLowerCase();
-  return (
-    name === 'product_added_to_cart' ||
-    name === 'add_to_cart' ||
-    name === 'added_to_cart' ||
-    name === 'cart_add' ||
-    name === 'atc'
-  );
+  const { key, tokens, compact } = normalizeEventNameKey(eventName);
+  if (!key) return false;
+  if (KEY_EVENT_ALIASES.atc.has(key)) return true;
+  if (tokens.includes('atc')) return true;
+  if (compact.includes('addtocart') || compact.includes('addedtocart')) return true;
+
+  const hasContainer = tokens.some((t) => ADD_TO_CART_CONTAINER_TOKENS.has(t));
+  const hasAddAction = tokens.some((t) => ADD_TO_CART_ACTION_TOKENS.has(t) || t.startsWith('add'));
+  if (hasContainer && hasAddAction) return true;
+
+  // Common compact variants: cartadd, bagadd, basketadd.
+  if (
+    compact.includes('cartadd') ||
+    compact.includes('bagadd') ||
+    compact.includes('basketadd')
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function isCheckoutStarted(eventName) {
-  const name = safeString(eventName).toLowerCase();
-  return name === 'checkout_started' || name === 'checkout_initiated' || name === 'begin_checkout';
+  const { key, tokens, compact } = normalizeEventNameKey(eventName);
+  if (!key) return false;
+  if (KEY_EVENT_ALIASES.checkout_started.has(key)) return true;
+
+  const hasCheckout = tokens.includes('checkout') || compact.includes('checkout');
+  if (!hasCheckout) return false;
+
+  if (tokens.some((t) => CHECKOUT_COMPLETE_GUARD_TOKENS.has(t))) return false;
+
+  const hasStart = tokens.some((t) => CHECKOUT_START_TOKENS.has(t));
+  if (hasStart) return true;
+
+  return (
+    compact.includes('begincheckout') ||
+    compact.includes('checkoutstart') ||
+    compact.includes('startcheckout') ||
+    compact.includes('checkoutinitiated') ||
+    compact.includes('initiatecheckout')
+  );
 }
 
 function isPurchase(eventName) {
-  const name = safeString(eventName).toLowerCase();
-  return (
-    name === 'checkout_completed' ||
-    name === 'purchase' ||
-    name === 'order_completed' ||
-    name === 'order_placed'
-  );
+  const { key, tokens, compact } = normalizeEventNameKey(eventName);
+  if (!key) return false;
+  if (KEY_EVENT_ALIASES.purchase.has(key)) return true;
+  if (tokens.includes('purchase') || tokens.includes('purchased')) return true;
+
+  const hasOrder = tokens.includes('order') || compact.includes('order');
+  const hasOrderTerminal = tokens.some((t) => ORDER_TERMINAL_TOKENS.has(t)) || compact.includes('orderplaced') || compact.includes('ordercompleted');
+  if (hasOrder && hasOrderTerminal) return true;
+
+  const hasCheckout = tokens.includes('checkout') || compact.includes('checkout');
+  const hasCheckoutComplete =
+    tokens.includes('completed') ||
+    tokens.includes('complete') ||
+    compact.includes('checkoutcompleted') ||
+    compact.includes('checkoutcomplete');
+  if (hasCheckout && hasCheckoutComplete) return true;
+
+  return false;
 }
+
+function normalizeEventNameKey(value) {
+  const raw = safeString(value).trim();
+  if (!raw) return { key: '', tokens: [], compact: '' };
+
+  // Support `addToCart`-style and other separators by normalizing to snake_case-ish keys.
+  const expanded = raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+  const key = expanded
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_');
+
+  const tokens = key ? key.split('_').filter(Boolean) : [];
+  const compact = key ? key.replace(/_/g, '') : '';
+  return { key, tokens, compact };
+}
+
+const KEY_EVENT_ALIASES = {
+  atc: new Set(['product_added_to_cart', 'add_to_cart', 'added_to_cart', 'cart_add', 'atc']),
+  checkout_started: new Set(['checkout_started', 'checkout_initiated', 'begin_checkout']),
+  purchase: new Set(['checkout_completed', 'purchase', 'order_completed', 'order_placed'])
+};
+
+const ADD_TO_CART_CONTAINER_TOKENS = new Set(['cart', 'bag', 'basket']);
+const ADD_TO_CART_ACTION_TOKENS = new Set(['add', 'added', 'adding']);
+
+const CHECKOUT_START_TOKENS = new Set(['start', 'started', 'begin', 'began', 'initiated', 'initiate', 'open', 'opened', 'enter', 'entered']);
+const CHECKOUT_COMPLETE_GUARD_TOKENS = new Set(['complete', 'completed', 'completion', 'purchase', 'purchased', 'paid', 'placed', 'thank', 'you']);
+const ORDER_TERMINAL_TOKENS = new Set(['placed', 'complete', 'completed', 'paid', 'success']);
 
 function extractCartSnapshot(eventData) {
   if (!eventData || typeof eventData !== 'object') return null;
@@ -1149,22 +1217,16 @@ export function getSessionIntelligenceOverview(store) {
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', '-24 hours')
-      AND lower(event_name) IN (
-        'product_added_to_cart','add_to_cart','added_to_cart','cart_add','atc',
-        'checkout_started','checkout_initiated','begin_checkout',
-        'checkout_completed','purchase','order_completed','order_placed'
-      )
     GROUP BY lower(event_name)
   `).all(store);
 
-  const sumNamed = (names) => {
-    const set = new Set(names.map((n) => String(n).toLowerCase()));
-    return eventCounts.reduce((sum, row) => (set.has(row.name) ? sum + (Number(row.count) || 0) : sum), 0);
-  };
+  const sumWhere = (predicate) => eventCounts.reduce((sum, row) => (
+    predicate(row?.name) ? sum + (Number(row.count) || 0) : sum
+  ), 0);
 
-  const atcEvents24h = sumNamed(['product_added_to_cart', 'add_to_cart', 'added_to_cart', 'cart_add', 'atc']);
-  const checkoutStartedEvents24h = sumNamed(['checkout_started', 'checkout_initiated', 'begin_checkout']);
-  const purchasesEvents24h = sumNamed(['checkout_completed', 'purchase', 'order_completed', 'order_placed']);
+  const atcEvents24h = sumWhere(isAddToCart);
+  const checkoutStartedEvents24h = sumWhere(isCheckoutStarted);
+  const purchasesEvents24h = sumWhere(isPurchase);
 
   const dropoffs = db.prepare(`
     SELECT
@@ -1424,38 +1486,25 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     if (country) countryCounts.set(country, (countryCounts.get(country) || 0) + 1);
   }
 
-  const topEvents = db.prepare(`
-    SELECT event_name AS name, COUNT(*) AS count
-    FROM si_events
-    WHERE store = ?
-      AND created_at >= datetime('now', ?)
-    GROUP BY event_name
-    ORDER BY count DESC
-    LIMIT ?
-  `).all(normalizedStore, windowExpr, max);
-
-  const keyEventRows = db.prepare(`
+  const eventCounts = db.prepare(`
     SELECT lower(event_name) AS name, COUNT(*) AS count
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
-      AND lower(event_name) IN (
-        'product_added_to_cart','add_to_cart','added_to_cart','cart_add','atc',
-        'checkout_started','checkout_initiated','begin_checkout',
-        'checkout_completed','purchase','order_completed','order_placed'
-      )
     GROUP BY lower(event_name)
+    ORDER BY count DESC
   `).all(normalizedStore, windowExpr);
 
-  const sumNamed = (names) => {
-    const set = new Set(names.map((n) => String(n).toLowerCase()));
-    return keyEventRows.reduce((sum, row) => (set.has(row.name) ? sum + (Number(row.count) || 0) : sum), 0);
-  };
+  const topEvents = eventCounts.slice(0, max);
+
+  const sumWhere = (predicate) => eventCounts.reduce((sum, row) => (
+    predicate(row?.name) ? sum + (Number(row.count) || 0) : sum
+  ), 0);
 
   const keyEvents = {
-    atc: sumNamed(['product_added_to_cart', 'add_to_cart', 'added_to_cart', 'cart_add', 'atc']),
-    checkout_started: sumNamed(['checkout_started', 'checkout_initiated', 'begin_checkout']),
-    purchase: sumNamed(['checkout_completed', 'purchase', 'order_completed', 'order_placed'])
+    atc: sumWhere(isAddToCart),
+    checkout_started: sumWhere(isCheckoutStarted),
+    purchase: sumWhere(isPurchase)
   };
 
   return {
