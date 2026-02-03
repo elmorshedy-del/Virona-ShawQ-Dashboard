@@ -862,10 +862,10 @@ export default function SessionIntelligenceTab({ store }) {
 
         <div className="si-row si-realtime-controls">
           <button className="si-button si-button-small" type="button" onClick={loadRealtime} disabled={realtimeLoading}>
-            {realtimeLoading ? 'Updating…' : 'Update'}
+            {realtimeLoading ? 'Refreshing…' : 'Refresh'}
           </button>
           {realtime?.updatedAt ? (
-            <span className="si-muted">Updated {timeAgo(realtime.updatedAt)}</span>
+            <span className="si-muted">Last refreshed {timeAgo(realtime.updatedAt)}</span>
           ) : null}
           <span className="si-spacer" />
           <span className="si-muted">Map</span>
@@ -1035,7 +1035,7 @@ export default function SessionIntelligenceTab({ store }) {
 	        </div>
 	        <ul className="si-list">
 	          <li>
-	            <strong>Live feed (updates every second):</strong> it receives behavior signals from our Shopify Custom Pixel, so you’re not guessing — you’re watching real intent form in real time.
+	            <strong>Live feed:</strong> it receives behavior signals from our Shopify Custom Pixel, so you’re not guessing — you’re watching real intent form in real time.
 	          </li>
 	          <li>
 	            <strong>Full journey per shopper:</strong> each shopper gets a private <em>Shopper‑0001</em> style ID, and we track their path step‑by‑step across the entire session (page → product → add to cart → checkout steps → purchase or drop‑off).
