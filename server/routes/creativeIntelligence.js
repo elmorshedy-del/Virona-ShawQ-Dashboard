@@ -6,6 +6,9 @@ import { streamDeepSeekChat } from '../services/deepseekService.js';
 
 const router = express.Router();
 
+const GEMINI_ANALYSIS_MODELS = new Set(['gemini-2.5-flash-lite', 'gemini-2.5-flash']);
+const DEFAULT_GEMINI_ANALYSIS_MODEL = 'gemini-2.5-flash-lite';
+
 // ============================================================================
 // TONE PRESETS
 // ============================================================================
@@ -63,7 +66,7 @@ router.post('/analyze-video', async (req, res) => {
   const { GoogleGenerativeAI } = await import('@google/generative-ai');
   
   try {
-    const { store, adId, adName, campaignId, campaignName, sourceUrl, embedHtml, thumbnailUrl } = req.body;
+    const { store, adId, adName, campaignId, campaignName, sourceUrl, embedHtml, thumbnailUrl, gemini_analysis_model } = req.body;
 
     // Validate
     if (!store || !adId) {
@@ -76,26 +79,56 @@ router.post('/analyze-video', async (req, res) => {
 
     const db = getDb();
 
+    // Resolve Gemini analysis model (settings → request override → default)
+    let settings = db.prepare(`SELECT gemini_analysis_model FROM ai_creative_settings WHERE store = ?`).get(store);
+    if (!settings) {
+      db.prepare(`INSERT INTO ai_creative_settings (store) VALUES (?)`).run(store);
+      settings = { gemini_analysis_model: DEFAULT_GEMINI_ANALYSIS_MODEL };
+    }
+
+    const requestedModel = typeof gemini_analysis_model === 'string' ? gemini_analysis_model.trim() : '';
+    const settingsModel = typeof settings?.gemini_analysis_model === 'string' ? settings.gemini_analysis_model.trim() : '';
+    const resolvedGeminiModel = GEMINI_ANALYSIS_MODELS.has(requestedModel)
+      ? requestedModel
+      : (GEMINI_ANALYSIS_MODELS.has(settingsModel) ? settingsModel : DEFAULT_GEMINI_ANALYSIS_MODEL);
+
     // Check if already analyzed
     const existing = db.prepare(`
       SELECT * FROM creative_scripts WHERE store = ? AND ad_id = ?
     `).get(store, adId);
 
-    if (existing && existing.status === 'complete') {
-      return res.json({ 
-        success: true, 
-        script: JSON.parse(existing.script),
-        cached: true,
-        method: existing.extraction_method || 'unknown'
-      });
+    if (existing && existing.status === 'complete' && existing.script) {
+      let existingScript;
+      try {
+        existingScript = JSON.parse(existing.script);
+      } catch {
+        existingScript = null;
+      }
+
+      const existingModel = typeof existing.gemini_model === 'string' ? existing.gemini_model : null;
+      const cacheHit = !!existingScript && existingModel === resolvedGeminiModel;
+
+      if (cacheHit) {
+        return res.json({ 
+          success: true, 
+          script: existingScript,
+          cached: true,
+          method: existingScript?.method || 'unknown',
+          model: existingModel
+        });
+      }
     }
 
     // Mark as processing
     db.prepare(`
-      INSERT INTO creative_scripts (store, ad_id, ad_name, campaign_id, campaign_name, status)
-      VALUES (?, ?, ?, ?, ?, 'processing')
-      ON CONFLICT(store, ad_id) DO UPDATE SET status = 'processing', updated_at = datetime('now')
-    `).run(store, adId, adName || '', campaignId || '', campaignName || '');
+      INSERT INTO creative_scripts (store, ad_id, ad_name, campaign_id, campaign_name, gemini_model, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'processing')
+      ON CONFLICT(store, ad_id) DO UPDATE SET
+        status = 'processing',
+        gemini_model = excluded.gemini_model,
+        error_message = NULL,
+        updated_at = datetime('now')
+    `).run(store, adId, adName || '', campaignId || '', campaignName || '', resolvedGeminiModel);
 
     // Extract and download media using the robust extractor
     const media = await extractAndDownloadMedia({ sourceUrl, embedHtml, thumbnailUrl });
@@ -114,7 +147,7 @@ router.post('/analyze-video', async (req, res) => {
 
     // Initialize Gemini
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    const model = genAI.getGenerativeModel({ model: resolvedGeminiModel });
 
     // Build prompt based on media type
     const prompt = media.type === 'video'
@@ -163,6 +196,7 @@ Return ONLY valid JSON array, no markdown:
     ]);
 
     const responseText = result.response.text();
+    const usage = result?.response?.usageMetadata || null;
     
     // Parse JSON from response
     let script;
@@ -183,6 +217,7 @@ Return ONLY valid JSON array, no markdown:
 
     // Build script data structure
     const scriptData = {
+      model: resolvedGeminiModel,
       analysisType,
       frames: analysisType === 'video_frames' ? script : null,
       thumbnail: analysisType.startsWith('thumbnail') ? script : null,
@@ -196,6 +231,7 @@ Return ONLY valid JSON array, no markdown:
       SET script = ?, 
           video_url = ?, 
           thumbnail_url = ?, 
+          gemini_model = ?,
           status = 'complete', 
           analyzed_at = datetime('now'), 
           updated_at = datetime('now')
@@ -204,6 +240,7 @@ Return ONLY valid JSON array, no markdown:
       JSON.stringify(scriptData), 
       sourceUrl || null, 
       thumbnailUrl || null, 
+      resolvedGeminiModel,
       store, 
       adId
     );
@@ -213,7 +250,9 @@ Return ONLY valid JSON array, no markdown:
       script: scriptData, 
       cached: false,
       method: media.method,
-      mediaType: media.type
+      mediaType: media.type,
+      model: resolvedGeminiModel,
+      usage: usage ? { gemini: usage } : undefined
     });
 
   } catch (error) {
@@ -255,6 +294,7 @@ router.get('/script/:adId', (req, res) => {
       exists: true,
       status: script.status,
       script: script.script ? JSON.parse(script.script) : null,
+      model: script.gemini_model || null,
       analyzedAt: script.analyzed_at,
       error: script.error_message
     });
@@ -710,6 +750,7 @@ router.get('/settings', (req, res) => {
       settings = {
         store,
         model: 'sonnet-4.5',
+        gemini_analysis_model: DEFAULT_GEMINI_ANALYSIS_MODEL,
         reasoning_effort: 'medium',
         temperature: 1.0,
         streaming: 1,
@@ -722,6 +763,9 @@ router.get('/settings', (req, res) => {
       settings.capabilities = typeof settings.capabilities === 'string'
         ? JSON.parse(settings.capabilities)
         : settings.capabilities;
+      settings.gemini_analysis_model = GEMINI_ANALYSIS_MODELS.has(settings.gemini_analysis_model)
+        ? settings.gemini_analysis_model
+        : DEFAULT_GEMINI_ANALYSIS_MODEL;
       settings.reasoning_effort = settings.reasoning_effort || 'medium';
       settings.temperature = Number.isFinite(Number(settings.temperature)) ? Number(settings.temperature) : 1.0;
       settings.verbosity = settings.verbosity || 'medium';
@@ -735,14 +779,19 @@ router.get('/settings', (req, res) => {
 
 router.put('/settings', (req, res) => {
   try {
-    const { store, model, reasoning_effort, temperature, streaming, tone, custom_prompt, capabilities, verbosity } = req.body;
+    const { store, model, gemini_analysis_model, reasoning_effort, temperature, streaming, tone, custom_prompt, capabilities, verbosity } = req.body;
     const db = getDb();
 
+    const nextGeminiAnalysisModel = GEMINI_ANALYSIS_MODELS.has(gemini_analysis_model)
+      ? gemini_analysis_model
+      : DEFAULT_GEMINI_ANALYSIS_MODEL;
+
     db.prepare(`
-      INSERT INTO ai_creative_settings (store, model, reasoning_effort, temperature, streaming, tone, custom_prompt, capabilities, verbosity)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO ai_creative_settings (store, model, gemini_analysis_model, reasoning_effort, temperature, streaming, tone, custom_prompt, capabilities, verbosity)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(store) DO UPDATE SET
         model = excluded.model,
+        gemini_analysis_model = excluded.gemini_analysis_model,
         reasoning_effort = excluded.reasoning_effort,
         temperature = excluded.temperature,
         streaming = excluded.streaming,
@@ -754,6 +803,7 @@ router.put('/settings', (req, res) => {
     `).run(
       store,
       model || 'sonnet-4.5',
+      nextGeminiAnalysisModel,
       reasoning_effort || 'medium',
       Number.isFinite(Number(temperature)) ? Number(temperature) : 1.0,
       streaming ? 1 : 0,
