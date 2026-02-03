@@ -107,11 +107,17 @@ function buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDa
   return `${META_BASE_URL}/act_${accountId}/insights?${params.toString()}`;
 }
 
+function redactAccessToken(url) {
+  return url.replace(/access_token=[^&]+/g, 'access_token=[REDACTED]');
+}
+
 async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate, endDate, fields }) {
   let url = buildInsightsUrl({ accountId, accessToken, breakdowns, startDate, endDate, fields });
   const allRows = [];
+  let page = 0;
 
   while (url) {
+    page += 1;
     const response = await fetch(url);
     const json = await response.json();
 
@@ -119,6 +125,13 @@ async function fetchAllInsights({ accountId, accessToken, breakdowns, startDate,
       const message = json.error.message || 'Meta API error';
       const error = new Error(message);
       error.meta = json.error;
+      error.metaDebug = {
+        breakdowns,
+        fields,
+        page,
+        url: redactAccessToken(url),
+        status: response.status
+      };
       throw error;
     }
 
@@ -304,6 +317,7 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
   const fetchWithFallback = async (breakdowns) => {
     const fieldsWithValues = 'spend,impressions,clicks,inline_link_clicks,actions,action_values';
     const fieldsNoValues = 'spend,impressions,clicks,inline_link_clicks,actions';
+    const fieldsNoActions = 'spend,impressions,clicks,inline_link_clicks';
     try {
       const rows = await fetchAllInsights({
         accountId: normalizedAccountId,
@@ -316,17 +330,50 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
       return { rows, actionsAvailable: true, actionValuesAvailable: true };
     } catch (error) {
       const message = error?.message || '';
+      const debug = error?.metaDebug || {};
+      console.warn('[MetaDemographics] Primary fetch failed', {
+        breakdowns,
+        fields: fieldsWithValues,
+        message,
+        debug
+      });
+
       if (message.includes('action_type') || message.includes('breakdown columns')) {
         warnings.push(`Meta does not allow action_values with breakdowns: ${breakdowns.join(', ')}`);
-        const rows = await fetchAllInsights({
-          accountId: normalizedAccountId,
-          accessToken,
-          breakdowns,
-          startDate,
-          endDate,
-          fields: fieldsNoValues
-        });
-        return { rows, actionsAvailable: true, actionValuesAvailable: false };
+        try {
+          const rows = await fetchAllInsights({
+            accountId: normalizedAccountId,
+            accessToken,
+            breakdowns,
+            startDate,
+            endDate,
+            fields: fieldsNoValues
+          });
+          return { rows, actionsAvailable: true, actionValuesAvailable: false };
+        } catch (innerError) {
+          const innerMessage = innerError?.message || '';
+          const innerDebug = innerError?.metaDebug || {};
+          console.warn('[MetaDemographics] Fallback without action_values failed', {
+            breakdowns,
+            fields: fieldsNoValues,
+            message: innerMessage,
+            debug: innerDebug
+          });
+
+          if (innerMessage.includes('action_type') || innerMessage.includes('breakdown columns')) {
+            warnings.push(`Meta does not allow actions with breakdowns: ${breakdowns.join(', ')}`);
+            const rows = await fetchAllInsights({
+              accountId: normalizedAccountId,
+              accessToken,
+              breakdowns,
+              startDate,
+              endDate,
+              fields: fieldsNoActions
+            });
+            return { rows, actionsAvailable: false, actionValuesAvailable: false };
+          }
+          throw innerError;
+        }
       }
       throw error;
     }
