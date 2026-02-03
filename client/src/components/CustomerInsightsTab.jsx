@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Sparkles,
   TrendingUp,
@@ -57,52 +57,36 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
     return value || '—';
   }, [format, value, formatter]);
 
-  const valueRef = useRef(null);
-
-  useLayoutEffect(() => {
-    const el = valueRef.current;
-    if (!el) return;
-
-    const baseSize = parseFloat(el.dataset.baseSize || '0') || parseFloat(getComputedStyle(el).fontSize || '0');
-    if (baseSize) el.style.fontSize = `${baseSize}px`;
-
-    let currentSize = baseSize || parseFloat(getComputedStyle(el).fontSize || '0');
-    const minSize = 18;
-    let guard = 10;
-
-    while (el.scrollHeight > el.clientHeight && currentSize > minSize && guard > 0) {
-      currentSize -= 2;
-      el.style.fontSize = `${currentSize}px`;
-      guard -= 1;
-    }
-
-    el.dataset.baseSize = `${baseSize || currentSize}`;
-  }, [displayValue, label]);
+  const textSizeClass = useMemo(() => {
+    const len = String(displayValue).length;
+    if (len <= 8) return 'text-2xl';
+    if (len <= 12) return 'text-xl';
+    if (len <= 20) return 'text-lg';
+    if (len <= 30) return 'text-base';
+    return 'text-sm';
+  }, [displayValue]);
 
   return (
     <div
-      className="group relative min-h-[124px] overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_12px_30px_rgba(79,70,229,0.20)]"
+      className="group relative flex min-h-[124px] flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_12px_30px_rgba(79,70,229,0.20)]"
       style={{ backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' }}
+      title={String(displayValue).length > 20 ? displayValue : undefined}
     >
       <div className="pointer-events-none absolute inset-0 rounded-2xl border border-white/10" />
       <div className="absolute left-0 top-0 h-full w-0.5 bg-indigo-500/40 opacity-70 transition-all duration-300 group-hover:w-1 group-hover:opacity-100" />
       <div className="absolute left-0 top-0 h-0.5 w-full bg-indigo-500/30 opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
 
       <div className="relative z-10 flex h-full flex-col">
-        <div
-          className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-700"
-          style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', wordBreak: 'normal', overflowWrap: 'normal', hyphens: 'none' }}
-          title={label}
-        >
+        <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
           {label}
         </div>
-        <div className="mt-2 flex-grow">
-          <div className="min-h-[3.2rem] text-[20px] sm:text-[22px] md:text-[24px] font-semibold leading-tight text-gray-900 line-clamp-2 whitespace-normal break-words">
+        <div className="mt-2 flex flex-1 items-start">
+          <div className={`${textSizeClass} font-semibold leading-snug text-gray-900 break-words hyphens-auto`}>
             {displayValue}
           </div>
         </div>
         {hint && (
-          <div className="mt-2 text-xs text-gray-600/90 line-clamp-2 whitespace-normal break-words">
+          <div className="mt-auto pt-2 text-xs text-gray-500 line-clamp-2">
             {hint}
           </div>
         )}
