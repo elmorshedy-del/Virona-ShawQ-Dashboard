@@ -38,6 +38,8 @@ const EMPTY_VIDEO = {
   message: 'No video found for this ad.'
 };
 
+const MAX_CHAT_CONTEXT_ADS = 5;
+
 // ============================================================================
 // TRANSCRIPT EXTRACTION HELPERS
 // ============================================================================
@@ -653,6 +655,7 @@ export default function CreativeIntelligence({ store }) {
   const [selectedCampaign, setSelectedCampaign] = useState('');
   const [selectedAd, setSelectedAd] = useState(null);
   const [scriptStatuses, setScriptStatuses] = useState({});
+  const [chatContextAds, setChatContextAds] = useState([]);
   
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
@@ -686,6 +689,29 @@ export default function CreativeIntelligence({ store }) {
   const [chatLoading, setChatLoading] = useState(false);
   const [conversationId, setConversationId] = useState(null);
   const [savedSelectedAdId, setSavedSelectedAdId] = useState(null);
+
+  const chatContextAdIdSet = useMemo(
+    () => new Set(chatContextAds.map((ad) => ad?.id).filter(Boolean)),
+    [chatContextAds]
+  );
+
+  const activeChatContextAds = useMemo(() => {
+    const list = [];
+    if (selectedAd?.id) {
+      list.push({ id: selectedAd.id, name: selectedAd.name || selectedAd.id, primary: true });
+    }
+    chatContextAds.forEach((ad) => {
+      if (!ad?.id) return;
+      if (ad.id === selectedAd?.id) return;
+      list.push({ id: ad.id, name: ad.name || ad.id, primary: false });
+    });
+    return list.slice(0, MAX_CHAT_CONTEXT_ADS);
+  }, [chatContextAds, selectedAd?.id, selectedAd?.name]);
+
+  const activeChatContextAdIds = useMemo(
+    () => activeChatContextAds.map((ad) => ad.id).filter(Boolean),
+    [activeChatContextAds]
+  );
   
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState(null);
@@ -870,6 +896,7 @@ export default function CreativeIntelligence({ store }) {
   const handleSelectAd = useCallback(async (ad, options = {}) => {
     const { resetChat = true, restoreConversationId = null } = options;
     setSelectedAd(ad);
+    setChatContextAds((prev) => prev.filter((item) => item?.id !== ad?.id));
     setLoadingVideo(true);
     setVideoData(null);
     setScriptStatus(null);
@@ -897,6 +924,41 @@ export default function CreativeIntelligence({ store }) {
       setLoadingVideo(false);
     }
   }, [hydrateChatForAd, loadConversation, selectedAccount, storeId]);
+
+  const clearChatContextAds = useCallback(() => {
+    setChatContextAds([]);
+  }, []);
+
+  const removeChatContextAd = useCallback((adIdToRemove) => {
+    if (!adIdToRemove) return;
+    setChatContextAds((prev) => prev.filter((item) => item?.id !== adIdToRemove));
+  }, []);
+
+  const toggleChatContextAd = useCallback((ad) => {
+    if (!ad?.id) return;
+    if (ad.id === selectedAd?.id) return;
+
+    const isAnalyzed = scriptStatuses?.[ad.id] === 'complete';
+    if (!isAnalyzed) {
+      setError('Analyze this ad first, then add it to the chat context.');
+      return;
+    }
+
+    setChatContextAds((prev) => {
+      const exists = prev.some((item) => item?.id === ad.id);
+      if (exists) {
+        return prev.filter((item) => item?.id !== ad.id);
+      }
+
+      const next = [...prev, { id: ad.id, name: ad.name || ad.id }];
+      const totalSelected = (selectedAd?.id ? 1 : 0) + next.length;
+      if (totalSelected > MAX_CHAT_CONTEXT_ADS) {
+        setError(`You can compare up to ${MAX_CHAT_CONTEXT_ADS} ads at once.`);
+        return prev;
+      }
+      return next;
+    });
+  }, [scriptStatuses, selectedAd?.id]);
 
   // Fetch ad accounts
   useEffect(() => {
@@ -1168,6 +1230,7 @@ export default function CreativeIntelligence({ store }) {
       store: storeId,
       message: userMessage,
       adId: selectedAd?.id,
+      adIds: activeChatContextAdIds,
       conversationId,
       reasoning_effort: reasoningEffort
     };
@@ -1201,6 +1264,7 @@ export default function CreativeIntelligence({ store }) {
             error: errorData?.error || 'Unknown error',
             conversationId,
             adId: selectedAd?.id,
+            adIds: activeChatContextAdIds,
             messageLength: userMessage.length
           }
         });
@@ -1301,6 +1365,7 @@ export default function CreativeIntelligence({ store }) {
                     details: {
                       conversationId: data.conversationId,
                       adId: selectedAd?.id,
+                      adIds: activeChatContextAdIds,
                       usage
                     }
                   });
@@ -1318,6 +1383,7 @@ export default function CreativeIntelligence({ store }) {
                     details: {
                       conversationId,
                       adId: selectedAd?.id,
+                      adIds: activeChatContextAdIds,
                       error: data.error || 'Unknown streaming error'
                     }
                   });
@@ -1345,6 +1411,7 @@ export default function CreativeIntelligence({ store }) {
             details: {
               conversationId: data.conversationId,
               adId: selectedAd?.id,
+              adIds: activeChatContextAdIds,
               usage: data.usage ?? null
             }
           });
@@ -1362,6 +1429,7 @@ export default function CreativeIntelligence({ store }) {
             details: {
               conversationId,
               adId: selectedAd?.id,
+              adIds: activeChatContextAdIds,
               error: data.error || 'Unknown chat error'
             }
           });
@@ -1383,6 +1451,7 @@ export default function CreativeIntelligence({ store }) {
         details: {
           conversationId,
           adId: selectedAd?.id,
+          adIds: activeChatContextAdIds,
           error: err.message,
           messageLength: userMessage.length
         }
@@ -1662,6 +1731,30 @@ export default function CreativeIntelligence({ store }) {
                         )}
                       </div>
                     </div>
+
+                    {scriptStatuses[ad.id] === 'complete' && selectedAd?.id !== ad.id && (
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        title={chatContextAdIdSet.has(ad.id) ? 'Remove from chat context' : 'Add to chat context'}
+                        onClick={(event) => { event.stopPropagation(); toggleChatContextAd(ad); }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            toggleChatContextAd(ad);
+                          }
+                        }}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold flex-shrink-0"
+                        style={{
+                          borderColor: chatContextAdIdSet.has(ad.id) ? colors.accent : colors.border,
+                          backgroundColor: chatContextAdIdSet.has(ad.id) ? colors.accentLight : colors.card,
+                          color: chatContextAdIdSet.has(ad.id) ? colors.accent : colors.textSecondary
+                        }}
+                      >
+                        {chatContextAdIdSet.has(ad.id) ? '✓ In chat' : '+ Compare'}
+                      </div>
+                    )}
                   </div>
                 </button>
               ))
@@ -1743,13 +1836,15 @@ export default function CreativeIntelligence({ store }) {
                 >
                   {chatMessages.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center" style={{ minHeight: '300px' }}>
-                      <div className="text-center max-w-md">
-                        <div className="text-5xl mb-6">💬</div>
-                        <h3 className="text-lg font-semibold mb-2" style={{ color: colors.text }}>Ask Claude about this ad</h3>
-                        <p className="text-sm mb-6" style={{ color: colors.textSecondary }}>Get insights on why it works, compare to other ads, or generate new variations</p>
-                        <SuggestionChips onSelect={handleSendMessage} disabled={scriptStatus?.status !== 'complete' || chatLoading} />
+                        <div className="text-center max-w-md">
+                          <div className="text-5xl mb-6">💬</div>
+                          <h3 className="text-lg font-semibold mb-2" style={{ color: colors.text }}>
+                            Ask Claude about {activeChatContextAds.length > 1 ? 'these ads' : 'this ad'}
+                          </h3>
+                          <p className="text-sm mb-6" style={{ color: colors.textSecondary }}>Get insights on why it works, compare to other ads, or generate new variations</p>
+                          <SuggestionChips onSelect={handleSendMessage} disabled={scriptStatus?.status !== 'complete' || chatLoading} />
+                        </div>
                       </div>
-                    </div>
                   ) : (
                     <div>
                       {chatMessages.map((msg, i) => (
@@ -1772,12 +1867,57 @@ export default function CreativeIntelligence({ store }) {
 
                 {/* Input */}
                 <div className="p-4 border-t flex-shrink-0" style={{ borderColor: colors.borderLight }}>
+                  {activeChatContextAds.length > 1 && (
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: colors.textMuted }}>
+                        Chat context
+                      </div>
+                      {activeChatContextAds.map((ad) => (
+                        <div
+                          key={ad.id}
+                          className="flex items-center gap-2 px-2.5 py-1 rounded-full border text-[11px] max-w-[260px]"
+                          style={{
+                            borderColor: ad.primary ? colors.accent : colors.border,
+                            backgroundColor: ad.primary ? colors.accentLight : colors.bgSubtle,
+                            color: ad.primary ? colors.accent : colors.textSecondary
+                          }}
+                          title={ad.name}
+                        >
+                          <span className="truncate">
+                            {ad.primary ? 'Primary: ' : ''}{ad.name}
+                          </span>
+                          {!ad.primary && (
+                            <button
+                              type="button"
+                              onClick={() => removeChatContextAd(ad.id)}
+                              className="text-[11px] font-semibold hover:text-gray-800"
+                              style={{ color: colors.textMuted }}
+                              title="Remove"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={clearChatContextAds}
+                        className="ml-auto text-[11px] font-semibold hover:underline"
+                        style={{ color: colors.textMuted }}
+                        title="Clear compare ads"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
                   <form onSubmit={handleFormSubmit} className="flex gap-3">
                     <input
                       type="text"
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
-                      placeholder={scriptStatus?.status === 'complete' ? "Ask about this ad..." : "Analyze the ad first..."}
+                      placeholder={scriptStatus?.status === 'complete'
+                        ? (activeChatContextAds.length > 1 ? 'Ask about these ads...' : 'Ask about this ad...')
+                        : 'Analyze the ad first...'}
                       disabled={chatLoading || scriptStatus?.status !== 'complete'}
                       className="ci-input-glow flex-1 px-5 py-3.5 rounded-xl border text-sm focus:outline-none disabled:opacity-50 transition-all"
                       style={{ borderColor: colors.border, backgroundColor: colors.card, color: colors.text }}
