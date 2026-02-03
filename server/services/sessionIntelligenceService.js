@@ -1822,7 +1822,9 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
         MAX(shopper_number) AS shopper_number,
         MIN(created_at) AS first_seen,
         MAX(created_at) AS last_seen,
+        SUM(CASE WHEN lower(event_name) IN ('product_viewed','view_item') OR (page_path LIKE '/products/%') THEN 1 ELSE 0 END) AS product_views,
         SUM(CASE WHEN lower(event_name) IN ('product_added_to_cart','add_to_cart','added_to_cart','cart_add','atc') THEN 1 ELSE 0 END) AS atc_events,
+        SUM(CASE WHEN lower(event_name) IN ('cart_viewed','view_cart') THEN 1 ELSE 0 END) AS cart_events,
         SUM(CASE WHEN lower(event_name) IN ('checkout_started','checkout_initiated','begin_checkout') THEN 1 ELSE 0 END) AS checkout_started_events,
         SUM(CASE WHEN lower(event_name) IN ('checkout_completed','purchase','order_completed','order_placed') THEN 1 ELSE 0 END) AS purchase_events,
         MAX(COALESCE(checkout_step, '')) AS last_checkout_step,
@@ -1843,7 +1845,9 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
       d.shopper_number,
       d.first_seen,
       d.last_seen,
+      d.product_views,
       d.atc_events,
+      d.cart_events,
       d.checkout_started_events,
       d.purchase_events,
       NULLIF(d.last_checkout_step, '') AS last_checkout_step,
@@ -1864,9 +1868,322 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
     ORDER BY d.last_seen DESC
     LIMIT ?
   `).all(store, range.start, range.end, store, max).map((row) => ({
-    ...row,
-    codename: makeSessionCodename(row.session_id)
-  }));
+      ...row,
+      codename: makeSessionCodename(row.session_id)
+    }));
+}
+
+const SESSION_FLOW_STAGE_ORDER = [
+  'landing',
+  'product',
+  'atc',
+  'cart',
+  'checkout_contact',
+  'checkout_shipping',
+  'checkout_payment',
+  'purchase'
+];
+
+const SESSION_FLOW_STAGE_LABELS = {
+  landing: 'Landing',
+  product: 'Product',
+  atc: 'Add to cart',
+  cart: 'Cart',
+  checkout_contact: 'Checkout (Contact)',
+  checkout_shipping: 'Checkout (Shipping)',
+  checkout_payment: 'Checkout (Payment)',
+  purchase: 'Purchase'
+};
+
+function resolveSessionFlowMode(raw) {
+  const mode = safeString(raw).toLowerCase().trim();
+  if (mode === 'high_intent_no_purchase' || mode === 'high-intent-no-purchase' || mode === 'high_intent') return 'high_intent_no_purchase';
+  return 'all';
+}
+
+function isProductStageEvent(eventName, pagePath) {
+  const name = safeString(eventName).toLowerCase().trim();
+  const path = safeString(pagePath).toLowerCase().trim();
+  if (name === 'product_viewed' || name === 'view_item') return true;
+  return path.startsWith('/products/');
+}
+
+function isCartStageEvent(eventName) {
+  const name = safeString(eventName).toLowerCase().trim();
+  return name === 'cart_viewed' || name === 'view_cart';
+}
+
+function stageFromEvent({ eventName, pagePath, checkoutStep }) {
+  const name = safeString(eventName).toLowerCase().trim();
+  const step = normalizeCheckoutStep(checkoutStep);
+
+  if (isPurchase(name) || step === 'thank_you') return 'purchase';
+  if (step === 'payment') return 'checkout_payment';
+  if (step === 'shipping') return 'checkout_shipping';
+  if (step === 'contact' || isCheckoutStarted(name)) return 'checkout_contact';
+
+  if (isAddToCart(name)) return 'atc';
+  if (isCartStageEvent(name)) return 'cart';
+  if (isProductStageEvent(name, pagePath)) return 'product';
+
+  return null;
+}
+
+function computePercentile(values, percentile) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const p = Number(percentile);
+  if (!Number.isFinite(p) || p < 0 || p > 1) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.floor(p * (sorted.length - 1))));
+  const value = sorted[index];
+  return Number.isFinite(value) ? value : null;
+}
+
+function average(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const sum = values.reduce((acc, v) => acc + (Number.isFinite(v) ? v : 0), 0);
+  return sum / values.length;
+}
+
+function inferDropoffStageFromSessionSummary(session) {
+  if (!session || typeof session !== 'object') return 'landing';
+  if ((session.purchase_events || 0) > 0) return 'purchase';
+
+  if ((session.checkout_started_events || 0) > 0) {
+    const step = normalizeCheckoutStep(session.last_checkout_step);
+    if (step === 'payment') return 'checkout_payment';
+    if (step === 'shipping') return 'checkout_shipping';
+    return 'checkout_contact';
+  }
+
+  if ((session.cart_events || 0) > 0) return 'cart';
+  if ((session.atc_events || 0) > 0) return 'atc';
+  if ((session.product_views || 0) > 0) return 'product';
+  return 'landing';
+}
+
+export function getSessionIntelligenceFlowForDay(store, dateStr, { mode = 'all', limitSessions = 5000 } = {}) {
+  const db = getDb();
+  ensureRecentShopperNumbers(store);
+
+  const iso = requireIsoDay(dateStr);
+  if (!iso) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+
+  const scope = resolveSessionFlowMode(mode);
+  const range = dayRangeUtc(iso);
+  if (!range) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+
+  const sessions = getSessionIntelligenceSessionsForDay(store, iso, limitSessions);
+  const selectedSessions = scope === 'high_intent_no_purchase'
+    ? sessions.filter((s) => ((s.atc_events || 0) > 0 || (s.checkout_started_events || 0) > 0) && (s.purchase_events || 0) === 0)
+    : sessions;
+
+  const sessionMap = new Map(selectedSessions.map((s) => [s.session_id, s]));
+  const sessionIds = Array.from(sessionMap.keys()).filter(Boolean);
+
+  const stageStats = new Map(
+    SESSION_FLOW_STAGE_ORDER.map((stage) => [stage, { stage, reached: 0, dropoffs: 0, dwellSecs: [], advanceToNext: 0 }])
+  );
+
+  if (sessionIds.length === 0) {
+    const stages = SESSION_FLOW_STAGE_ORDER.map((stage) => ({
+      stage,
+      label: SESSION_FLOW_STAGE_LABELS[stage] || stage,
+      reached: 0,
+      dropoffs: 0,
+      advanceToNext: 0,
+      avg_dwell_sec: null,
+      p50_dwell_sec: null,
+      p90_dwell_sec: null
+    }));
+
+    return {
+      success: true,
+      data: {
+        store,
+        date: iso,
+        mode: scope,
+        totals: { sessions: 0 },
+        stages,
+        clusters: []
+      }
+    };
+  }
+
+  const stageTimesBySession = new Map();
+
+  const sessionChunks = chunkArray(sessionIds, 450);
+  for (const chunk of sessionChunks) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT
+        id,
+        session_id,
+        event_name,
+        event_ts,
+        created_at,
+        page_path,
+        checkout_step
+      FROM si_events
+      WHERE store = ?
+        AND created_at >= ?
+        AND created_at < ?
+        AND session_id IN (${placeholders})
+      ORDER BY session_id, event_ts, id
+    `).all(store, range.start, range.end, ...chunk);
+
+    for (const row of rows) {
+      const sessionId = row.session_id;
+      if (!sessionId) continue;
+      let entry = stageTimesBySession.get(sessionId);
+      if (!entry) {
+        entry = { startMs: Number.POSITIVE_INFINITY, endMs: Number.NEGATIVE_INFINITY, stages: {} };
+        stageTimesBySession.set(sessionId, entry);
+      }
+
+      const ms = Number.isFinite(parseSqliteDateTimeToMs(row.event_ts))
+        ? parseSqliteDateTimeToMs(row.event_ts)
+        : parseSqliteDateTimeToMs(row.created_at);
+      if (!Number.isFinite(ms)) continue;
+
+      if (ms < entry.startMs) entry.startMs = ms;
+      if (ms > entry.endMs) entry.endMs = ms;
+
+      const stage = stageFromEvent({
+        eventName: row.event_name,
+        pagePath: row.page_path,
+        checkoutStep: row.checkout_step
+      });
+      if (!stage) continue;
+      if (!entry.stages[stage] || ms < entry.stages[stage]) {
+        entry.stages[stage] = ms;
+      }
+    }
+  }
+
+  const dropBuckets = new Map();
+
+  for (const sessionId of sessionIds) {
+    const entry = stageTimesBySession.get(sessionId);
+    if (!entry || !Number.isFinite(entry.startMs) || !Number.isFinite(entry.endMs)) continue;
+
+    // Ensure landing exists so the flow always starts.
+    const stageTimes = { ...entry.stages, landing: entry.startMs };
+
+    // Reached + dwell.
+    for (let idx = 0; idx < SESSION_FLOW_STAGE_ORDER.length; idx += 1) {
+      const stage = SESSION_FLOW_STAGE_ORDER[idx];
+      const t0 = stageTimes[stage];
+      if (!Number.isFinite(t0)) continue;
+
+      const stat = stageStats.get(stage);
+      if (!stat) continue;
+      stat.reached += 1;
+
+      // Find the next later stage time (not necessarily the next funnel stage).
+      let nextMs = Number.POSITIVE_INFINITY;
+      for (let j = idx + 1; j < SESSION_FLOW_STAGE_ORDER.length; j += 1) {
+        const candidate = stageTimes[SESSION_FLOW_STAGE_ORDER[j]];
+        if (!Number.isFinite(candidate)) continue;
+        if (candidate <= t0) continue;
+        if (candidate < nextMs) nextMs = candidate;
+      }
+      const exitMs = Number.isFinite(nextMs) && nextMs !== Number.POSITIVE_INFINITY ? nextMs : entry.endMs;
+      const dwellSec = Math.max(0, (exitMs - t0) / 1000);
+      // Ignore obviously broken dwell times.
+      if (Number.isFinite(dwellSec) && dwellSec <= 6 * 60 * 60) {
+        stat.dwellSecs.push(dwellSec);
+      }
+
+      // Advance to the next funnel stage specifically (helps compute conversion).
+      const nextStage = SESSION_FLOW_STAGE_ORDER[idx + 1] || null;
+      const nextStageMs = nextStage ? stageTimes[nextStage] : null;
+      if (nextStage && Number.isFinite(nextStageMs) && nextStageMs > t0) {
+        stat.advanceToNext += 1;
+      }
+    }
+
+    // Drop-off stage = last reached stage by timestamp (purchase = success).
+    let lastStage = null;
+    let lastTime = Number.NEGATIVE_INFINITY;
+    for (const stage of SESSION_FLOW_STAGE_ORDER) {
+      const t = stageTimes[stage];
+      if (!Number.isFinite(t)) continue;
+      if (t > lastTime) {
+        lastTime = t;
+        lastStage = stage;
+      }
+    }
+
+    if (lastStage && lastStage !== 'purchase') {
+      const stat = stageStats.get(lastStage);
+      if (stat) stat.dropoffs += 1;
+      if (!dropBuckets.has(lastStage)) dropBuckets.set(lastStage, []);
+      dropBuckets.get(lastStage).push(sessionMap.get(sessionId));
+    }
+  }
+
+  const stages = SESSION_FLOW_STAGE_ORDER.map((stage) => {
+    const stat = stageStats.get(stage);
+    const dwell = stat?.dwellSecs || [];
+    return {
+      stage,
+      label: SESSION_FLOW_STAGE_LABELS[stage] || stage,
+      reached: stat?.reached || 0,
+      dropoffs: stat?.dropoffs || 0,
+      advanceToNext: stat?.advanceToNext || 0,
+      avg_dwell_sec: dwell.length ? average(dwell) : null,
+      p50_dwell_sec: dwell.length ? computePercentile(dwell, 0.5) : null,
+      p90_dwell_sec: dwell.length ? computePercentile(dwell, 0.9) : null
+    };
+  });
+
+  const clusters = Array.from(dropBuckets.entries())
+    .map(([stage, list]) => {
+      const reached = stageStats.get(stage)?.reached || 0;
+      const dropped = list.length;
+      const label = SESSION_FLOW_STAGE_LABELS[stage] || stage;
+      const dwell = stageStats.get(stage)?.dwellSecs || [];
+      return {
+        stage,
+        label,
+        dropped,
+        reached,
+        drop_rate: reached > 0 ? dropped / reached : null,
+        avg_dwell_sec: dwell.length ? average(dwell) : null,
+        p50_dwell_sec: dwell.length ? computePercentile(dwell, 0.5) : null,
+        top_devices: buildTopCounts(list, 'device_type', 3),
+        top_countries: buildTopCounts(list, 'country_code', 3),
+        top_campaigns: buildTopCounts(list, 'utm_campaign', 3),
+        sample_sessions: (list || []).slice(0, 6).map((s) => ({
+          codename: s?.codename,
+          session_id: s?.session_id,
+          last_seen: s?.last_seen,
+          device_type: s?.device_type || null,
+          country_code: s?.country_code || null,
+          utm_campaign: s?.utm_campaign || null,
+          inferred_drop_stage: inferDropoffStageFromSessionSummary(s)
+        }))
+      };
+    })
+    .sort((a, b) => (b.dropped || 0) - (a.dropped || 0))
+    .slice(0, 12);
+
+  return {
+    success: true,
+    data: {
+      store,
+      date: iso,
+      mode: scope,
+      totals: { sessions: selectedSessions.length },
+      stages,
+      clusters
+    }
+  };
 }
 
 export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId = null, limit = 800 } = {}) {
