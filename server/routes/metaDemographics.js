@@ -16,7 +16,7 @@ router.get('/', async (req, res) => {
     return res.json(result);
   } catch (error) {
     console.error('[MetaDemographics] Error:', error);
-    return res.status(500).json({ success: false, error: error.message || 'Failed to load meta demographics.' });
+    return res.status(500).json({ success: false, error: 'Failed to load meta demographics.' });
   }
 });
 
