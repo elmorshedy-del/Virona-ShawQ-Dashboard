@@ -1219,7 +1219,7 @@ router.get('/video-overlay/health', async (req, res) => {
       },
       gemini: {
         configured: Boolean(process.env.GEMINI_API_KEY),
-        model: process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.0-flash-lite'
+        model: process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.5-flash-lite'
       },
       tools: {
         ffmpeg: true,
@@ -1325,7 +1325,7 @@ async function detectOverlayKeysWithGemini({ frames } = {}) {
     throw new Error('GEMINI_API_KEY is not configured.');
   }
 
-  const modelName = process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.0-flash-lite';
+  const modelName = process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.5-flash-lite';
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({ model: modelName });
 
