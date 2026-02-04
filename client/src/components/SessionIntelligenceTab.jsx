@@ -193,6 +193,8 @@ const EVENT_LABEL_OVERRIDES = {
   added_to_cart: 'Add to Cart',
   cart_add: 'Add to Cart',
   atc: 'Add to Cart',
+  si_atc_success: 'Add to Cart',
+  si_variant_changed: 'Variant Changed',
   checkout_started: 'Checkout Started',
   checkout_initiated: 'Checkout Started',
   begin_checkout: 'Checkout Started',
