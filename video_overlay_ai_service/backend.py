@@ -59,6 +59,8 @@ print("✓ EasyOCR loaded")
 DINO_AVAILABLE = False
 dino_model = None
 DINO_ERROR = None
+DINO_CONFIG_PATH = None
+DINO_WEIGHTS_PATH = None
 try:
     from groundingdino.util.inference import load_model as load_dino, predict as dino_predict
 
@@ -80,6 +82,8 @@ try:
 
     config_path = resolve_dino_config_path()
     weights_path = "weights/groundingdino_swint_ogc.pth"
+    DINO_CONFIG_PATH = config_path
+    DINO_WEIGHTS_PATH = weights_path
 
     if os.path.exists(weights_path):
         dino_model = load_dino(config_path, weights_path, device=DEVICE)
@@ -96,11 +100,14 @@ except Exception as e:
 SAM_AVAILABLE = False
 sam_predictor = None
 SAM_ERROR = None
+SAM2_CONFIG_NAME = None
+SAM2_WEIGHTS_PATH = None
 try:
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
     
     sam_weights = "weights/sam2_hiera_large.pt"
+    SAM2_WEIGHTS_PATH = sam_weights
 
     def resolve_sam2_config_name():
         """
@@ -115,9 +122,33 @@ try:
         )
 
     sam_config = resolve_sam2_config_name()
+    SAM2_CONFIG_NAME = sam_config
+
+    def init_sam2_hydra_with_vendored_configs():
+        """
+        Some container installs of SAM2 omit the `configs/` YAMLs from the built wheel.
+        We vendor the needed configs under the local `sam2_configs` module and
+        re-initialize Hydra to point at that module.
+        """
+        from hydra.core.global_hydra import GlobalHydra
+        from hydra import initialize_config_module
+
+        # Ensure the module is importable before clearing Hydra.
+        import sam2_configs  # noqa: F401
+
+        GlobalHydra.instance().clear()
+        initialize_config_module("sam2_configs", version_base="1.2")
 
     if os.path.exists(sam_weights):
-        sam_model = build_sam2(sam_config, sam_weights, device=DEVICE)
+        try:
+            sam_model = build_sam2(config_file=sam_config, ckpt_path=sam_weights, device=DEVICE)
+        except Exception as e:
+            # Retry once with vendored configs if Hydra can't find the requested YAML.
+            try:
+                init_sam2_hydra_with_vendored_configs()
+                sam_model = build_sam2(config_file=sam_config, ckpt_path=sam_weights, device=DEVICE)
+            except Exception as e2:
+                raise RuntimeError(f"SAM 2 build failed: {e} (after vendored config init: {e2})") from e2
         sam_predictor = SAM2ImagePredictor(sam_model)
         SAM_AVAILABLE = True
         print("✓ SAM 2 loaded")
@@ -644,6 +675,12 @@ def health():
             'dino': DINO_AVAILABLE,
             'sam2': SAM_AVAILABLE,
             'ocr': True
+        },
+        'paths': {
+            'dino_config': DINO_CONFIG_PATH,
+            'dino_weights': DINO_WEIGHTS_PATH,
+            'sam2_config': SAM2_CONFIG_NAME,
+            'sam2_weights': SAM2_WEIGHTS_PATH
         },
         'errors': {
             'dino': DINO_ERROR,
