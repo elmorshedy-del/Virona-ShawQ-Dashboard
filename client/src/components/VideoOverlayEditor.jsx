@@ -124,6 +124,8 @@ function Select({ className, children, ...props }) {
 export default function VideoOverlayEditor({ store }) {
   const [health, setHealth] = useState(null);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
+  const [showStatusDetails, setShowStatusDetails] = useState(false);
+  const [copied, setCopied] = useState(null); // 'node' | 'python' | null
 
   const [videoSrc, setVideoSrc] = useState(null);
   const [videoId, setVideoId] = useState(null);
@@ -175,6 +177,18 @@ export default function VideoOverlayEditor({ store }) {
       setIsHealthLoading(false);
     }
   }, [store]);
+
+  const copyJson = useCallback(async (payload, label) => {
+    try {
+      const text = JSON.stringify(payload ?? null, null, 2);
+      await navigator.clipboard.writeText(text);
+      setCopied(label);
+      window.setTimeout(() => setCopied(null), 1500);
+    } catch (e) {
+      console.error('copy failed', e);
+      setCopied(null);
+    }
+  }, []);
 
   useEffect(() => {
     refreshHealth();
@@ -666,6 +680,8 @@ export default function VideoOverlayEditor({ store }) {
   const overlayAiOk = Boolean(health?.overlay_ai?.health?.ok);
   const overlayAiConfigured = Boolean(health?.overlay_ai?.configured);
   const geminiConfigured = Boolean(health?.gemini?.configured);
+  const overlayAiUrl = health?.overlay_ai?.url || null;
+  const overlayAiHealthPayload = health?.overlay_ai?.health?.payload || null;
 
   const canScan = Boolean(videoId) && !isUploading && !isScanning;
   const canExport = Boolean(videoId) && segments.length > 0 && !isUploading && !isScanning && !isExporting;
@@ -713,13 +729,115 @@ export default function VideoOverlayEditor({ store }) {
             variant="secondary"
             className="pl-3"
             disabled={isHealthLoading}
-            onClick={refreshHealth}
+            onClick={() => {
+              setShowStatusDetails((v) => !v);
+              refreshHealth();
+            }}
           >
             {isHealthLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}
             Status
           </Button>
         </div>
       </div>
+
+      {/* Status details */}
+      {showStatusDetails ? (
+        <div className="mb-6 rounded-3xl border border-gray-200 bg-white shadow-sm p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">System status</div>
+              <div className="mt-1 text-xs text-gray-500">
+                This panel shows the exact payloads returned by the Node server and the Python detector so you can debug Railway issues quickly.
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="secondary"
+                className="px-3"
+                onClick={() => copyJson(health, 'node')}
+                disabled={!health}
+                title="Copy the Node /health wrapper JSON"
+              >
+                <Copy className="h-4 w-4" />
+                {copied === 'node' ? 'Copied' : 'Copy Node JSON'}
+              </Button>
+              <Button
+                variant="secondary"
+                className="px-3"
+                onClick={() => copyJson(overlayAiHealthPayload, 'python')}
+                disabled={!overlayAiHealthPayload}
+                title="Copy the Python detector /health payload JSON"
+              >
+                <Copy className="h-4 w-4" />
+                {copied === 'python' ? 'Copied' : 'Copy Detector JSON'}
+              </Button>
+              <Button
+                variant="secondary"
+                className="px-3"
+                onClick={() => setShowStatusDetails(false)}
+                title="Close"
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="text-xs font-semibold text-gray-800">Detector configuration</div>
+              <div className="mt-2 space-y-2 text-xs text-gray-700">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-gray-500">VIDEO_OVERLAY_AI_URL</div>
+                  <div className="font-mono text-[11px] text-gray-800 break-all">{overlayAiUrl || 'Not set'}</div>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-gray-500">Detector reachable</div>
+                  <div className="font-semibold">{overlayAiOk ? 'Yes (HTTP 200)' : overlayAiConfigured ? 'No / not ready' : 'No (not configured)'}</div>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-gray-500">Gemini</div>
+                  <div className="font-semibold">{geminiConfigured ? 'Configured' : 'Missing (scan will fail)'}</div>
+                </div>
+              </div>
+
+              {overlayAiUrl ? (
+                <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
+                  <div className="text-[11px] font-semibold text-gray-700">Quick curl (run locally)</div>
+                  <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-gray-950 text-gray-100 p-3 text-[11px] overflow-auto">
+                    {`curl -sS -i "${overlayAiUrl.replace(/\/+$/, '')}/health"`}
+                  </pre>
+                  <div className="mt-2 text-[11px] text-gray-500">
+                    Look for <span className="font-mono">errors.dino</span>, <span className="font-mono">errors.sam2</span>, and <span className="font-mono">paths.*</span>.
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="text-xs font-semibold text-gray-800">Detector /health (payload)</div>
+              {overlayAiHealthPayload ? (
+                <pre className="mt-2 whitespace-pre-wrap break-words rounded-xl bg-gray-950 text-gray-100 p-3 text-[11px] overflow-auto max-h-[320px]">
+                  {JSON.stringify(overlayAiHealthPayload, null, 2)}
+                </pre>
+              ) : (
+                <div className="mt-2 text-xs text-gray-600">
+                  No detector payload yet. If <span className="font-mono">VIDEO_OVERLAY_AI_URL</span> is set, the Node server will include the detector response here.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+            <div className="font-semibold">If status is failing on Railway</div>
+            <ul className="mt-2 list-disc pl-5 space-y-1">
+              <li><span className="font-mono">404 Application not found</span> on the detector URL means the Railway domain isn’t attached to the detector service.</li>
+              <li><span className="font-mono">503</span> is expected in strict mode until both <span className="font-mono">models.dino</span> and <span className="font-mono">models.sam2</span> become <span className="font-mono">true</span>.</li>
+              <li>Use the error strings to fix missing weights, missing configs, or dependency issues.</li>
+            </ul>
+          </div>
+        </div>
+      ) : null}
 
       {/* Error */}
       {error ? (
