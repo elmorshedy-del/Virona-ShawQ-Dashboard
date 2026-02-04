@@ -58,6 +58,7 @@ print("✓ EasyOCR loaded")
 # Grounding DINO
 DINO_AVAILABLE = False
 dino_model = None
+DINO_ERROR = None
 try:
     from groundingdino.util.inference import load_model as load_dino, predict as dino_predict
 
@@ -85,13 +86,16 @@ try:
         DINO_AVAILABLE = True
         print("✓ Grounding DINO loaded")
     else:
-        print(f"✗ DINO weights not found at {weights_path}")
+        DINO_ERROR = f"DINO weights not found at {weights_path}"
+        print(f"✗ {DINO_ERROR}")
 except Exception as e:
+    DINO_ERROR = str(e)
     print(f"✗ Grounding DINO not available: {e}")
 
 # SAM 2
 SAM_AVAILABLE = False
 sam_predictor = None
+SAM_ERROR = None
 try:
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -118,8 +122,10 @@ try:
         SAM_AVAILABLE = True
         print("✓ SAM 2 loaded")
     else:
-        print(f"✗ SAM 2 weights not found at {sam_weights}")
+        SAM_ERROR = f"SAM 2 weights not found at {sam_weights}"
+        print(f"✗ {SAM_ERROR}")
 except Exception as e:
+    SAM_ERROR = str(e)
     print(f"✗ SAM 2 not available: {e}")
 
 print("Models ready.\n")
@@ -633,10 +639,15 @@ def health():
     payload = {
         'status': 'ok' if (DINO_AVAILABLE and SAM_AVAILABLE) else 'not_ready',
         'strict': STRICT_MODE,
+        'device': DEVICE,
         'models': {
             'dino': DINO_AVAILABLE,
             'sam2': SAM_AVAILABLE,
             'ocr': True
+        },
+        'errors': {
+            'dino': DINO_ERROR,
+            'sam2': SAM_ERROR
         }
     }
 

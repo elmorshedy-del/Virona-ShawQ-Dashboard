@@ -1233,7 +1233,7 @@ router.get('/video-overlay/health', async (req, res) => {
 
 router.post('/video-overlay/upload', upload.single('video'), async (req, res) => {
   try {
-    ensureVideoOverlayDirs();
+    await ensureVideoOverlayDirs();
 
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No video provided' });
@@ -1406,7 +1406,7 @@ async function detectOverlayKeysWithDetector({ videoPath, times } = {}) {
 
 router.post('/video-overlay/scan', async (req, res) => {
   try {
-    ensureVideoOverlayDirs();
+    await ensureVideoOverlayDirs();
 
     const videoId = String(req.body?.video_id || '').trim();
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1618,7 +1618,7 @@ function buildOverlayFiltergraph({ durationSec, segments, fontPath } = {}) {
 
 router.post('/video-overlay/export', async (req, res) => {
   try {
-    ensureVideoOverlayDirs();
+    await ensureVideoOverlayDirs();
 
     const videoId = String(req.body?.video_id || '').trim();
     const segments = Array.isArray(req.body?.segments) ? req.body.segments : [];
