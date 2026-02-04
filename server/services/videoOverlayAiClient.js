@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 
-const VIDEO_OVERLAY_AI_URL = (process.env.VIDEO_OVERLAY_AI_URL || '').replace(/\/+$/, '');
+const VIDEO_OVERLAY_AI_URL = (process.env.VIDEO_OVERLAY_AI_URL || '').trim().replace(/\/+$/, '');
 const VIDEO_OVERLAY_AI_TIMEOUT_MS = Number(process.env.VIDEO_OVERLAY_AI_TIMEOUT_MS || 30000);
 
 export function isVideoOverlayAiConfigured() {
