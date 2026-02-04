@@ -15,6 +15,6 @@ torchvision>=0.15.0
 groundingdino-py
 # wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth -O weights/groundingdino_swint_ogc.pth
 
-# SAM 2 for exact masks
-segment-anything-2
+# SAM 2 for exact masks (installed from source; not published on PyPI)
+git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4
 # wget https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt -O weights/sam2_hiera_large.pt

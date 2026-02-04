@@ -17,7 +17,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Optional (recommended) model installs + weights are documented inside `backend.py`
+# Note: SAM 2 is installed from the official GitHub repo (not PyPI), so installs can take longer.
+# Model weights are downloaded automatically by `start.sh` on Railway (or manually if running locally).
 python backend.py
 ```
 
