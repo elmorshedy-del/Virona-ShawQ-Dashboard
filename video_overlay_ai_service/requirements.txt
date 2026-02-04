@@ -12,6 +12,8 @@ torch>=2.0.0
 torchvision>=0.15.0
 
 # Grounding DINO for box detection
+transformers==4.38.2
+timm==0.9.16
 groundingdino-py==0.4.0
 # wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth -O weights/groundingdino_swint_ogc.pth
 
