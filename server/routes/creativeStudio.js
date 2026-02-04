@@ -38,9 +38,9 @@ const VIDEO_OVERLAY_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'video-o
 const VIDEO_OVERLAY_UPLOADS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'uploads');
 const VIDEO_OVERLAY_OUTPUTS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'outputs');
 
-function ensureVideoOverlayDirs() {
-  fs.mkdirSync(VIDEO_OVERLAY_UPLOADS_DIR, { recursive: true });
-  fs.mkdirSync(VIDEO_OVERLAY_OUTPUTS_DIR, { recursive: true });
+async function ensureVideoOverlayDirs() {
+  await fs.promises.mkdir(VIDEO_OVERLAY_UPLOADS_DIR, { recursive: true });
+  await fs.promises.mkdir(VIDEO_OVERLAY_OUTPUTS_DIR, { recursive: true });
 }
 
 function getUploadedVideoPath(videoId) {
