@@ -1,4 +1,4 @@
-# Video Overlay AI Service (DINO + optional SAM2 + OCR)
+# Video Overlay AI Service (DINO + SAM2 + OCR)
 
 FROM python:3.11-slim
 
