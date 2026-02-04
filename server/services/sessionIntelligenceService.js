@@ -2726,7 +2726,7 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
   const scroll_dropoff = Array.from(scrollByPage.entries())
     .map(([page, entry]) => {
       const maxValues = Array.from(entry.maxBySession.values());
-      if (maxValues.length < 8) return null; // keep signal high
+      if (maxValues.length < MIN_SESSIONS_FOR_SCROLL_DROPOFF) return null; // keep signal high
       const total = maxValues.length;
       const reached = {};
       scrollBuckets.forEach((b) => {
