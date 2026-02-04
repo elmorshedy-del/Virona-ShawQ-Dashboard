@@ -653,7 +653,6 @@ function extractSessionIdentifiers(payload) {
 function isAddToCart(eventName) {
   const { key, tokens, compact } = normalizeEventNameKey(eventName);
   if (!key) return false;
-  if (KEY_EVENT_ALIASES.atc.has(key)) return true;
   if (tokens.includes('atc')) return true;
   if (compact.includes('addtocart') || compact.includes('addedtocart')) return true;
 
@@ -676,7 +675,6 @@ function isAddToCart(eventName) {
 function isCheckoutStarted(eventName) {
   const { key, tokens, compact } = normalizeEventNameKey(eventName);
   if (!key) return false;
-  if (KEY_EVENT_ALIASES.checkout_started.has(key)) return true;
 
   const hasCheckout = tokens.includes('checkout') || compact.includes('checkout');
   if (!hasCheckout) return false;
@@ -698,7 +696,6 @@ function isCheckoutStarted(eventName) {
 function isPurchase(eventName) {
   const { key, tokens, compact } = normalizeEventNameKey(eventName);
   if (!key) return false;
-  if (KEY_EVENT_ALIASES.purchase.has(key)) return true;
   if (tokens.includes('purchase') || tokens.includes('purchased')) return true;
 
   const hasOrder = tokens.includes('order') || compact.includes('order');
@@ -733,18 +730,53 @@ function normalizeEventNameKey(value) {
   return { key, tokens, compact };
 }
 
-const KEY_EVENT_ALIASES = {
-  atc: new Set(['product_added_to_cart', 'add_to_cart', 'added_to_cart', 'cart_add', 'atc']),
-  checkout_started: new Set(['checkout_started', 'checkout_initiated', 'begin_checkout']),
-  purchase: new Set(['checkout_completed', 'purchase', 'order_completed', 'order_placed'])
-};
-
 const ADD_TO_CART_CONTAINER_TOKENS = new Set(['cart', 'bag', 'basket']);
 const ADD_TO_CART_ACTION_TOKENS = new Set(['add', 'added', 'adding']);
 
 const CHECKOUT_START_TOKENS = new Set(['start', 'started', 'begin', 'began', 'initiated', 'initiate', 'open', 'opened', 'enter', 'entered']);
 const CHECKOUT_COMPLETE_GUARD_TOKENS = new Set(['complete', 'completed', 'completion', 'purchase', 'purchased', 'paid', 'placed', 'thank', 'you']);
 const ORDER_TERMINAL_TOKENS = new Set(['placed', 'complete', 'completed', 'paid', 'success']);
+
+function isProductViewedEvent(eventName, pagePath) {
+  const path = safeString(pagePath).toLowerCase().trim();
+  if (path.startsWith('/products/')) return true;
+
+  const { tokens, compact } = normalizeEventNameKey(eventName);
+  if (!tokens.length) return false;
+
+  const hasViewToken = tokens.includes('view') || tokens.includes('viewed') || tokens.includes('seen');
+  const hasProductToken = tokens.includes('product') || tokens.includes('item') || tokens.includes('sku');
+  const hasDetailToken = tokens.includes('detail') || tokens.includes('details');
+
+  if (hasViewToken && hasProductToken) return true;
+  if (hasDetailToken && hasProductToken) return true;
+  if (compact.includes('viewitem') || compact.includes('productview')) return true;
+
+  return false;
+}
+
+function isCartViewedEvent(eventName, pagePath) {
+  if (isAddToCart(eventName)) return false;
+
+  const path = safeString(pagePath).toLowerCase().trim();
+  if (path === '/cart' || path === '/cart/') return true;
+
+  const { tokens, compact } = normalizeEventNameKey(eventName);
+  if (!tokens.length) return false;
+
+  const hasContainer = tokens.some((t) => ADD_TO_CART_CONTAINER_TOKENS.has(t)) || compact.includes('cart');
+  if (!hasContainer) return false;
+
+  const hasView =
+    tokens.includes('view') ||
+    tokens.includes('viewed') ||
+    tokens.includes('open') ||
+    tokens.includes('opened') ||
+    compact.includes('viewcart') ||
+    compact.includes('cartview') ||
+    compact.includes('opencart');
+  return hasView;
+}
 
 function extractCartSnapshot(eventData) {
   if (!eventData || typeof eventData !== 'object') return null;
@@ -1270,16 +1302,16 @@ export function getSessionIntelligenceOverview(store) {
   }
 
   const purchaseEventRows = db.prepare(`
-    SELECT session_id, product_id
+    SELECT session_id, product_id, lower(event_name) AS event_name
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
       AND product_id IS NOT NULL
-      AND lower(event_name) IN ('checkout_completed','purchase','order_completed','order_placed')
   `).all(store, retentionWindow);
 
   for (const row of purchaseEventRows) {
     if (!row?.session_id || !row?.product_id) continue;
+    if (!isPurchase(row.event_name)) continue;
     const set = purchasedProductsBySession.get(row.session_id) || new Set();
     set.add(row.product_id);
     purchasedProductsBySession.set(row.session_id, set);
@@ -1287,17 +1319,17 @@ export function getSessionIntelligenceOverview(store) {
   }
 
   const viewEventRows = db.prepare(`
-    SELECT session_id, product_id, page_path
+    SELECT session_id, product_id, page_path, lower(event_name) AS event_name
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
       AND product_id IS NOT NULL
-      AND lower(event_name) IN ('product_viewed','product_view','view_item','product_detail_viewed')
   `).all(store, retentionWindow);
 
   const viewedNotBought = new Map();
   for (const row of viewEventRows) {
     if (!row?.session_id || !row?.product_id) continue;
+    if (!isProductViewedEvent(row.event_name, row.page_path)) continue;
     if (!purchasedSessionIds.has(row.session_id)) continue;
     const purchasedSet = purchasedProductsBySession.get(row.session_id);
     if (!purchasedSet || purchasedSet.size === 0) continue;
@@ -2036,18 +2068,46 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
   const range = dayRangeUtc(dateStr);
   if (!range) return [];
 
-  return db.prepare(`
+  const distinctEventNames = db.prepare(`
+    SELECT DISTINCT lower(event_name) AS name
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= ?
+      AND created_at < ?
+  `).all(store, range.start, range.end)
+    .map((row) => row?.name)
+    .filter(Boolean);
+
+  const productViewNames = distinctEventNames.filter((name) => isProductViewedEvent(name, ''));
+  const atcNames = distinctEventNames.filter(isAddToCart);
+  const cartNames = distinctEventNames.filter((name) => isCartViewedEvent(name, ''));
+  const checkoutNames = distinctEventNames.filter(isCheckoutStarted);
+  const purchaseNames = distinctEventNames.filter(isPurchase);
+
+  const toInClause = (values) => {
+    const unique = Array.from(new Set(values)).filter(Boolean);
+    if (!unique.length) return { clause: 'NULL', params: [] };
+    return { clause: unique.map(() => '?').join(','), params: unique };
+  };
+
+  const productViewIn = toInClause(productViewNames);
+  const atcIn = toInClause(atcNames);
+  const cartIn = toInClause(cartNames);
+  const checkoutIn = toInClause(checkoutNames);
+  const purchaseIn = toInClause(purchaseNames);
+
+  const query = `
     WITH day_events AS (
       SELECT
         session_id,
         MAX(shopper_number) AS shopper_number,
         MIN(created_at) AS first_seen,
         MAX(created_at) AS last_seen,
-        SUM(CASE WHEN lower(event_name) IN ('product_viewed','view_item') OR (page_path LIKE '/products/%') THEN 1 ELSE 0 END) AS product_views,
-        SUM(CASE WHEN lower(event_name) IN ('product_added_to_cart','add_to_cart','added_to_cart','cart_add','atc') THEN 1 ELSE 0 END) AS atc_events,
-        SUM(CASE WHEN lower(event_name) IN ('cart_viewed','view_cart') THEN 1 ELSE 0 END) AS cart_events,
-        SUM(CASE WHEN lower(event_name) IN ('checkout_started','checkout_initiated','begin_checkout') THEN 1 ELSE 0 END) AS checkout_started_events,
-        SUM(CASE WHEN lower(event_name) IN ('checkout_completed','purchase','order_completed','order_placed') THEN 1 ELSE 0 END) AS purchase_events,
+        SUM(CASE WHEN lower(event_name) IN (${productViewIn.clause}) OR (page_path LIKE '/products/%') THEN 1 ELSE 0 END) AS product_views,
+        SUM(CASE WHEN lower(event_name) IN (${atcIn.clause}) THEN 1 ELSE 0 END) AS atc_events,
+        SUM(CASE WHEN lower(event_name) IN (${cartIn.clause}) OR (page_path = '/cart' OR page_path = '/cart/') THEN 1 ELSE 0 END) AS cart_events,
+        SUM(CASE WHEN lower(event_name) IN (${checkoutIn.clause}) THEN 1 ELSE 0 END) AS checkout_started_events,
+        SUM(CASE WHEN lower(event_name) IN (${purchaseIn.clause}) THEN 1 ELSE 0 END) AS purchase_events,
         MAX(COALESCE(checkout_step, '')) AS last_checkout_step,
         MAX(COALESCE(device_type, '')) AS device_type,
         MAX(COALESCE(country_code, '')) AS country_code,
@@ -2084,11 +2144,26 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
       s.confidence,
       s.summary
     FROM day_events d
-    LEFT JOIN si_sessions s
+      LEFT JOIN si_sessions s
       ON s.store = ? AND s.session_id = d.session_id
     ORDER BY d.last_seen DESC
     LIMIT ?
-  `).all(store, range.start, range.end, store, max).map((row) => ({
+  `;
+
+  const params = [
+    ...productViewIn.params,
+    ...atcIn.params,
+    ...cartIn.params,
+    ...checkoutIn.params,
+    ...purchaseIn.params,
+    store,
+    range.start,
+    range.end,
+    store,
+    max
+  ];
+
+  return db.prepare(query).all(...params).map((row) => ({
       ...row,
       codename: makeSessionCodename(row.session_id)
     }));
@@ -2123,17 +2198,11 @@ function resolveSessionFlowMode(raw) {
 }
 
 function isProductStageEvent(eventName, pagePath) {
-  const name = safeString(eventName).toLowerCase().trim();
-  const path = safeString(pagePath).toLowerCase().trim();
-  if (name === 'product_viewed' || name === 'view_item') return true;
-  return path.startsWith('/products/');
+  return isProductViewedEvent(eventName, pagePath);
 }
 
 function isCartStageEvent(eventName, pagePath) {
-  const name = safeString(eventName).toLowerCase().trim();
-  const path = safeString(pagePath).toLowerCase().trim();
-  if (name === 'cart_viewed' || name === 'view_cart') return true;
-  return path === '/cart' || path.startsWith('/cart/');
+  return isCartViewedEvent(eventName, pagePath);
 }
 
 function stageFromEvent({ eventName, pagePath, checkoutStep }) {
