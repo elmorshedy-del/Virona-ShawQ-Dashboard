@@ -1610,25 +1610,46 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
 
 export function getSessionIntelligenceLatestBrief(store) {
   const db = getDb();
-  return db.prepare(`
+  const row = db.prepare(`
     SELECT id, store, date, content, top_reasons_json, model, generated_at, created_at
     FROM si_daily_briefs
     WHERE store = ?
     ORDER BY date DESC
     LIMIT 1
   `).get(store);
+  return hydrateBriefRow(row);
 }
 
 export function getSessionIntelligenceBriefForDay(store, date) {
   const db = getDb();
   const iso = requireIsoDay(date);
   if (!iso) return null;
-  return db.prepare(`
+  const row = db.prepare(`
     SELECT id, store, date, content, top_reasons_json, model, generated_at, created_at
     FROM si_daily_briefs
     WHERE store = ? AND date = ?
     LIMIT 1
   `).get(store, iso);
+  return hydrateBriefRow(row);
+}
+
+function hydrateBriefRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const raw = safeString(row.top_reasons_json);
+  let topReasons = [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) topReasons = parsed;
+    } catch (_error) {
+      topReasons = [];
+    }
+  }
+
+  return {
+    ...row,
+    top_reasons: topReasons
+  };
 }
 
 function chunkArray(list, size) {
@@ -2108,9 +2129,11 @@ function isProductStageEvent(eventName, pagePath) {
   return path.startsWith('/products/');
 }
 
-function isCartStageEvent(eventName) {
+function isCartStageEvent(eventName, pagePath) {
   const name = safeString(eventName).toLowerCase().trim();
-  return name === 'cart_viewed' || name === 'view_cart';
+  const path = safeString(pagePath).toLowerCase().trim();
+  if (name === 'cart_viewed' || name === 'view_cart') return true;
+  return path === '/cart' || path.startsWith('/cart/');
 }
 
 function stageFromEvent({ eventName, pagePath, checkoutStep }) {
@@ -2123,7 +2146,7 @@ function stageFromEvent({ eventName, pagePath, checkoutStep }) {
   if (step === 'contact' || isCheckoutStarted(name)) return 'checkout_contact';
 
   if (isAddToCart(name)) return 'atc';
-  if (isCartStageEvent(name)) return 'cart';
+  if (isCartStageEvent(name, pagePath)) return 'cart';
   if (isProductStageEvent(name, pagePath)) return 'product';
 
   return null;

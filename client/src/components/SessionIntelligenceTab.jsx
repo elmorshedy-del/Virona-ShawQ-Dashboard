@@ -256,6 +256,33 @@ function normalizeTrafficSourceTitle(value) {
   return `${label} (${raw})`;
 }
 
+function normalizeDeviceLabel(value) {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '—';
+  const key = raw.toLowerCase().trim();
+  if (key === 'mobile') return 'Mobile';
+  if (key === 'desktop') return 'Desktop';
+  if (key === 'tablet') return 'Tablet';
+  return raw;
+}
+
+function normalizeLooseKey(value) {
+  return (value || '').toString().toLowerCase().trim();
+}
+
+function inferDropoffStageFromBriefText(text) {
+  const raw = (text || '').toString().toLowerCase();
+  if (!raw) return null;
+  if (raw.includes('payment')) return 'checkout_payment';
+  if (raw.includes('shipping')) return 'checkout_shipping';
+  if (raw.includes('contact')) return 'checkout_contact';
+  if (raw.includes('checkout')) return 'checkout_contact';
+  if (raw.includes('cart')) return 'cart';
+  if (raw.includes('add to cart') || raw.includes('added to cart') || raw.includes('atc')) return 'atc';
+  if (raw.includes('product')) return 'product';
+  return null;
+}
+
 function campaignCellProps(utmSource, utmCampaign) {
   const sourceRaw = (utmSource || '').toString().trim();
   const campaignRaw = (utmCampaign || '').toString().trim();
@@ -386,6 +413,9 @@ export default function SessionIntelligenceTab({ store }) {
   const [flowLoading, setFlowLoading] = useState(false);
   const [flowError, setFlowError] = useState('');
   const [dropoffStageFilter, setDropoffStageFilter] = useState('');
+  const [dropoffDeviceFilter, setDropoffDeviceFilter] = useState('');
+  const [dropoffCountryFilter, setDropoffCountryFilter] = useState('');
+  const [dropoffCampaignFilter, setDropoffCampaignFilter] = useState('');
   const [sessions, setSessions] = useState([]);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -538,8 +568,35 @@ export default function SessionIntelligenceTab({ store }) {
       list = list.filter((s) => inferDropoffStageFromSummary(s) === dropoffStageFilter);
     }
 
+    if (dropoffDeviceFilter) {
+      const target = normalizeLooseKey(dropoffDeviceFilter);
+      if (target === '—') {
+        list = list.filter((s) => !normalizeLooseKey(s.device_type));
+      } else {
+        list = list.filter((s) => normalizeLooseKey(s.device_type) === target);
+      }
+    }
+
+    if (dropoffCountryFilter) {
+      const target = normalizeLooseKey(dropoffCountryFilter);
+      if (target === '—') {
+        list = list.filter((s) => !normalizeLooseKey(s.country_code));
+      } else {
+        list = list.filter((s) => normalizeLooseKey(s.country_code) === target);
+      }
+    }
+
+    if (dropoffCampaignFilter) {
+      const target = dropoffCampaignFilter;
+      if (target === '—') {
+        list = list.filter((s) => !(s.utm_campaign || '').toString().trim());
+      } else {
+        list = list.filter((s) => (s.utm_campaign || '') === target);
+      }
+    }
+
     return list;
-  }, [dropoffStageFilter, highIntentOnly, librarySessions]);
+  }, [dropoffCampaignFilter, dropoffCountryFilter, dropoffDeviceFilter, dropoffStageFilter, highIntentOnly, librarySessions]);
 
   const loadLibrarySessions = useCallback(async (day) => {
     if (!day) return;
@@ -822,11 +879,20 @@ export default function SessionIntelligenceTab({ store }) {
   const flowTotals = flowData?.totals?.sessions ?? 0;
   const flowStages = Array.isArray(flowData?.stages) ? flowData.stages : [];
   const flowClusters = Array.isArray(flowData?.clusters) ? flowData.clusters : [];
+  const briefReasons = Array.isArray(brief?.top_reasons) ? brief.top_reasons : [];
 
   const realtimeCountries = realtime?.breakdowns?.countries || [];
   const realtimeFocusCountry = realtimeCountries?.[0]?.value || null;
   const realtimeFocusCountryName = realtimeFocusCountry ? countryNameFromCode(realtimeFocusCountry) : null;
   const realtimeMapRegion = realtimeMapMode === 'focus' && realtimeFocusCountry ? realtimeFocusCountry : 'WORLD';
+  const hasDayFilters = Boolean(dropoffStageFilter || dropoffDeviceFilter || dropoffCountryFilter || dropoffCampaignFilter);
+
+  const clearDayFilters = useCallback(() => {
+    setDropoffStageFilter('');
+    setDropoffDeviceFilter('');
+    setDropoffCountryFilter('');
+    setDropoffCampaignFilter('');
+  }, []);
 
   return (
 	    <div className="si-root">
@@ -1153,11 +1219,79 @@ export default function SessionIntelligenceTab({ store }) {
               {briefGenerateError}
             </div>
           ) : null}
-          <div className="si-muted">
+          <div className="si-muted si-preline">
             {brief?.content
               ? brief.content
               : 'Generate a daily brief to turn today’s high-intent sessions into friction clusters + fixes.'}
           </div>
+
+          {briefReasons.length > 0 ? (
+            <div className="si-brief-reasons">
+              {briefReasons.slice(0, 6).map((reason, idx) => {
+                const conf = Number(reason?.confidence);
+                const confidence = Number.isFinite(conf) ? Math.min(Math.max(conf, 0), 1) : null;
+                const evidence = Array.isArray(reason?.evidence) ? reason.evidence.filter(Boolean).slice(0, 4) : [];
+                const fixes = Array.isArray(reason?.fixes) ? reason.fixes.filter(Boolean).slice(0, 4) : [];
+                const stageHint = inferDropoffStageFromBriefText([reason?.reason, ...evidence].filter(Boolean).join('\n'));
+
+                return (
+                  <div key={`${reason?.reason || 'reason'}-${idx}`} className="si-brief-reason">
+                    <div className="si-brief-reason-header">
+                      <div className="si-brief-reason-title">{reason?.reason || 'Insight'}</div>
+                      <div className="si-brief-reason-confidence">
+                        {confidence == null ? '—' : `${Math.round(confidence * 100)}%`}
+                      </div>
+                    </div>
+                    <div className="si-brief-reason-bar" aria-hidden="true">
+                      <div
+                        className="si-brief-reason-bar-fill"
+                        style={{ width: `${Math.round((confidence ?? 0) * 100)}%` }}
+                      />
+                    </div>
+
+                    {evidence.length > 0 ? (
+                      <div className="si-brief-reason-block">
+                        <div className="si-brief-reason-block-title">Evidence</div>
+                        <ul className="si-brief-reason-list">
+                          {evidence.map((line, lineIdx) => (
+                            <li key={`ev-${idx}-${lineIdx}`}>{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    {fixes.length > 0 ? (
+                      <div className="si-brief-reason-block">
+                        <div className="si-brief-reason-block-title">Fix</div>
+                        <ul className="si-brief-reason-list">
+                          {fixes.map((line, lineIdx) => (
+                            <li key={`fx-${idx}-${lineIdx}`}>{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    {stageHint ? (
+                      <div className="si-row" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
+                        <button
+                          className="si-button si-button-small"
+                          type="button"
+                          onClick={() => {
+                            setFlowMode('high_intent_no_purchase');
+                            setHighIntentOnly(true);
+                            setDropoffStageFilter(stageHint);
+                          }}
+                          title="Filter the day sessions list to the most likely drop-off stage."
+                        >
+                          Filter sessions
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1199,10 +1333,30 @@ export default function SessionIntelligenceTab({ store }) {
           >
             {flowLoading ? 'Loading…' : 'Reload'}
           </button>
-          {dropoffStageFilter ? (
-            <span className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              Filtering day sessions: <span className="si-badge">{FLOW_STAGE_LABELS[dropoffStageFilter] || dropoffStageFilter}</span>
-              <button className="si-button si-button-small" type="button" onClick={() => setDropoffStageFilter('')}>
+          {hasDayFilters ? (
+            <span className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              Filtering day sessions:
+              {dropoffStageFilter ? (
+                <span className="si-badge" title="Drop-off stage">
+                  Stage: {FLOW_STAGE_LABELS[dropoffStageFilter] || dropoffStageFilter}
+                </span>
+              ) : null}
+              {dropoffDeviceFilter ? (
+                <span className="si-badge" title="Device filter">
+                  Device: {normalizeDeviceLabel(dropoffDeviceFilter)}
+                </span>
+              ) : null}
+              {dropoffCountryFilter ? (
+                <span className="si-badge" title="Country filter">
+                  Country: {countryNameFromCode(dropoffCountryFilter)}
+                </span>
+              ) : null}
+              {dropoffCampaignFilter ? (
+                <span className="si-badge" title="Campaign filter">
+                  Campaign: {dropoffCampaignFilter}
+                </span>
+              ) : null}
+              <button className="si-button si-button-small" type="button" onClick={clearDayFilters}>
                 Clear
               </button>
             </span>
@@ -1294,21 +1448,63 @@ export default function SessionIntelligenceTab({ store }) {
                       </div>
 
                       <div className="si-cluster-chips">
-                        {(cluster.top_devices || []).slice(0, 3).map((item, idx) => (
-                          <span key={`dev-${item.value}-${idx}`} className="si-chip" title="Top device">
-                            {item.value} <strong>{item.count}</strong>
-                          </span>
-                        ))}
-                        {(cluster.top_countries || []).slice(0, 3).map((item, idx) => (
-                          <span key={`cty-${item.value}-${idx}`} className="si-chip" title="Top country">
-                            {item.value} <strong>{item.count}</strong>
-                          </span>
-                        ))}
-                        {(cluster.top_campaigns || []).slice(0, 2).map((item, idx) => (
-                          <span key={`cmp-${item.value}-${idx}`} className="si-chip" title="Top campaign">
-                            {item.value || '—'} <strong>{item.count}</strong>
-                          </span>
-                        ))}
+                        {(cluster.top_devices || []).slice(0, 3).map((item, idx) => {
+                          const value = item.value || '—';
+                          const active = normalizeLooseKey(dropoffDeviceFilter) === normalizeLooseKey(value);
+                          return (
+                            <button
+                              key={`dev-${value}-${idx}`}
+                              className={`si-chip si-chip-button ${active ? 'si-chip-active' : ''}`}
+                              type="button"
+                              aria-pressed={active}
+                              title="Filter by device"
+                              onClick={() => {
+                                setDropoffStageFilter(cluster.stage);
+                                setDropoffDeviceFilter(active ? '' : value);
+                              }}
+                            >
+                              {normalizeDeviceLabel(value)} <strong>{item.count}</strong>
+                            </button>
+                          );
+                        })}
+                        {(cluster.top_countries || []).slice(0, 3).map((item, idx) => {
+                          const value = item.value || '—';
+                          const active = normalizeLooseKey(dropoffCountryFilter) === normalizeLooseKey(value);
+                          return (
+                            <button
+                              key={`cty-${value}-${idx}`}
+                              className={`si-chip si-chip-button ${active ? 'si-chip-active' : ''}`}
+                              type="button"
+                              aria-pressed={active}
+                              title="Filter by country"
+                              onClick={() => {
+                                setDropoffStageFilter(cluster.stage);
+                                setDropoffCountryFilter(active ? '' : value);
+                              }}
+                            >
+                              {countryNameFromCode(value)} <strong>{item.count}</strong>
+                            </button>
+                          );
+                        })}
+                        {(cluster.top_campaigns || []).slice(0, 2).map((item, idx) => {
+                          const value = item.value || '—';
+                          const active = dropoffCampaignFilter === value;
+                          return (
+                            <button
+                              key={`cmp-${value}-${idx}`}
+                              className={`si-chip si-chip-button ${active ? 'si-chip-active' : ''}`}
+                              type="button"
+                              aria-pressed={active}
+                              title="Filter by campaign"
+                              onClick={() => {
+                                setDropoffStageFilter(cluster.stage);
+                                setDropoffCampaignFilter(active ? '' : value);
+                              }}
+                            >
+                              {value} <strong>{item.count}</strong>
+                            </button>
+                          );
+                        })}
                       </div>
 
                       {(cluster.sample_sessions || []).length > 0 ? (
