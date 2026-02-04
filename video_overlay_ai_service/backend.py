@@ -35,12 +35,15 @@ import easyocr
 from PIL import Image
 from sklearn.cluster import KMeans
 import os
+import torch
 
 app = Flask(__name__)
 CORS(app)
 
 # Strict mode: do not allow OCR-only or rectangular-mask fallbacks.
 STRICT_MODE = os.environ.get('VIDEO_OVERLAY_STRICT', 'true').lower() in ('1', 'true', 'yes')
+DEFAULT_DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+DEVICE = os.environ.get('VIDEO_OVERLAY_DEVICE', DEFAULT_DEVICE)
 
 # ============================================================================
 # MODEL LOADING
@@ -78,7 +81,7 @@ try:
     weights_path = "weights/groundingdino_swint_ogc.pth"
 
     if os.path.exists(weights_path):
-        dino_model = load_dino(config_path, weights_path)
+        dino_model = load_dino(config_path, weights_path, device=DEVICE)
         DINO_AVAILABLE = True
         print("✓ Grounding DINO loaded")
     else:
@@ -110,7 +113,7 @@ try:
     sam_config = resolve_sam2_config_name()
 
     if os.path.exists(sam_weights):
-        sam_model = build_sam2(sam_config, sam_weights)
+        sam_model = build_sam2(sam_config, sam_weights, device=DEVICE)
         sam_predictor = SAM2ImagePredictor(sam_model)
         SAM_AVAILABLE = True
         print("✓ SAM 2 loaded")
@@ -434,7 +437,8 @@ def find_boxes_with_dino(frame):
         image=image_pil,
         caption=TEXT_PROMPT,
         box_threshold=0.30,
-        text_threshold=0.25
+        text_threshold=0.25,
+        device=DEVICE
     )
 
     results = []
