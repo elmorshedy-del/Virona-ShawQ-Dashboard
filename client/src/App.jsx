@@ -31,6 +31,7 @@ import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
 import CampaignLauncher from './components/CampaignLauncher';
 import ProductRadar from './components/ProductRadar';
 import CustomerInsightsTab from './components/CustomerInsightsTab';
+import WatchtowerTab from './components/WatchtowerTab';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -398,8 +399,9 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher', 'Product Radar'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher', 'Product Radar', 'Watchtower'];
 const PRODUCT_RADAR_TAB_INDEX = TABS.indexOf('Product Radar');
+const WATCHTOWER_TAB_INDEX = TABS.indexOf('Watchtower');
 const TABS_VERSION = '2026-01-31-customer-insights-after-neometa-v1';
 
 export default function App() {
@@ -1817,10 +1819,17 @@ export default function App() {
           <CampaignLauncher store={store} />
         )}
 
-        {activeTab === PRODUCT_RADAR_TAB_INDEX && (
-          <ProductRadar />
-        )}
-      </div>
+	        {activeTab === PRODUCT_RADAR_TAB_INDEX && (
+	          <ProductRadar />
+	        )}
+
+	        {activeTab === WATCHTOWER_TAB_INDEX && (
+	          <WatchtowerTab
+	            store={store}
+	            formatCurrency={formatCurrency}
+	          />
+	        )}
+	      </div>
 
         {storeDropdownOpen && (
           <div className="fixed inset-0 z-40" onClick={() => setStoreDropdownOpen(false)} />
