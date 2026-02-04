@@ -62,7 +62,8 @@ DINO_ERROR = None
 DINO_CONFIG_PATH = None
 DINO_WEIGHTS_PATH = None
 try:
-    from groundingdino.util.inference import load_model as load_dino, predict as dino_predict
+    from groundingdino.util.inference import load_model as load_dino, predict as dino_predict, Model as DinoInferenceModel
+    from torchvision.ops import box_convert
 
     def resolve_dino_config_path():
         # Prefer local relative path (matches the original project), otherwise try package location.
@@ -465,26 +466,27 @@ def detect_overlays(frame):
 
 def find_boxes_with_dino(frame):
     h, w = frame.shape[:2]
-    image_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
     TEXT_PROMPT = "text box. subtitle. caption. text overlay. lower third. label."
+
+    # GroundingDINO expects a normalized torch.Tensor image (C,H,W).
+    processed_image = DinoInferenceModel.preprocess_image(image_bgr=frame)
 
     boxes, logits, phrases = dino_predict(
         model=dino_model,
-        image=image_pil,
+        image=processed_image,
         caption=TEXT_PROMPT,
         box_threshold=0.30,
         text_threshold=0.25,
         device=DEVICE
     )
 
-    results = []
-    for box, score in zip(boxes, logits):
-        x1, y1, x2, y2 = box.tolist()
+    # Convert normalized cxcywh -> xyxy pixels
+    boxes_xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy")
+    boxes_xyxy = boxes_xyxy * torch.tensor([w, h, w, h])
 
-        if max(x1, y1, x2, y2) <= 1:
-            x1, x2 = x1 * w, x2 * w
-            y1, y2 = y1 * h, y2 * h
+    results = []
+    for box, score in zip(boxes_xyxy, logits):
+        x1, y1, x2, y2 = [float(v) for v in box.tolist()]
 
         if (x2 - x1) < 20 or (y2 - y1) < 10:
             continue
