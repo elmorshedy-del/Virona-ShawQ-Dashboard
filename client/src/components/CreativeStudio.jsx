@@ -13,6 +13,7 @@ import {
   HelpCircle, Bookmark, ChevronLeft
 } from 'lucide-react';
 import TestimonialExtractor from './TestimonialExtractor';
+import VideoOverlayEditor from './VideoOverlayEditor';
 
 const API_BASE = '/api';
 const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
@@ -209,6 +210,7 @@ export default function CreativeStudio({ store }) {
 
   // Tabs configuration
   const tabs = [
+    { id: 'overlay', label: 'Overlay Editor', icon: <Sparkles size={18} /> },
     { id: 'editor', label: 'Ad Editor', icon: <Layers size={18} /> },
     { id: 'video', label: 'Video Resizer', icon: <Film size={18} /> },
     { id: 'spy', label: 'Competitor Spy', icon: <Search size={18} /> },
@@ -259,6 +261,7 @@ export default function CreativeStudio({ store }) {
 
       {/* Content */}
       <div className="max-w-[1800px] mx-auto">
+        {activeTab === 'overlay' && <VideoOverlayEditor store={store} />}
         {activeTab === 'editor' && <AdEditor store={store} />}
         {activeTab === 'video' && <VideoResizer store={store} />}
         {activeTab === 'spy' && (

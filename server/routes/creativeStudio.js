@@ -1,7 +1,14 @@
 import express from 'express';
 import axios from 'axios';
+import crypto from 'crypto';
+import fs from 'fs';
 import multer from 'multer';
+import os from 'os';
 import path from 'path';
+import { promisify } from 'util';
+import { execFile } from 'child_process';
+import { fileURLToPath } from 'url';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as geminiVision from '../services/geminiVisionService.js';
 import * as cloudinary from '../services/cloudinaryService.js';
 import * as fbAdLibrary from '../services/fbAdLibraryService.js';
@@ -12,11 +19,174 @@ import { getDb } from '../db/database.js';
 import * as apifyService from '../services/apifyService.js';
 import { isBrandCacheValid, getBrandCacheExpiry } from '../db/competitorSpyMigration.js';
 import { getOrCreateStoreProfile } from '../services/storeProfileService.js';
+import { detectVideoOverlays, getVideoOverlayAiHealth, isVideoOverlayAiConfigured } from '../services/videoOverlayAiClient.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const execFileAsync = promisify(execFile);
 
 const router = express.Router();
 const db = getDb();
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+// ============================================================================
+// VIDEO OVERLAY EDITOR (VideoOverlayAI) - temp storage + helpers
+// ============================================================================
+
+const VIDEO_OVERLAY_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'video-overlay');
+const VIDEO_OVERLAY_UPLOADS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'uploads');
+const VIDEO_OVERLAY_OUTPUTS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'outputs');
+
+function ensureVideoOverlayDirs() {
+  fs.mkdirSync(VIDEO_OVERLAY_UPLOADS_DIR, { recursive: true });
+  fs.mkdirSync(VIDEO_OVERLAY_OUTPUTS_DIR, { recursive: true });
+}
+
+function getUploadedVideoPath(videoId) {
+  return path.join(VIDEO_OVERLAY_UPLOADS_DIR, videoId);
+}
+
+function getExportedVideoPath(exportId) {
+  return path.join(VIDEO_OVERLAY_OUTPUTS_DIR, `${exportId}.mp4`);
+}
+
+function safeParseNumber(value, fallback = null) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clampNumber(value, min, max) {
+  const n = safeParseNumber(value, min);
+  return Math.min(max, Math.max(min, n));
+}
+
+function normalizeOverlayKey(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseHexColor(hex) {
+  const normalized = String(hex || '').trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
+  const r = parseInt(normalized.slice(0, 2), 16);
+  const g = parseInt(normalized.slice(2, 4), 16);
+  const b = parseInt(normalized.slice(4, 6), 16);
+  return { r, g, b, hex: `#${normalized.toLowerCase()}` };
+}
+
+function escapeDrawtext(text) {
+  // drawtext parsing is `:` separated, and supports expansions by default.
+  // We disable expansion and still escape chars that break parsing.
+  return String(text ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/:/g, '\\:')
+    .replace(/%/g, '\\%');
+}
+
+async function ffprobeVideoInfo(videoPath) {
+  const { stdout: durationOut } = await execFileAsync('ffprobe', [
+    '-v', 'error',
+    '-show_entries', 'format=duration',
+    '-of', 'default=noprint_wrappers=1:nokey=1',
+    videoPath
+  ]);
+
+  const duration = Math.max(0, safeParseNumber(String(durationOut).trim(), 0));
+
+  const { stdout: streamOut } = await execFileAsync('ffprobe', [
+    '-v', 'error',
+    '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height',
+    '-of', 'csv=s=x:p=0',
+    videoPath
+  ]);
+
+  const [widthStr, heightStr] = String(streamOut).trim().split('x');
+  const width = Math.max(0, parseInt(widthStr || '0', 10) || 0);
+  const height = Math.max(0, parseInt(heightStr || '0', 10) || 0);
+
+  return { duration, width, height };
+}
+
+function buildSegmentsFromFrameKeys({ frames, durationSec, intervalSec }) {
+  const sorted = [...frames].sort((a, b) => a.t - b.t);
+  const segments = [];
+
+  let current = null;
+  for (const frame of sorted) {
+    const key = normalizeOverlayKey(frame.overlay_text);
+    if (!current) {
+      current = { key, start: frame.t, end: frame.t, sample_t: frame.t, raw: frame.overlay_text || null };
+      continue;
+    }
+
+    if (key === current.key) {
+      current.end = frame.t;
+      continue;
+    }
+
+    segments.push(current);
+    current = { key, start: frame.t, end: frame.t, sample_t: frame.t, raw: frame.overlay_text || null };
+  }
+
+  if (current) segments.push(current);
+
+  // Convert sampling points to time ranges using the next segment's start.
+  const ranged = segments.map((seg, idx) => {
+    const next = segments[idx + 1];
+    const start = clampNumber(seg.start, 0, durationSec);
+    const end = next ? clampNumber(next.start, start, durationSec) : durationSec;
+
+    // Prefer the first sample time in the segment as the representative frame.
+    const sample_t = clampNumber(seg.sample_t, start, end || durationSec);
+
+    return {
+      id: crypto.randomUUID(),
+      key: seg.key,
+      label: seg.raw || null,
+      start,
+      end,
+      sample_t
+    };
+  });
+
+  // Drop "no overlay" segments (empty keys) unless the whole video is empty.
+  const withOverlay = ranged.filter(seg => seg.key);
+  if (withOverlay.length > 0) return withOverlay;
+  return ranged;
+}
+
+function toOverlayBox(det, { startTime, endTime } = {}) {
+  const font = det?.font || {};
+  const colors = det?.colors || {};
+  const backgroundHex = colors?.background?.hex || '#333333';
+  const textHex = colors?.text?.hex || '#ffffff';
+
+  return {
+    id: crypto.randomUUID(),
+    x: det?.x ?? 0,
+    y: det?.y ?? 0,
+    width: det?.width ?? 0,
+    height: det?.height ?? 0,
+    text: det?.text || 'Detected',
+    backgroundColor: backgroundHex,
+    textColor: textHex,
+    fontSize: font?.size || 24,
+    fontWeight: font?.weight || 'normal',
+    fontStyle: font?.style || 'normal',
+    fontFamily: (font?.suggested_fonts && font.suggested_fonts[0]) || 'Inter',
+    isGradient: Boolean(colors?.is_gradient),
+    gradient: colors?.gradient || null,
+    confidence: det?.confidence ?? 0.9,
+    startTime: typeof startTime === 'number' ? startTime : null,
+    endTime: typeof endTime === 'number' ? endTime : null
+  };
+}
 
 const LOCALE_LABELS = {
   'en-US': 'English (US)',
@@ -1028,6 +1198,517 @@ router.get('/video/download', async (req, res) => {
   } catch (error) {
     console.error('Download proxy error:', error);
     res.status(500).json({ error: 'Download failed' });
+  }
+});
+
+// ============================================================================
+// VIDEO TEXT OVERLAY EDITOR (burnt-in overlay editing)
+// ============================================================================
+
+router.get('/video-overlay/health', async (req, res) => {
+  try {
+    const overlayAiConfigured = isVideoOverlayAiConfigured();
+    const overlayAiHealth = overlayAiConfigured ? await getVideoOverlayAiHealth().catch(() => null) : null;
+
+    res.json({
+      success: true,
+      overlay_ai: {
+        configured: overlayAiConfigured,
+        url: process.env.VIDEO_OVERLAY_AI_URL || null,
+        health: overlayAiHealth
+      },
+      gemini: {
+        configured: Boolean(process.env.GEMINI_API_KEY),
+        model: process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.0-flash-lite'
+      },
+      tools: {
+        ffmpeg: true,
+        ffprobe: true
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/video-overlay/upload', upload.single('video'), async (req, res) => {
+  try {
+    ensureVideoOverlayDirs();
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No video provided' });
+    }
+
+    const videoId = crypto.randomUUID();
+    const videoPath = getUploadedVideoPath(videoId);
+    await fs.promises.writeFile(videoPath, req.file.buffer);
+
+    let info = { duration: null, width: null, height: null };
+    try {
+      info = await ffprobeVideoInfo(videoPath);
+    } catch (e) {
+      console.warn('ffprobe failed for upload:', e?.message || e);
+    }
+
+    return res.json({
+      success: true,
+      video_id: videoId,
+      filename: req.file.originalname,
+      size: req.file.size,
+      ...info
+    });
+  } catch (error) {
+    console.error('Video overlay upload error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/video-overlay/detect', async (req, res) => {
+  try {
+    const imageBase64 = req.body?.image || '';
+    const startTime = safeParseNumber(req.body?.startTime, null);
+    const endTime = safeParseNumber(req.body?.endTime, null);
+
+    if (!imageBase64) {
+      return res.status(400).json({ success: false, error: 'image is required (base64 JPEG/PNG, no data: prefix)' });
+    }
+
+    if (!isVideoOverlayAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'VIDEO_OVERLAY_AI_URL is not configured. Start the Python detector and set VIDEO_OVERLAY_AI_URL.'
+      });
+    }
+
+    const detections = await detectVideoOverlays({ imageBase64 });
+    const overlays = Array.isArray(detections)
+      ? detections.map((det) => toOverlayBox(det, { startTime, endTime }))
+      : [];
+
+    return res.json({ success: true, overlays, raw: detections });
+  } catch (error) {
+    console.error('Video overlay detect error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+async function extractFrameBase64(videoPath, { t, width = null } = {}) {
+  const tmpDir = path.join(VIDEO_OVERLAY_TMP_DIR, 'frames', crypto.randomUUID());
+  await fs.promises.mkdir(tmpDir, { recursive: true });
+  const outPath = path.join(tmpDir, 'frame.jpg');
+
+  const args = [
+    '-ss', String(Math.max(0, t || 0)),
+    '-i', videoPath,
+    '-frames:v', '1'
+  ];
+
+  if (width && Number.isFinite(width) && width > 0) {
+    args.push('-vf', `scale=${Math.round(width)}:-1`);
+  }
+
+  args.push('-q:v', '4', '-y', outPath);
+
+  await execFileAsync('ffmpeg', args);
+  const b64 = await fs.promises.readFile(outPath, 'base64');
+
+  // Best-effort cleanup
+  fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+
+  return b64;
+}
+
+async function detectOverlayKeysWithGemini({ frames } = {}) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
+  }
+
+  const modelName = process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.0-flash-lite';
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: modelName });
+
+  const results = [];
+  const chunkSize = 8;
+
+  for (let i = 0; i < frames.length; i += chunkSize) {
+    const chunk = frames.slice(i, i + chunkSize);
+
+    const prompt = `You analyze video frames to find when a burnt-in text overlay changes.
+
+For each frame, read ONLY the prominent burnt-in text overlay (lower-third/subtitle/caption) that appears as a boxed/overlayed text element.
+If there is no such overlay, return null.
+If there are multiple overlays, pick the most prominent editable overlay.
+If the text is unreadable, return "UNREADABLE" (do not guess).
+
+Return ONLY valid JSON with this exact shape:
+{"frames":[{"t":0.0,"overlay_text":null}]}`;
+
+    const parts = [{ text: prompt }];
+
+    for (const frame of chunk) {
+      parts.push({ text: `FRAME t=${frame.t}` });
+      parts.push({ inlineData: { mimeType: 'image/jpeg', data: frame.b64 } });
+    }
+
+    const result = await model.generateContent(parts);
+    const text = String(result?.response?.text?.() ?? '').trim();
+
+    // Robust JSON extraction
+    const jsonText = text
+      .replace(/```json|```/g, '')
+      .trim();
+
+    const start = jsonText.indexOf('{');
+    const end = jsonText.lastIndexOf('}');
+    const slice = start >= 0 && end >= 0 ? jsonText.slice(start, end + 1) : jsonText;
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(slice);
+    } catch (e) {
+      throw new Error(`Gemini returned invalid JSON: ${text.slice(0, 200)}`);
+    }
+
+    const frameRows = Array.isArray(parsed?.frames) ? parsed.frames : [];
+    for (const row of frameRows) {
+      const t = safeParseNumber(row?.t, null);
+      if (t === null) continue;
+      results.push({ t, overlay_text: row?.overlay_text ?? null });
+    }
+  }
+
+  return results;
+}
+
+async function detectOverlayKeysWithDetector({ videoPath, times } = {}) {
+  if (!isVideoOverlayAiConfigured()) {
+    throw new Error('VIDEO_OVERLAY_AI_URL is not configured.');
+  }
+
+  const frames = [];
+  for (const t of times) {
+    const b64 = await extractFrameBase64(videoPath, { t, width: 512 });
+    const detections = await detectVideoOverlays({ imageBase64: b64 });
+    const texts = Array.isArray(detections)
+      ? detections
+        .map(d => String(d?.text || '').trim())
+        .filter(Boolean)
+      : [];
+    frames.push({
+      t,
+      overlay_text: texts.length ? texts.join(' | ') : null
+    });
+  }
+  return frames;
+}
+
+router.post('/video-overlay/scan', async (req, res) => {
+  try {
+    ensureVideoOverlayDirs();
+
+    const videoId = String(req.body?.video_id || '').trim();
+    if (!videoId) {
+      return res.status(400).json({ success: false, error: 'video_id is required' });
+    }
+
+    const videoPath = getUploadedVideoPath(videoId);
+    if (!fs.existsSync(videoPath)) {
+      return res.status(404).json({ success: false, error: 'Uploaded video not found (upload again)' });
+    }
+
+    let info;
+    try {
+      info = await ffprobeVideoInfo(videoPath);
+    } catch (e) {
+      const msg = e?.code === 'ENOENT'
+        ? 'ffprobe not found on server. Install ffmpeg/ffprobe.'
+        : (e?.message || 'Failed to read video metadata');
+      return res.status(500).json({ success: false, error: msg });
+    }
+
+    const durationSec = info.duration || 0;
+    if (!durationSec) {
+      return res.status(400).json({ success: false, error: 'Invalid video duration (ffprobe returned 0)' });
+    }
+
+    let intervalSec = clampNumber(req.body?.interval_sec ?? 1, 0.25, 10);
+    const maxFrames = Math.round(clampNumber(req.body?.max_frames ?? 30, 5, 120));
+
+    // Keep within maxFrames by increasing interval automatically.
+    if (durationSec / intervalSec > maxFrames) {
+      intervalSec = durationSec / maxFrames;
+    }
+
+    const times = [];
+    for (let t = 0; t < durationSec && times.length < maxFrames; t += intervalSec) {
+      times.push(Math.min(durationSec, t));
+    }
+
+    // Extract scaled frames for scanning (Gemini / fallback)
+    const scanFrames = [];
+    for (const t of times) {
+      const b64 = await extractFrameBase64(videoPath, { t, width: 512 });
+      scanFrames.push({ t, b64 });
+    }
+
+    if (!isVideoOverlayAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'VIDEO_OVERLAY_AI_URL is not configured. This feature requires the DINO+SAM2 overlay detector service.'
+      });
+    }
+
+    const overlayHealth = await getVideoOverlayAiHealth().catch(() => null);
+    if (!overlayHealth?.ok) {
+      return res.status(503).json({
+        success: false,
+        error: 'Video Overlay AI service is not ready. DINO + SAM2 must be loaded (no fallback mode).',
+        details: overlayHealth?.payload || null
+      });
+    }
+
+    const useGemini = req.body?.use_gemini !== false;
+    if (!useGemini) {
+      return res.status(400).json({
+        success: false,
+        error: 'Gemini scan is required for video-wide overlay segmentation (no fallback mode). Enable Gemini scan.'
+      });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: 'GEMINI_API_KEY is not configured. This feature requires Gemini for segment detection (no fallback mode).'
+      });
+    }
+
+    const frameKeys = await detectOverlayKeysWithGemini({ frames: scanFrames });
+    const scanMethod = 'gemini';
+
+    const segmentsRaw = buildSegmentsFromFrameKeys({ frames: frameKeys, durationSec, intervalSec });
+    if (!segmentsRaw.some(seg => seg.key)) {
+      return res.json({
+        success: true,
+        scan_method: scanMethod,
+        duration: durationSec,
+        interval_sec: intervalSec,
+        max_frames: maxFrames,
+        frames_analyzed: scanFrames.length,
+        segments: []
+      });
+    }
+
+    // For each segment, run the exact detector on a full-res representative frame to get geometry/colors/fonts.
+    // Strict mode: no silent segment failures.
+    const segments = [];
+    for (const seg of segmentsRaw) {
+      const fullFrameB64 = await extractFrameBase64(videoPath, { t: seg.sample_t, width: null });
+      const detections = await detectVideoOverlays({ imageBase64: fullFrameB64 });
+      const overlays = Array.isArray(detections)
+        ? detections.map((det) => toOverlayBox(det, { startTime: seg.start, endTime: seg.end }))
+        : [];
+
+      if (!overlays.length) {
+        throw new Error(`Detector returned 0 overlays for segment start=${seg.start}s end=${seg.end}s (sample_t=${seg.sample_t}s).`);
+      }
+
+      segments.push({
+        id: seg.id,
+        label: seg.label,
+        start: seg.start,
+        end: seg.end,
+        sample_time: seg.sample_t,
+        overlays
+      });
+    }
+
+    res.json({
+      success: true,
+      scan_method: scanMethod,
+      duration: durationSec,
+      interval_sec: intervalSec,
+      max_frames: maxFrames,
+      frames_analyzed: scanFrames.length,
+      segments
+    });
+  } catch (error) {
+    console.error('Video overlay scan error:', error);
+    const msg = error?.code === 'ENOENT'
+      ? 'ffmpeg/ffprobe not found on server. Install ffmpeg.'
+      : error.message;
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
+function buildOverlayFiltergraph({ durationSec, segments, fontPath } = {}) {
+  const filters = [];
+  let label = '[0:v]';
+  let step = 0;
+
+  // Make sure we always have a working font file path.
+  const fallbackFont = fontPath || path.join(__dirname, '..', 'assets', 'fonts', 'Inter-Regular.ttf');
+  const resolvedFontPath = fs.existsSync(fallbackFont)
+    ? fallbackFont
+    : path.join(__dirname, '..', '..', 'Inter-Regular.ttf');
+
+  for (const seg of segments || []) {
+    const start = clampNumber(seg?.start, 0, durationSec);
+    const end = clampNumber(seg?.end, start, durationSec);
+    const overlays = Array.isArray(seg?.overlays) ? seg.overlays : [];
+
+    for (const ov of overlays) {
+      const x = Math.max(0, Math.round(ov?.x || 0));
+      const y = Math.max(0, Math.round(ov?.y || 0));
+      const w = Math.max(1, Math.round(ov?.width || 1));
+      const h = Math.max(1, Math.round(ov?.height || 1));
+
+      const enable = `between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})`;
+
+      const bgHex = parseHexColor(ov?.backgroundColor)?.hex || '#333333';
+      const textHex = parseHexColor(ov?.textColor)?.hex || '#ffffff';
+      const fontsize = Math.max(8, Math.round(safeParseNumber(ov?.fontSize, 24)));
+      const text = escapeDrawtext(ov?.text || '');
+
+      // Background: prefer gradient when provided; fall back to solid color.
+      let bgStream = `[bg${step}]`;
+      if (ov?.isGradient && ov?.gradient?.from?.hex && ov?.gradient?.to?.hex) {
+        const from = parseHexColor(ov.gradient.from.hex);
+        const to = parseHexColor(ov.gradient.to.hex);
+        const dir = ov.gradient.direction === 'horizontal' ? 'horizontal' : 'vertical';
+
+        if (from && to) {
+          // This uses geq; if ffmpeg lacks it or parsing fails, the export route will fall back to solid.
+          const axis = dir === 'horizontal' ? 'X' : 'Y';
+          const denom = dir === 'horizontal' ? 'W' : 'H';
+          filters.push(
+            `color=c=black:s=${w}x${h}:d=${durationSec.toFixed(3)},format=rgba,geq=` +
+              `r='${from.r}+(${to.r}-${from.r})*${axis}/${denom}':` +
+              `g='${from.g}+(${to.g}-${from.g})*${axis}/${denom}':` +
+              `b='${from.b}+(${to.b}-${from.b})*${axis}/${denom}':` +
+              `a=255${bgStream}`
+          );
+        } else {
+          filters.push(`color=c=${bgHex}:s=${w}x${h}:d=${durationSec.toFixed(3)}${bgStream}`);
+        }
+      } else {
+        filters.push(`color=c=${bgHex}:s=${w}x${h}:d=${durationSec.toFixed(3)}${bgStream}`);
+      }
+
+      const out1 = `[v${++step}]`;
+      filters.push(`${label}${bgStream}overlay=${x}:${y}:enable='${enable}'${out1}`);
+      label = out1;
+
+      const out2 = `[v${++step}]`;
+      const draw = `drawtext=fontfile='${resolvedFontPath}':text='${text}':` +
+        `x=${x}+((${w}-text_w)/2):y=${y}+((${h}-text_h)/2):` +
+        `fontsize=${fontsize}:fontcolor=${textHex}:` +
+        `expansion=none:enable='${enable}'`;
+      filters.push(`${label}${draw}${out2}`);
+      label = out2;
+    }
+  }
+
+  return {
+    filterComplex: filters.join(';'),
+    finalLabel: label,
+    resolvedFontPath
+  };
+}
+
+router.post('/video-overlay/export', async (req, res) => {
+  try {
+    ensureVideoOverlayDirs();
+
+    const videoId = String(req.body?.video_id || '').trim();
+    const segments = Array.isArray(req.body?.segments) ? req.body.segments : [];
+
+    if (!videoId) {
+      return res.status(400).json({ success: false, error: 'video_id is required' });
+    }
+    if (!segments.length) {
+      return res.status(400).json({ success: false, error: 'segments are required' });
+    }
+
+    const videoPath = getUploadedVideoPath(videoId);
+    if (!fs.existsSync(videoPath)) {
+      return res.status(404).json({ success: false, error: 'Uploaded video not found (upload again)' });
+    }
+
+    let info;
+    try {
+      info = await ffprobeVideoInfo(videoPath);
+    } catch (e) {
+      const msg = e?.code === 'ENOENT'
+        ? 'ffprobe not found on server. Install ffmpeg/ffprobe.'
+        : (e?.message || 'Failed to read video metadata');
+      return res.status(500).json({ success: false, error: msg });
+    }
+
+    const exportId = crypto.randomUUID();
+    const outPath = getExportedVideoPath(exportId);
+
+    // Build filtergraph (includes gradients when provided). No fallback mode.
+    const fontPath = path.join(__dirname, '..', 'assets', 'fonts', 'Inter-Regular.ttf');
+    const graph = buildOverlayFiltergraph({ durationSec: info.duration, segments, fontPath });
+    if (!graph.filterComplex) {
+      return res.status(400).json({ success: false, error: 'No overlays found in segments (nothing to export)' });
+    }
+
+    const baseArgs = [
+      '-i', videoPath,
+      '-filter_complex', graph.filterComplex,
+      '-map', graph.finalLabel,
+      '-map', '0:a?',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '18',
+      '-c:a', 'copy',
+      '-movflags', '+faststart',
+      '-y',
+      outPath
+    ];
+
+    await execFileAsync('ffmpeg', baseArgs);
+
+    const filename = String(req.body?.filename || 'edited_video.mp4');
+    const downloadUrl = `/api/creative-studio/video-overlay/download?output_id=${encodeURIComponent(exportId)}&filename=${encodeURIComponent(filename)}`;
+
+    return res.json({
+      success: true,
+      output_id: exportId,
+      url: downloadUrl
+    });
+  } catch (error) {
+    console.error('Video overlay export error:', error);
+    const msg = error?.code === 'ENOENT'
+      ? 'ffmpeg not found on server. Install ffmpeg.'
+      : error.message;
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
+router.get('/video-overlay/download', async (req, res) => {
+  try {
+    const outputId = String(req.query?.output_id || '').trim();
+    const filename = String(req.query?.filename || 'edited_video.mp4');
+
+    if (!outputId) {
+      return res.status(400).json({ success: false, error: 'output_id is required' });
+    }
+
+    const outPath = getExportedVideoPath(outputId);
+    if (!fs.existsSync(outPath)) {
+      return res.status(404).json({ success: false, error: 'Export not found (export again)' });
+    }
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    fs.createReadStream(outPath).pipe(res);
+  } catch (error) {
+    console.error('Video overlay download error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
