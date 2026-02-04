@@ -653,7 +653,6 @@ function extractSessionIdentifiers(payload) {
 function isAddToCart(eventName) {
   const { key, tokens, compact } = normalizeEventNameKey(eventName);
   if (!key) return false;
-  if (KEY_EVENT_ALIASES.atc.has(key)) return true;
   if (tokens.includes('atc')) return true;
   if (compact.includes('addtocart') || compact.includes('addedtocart')) return true;
 
@@ -676,7 +675,6 @@ function isAddToCart(eventName) {
 function isCheckoutStarted(eventName) {
   const { key, tokens, compact } = normalizeEventNameKey(eventName);
   if (!key) return false;
-  if (KEY_EVENT_ALIASES.checkout_started.has(key)) return true;
 
   const hasCheckout = tokens.includes('checkout') || compact.includes('checkout');
   if (!hasCheckout) return false;
@@ -698,7 +696,6 @@ function isCheckoutStarted(eventName) {
 function isPurchase(eventName) {
   const { key, tokens, compact } = normalizeEventNameKey(eventName);
   if (!key) return false;
-  if (KEY_EVENT_ALIASES.purchase.has(key)) return true;
   if (tokens.includes('purchase') || tokens.includes('purchased')) return true;
 
   const hasOrder = tokens.includes('order') || compact.includes('order');
@@ -733,18 +730,53 @@ function normalizeEventNameKey(value) {
   return { key, tokens, compact };
 }
 
-const KEY_EVENT_ALIASES = {
-  atc: new Set(['product_added_to_cart', 'add_to_cart', 'added_to_cart', 'cart_add', 'atc']),
-  checkout_started: new Set(['checkout_started', 'checkout_initiated', 'begin_checkout']),
-  purchase: new Set(['checkout_completed', 'purchase', 'order_completed', 'order_placed'])
-};
-
 const ADD_TO_CART_CONTAINER_TOKENS = new Set(['cart', 'bag', 'basket']);
 const ADD_TO_CART_ACTION_TOKENS = new Set(['add', 'added', 'adding']);
 
 const CHECKOUT_START_TOKENS = new Set(['start', 'started', 'begin', 'began', 'initiated', 'initiate', 'open', 'opened', 'enter', 'entered']);
 const CHECKOUT_COMPLETE_GUARD_TOKENS = new Set(['complete', 'completed', 'completion', 'purchase', 'purchased', 'paid', 'placed', 'thank', 'you']);
 const ORDER_TERMINAL_TOKENS = new Set(['placed', 'complete', 'completed', 'paid', 'success']);
+
+function isProductViewedEvent(eventName, pagePath) {
+  const path = safeString(pagePath).toLowerCase().trim();
+  if (path.startsWith('/products/')) return true;
+
+  const { tokens, compact } = normalizeEventNameKey(eventName);
+  if (!tokens.length) return false;
+
+  const hasViewToken = tokens.includes('view') || tokens.includes('viewed') || tokens.includes('seen');
+  const hasProductToken = tokens.includes('product') || tokens.includes('item') || tokens.includes('sku');
+  const hasDetailToken = tokens.includes('detail') || tokens.includes('details');
+
+  if (hasViewToken && hasProductToken) return true;
+  if (hasDetailToken && hasProductToken) return true;
+  if (compact.includes('viewitem') || compact.includes('productview')) return true;
+
+  return false;
+}
+
+function isCartViewedEvent(eventName, pagePath) {
+  if (isAddToCart(eventName)) return false;
+
+  const path = safeString(pagePath).toLowerCase().trim();
+  if (path === '/cart' || path === '/cart/') return true;
+
+  const { tokens, compact } = normalizeEventNameKey(eventName);
+  if (!tokens.length) return false;
+
+  const hasContainer = tokens.some((t) => ADD_TO_CART_CONTAINER_TOKENS.has(t)) || compact.includes('cart');
+  if (!hasContainer) return false;
+
+  const hasView =
+    tokens.includes('view') ||
+    tokens.includes('viewed') ||
+    tokens.includes('open') ||
+    tokens.includes('opened') ||
+    compact.includes('viewcart') ||
+    compact.includes('cartview') ||
+    compact.includes('opencart');
+  return hasView;
+}
 
 function extractCartSnapshot(eventData) {
   if (!eventData || typeof eventData !== 'object') return null;
@@ -1270,16 +1302,16 @@ export function getSessionIntelligenceOverview(store) {
   }
 
   const purchaseEventRows = db.prepare(`
-    SELECT session_id, product_id
+    SELECT session_id, product_id, lower(event_name) AS event_name
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
       AND product_id IS NOT NULL
-      AND lower(event_name) IN ('checkout_completed','purchase','order_completed','order_placed')
   `).all(store, retentionWindow);
 
   for (const row of purchaseEventRows) {
     if (!row?.session_id || !row?.product_id) continue;
+    if (!isPurchase(row.event_name)) continue;
     const set = purchasedProductsBySession.get(row.session_id) || new Set();
     set.add(row.product_id);
     purchasedProductsBySession.set(row.session_id, set);
@@ -1287,17 +1319,17 @@ export function getSessionIntelligenceOverview(store) {
   }
 
   const viewEventRows = db.prepare(`
-    SELECT session_id, product_id, page_path
+    SELECT session_id, product_id, page_path, lower(event_name) AS event_name
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
       AND product_id IS NOT NULL
-      AND lower(event_name) IN ('product_viewed','product_view','view_item','product_detail_viewed')
   `).all(store, retentionWindow);
 
   const viewedNotBought = new Map();
   for (const row of viewEventRows) {
     if (!row?.session_id || !row?.product_id) continue;
+    if (!isProductViewedEvent(row.event_name, row.page_path)) continue;
     if (!purchasedSessionIds.has(row.session_id)) continue;
     const purchasedSet = purchasedProductsBySession.get(row.session_id);
     if (!purchasedSet || purchasedSet.size === 0) continue;
@@ -1610,25 +1642,46 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
 
 export function getSessionIntelligenceLatestBrief(store) {
   const db = getDb();
-  return db.prepare(`
+  const row = db.prepare(`
     SELECT id, store, date, content, top_reasons_json, model, generated_at, created_at
     FROM si_daily_briefs
     WHERE store = ?
     ORDER BY date DESC
     LIMIT 1
   `).get(store);
+  return hydrateBriefRow(row);
 }
 
 export function getSessionIntelligenceBriefForDay(store, date) {
   const db = getDb();
   const iso = requireIsoDay(date);
   if (!iso) return null;
-  return db.prepare(`
+  const row = db.prepare(`
     SELECT id, store, date, content, top_reasons_json, model, generated_at, created_at
     FROM si_daily_briefs
     WHERE store = ? AND date = ?
     LIMIT 1
   `).get(store, iso);
+  return hydrateBriefRow(row);
+}
+
+function hydrateBriefRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const raw = safeString(row.top_reasons_json);
+  let topReasons = [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) topReasons = parsed;
+    } catch (_error) {
+      topReasons = [];
+    }
+  }
+
+  return {
+    ...row,
+    top_reasons: topReasons
+  };
 }
 
 function chunkArray(list, size) {
@@ -2015,18 +2068,46 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
   const range = dayRangeUtc(dateStr);
   if (!range) return [];
 
-  return db.prepare(`
+  const distinctEventNames = db.prepare(`
+    SELECT DISTINCT lower(event_name) AS name
+    FROM si_events
+    WHERE store = ?
+      AND created_at >= ?
+      AND created_at < ?
+  `).all(store, range.start, range.end)
+    .map((row) => row?.name)
+    .filter(Boolean);
+
+  const productViewNames = distinctEventNames.filter((name) => isProductViewedEvent(name, ''));
+  const atcNames = distinctEventNames.filter(isAddToCart);
+  const cartNames = distinctEventNames.filter((name) => isCartViewedEvent(name, ''));
+  const checkoutNames = distinctEventNames.filter(isCheckoutStarted);
+  const purchaseNames = distinctEventNames.filter(isPurchase);
+
+  const toInClause = (values) => {
+    const unique = Array.from(new Set(values)).filter(Boolean);
+    if (!unique.length) return { clause: 'NULL', params: [] };
+    return { clause: unique.map(() => '?').join(','), params: unique };
+  };
+
+  const productViewIn = toInClause(productViewNames);
+  const atcIn = toInClause(atcNames);
+  const cartIn = toInClause(cartNames);
+  const checkoutIn = toInClause(checkoutNames);
+  const purchaseIn = toInClause(purchaseNames);
+
+  const query = `
     WITH day_events AS (
       SELECT
         session_id,
         MAX(shopper_number) AS shopper_number,
         MIN(created_at) AS first_seen,
         MAX(created_at) AS last_seen,
-        SUM(CASE WHEN lower(event_name) IN ('product_viewed','view_item') OR (page_path LIKE '/products/%') THEN 1 ELSE 0 END) AS product_views,
-        SUM(CASE WHEN lower(event_name) IN ('product_added_to_cart','add_to_cart','added_to_cart','cart_add','atc') THEN 1 ELSE 0 END) AS atc_events,
-        SUM(CASE WHEN lower(event_name) IN ('cart_viewed','view_cart') THEN 1 ELSE 0 END) AS cart_events,
-        SUM(CASE WHEN lower(event_name) IN ('checkout_started','checkout_initiated','begin_checkout') THEN 1 ELSE 0 END) AS checkout_started_events,
-        SUM(CASE WHEN lower(event_name) IN ('checkout_completed','purchase','order_completed','order_placed') THEN 1 ELSE 0 END) AS purchase_events,
+        SUM(CASE WHEN lower(event_name) IN (${productViewIn.clause}) OR (page_path LIKE '/products/%') THEN 1 ELSE 0 END) AS product_views,
+        SUM(CASE WHEN lower(event_name) IN (${atcIn.clause}) THEN 1 ELSE 0 END) AS atc_events,
+        SUM(CASE WHEN lower(event_name) IN (${cartIn.clause}) OR (page_path = '/cart' OR page_path = '/cart/') THEN 1 ELSE 0 END) AS cart_events,
+        SUM(CASE WHEN lower(event_name) IN (${checkoutIn.clause}) THEN 1 ELSE 0 END) AS checkout_started_events,
+        SUM(CASE WHEN lower(event_name) IN (${purchaseIn.clause}) THEN 1 ELSE 0 END) AS purchase_events,
         MAX(COALESCE(checkout_step, '')) AS last_checkout_step,
         MAX(COALESCE(device_type, '')) AS device_type,
         MAX(COALESCE(country_code, '')) AS country_code,
@@ -2063,11 +2144,26 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
       s.confidence,
       s.summary
     FROM day_events d
-    LEFT JOIN si_sessions s
+      LEFT JOIN si_sessions s
       ON s.store = ? AND s.session_id = d.session_id
     ORDER BY d.last_seen DESC
     LIMIT ?
-  `).all(store, range.start, range.end, store, max).map((row) => ({
+  `;
+
+  const params = [
+    ...productViewIn.params,
+    ...atcIn.params,
+    ...cartIn.params,
+    ...checkoutIn.params,
+    ...purchaseIn.params,
+    store,
+    range.start,
+    range.end,
+    store,
+    max
+  ];
+
+  return db.prepare(query).all(...params).map((row) => ({
       ...row,
       codename: makeSessionCodename(row.session_id)
     }));
@@ -2102,15 +2198,11 @@ function resolveSessionFlowMode(raw) {
 }
 
 function isProductStageEvent(eventName, pagePath) {
-  const name = safeString(eventName).toLowerCase().trim();
-  const path = safeString(pagePath).toLowerCase().trim();
-  if (name === 'product_viewed' || name === 'view_item') return true;
-  return path.startsWith('/products/');
+  return isProductViewedEvent(eventName, pagePath);
 }
 
-function isCartStageEvent(eventName) {
-  const name = safeString(eventName).toLowerCase().trim();
-  return name === 'cart_viewed' || name === 'view_cart';
+function isCartStageEvent(eventName, pagePath) {
+  return isCartViewedEvent(eventName, pagePath);
 }
 
 function stageFromEvent({ eventName, pagePath, checkoutStep }) {
@@ -2123,7 +2215,7 @@ function stageFromEvent({ eventName, pagePath, checkoutStep }) {
   if (step === 'contact' || isCheckoutStarted(name)) return 'checkout_contact';
 
   if (isAddToCart(name)) return 'atc';
-  if (isCartStageEvent(name)) return 'cart';
+  if (isCartStageEvent(name, pagePath)) return 'cart';
   if (isProductStageEvent(name, pagePath)) return 'product';
 
   return null;
@@ -2386,6 +2478,291 @@ export function getSessionIntelligenceFlowForDay(store, dateStr, { mode = 'all',
   };
 }
 
+export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mode = 'high_intent_no_purchase', limitSessions = 5000 } = {}) {
+  const db = getDb();
+  ensureRecentShopperNumbers(store);
+
+  const iso = requireIsoDay(dateStr);
+  if (!iso) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+
+  const scope = resolveSessionFlowMode(mode);
+  const range = dayRangeUtc(iso);
+  if (!range) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+
+  const sessions = getSessionIntelligenceSessionsForDay(store, iso, limitSessions);
+  const selectedSessions = scope === 'high_intent_no_purchase'
+    ? sessions.filter((s) => ((s.atc_events || 0) > 0 || (s.checkout_started_events || 0) > 0) && (s.purchase_events || 0) === 0)
+    : sessions;
+
+  const sessionMap = new Map(selectedSessions.map((s) => [s.session_id, s]));
+  const sessionIds = Array.from(sessionMap.keys()).filter(Boolean);
+
+  if (sessionIds.length === 0) {
+    return {
+      success: true,
+      data: {
+        store,
+        date: iso,
+        mode: scope,
+        totals: { sessions: 0 },
+        signals: {
+          rage_clicks: [],
+          dead_clicks: [],
+          js_errors: [],
+          form_invalid: [],
+          scroll_dropoff: []
+        }
+      }
+    };
+  }
+
+  const SIGNAL_EVENTS = new Set([
+    'rage_click',
+    'dead_click',
+    'js_error',
+    'unhandled_rejection',
+    'form_invalid',
+    'scroll_depth',
+    'scroll_max'
+  ]);
+
+  const rageCounts = new Map(); // key => { count, sessions:Set, page, targetKey, sample:[] }
+  const deadCounts = new Map();
+  const errorCounts = new Map(); // key => { count, sessions:Set, message, page, sample:[] }
+  const formCounts = new Map(); // key => { count, sessions:Set, field_type, field_name, sample:[] }
+  const scrollMaxBySessionPage = new Map(); // `${sessionId}|${page}` => maxPercent
+
+  const pageKey = (raw) => {
+    const p = safeString(raw).trim();
+    if (!p) return '/';
+    return p.split('?')[0].split('#')[0] || '/';
+  };
+
+  const addSample = (entry, sessionId) => {
+    if (!entry || !sessionId) return;
+    if (!entry.sample) entry.sample = [];
+    if (entry.sample.length >= 6) return;
+    if (entry.sample.includes(sessionId)) return;
+    entry.sample.push(sessionId);
+  };
+
+  const chunks = chunkArray(sessionIds, 450);
+  for (const chunk of chunks) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT
+        session_id,
+        lower(event_name) AS event_name,
+        page_path,
+        data_json
+      FROM si_events
+      WHERE store = ?
+        AND created_at >= ?
+        AND created_at < ?
+        AND session_id IN (${placeholders})
+        AND lower(event_name) IN (
+          'rage_click','dead_click','js_error','unhandled_rejection','form_invalid','scroll_depth','scroll_max'
+        )
+      ORDER BY created_at DESC
+      LIMIT 25000
+    `).all(store, range.start, range.end, ...chunk);
+
+    for (const row of rows) {
+      const sessionId = row.session_id;
+      const name = row.event_name;
+      if (!sessionId || !SIGNAL_EVENTS.has(name)) continue;
+
+      const page = pageKey(row.page_path);
+      const data = safeJsonParse(row.data_json) || {};
+
+      if (name === 'rage_click') {
+        const targetKey = safeString(data.target_key || data?.target?.key || '').trim() || 'unknown';
+        const key = `${page}||${targetKey}`;
+        const entry = rageCounts.get(key) || { page, target_key: targetKey, count: 0, sessions: new Set(), sample: [] };
+        entry.count += 1;
+        entry.sessions.add(sessionId);
+        addSample(entry, sessionId);
+        rageCounts.set(key, entry);
+        continue;
+      }
+
+      if (name === 'dead_click') {
+        const targetKey = safeString(data.target_key || data?.target?.key || '').trim() || 'unknown';
+        const key = `${page}||${targetKey}`;
+        const entry = deadCounts.get(key) || { page, target_key: targetKey, count: 0, sessions: new Set(), sample: [] };
+        entry.count += 1;
+        entry.sessions.add(sessionId);
+        addSample(entry, sessionId);
+        deadCounts.set(key, entry);
+        continue;
+      }
+
+      if (name === 'js_error' || name === 'unhandled_rejection') {
+        const message = safeString(data.message || data.reason || '').trim() || 'Unknown error';
+        const key = `${page}||${message.slice(0, 180)}`;
+        const entry = errorCounts.get(key) || { page, message: message.slice(0, 220), count: 0, sessions: new Set(), sample: [] };
+        entry.count += 1;
+        entry.sessions.add(sessionId);
+        addSample(entry, sessionId);
+        errorCounts.set(key, entry);
+        continue;
+      }
+
+      if (name === 'form_invalid') {
+        const fieldType = safeString(data.field_type || '').trim() || null;
+        const fieldName = safeString(data.field_name || '').trim() || null;
+        const key = `${page}||${fieldType || ''}||${fieldName || ''}`;
+        const entry = formCounts.get(key) || { page, field_type: fieldType, field_name: fieldName, count: 0, sessions: new Set(), sample: [] };
+        entry.count += 1;
+        entry.sessions.add(sessionId);
+        addSample(entry, sessionId);
+        formCounts.set(key, entry);
+        continue;
+      }
+
+      if (name === 'scroll_depth' || name === 'scroll_max') {
+        const percent = Number(data.max_percent ?? data.percent);
+        const maxPercent = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
+        if (maxPercent == null) continue;
+        const key = `${sessionId}||${page}`;
+        const existing = scrollMaxBySessionPage.get(key) || 0;
+        if (maxPercent > existing) scrollMaxBySessionPage.set(key, maxPercent);
+      }
+    }
+  }
+
+  const asTopList = (map, toItem, limit = 10) => (
+    Array.from(map.values())
+      .map(toItem)
+      .sort((a, b) => (b.count || 0) - (a.count || 0))
+      .slice(0, limit)
+  );
+
+  const sessionStub = (sessionId) => {
+    const s = sessionMap.get(sessionId) || null;
+    if (!s) return { session_id: sessionId };
+    return {
+      session_id: s.session_id,
+      codename: s.codename,
+      shopper_number: s.shopper_number || null,
+      last_seen: s.last_seen || null,
+      device_type: s.device_type || null,
+      country_code: s.country_code || null,
+      utm_source: s.utm_source || null,
+      utm_campaign: s.utm_campaign || null,
+      atc_events: s.atc_events || 0,
+      checkout_started_events: s.checkout_started_events || 0,
+      purchase_events: s.purchase_events || 0,
+      last_checkout_step: s.last_checkout_step || null
+    };
+  };
+
+  const rage_clicks = asTopList(
+    rageCounts,
+    (entry) => ({
+      page: entry.page,
+      target_key: entry.target_key,
+      count: entry.count,
+      sessions: entry.sessions.size,
+      sample_sessions: (entry.sample || []).map(sessionStub)
+    })
+  );
+
+  const dead_clicks = asTopList(
+    deadCounts,
+    (entry) => ({
+      page: entry.page,
+      target_key: entry.target_key,
+      count: entry.count,
+      sessions: entry.sessions.size,
+      sample_sessions: (entry.sample || []).map(sessionStub)
+    })
+  );
+
+  const js_errors = asTopList(
+    errorCounts,
+    (entry) => ({
+      page: entry.page,
+      message: entry.message,
+      count: entry.count,
+      sessions: entry.sessions.size,
+      sample_sessions: (entry.sample || []).map(sessionStub)
+    })
+  );
+
+  const form_invalid = asTopList(
+    formCounts,
+    (entry) => ({
+      page: entry.page,
+      field_type: entry.field_type,
+      field_name: entry.field_name,
+      count: entry.count,
+      sessions: entry.sessions.size,
+      sample_sessions: (entry.sample || []).map(sessionStub)
+    })
+  );
+
+  // Scroll drop-off buckets by page (how many sessions never reached the bucket).
+  const scrollBuckets = [25, 50, 75, 90];
+  const scrollByPage = new Map(); // page => { totalSessions:Set, maxBySession:Map(sessionId=>max) }
+  for (const key of scrollMaxBySessionPage.keys()) {
+    const parts = key.split('||');
+    if (parts.length < 2) continue;
+    const sessionId = parts[0];
+    const page = parts.slice(1).join('||');
+    if (!sessionId || !page) continue;
+    let entry = scrollByPage.get(page);
+    if (!entry) {
+      entry = { maxBySession: new Map() };
+      scrollByPage.set(page, entry);
+    }
+    entry.maxBySession.set(sessionId, scrollMaxBySessionPage.get(key) || 0);
+  }
+
+  const scroll_dropoff = Array.from(scrollByPage.entries())
+    .map(([page, entry]) => {
+      const maxValues = Array.from(entry.maxBySession.values());
+      if (maxValues.length < MIN_SESSIONS_FOR_SCROLL_DROPOFF) return null; // keep signal high
+      const total = maxValues.length;
+      const reached = {};
+      scrollBuckets.forEach((b) => {
+        reached[b] = maxValues.filter((v) => v >= b).length;
+      });
+      return {
+        page,
+        total_sessions: total,
+        reached_25: reached[25],
+        reached_50: reached[50],
+        reached_75: reached[75],
+        reached_90: reached[90]
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (b.total_sessions || 0) - (a.total_sessions || 0))
+    .slice(0, 10);
+
+  return {
+    success: true,
+    data: {
+      store,
+      date: iso,
+      mode: scope,
+      totals: { sessions: selectedSessions.length },
+      signals: {
+        rage_clicks,
+        dead_clicks,
+        js_errors,
+        form_invalid,
+        scroll_dropoff
+      }
+    }
+  };
+}
+
 export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId = null, limit = 800 } = {}) {
   const db = getDb();
   ensureRecentShopperNumbers(store);
@@ -2419,6 +2796,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
         wbraid,
         gbraid,
         irclickid,
+        data_json,
         created_at
       FROM si_events
       WHERE store = ?

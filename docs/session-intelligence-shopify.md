@@ -67,7 +67,17 @@ Notes:
 
 ## 3) Optional: Theme snippet for extra click tracking
 
-If you want extra UI clicks (e.g. “Size chart” open **and out‑of‑stock size clicks**), add this just before `</body>` in `layout/theme.liquid`:
+If you want Clarity‑style signals (rage clicks, dead clicks, scroll depth, JS errors, form validation friction), add this just before `</head>` (or `</body>`) in `layout/theme.liquid`:
+
+```html
+<script async src="https://YOUR-RAILWAY-DOMAIN/pixel.js?store=shawq"></script>
+```
+
+This works on Shopify and also works on non‑Shopify sites (custom storefronts, WooCommerce, etc.).
+
+### Legacy (inline) click tracking snippet
+
+If you only want the original extra UI clicks (e.g. “Size chart” open **and out‑of‑stock size clicks**) without the universal script, add this just before `</body>` in `layout/theme.liquid`:
 
 ```html
 <script>

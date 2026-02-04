@@ -86,6 +86,15 @@ function formatNumber(value) {
   return new Intl.NumberFormat().format(n);
 }
 
+function safeJsonParse(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
 async function fetchJson(url, options) {
   const res = await fetch(url, { cache: 'no-store', ...options });
   const contentType = res.headers.get('content-type') || '';
@@ -256,6 +265,33 @@ function normalizeTrafficSourceTitle(value) {
   return `${label} (${raw})`;
 }
 
+function normalizeDeviceLabel(value) {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '—';
+  const key = raw.toLowerCase().trim();
+  if (key === 'mobile') return 'Mobile';
+  if (key === 'desktop') return 'Desktop';
+  if (key === 'tablet') return 'Tablet';
+  return raw;
+}
+
+function normalizeLooseKey(value) {
+  return (value || '').toString().toLowerCase().trim();
+}
+
+function inferDropoffStageFromBriefText(text) {
+  const raw = (text || '').toString().toLowerCase();
+  if (!raw) return null;
+  if (raw.includes('payment')) return 'checkout_payment';
+  if (raw.includes('shipping')) return 'checkout_shipping';
+  if (raw.includes('contact')) return 'checkout_contact';
+  if (raw.includes('checkout')) return 'checkout_contact';
+  if (raw.includes('cart')) return 'cart';
+  if (raw.includes('add to cart') || raw.includes('added to cart') || raw.includes('atc')) return 'atc';
+  if (raw.includes('product')) return 'product';
+  return null;
+}
+
 function campaignCellProps(utmSource, utmCampaign) {
   const sourceRaw = (utmSource || '').toString().trim();
   const campaignRaw = (utmCampaign || '').toString().trim();
@@ -386,6 +422,18 @@ export default function SessionIntelligenceTab({ store }) {
   const [flowLoading, setFlowLoading] = useState(false);
   const [flowError, setFlowError] = useState('');
   const [dropoffStageFilter, setDropoffStageFilter] = useState('');
+  const [dropoffDeviceFilter, setDropoffDeviceFilter] = useState('');
+  const [dropoffCountryFilter, setDropoffCountryFilter] = useState('');
+  const [dropoffCampaignFilter, setDropoffCampaignFilter] = useState('');
+  const [claritySignals, setClaritySignals] = useState(null);
+  const [clarityLoading, setClarityLoading] = useState(false);
+  const [clarityError, setClarityError] = useState('');
+
+  const [storyOpen, setStoryOpen] = useState(false);
+  const [storySession, setStorySession] = useState(null);
+  const [storyEvents, setStoryEvents] = useState([]);
+  const [storyLoading, setStoryLoading] = useState(false);
+  const [storyError, setStoryError] = useState('');
   const [sessions, setSessions] = useState([]);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -420,6 +468,44 @@ export default function SessionIntelligenceTab({ store }) {
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
   }, [analysisLlm]);
+
+  const openStory = useCallback(async (sessionId, stub = null) => {
+    if (!libraryDay || !sessionId) return;
+    setStoryOpen(true);
+    setStorySession(stub);
+    setStoryEvents([]);
+    setStoryError('');
+    setStoryLoading(true);
+
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        date: libraryDay,
+        sessionId: String(sessionId),
+        limit: '1200'
+      });
+      const payload = await fetchJson(`/api/session-intelligence/events-by-day?${params.toString()}`);
+      setStoryEvents(Array.isArray(payload.events) ? payload.events : []);
+
+      if (!stub) {
+        const found = librarySessions.find((s) => s.session_id === sessionId) || null;
+        setStorySession(found);
+      }
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] story load failed:', error);
+      setStoryError(error?.message || 'Failed to load session story');
+      setStoryEvents([]);
+    } finally {
+      setStoryLoading(false);
+    }
+  }, [libraryDay, librarySessions, storeId]);
+
+  const closeStory = useCallback(() => {
+    setStoryOpen(false);
+    setStorySession(null);
+    setStoryEvents([]);
+    setStoryError('');
+  }, []);
 
   const loadRealtime = useCallback(async () => {
     setRealtimeLoading(true);
@@ -460,6 +546,28 @@ export default function SessionIntelligenceTab({ store }) {
       setFlowData(null);
     } finally {
       setFlowLoading(false);
+    }
+  }, [storeId]);
+
+  const loadClarity = useCallback(async (day, mode) => {
+    if (!day) return;
+    setClarityLoading(true);
+    setClarityError('');
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        date: day,
+        mode: mode || 'high_intent_no_purchase',
+        limitSessions: '5000'
+      });
+      const payload = await fetchJson(`/api/session-intelligence/clarity?${params.toString()}`);
+      setClaritySignals(payload?.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] clarity load failed:', error);
+      setClarityError(error?.message || 'Failed to load clarity signals');
+      setClaritySignals(null);
+    } finally {
+      setClarityLoading(false);
     }
   }, [storeId]);
 
@@ -523,6 +631,11 @@ export default function SessionIntelligenceTab({ store }) {
     loadFlow(libraryDay, flowMode);
   }, [libraryDay, flowMode, loadFlow]);
 
+  useEffect(() => {
+    if (!libraryDay) return;
+    loadClarity(libraryDay, flowMode);
+  }, [libraryDay, flowMode, loadClarity]);
+
   const filteredLibrarySessions = useMemo(() => {
     let list = librarySessions;
 
@@ -538,8 +651,35 @@ export default function SessionIntelligenceTab({ store }) {
       list = list.filter((s) => inferDropoffStageFromSummary(s) === dropoffStageFilter);
     }
 
+    if (dropoffDeviceFilter) {
+      const target = normalizeLooseKey(dropoffDeviceFilter);
+      if (target === '—') {
+        list = list.filter((s) => !normalizeLooseKey(s.device_type));
+      } else {
+        list = list.filter((s) => normalizeLooseKey(s.device_type) === target);
+      }
+    }
+
+    if (dropoffCountryFilter) {
+      const target = normalizeLooseKey(dropoffCountryFilter);
+      if (target === '—') {
+        list = list.filter((s) => !normalizeLooseKey(s.country_code));
+      } else {
+        list = list.filter((s) => normalizeLooseKey(s.country_code) === target);
+      }
+    }
+
+    if (dropoffCampaignFilter) {
+      const target = dropoffCampaignFilter;
+      if (target === '—') {
+        list = list.filter((s) => !(s.utm_campaign || '').toString().trim());
+      } else {
+        list = list.filter((s) => (s.utm_campaign || '') === target);
+      }
+    }
+
     return list;
-  }, [dropoffStageFilter, highIntentOnly, librarySessions]);
+  }, [dropoffCampaignFilter, dropoffCountryFilter, dropoffDeviceFilter, dropoffStageFilter, highIntentOnly, librarySessions]);
 
   const loadLibrarySessions = useCallback(async (day) => {
     if (!day) return;
@@ -580,6 +720,7 @@ export default function SessionIntelligenceTab({ store }) {
         loadOverview(),
         loadBrief(),
         loadFlow(libraryDay, flowMode),
+        loadClarity(libraryDay, flowMode),
         loadSessions(),
         loadEvents(),
         loadLibraryDays(),
@@ -588,7 +729,7 @@ export default function SessionIntelligenceTab({ store }) {
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadCampaignPurchases, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadCampaignPurchases, loadClarity, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     let active = true;
@@ -822,11 +963,20 @@ export default function SessionIntelligenceTab({ store }) {
   const flowTotals = flowData?.totals?.sessions ?? 0;
   const flowStages = Array.isArray(flowData?.stages) ? flowData.stages : [];
   const flowClusters = Array.isArray(flowData?.clusters) ? flowData.clusters : [];
+  const briefReasons = Array.isArray(brief?.top_reasons) ? brief.top_reasons : [];
 
   const realtimeCountries = realtime?.breakdowns?.countries || [];
   const realtimeFocusCountry = realtimeCountries?.[0]?.value || null;
   const realtimeFocusCountryName = realtimeFocusCountry ? countryNameFromCode(realtimeFocusCountry) : null;
   const realtimeMapRegion = realtimeMapMode === 'focus' && realtimeFocusCountry ? realtimeFocusCountry : 'WORLD';
+  const hasDayFilters = Boolean(dropoffStageFilter || dropoffDeviceFilter || dropoffCountryFilter || dropoffCampaignFilter);
+
+  const clearDayFilters = useCallback(() => {
+    setDropoffStageFilter('');
+    setDropoffDeviceFilter('');
+    setDropoffCountryFilter('');
+    setDropoffCampaignFilter('');
+  }, []);
 
   return (
 	    <div className="si-root">
@@ -1153,11 +1303,79 @@ export default function SessionIntelligenceTab({ store }) {
               {briefGenerateError}
             </div>
           ) : null}
-          <div className="si-muted">
+          <div className="si-muted si-preline">
             {brief?.content
               ? brief.content
               : 'Generate a daily brief to turn today’s high-intent sessions into friction clusters + fixes.'}
           </div>
+
+          {briefReasons.length > 0 ? (
+            <div className="si-brief-reasons">
+              {briefReasons.slice(0, 6).map((reason, idx) => {
+                const conf = Number(reason?.confidence);
+                const confidence = Number.isFinite(conf) ? Math.min(Math.max(conf, 0), 1) : null;
+                const evidence = Array.isArray(reason?.evidence) ? reason.evidence.filter(Boolean).slice(0, 4) : [];
+                const fixes = Array.isArray(reason?.fixes) ? reason.fixes.filter(Boolean).slice(0, 4) : [];
+                const stageHint = inferDropoffStageFromBriefText([reason?.reason, ...evidence].filter(Boolean).join('\n'));
+
+                return (
+                  <div key={`${reason?.reason || 'reason'}-${idx}`} className="si-brief-reason">
+                    <div className="si-brief-reason-header">
+                      <div className="si-brief-reason-title">{reason?.reason || 'Insight'}</div>
+                      <div className="si-brief-reason-confidence">
+                        {confidence == null ? '—' : `${Math.round(confidence * 100)}%`}
+                      </div>
+                    </div>
+                    <div className="si-brief-reason-bar" aria-hidden="true">
+                      <div
+                        className="si-brief-reason-bar-fill"
+                        style={{ width: `${Math.round((confidence ?? 0) * 100)}%` }}
+                      />
+                    </div>
+
+                    {evidence.length > 0 ? (
+                      <div className="si-brief-reason-block">
+                        <div className="si-brief-reason-block-title">Evidence</div>
+                        <ul className="si-brief-reason-list">
+                          {evidence.map((line, lineIdx) => (
+                            <li key={`ev-${idx}-${lineIdx}`}>{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    {fixes.length > 0 ? (
+                      <div className="si-brief-reason-block">
+                        <div className="si-brief-reason-block-title">Fix</div>
+                        <ul className="si-brief-reason-list">
+                          {fixes.map((line, lineIdx) => (
+                            <li key={`fx-${idx}-${lineIdx}`}>{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    {stageHint ? (
+                      <div className="si-row" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
+                        <button
+                          className="si-button si-button-small"
+                          type="button"
+                          onClick={() => {
+                            setFlowMode('high_intent_no_purchase');
+                            setHighIntentOnly(true);
+                            setDropoffStageFilter(stageHint);
+                          }}
+                          title="Filter the day sessions list to the most likely drop-off stage."
+                        >
+                          Filter sessions
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1199,10 +1417,30 @@ export default function SessionIntelligenceTab({ store }) {
           >
             {flowLoading ? 'Loading…' : 'Reload'}
           </button>
-          {dropoffStageFilter ? (
-            <span className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              Filtering day sessions: <span className="si-badge">{FLOW_STAGE_LABELS[dropoffStageFilter] || dropoffStageFilter}</span>
-              <button className="si-button si-button-small" type="button" onClick={() => setDropoffStageFilter('')}>
+          {hasDayFilters ? (
+            <span className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              Filtering day sessions:
+              {dropoffStageFilter ? (
+                <span className="si-badge" title="Drop-off stage">
+                  Stage: {FLOW_STAGE_LABELS[dropoffStageFilter] || dropoffStageFilter}
+                </span>
+              ) : null}
+              {dropoffDeviceFilter ? (
+                <span className="si-badge" title="Device filter">
+                  Device: {normalizeDeviceLabel(dropoffDeviceFilter)}
+                </span>
+              ) : null}
+              {dropoffCountryFilter ? (
+                <span className="si-badge" title="Country filter">
+                  Country: {countryNameFromCode(dropoffCountryFilter)}
+                </span>
+              ) : null}
+              {dropoffCampaignFilter ? (
+                <span className="si-badge" title="Campaign filter">
+                  Campaign: {dropoffCampaignFilter}
+                </span>
+              ) : null}
+              <button className="si-button si-button-small" type="button" onClick={clearDayFilters}>
                 Clear
               </button>
             </span>
@@ -1294,21 +1532,63 @@ export default function SessionIntelligenceTab({ store }) {
                       </div>
 
                       <div className="si-cluster-chips">
-                        {(cluster.top_devices || []).slice(0, 3).map((item, idx) => (
-                          <span key={`dev-${item.value}-${idx}`} className="si-chip" title="Top device">
-                            {item.value} <strong>{item.count}</strong>
-                          </span>
-                        ))}
-                        {(cluster.top_countries || []).slice(0, 3).map((item, idx) => (
-                          <span key={`cty-${item.value}-${idx}`} className="si-chip" title="Top country">
-                            {item.value} <strong>{item.count}</strong>
-                          </span>
-                        ))}
-                        {(cluster.top_campaigns || []).slice(0, 2).map((item, idx) => (
-                          <span key={`cmp-${item.value}-${idx}`} className="si-chip" title="Top campaign">
-                            {item.value || '—'} <strong>{item.count}</strong>
-                          </span>
-                        ))}
+                        {(cluster.top_devices || []).slice(0, 3).map((item, idx) => {
+                          const value = item.value || '—';
+                          const active = normalizeLooseKey(dropoffDeviceFilter) === normalizeLooseKey(value);
+                          return (
+                            <button
+                              key={`dev-${value}-${idx}`}
+                              className={`si-chip si-chip-button ${active ? 'si-chip-active' : ''}`}
+                              type="button"
+                              aria-pressed={active}
+                              title="Filter by device"
+                              onClick={() => {
+                                setDropoffStageFilter(cluster.stage);
+                                setDropoffDeviceFilter(active ? '' : value);
+                              }}
+                            >
+                              {normalizeDeviceLabel(value)} <strong>{item.count}</strong>
+                            </button>
+                          );
+                        })}
+                        {(cluster.top_countries || []).slice(0, 3).map((item, idx) => {
+                          const value = item.value || '—';
+                          const active = normalizeLooseKey(dropoffCountryFilter) === normalizeLooseKey(value);
+                          return (
+                            <button
+                              key={`cty-${value}-${idx}`}
+                              className={`si-chip si-chip-button ${active ? 'si-chip-active' : ''}`}
+                              type="button"
+                              aria-pressed={active}
+                              title="Filter by country"
+                              onClick={() => {
+                                setDropoffStageFilter(cluster.stage);
+                                setDropoffCountryFilter(active ? '' : value);
+                              }}
+                            >
+                              {countryNameFromCode(value)} <strong>{item.count}</strong>
+                            </button>
+                          );
+                        })}
+                        {(cluster.top_campaigns || []).slice(0, 2).map((item, idx) => {
+                          const value = item.value || '—';
+                          const active = dropoffCampaignFilter === value;
+                          return (
+                            <button
+                              key={`cmp-${value}-${idx}`}
+                              className={`si-chip si-chip-button ${active ? 'si-chip-active' : ''}`}
+                              type="button"
+                              aria-pressed={active}
+                              title="Filter by campaign"
+                              onClick={() => {
+                                setDropoffStageFilter(cluster.stage);
+                                setDropoffCampaignFilter(active ? '' : value);
+                              }}
+                            >
+                              {value} <strong>{item.count}</strong>
+                            </button>
+                          );
+                        })}
                       </div>
 
                       {(cluster.sample_sessions || []).length > 0 ? (
@@ -1320,7 +1600,7 @@ export default function SessionIntelligenceTab({ store }) {
                               className="si-sample"
                               onClick={() => {
                                 if (!s.session_id) return;
-                                setLibrarySessionId(s.session_id);
+                                openStory(s.session_id, s);
                               }}
                               title={s.session_id || ''}
                             >
@@ -1332,6 +1612,219 @@ export default function SessionIntelligenceTab({ store }) {
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="si-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Clarity signals</h3>
+          <span className="si-muted">
+            {libraryDay || claritySignals?.date || '—'}
+            {' • '}
+            {flowMode === 'high_intent_no_purchase' ? 'High intent (no purchase)' : 'All sessions'}
+          </span>
+        </div>
+
+        <div className="si-muted">
+          Rage clicks, dead clicks, scroll depth, JS errors, and form validation friction (from the storefront script).
+        </div>
+
+        {clarityError ? (
+          <div className="si-empty" style={{ marginTop: 10, color: '#b42318' }}>
+            {clarityError}
+          </div>
+        ) : null}
+
+        {!clarityError && clarityLoading ? (
+          <div className="si-empty" style={{ marginTop: 10 }}>
+            Loading clarity signals…
+          </div>
+        ) : null}
+
+        {!clarityLoading && !clarityError && !claritySignals ? (
+          <div className="si-empty" style={{ marginTop: 10 }}>
+            No clarity signals yet. Install the storefront script: <span className="si-code">/pixel.js?store={storeId}</span>
+          </div>
+        ) : null}
+
+        {!clarityError && claritySignals ? (
+          <div className="si-insights-grid" style={{ marginTop: 12 }}>
+            <div className="si-insight-block">
+              <div className="si-insight-title">Rage clicks</div>
+              {(claritySignals?.signals?.rage_clicks || []).length === 0 ? (
+                <div className="si-empty">No rage clicks detected.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.rage_clicks || []).slice(0, 8).map((item, idx) => (
+                    <li key={`rage-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <span title={item.target_key || ''}>
+                          {formatPathLabel(item.page)}{' '}
+                          <span className="si-muted" style={{ fontSize: 11 }}>
+                            {item.target_key ? `• ${String(item.target_key).slice(0, 60)}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-muted">
+                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} clicks
+                        </span>
+                      </div>
+                      {(item.sample_sessions || []).length ? (
+                        <div className="si-cluster-samples">
+                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                            <button
+                              key={s.session_id}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => openStory(s.session_id, s)}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="si-insight-block">
+              <div className="si-insight-title">Dead clicks</div>
+              {(claritySignals?.signals?.dead_clicks || []).length === 0 ? (
+                <div className="si-empty">No dead clicks detected.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.dead_clicks || []).slice(0, 8).map((item, idx) => (
+                    <li key={`dead-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <span title={item.target_key || ''}>
+                          {formatPathLabel(item.page)}{' '}
+                          <span className="si-muted" style={{ fontSize: 11 }}>
+                            {item.target_key ? `• ${String(item.target_key).slice(0, 60)}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-muted">
+                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} clicks
+                        </span>
+                      </div>
+                      {(item.sample_sessions || []).length ? (
+                        <div className="si-cluster-samples">
+                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                            <button
+                              key={s.session_id}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => openStory(s.session_id, s)}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="si-insight-block">
+              <div className="si-insight-title">JS errors</div>
+              {(claritySignals?.signals?.js_errors || []).length === 0 ? (
+                <div className="si-empty">No JS errors detected.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.js_errors || []).slice(0, 8).map((item, idx) => (
+                    <li key={`js-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <span title={item.message}>
+                          {formatPathLabel(item.page)}{' '}
+                          <span className="si-muted" style={{ fontSize: 11 }}>
+                            {item.message ? `• ${String(item.message).slice(0, 80)}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-muted">
+                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} errors
+                        </span>
+                      </div>
+                      {(item.sample_sessions || []).length ? (
+                        <div className="si-cluster-samples">
+                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                            <button
+                              key={s.session_id}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => openStory(s.session_id, s)}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="si-insight-block">
+              <div className="si-insight-title">Form validation</div>
+              {(claritySignals?.signals?.form_invalid || []).length === 0 ? (
+                <div className="si-empty">No form validation friction detected.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.form_invalid || []).slice(0, 8).map((item, idx) => (
+                    <li key={`form-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <span title={[item.field_type, item.field_name].filter(Boolean).join(' ')}>
+                          {formatPathLabel(item.page)}{' '}
+                          <span className="si-muted" style={{ fontSize: 11 }}>
+                            {(item.field_type || item.field_name) ? `• ${(item.field_type || 'field')}${item.field_name ? ` (${item.field_name})` : ''}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-muted">
+                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} invalid submits
+                        </span>
+                      </div>
+                      {(item.sample_sessions || []).length ? (
+                        <div className="si-cluster-samples">
+                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                            <button
+                              key={s.session_id}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => openStory(s.session_id, s)}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="si-insight-block">
+              <div className="si-insight-title">Scroll reach (top pages)</div>
+              {(claritySignals?.signals?.scroll_dropoff || []).length === 0 ? (
+                <div className="si-empty">No scroll data yet.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.scroll_dropoff || []).slice(0, 8).map((item, idx) => (
+                    <li key={`scroll-${item.page}-${idx}`} className="si-insight-item">
+                      <span>{formatPathLabel(item.page)}</span>
+                      <span className="si-muted" title={`Total: ${item.total_sessions}`}>
+                        50%: {formatPercent(item.total_sessions ? item.reached_50 / item.total_sessions : 0)} •
+                        75%: {formatPercent(item.total_sessions ? item.reached_75 / item.total_sessions : 0)} •
+                        90%: {formatPercent(item.total_sessions ? item.reached_90 / item.total_sessions : 0)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           </div>
@@ -1812,6 +2305,116 @@ export default function SessionIntelligenceTab({ store }) {
           </div>
         )}
       </div>
+
+      {storyOpen ? (
+        <div className="si-drawer-backdrop" role="dialog" aria-modal="true" onClick={closeStory}>
+          <div className="si-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="si-drawer-header">
+              <div style={{ minWidth: 0 }}>
+                <div className="si-drawer-title">
+                  {storySession ? userLabel(storySession) : 'Session story'}
+                </div>
+                <div className="si-muted" style={{ marginTop: 2 }}>
+                  {libraryDay ? `Day ${libraryDay}` : '—'}
+                  {storySession?.device_type ? ` • ${normalizeDeviceLabel(storySession.device_type)}` : ''}
+                  {storySession?.country_code ? ` • ${countryNameFromCode(storySession.country_code)}` : ''}
+                  {storySession?.utm_source ? ` • ${normalizeTrafficSourceLabel(storySession.utm_source)}` : ''}
+                  {storySession?.utm_campaign ? ` • ${storySession.utm_campaign}` : ''}
+                </div>
+              </div>
+              <button className="si-button si-button-small" type="button" onClick={closeStory}>
+                Close
+              </button>
+            </div>
+
+            {storyError ? (
+              <div className="si-empty" style={{ color: '#b42318', marginTop: 10 }}>
+                {storyError}
+              </div>
+            ) : null}
+
+            {storyLoading ? (
+              <div className="si-empty" style={{ marginTop: 10 }}>
+                Loading events…
+              </div>
+            ) : null}
+
+            {!storyLoading && !storyError ? (
+              <>
+                <div className="si-story-metrics">
+                  {(() => {
+                    const counts = {
+                      rage: 0,
+                      dead: 0,
+                      errors: 0,
+                      invalid: 0,
+                      maxScroll: 0
+                    };
+                    (storyEvents || []).forEach((ev) => {
+                      const name = String(ev?.event_name || '').toLowerCase();
+                      if (name === 'rage_click') counts.rage += 1;
+                      if (name === 'dead_click') counts.dead += 1;
+                      if (name === 'js_error' || name === 'unhandled_rejection') counts.errors += 1;
+                      if (name === 'form_invalid') counts.invalid += 1;
+                      if (name === 'scroll_depth' || name === 'scroll_max') {
+                        const data = safeJsonParse(ev?.data_json) || {};
+                        const percent = Number(data.max_percent ?? data.percent);
+                        if (Number.isFinite(percent) && percent > counts.maxScroll) counts.maxScroll = percent;
+                      }
+                    });
+
+                    const items = [
+                      { label: 'Rage clicks', value: counts.rage },
+                      { label: 'Dead clicks', value: counts.dead },
+                      { label: 'Errors', value: counts.errors },
+                      { label: 'Invalid submits', value: counts.invalid },
+                      { label: 'Max scroll', value: counts.maxScroll ? `${Math.round(counts.maxScroll)}%` : '—' }
+                    ];
+
+                    return items.map((item) => (
+                      <div key={item.label} className="si-story-metric">
+                        <div className="si-story-metric-label">{item.label}</div>
+                        <div className="si-story-metric-value">{item.value}</div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+
+                <div className="si-story-events">
+                  <div className="si-card-title" style={{ marginBottom: 8 }}>
+                    <h3 style={{ fontSize: 13, margin: 0 }}>Event stream</h3>
+                    <span className="si-muted">{storyEvents.length ? `${storyEvents.length} events` : '—'}</span>
+                  </div>
+
+                  {storyEvents.length === 0 ? (
+                    <div className="si-empty">No events for this session on {libraryDay}.</div>
+                  ) : (
+                    <div className="si-story-list">
+                      {storyEvents.slice(-120).map((ev) => {
+                        const nameKey = String(ev?.event_name || '').toLowerCase();
+                        const isSignal = (
+                          nameKey === 'rage_click' ||
+                          nameKey === 'dead_click' ||
+                          nameKey === 'js_error' ||
+                          nameKey === 'unhandled_rejection' ||
+                          nameKey === 'form_invalid'
+                        );
+                        return (
+                          <div key={ev.id} className={`si-story-row ${isSignal ? 'si-story-row-signal' : ''}`}>
+                            <div className="si-story-time">{formatShort(ev.created_at || ev.event_ts)}</div>
+                            <div className="si-story-name">{normalizeEventLabel(ev.event_name)}</div>
+                            <div className="si-story-path" title={ev.page_path || ''}>{formatPathLabel(ev.page_path, ev.checkout_step)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
   getSessionIntelligenceEventsForDay,
   getSessionIntelligenceSessionsForDay,
   getSessionIntelligenceBriefForDay,
+  getSessionIntelligenceClaritySignalsForDay,
   getSessionIntelligenceFlowForDay,
   getSessionIntelligenceLatestBrief,
   getSessionIntelligenceOverview,
@@ -93,6 +94,23 @@ router.get('/flow', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] flow error:', error);
     res.status(500).json({ success: false, error: 'Failed to load flow' });
+  }
+});
+
+router.get('/clarity', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const date = req.query.date;
+    const mode = req.query.mode || 'high_intent_no_purchase';
+    const limitSessions = req.query.limitSessions ? Number(req.query.limitSessions) : 5000;
+    if (!date) return res.status(400).json({ success: false, error: 'Missing date (YYYY-MM-DD)' });
+
+    const result = getSessionIntelligenceClaritySignalsForDay(store, date, { mode, limitSessions });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] clarity error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load clarity signals' });
   }
 });
 

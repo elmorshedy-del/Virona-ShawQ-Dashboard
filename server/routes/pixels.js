@@ -8,6 +8,506 @@ const DEFAULT_WINDOW_SECONDS = 180;
 const MAX_WINDOW_SECONDS = 1800;
 const LIVE_STATE_GC_MULTIPLIER = 6; // keep some buffer beyond the visible window
 
+const PIXEL_SCRIPT_CACHE_SECONDS = 300; // keep short so we can ship fixes quickly
+const PIXEL_SCRIPT_VERSION = 'virona-pixel-v1';
+
+function renderUniversalPixelScript() {
+  // IMPORTANT:
+  // - This script is designed to run on ANY site (Shopify / custom / etc.)
+  // - It posts to THIS server origin (derived from the script src), not the host site origin.
+  // - It does NOT capture PII (no input values, no message text bodies, etc.)
+  return `
+/* ${PIXEL_SCRIPT_VERSION} */
+(function () {
+  'use strict';
+
+  var VERSION = ${JSON.stringify(PIXEL_SCRIPT_VERSION)};
+  var SESSION_IDLE_MS = 30 * 60 * 1000;
+  var DEAD_CLICK_TIMEOUT_MS = 1200;
+  var RAGE_CLICK_WINDOW_MS = 800;
+  var RAGE_CLICK_MIN_CLICKS = 3;
+  var RAGE_CLICK_RADIUS_PX = 30;
+  var SCROLL_BUCKETS = [25, 50, 75, 90];
+  var MAX_STRING = 240;
+
+  function safeString(value, max) {
+    try {
+      var str = value == null ? '' : String(value);
+      if (!str) return '';
+      var limit = typeof max === 'number' && max > 0 ? max : MAX_STRING;
+      return str.length > limit ? str.slice(0, limit) : str;
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function safeNumber(value) {
+    var n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function uuid() {
+    try {
+      if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+    } catch (_e) {}
+
+    // Fallback UUID-ish generator
+    var s = '';
+    for (var i = 0; i < 32; i += 1) {
+      s += Math.floor(Math.random() * 16).toString(16);
+    }
+    return (
+      s.slice(0, 8) + '-' +
+      s.slice(8, 12) + '-' +
+      '4' + s.slice(13, 16) + '-' +
+      'a' + s.slice(17, 20) + '-' +
+      s.slice(20)
+    );
+  }
+
+  function getCurrentScriptUrl() {
+    try {
+      var current = document.currentScript;
+      if (current && current.src) return current.src;
+    } catch (_e) {}
+    try {
+      var scripts = document.getElementsByTagName('script');
+      if (scripts && scripts.length) {
+        var last = scripts[scripts.length - 1];
+        if (last && last.src) return last.src;
+      }
+    } catch (_e2) {}
+    return '';
+  }
+
+  function parseUrl(raw) {
+    try {
+      return new URL(raw);
+    } catch (_e) {
+      try {
+        return new URL(raw, window.location.href);
+      } catch (_e2) {
+        return null;
+      }
+    }
+  }
+
+  var scriptUrl = getCurrentScriptUrl();
+  var parsedScriptUrl = parseUrl(scriptUrl);
+  var scriptOrigin = parsedScriptUrl && parsedScriptUrl.origin ? parsedScriptUrl.origin : '';
+  var store = (parsedScriptUrl && parsedScriptUrl.searchParams && parsedScriptUrl.searchParams.get('store')) || 'shawq';
+  var endpointOverride = parsedScriptUrl && parsedScriptUrl.searchParams ? parsedScriptUrl.searchParams.get('endpoint') : null;
+  var endpoint = endpointOverride || (scriptOrigin ? (scriptOrigin + '/api/pixels/shopify') : '/api/pixels/shopify');
+
+  function storageKey(base) {
+    return base + ':' + store;
+  }
+
+  function readStorage(storage, key) {
+    try {
+      return storage.getItem(key);
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function writeStorage(storage, key, value) {
+    try {
+      storage.setItem(key, value);
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  function getOrCreateClientId() {
+    var key = storageKey('virona_si_client_id');
+    var existing = readStorage(window.localStorage, key);
+    if (existing) return existing;
+    var id = uuid();
+    writeStorage(window.localStorage, key, id);
+    return id;
+  }
+
+  function getOrCreateSessionId() {
+    var idKey = storageKey('virona_si_session_id');
+    var tsKey = storageKey('virona_si_session_last_ts');
+    var existing = readStorage(window.sessionStorage, idKey);
+    var lastTs = safeNumber(readStorage(window.sessionStorage, tsKey));
+    var now = Date.now();
+
+    if (existing && lastTs != null && (now - lastTs) < SESSION_IDLE_MS) {
+      writeStorage(window.sessionStorage, tsKey, String(now));
+      return existing;
+    }
+
+    var id = uuid();
+    writeStorage(window.sessionStorage, idKey, id);
+    writeStorage(window.sessionStorage, tsKey, String(now));
+    return id;
+  }
+
+  var clientId = getOrCreateClientId();
+  var sessionId = getOrCreateSessionId();
+
+  function sessionContext() {
+    // Refresh session id if we went idle.
+    sessionId = getOrCreateSessionId();
+
+    return {
+      clientId: clientId,
+      sessionId: sessionId,
+      navigator: { userAgent: safeString(navigator.userAgent, 280) },
+      document: {
+        title: safeString(document.title, 140),
+        referrer: safeString(document.referrer, 280),
+        location: { href: safeString(window.location.href, 800) }
+      }
+    };
+  }
+
+  function sendEvent(name, data, options) {
+    try {
+      var opts = options || {};
+      var payload = {
+        store: store,
+        source: VERSION,
+        timestamp: new Date().toISOString(),
+        context: sessionContext(),
+        event: {
+          name: name,
+          data: data || {}
+        }
+      };
+
+      var body = JSON.stringify(payload);
+      var useBeacon = !!opts.beacon;
+
+      if (useBeacon && navigator && typeof navigator.sendBeacon === 'function') {
+        try {
+          var blob = new Blob([body], { type: 'application/json' });
+          navigator.sendBeacon(endpoint, blob);
+          return;
+        } catch (_be) {}
+      }
+
+      fetch(endpoint, {
+        method: 'POST',
+        mode: 'cors',
+        credentials: 'omit',
+        headers: { 'Content-Type': 'application/json' },
+        body: body,
+        keepalive: true
+      }).catch(function () {});
+    } catch (_e) {}
+  }
+
+  function elementSummary(el) {
+    if (!el) return { key: 'unknown' };
+    var tag = el.tagName ? el.tagName.toLowerCase() : 'unknown';
+    var id = safeString(el.id, 60);
+    var cls = '';
+    try {
+      if (el.classList && el.classList.length) {
+        cls = Array.prototype.slice.call(el.classList, 0, 4).join('.');
+      }
+    } catch (_e) {}
+
+    var role = safeString(el.getAttribute ? el.getAttribute('role') : '', 32);
+    var type = safeString(el.getAttribute ? el.getAttribute('type') : '', 32);
+    var href = '';
+    try {
+      if (tag === 'a' && el.getAttribute) {
+        href = safeString(el.getAttribute('href') || '', 260);
+      }
+    } catch (_e2) {}
+
+    var key = tag +
+      (id ? ('#' + id) : '') +
+      (cls ? ('.' + cls) : '') +
+      (role ? ('[role=' + role + ']') : '') +
+      (type ? ('[type=' + type + ']') : '');
+
+    return {
+      key: safeString(key, 220),
+      tag: tag,
+      id: id || null,
+      class_hint: cls || null,
+      role: role || null,
+      type: type || null,
+      href: href || null
+    };
+  }
+
+  function isProbablyClickable(el) {
+    if (!el || !el.closest) return false;
+    var clickable = el.closest('a,button,[role=\"button\"],input[type=\"button\"],input[type=\"submit\"],summary,label');
+    return !!clickable;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rage clicks
+  // ---------------------------------------------------------------------------
+  var recentClicks = [];
+  var lastRageSentAt = 0;
+
+  function onClickCapture(e) {
+    if (!e) return;
+    var target = e.target && e.target.closest ? e.target.closest('a,button,[role=\"button\"],input,select,textarea,label,summary') : e.target;
+    if (!target) return;
+
+    var point = {
+      t: Date.now(),
+      x: safeNumber(e.clientX),
+      y: safeNumber(e.clientY),
+      target: elementSummary(target),
+      hrefAtClick: safeString(window.location.href, 800)
+    };
+
+    // Keep only clicks in the rage window.
+    var cutoff = point.t - RAGE_CLICK_WINDOW_MS;
+    recentClicks = recentClicks.filter(function (c) { return c.t >= cutoff; });
+    recentClicks.push(point);
+
+    // Dead click timer (computed separately).
+    scheduleDeadClick(point, target);
+
+    if (point.t - lastRageSentAt < RAGE_CLICK_WINDOW_MS) return;
+    if (recentClicks.length < RAGE_CLICK_MIN_CLICKS) return;
+
+    var base = recentClicks[recentClicks.length - 1];
+    var hits = recentClicks.filter(function (c) {
+      if (c.target && base.target && c.target.key !== base.target.key) return false;
+      if (c.x == null || c.y == null || base.x == null || base.y == null) return false;
+      var dx = c.x - base.x;
+      var dy = c.y - base.y;
+      return Math.sqrt(dx * dx + dy * dy) <= RAGE_CLICK_RADIUS_PX;
+    });
+
+    if (hits.length >= RAGE_CLICK_MIN_CLICKS) {
+      lastRageSentAt = point.t;
+      recentClicks = [];
+      sendEvent('rage_click', {
+        target_key: base.target ? base.target.key : 'unknown',
+        target: base.target || null,
+        x: base.x,
+        y: base.y
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dead clicks
+  // ---------------------------------------------------------------------------
+  var pendingDead = null;
+  var pendingDeadTimer = 0;
+
+  function scheduleDeadClick(point, rawTarget) {
+    try {
+      if (!isProbablyClickable(rawTarget)) return;
+      // Ignore obvious successful navigations (new tab / downloads, etc.) – too noisy.
+      if (rawTarget && rawTarget.tagName && rawTarget.tagName.toLowerCase() === 'a') {
+        var href = rawTarget.getAttribute ? (rawTarget.getAttribute('href') || '') : '';
+        if (href && href.startsWith('mailto:')) return;
+        if (href && href.startsWith('tel:')) return;
+      }
+
+      pendingDead = {
+        t: point.t,
+        href: point.hrefAtClick,
+        target: point.target,
+        x: point.x,
+        y: point.y
+      };
+
+      if (pendingDeadTimer) clearTimeout(pendingDeadTimer);
+
+      pendingDeadTimer = setTimeout(function () {
+        pendingDeadTimer = 0;
+        if (!pendingDead) return;
+
+        // If location changed, it wasn't dead.
+        if (pendingDead.href && safeString(window.location.href, 800) !== pendingDead.href) {
+          pendingDead = null;
+          return;
+        }
+
+        // If a submit just happened, assume it did something.
+        if (Date.now() - lastFormSubmitAt < DEAD_CLICK_TIMEOUT_MS) {
+          pendingDead = null;
+          return;
+        }
+
+        sendEvent('dead_click', {
+          target_key: pendingDead.target ? pendingDead.target.key : 'unknown',
+          target: pendingDead.target || null,
+          x: pendingDead.x,
+          y: pendingDead.y
+        });
+        pendingDead = null;
+      }, DEAD_CLICK_TIMEOUT_MS);
+    } catch (_e) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scroll depth
+  // ---------------------------------------------------------------------------
+  var scrollMaxPercent = 0;
+  var lastScrollBucketSent = 0;
+  var scrollRaf = 0;
+
+  function computeScrollPercent() {
+    var doc = document.documentElement;
+    if (!doc) return 0;
+    var scrollTop = window.pageYOffset || doc.scrollTop || 0;
+    var viewport = window.innerHeight || 0;
+    var height = Math.max(doc.scrollHeight || 0, document.body ? (document.body.scrollHeight || 0) : 0);
+    var denom = Math.max(1, height - viewport);
+    var pct = Math.round(Math.min(1, Math.max(0, scrollTop / denom)) * 100);
+    return pct;
+  }
+
+  function handleScroll() {
+    scrollRaf = 0;
+    var pct = computeScrollPercent();
+    if (pct > scrollMaxPercent) scrollMaxPercent = pct;
+
+    for (var i = 0; i < SCROLL_BUCKETS.length; i += 1) {
+      var bucket = SCROLL_BUCKETS[i];
+      if (bucket <= lastScrollBucketSent) continue;
+      if (pct >= bucket) {
+        lastScrollBucketSent = bucket;
+        sendEvent('scroll_depth', { percent: bucket, max_percent: scrollMaxPercent });
+      }
+    }
+  }
+
+  function onScroll() {
+    if (scrollRaf) return;
+    scrollRaf = window.requestAnimationFrame(handleScroll);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Form friction (validation failures)
+  // ---------------------------------------------------------------------------
+  var lastFormSubmitAt = 0;
+
+  function onFormSubmitCapture(e) {
+    try {
+      lastFormSubmitAt = Date.now();
+      var form = e && e.target && e.target.tagName && e.target.tagName.toLowerCase() === 'form'
+        ? e.target
+        : null;
+      if (!form || typeof form.checkValidity !== 'function') return;
+
+      if (form.checkValidity()) return;
+
+      var invalid = null;
+      try {
+        invalid = form.querySelector(':invalid');
+      } catch (_q) {}
+
+      var summary = invalid ? elementSummary(invalid) : null;
+      var fieldType = invalid && invalid.getAttribute ? safeString(invalid.getAttribute('type') || '', 40) : '';
+      var fieldName = invalid && invalid.getAttribute ? safeString(invalid.getAttribute('name') || '', 80) : '';
+
+      var validity = null;
+      try {
+        if (invalid && invalid.validity) {
+          validity = {
+            valueMissing: !!invalid.validity.valueMissing,
+            typeMismatch: !!invalid.validity.typeMismatch,
+            patternMismatch: !!invalid.validity.patternMismatch,
+            tooShort: !!invalid.validity.tooShort,
+            tooLong: !!invalid.validity.tooLong,
+            rangeUnderflow: !!invalid.validity.rangeUnderflow,
+            rangeOverflow: !!invalid.validity.rangeOverflow,
+            stepMismatch: !!invalid.validity.stepMismatch,
+            badInput: !!invalid.validity.badInput,
+            customError: !!invalid.validity.customError
+          };
+        }
+      } catch (_v) {}
+
+      sendEvent('form_invalid', {
+        form_id: safeString(form.id, 80) || null,
+        field: summary,
+        field_type: fieldType || null,
+        field_name: fieldName || null,
+        validity: validity
+      });
+    } catch (_e) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // JS errors / unhandled rejections
+  // ---------------------------------------------------------------------------
+  function onWindowError(event) {
+    try {
+      if (!event) return;
+      var message = safeString(event.message || '', 260);
+      if (!message) return;
+      var filename = safeString(event.filename || '', 260);
+      var stack = '';
+      try {
+        if (event.error && event.error.stack) stack = safeString(event.error.stack, 900);
+      } catch (_s) {}
+      sendEvent('js_error', {
+        message: message,
+        filename: filename || null,
+        line: safeNumber(event.lineno),
+        column: safeNumber(event.colno),
+        stack: stack || null
+      });
+    } catch (_e) {}
+  }
+
+  function onUnhandledRejection(event) {
+    try {
+      var reason = event && event.reason;
+      var message = safeString((reason && reason.message) || reason || '', 260);
+      if (!message) return;
+      var stack = '';
+      try {
+        if (reason && reason.stack) stack = safeString(reason.stack, 900);
+      } catch (_s) {}
+      sendEvent('unhandled_rejection', {
+        message: message,
+        stack: stack || null
+      });
+    } catch (_e) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+  function flushOnHide() {
+    // Send scroll max at end of page lifecycle (low volume, high signal).
+    if (scrollMaxPercent > 0) {
+      sendEvent('scroll_max', { max_percent: scrollMaxPercent }, { beacon: true });
+    }
+  }
+
+  try {
+    document.addEventListener('click', onClickCapture, true);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('error', onWindowError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    document.addEventListener('submit', onFormSubmitCapture, true);
+    window.addEventListener('pagehide', flushOnHide);
+  } catch (_e) {}
+})();
+`.trim();
+}
+
+router.get('/pixel.js', (req, res) => {
+  res.setHeader('content-type', 'application/javascript; charset=utf-8');
+  res.setHeader('cache-control', `public, max-age=${PIXEL_SCRIPT_CACHE_SECONDS}`);
+  res.send(renderUniversalPixelScript());
+});
+
 // In-memory live state (fast + works even if DB is read-only / unavailable).
 // Structure: store -> sessionKey -> { type, tsMs }
 const liveSessionsByStore = new Map();
