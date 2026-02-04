@@ -15,6 +15,19 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 export default function VideoOverlayEditor({ store }) {
   const [videoSrc, setVideoSrc] = useState(null);
+
+  useEffect(() => {
+    const objectUrl = videoSrc;
+
+    // This cleanup function will be called when the component unmounts
+    // or when videoSrc changes, preventing memory leaks.
+    return () => {
+      if (objectUrl && objectUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [videoSrc]);
+
   const [videoId, setVideoId] = useState(null);
   const [videoInfo, setVideoInfo] = useState(null); // {duration,width,height}
   const [segments, setSegments] = useState([]); // [{id,start,end,label,overlays:[]}]
