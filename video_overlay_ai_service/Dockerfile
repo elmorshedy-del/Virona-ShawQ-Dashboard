@@ -14,6 +14,9 @@ WORKDIR /app
 # Install PyTorch CPU wheels (predictable for servers; swap for GPU base image if needed)
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
+# Railway CPU builds: skip CUDA extension build for SAM2.
+ENV SAM2_BUILD_CUDA=0
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
