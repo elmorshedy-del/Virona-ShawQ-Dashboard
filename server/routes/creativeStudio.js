@@ -8,7 +8,7 @@ import path from 'path';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
 import { fileURLToPath } from 'url';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import * as geminiVision from '../services/geminiVisionService.js';
 import * as cloudinary from '../services/cloudinaryService.js';
 import * as fbAdLibrary from '../services/fbAdLibraryService.js';
@@ -1327,12 +1327,32 @@ async function detectOverlayKeysWithGemini({ frames } = {}) {
 
   const modelName = process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.5-flash-lite';
   const genAI = new GoogleGenerativeAI(apiKey);
+
+  const responseSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+      frames: {
+        type: SchemaType.ARRAY,
+        items: {
+          type: SchemaType.OBJECT,
+          properties: {
+            t: { type: SchemaType.NUMBER },
+            overlay_text: { type: SchemaType.STRING, nullable: true }
+          },
+          required: ['t', 'overlay_text']
+        }
+      }
+    },
+    required: ['frames']
+  };
+
   const model = genAI.getGenerativeModel({
     model: modelName,
     generationConfig: {
       temperature: 0,
       maxOutputTokens: 1024,
-      responseMimeType: 'application/json'
+      responseMimeType: 'application/json',
+      responseSchema
     }
   });
 
@@ -1386,6 +1406,73 @@ async function detectOverlayKeysWithGemini({ frames } = {}) {
     }
   };
 
+  const extractFirstJsonObject = (rawText) => {
+    const text = String(rawText || '');
+    const start = text.indexOf('{');
+    if (start < 0) return null;
+
+    let depth = 0;
+    let inString = false;
+    let isEscaped = false;
+
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+
+      if (inString) {
+        if (isEscaped) {
+          isEscaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          isEscaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '{') {
+        depth += 1;
+        continue;
+      }
+      if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+
+    return null;
+  };
+
+  const parseGeminiJson = (rawText) => {
+    const cleaned = String(rawText || '')
+      .replace(/```json|```/g, '')
+      .trim();
+
+    try {
+      return JSON.parse(cleaned);
+    } catch {}
+
+    const extracted = extractFirstJsonObject(cleaned);
+    if (!extracted) {
+      throw new Error(`Gemini returned JSON but it looks incomplete. Preview: ${cleaned.slice(0, 200)}`);
+    }
+
+    try {
+      return JSON.parse(extracted);
+    } catch {
+      throw new Error(`Gemini returned invalid JSON. Preview: ${cleaned.slice(0, 200)}`);
+    }
+  };
+
   for (let i = 0; i < frames.length; i += chunkSize) {
     const chunk = frames.slice(i, i + chunkSize);
 
@@ -1408,21 +1495,11 @@ Return ONLY valid JSON with this exact shape:
 
     const result = await generateWithRetry(parts);
     const text = String(result?.response?.text?.() ?? '').trim();
-
-    // Robust JSON extraction
-    const jsonText = text
-      .replace(/```json|```/g, '')
-      .trim();
-
-    const start = jsonText.indexOf('{');
-    const end = jsonText.lastIndexOf('}');
-    const slice = start >= 0 && end >= 0 ? jsonText.slice(start, end + 1) : jsonText;
-
     let parsed = null;
     try {
-      parsed = JSON.parse(slice);
+      parsed = parseGeminiJson(text);
     } catch (e) {
-      throw new Error(`Gemini returned invalid JSON: ${text.slice(0, 200)}`);
+      throw new Error(`${e.message} Model=${modelName}`);
     }
 
     const frameRows = Array.isArray(parsed?.frames) ? parsed.frames : [];
