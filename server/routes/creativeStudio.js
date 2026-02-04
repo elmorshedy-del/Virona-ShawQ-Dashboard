@@ -1327,10 +1327,64 @@ async function detectOverlayKeysWithGemini({ frames } = {}) {
 
   const modelName = process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.5-flash-lite';
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: modelName });
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 1024,
+      responseMimeType: 'application/json'
+    }
+  });
 
   const results = [];
   const chunkSize = 8;
+  const maxRetries = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_RETRIES ?? 6, 0, 10));
+  const minDelayMs = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_MIN_DELAY_MS ?? 250, 0, 5000));
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const getHttpStatus = (error) => {
+    if (!error) return null;
+    if (Number.isFinite(error.status)) return Number(error.status);
+    const msg = String(error.message || '');
+    const match = msg.match(/\[(\d{3})\s/);
+    return match ? Number(match[1]) : null;
+  };
+
+  const isRetryable = (error) => {
+    const status = getHttpStatus(error);
+    if (status === 429) return true;
+    if (status && [500, 502, 503, 504].includes(status)) return true;
+    const msg = String(error?.message || '').toLowerCase();
+    return msg.includes('resource exhausted') || msg.includes('too many requests') || msg.includes('quota');
+  };
+
+  const generateWithRetry = async (parts) => {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await model.generateContent(parts);
+      } catch (error) {
+        const status = getHttpStatus(error);
+        if (!isRetryable(error) || attempt >= maxRetries) {
+          const err = new Error(
+            status === 429
+              ? `Gemini rate limit / quota exceeded (HTTP 429). Try again in a minute, lower max frames, or increase quota. Model=${modelName}.`
+              : `Gemini request failed${status ? ` (HTTP ${status})` : ''}. Model=${modelName}. ${error?.message || ''}`.trim()
+          );
+          err.statusCode = status || 500;
+          err.cause = error;
+          throw err;
+        }
+
+        // Exponential backoff with jitter (kept small to avoid long-running requests).
+        const base = 750;
+        const delay = Math.min(15000, base * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
+        attempt += 1;
+        await sleep(delay);
+      }
+    }
+  };
 
   for (let i = 0; i < frames.length; i += chunkSize) {
     const chunk = frames.slice(i, i + chunkSize);
@@ -1352,7 +1406,7 @@ Return ONLY valid JSON with this exact shape:
       parts.push({ inlineData: { mimeType: 'image/jpeg', data: frame.b64 } });
     }
 
-    const result = await model.generateContent(parts);
+    const result = await generateWithRetry(parts);
     const text = String(result?.response?.text?.() ?? '').trim();
 
     // Robust JSON extraction
@@ -1376,6 +1430,10 @@ Return ONLY valid JSON with this exact shape:
       const t = safeParseNumber(row?.t, null);
       if (t === null) continue;
       results.push({ t, overlay_text: row?.overlay_text ?? null });
+    }
+
+    if (minDelayMs > 0 && i + chunkSize < frames.length) {
+      await sleep(minDelayMs);
     }
   }
 
@@ -1535,6 +1593,9 @@ router.post('/video-overlay/scan', async (req, res) => {
     });
   } catch (error) {
     console.error('Video overlay scan error:', error);
+    if (Number.isFinite(Number(error?.statusCode)) && Number(error.statusCode) !== 500) {
+      return res.status(Number(error.statusCode)).json({ success: false, error: error.message });
+    }
     const msg = error?.code === 'ENOENT'
       ? 'ffmpeg/ffprobe not found on server. Install ffmpeg.'
       : error.message;
