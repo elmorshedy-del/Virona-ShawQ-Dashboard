@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     git \
     curl \
+    wget \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
@@ -15,6 +16,14 @@ RUN apt-get update && apt-get install -y \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Download model weights EARLY (cached, won't re-download on code changes)
+RUN mkdir -p weights && \
+    echo "Downloading DINO weights (~700MB)..." && \
+    wget -q --show-progress https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth -O weights/groundingdino_swint_ogc.pth && \
+    echo "Downloading SAM2 weights (~2.4GB)..." && \
+    wget -q --show-progress https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt -O weights/sam2_hiera_large.pt && \
+    echo "Weights downloaded!"
 
 # Install PyTorch CPU wheels (predictable for servers; swap for GPU base image if needed)
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
