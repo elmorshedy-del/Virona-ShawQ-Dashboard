@@ -1409,11 +1409,10 @@ router.post('/video-overlay/scan', async (req, res) => {
     ensureVideoOverlayDirs();
 
     const videoId = String(req.body?.video_id || '').trim();
-    if (!videoId) {
-      return res.status(400).json({ success: false, error: 'video_id is required' });
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(videoId)) {
+      return res.status(400).json({ success: false, error: 'Invalid video_id format' });
     }
-
-    const videoPath = getUploadedVideoPath(videoId);
     if (!fs.existsSync(videoPath)) {
       return res.status(404).json({ success: false, error: 'Uploaded video not found (upload again)' });
     }
