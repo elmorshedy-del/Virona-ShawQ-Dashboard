@@ -67,6 +67,7 @@ I’ll keep it updated after each code change during this session.
 - Exchange Rates: Provider status + backfill + manual rate tools for TRY↔USD. Endpoints: `GET /api/exchange-rates/debug`, `POST /api/exchange-rates/backfill-single`, `POST /api/exchange-rates/manual`.
 - Campaign Launcher: Multi-step campaign creation UI with mock pages and simulated launch results (no backend calls).
 - Product Radar: Product opportunity scanner + sources health. Endpoints: `GET /api/product-radar/health`, `POST /api/product-radar/scan`.
+- Watchtower: Always-on anomaly detection + guardrails + annotations + AI explanations. Endpoints: `GET /api/watchtower/overview`, `/series`, `/drivers`; `GET/POST/DELETE /api/watchtower/annotations`; `GET/POST/DELETE /api/watchtower/rules`.
 
 ## Data Flow Diagram
 ```mermaid
