@@ -41,9 +41,9 @@ function tokenizeMathExpression(expression) {
         if ((next === 'e' || next === 'E') && i + 1 < expression.length) {
           const afterE = expression[i + 1];
           const afterE2 = expression[i + 2];
-          if (isDigit(afterE) || afterE === '+' || afterE === '-' || afterE === '.') {
+          if (isDigit(afterE) || afterE === '+' || afterE === '-') {
             i += 2;
-            if (afterE2 && (isDigit(afterE2) || afterE2 === '.')) {
+            if (afterE2 && isDigit(afterE2)) {
               i += 1;
             }
             continue;
