@@ -802,6 +802,126 @@
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.10);
 }
 
+.si-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px;
+}
+
+.si-drawer {
+  width: min(560px, 100%);
+  max-height: calc(100vh - 28px);
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
+  padding: 14px;
+  backdrop-filter: blur(12px);
+}
+
+.si-drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.si-drawer-title {
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--si-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.si-story-metrics {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .si-story-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.si-story-metric {
+  border-radius: 14px;
+  border: 1px solid rgba(79, 70, 229, 0.16);
+  background: rgba(238, 242, 255, 0.45);
+  padding: 10px;
+  min-width: 0;
+}
+
+.si-story-metric-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(71, 85, 105, 0.85);
+}
+
+.si-story-metric-value {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--si-text);
+}
+
+.si-story-events {
+  margin-top: 14px;
+}
+
+.si-story-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.si-story-row {
+  display: grid;
+  grid-template-columns: 72px 150px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.si-story-row-signal {
+  border-color: rgba(79, 70, 229, 0.28);
+  background: rgba(238, 242, 255, 0.70);
+}
+
+.si-story-time {
+  font-size: 11px;
+  font-weight: 800;
+  color: rgba(71, 85, 105, 0.9);
+}
+
+.si-story-name {
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--si-text);
+}
+
+.si-story-path {
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.95);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .si-realtime-card {
   background: rgba(255, 255, 255, 0.86);
 }

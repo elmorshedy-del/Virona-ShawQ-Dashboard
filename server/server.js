@@ -239,6 +239,15 @@ app.use('/api/testimonials', testimonialExtractorRouter);
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
 app.use(express.static(clientDist));
+
+// Convenience URL for installs on non-Shopify storefronts:
+// <script src="https://YOUR-DOMAIN/pixel.js?store=shawq"></script>
+// Redirects to the actual pixel route mounted under /api to avoid SPA fallthrough.
+app.get('/pixel.js', (req, res) => {
+  const query = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+  res.redirect(302, `/api/pixels/pixel.js${query}`);
+});
+
 app.get('*', (req, res, next) => {
   // Don't serve the SPA shell for API routes (prevents "Unexpected token <" JSON errors).
   if (req.path.startsWith('/api')) return next();

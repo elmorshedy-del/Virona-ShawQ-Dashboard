@@ -86,6 +86,15 @@ function formatNumber(value) {
   return new Intl.NumberFormat().format(n);
 }
 
+function safeJsonParse(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
 async function fetchJson(url, options) {
   const res = await fetch(url, { cache: 'no-store', ...options });
   const contentType = res.headers.get('content-type') || '';
@@ -416,6 +425,15 @@ export default function SessionIntelligenceTab({ store }) {
   const [dropoffDeviceFilter, setDropoffDeviceFilter] = useState('');
   const [dropoffCountryFilter, setDropoffCountryFilter] = useState('');
   const [dropoffCampaignFilter, setDropoffCampaignFilter] = useState('');
+  const [claritySignals, setClaritySignals] = useState(null);
+  const [clarityLoading, setClarityLoading] = useState(false);
+  const [clarityError, setClarityError] = useState('');
+
+  const [storyOpen, setStoryOpen] = useState(false);
+  const [storySession, setStorySession] = useState(null);
+  const [storyEvents, setStoryEvents] = useState([]);
+  const [storyLoading, setStoryLoading] = useState(false);
+  const [storyError, setStoryError] = useState('');
   const [sessions, setSessions] = useState([]);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -450,6 +468,44 @@ export default function SessionIntelligenceTab({ store }) {
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
   }, [analysisLlm]);
+
+  const openStory = useCallback(async (sessionId, stub = null) => {
+    if (!libraryDay || !sessionId) return;
+    setStoryOpen(true);
+    setStorySession(stub);
+    setStoryEvents([]);
+    setStoryError('');
+    setStoryLoading(true);
+
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        date: libraryDay,
+        sessionId: String(sessionId),
+        limit: '1200'
+      });
+      const payload = await fetchJson(`/api/session-intelligence/events-by-day?${params.toString()}`);
+      setStoryEvents(Array.isArray(payload.events) ? payload.events : []);
+
+      if (!stub) {
+        const found = librarySessions.find((s) => s.session_id === sessionId) || null;
+        setStorySession(found);
+      }
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] story load failed:', error);
+      setStoryError(error?.message || 'Failed to load session story');
+      setStoryEvents([]);
+    } finally {
+      setStoryLoading(false);
+    }
+  }, [libraryDay, librarySessions, storeId]);
+
+  const closeStory = useCallback(() => {
+    setStoryOpen(false);
+    setStorySession(null);
+    setStoryEvents([]);
+    setStoryError('');
+  }, []);
 
   const loadRealtime = useCallback(async () => {
     setRealtimeLoading(true);
@@ -490,6 +546,28 @@ export default function SessionIntelligenceTab({ store }) {
       setFlowData(null);
     } finally {
       setFlowLoading(false);
+    }
+  }, [storeId]);
+
+  const loadClarity = useCallback(async (day, mode) => {
+    if (!day) return;
+    setClarityLoading(true);
+    setClarityError('');
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        date: day,
+        mode: mode || 'high_intent_no_purchase',
+        limitSessions: '5000'
+      });
+      const payload = await fetchJson(`/api/session-intelligence/clarity?${params.toString()}`);
+      setClaritySignals(payload?.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] clarity load failed:', error);
+      setClarityError(error?.message || 'Failed to load clarity signals');
+      setClaritySignals(null);
+    } finally {
+      setClarityLoading(false);
     }
   }, [storeId]);
 
@@ -552,6 +630,11 @@ export default function SessionIntelligenceTab({ store }) {
     if (!libraryDay) return;
     loadFlow(libraryDay, flowMode);
   }, [libraryDay, flowMode, loadFlow]);
+
+  useEffect(() => {
+    if (!libraryDay) return;
+    loadClarity(libraryDay, flowMode);
+  }, [libraryDay, flowMode, loadClarity]);
 
   const filteredLibrarySessions = useMemo(() => {
     let list = librarySessions;
@@ -637,6 +720,7 @@ export default function SessionIntelligenceTab({ store }) {
         loadOverview(),
         loadBrief(),
         loadFlow(libraryDay, flowMode),
+        loadClarity(libraryDay, flowMode),
         loadSessions(),
         loadEvents(),
         loadLibraryDays(),
@@ -645,7 +729,7 @@ export default function SessionIntelligenceTab({ store }) {
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadCampaignPurchases, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadCampaignPurchases, loadClarity, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     let active = true;
@@ -1516,7 +1600,7 @@ export default function SessionIntelligenceTab({ store }) {
                               className="si-sample"
                               onClick={() => {
                                 if (!s.session_id) return;
-                                setLibrarySessionId(s.session_id);
+                                openStory(s.session_id, s);
                               }}
                               title={s.session_id || ''}
                             >
@@ -1528,6 +1612,219 @@ export default function SessionIntelligenceTab({ store }) {
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="si-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Clarity signals</h3>
+          <span className="si-muted">
+            {libraryDay || claritySignals?.date || '—'}
+            {' • '}
+            {flowMode === 'high_intent_no_purchase' ? 'High intent (no purchase)' : 'All sessions'}
+          </span>
+        </div>
+
+        <div className="si-muted">
+          Rage clicks, dead clicks, scroll depth, JS errors, and form validation friction (from the storefront script).
+        </div>
+
+        {clarityError ? (
+          <div className="si-empty" style={{ marginTop: 10, color: '#b42318' }}>
+            {clarityError}
+          </div>
+        ) : null}
+
+        {!clarityError && clarityLoading ? (
+          <div className="si-empty" style={{ marginTop: 10 }}>
+            Loading clarity signals…
+          </div>
+        ) : null}
+
+        {!clarityLoading && !clarityError && !claritySignals ? (
+          <div className="si-empty" style={{ marginTop: 10 }}>
+            No clarity signals yet. Install the storefront script: <span className="si-code">/pixel.js?store={storeId}</span>
+          </div>
+        ) : null}
+
+        {!clarityError && claritySignals ? (
+          <div className="si-insights-grid" style={{ marginTop: 12 }}>
+            <div className="si-insight-block">
+              <div className="si-insight-title">Rage clicks</div>
+              {(claritySignals?.signals?.rage_clicks || []).length === 0 ? (
+                <div className="si-empty">No rage clicks detected.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.rage_clicks || []).slice(0, 8).map((item, idx) => (
+                    <li key={`rage-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <span title={item.target_key || ''}>
+                          {formatPathLabel(item.page)}{' '}
+                          <span className="si-muted" style={{ fontSize: 11 }}>
+                            {item.target_key ? `• ${String(item.target_key).slice(0, 60)}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-muted">
+                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} clicks
+                        </span>
+                      </div>
+                      {(item.sample_sessions || []).length ? (
+                        <div className="si-cluster-samples">
+                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                            <button
+                              key={s.session_id}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => openStory(s.session_id, s)}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="si-insight-block">
+              <div className="si-insight-title">Dead clicks</div>
+              {(claritySignals?.signals?.dead_clicks || []).length === 0 ? (
+                <div className="si-empty">No dead clicks detected.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.dead_clicks || []).slice(0, 8).map((item, idx) => (
+                    <li key={`dead-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <span title={item.target_key || ''}>
+                          {formatPathLabel(item.page)}{' '}
+                          <span className="si-muted" style={{ fontSize: 11 }}>
+                            {item.target_key ? `• ${String(item.target_key).slice(0, 60)}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-muted">
+                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} clicks
+                        </span>
+                      </div>
+                      {(item.sample_sessions || []).length ? (
+                        <div className="si-cluster-samples">
+                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                            <button
+                              key={s.session_id}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => openStory(s.session_id, s)}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="si-insight-block">
+              <div className="si-insight-title">JS errors</div>
+              {(claritySignals?.signals?.js_errors || []).length === 0 ? (
+                <div className="si-empty">No JS errors detected.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.js_errors || []).slice(0, 8).map((item, idx) => (
+                    <li key={`js-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <span title={item.message}>
+                          {formatPathLabel(item.page)}{' '}
+                          <span className="si-muted" style={{ fontSize: 11 }}>
+                            {item.message ? `• ${String(item.message).slice(0, 80)}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-muted">
+                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} errors
+                        </span>
+                      </div>
+                      {(item.sample_sessions || []).length ? (
+                        <div className="si-cluster-samples">
+                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                            <button
+                              key={s.session_id}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => openStory(s.session_id, s)}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="si-insight-block">
+              <div className="si-insight-title">Form validation</div>
+              {(claritySignals?.signals?.form_invalid || []).length === 0 ? (
+                <div className="si-empty">No form validation friction detected.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.form_invalid || []).slice(0, 8).map((item, idx) => (
+                    <li key={`form-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <span title={[item.field_type, item.field_name].filter(Boolean).join(' ')}>
+                          {formatPathLabel(item.page)}{' '}
+                          <span className="si-muted" style={{ fontSize: 11 }}>
+                            {(item.field_type || item.field_name) ? `• ${(item.field_type || 'field')}${item.field_name ? ` (${item.field_name})` : ''}` : ''}
+                          </span>
+                        </span>
+                        <span className="si-muted">
+                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} invalid submits
+                        </span>
+                      </div>
+                      {(item.sample_sessions || []).length ? (
+                        <div className="si-cluster-samples">
+                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                            <button
+                              key={s.session_id}
+                              type="button"
+                              className="si-sample"
+                              onClick={() => openStory(s.session_id, s)}
+                            >
+                              {s.codename || toCode('Session', s.session_id, 6)}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="si-insight-block">
+              <div className="si-insight-title">Scroll reach (top pages)</div>
+              {(claritySignals?.signals?.scroll_dropoff || []).length === 0 ? (
+                <div className="si-empty">No scroll data yet.</div>
+              ) : (
+                <ul className="si-insight-list">
+                  {(claritySignals?.signals?.scroll_dropoff || []).slice(0, 8).map((item, idx) => (
+                    <li key={`scroll-${item.page}-${idx}`} className="si-insight-item">
+                      <span>{formatPathLabel(item.page)}</span>
+                      <span className="si-muted" title={`Total: ${item.total_sessions}`}>
+                        50%: {formatPercent(item.total_sessions ? item.reached_50 / item.total_sessions : 0)} •
+                        75%: {formatPercent(item.total_sessions ? item.reached_75 / item.total_sessions : 0)} •
+                        90%: {formatPercent(item.total_sessions ? item.reached_90 / item.total_sessions : 0)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           </div>
@@ -2008,6 +2305,116 @@ export default function SessionIntelligenceTab({ store }) {
           </div>
         )}
       </div>
+
+      {storyOpen ? (
+        <div className="si-drawer-backdrop" role="dialog" aria-modal="true" onClick={closeStory}>
+          <div className="si-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="si-drawer-header">
+              <div style={{ minWidth: 0 }}>
+                <div className="si-drawer-title">
+                  {storySession ? userLabel(storySession) : 'Session story'}
+                </div>
+                <div className="si-muted" style={{ marginTop: 2 }}>
+                  {libraryDay ? `Day ${libraryDay}` : '—'}
+                  {storySession?.device_type ? ` • ${normalizeDeviceLabel(storySession.device_type)}` : ''}
+                  {storySession?.country_code ? ` • ${countryNameFromCode(storySession.country_code)}` : ''}
+                  {storySession?.utm_source ? ` • ${normalizeTrafficSourceLabel(storySession.utm_source)}` : ''}
+                  {storySession?.utm_campaign ? ` • ${storySession.utm_campaign}` : ''}
+                </div>
+              </div>
+              <button className="si-button si-button-small" type="button" onClick={closeStory}>
+                Close
+              </button>
+            </div>
+
+            {storyError ? (
+              <div className="si-empty" style={{ color: '#b42318', marginTop: 10 }}>
+                {storyError}
+              </div>
+            ) : null}
+
+            {storyLoading ? (
+              <div className="si-empty" style={{ marginTop: 10 }}>
+                Loading events…
+              </div>
+            ) : null}
+
+            {!storyLoading && !storyError ? (
+              <>
+                <div className="si-story-metrics">
+                  {(() => {
+                    const counts = {
+                      rage: 0,
+                      dead: 0,
+                      errors: 0,
+                      invalid: 0,
+                      maxScroll: 0
+                    };
+                    (storyEvents || []).forEach((ev) => {
+                      const name = String(ev?.event_name || '').toLowerCase();
+                      if (name === 'rage_click') counts.rage += 1;
+                      if (name === 'dead_click') counts.dead += 1;
+                      if (name === 'js_error' || name === 'unhandled_rejection') counts.errors += 1;
+                      if (name === 'form_invalid') counts.invalid += 1;
+                      if (name === 'scroll_depth' || name === 'scroll_max') {
+                        const data = safeJsonParse(ev?.data_json) || {};
+                        const percent = Number(data.max_percent ?? data.percent);
+                        if (Number.isFinite(percent) && percent > counts.maxScroll) counts.maxScroll = percent;
+                      }
+                    });
+
+                    const items = [
+                      { label: 'Rage clicks', value: counts.rage },
+                      { label: 'Dead clicks', value: counts.dead },
+                      { label: 'Errors', value: counts.errors },
+                      { label: 'Invalid submits', value: counts.invalid },
+                      { label: 'Max scroll', value: counts.maxScroll ? `${Math.round(counts.maxScroll)}%` : '—' }
+                    ];
+
+                    return items.map((item) => (
+                      <div key={item.label} className="si-story-metric">
+                        <div className="si-story-metric-label">{item.label}</div>
+                        <div className="si-story-metric-value">{item.value}</div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+
+                <div className="si-story-events">
+                  <div className="si-card-title" style={{ marginBottom: 8 }}>
+                    <h3 style={{ fontSize: 13, margin: 0 }}>Event stream</h3>
+                    <span className="si-muted">{storyEvents.length ? `${storyEvents.length} events` : '—'}</span>
+                  </div>
+
+                  {storyEvents.length === 0 ? (
+                    <div className="si-empty">No events for this session on {libraryDay}.</div>
+                  ) : (
+                    <div className="si-story-list">
+                      {storyEvents.slice(-120).map((ev) => {
+                        const nameKey = String(ev?.event_name || '').toLowerCase();
+                        const isSignal = (
+                          nameKey === 'rage_click' ||
+                          nameKey === 'dead_click' ||
+                          nameKey === 'js_error' ||
+                          nameKey === 'unhandled_rejection' ||
+                          nameKey === 'form_invalid'
+                        );
+                        return (
+                          <div key={ev.id} className={`si-story-row ${isSignal ? 'si-story-row-signal' : ''}`}>
+                            <div className="si-story-time">{formatShort(ev.created_at || ev.event_ts)}</div>
+                            <div className="si-story-name">{normalizeEventLabel(ev.event_name)}</div>
+                            <div className="si-story-path" title={ev.page_path || ''}>{formatPathLabel(ev.page_path, ev.checkout_step)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

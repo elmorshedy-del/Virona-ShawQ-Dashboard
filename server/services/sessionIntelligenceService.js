@@ -2409,6 +2409,291 @@ export function getSessionIntelligenceFlowForDay(store, dateStr, { mode = 'all',
   };
 }
 
+export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mode = 'high_intent_no_purchase', limitSessions = 5000 } = {}) {
+  const db = getDb();
+  ensureRecentShopperNumbers(store);
+
+  const iso = requireIsoDay(dateStr);
+  if (!iso) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+
+  const scope = resolveSessionFlowMode(mode);
+  const range = dayRangeUtc(iso);
+  if (!range) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+
+  const sessions = getSessionIntelligenceSessionsForDay(store, iso, limitSessions);
+  const selectedSessions = scope === 'high_intent_no_purchase'
+    ? sessions.filter((s) => ((s.atc_events || 0) > 0 || (s.checkout_started_events || 0) > 0) && (s.purchase_events || 0) === 0)
+    : sessions;
+
+  const sessionMap = new Map(selectedSessions.map((s) => [s.session_id, s]));
+  const sessionIds = Array.from(sessionMap.keys()).filter(Boolean);
+
+  if (sessionIds.length === 0) {
+    return {
+      success: true,
+      data: {
+        store,
+        date: iso,
+        mode: scope,
+        totals: { sessions: 0 },
+        signals: {
+          rage_clicks: [],
+          dead_clicks: [],
+          js_errors: [],
+          form_invalid: [],
+          scroll_dropoff: []
+        }
+      }
+    };
+  }
+
+  const SIGNAL_EVENTS = new Set([
+    'rage_click',
+    'dead_click',
+    'js_error',
+    'unhandled_rejection',
+    'form_invalid',
+    'scroll_depth',
+    'scroll_max'
+  ]);
+
+  const rageCounts = new Map(); // key => { count, sessions:Set, page, targetKey, sample:[] }
+  const deadCounts = new Map();
+  const errorCounts = new Map(); // key => { count, sessions:Set, message, page, sample:[] }
+  const formCounts = new Map(); // key => { count, sessions:Set, field_type, field_name, sample:[] }
+  const scrollMaxBySessionPage = new Map(); // `${sessionId}|${page}` => maxPercent
+
+  const pageKey = (raw) => {
+    const p = safeString(raw).trim();
+    if (!p) return '/';
+    return p.split('?')[0].split('#')[0] || '/';
+  };
+
+  const addSample = (entry, sessionId) => {
+    if (!entry || !sessionId) return;
+    if (!entry.sample) entry.sample = [];
+    if (entry.sample.length >= 6) return;
+    if (entry.sample.includes(sessionId)) return;
+    entry.sample.push(sessionId);
+  };
+
+  const chunks = chunkArray(sessionIds, 450);
+  for (const chunk of chunks) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT
+        session_id,
+        lower(event_name) AS event_name,
+        page_path,
+        data_json
+      FROM si_events
+      WHERE store = ?
+        AND created_at >= ?
+        AND created_at < ?
+        AND session_id IN (${placeholders})
+        AND lower(event_name) IN (
+          'rage_click','dead_click','js_error','unhandled_rejection','form_invalid','scroll_depth','scroll_max'
+        )
+      ORDER BY created_at DESC
+      LIMIT 25000
+    `).all(store, range.start, range.end, ...chunk);
+
+    for (const row of rows) {
+      const sessionId = row.session_id;
+      const name = row.event_name;
+      if (!sessionId || !SIGNAL_EVENTS.has(name)) continue;
+
+      const page = pageKey(row.page_path);
+      const data = safeJsonParse(row.data_json) || {};
+
+      if (name === 'rage_click') {
+        const targetKey = safeString(data.target_key || data?.target?.key || '').trim() || 'unknown';
+        const key = `${page}||${targetKey}`;
+        const entry = rageCounts.get(key) || { page, target_key: targetKey, count: 0, sessions: new Set(), sample: [] };
+        entry.count += 1;
+        entry.sessions.add(sessionId);
+        addSample(entry, sessionId);
+        rageCounts.set(key, entry);
+        continue;
+      }
+
+      if (name === 'dead_click') {
+        const targetKey = safeString(data.target_key || data?.target?.key || '').trim() || 'unknown';
+        const key = `${page}||${targetKey}`;
+        const entry = deadCounts.get(key) || { page, target_key: targetKey, count: 0, sessions: new Set(), sample: [] };
+        entry.count += 1;
+        entry.sessions.add(sessionId);
+        addSample(entry, sessionId);
+        deadCounts.set(key, entry);
+        continue;
+      }
+
+      if (name === 'js_error' || name === 'unhandled_rejection') {
+        const message = safeString(data.message || data.reason || '').trim() || 'Unknown error';
+        const key = `${page}||${message.slice(0, 180)}`;
+        const entry = errorCounts.get(key) || { page, message: message.slice(0, 220), count: 0, sessions: new Set(), sample: [] };
+        entry.count += 1;
+        entry.sessions.add(sessionId);
+        addSample(entry, sessionId);
+        errorCounts.set(key, entry);
+        continue;
+      }
+
+      if (name === 'form_invalid') {
+        const fieldType = safeString(data.field_type || '').trim() || null;
+        const fieldName = safeString(data.field_name || '').trim() || null;
+        const key = `${page}||${fieldType || ''}||${fieldName || ''}`;
+        const entry = formCounts.get(key) || { page, field_type: fieldType, field_name: fieldName, count: 0, sessions: new Set(), sample: [] };
+        entry.count += 1;
+        entry.sessions.add(sessionId);
+        addSample(entry, sessionId);
+        formCounts.set(key, entry);
+        continue;
+      }
+
+      if (name === 'scroll_depth' || name === 'scroll_max') {
+        const percent = Number(data.max_percent ?? data.percent);
+        const maxPercent = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
+        if (maxPercent == null) continue;
+        const key = `${sessionId}||${page}`;
+        const existing = scrollMaxBySessionPage.get(key) || 0;
+        if (maxPercent > existing) scrollMaxBySessionPage.set(key, maxPercent);
+      }
+    }
+  }
+
+  const asTopList = (map, toItem, limit = 10) => (
+    Array.from(map.values())
+      .map(toItem)
+      .sort((a, b) => (b.count || 0) - (a.count || 0))
+      .slice(0, limit)
+  );
+
+  const sessionStub = (sessionId) => {
+    const s = sessionMap.get(sessionId) || null;
+    if (!s) return { session_id: sessionId };
+    return {
+      session_id: s.session_id,
+      codename: s.codename,
+      shopper_number: s.shopper_number || null,
+      last_seen: s.last_seen || null,
+      device_type: s.device_type || null,
+      country_code: s.country_code || null,
+      utm_source: s.utm_source || null,
+      utm_campaign: s.utm_campaign || null,
+      atc_events: s.atc_events || 0,
+      checkout_started_events: s.checkout_started_events || 0,
+      purchase_events: s.purchase_events || 0,
+      last_checkout_step: s.last_checkout_step || null
+    };
+  };
+
+  const rage_clicks = asTopList(
+    rageCounts,
+    (entry) => ({
+      page: entry.page,
+      target_key: entry.target_key,
+      count: entry.count,
+      sessions: entry.sessions.size,
+      sample_sessions: (entry.sample || []).map(sessionStub)
+    })
+  );
+
+  const dead_clicks = asTopList(
+    deadCounts,
+    (entry) => ({
+      page: entry.page,
+      target_key: entry.target_key,
+      count: entry.count,
+      sessions: entry.sessions.size,
+      sample_sessions: (entry.sample || []).map(sessionStub)
+    })
+  );
+
+  const js_errors = asTopList(
+    errorCounts,
+    (entry) => ({
+      page: entry.page,
+      message: entry.message,
+      count: entry.count,
+      sessions: entry.sessions.size,
+      sample_sessions: (entry.sample || []).map(sessionStub)
+    })
+  );
+
+  const form_invalid = asTopList(
+    formCounts,
+    (entry) => ({
+      page: entry.page,
+      field_type: entry.field_type,
+      field_name: entry.field_name,
+      count: entry.count,
+      sessions: entry.sessions.size,
+      sample_sessions: (entry.sample || []).map(sessionStub)
+    })
+  );
+
+  // Scroll drop-off buckets by page (how many sessions never reached the bucket).
+  const scrollBuckets = [25, 50, 75, 90];
+  const scrollByPage = new Map(); // page => { totalSessions:Set, maxBySession:Map(sessionId=>max) }
+  for (const key of scrollMaxBySessionPage.keys()) {
+    const parts = key.split('||');
+    if (parts.length < 2) continue;
+    const sessionId = parts[0];
+    const page = parts.slice(1).join('||');
+    if (!sessionId || !page) continue;
+    let entry = scrollByPage.get(page);
+    if (!entry) {
+      entry = { maxBySession: new Map() };
+      scrollByPage.set(page, entry);
+    }
+    entry.maxBySession.set(sessionId, scrollMaxBySessionPage.get(key) || 0);
+  }
+
+  const scroll_dropoff = Array.from(scrollByPage.entries())
+    .map(([page, entry]) => {
+      const maxValues = Array.from(entry.maxBySession.values());
+      if (maxValues.length < 8) return null; // keep signal high
+      const total = maxValues.length;
+      const reached = {};
+      scrollBuckets.forEach((b) => {
+        reached[b] = maxValues.filter((v) => v >= b).length;
+      });
+      return {
+        page,
+        total_sessions: total,
+        reached_25: reached[25],
+        reached_50: reached[50],
+        reached_75: reached[75],
+        reached_90: reached[90]
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (b.total_sessions || 0) - (a.total_sessions || 0))
+    .slice(0, 10);
+
+  return {
+    success: true,
+    data: {
+      store,
+      date: iso,
+      mode: scope,
+      totals: { sessions: selectedSessions.length },
+      signals: {
+        rage_clicks,
+        dead_clicks,
+        js_errors,
+        form_invalid,
+        scroll_dropoff
+      }
+    }
+  };
+}
+
 export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId = null, limit = 800 } = {}) {
   const db = getDb();
   ensureRecentShopperNumbers(store);
@@ -2442,6 +2727,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
         wbraid,
         gbraid,
         irclickid,
+        data_json,
         created_at
       FROM si_events
       WHERE store = ?
