@@ -402,7 +402,13 @@ export default function CreativePreview({ store }) {
                 >
                   <div className="aspect-video bg-gray-50">
                     {ad.thumbnail ? (
-                      <img src={ad.thumbnail} alt="" className="w-full h-full object-cover" />
+                      <img
+                        src={ad.thumbnail}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover"
+                      />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-xs text-gray-400">
                         No thumbnail
@@ -469,6 +475,7 @@ export default function CreativePreview({ store }) {
                       ref={imageRef}
                       src={displayThumbnail}
                       alt="Ad thumbnail"
+                      decoding="async"
                       onLoad={handleImageLoad}
                       className="w-full h-auto max-h-[80vh] object-contain rounded-xl"
                     />
@@ -526,4 +533,3 @@ export default function CreativePreview({ store }) {
     </div>
   );
 }
-
