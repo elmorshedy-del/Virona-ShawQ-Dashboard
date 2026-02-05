@@ -1218,11 +1218,16 @@ router.get('/video/download', async (req, res) => {
 	
 	    res.json({
 	      success: true,
-	      overlay_ai: {
+      overlay_ai: {
         configured: overlayAiConfigured,
         url: process.env.VIDEO_OVERLAY_AI_URL || null,
-        health: overlayAiHealth
-	      },
+        health: overlayAiHealth,
+        timeouts_ms: {
+          default: Number(process.env.VIDEO_OVERLAY_AI_TIMEOUT_MS || 120000),
+          health: Number(process.env.VIDEO_OVERLAY_AI_HEALTH_TIMEOUT_MS || 10000),
+          detect: Number(process.env.VIDEO_OVERLAY_AI_DETECT_TIMEOUT_MS || Number(process.env.VIDEO_OVERLAY_AI_TIMEOUT_MS || 120000))
+        }
+      },
 	      gemini: {
 	        configured: Boolean(process.env.GEMINI_API_KEY),
 	        model: resolvedModel,

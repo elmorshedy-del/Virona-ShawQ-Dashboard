@@ -1,7 +1,9 @@
 import fetch from 'node-fetch';
 
 const VIDEO_OVERLAY_AI_URL = (process.env.VIDEO_OVERLAY_AI_URL || '').trim().replace(/\/+$/, '');
-const VIDEO_OVERLAY_AI_TIMEOUT_MS = Number(process.env.VIDEO_OVERLAY_AI_TIMEOUT_MS || 30000);
+const VIDEO_OVERLAY_AI_TIMEOUT_MS = Number(process.env.VIDEO_OVERLAY_AI_TIMEOUT_MS || 120000);
+const VIDEO_OVERLAY_AI_HEALTH_TIMEOUT_MS = Number(process.env.VIDEO_OVERLAY_AI_HEALTH_TIMEOUT_MS || 10000);
+const VIDEO_OVERLAY_AI_DETECT_TIMEOUT_MS = Number(process.env.VIDEO_OVERLAY_AI_DETECT_TIMEOUT_MS || VIDEO_OVERLAY_AI_TIMEOUT_MS);
 
 export function isVideoOverlayAiConfigured() {
   return Boolean(VIDEO_OVERLAY_AI_URL);
@@ -12,8 +14,9 @@ export function getVideoOverlayAiBaseUrl() {
 }
 
 async function fetchJson(url, options = {}) {
+  const timeoutMs = Number.isFinite(Number(options?.timeoutMs)) ? Number(options.timeoutMs) : VIDEO_OVERLAY_AI_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), VIDEO_OVERLAY_AI_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const res = await fetch(url, {
@@ -49,7 +52,7 @@ async function fetchJson(url, options = {}) {
 export async function getVideoOverlayAiHealth() {
   if (!isVideoOverlayAiConfigured()) return null;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), VIDEO_OVERLAY_AI_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), VIDEO_OVERLAY_AI_HEALTH_TIMEOUT_MS);
 
   try {
     const res = await fetch(`${VIDEO_OVERLAY_AI_URL}/health`, {
@@ -79,6 +82,7 @@ export async function detectVideoOverlays({ imageBase64 } = {}) {
   return fetchJson(`${VIDEO_OVERLAY_AI_URL}/detect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image: imageBase64 })
+    body: JSON.stringify({ image: imageBase64 }),
+    timeoutMs: VIDEO_OVERLAY_AI_DETECT_TIMEOUT_MS
   });
 }
