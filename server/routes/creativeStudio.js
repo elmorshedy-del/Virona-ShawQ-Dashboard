@@ -20,6 +20,15 @@ import * as apifyService from '../services/apifyService.js';
 import { isBrandCacheValid, getBrandCacheExpiry } from '../db/competitorSpyMigration.js';
 import { getOrCreateStoreProfile } from '../services/storeProfileService.js';
 import { detectVideoOverlays, getVideoOverlayAiHealth, isVideoOverlayAiConfigured } from '../services/videoOverlayAiClient.js';
+import sharp from 'sharp';
+import {
+  eraseLama,
+  getPhotoMagicAiHealth,
+  isPhotoMagicAiConfigured,
+  refineBgSam2,
+  removeBgRmbg2
+} from '../services/photoMagicAiClient.js';
+import { eraseSdxl, getPhotoMagicHqHealth, isPhotoMagicHqConfigured } from '../services/photoMagicHqClient.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +38,42 @@ const router = express.Router();
 const db = getDb();
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+const PHOTO_MAGIC_MAX_UPLOAD_BYTES = (() => {
+  const mb = Number(process.env.PHOTO_MAGIC_MAX_UPLOAD_MB || 25);
+  const resolved = Number.isFinite(mb) && mb > 0 ? Math.round(mb * 1024 * 1024) : 25 * 1024 * 1024;
+  return Math.min(Math.max(1 * 1024 * 1024, resolved), 200 * 1024 * 1024);
+})();
+
+const PHOTO_MAGIC_MAX_IMAGE_PIXELS = (() => {
+  const raw = Number(process.env.PHOTO_MAGIC_MAX_IMAGE_PIXELS || 60000000);
+  const resolved = Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 60000000;
+  return Math.min(Math.max(1000000, resolved), 200000000);
+})();
+
+const photoMagicUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PHOTO_MAGIC_MAX_UPLOAD_BYTES }
+});
+
+function photoMagicSingle(fieldName) {
+  const middleware = photoMagicUpload.single(fieldName);
+  return (req, res, next) => {
+    middleware(req, res, (err) => {
+      if (!err) return next();
+      const isTooLarge = err?.code === 'LIMIT_FILE_SIZE';
+      const status = isTooLarge ? 413 : 400;
+      return res.status(status).json({
+        success: false,
+        error: isTooLarge
+          ? `File too large (max ${Math.round(PHOTO_MAGIC_MAX_UPLOAD_BYTES / (1024 * 1024))}MB)`
+          : (err?.message || 'Upload error'),
+        code: err?.code || 'UPLOAD_ERROR',
+        limit_bytes: PHOTO_MAGIC_MAX_UPLOAD_BYTES
+      });
+    });
+  };
+}
 
 // ============================================================================
 // VIDEO OVERLAY EDITOR (VideoOverlayAI) - temp storage + helpers
@@ -51,6 +96,62 @@ function getExportedVideoPath(exportId) {
   return path.join(VIDEO_OVERLAY_OUTPUTS_DIR, `${exportId}.mp4`);
 }
 
+// ============================================================================
+// PHOTO MAGIC (background removal + magic eraser) - temp storage + helpers
+// ============================================================================
+
+const PHOTO_MAGIC_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'photo-magic');
+const PHOTO_MAGIC_DEFAULT_STORE = 'vironax';
+
+function toSafePathSegment(value, { fallback = 'unknown', maxLen = 64 } = {}) {
+  const raw = String(value || '').trim();
+  const normalized = raw.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, maxLen);
+  if (!normalized || normalized === '.' || normalized === '..') return fallback;
+  return normalized;
+}
+
+function withStoreParam(relativeUrl, store) {
+  const resolvedStore = String(store || PHOTO_MAGIC_DEFAULT_STORE);
+  const sep = relativeUrl.includes('?') ? '&' : '?';
+  return `${relativeUrl}${sep}store=${encodeURIComponent(resolvedStore)}`;
+}
+
+function sanitizeDownloadFilename(filename, fallback) {
+  const raw = String(filename || '').trim();
+  const base = path.basename(raw).replace(/[\r\n"]/g, '').trim();
+  const safe = base.replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 120);
+  return safe || fallback;
+}
+
+function getPhotoMagicStoreDir(store) {
+  return path.join(PHOTO_MAGIC_TMP_DIR, toSafePathSegment(store || PHOTO_MAGIC_DEFAULT_STORE));
+}
+
+function getPhotoMagicUploadsDir(store) {
+  return path.join(getPhotoMagicStoreDir(store), 'uploads');
+}
+
+function getPhotoMagicOutputsDir(store) {
+  return path.join(getPhotoMagicStoreDir(store), 'outputs');
+}
+
+async function ensurePhotoMagicDirs(store) {
+  await fs.promises.mkdir(getPhotoMagicUploadsDir(store), { recursive: true });
+  await fs.promises.mkdir(getPhotoMagicOutputsDir(store), { recursive: true });
+}
+
+function getUploadedPhotoPath(store, imageId) {
+  return path.join(getPhotoMagicUploadsDir(store), imageId);
+}
+
+function getPhotoMagicOutputPath(store, outputId, ext = 'png') {
+  return path.join(getPhotoMagicOutputsDir(store), `${outputId}.${ext}`);
+}
+
+function isSafeTmpId(id) {
+  return /^[a-f0-9-]{8,}$/i.test(String(id || '').trim());
+}
+
 function safeParseNumber(value, fallback = null) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -59,6 +160,14 @@ function safeParseNumber(value, fallback = null) {
 function clampNumber(value, min, max) {
   const n = safeParseNumber(value, min);
   return Math.min(max, Math.max(min, n));
+}
+
+function parseBool(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (text === 'true' || text === '1' || text === 'yes') return true;
+  if (text === 'false' || text === '0' || text === 'no') return false;
+  return fallback;
 }
 
 function normalizeOverlayKey(text) {
@@ -1855,7 +1964,7 @@ router.post('/video-overlay/export', async (req, res) => {
 router.get('/video-overlay/download', async (req, res) => {
   try {
     const outputId = String(req.query?.output_id || '').trim();
-    const filename = String(req.query?.filename || 'edited_video.mp4');
+    const filename = sanitizeDownloadFilename(req.query?.filename, 'edited_video.mp4');
 
     if (!outputId) {
       return res.status(400).json({ success: false, error: 'output_id is required' });
@@ -1871,6 +1980,394 @@ router.get('/video-overlay/download', async (req, res) => {
     fs.createReadStream(outPath).pipe(res);
   } catch (error) {
     console.error('Video overlay download error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// PHOTO MAGIC (RMBG2 + SAM2 + LaMa + optional SDXL HQ)
+// ============================================================================
+
+router.get('/photo-magic/health', async (req, res) => {
+  try {
+    const aiConfigured = isPhotoMagicAiConfigured();
+    const aiHealth = aiConfigured
+      ? await getPhotoMagicAiHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+
+    const hqConfigured = isPhotoMagicHqConfigured();
+    const hqHealth = hqConfigured
+      ? await getPhotoMagicHqHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+
+    res.json({
+      success: true,
+      photo_magic: {
+        uploads: {
+          max_upload_bytes: PHOTO_MAGIC_MAX_UPLOAD_BYTES,
+          max_image_pixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS
+        },
+        ai: {
+          configured: aiConfigured,
+          url: process.env.PHOTO_MAGIC_AI_URL || null,
+          health: aiHealth,
+          timeouts_ms: {
+            default: Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000),
+            health: Number(process.env.PHOTO_MAGIC_AI_HEALTH_TIMEOUT_MS || 10000)
+          }
+        },
+        hq: {
+          configured: hqConfigured,
+          url: process.env.PHOTO_MAGIC_HQ_AI_URL || null,
+          health: hqHealth,
+          timeouts_ms: {
+            default: Number(process.env.PHOTO_MAGIC_HQ_TIMEOUT_MS || 600000),
+            health: Number(process.env.PHOTO_MAGIC_HQ_HEALTH_TIMEOUT_MS || 10000)
+          }
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/photo-magic/upload', photoMagicSingle('image'), async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No image provided' });
+    }
+
+    const mime = String(req.file.mimetype || '').toLowerCase();
+    if (mime && !mime.startsWith('image/')) {
+      return res.status(415).json({ success: false, error: 'Unsupported file type (expected image/*)' });
+    }
+
+    let meta = null;
+    try {
+      meta = await sharp(req.file.buffer).metadata();
+    } catch {
+      meta = null;
+    }
+
+    const width = Number(meta?.width || 0);
+    const height = Number(meta?.height || 0);
+    if (!width || !height) {
+      return res.status(400).json({ success: false, error: 'Invalid image (could not read metadata)' });
+    }
+
+    const pixels = width * height;
+    if (Number.isFinite(pixels) && pixels > PHOTO_MAGIC_MAX_IMAGE_PIXELS) {
+      return res.status(413).json({
+        success: false,
+        error: `Image too large (${width}x${height}). Max pixels is ${PHOTO_MAGIC_MAX_IMAGE_PIXELS}.`
+      });
+    }
+
+    const imageId = crypto.randomUUID();
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    await fs.promises.writeFile(imagePath, req.file.buffer);
+
+    return res.json({
+      success: true,
+      image_id: imageId,
+      filename: req.file.originalname,
+      size: req.file.size,
+      mime: req.file.mimetype,
+      width,
+      height
+    });
+  } catch (error) {
+    console.error('Photo magic upload error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/photo-magic/remove-bg', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!isPhotoMagicAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    const engine = String(req.body?.engine || 'rmbg2').trim();
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.maxSide ?? 2048, 256, 8192);
+
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+    if (engine !== 'rmbg2') {
+      return res.status(400).json({ success: false, error: 'Unsupported engine (expected rmbg2)' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const buf = await fs.promises.readFile(imagePath);
+    const imageBase64 = buf.toString('base64');
+
+    const result = await removeBgRmbg2({ imageBase64, maxSide });
+
+    const cutoutId = crypto.randomUUID();
+    const maskId = crypto.randomUUID();
+
+    const cutoutPath = getPhotoMagicOutputPath(store, cutoutId, 'png');
+    const maskPath = getPhotoMagicOutputPath(store, maskId, 'png');
+
+    await fs.promises.writeFile(cutoutPath, Buffer.from(String(result?.cutout_png || ''), 'base64'));
+    await fs.promises.writeFile(maskPath, Buffer.from(String(result?.mask_png || ''), 'base64'));
+
+    return res.json({
+      success: true,
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      cutout: {
+        output_id: cutoutId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(cutoutId)}&filename=${encodeURIComponent('cutout.png')}`,
+          store
+        )
+      },
+      mask: {
+        output_id: maskId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(maskId)}&filename=${encodeURIComponent('mask.png')}`,
+          store
+        )
+      }
+    });
+  } catch (error) {
+    console.error('Photo magic remove-bg error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/remove-bg/refine', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!isPhotoMagicAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    const points = Array.isArray(req.body?.points) ? req.body.points : [];
+    const boxXyxy = Array.isArray(req.body?.box_xyxy) ? req.body.box_xyxy : null;
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.maxSide ?? 2048, 256, 8192);
+    const maskDilatePx = clampNumber(req.body?.mask_dilate_px ?? req.body?.maskDilatePx ?? 0, 0, 64);
+    const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 0, 0, 64);
+
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+    if (!points.length) {
+      return res.status(400).json({ success: false, error: 'points is required (at least 1 point)' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const buf = await fs.promises.readFile(imagePath);
+    const imageBase64 = buf.toString('base64');
+
+    const result = await refineBgSam2({
+      imageBase64,
+      points,
+      boxXyxy,
+      maxSide,
+      maskDilatePx,
+      maskFeatherPx
+    });
+
+    const cutoutId = crypto.randomUUID();
+    const maskId = crypto.randomUUID();
+
+    const cutoutPath = getPhotoMagicOutputPath(store, cutoutId, 'png');
+    const maskPath = getPhotoMagicOutputPath(store, maskId, 'png');
+
+    await fs.promises.writeFile(cutoutPath, Buffer.from(String(result?.cutout_png || ''), 'base64'));
+    await fs.promises.writeFile(maskPath, Buffer.from(String(result?.mask_png || ''), 'base64'));
+
+    return res.json({
+      success: true,
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      cutout: {
+        output_id: cutoutId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(cutoutId)}&filename=${encodeURIComponent('cutout.png')}`,
+          store
+        )
+      },
+      mask: {
+        output_id: maskId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(maskId)}&filename=${encodeURIComponent('mask.png')}`,
+          store
+        )
+      }
+    });
+  } catch (error) {
+    console.error('Photo magic refine error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/erase', photoMagicSingle('mask'), async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    const imageId = String(req.body?.image_id || '').trim();
+    const maskBase64 = req.file?.buffer?.length
+      ? req.file.buffer.toString('base64')
+      : (req.body?.mask_png_base64 || req.body?.mask_png || req.body?.mask || '');
+    const quality = String(req.body?.quality || 'standard').trim().toLowerCase();
+
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+    if (req.file) {
+      const maskMime = String(req.file.mimetype || '').toLowerCase();
+      if (maskMime && !maskMime.startsWith('image/')) {
+        return res.status(415).json({ success: false, error: 'Unsupported mask file type (expected image/*)' });
+      }
+    }
+    if (!maskBase64) {
+      return res.status(400).json({ success: false, error: 'mask is required' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const buf = await fs.promises.readFile(imagePath);
+    const imageBase64 = buf.toString('base64');
+
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.maxSide ?? 2048, 256, 8192);
+    const maskDilatePx = clampNumber(req.body?.mask_dilate_px ?? req.body?.maskDilatePx ?? 8, 0, 64);
+    const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 8, 0, 64);
+    const cropToMask = parseBool(req.body?.crop_to_mask ?? req.body?.cropToMask, true);
+    const cropMarginPx = clampNumber(req.body?.crop_margin_px ?? req.body?.cropMarginPx ?? 128, 0, 2048);
+
+    let result;
+    if (quality === 'hq') {
+      if (!isPhotoMagicHqConfigured()) {
+        return res.status(503).json({
+          success: false,
+          error: 'PHOTO_MAGIC_HQ_AI_URL is not configured. Deploy the HQ service and set PHOTO_MAGIC_HQ_AI_URL.'
+        });
+      }
+
+      const health = await getPhotoMagicHqHealth().catch(() => null);
+      if (!health?.ok) {
+        return res.status(503).json({
+          success: false,
+          error: 'Photo Magic HQ service is not ready (check /photo-magic/health)',
+          details: health
+        });
+      }
+
+      const steps = clampNumber(req.body?.num_inference_steps ?? req.body?.numInferenceSteps ?? 20, 5, 80);
+      const guidance = clampNumber(req.body?.guidance_scale ?? req.body?.guidanceScale ?? 8.0, 0.0, 20.0);
+      const strength = clampNumber(req.body?.strength ?? 0.99, 0.0, 1.0);
+      const seed = clampNumber(req.body?.seed ?? 0, 0, Number.MAX_SAFE_INTEGER);
+
+      result = await eraseSdxl({
+        imageBase64,
+        maskBase64,
+        numInferenceSteps: steps,
+        guidanceScale: guidance,
+        strength,
+        seed,
+        maskDilatePx,
+        maskFeatherPx,
+        cropToMask,
+        cropMarginPx
+      });
+    } else {
+      if (!isPhotoMagicAiConfigured()) {
+        return res.status(503).json({
+          success: false,
+          error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+        });
+      }
+
+      result = await eraseLama({
+        imageBase64,
+        maskBase64,
+        maxSide,
+        maskDilatePx,
+        maskFeatherPx,
+        cropToMask,
+        cropMarginPx
+      });
+    }
+
+    const outId = crypto.randomUUID();
+    const outPath = getPhotoMagicOutputPath(store, outId, 'png');
+    await fs.promises.writeFile(outPath, Buffer.from(String(result?.result_png || ''), 'base64'));
+
+    return res.json({
+      success: true,
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      output_id: outId,
+      url: withStoreParam(
+        `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(outId)}&filename=${encodeURIComponent('result.png')}`,
+        store
+      )
+    });
+  } catch (error) {
+    console.error('Photo magic erase error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.get('/photo-magic/download', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    const outputId = String(req.query?.output_id || '').trim();
+    const filename = sanitizeDownloadFilename(req.query?.filename, 'result.png');
+
+    if (!outputId) {
+      return res.status(400).json({ success: false, error: 'output_id is required' });
+    }
+    if (!isSafeTmpId(outputId)) {
+      return res.status(400).json({ success: false, error: 'Invalid output_id' });
+    }
+
+    const outPath = getPhotoMagicOutputPath(store, outputId, 'png');
+    if (!fs.existsSync(outPath)) {
+      return res.status(404).json({ success: false, error: 'Output not found (run again)' });
+    }
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    fs.createReadStream(outPath).pipe(res);
+  } catch (error) {
+    console.error('Photo magic download error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
