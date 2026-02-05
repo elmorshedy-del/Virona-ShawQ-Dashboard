@@ -1730,14 +1730,15 @@ export default function App() {
           <NeoMetaTab />
         )}
 
-        {activeTab === 6 && (
-          <CustomerInsightsTab
-            data={customerInsights}
-            loading={customerInsightsLoading}
-            formatCurrency={formatCurrency}
-            store={store}
-          />
-        )}
+	        {activeTab === 6 && (
+	          <CustomerInsightsTab
+	            data={customerInsights}
+	            loading={customerInsightsLoading}
+	            formatCurrency={formatCurrency}
+	            store={store}
+	            dateRange={dateRange}
+	          />
+	        )}
 
         {activeTab === 7 && efficiency && (
           <EfficiencyTab

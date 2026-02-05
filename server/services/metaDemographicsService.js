@@ -7,6 +7,9 @@ const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 
 const MIN_CLICKS = 30;
 const Z_THRESHOLD = 2.0;
+const DEFAULT_DAYS = 90;
+const MAX_DAYS = 3650;
+const LEAK_MIN_ATC = 20;
 
 const PURCHASE_ACTION_TYPES = [
   'omni_purchase',
@@ -71,6 +74,48 @@ function normalizeAge(value) {
   const raw = String(value || '').trim();
   if (!raw) return 'unknown';
   return raw;
+}
+
+function isIsoDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function diffDaysInclusive(startDate, endDate) {
+  if (!isIsoDate(startDate) || !isIsoDate(endDate)) return null;
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const diffMs = end.getTime() - start.getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return null;
+  return Math.max(1, Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1);
+}
+
+function resolveRange({ days, startDate, endDate, yesterday } = {}) {
+  const today = formatDateAsGmt3(new Date());
+
+  if (yesterday === true || yesterday === '1' || yesterday === 1) {
+    const y = formatDateAsGmt3(new Date(Date.now() - 24 * 60 * 60 * 1000));
+    return { startDate: y, endDate: y, days: 1, mode: 'yesterday' };
+  }
+
+  const hasCustom = isIsoDate(startDate) && isIsoDate(endDate);
+  if (hasCustom) {
+    if (startDate > endDate) {
+      throw new Error('startDate must be <= endDate');
+    }
+    return {
+      startDate,
+      endDate,
+      days: diffDaysInclusive(startDate, endDate) || null,
+      mode: 'custom'
+    };
+  }
+
+  const safeDays = Number.isFinite(Number(days))
+    ? Math.max(1, Math.min(MAX_DAYS, Number(days)))
+    : DEFAULT_DAYS;
+
+  const computedStart = formatDateAsGmt3(new Date(Date.now() - (safeDays - 1) * 24 * 60 * 60 * 1000));
+  return { startDate: computedStart, endDate: today, days: safeDays, mode: 'days' };
 }
 
 function getStoreConfig(store) {
@@ -293,13 +338,17 @@ function buildInsights(rows) {
 
       const direction = z > 0 ? 'above' : 'below';
       const impact = z > 0 ? 'High' : 'Low';
+      const type = z > 0 ? 'opportunity' : 'leak';
       const label = formatSegmentLabel(row);
+      const metricValue = formatPercent(row[metric.key]);
 
       insights.push({
         id: `${row.segmentType}-${row.key}-${metric.key}`,
         title: `${label} is ${direction} average on ${metric.label}`,
         detail: `${label} has a ${metric.label} of ${formatPercent(row[metric.key])} (${Math.abs(z).toFixed(1)}σ ${direction} mean) with ${row.clicks} clicks and ${Math.round(row.spend)} spend.`,
         impact,
+        type,
+        text: `${label} is ${direction} average on ${metric.label} (${metricValue}; ${Math.abs(z).toFixed(1)}σ).`,
         metric: metric.key,
         zScore: z,
         segmentType: row.segmentType,
@@ -314,6 +363,150 @@ function buildInsights(rows) {
     .slice(0, 12);
 }
 
+function buildKeyInsights({ ageGenderSegments, countryGenderSegments, actionsAvailable, countryActionsAvailable }) {
+  if (!actionsAvailable) {
+    return [
+      {
+        type: 'waste',
+        text: 'Meta did not return conversion actions for this breakdown, so demographic conversion insights are limited. Try widening the date window.'
+      }
+    ];
+  }
+
+  const eligibleAge = (ageGenderSegments || []).filter((row) => row?.eligible);
+  const insights = [];
+
+  const formatPct = (value, digits = 1) => `${(value * 100).toFixed(digits)}%`;
+  const genderShort = (gender) => (gender === 'female' ? 'F' : gender === 'male' ? 'M' : 'U');
+
+  // 1) Gender gap
+  const genderAgg = new Map();
+  eligibleAge.forEach((row) => {
+    const gender = row.gender;
+    if (gender !== 'female' && gender !== 'male') return;
+    if (!genderAgg.has(gender)) {
+      genderAgg.set(gender, { clicks: 0, atc: 0, purchases: 0 });
+    }
+    const acc = genderAgg.get(gender);
+    acc.clicks += row.clicks || 0;
+    acc.atc += row.atc || 0;
+    acc.purchases += row.purchases || 0;
+  });
+
+  const female = genderAgg.get('female');
+  const male = genderAgg.get('male');
+  if (female?.clicks >= MIN_CLICKS && male?.clicks >= MIN_CLICKS) {
+    const femaleConv = female.purchases / Math.max(1, female.clicks);
+    const maleConv = male.purchases / Math.max(1, male.clicks);
+    const femaleAtc = female.atc / Math.max(1, female.clicks);
+    const maleAtc = male.atc / Math.max(1, male.clicks);
+
+    const womenLead = femaleConv >= maleConv;
+    const leadLabel = womenLead ? 'Women' : 'Men';
+    const lagLabel = womenLead ? 'Men' : 'Women';
+    const leadConv = womenLead ? femaleConv : maleConv;
+    const lagConv = womenLead ? maleConv : femaleConv;
+    const leadAtc = womenLead ? femaleAtc : maleAtc;
+    const lagAtc = womenLead ? maleAtc : femaleAtc;
+
+    const atcRatio = lagAtc > 0 ? (leadAtc / lagAtc) : null;
+
+    insights.push({
+      type: 'gender',
+      text: `${leadLabel} convert at ${formatPct(leadConv)} vs ${lagLabel} ${formatPct(lagConv)} — ${atcRatio ? `${atcRatio.toFixed(1)}x` : '—'} better ATC rate`
+    });
+  }
+
+  // 2) Worst overspend (high spend share + low purchase rate)
+  const spendCandidates = eligibleAge
+    .filter((row) => Number.isFinite(row.spendShare) && Number.isFinite(row.purchaseRate))
+    .sort((a, b) => (b.spendShare || 0) - (a.spendShare || 0))
+    .slice(0, 10);
+
+  if (spendCandidates.length) {
+    const worst = [...spendCandidates].sort((a, b) => {
+      const aRate = Number.isFinite(a.purchaseRate) ? a.purchaseRate : 1;
+      const bRate = Number.isFinite(b.purchaseRate) ? b.purchaseRate : 1;
+      if (aRate !== bRate) return aRate - bRate;
+      return (b.spendShare || 0) - (a.spendShare || 0);
+    })[0];
+
+    if (worst) {
+      insights.push({
+        type: 'waste',
+        text: `${genderShort(worst.gender)} ${worst.age || 'Unknown'} gets ${Math.round((worst.spendShare || 0) * 100)}% of budget but converts at only ${formatPct(worst.purchaseRate)} — worst overspend`
+      });
+    }
+  }
+
+  // 3) Best age sweet spot (click→purchase)
+  const ageAgg = new Map();
+  eligibleAge.forEach((row) => {
+    const age = row.age || 'unknown';
+    if (!ageAgg.has(age)) ageAgg.set(age, { clicks: 0, purchases: 0 });
+    const acc = ageAgg.get(age);
+    acc.clicks += row.clicks || 0;
+    acc.purchases += row.purchases || 0;
+  });
+
+  const bestAge = [...ageAgg.entries()]
+    .map(([age, agg]) => ({ age, clicks: agg.clicks, purchases: agg.purchases, rate: agg.clicks > 0 ? agg.purchases / agg.clicks : null }))
+    .filter((row) => row.clicks >= MIN_CLICKS && Number.isFinite(row.rate))
+    .sort((a, b) => (b.rate || 0) - (a.rate || 0))[0];
+
+  if (bestAge) {
+    insights.push({
+      type: 'sweetspot',
+      text: `Age ${bestAge.age} has best click→purchase at ${formatPct(bestAge.rate)}`
+    });
+  }
+
+  // 4) Funnel leak (ATC → checkout)
+  const leakCandidate = eligibleAge
+    .filter((row) => Number.isFinite(row.atc) && Number.isFinite(row.checkout) && row.atc >= LEAK_MIN_ATC)
+    .map((row) => ({
+      ...row,
+      leak: row.atc > 0 ? 1 - (row.checkout / row.atc) : null
+    }))
+    .filter((row) => Number.isFinite(row.leak))
+    .sort((a, b) => (b.leak || 0) - (a.leak || 0))[0];
+
+  if (leakCandidate) {
+    insights.push({
+      type: 'leak',
+      text: `${genderShort(leakCandidate.gender)} ${leakCandidate.age || 'Unknown'} loses ${Math.round(leakCandidate.leak * 100)}% between ATC and checkout — potential trust issue`
+    });
+  }
+
+  // 5) Country standout (optional)
+  if (countryActionsAvailable) {
+    const countryAgg = new Map();
+    (countryGenderSegments || []).forEach((row) => {
+      if (!row?.eligible) return;
+      const key = row.country || 'ALL';
+      if (!key || key === 'ALL' || key.toLowerCase() === 'unknown') return;
+      if (!countryAgg.has(key)) countryAgg.set(key, { clicks: 0, purchases: 0 });
+      const acc = countryAgg.get(key);
+      acc.clicks += row.clicks || 0;
+      acc.purchases += row.purchases || 0;
+    });
+
+    const bestCountry = [...countryAgg.entries()]
+      .map(([country, agg]) => ({ country, clicks: agg.clicks, purchases: agg.purchases, rate: agg.clicks > 0 ? agg.purchases / agg.clicks : null }))
+      .filter((row) => row.clicks >= MIN_CLICKS && Number.isFinite(row.rate))
+      .sort((a, b) => (b.rate || 0) - (a.rate || 0))[0];
+
+    if (bestCountry) {
+      insights.push({
+        type: 'country',
+        text: `${bestCountry.country} converts at ${formatPct(bestCountry.rate)} click→purchase — strongest country cohort`
+      });
+    }
+  }
+
+  return insights.slice(0, 8);
+}
+
 function sortAgeGender(rows) {
   return [...rows].sort((a, b) => {
     const ageIndexA = AGE_ORDER.indexOf(a.age || 'unknown');
@@ -325,7 +518,7 @@ function sortAgeGender(rows) {
   });
 }
 
-export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
+export async function getMetaDemographics({ store = 'vironax', days, startDate, endDate, yesterday } = {}) {
   const { accessToken, adAccountId } = getStoreConfig(store);
 
   if (!accessToken || !adAccountId) {
@@ -336,13 +529,22 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
   }
 
   const normalizedAccountId = normalizeAccountId(adAccountId);
-  const safeDays = Number.isFinite(Number(days)) ? Math.max(1, Number(days)) : 30;
-  const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - (safeDays - 1) * 24 * 60 * 60 * 1000));
+  let resolved;
+  try {
+    resolved = resolveRange({ days, startDate, endDate, yesterday });
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.message || 'Invalid date range.'
+    };
+  }
+  const safeDays = resolved.days;
+  const resolvedEndDate = resolved.endDate;
+  const resolvedStartDate = resolved.startDate;
 
   let currencyRate = 1;
   if (store === 'shawq') {
-    const rate = await getExchangeRateForDate(endDate);
+    const rate = await getExchangeRateForDate(resolvedEndDate);
     if (Number.isFinite(rate) && rate > 0) {
       currencyRate = rate;
     }
@@ -359,8 +561,8 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
         accountId: normalizedAccountId,
         accessToken,
         breakdowns,
-        startDate,
-        endDate,
+        startDate: resolvedStartDate,
+        endDate: resolvedEndDate,
         fields: fieldsWithValues,
         filtering
       });
@@ -386,8 +588,8 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
             accountId: normalizedAccountId,
             accessToken,
             breakdowns,
-            startDate,
-            endDate,
+            startDate: resolvedStartDate,
+            endDate: resolvedEndDate,
             fields: fieldsNoValues,
             filtering
           });
@@ -412,8 +614,8 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
               accountId: normalizedAccountId,
               accessToken,
               breakdowns,
-              startDate,
-              endDate,
+              startDate: resolvedStartDate,
+              endDate: resolvedEndDate,
               fields: fieldsNoActions,
               filtering
             });
@@ -512,6 +714,15 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
   };
 
   const insights = buildInsights([...ageGenderSegments, ...countryGenderSegments]);
+  const countryActionsAvailable = countryGenderSegments.some((row) =>
+    row.atcRate !== null || row.checkoutRate !== null || row.purchaseRate !== null
+  );
+  const keyInsights = buildKeyInsights({
+    ageGenderSegments,
+    countryGenderSegments,
+    actionsAvailable: ageGenderResult.actionsAvailable,
+    countryActionsAvailable
+  });
 
   const totals = ageGenderSegments.reduce((acc, row) => {
     acc.spend += row.spend;
@@ -533,13 +744,11 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
     success: true,
     data: {
       updatedAt: new Date().toISOString(),
-      range: { startDate, endDate, days: safeDays },
+      range: { startDate: resolvedStartDate, endDate: resolvedEndDate, days: safeDays },
       warnings,
       flags: {
         ageActionsAvailable: ageGenderResult.actionsAvailable,
-        countryActionsAvailable: countryGenderSegments.some((row) =>
-          row.atcRate !== null || row.checkoutRate !== null || row.purchaseRate !== null
-        ),
+        countryActionsAvailable,
         ageActionValuesAvailable: ageGenderResult.actionValuesAvailable,
         countryActionValuesAvailable: false,
         countryGenderSplitAvailable,
@@ -565,6 +774,7 @@ export async function getMetaDemographics({ store = 'vironax', days = 30 }) {
         ageGender: ageStats,
         countryGender: countryStats
       },
+      keyInsights,
       insights,
       rules: {
         minClicks: MIN_CLICKS,
