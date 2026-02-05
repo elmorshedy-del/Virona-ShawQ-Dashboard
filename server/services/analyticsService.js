@@ -121,7 +121,7 @@ export function getCitiesByCountry(store, countryCode, params) {
           COUNT(*) as orders,
           SUM(subtotal) as revenue
         FROM shopify_orders
-        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
         AND city IS NOT NULL AND city != ''
         GROUP BY city, state
         ORDER BY orders DESC
@@ -136,7 +136,7 @@ export function getCitiesByCountry(store, countryCode, params) {
           COUNT(*) as orders,
           SUM(subtotal) as revenue
         FROM salla_orders
-        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
         AND city IS NOT NULL AND city != ''
         GROUP BY city, state
         ORDER BY orders DESC
@@ -199,7 +199,7 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
   if (store === 'shawq' && !campaignValue) {
     const ecomData = db.prepare(`
       SELECT COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
     `).get(store, startDate, endDate) || {};
     totalOrders = ecomData.orders || 0;
     totalRevenue = ecomData.revenue || 0;
@@ -410,7 +410,7 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
   if (store === 'shawq') {
     ecomData = db.prepare(`
       SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL GROUP BY country_code
     `).all(store, startDate, endDate);
     dataSource = 'Shopify';
   } else if (store === 'vironax') {
@@ -418,7 +418,7 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
     if (isSallaActive()) {
       ecomData = db.prepare(`
         SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
-        FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+        FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL GROUP BY country_code
       `).all(store, startDate, endDate);
       dataSource = 'Salla';
     } else {
@@ -522,7 +522,7 @@ function getTrends(store, startDate, endDate, params = {}) {
 
   let salesData = [];
   if (store === 'shawq' && !campaignValue) {
-    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 GROUP BY date`).all(store, startDate, endDate);
   } else {
     salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs);
   }
@@ -749,7 +749,7 @@ export function getCountryTrends(store, params) {
           COUNT(*) as orders,
           SUM(subtotal) as revenue
         FROM shopify_orders
-        WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
+        WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL
         GROUP BY date, country_code
         ORDER BY date ASC, country_code ASC
       `).all(store, startDate, endDate);
@@ -766,7 +766,7 @@ export function getCountryTrends(store, params) {
             COUNT(*) as orders,
             SUM(total_price) as revenue
           FROM salla_orders
-          WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
+          WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL
           GROUP BY date, country_code
           ORDER BY date ASC, country_code ASC
         `).all(store, startDate, endDate);
@@ -856,6 +856,7 @@ export function getNewYorkTrends(store, params) {
       FROM shopify_orders
       WHERE store = ?
         AND date BETWEEN ? AND ?
+        AND COALESCE(is_excluded, 0) = 0
         AND country_code = 'US'
         AND city IS NOT NULL
         AND (LOWER(city) LIKE '%new york%' OR city = 'NYC' OR city = 'Brooklyn' OR city = 'Queens' OR city = 'Bronx' OR city = 'Manhattan' OR city = 'Staten Island')
@@ -881,6 +882,7 @@ export function getNewYorkTrends(store, params) {
       FROM shopify_orders
       WHERE store = ?
         AND date BETWEEN ? AND ?
+        AND COALESCE(is_excluded, 0) = 0
         AND country_code = 'US'
         AND city IS NOT NULL
         AND (LOWER(city) LIKE '%new york%' OR city = 'NYC' OR city = 'Brooklyn' OR city = 'Queens' OR city = 'Bronx' OR city = 'Manhattan' OR city = 'Staten Island')
@@ -1024,6 +1026,7 @@ export function getShopifyTimeOfDay(store, params) {
         subtotal as revenue
       FROM shopify_orders
       WHERE store = ? AND date BETWEEN ? AND ?
+      AND COALESCE(is_excluded, 0) = 0
       AND order_created_at IS NOT NULL
     `;
 
@@ -1110,7 +1113,7 @@ export function getSallaTimeOfDay(store, params) {
         country_code,
         subtotal as revenue
       FROM salla_orders
-      WHERE store = ? AND date BETWEEN ? AND ?
+      WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
       AND created_at IS NOT NULL
     `).all(store, startDate, endDate);
 
@@ -1222,12 +1225,12 @@ export function getOrdersByDayOfWeek(store, params) {
     let source = '';
 
     if (store === 'shawq') {
-      orders = db.prepare(`SELECT date FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+      orders = db.prepare(`SELECT date FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0`).all(store, startDate, endDate);
       source = 'Shopify';
     } else if (store === 'vironax') {
       // Check if Salla token exists (not database - avoids demo data issues)
       if (isSallaActive()) {
-        orders = db.prepare(`SELECT date FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+        orders = db.prepare(`SELECT date FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0`).all(store, startDate, endDate);
         source = 'Salla';
       } else {
         // Salla NOT connected - use Meta conversions
@@ -1418,8 +1421,8 @@ export function getAvailableCountries(store) {
   const db = getDb();
   const rows = db.prepare(`
     SELECT DISTINCT country as code FROM meta_daily_metrics WHERE store = ? AND country != 'ALL' AND (spend > 0 OR conversions > 0)
-    UNION SELECT DISTINCT country_code as code FROM shopify_orders WHERE store = ?
-    UNION SELECT DISTINCT country_code as code FROM salla_orders WHERE store = ?
+    UNION SELECT DISTINCT country_code as code FROM shopify_orders WHERE store = ? AND COALESCE(is_excluded, 0) = 0
+    UNION SELECT DISTINCT country_code as code FROM salla_orders WHERE store = ? AND COALESCE(is_excluded, 0) = 0
   `).all(store, store, store);
   return rows.map(r => getCountryInfo(r.code)).filter(c => c && c.name);
 }

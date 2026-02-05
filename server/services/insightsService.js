@@ -285,13 +285,33 @@ const getGeoFeatures = (store, recentStart, endDate, priorStart) => {
 
 const getOrderItemData = (store, recentStart, endDate) => {
   const db = getDb();
-  const table = store === 'vironax' ? 'salla_order_items' : 'shopify_order_items';
   try {
-    const rows = db.prepare(`
-      SELECT order_id, order_date, name, sku, product_id, variant_id
-      FROM ${table}
-      WHERE store = ? AND order_date BETWEEN ? AND ?
-    `).all(store, recentStart, endDate);
+    let rows = [];
+
+    if (store === 'shawq') {
+      rows = db.prepare(`
+        SELECT
+          oi.order_id,
+          o.date as order_date,
+          oi.title as name,
+          oi.sku,
+          oi.product_id,
+          oi.variant_id
+        FROM shopify_order_items oi
+        JOIN shopify_orders o
+          ON o.store = oi.store AND o.order_id = oi.order_id
+        WHERE oi.store = ?
+          AND o.date BETWEEN ? AND ?
+          AND COALESCE(o.is_excluded, 0) = 0
+          AND COALESCE(oi.is_excluded, 0) = 0
+      `).all(store, recentStart, endDate);
+    } else {
+      rows = db.prepare(`
+        SELECT order_id, order_date, name, sku, product_id, variant_id
+        FROM salla_order_items
+        WHERE store = ? AND order_date BETWEEN ? AND ?
+      `).all(store, recentStart, endDate);
+    }
 
     if (!rows.length) return { orders: [], edges: [] };
 
@@ -360,10 +380,13 @@ function getOrdersTable(store) {
 function getOrdersSummary(db, store, startDate, endDate) {
   const table = getOrdersTable(store);
   try {
+    const exclusionClause = ['shopify_orders', 'salla_orders'].includes(table)
+      ? ' AND COALESCE(is_excluded, 0) = 0'
+      : '';
     const row = db.prepare(`
       SELECT COUNT(*) as orders, SUM(order_total) as revenue
       FROM ${table}
-      WHERE store = ? AND date BETWEEN ? AND ?
+      WHERE store = ? AND date BETWEEN ? AND ?${exclusionClause}
     `).get(store, startDate, endDate);
     return {
       orders: row?.orders || 0,

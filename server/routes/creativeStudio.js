@@ -297,6 +297,68 @@ function toOverlayBox(det, { startTime, endTime } = {}) {
   };
 }
 
+function buildSegmentSampleTimes(seg, durationSec) {
+  const start = clampNumber(seg?.start, 0, durationSec);
+  const end = clampNumber(seg?.end, start, durationSec);
+  const span = Math.max(0, end - start);
+  const edgeOffset = Math.min(0.25, Math.max(0.05, span * 0.25));
+
+  const candidates = [
+    clampNumber(seg?.sample_t ?? start, start, end || durationSec),
+    clampNumber(start + span / 2, start, end || durationSec),
+    clampNumber(start + edgeOffset, start, end || durationSec),
+    clampNumber(end - edgeOffset, start, end || durationSec),
+    clampNumber(start + 0.01, start, end || durationSec)
+  ];
+
+  const seen = new Set();
+  const unique = [];
+  for (const t of candidates) {
+    const key = Number(t).toFixed(3);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(Number(key));
+  }
+  return unique;
+}
+
+function buildPlaceholderOverlay({ seg, videoWidth, videoHeight } = {}) {
+  const safeWidth = Math.max(360, Math.round(safeParseNumber(videoWidth, 1080)));
+  const safeHeight = Math.max(360, Math.round(safeParseNumber(videoHeight, 1920)));
+
+  const width = Math.round(clampNumber(safeWidth * 0.58, 180, Math.max(180, safeWidth - 20)));
+  const height = Math.round(clampNumber(width * 0.22, 56, Math.max(56, safeHeight * 0.35)));
+  const x = Math.round(clampNumber((safeWidth - width) / 2, 0, Math.max(0, safeWidth - width)));
+  const y = Math.round(clampNumber(safeHeight * 0.68, 0, Math.max(0, safeHeight - height)));
+  const fontSize = Math.round(clampNumber(height * 0.42, 18, 56));
+
+  const rawText = String(seg?.label || '').trim();
+  const text = rawText && rawText.toUpperCase() !== 'UNREADABLE'
+    ? rawText.slice(0, 120)
+    : 'Edit overlay text';
+
+  return {
+    id: crypto.randomUUID(),
+    x,
+    y,
+    width,
+    height,
+    text,
+    backgroundColor: '#a32929',
+    textColor: '#ffffff',
+    fontSize,
+    fontWeight: 'bold',
+    fontStyle: 'normal',
+    fontFamily: 'Inter',
+    isGradient: false,
+    gradient: null,
+    confidence: 0,
+    startTime: typeof seg?.start === 'number' ? seg.start : null,
+    endTime: typeof seg?.end === 'number' ? seg.end : null,
+    placeholder: true
+  };
+}
+
 const LOCALE_LABELS = {
   'en-US': 'English (US)',
   'en-GB': 'English (UK)',
@@ -349,12 +411,12 @@ function buildRecommendedLocales(store) {
   const rawRows = db.prepare(`
     SELECT country_code as country, COUNT(*) as orders, SUM(order_total) as revenue
     FROM salla_orders
-    WHERE store = ? AND country_code IS NOT NULL AND country_code != ''
+    WHERE store = ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL AND country_code != ''
     GROUP BY country_code
     UNION ALL
     SELECT country_code as country, COUNT(*) as orders, SUM(subtotal) as revenue
     FROM shopify_orders
-    WHERE store = ? AND country_code IS NOT NULL AND country_code != ''
+    WHERE store = ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL AND country_code != ''
     GROUP BY country_code
     UNION ALL
     SELECT country as country, SUM(orders_count) as orders, SUM(revenue) as revenue
@@ -1769,18 +1831,51 @@ router.post('/video-overlay/scan', async (req, res) => {
       });
     }
 
-    // For each segment, run the exact detector on a full-res representative frame to get geometry/colors/fonts.
-    // Strict mode: no silent segment failures.
+    // For each segment, run detector on several representative frames.
+    // If no overlays are found but detector calls succeed, inject a placeholder so editing can continue.
     const segments = [];
+    const warnings = [];
+    const videoWidth = Math.max(1, Math.round(safeParseNumber(info?.width, 1080)));
+    const videoHeight = Math.max(1, Math.round(safeParseNumber(info?.height, 1920)));
+
     for (const seg of segmentsRaw) {
-      const fullFrameB64 = await extractFrameBase64(videoPath, { t: seg.sample_t, width: null });
-      const detections = await detectVideoOverlays({ imageBase64: fullFrameB64 });
-      const overlays = Array.isArray(detections)
-        ? detections.map((det) => toOverlayBox(det, { startTime: seg.start, endTime: seg.end }))
-        : [];
+      const sampleTimes = buildSegmentSampleTimes(seg, durationSec);
+      let overlays = [];
+      let resolvedSampleTime = seg.sample_t;
+      let hadDetectorResponse = false;
+      let lastDetectorError = null;
+
+      for (const sampleTime of sampleTimes) {
+        try {
+          const fullFrameB64 = await extractFrameBase64(videoPath, { t: sampleTime, width: null });
+          const detections = await detectVideoOverlays({ imageBase64: fullFrameB64 });
+          hadDetectorResponse = true;
+          const candidateOverlays = Array.isArray(detections)
+            ? detections.map((det) => toOverlayBox(det, { startTime: seg.start, endTime: seg.end }))
+            : [];
+
+          if (candidateOverlays.length) {
+            overlays = candidateOverlays;
+            resolvedSampleTime = sampleTime;
+            break;
+          }
+        } catch (sampleErr) {
+          lastDetectorError = sampleErr;
+        }
+      }
+
+      if (!overlays.length && !hadDetectorResponse && lastDetectorError) {
+        const baseMsg = lastDetectorError?.message || String(lastDetectorError);
+        throw new Error(
+          `Detector failed for segment start=${seg.start}s end=${seg.end}s after ${sampleTimes.length} attempts: ${baseMsg}`
+        );
+      }
 
       if (!overlays.length) {
-        throw new Error(`Detector returned 0 overlays for segment start=${seg.start}s end=${seg.end}s (sample_t=${seg.sample_t}s).`);
+        overlays = [buildPlaceholderOverlay({ seg, videoWidth, videoHeight })];
+        warnings.push(
+          `No overlays detected for segment ${seg.start.toFixed(3)}-${seg.end.toFixed(3)}s. Inserted placeholder for manual edit.`
+        );
       }
 
       segments.push({
@@ -1788,7 +1883,7 @@ router.post('/video-overlay/scan', async (req, res) => {
         label: seg.label,
         start: seg.start,
         end: seg.end,
-        sample_time: seg.sample_t,
+        sample_time: resolvedSampleTime,
         overlays
       });
     }
@@ -1800,7 +1895,9 @@ router.post('/video-overlay/scan', async (req, res) => {
       interval_sec: intervalSec,
       max_frames: maxFrames,
       frames_analyzed: scanFrames.length,
-      segments
+      segments,
+      warnings,
+      segments_with_placeholder: warnings.length
     });
   } catch (error) {
     console.error('Video overlay scan error:', error);

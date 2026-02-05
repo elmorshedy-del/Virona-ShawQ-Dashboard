@@ -74,6 +74,12 @@ export function initDb() {
     db.exec(`ALTER TABLE salla_orders ADD COLUMN state TEXT`);
   } catch (e) { /* column exists */ }
   try {
+    db.exec(`ALTER TABLE salla_orders ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE salla_orders ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN city TEXT`);
   } catch (e) { /* column exists */ }
   try {
@@ -91,6 +97,47 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN customer_email TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN net_price REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`
+      UPDATE shopify_order_items
+      SET net_price = (COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0))
+      WHERE net_price IS NULL
+    `);
+  } catch (e) { /* best effort */ }
+  try {
+    db.exec(`
+      UPDATE shopify_order_items
+      SET is_excluded = 1,
+          exclusion_reason = COALESCE(exclusion_reason, 'legacy_non_revenue_zero_net')
+      WHERE COALESCE(is_excluded, 0) = 0
+        AND (COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0)) <= 0
+    `);
+  } catch (e) { /* best effort */ }
+  try {
+    db.exec(`
+      UPDATE shopify_orders
+      SET is_excluded = 1,
+          exclusion_reason = COALESCE(exclusion_reason, 'legacy_non_revenue_non_positive_total')
+      WHERE COALESCE(is_excluded, 0) = 0
+        AND COALESCE(order_total, 0) <= 0
+        AND COALESCE(subtotal, 0) <= 0
+    `);
+  } catch (e) { /* best effort */ }
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -149,6 +196,8 @@ export function initDb() {
       status TEXT,
       payment_method TEXT,
       currency TEXT DEFAULT 'SAR',
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -179,6 +228,8 @@ export function initDb() {
       attribution_json TEXT,
       customer_id TEXT,
       customer_email TEXT,
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, order_id)
     )
@@ -200,6 +251,9 @@ export function initDb() {
       quantity INTEGER DEFAULT 1,
       price REAL DEFAULT 0,
       discount REAL DEFAULT 0,
+      net_price REAL DEFAULT 0,
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, order_id, line_item_id)
     )
@@ -250,6 +304,9 @@ export function initDb() {
           quantity INTEGER DEFAULT 1,
           price REAL DEFAULT 0,
           discount REAL DEFAULT 0,
+          net_price REAL DEFAULT 0,
+          is_excluded INTEGER DEFAULT 0,
+          exclusion_reason TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(store, order_id, line_item_id)
         )
@@ -257,10 +314,17 @@ export function initDb() {
 
       const lineItemSelect = hasLineItemId ? 'line_item_id' : 'NULL AS line_item_id';
       const imageUrlSelect = columns.includes('image_url') ? 'image_url' : 'NULL AS image_url';
+      const netPriceSelect = columns.includes('net_price')
+        ? 'net_price'
+        : '(COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0)) AS net_price';
+      const itemExcludedSelect = columns.includes('is_excluded') ? 'is_excluded' : '0 AS is_excluded';
+      const itemExclusionReasonSelect = columns.includes('exclusion_reason')
+        ? 'exclusion_reason'
+        : 'NULL AS exclusion_reason';
 
       db.exec(`
         INSERT INTO shopify_order_items
-          (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount, created_at)
+          (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount, net_price, is_excluded, exclusion_reason, created_at)
         SELECT
           store,
           order_id,
@@ -273,6 +337,9 @@ export function initDb() {
           quantity,
           price,
           discount,
+          ${netPriceSelect},
+          ${itemExcludedSelect},
+          ${itemExclusionReasonSelect},
           created_at
         FROM "${backupTable}"
       `);
@@ -753,6 +820,8 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_ad_store_date ON meta_ad_metrics(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_salla_store_date ON salla_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date_excluded ON shopify_orders(store, date, is_excluded)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_items_store_order_excluded ON shopify_order_items(store, order_id, is_excluded)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_spend_store_date ON manual_spend_overrides(store, date)`);
 

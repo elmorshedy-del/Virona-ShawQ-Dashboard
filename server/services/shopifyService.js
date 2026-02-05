@@ -1,35 +1,139 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 import { createOrderNotifications } from './notificationService.js';
-import { getLatestShopifyAccessToken, getShopifyAccessToken, getShopifyTokenRecord } from './shopifyAuthService.js';
+import {
+  getLatestShopifyAccessToken,
+  getShopifyAccessToken,
+  getShopifyTokenRecord,
+  listShopifyAccessTokens
+} from './shopifyAuthService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import {
+  classifyNonRevenueLineItem,
+  classifyNonRevenueOrder,
+  resolveNonRevenueKeywords
+} from './orderExclusionService.js';
 
-function getShopifyCredentials() {
-  const envStore = process.env.SHAWQ_SHOPIFY_STORE;
-  const envToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
+function normalizeShopDomain(shop) {
+  if (!shop || typeof shop !== 'string') return null;
+  const trimmed = shop.trim().toLowerCase();
+  if (!trimmed) return null;
+  return trimmed.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+}
 
-  if (envStore && envToken) {
-    return { shopifyStore: envStore, accessToken: envToken, source: 'env' };
+function sanitizeStoreKey(value, fallback = 'shawq') {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return normalized || fallback;
+}
+
+function parseStoreAliasMap() {
+  const raw = process.env.SHOPIFY_STORE_ALIAS_MAP;
+  if (!raw || typeof raw !== 'string') return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const entries = Object.entries(parsed)
+      .map(([shop, store]) => [normalizeShopDomain(shop), sanitizeStoreKey(store, '')])
+      .filter(([shop, store]) => shop && store);
+    return Object.fromEntries(entries);
+  } catch (error) {
+    return {};
+  }
+}
+
+function resolveStoreKeyForShop(shopifyStore, aliasMap = {}) {
+  const normalizedShop = normalizeShopDomain(shopifyStore);
+  if (!normalizedShop) {
+    return sanitizeStoreKey(process.env.SHOPIFY_DEFAULT_STORE_KEY || process.env.SHAWQ_STORE_KEY || 'shawq');
   }
 
-  if (envStore) {
+  if (aliasMap[normalizedShop]) {
+    return sanitizeStoreKey(aliasMap[normalizedShop]);
+  }
+
+  const envStore = normalizeShopDomain(process.env.SHAWQ_SHOPIFY_STORE);
+  if (envStore && envStore === normalizedShop) {
+    return sanitizeStoreKey(process.env.SHAWQ_STORE_KEY || 'shawq');
+  }
+
+  const defaultKey = normalizedShop.replace(/\.myshopify\.com$/i, '');
+  return sanitizeStoreKey(defaultKey, 'shopify_store');
+}
+
+function getAllShopifyCredentials() {
+  const envStore = normalizeShopDomain(process.env.SHAWQ_SHOPIFY_STORE);
+  const envToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
+  const aliasMap = parseStoreAliasMap();
+  const credentialsByShop = new Map();
+
+  const upsertCredential = ({ shopifyStore, accessToken, source }) => {
+    const normalizedShop = normalizeShopDomain(shopifyStore);
+    if (!normalizedShop || !accessToken) return;
+
+    const next = {
+      shopifyStore: normalizedShop,
+      accessToken,
+      source,
+      analyticsStore: resolveStoreKeyForShop(normalizedShop, aliasMap)
+    };
+
+    const current = credentialsByShop.get(normalizedShop);
+    if (!current || current.source !== 'env') {
+      credentialsByShop.set(normalizedShop, next);
+    }
+  };
+
+  if (envStore && envToken) {
+    upsertCredential({ shopifyStore: envStore, accessToken: envToken, source: 'env' });
+  }
+
+  if (envStore && !envToken) {
     const oauthToken = getShopifyAccessToken(envStore);
     if (oauthToken) {
-      return { shopifyStore: envStore, accessToken: oauthToken, source: 'oauth' };
+      upsertCredential({ shopifyStore: envStore, accessToken: oauthToken, source: 'oauth' });
     }
   }
 
-  const latest = getLatestShopifyAccessToken();
-  if (latest?.token) {
-    return { shopifyStore: latest.shop, accessToken: latest.token, source: 'oauth' };
+  listShopifyAccessTokens().forEach((row) => {
+    upsertCredential({ shopifyStore: row.shop, accessToken: row.token, source: 'oauth' });
+  });
+
+  if (credentialsByShop.size === 0) {
+    const latest = getLatestShopifyAccessToken();
+    if (latest?.shop && latest?.token) {
+      upsertCredential({ shopifyStore: latest.shop, accessToken: latest.token, source: 'oauth' });
+    }
   }
 
-  return { shopifyStore: envStore || null, accessToken: envToken || null, source: 'missing' };
+  return Array.from(credentialsByShop.values()).sort((a, b) => {
+    if (a.source === b.source) return a.shopifyStore.localeCompare(b.shopifyStore);
+    return a.source === 'env' ? -1 : 1;
+  });
+}
+
+function getPrimaryShopifyCredential() {
+  const all = getAllShopifyCredentials();
+  if (all.length) return all[0];
+
+  const fallbackStore = normalizeShopDomain(process.env.SHAWQ_SHOPIFY_STORE);
+  return {
+    shopifyStore: fallbackStore || null,
+    accessToken: process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN || null,
+    source: 'missing',
+    analyticsStore: resolveStoreKeyForShop(fallbackStore)
+  };
+}
+
+function getShopifyCredentials() {
+  return getPrimaryShopifyCredential();
 }
 
 export function isShopifyConfigured() {
-  const { shopifyStore, accessToken } = getShopifyCredentials();
-  return Boolean(shopifyStore && accessToken);
+  return getAllShopifyCredentials().length > 0;
 }
 
 function getShopifyHeaders(accessToken) {
@@ -187,6 +291,8 @@ function extractAttributionAttributes(noteAttributes = []) {
 
 export async function fetchShopifyOrders(dateStart, dateEnd) {
   const { shopifyStore, accessToken } = getShopifyCredentials();
+  const exclusionKeywords = resolveNonRevenueKeywords({ account: shopifyStore, store: shopifyStore });
+  const exclusionOptions = { keywords: exclusionKeywords };
 
   if (!shopifyStore || !accessToken) {
     console.log('Shopify credentials not configured for Shawq - returning empty array (no demo data)');
@@ -242,6 +348,18 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
               }))
             : [];
 
+          const lineClassifications = lineItems.map((item) => classifyNonRevenueLineItem(item, exclusionOptions));
+          const orderClassification = classifyNonRevenueOrder(
+            {
+              order_total: parseFloat(order.total_price) || 0,
+              subtotal: parseFloat(order.subtotal_price) || 0,
+              tags: order.tags || '',
+              note: order.note || ''
+            },
+            lineClassifications,
+            exclusionOptions
+          );
+
           orders.push({
             order_id: order.id.toString(),
             date: dateGmt3,
@@ -265,6 +383,8 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             customer_id: customerId,
             customer_email: customerEmail,
             line_items: lineItems,
+            is_excluded: orderClassification.exclude,
+            exclusion_reason: orderClassification.reason,
             createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
           });
         }
@@ -311,12 +431,16 @@ export async function syncShopifyOrders() {
 
   try {
     const orders = await fetchShopifyOrders(startDate, endDate);
+    const { shopifyStore } = getShopifyCredentials();
+    const exclusionKeywords = resolveNonRevenueKeywords({ account: shopifyStore, store: shopifyStore });
+    const exclusionOptions = { keywords: exclusionKeywords };
 
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_orders
       (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount,
-       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at, attribution_json, customer_id, customer_email)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at, attribution_json, customer_id, customer_email,
+       is_excluded, exclusion_reason)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const deleteItemsStmt = db.prepare(`
@@ -326,8 +450,8 @@ export async function syncShopifyOrders() {
 
     const insertItemStmt = db.prepare(`
       INSERT OR REPLACE INTO shopify_order_items
-      (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount, net_price, is_excluded, exclusion_reason)
+      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const productIds = Array.from(new Set(orders
@@ -364,7 +488,9 @@ export async function syncShopifyOrders() {
           order.order_created_at,
           order.attribution_json,
           order.customer_id,
-          order.customer_email
+          order.customer_email,
+          order.is_excluded ? 1 : 0,
+          order.exclusion_reason || null
         );
 
         deleteItemsStmt.run(order.order_id);
@@ -374,6 +500,10 @@ export async function syncShopifyOrders() {
             const productCache = item.product_id ? productCacheMap.get(String(item.product_id)) : null;
             const itemTitle = item.title || productCache?.title || null;
             const itemImageUrl = productCache?.image_url || null;
+            const classification = classifyNonRevenueLineItem({
+              ...item,
+              title: itemTitle
+            }, exclusionOptions);
 
             insertItemStmt.run(
               order.order_id,
@@ -385,7 +515,10 @@ export async function syncShopifyOrders() {
               itemImageUrl,
               item.quantity,
               item.price,
-              item.discount
+              item.discount,
+              classification.net,
+              classification.exclude ? 1 : 0,
+              classification.reason
             );
           }
         }

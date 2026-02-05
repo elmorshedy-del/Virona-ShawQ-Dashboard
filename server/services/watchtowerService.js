@@ -85,7 +85,7 @@ function getOrdersDailyAgg(store, startDate, endDate) {
         SUM(COALESCE(NULLIF(subtotal, 0), order_total)) as revenue,
         SUM(COALESCE(discount, 0)) as discount
       FROM shopify_orders
-      WHERE store = ? AND date BETWEEN ? AND ?
+      WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
       GROUP BY date
     `).all(store, startDate, endDate);
 
@@ -99,7 +99,7 @@ function getOrdersDailyAgg(store, startDate, endDate) {
       SUM(COALESCE(NULLIF(subtotal, 0), order_total)) as revenue,
       SUM(COALESCE(discount, 0)) as discount
     FROM salla_orders
-    WHERE store = ? AND date BETWEEN ? AND ?
+    WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
     GROUP BY date
   `).all(store, startDate, endDate);
 
@@ -691,6 +691,9 @@ export function getWatchtowerDrivers(store, metricKey, dateStr, params = {}) {
   const revenueExpr = ordersTable === 'shopify_orders'
     ? 'SUM(COALESCE(NULLIF(subtotal, 0), order_total))'
     : 'SUM(COALESCE(NULLIF(subtotal, 0), order_total))';
+  const exclusionClause = ['shopify_orders', 'salla_orders'].includes(ordersTable)
+    ? ' AND COALESCE(is_excluded, 0) = 0'
+    : '';
 
   const todayRows = db.prepare(`
     SELECT
@@ -698,7 +701,7 @@ export function getWatchtowerDrivers(store, metricKey, dateStr, params = {}) {
       COUNT(*) as orders,
       ${revenueExpr} as revenue
     FROM ${ordersTable}
-    WHERE store = ? AND date = ?
+    WHERE store = ? AND date = ?${exclusionClause}
     GROUP BY 1
     ORDER BY revenue DESC
     LIMIT 12
@@ -716,7 +719,7 @@ export function getWatchtowerDrivers(store, metricKey, dateStr, params = {}) {
         COUNT(*) as daily_orders,
         ${revenueExpr} as daily_revenue
       FROM ${ordersTable}
-      WHERE store = ? AND date BETWEEN ? AND ?
+      WHERE store = ? AND date BETWEEN ? AND ?${exclusionClause}
       GROUP BY date, 2
     )
     GROUP BY key

@@ -161,7 +161,10 @@ function getFinalizedEndDateStr(graceMinutes = FINALIZE_GRACE_MINUTES) {
 function buildOrderWhereClause(orderTable) {
   // For Shopify attribution comparisons, count paid orders only.
   if (orderTable === 'shopify_orders') {
-    return ` AND (financial_status = 'paid' OR financial_status = 'partially_paid')`;
+    return ` AND (financial_status = 'paid' OR financial_status = 'partially_paid') AND COALESCE(is_excluded, 0) = 0`;
+  }
+  if (orderTable === 'salla_orders') {
+    return ` AND COALESCE(is_excluded, 0) = 0`;
   }
   return '';
 }

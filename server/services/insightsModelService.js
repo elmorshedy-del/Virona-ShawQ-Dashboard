@@ -273,6 +273,9 @@ async function localGeoInsight({ topGeo, radarPoints }) {
 async function localAdjacentInsight({ store, adjacentSuggestion, recentStart, endDate }) {
   const db = getDb();
   const table = getOrdersTable(store);
+  const exclusionClause = ['shopify_orders', 'salla_orders'].includes(table)
+    ? ' AND COALESCE(is_excluded, 0) = 0'
+    : '';
 
   const rows = db.prepare(`
     SELECT
@@ -280,7 +283,7 @@ async function localAdjacentInsight({ store, adjacentSuggestion, recentStart, en
       COUNT(*) as total_orders,
       AVG(items_count) as avg_items
     FROM ${table}
-    WHERE store = ? AND date BETWEEN ? AND ?
+    WHERE store = ? AND date BETWEEN ? AND ?${exclusionClause}
   `).get(store, recentStart, endDate);
 
   if (!rows || !rows.total_orders) return null;
@@ -528,4 +531,3 @@ export async function fetchPeaksInsight({
     return null;
   }
 }
-

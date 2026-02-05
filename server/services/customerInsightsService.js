@@ -164,7 +164,7 @@ function getOrderRows(db, store, startDate, endDate) {
         customer_id,
         customer_email
       FROM shopify_orders
-      WHERE store = ? AND date BETWEEN ? AND ?
+      WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
     `).all(store, startDate, endDate);
   }
 
@@ -183,7 +183,7 @@ function getOrderRows(db, store, startDate, endDate) {
       NULL as customer_id,
       NULL as customer_email
     FROM salla_orders
-    WHERE store = ? AND date BETWEEN ? AND ?
+    WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
   `).all(store, startDate, endDate);
 }
 
@@ -210,6 +210,8 @@ function getOrderItems(db, store, startDate, endDate) {
     LEFT JOIN shopify_products_cache pc
       ON pc.store = oi.store AND pc.product_id = oi.product_id
     WHERE o.store = ? AND o.date BETWEEN ? AND ?
+      AND COALESCE(o.is_excluded, 0) = 0
+      AND COALESCE(oi.is_excluded, 0) = 0
   `).all(store, startDate, endDate);
 }
 

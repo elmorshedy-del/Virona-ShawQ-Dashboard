@@ -136,6 +136,11 @@ export function getLatestShopifyTokenRecord() {
   return db.prepare('SELECT * FROM shopify_auth_tokens ORDER BY updated_at DESC LIMIT 1').get();
 }
 
+export function listShopifyTokenRecords() {
+  const db = getDb();
+  return db.prepare('SELECT * FROM shopify_auth_tokens ORDER BY updated_at DESC').all();
+}
+
 export function getShopifyAccessToken(shop) {
   const row = getShopifyTokenRecord(shop);
   return decryptToken(row);
@@ -145,6 +150,17 @@ export function getLatestShopifyAccessToken() {
   const row = getLatestShopifyTokenRecord();
   if (!row) return null;
   return { shop: row.shop, token: decryptToken(row) };
+}
+
+export function listShopifyAccessTokens() {
+  return listShopifyTokenRecords()
+    .map((row) => ({
+      shop: row.shop,
+      token: decryptToken(row),
+      scopes: row.scopes ? JSON.parse(row.scopes) : [],
+      updated_at: row.updated_at
+    }))
+    .filter((entry) => entry.shop && entry.token);
 }
 
 export function maskToken(token) {
