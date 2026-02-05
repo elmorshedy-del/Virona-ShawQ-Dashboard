@@ -11,6 +11,7 @@ const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 const ARABIC_REGEX = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/g;
 const TIP_REGEX = /\btip\b|gratuity/i;
 const TEST_REGEX = /\btest\b/i;
+const UNKNOWN_TEXT_REGEX = /^(unknown|unk|n\/a|na|null|undefined|none|-)$/i;
 
 const DEFAULT_STORE_TIMEZONE = process.env.STORE_TIMEZONE_DEFAULT || 'UTC';
 
@@ -55,6 +56,13 @@ function isExcludedProduct(row) {
   const text = [row?.title, row?.cache_title, row?.sku].filter(Boolean).join(' ').toLowerCase();
   if (!text) return false;
   return TIP_REGEX.test(text) || TEST_REGEX.test(text);
+}
+
+function isUnknownText(value) {
+  if (value == null) return true;
+  const text = String(value).trim();
+  if (!text) return true;
+  return UNKNOWN_TEXT_REGEX.test(text);
 }
 
 function getItemIdentity(row) {
@@ -468,19 +476,37 @@ function computeBundles(items) {
   pairCounts.forEach((count, key) => {
     if (count < 2) return;
     const [a, b] = key.split('||');
-    const support = safeDivide(count, totalOrders);
-    const attach = safeDivide(count, itemCounts.get(a) || 0);
-    const lift = attach && totalOrders ? attach / safeDivide(itemCounts.get(b) || 0, totalOrders) : 0;
+    const countA = itemCounts.get(a) || 0;
+    const countB = itemCounts.get(b) || 0;
+    if (!totalOrders || !countA || !countB) return;
 
-    const labelA = labelByKey.get(a) || a;
-    const labelB = labelByKey.get(b) || b;
+    const support = count / totalOrders;
+
+    const attachAB = count / countA; // P(b | a)
+    const baselineB = countB / totalOrders; // P(b)
+    const liftAB = baselineB ? attachAB / baselineB : 0;
+
+    const attachBA = count / countB; // P(a | b)
+    const baselineA = countA / totalOrders; // P(a)
+    const liftBA = baselineA ? attachBA / baselineA : 0;
+
+    const useAB = liftAB >= liftBA;
+    const anchorKey = useAB ? a : b;
+    const attachKey = useAB ? b : a;
+    const attachRate = useAB ? attachAB : attachBA;
+    const baselineRate = useAB ? baselineB : baselineA;
+    const lift = useAB ? liftAB : liftBA;
+
+    const anchorLabel = labelByKey.get(anchorKey) || anchorKey;
+    const attachLabel = labelByKey.get(attachKey) || attachKey;
 
     pairs.push({
-      pair: [labelA, labelB],
-      pairKeys: [a, b],
+      pair: [anchorLabel, attachLabel],
+      pairKeys: [anchorKey, attachKey],
       count,
       support,
-      attach,
+      attachRate,
+      baselineRate,
       lift
     });
   });
@@ -733,6 +759,7 @@ function computeProductShiftInsights(currentItems, previousItems, minOrders = 2)
       title: topGainer.title + ' surged',
       detail: moveLabel + '. ' + liftLabel + ' vs last window.',
       impact: 'Product momentum',
+      target: 'topProducts',
       confidence: scoreConfidence(Math.max(topGainer.currOrders, topGainer.prevOrders))
     });
   }
@@ -747,6 +774,7 @@ function computeProductShiftInsights(currentItems, previousItems, minOrders = 2)
       title: topDecliner.title + ' softened',
       detail: moveLabel + '. ' + liftLabel + ' vs last window.',
       impact: 'Product watch',
+      target: 'topProducts',
       confidence: scoreConfidence(Math.max(topDecliner.currOrders, topDecliner.prevOrders))
     });
   }
@@ -802,53 +830,68 @@ function scoreConfidence(sampleSize) {
   return clamp(sampleSize / 80, 0.35, 0.95);
 }
 
-function buildInsights({ discountMetrics, repeatRate, topDay, topHour, bundleTop, segmentLabel, productShiftInsights }) {
+function buildInsights({
+  discountMetrics,
+  repeatRate,
+  customerCount,
+  totalOrders,
+  topDay,
+  topHour,
+  bundleTop,
+  segment,
+  productShiftInsights
+}) {
   const insights = [];
 
-  if (discountMetrics.discountRevenueShare > 0.35) {
+  const DISCOUNT_REVENUE_SHARE_RISK = 0.35;
+  const REPEAT_RATE_OPPORTUNITY = 0.25;
+  const TIMING_MIN_ORDERS = 20;
+  const BUNDLE_MIN_COUNT = 4;
+  const BUNDLE_MIN_LIFT = 1.6;
+
+  if (discountMetrics.discountRevenueShare > DISCOUNT_REVENUE_SHARE_RISK) {
     insights.push({
       id: 'discount-reliance',
       title: 'Discount-driven revenue is high',
       detail: `Discounted orders contribute ${(discountMetrics.discountRevenueShare * 100).toFixed(1)}% of revenue.`,
       impact: 'Margin risk',
-      confidence: scoreConfidence(discountMetrics.discountedOrders)
-    });
-  } else {
-    insights.push({
-      id: 'price-integrity',
-      title: 'Strong full-price mix',
-      detail: `Only ${(discountMetrics.discountRevenueShare * 100).toFixed(1)}% of revenue is discounted.`,
-      impact: 'Healthy margin base',
+      target: 'discountRefund',
       confidence: scoreConfidence(discountMetrics.discountedOrders)
     });
   }
 
-  if (repeatRate != null) {
+  if (repeatRate != null && repeatRate < REPEAT_RATE_OPPORTUNITY) {
     insights.push({
-      id: 'repeat-rate',
-      title: repeatRate < 0.25 ? 'Repeat rate opportunity' : 'Repeat rate is healthy',
+      id: 'repeat-rate-opportunity',
+      title: 'Repeat rate opportunity',
       detail: `Repeat customers represent ${(repeatRate * 100).toFixed(1)}% of buyers in this window.`,
-      impact: repeatRate < 0.25 ? 'Retention upside' : 'Retention strength',
-      confidence: repeatRate
+      impact: 'Retention upside',
+      target: 'cohorts',
+      confidence: scoreConfidence(customerCount)
     });
   }
 
-  if (topDay && topHour) {
+  if (topDay && topHour && (topDay.count || 0) >= TIMING_MIN_ORDERS) {
     insights.push({
       id: 'timing',
       title: `Peak demand hits on ${DAY_NAMES[topDay.day]}`,
       detail: `Most orders arrive around ${topHour.hour}:00 (${describeDaypart(topHour.hour)}).`,
       impact: 'Media timing',
+      target: 'segments',
       confidence: scoreConfidence(topDay.count)
     });
   }
 
-  if (bundleTop) {
+  if (bundleTop && (bundleTop.count || 0) >= BUNDLE_MIN_COUNT && (bundleTop.lift || 0) >= BUNDLE_MIN_LIFT) {
+    const attachPct = bundleTop.attachRate != null ? (bundleTop.attachRate * 100).toFixed(1) + '%' : null;
+    const baselinePct = bundleTop.baselineRate != null ? (bundleTop.baselineRate * 100).toFixed(1) + '%' : null;
+    const statPart = attachPct && baselinePct ? `Attach ${attachPct} vs baseline ${baselinePct}. ` : '';
     insights.push({
       id: 'bundle',
       title: 'Bundle opportunity spotted',
-      detail: `${bundleTop.pair[0]} + ${bundleTop.pair[1]} shows high lift (${bundleTop.lift.toFixed(2)}x).`,
+      detail: `${bundleTop.pair[0]} → ${bundleTop.pair[1]} shows lift (${bundleTop.lift.toFixed(2)}x). ${statPart}Seen in ${bundleTop.count} orders.`,
       impact: 'AOV lift',
+      target: 'bundles',
       confidence: scoreConfidence(bundleTop.count)
     });
   }
@@ -857,17 +900,36 @@ function buildInsights({ discountMetrics, repeatRate, topDay, topHour, bundleTop
     insights.push(...productShiftInsights);
   }
 
-  if (segmentLabel) {
+  if (segment?.label) {
     insights.push({
       id: 'segment',
-      title: 'Best segment detected',
-      detail: segmentLabel,
+      title: 'Meta segment worth scaling',
+      detail: `${segment.label}${segment.revenue ? ` (${segment.revenue.toFixed(0)} revenue)` : ''}.`,
       impact: 'Targeting focus',
+      target: 'metaDemographics',
       confidence: 0.7
     });
   }
 
-  return insights.slice(0, 3);
+  const priority = {
+    'product-mover-up': 1.25,
+    'product-mover-down': 1.1,
+    bundle: 1.05,
+    segment: 1.0,
+    'discount-reliance': 0.95,
+    'repeat-rate-opportunity': 0.9,
+    timing: 0.55
+  };
+
+  return insights
+    .map((insight) => {
+      const conf = Number.isFinite(insight.confidence) ? insight.confidence : 0.5;
+      const weight = priority[insight.id] ?? 0.75;
+      return { ...insight, _score: weight * conf };
+    })
+    .sort((a, b) => (b._score || 0) - (a._score || 0))
+    .slice(0, 6)
+    .map(({ _score, ...insight }) => insight);
 }
 
 export async function getCustomerInsightsPayload(store, params = {}) {
@@ -909,9 +971,12 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const discountSkus = computeDiscountSkus(items);
   const productShiftInsights = computeProductShiftInsights(items, previousItems, 2);
 
+  let ordersWithCountry = 0;
   const topCountry = orders.reduce((best, row) => {
-    if (!row.country_code && !row.country) return best;
-    const code = row.country_code || row.country;
+    const rawCountry = row.country_code || row.country;
+    if (isUnknownText(rawCountry)) return best;
+    ordersWithCountry += 1;
+    const code = String(rawCountry).trim();
     const entry = best.map.get(code) || { code, revenue: 0, orders: 0 };
     entry.revenue += toNumber(row.order_total);
     entry.orders += 1;
@@ -931,10 +996,12 @@ export async function getCustomerInsightsPayload(store, params = {}) {
     .slice(0, 8);
 
   const cityMap = new Map();
+  let ordersWithCity = 0;
   orders.forEach((row) => {
-    if (!row.city) return;
-    const key = row.city.trim();
+    if (isUnknownText(row.city)) return;
+    const key = String(row.city).trim();
     if (!key) return;
+    ordersWithCity += 1;
     const entry = cityMap.get(key) || { city: key, revenue: 0, orders: 0 };
     entry.revenue += toNumber(row.order_total);
     entry.orders += 1;
@@ -960,48 +1027,62 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const reliableCountry = countryRows.find((row) => row.orders >= minSegmentOrders) || null;
 
   const bestCustomerSegment = reliableCity
-    ? { type: 'city', label: reliableCity.city, orders: reliableCity.orders }
+    ? { type: 'city', label: reliableCity.city, orders: reliableCity.orders, revenue: reliableCity.revenue, aov: reliableCity.aov }
     : (reliableCountry
-      ? { type: 'country', label: reliableCountry.name, orders: reliableCountry.orders }
-      : (topCountryRow ? { type: 'country', label: topCountryRow.name, orders: topCountryRow.orders } : null));
+      ? { type: 'country', label: reliableCountry.name, orders: reliableCountry.orders, revenue: reliableCountry.revenue, aov: reliableCountry.aov }
+      : (topCountryRow ? { type: 'country', label: topCountryRow.name, orders: topCountryRow.orders, revenue: topCountryRow.revenue, aov: topCountryRow.aov } : null));
 
   const bestCustomerLabel = bestCustomerSegment?.label || null;
   const segmentOrders = bestCustomerSegment?.orders || 0;
+  const segmentRevenue = bestCustomerSegment?.revenue || 0;
 
   const topDay = timing.topDay.count ? timing.topDay : null;
   const topHour = timing.topHour.count ? timing.topHour : null;
 
   const confidence = scoreConfidence(segmentOrders);
+  const cityCoverage = safeDivide(ordersWithCity, totalOrders);
+  const countryCoverage = safeDivide(ordersWithCountry, totalOrders);
 
   const hero = {
-    title: bestCustomerLabel ? `Best customers: ${bestCustomerLabel}` : 'Customer insights are building',
+    title: bestCustomerLabel
+      ? `${bestCustomerSegment?.type === 'city' ? 'Top city' : 'Top country'} by revenue: ${bestCustomerLabel}`
+      : 'Customer insights are building',
     subtitle: topDay && topHour
       ? `Peak orders on ${DAY_NAMES[topDay.day]} ${describeDaypart(topHour.hour)}.`
       : `Window: ${startDate} → ${endDate}`,
-    metricLabel: 'Share of orders',
-    metricValue: segmentOrders && totalOrders ? safeDivide(segmentOrders, totalOrders) : 0,
+    metricLabel: 'Revenue share',
+    metricValue: segmentRevenue && totalRevenue ? safeDivide(segmentRevenue, totalRevenue) : 0,
     metricFormat: 'percent',
     confidence,
     sampleSize: segmentOrders || 0
   };
 
   const kpis = [
-    { id: 'best-segment', label: 'Best Customers', value: bestCustomerLabel || '—', format: 'text' },
+    bestCustomerLabel
+      ? {
+        id: 'best-segment',
+        label: 'Top location',
+        value: bestCustomerLabel,
+        format: 'text',
+        hint: `${bestCustomerSegment?.type === 'city' ? 'City' : 'Country'} with most revenue (min ${minSegmentOrders} orders)`
+      }
+      : null,
     { id: 'ltv90', label: '90-Day LTV', value: customerStats.avgLtv90 ?? avgOrderValue, format: 'currency' },
-    { id: 'repeat-rate', label: 'Repeat Rate', value: customerStats.repeatRate, format: 'percent' },
-    { id: 'discount-reliance', label: 'Discount Reliance', value: discountMetrics.discountRevenueShare, format: 'percent' },
-    { id: 'refund-drag', label: 'Refund Drag', value: null, format: 'percent', hint: 'Refund data not connected' },
-    { id: 'top-repeat', label: 'Top Repeat Path', value: repeatPaths[0] ? `${repeatPaths[0].from} → ${repeatPaths[0].to}` : '—', format: 'text' },
-    { id: 'top-bundle', label: 'Top Bundle', value: bundles[0] ? `${bundles[0].pair[0]} + ${bundles[0].pair[1]}` : '—', format: 'text' }
-  ];
+    customerStats.customerCount ? { id: 'repeat-rate', label: 'Repeat Rate', value: customerStats.repeatRate, format: 'percent' } : null,
+    { id: 'discount-reliance', label: 'Discount Revenue Share', value: discountMetrics.discountRevenueShare, format: 'percent' },
+    repeatPaths[0] ? { id: 'top-repeat', label: 'Top Repeat Path', value: `${repeatPaths[0].from} → ${repeatPaths[0].to}`, format: 'text' } : null,
+    bundles[0] ? { id: 'top-bundle', label: 'Top Bundle', value: `${bundles[0].pair[0]} → ${bundles[0].pair[1]}`, format: 'text' } : null
+  ].filter(Boolean);
 
   const insights = buildInsights({
     discountMetrics,
     repeatRate: customerStats.repeatRate,
+    customerCount: customerStats.customerCount,
+    totalOrders,
     topDay,
     topHour,
     bundleTop: bundles[0],
-    segmentLabel: metaSegment?.label,
+    segment: metaSegment,
     productShiftInsights
   });
 
@@ -1026,6 +1107,21 @@ export async function getCustomerInsightsPayload(store, params = {}) {
         timing: {
           topDay: topDay ? DAY_NAMES[topDay.day] : null,
           topHour: topHour ? topHour.hour : null
+        },
+        geo: {
+          minOrders: minSegmentOrders,
+          cityCoverage,
+          countryCoverage,
+          cities: cityRows.map((row) => ({
+            ...row,
+            revenueShare: totalRevenue ? safeDivide(row.revenue, totalRevenue) : 0,
+            orderShare: totalOrders ? safeDivide(row.orders, totalOrders) : 0
+          })),
+          countries: countryRows.map((row) => ({
+            ...row,
+            revenueShare: totalRevenue ? safeDivide(row.revenue, totalRevenue) : 0,
+            orderShare: totalOrders ? safeDivide(row.orders, totalOrders) : 0
+          }))
         }
       },
       topProducts: {
@@ -1077,6 +1173,12 @@ export async function getCustomerInsightsPayload(store, params = {}) {
       hasItems: items.length > 0,
       hasMetaBreakdowns: Boolean(metaSegment),
       notes: [
+        totalOrders && cityCoverage < 0.8
+          ? `City missing on ${Math.round((1 - cityCoverage) * 100)}% of orders; city insights may be noisy.`
+          : null,
+        totalOrders && countryCoverage < 0.95
+          ? `Country missing on ${Math.round((1 - countryCoverage) * 100)}% of orders; country insights may be incomplete.`
+          : null,
         customerStats.customerCount ? null : 'Customer IDs missing for full repeat analysis.',
         items.length ? null : 'Line items not yet synced for bundles and paths.',
         metaSegment ? null : 'Meta age/gender breakdowns not available.',
