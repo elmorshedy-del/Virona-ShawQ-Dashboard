@@ -458,12 +458,6 @@ export default function SessionIntelligenceTab({ store }) {
   const [briefGenerating, setBriefGenerating] = useState(false);
   const [briefGenerateError, setBriefGenerateError] = useState('');
 
-  const [campaignStartDate, setCampaignStartDate] = useState(() => isoDayUtc(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
-  const [campaignEndDate, setCampaignEndDate] = useState(() => isoDayUtc(new Date()));
-  const [campaignPurchasesReport, setCampaignPurchasesReport] = useState(null);
-  const [campaignPurchasesLoading, setCampaignPurchasesLoading] = useState(false);
-  const [campaignPurchasesError, setCampaignPurchasesError] = useState('');
-
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
 
@@ -697,23 +691,6 @@ export default function SessionIntelligenceTab({ store }) {
     setLibraryEvents(Array.isArray(data.events) ? data.events : []);
   }, [storeId]);
 
-  const loadCampaignPurchases = useCallback(async (startDate = campaignStartDate, endDate = campaignEndDate) => {
-    if (!startDate || !endDate) return;
-    setCampaignPurchasesLoading(true);
-    setCampaignPurchasesError('');
-    try {
-      const url = `/api/session-intelligence/purchases-by-campaign?store=${encodeURIComponent(storeId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&limit=500`;
-      const data = await fetchJson(url);
-      setCampaignPurchasesReport(data);
-    } catch (error) {
-      console.error('[SessionIntelligenceTab] purchases-by-campaign load failed:', error);
-      setCampaignPurchasesError(error?.message || 'Failed to load purchases by campaign');
-      setCampaignPurchasesReport(null);
-    } finally {
-      setCampaignPurchasesLoading(false);
-    }
-  }, [campaignEndDate, campaignStartDate, storeId]);
-
   const manualRefresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -725,20 +702,19 @@ export default function SessionIntelligenceTab({ store }) {
         loadClarity(libraryDay, flowMode),
         loadSessions(),
         loadEvents(),
-        loadLibraryDays(),
-        loadCampaignPurchases()
+        loadLibraryDays()
       ]);
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadCampaignPurchases, loadClarity, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadClarity, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadRealtime(), loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays(), loadCampaignPurchases()])
+    Promise.all([loadRealtime(), loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -781,7 +757,7 @@ export default function SessionIntelligenceTab({ store }) {
       clearInterval(eventsTimer);
       clearInterval(overviewTimer);
     };
-  }, [loadBrief, loadCampaignPurchases, loadEvents, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [loadBrief, loadEvents, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     setLibraryError('');
@@ -1925,77 +1901,6 @@ export default function SessionIntelligenceTab({ store }) {
 	        )}
       </div>
 
-      <div className="si-card" style={{ marginBottom: 12 }}>
-        <div className="si-card-title">
-          <h3>Purchases by campaign & country</h3>
-          <span className="si-muted">From our Shopify tracking (UTC)</span>
-        </div>
-
-        <div className="si-row" style={{ gap: 10, flexWrap: 'wrap' }}>
-          <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            Start
-            <input
-              className="si-input"
-              type="date"
-              value={campaignStartDate}
-              onChange={(e) => setCampaignStartDate(e.target.value)}
-            />
-          </label>
-          <label className="si-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            End
-            <input
-              className="si-input"
-              type="date"
-              value={campaignEndDate}
-              onChange={(e) => setCampaignEndDate(e.target.value)}
-            />
-          </label>
-
-          <button className="si-button" type="button" onClick={() => loadCampaignPurchases()} disabled={campaignPurchasesLoading}>
-            {campaignPurchasesLoading ? 'Loading…' : 'Load'}
-          </button>
-
-          <span className="si-muted">
-            Purchases: {campaignPurchasesReport?.totalPurchases ?? '—'}
-          </span>
-        </div>
-
-        {campaignPurchasesError ? (
-          <div className="si-empty" style={{ color: '#b42318', marginTop: 10 }}>
-            {campaignPurchasesError}
-          </div>
-        ) : null}
-
-        {campaignPurchasesLoading && !campaignPurchasesReport ? (
-          <div className="si-empty" style={{ marginTop: 10 }}>
-            Loading purchases…
-          </div>
-        ) : Array.isArray(campaignPurchasesReport?.rows) && campaignPurchasesReport.rows.length > 0 ? (
-          <table className="si-event-table" style={{ marginTop: 10 }}>
-            <thead>
-              <tr>
-                <th>Campaign</th>
-                <th>Country</th>
-                <th style={{ textAlign: 'right' }}>Purchases</th>
-              </tr>
-            </thead>
-            <tbody>
-              {campaignPurchasesReport.rows.map((row) => (
-                <tr key={`${row.campaign}||${row.country}`}>
-                  <td title={row.campaign}>{row.campaign}</td>
-                  <td>{row.country}</td>
-                  <td style={{ textAlign: 'right' }}>{row.purchases}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <div className="si-empty" style={{ marginTop: 10 }}>
-            No purchases found in this date range.
-          </div>
-        )}
-      </div>
-
       <div className="si-card" style={{ marginTop: 14 }}>
         <div className="si-card-title">
           <h3>Events library (last {overview?.retentionHours ?? 72}h)</h3>
@@ -2229,84 +2134,85 @@ export default function SessionIntelligenceTab({ store }) {
         )}
       </div>
 
-      <div className="si-sanity">
-        <div
-          className="si-sanity-header"
-          role="button"
-          tabIndex={0}
-          onClick={() => setSanityOpen((v) => !v)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') setSanityOpen((v) => !v);
-          }}
-        >
-          <div className="si-sanity-title">
-            <span>Sanity panel (events from Shopify)</span>
-            <small>
-              {eventsStatus === 'ok'
-                ? `Last event ${latestEventAt ? timeAgo(latestEventAt) : '—'} • Updated ${lastUpdatedAt ? timeAgo(lastUpdatedAt) : '—'}`
-                : 'Waiting for events…'}
-            </small>
-          </div>
-
-          <div className="si-chevron" data-open={sanityOpen ? 'true' : 'false'}>
-            <ChevronDown size={16} />
-          </div>
+      <div className="si-row" style={{ marginTop: 14, justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="si-muted" style={{ fontSize: 12 }}>
+          {eventsStatus === 'ok'
+            ? `Live events: last ${latestEventAt ? timeAgo(latestEventAt) : '—'} • updated ${lastUpdatedAt ? timeAgo(lastUpdatedAt) : '—'}`
+            : 'Live events: waiting for events…'}
         </div>
 
-        {sanityOpen && (
-          <div className="si-sanity-body">
-            {events.length === 0 ? (
-              <div className="si-empty">
-                No events yet. Open Shopify and trigger <span className="si-badge">page_viewed</span> or{' '}
-                <span className="si-badge">checkout_started</span>.
-              </div>
-            ) : (
-              <table className="si-event-table">
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Event</th>
-                    <th>Path</th>
-                    <th>Checkout step</th>
-                    <th>User</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {events.slice(0, 30).map((event) => (
-                    <tr key={event.id}>
-                      <td>{timeAgo(event.created_at || event.event_ts)}</td>
-                      <td>
-                        <span className="si-event-name">
-                          <Activity size={14} />
-                          {event.event_name}
-                        </span>
-                      </td>
-                      <td title={event.page_url || event.page_path || ''}>
-                        {event.page_path || event.page_url || '—'}
-                      </td>
-                      <td>
-                        {event.checkout_step ? (
-                          <span className="si-badge">{normalizeStepLabel(event.checkout_step)}</span>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td
-                        title={[
-                          event.client_id ? `client_id: ${event.client_id}` : null,
-                          event.session_id ? `session_id: ${event.session_id}` : null
-                        ].filter(Boolean).join('\n')}
-                      >
-                        {userLabel(event)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
+        <button
+          type="button"
+          className={`si-chip si-chip-button ${sanityOpen ? 'si-chip-active' : ''}`}
+          aria-pressed={sanityOpen}
+          onClick={() => setSanityOpen((v) => !v)}
+          title="Live Shopify events (debug feed)"
+        >
+          <Activity size={14} />
+          Live events
+          <ChevronDown
+            size={14}
+            style={{
+              transition: 'transform 150ms ease',
+              transform: sanityOpen ? 'rotate(180deg)' : 'rotate(0deg)'
+            }}
+          />
+        </button>
       </div>
+
+      {sanityOpen ? (
+        <div className="si-card" style={{ marginTop: 10 }}>
+          {events.length === 0 ? (
+            <div className="si-empty">
+              No events yet. Open Shopify and trigger <span className="si-badge">page_viewed</span> or{' '}
+              <span className="si-badge">checkout_started</span>.
+            </div>
+          ) : (
+            <table className="si-event-table">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Event</th>
+                  <th>Path</th>
+                  <th>Checkout step</th>
+                  <th>User</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.slice(0, 30).map((event) => (
+                  <tr key={event.id}>
+                    <td>{timeAgo(event.created_at || event.event_ts)}</td>
+                    <td>
+                      <span className="si-event-name">
+                        <Activity size={14} />
+                        {event.event_name}
+                      </span>
+                    </td>
+                    <td title={event.page_url || event.page_path || ''}>
+                      {event.page_path || event.page_url || '—'}
+                    </td>
+                    <td>
+                      {event.checkout_step ? (
+                        <span className="si-badge">{normalizeStepLabel(event.checkout_step)}</span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td
+                      title={[
+                        event.client_id ? `client_id: ${event.client_id}` : null,
+                        event.session_id ? `session_id: ${event.session_id}` : null
+                      ].filter(Boolean).join('\n')}
+                    >
+                      {userLabel(event)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : null}
 
       {storyOpen ? (
         <div className="si-drawer-backdrop" role="dialog" aria-modal="true" onClick={closeStory}>

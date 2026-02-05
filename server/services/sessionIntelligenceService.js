@@ -263,10 +263,11 @@ function extractJsonObjectFromText(text) {
 
 function makeSessionCodename(sessionId) {
   const raw = safeString(sessionId).trim();
-  if (!raw) return 'S-UNKNOWN';
+  if (!raw) return 'SUNKNOWN';
   const hex = createHash('sha256').update(raw).digest('hex').slice(0, 10);
   const code = BigInt(`0x${hex}`).toString(36).toUpperCase().padStart(8, '0');
-  return `S-${code.slice(0, 4)}-${code.slice(4, 8)}`;
+  // Human-friendly, compact session code used across the UI.
+  return `S${code.slice(0, 4)}-${code.slice(4, 8)}`;
 }
 
 function extractProductIdsFromCart(cartJson) {
@@ -1603,7 +1604,10 @@ export function getSessionIntelligenceRecentEvents(store, limit = 80) {
     WHERE store = ?
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(store, max);
+  `).all(store, max).map((row) => ({
+    ...row,
+    codename: makeSessionCodename(row.session_id)
+  }));
 }
 
 export function getSessionIntelligenceSessions(store, limit = 60) {
@@ -1641,7 +1645,10 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
     WHERE store = ?
     ORDER BY COALESCE(last_event_at, updated_at, created_at) DESC
     LIMIT ?
-  `).all(store, max);
+  `).all(store, max).map((row) => ({
+    ...row,
+    codename: makeSessionCodename(row.session_id)
+  }));
 }
 
 export function getSessionIntelligenceLatestBrief(store) {
@@ -2809,7 +2816,10 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
         AND created_at < ?
       ORDER BY created_at ASC
       LIMIT ?
-    `).all(store, sessionId, range.start, range.end, max);
+    `).all(store, sessionId, range.start, range.end, max).map((row) => ({
+      ...row,
+      codename: makeSessionCodename(row.session_id)
+    }));
   }
 
   return db.prepare(`
@@ -2844,7 +2854,10 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
       AND created_at < ?
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(store, range.start, range.end, max);
+  `).all(store, range.start, range.end, max).map((row) => ({
+    ...row,
+    codename: makeSessionCodename(row.session_id)
+  }));
 }
 
 export function getSessionIntelligenceEventsForSession(store, sessionId, limit = 1200) {
