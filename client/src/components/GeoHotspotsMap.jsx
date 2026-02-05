@@ -41,7 +41,13 @@ function ensureGeoChartReady() {
       return;
     }
 
-    google.charts.load('current', { packages: ['geochart'] });
+    const mapsApiKey = import.meta?.env?.VITE_GOOGLE_MAPS_API_KEY;
+    const loadOptions = { packages: ['geochart'] };
+    if (typeof mapsApiKey === 'string' && mapsApiKey.trim()) {
+      loadOptions.mapsApiKey = mapsApiKey.trim();
+    }
+
+    google.charts.load('current', loadOptions);
     google.charts.setOnLoadCallback(() => resolve(google));
   }));
 
