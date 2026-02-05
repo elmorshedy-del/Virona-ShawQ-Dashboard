@@ -1205,25 +1205,33 @@ router.get('/video/download', async (req, res) => {
 // VIDEO TEXT OVERLAY EDITOR (burnt-in overlay editing)
 // ============================================================================
 
-router.get('/video-overlay/health', async (req, res) => {
-  try {
-    const overlayAiConfigured = isVideoOverlayAiConfigured();
-    const overlayAiHealth = overlayAiConfigured ? await getVideoOverlayAiHealth().catch(() => null) : null;
-
-    res.json({
-      success: true,
-      overlay_ai: {
+	router.get('/video-overlay/health', async (req, res) => {
+	  try {
+	    const overlayAiConfigured = isVideoOverlayAiConfigured();
+	    const overlayAiHealth = overlayAiConfigured ? await getVideoOverlayAiHealth().catch(() => null) : null;
+	    const rawModel = String(process.env.VIDEO_OVERLAY_SCAN_MODEL || '').trim();
+	    const defaultModel = 'gemini-2.5-flash-lite';
+	    const resolvedModel = rawModel && rawModel.toLowerCase() === 'gemini-2.0-flash-lite' ? defaultModel : (rawModel || defaultModel);
+	    const modelWarning = rawModel && rawModel.toLowerCase() === 'gemini-2.0-flash-lite'
+	      ? `VIDEO_OVERLAY_SCAN_MODEL=${rawModel} is deprecated. Using ${resolvedModel} instead.`
+	      : null;
+	
+	    res.json({
+	      success: true,
+	      overlay_ai: {
         configured: overlayAiConfigured,
         url: process.env.VIDEO_OVERLAY_AI_URL || null,
         health: overlayAiHealth
-      },
-      gemini: {
-        configured: Boolean(process.env.GEMINI_API_KEY),
-        model: process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.5-flash-lite'
-      },
-      tools: {
-        ffmpeg: true,
-        ffprobe: true
+	      },
+	      gemini: {
+	        configured: Boolean(process.env.GEMINI_API_KEY),
+	        model: resolvedModel,
+	        configured_model: rawModel || null,
+	        warning: modelWarning
+	      },
+	      tools: {
+	        ffmpeg: true,
+	        ffprobe: true
       }
     });
   } catch (error) {
@@ -1325,7 +1333,19 @@ async function detectOverlayKeysWithGemini({ frames } = {}) {
     throw new Error('GEMINI_API_KEY is not configured.');
   }
 
-  const modelName = process.env.VIDEO_OVERLAY_SCAN_MODEL || 'gemini-2.5-flash-lite';
+  const DEFAULT_VIDEO_OVERLAY_SCAN_MODEL = 'gemini-2.5-flash-lite';
+  const resolveVideoOverlayScanModel = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return DEFAULT_VIDEO_OVERLAY_SCAN_MODEL;
+
+    // Back-compat: older deployments used gemini-2.0-flash-lite, which is deprecated / frequently errors.
+    if (raw.toLowerCase() === 'gemini-2.0-flash-lite') return DEFAULT_VIDEO_OVERLAY_SCAN_MODEL;
+
+    return raw;
+  };
+
+  const configuredModelName = process.env.VIDEO_OVERLAY_SCAN_MODEL || '';
+  const modelName = resolveVideoOverlayScanModel(configuredModelName);
   const genAI = new GoogleGenerativeAI(apiKey);
 
   const responseSchema = {
