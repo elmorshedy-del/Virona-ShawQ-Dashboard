@@ -12,6 +12,26 @@ const DEFAULT_DAYS = 90;
 const MAX_DAYS = 3650;
 const LEAK_MIN_ATC = 20;
 
+const KEY_INSIGHT_THRESHOLDS = {
+  genderConversionRatio: 1.2,
+  genderConversionGap: 0.002,
+  genderAtcGap: 0.01,
+  wasteSevereRateFactor: 0.4,
+  wasteMinSpendShare: 0.07,
+  wasteSevereMinSpendShare: 0.03,
+  sweetSpotRateFactor: 1.15,
+  leakMinAtc: 50,
+  leakMinDrop: 0.5,
+  leakMinSpendShare: 0.03,
+  countryRateFactor: 1.25,
+  placementWasteMinSpendShare: 0.05,
+  placementWasteRateFactor: 0.5,
+  placementOpportunityMaxSpendShare: 0.12,
+  placementOpportunityRateFactor: 1.4,
+  deviceRateRatio: 1.4,
+  maxKeyInsights: 8
+};
+
 const PURCHASE_ACTION_TYPES = [
   'omni_purchase',
   'purchase',
@@ -493,6 +513,7 @@ function buildKeyInsights({
   deviceActionsAvailable
 }) {
   const insights = [];
+  const thresholds = KEY_INSIGHT_THRESHOLDS;
 
   const formatPct = (value) => {
     if (!Number.isFinite(value)) return '—';
@@ -574,11 +595,13 @@ function buildKeyInsights({
       const convGap = leadConv - lagConv;
       const convRatio = lagConv > 0 ? leadConv / lagConv : null;
       const meaningful = Number.isFinite(convRatio)
-        ? (convRatio >= 1.2 && convGap >= 0.002)
-        : (convGap >= 0.002);
+        ? (convRatio >= thresholds.genderConversionRatio && convGap >= thresholds.genderConversionGap)
+        : (convGap >= thresholds.genderConversionGap);
 
       if (meaningful) {
-        const atcPart = (Number.isFinite(leadAtc) && Number.isFinite(lagAtc) && Math.abs(leadAtc - lagAtc) >= 0.01)
+        const atcPart = (Number.isFinite(leadAtc)
+          && Number.isFinite(lagAtc)
+          && Math.abs(leadAtc - lagAtc) >= thresholds.genderAtcGap)
           ? `; ATC ${formatPct(leadAtc)} vs ${formatPct(lagAtc)}`
           : '';
 
@@ -609,8 +632,9 @@ function buildKeyInsights({
     });
 
     if (worst) {
-      const severe = worst.purchaseRate <= overallPurchaseRateAge * 0.4;
-      const meaningfulSpend = (worst.spendShare >= 0.07) || (worst.spendShare >= 0.03 && severe);
+      const severe = worst.purchaseRate <= overallPurchaseRateAge * thresholds.wasteSevereRateFactor;
+      const meaningfulSpend = (worst.spendShare >= thresholds.wasteMinSpendShare)
+        || (worst.spendShare >= thresholds.wasteSevereMinSpendShare && severe);
       if (meaningfulSpend) {
         insights.push({
           type: 'waste',
@@ -637,7 +661,7 @@ function buildKeyInsights({
       .filter((row) => row.clicks >= keyMinClicks && row.purchases >= keyMinPurchases && Number.isFinite(row.rate))
       .sort((a, b) => (b.rate || 0) - (a.rate || 0))[0];
 
-    if (bestAge && bestAge.rate >= overallPurchaseRateAge * 1.15) {
+    if (bestAge && bestAge.rate >= overallPurchaseRateAge * thresholds.sweetSpotRateFactor) {
       insights.push({
         type: 'sweetspot',
         text: `Sweet spot: Age ${bestAge.age} converts best at ${formatPct(bestAge.rate)} (account ${formatPct(overallPurchaseRateAge)})`
@@ -647,7 +671,7 @@ function buildKeyInsights({
 
   // 4) Funnel leak (ATC → checkout), only with enough ATCs.
   if (ageActionsAvailable) {
-    const minAtc = Math.max(LEAK_MIN_ATC, 50);
+    const minAtc = Math.max(LEAK_MIN_ATC, thresholds.leakMinAtc);
     const leakCandidates = eligibleAge
       .filter((row) => Number.isFinite(row.atc) && Number.isFinite(row.checkout))
       .filter((row) => row.atc >= minAtc && row.clicks >= keyMinClicks)
@@ -655,12 +679,12 @@ function buildKeyInsights({
         ...row,
         leak: row.atc > 0 ? 1 - (row.checkout / row.atc) : null
       }))
-      .filter((row) => Number.isFinite(row.leak) && row.leak >= 0.5);
+      .filter((row) => Number.isFinite(row.leak) && row.leak >= thresholds.leakMinDrop);
 
     const worstLeak = leakCandidates
       .sort((a, b) => ((b.leak || 0) * (b.spendShare || 0)) - ((a.leak || 0) * (a.spendShare || 0)))[0];
 
-    if (worstLeak && worstLeak.spendShare >= 0.03) {
+    if (worstLeak && worstLeak.spendShare >= thresholds.leakMinSpendShare) {
       insights.push({
         type: 'leak',
         text: `Funnel leak: ${genderShort(worstLeak.gender)} ${worstLeak.age || 'Unknown'} drops ${Math.round(worstLeak.leak * 100)}% from ATC→checkout (≥ ${minAtc} ATCs)`
@@ -691,7 +715,7 @@ function buildKeyInsights({
     );
 
     const best = rows.sort((a, b) => (b.rate || 0) - (a.rate || 0))[0];
-    if (best && Number.isFinite(avg) && avg > 0 && best.rate >= avg * 1.25) {
+    if (best && Number.isFinite(avg) && avg > 0 && best.rate >= avg * thresholds.countryRateFactor) {
       insights.push({
         type: 'country',
         text: `Country: ${formatCountryLabel(best.country)} converts at ${formatPct(best.rate)} click→purchase (avg ${formatPct(avg)})`
@@ -712,7 +736,8 @@ function buildKeyInsights({
 
     if (Number.isFinite(avg) && avg > 0) {
       const worst = eligiblePlacements
-        .filter((row) => row.spendShare >= 0.05 && row.purchaseRate <= avg * 0.5)
+        .filter((row) => row.spendShare >= thresholds.placementWasteMinSpendShare
+          && row.purchaseRate <= avg * thresholds.placementWasteRateFactor)
         .sort((a, b) => ((b.spendShare || 0) * ((avg - b.purchaseRate) / avg)) - ((a.spendShare || 0) * ((avg - a.purchaseRate) / avg)))[0];
 
       if (worst) {
@@ -723,7 +748,9 @@ function buildKeyInsights({
       }
 
       const opportunity = eligiblePlacements
-        .filter((row) => row.spendShare <= 0.12 && row.purchaseRate >= avg * 1.4 && row.purchases >= keyMinPurchases)
+        .filter((row) => row.spendShare <= thresholds.placementOpportunityMaxSpendShare
+          && row.purchaseRate >= avg * thresholds.placementOpportunityRateFactor
+          && row.purchases >= keyMinPurchases)
         .sort((a, b) => (b.purchaseRate || 0) - (a.purchaseRate || 0))[0];
 
       if (opportunity) {
@@ -746,7 +773,7 @@ function buildKeyInsights({
 
     if (best && worst && best.key !== worst.key && worst.purchaseRate > 0) {
       const ratio = best.purchaseRate / worst.purchaseRate;
-      if (Number.isFinite(ratio) && ratio >= 1.4 && best.purchases >= keyMinPurchases) {
+      if (Number.isFinite(ratio) && ratio >= thresholds.deviceRateRatio && best.purchases >= keyMinPurchases) {
         insights.push({
           type: 'device',
           text: `Device: ${formatDeviceLabel(best)} converts ${ratio.toFixed(1)}x better than ${formatDeviceLabel(worst)} (${formatPct(best.purchaseRate)} vs ${formatPct(worst.purchaseRate)})`
@@ -764,7 +791,7 @@ function buildKeyInsights({
     ];
   }
 
-  return insights.slice(0, 8);
+  return insights.slice(0, thresholds.maxKeyInsights);
 }
 
 function sortAgeGender(rows) {
