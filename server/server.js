@@ -208,7 +208,7 @@ try {
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // Favicon fallback
 app.get('/favicon.ico', (req, res) => {
