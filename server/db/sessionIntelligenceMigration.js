@@ -124,6 +124,7 @@ export function runSessionIntelligenceMigration() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,
       session_id TEXT NOT NULL,
+      session_number INTEGER,
       client_id TEXT,
       started_at TEXT,
       last_event_at TEXT,
@@ -153,6 +154,7 @@ export function runSessionIntelligenceMigration() {
     )
   `);
 
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN session_number INTEGER`); } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE si_sessions ADD COLUMN last_checkout_token TEXT`);
   } catch (e) { /* column exists */ }
@@ -190,6 +192,21 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_si_sessions_store_session_number
+    ON si_sessions(store, session_number)
+    WHERE session_number IS NOT NULL
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_store_counters (
+      store TEXT PRIMARY KEY,
+      next_session_number INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS si_daily_briefs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,
@@ -207,6 +224,57 @@ export function runSessionIntelligenceMigration() {
     CREATE INDEX IF NOT EXISTS idx_si_daily_briefs_store_date
     ON si_daily_briefs(store, date)
   `);
+
+  // Backfill session_number for existing sessions (per-store sequential IDs).
+  // Also initialize/update store counters so new sessions keep incrementing correctly.
+  try {
+    const stores = db.prepare(`
+      SELECT DISTINCT store
+      FROM si_sessions
+      WHERE store IS NOT NULL AND store != ''
+    `).all().map((row) => row.store).filter(Boolean);
+
+    const selectMax = db.prepare(`
+      SELECT COALESCE(MAX(session_number), 0) AS max
+      FROM si_sessions
+      WHERE store = ?
+    `);
+
+    const selectMissing = db.prepare(`
+      SELECT session_id
+      FROM si_sessions
+      WHERE store = ? AND session_number IS NULL
+      ORDER BY COALESCE(started_at, created_at), id
+    `);
+
+    const updateSession = db.prepare(`
+      UPDATE si_sessions
+      SET session_number = ?
+      WHERE store = ? AND session_id = ? AND session_number IS NULL
+    `);
+
+    const upsertCounter = db.prepare(`
+      INSERT INTO si_store_counters (store, next_session_number, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(store) DO UPDATE SET
+        next_session_number = excluded.next_session_number,
+        updated_at = excluded.updated_at
+    `);
+
+    for (const store of stores) {
+      let next = (Number(selectMax.get(store)?.max) || 0) + 1;
+      const missing = selectMissing.all(store);
+      for (const row of missing) {
+        if (!row?.session_id) continue;
+        updateSession.run(next, store, row.session_id);
+        next += 1;
+      }
+      upsertCounter.run(store, next);
+    }
+  } catch (e) {
+    // Don't block server boot if backfill fails (e.g. read-only DB).
+    console.warn('[SessionIntelligenceMigration] session_number backfill skipped:', e?.message || e);
+  }
 
   console.log('✅ Session Intelligence tables ready');
 }
