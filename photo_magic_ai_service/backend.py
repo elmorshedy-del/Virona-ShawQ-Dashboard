@@ -349,7 +349,7 @@ def remove_bg_rmbg2():
 @app.route("/remove-bg/sam2-refine", methods=["POST"])
 def remove_bg_sam2_refine():
     try:
-        ok, err = require_ready({"rmbg2": True, "sam2": SAM2_AVAILABLE, "lama": True})
+        ok, err = require_ready({"sam2": SAM2_AVAILABLE})
         if not ok:
             return err, 503
 
