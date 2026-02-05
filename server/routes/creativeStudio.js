@@ -20,6 +20,15 @@ import * as apifyService from '../services/apifyService.js';
 import { isBrandCacheValid, getBrandCacheExpiry } from '../db/competitorSpyMigration.js';
 import { getOrCreateStoreProfile } from '../services/storeProfileService.js';
 import { detectVideoOverlays, getVideoOverlayAiHealth, isVideoOverlayAiConfigured } from '../services/videoOverlayAiClient.js';
+import sharp from 'sharp';
+import {
+  eraseLama,
+  getPhotoMagicAiHealth,
+  isPhotoMagicAiConfigured,
+  refineBgSam2,
+  removeBgRmbg2
+} from '../services/photoMagicAiClient.js';
+import { eraseSdxl, getPhotoMagicHqHealth, isPhotoMagicHqConfigured } from '../services/photoMagicHqClient.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,6 +58,31 @@ function getUploadedVideoPath(videoId) {
 
 function getExportedVideoPath(exportId) {
   return path.join(VIDEO_OVERLAY_OUTPUTS_DIR, `${exportId}.mp4`);
+}
+
+// ============================================================================
+// PHOTO MAGIC (background removal + magic eraser) - temp storage + helpers
+// ============================================================================
+
+const PHOTO_MAGIC_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'photo-magic');
+const PHOTO_MAGIC_UPLOADS_DIR = path.join(PHOTO_MAGIC_TMP_DIR, 'uploads');
+const PHOTO_MAGIC_OUTPUTS_DIR = path.join(PHOTO_MAGIC_TMP_DIR, 'outputs');
+
+async function ensurePhotoMagicDirs() {
+  await fs.promises.mkdir(PHOTO_MAGIC_UPLOADS_DIR, { recursive: true });
+  await fs.promises.mkdir(PHOTO_MAGIC_OUTPUTS_DIR, { recursive: true });
+}
+
+function getUploadedPhotoPath(imageId) {
+  return path.join(PHOTO_MAGIC_UPLOADS_DIR, imageId);
+}
+
+function getPhotoMagicOutputPath(outputId, ext = 'png') {
+  return path.join(PHOTO_MAGIC_OUTPUTS_DIR, `${outputId}.${ext}`);
+}
+
+function isSafeTmpId(id) {
+  return /^[a-f0-9-]{8,}$/i.test(String(id || '').trim());
 }
 
 function safeParseNumber(value, fallback = null) {
@@ -1871,6 +1905,343 @@ router.get('/video-overlay/download', async (req, res) => {
     fs.createReadStream(outPath).pipe(res);
   } catch (error) {
     console.error('Video overlay download error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// PHOTO MAGIC (RMBG2 + SAM2 + LaMa + optional SDXL HQ)
+// ============================================================================
+
+router.get('/photo-magic/health', async (req, res) => {
+  try {
+    const aiConfigured = isPhotoMagicAiConfigured();
+    const aiHealth = aiConfigured
+      ? await getPhotoMagicAiHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+
+    const hqConfigured = isPhotoMagicHqConfigured();
+    const hqHealth = hqConfigured
+      ? await getPhotoMagicHqHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+
+    res.json({
+      success: true,
+      photo_magic: {
+        ai: {
+          configured: aiConfigured,
+          url: process.env.PHOTO_MAGIC_AI_URL || null,
+          health: aiHealth,
+          timeouts_ms: {
+            default: Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000),
+            health: Number(process.env.PHOTO_MAGIC_AI_HEALTH_TIMEOUT_MS || 10000)
+          }
+        },
+        hq: {
+          configured: hqConfigured,
+          url: process.env.PHOTO_MAGIC_HQ_AI_URL || null,
+          health: hqHealth,
+          timeouts_ms: {
+            default: Number(process.env.PHOTO_MAGIC_HQ_TIMEOUT_MS || 600000),
+            health: Number(process.env.PHOTO_MAGIC_HQ_HEALTH_TIMEOUT_MS || 10000)
+          }
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/photo-magic/upload', upload.single('image'), async (req, res) => {
+  try {
+    await ensurePhotoMagicDirs();
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No image provided' });
+    }
+
+    const imageId = crypto.randomUUID();
+    const imagePath = getUploadedPhotoPath(imageId);
+    await fs.promises.writeFile(imagePath, req.file.buffer);
+
+    let meta = null;
+    try {
+      meta = await sharp(req.file.buffer).metadata();
+    } catch {
+      meta = null;
+    }
+
+    return res.json({
+      success: true,
+      image_id: imageId,
+      filename: req.file.originalname,
+      size: req.file.size,
+      mime: req.file.mimetype,
+      width: meta?.width || null,
+      height: meta?.height || null
+    });
+  } catch (error) {
+    console.error('Photo magic upload error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/photo-magic/remove-bg', async (req, res) => {
+  try {
+    await ensurePhotoMagicDirs();
+
+    if (!isPhotoMagicAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    const engine = String(req.body?.engine || 'rmbg2').trim();
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.maxSide ?? 2048, 256, 8192);
+
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+    if (engine !== 'rmbg2') {
+      return res.status(400).json({ success: false, error: 'Unsupported engine (expected rmbg2)' });
+    }
+
+    const imagePath = getUploadedPhotoPath(imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const buf = await fs.promises.readFile(imagePath);
+    const imageBase64 = buf.toString('base64');
+
+    const result = await removeBgRmbg2({ imageBase64, maxSide });
+
+    const cutoutId = crypto.randomUUID();
+    const maskId = crypto.randomUUID();
+
+    const cutoutPath = getPhotoMagicOutputPath(cutoutId, 'png');
+    const maskPath = getPhotoMagicOutputPath(maskId, 'png');
+
+    await fs.promises.writeFile(cutoutPath, Buffer.from(String(result?.cutout_png || ''), 'base64'));
+    await fs.promises.writeFile(maskPath, Buffer.from(String(result?.mask_png || ''), 'base64'));
+
+    return res.json({
+      success: true,
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      cutout: {
+        output_id: cutoutId,
+        url: `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(cutoutId)}&filename=${encodeURIComponent('cutout.png')}`
+      },
+      mask: {
+        output_id: maskId,
+        url: `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(maskId)}&filename=${encodeURIComponent('mask.png')}`
+      }
+    });
+  } catch (error) {
+    console.error('Photo magic remove-bg error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/remove-bg/refine', async (req, res) => {
+  try {
+    await ensurePhotoMagicDirs();
+
+    if (!isPhotoMagicAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    const points = Array.isArray(req.body?.points) ? req.body.points : [];
+    const boxXyxy = Array.isArray(req.body?.box_xyxy) ? req.body.box_xyxy : null;
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.maxSide ?? 2048, 256, 8192);
+    const maskDilatePx = clampNumber(req.body?.mask_dilate_px ?? req.body?.maskDilatePx ?? 0, 0, 64);
+    const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 0, 0, 64);
+
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+    if (!points.length) {
+      return res.status(400).json({ success: false, error: 'points is required (at least 1 point)' });
+    }
+
+    const imagePath = getUploadedPhotoPath(imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const buf = await fs.promises.readFile(imagePath);
+    const imageBase64 = buf.toString('base64');
+
+    const result = await refineBgSam2({
+      imageBase64,
+      points,
+      boxXyxy,
+      maxSide,
+      maskDilatePx,
+      maskFeatherPx
+    });
+
+    const cutoutId = crypto.randomUUID();
+    const maskId = crypto.randomUUID();
+
+    const cutoutPath = getPhotoMagicOutputPath(cutoutId, 'png');
+    const maskPath = getPhotoMagicOutputPath(maskId, 'png');
+
+    await fs.promises.writeFile(cutoutPath, Buffer.from(String(result?.cutout_png || ''), 'base64'));
+    await fs.promises.writeFile(maskPath, Buffer.from(String(result?.mask_png || ''), 'base64'));
+
+    return res.json({
+      success: true,
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      cutout: {
+        output_id: cutoutId,
+        url: `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(cutoutId)}&filename=${encodeURIComponent('cutout.png')}`
+      },
+      mask: {
+        output_id: maskId,
+        url: `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(maskId)}&filename=${encodeURIComponent('mask.png')}`
+      }
+    });
+  } catch (error) {
+    console.error('Photo magic refine error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/erase', async (req, res) => {
+  try {
+    await ensurePhotoMagicDirs();
+
+    const imageId = String(req.body?.image_id || '').trim();
+    const maskBase64 = req.body?.mask_png_base64 || req.body?.mask_png || req.body?.mask || '';
+    const quality = String(req.body?.quality || 'standard').trim().toLowerCase();
+
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+    if (!maskBase64) {
+      return res.status(400).json({ success: false, error: 'mask_png_base64 is required' });
+    }
+
+    const imagePath = getUploadedPhotoPath(imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const buf = await fs.promises.readFile(imagePath);
+    const imageBase64 = buf.toString('base64');
+
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.maxSide ?? 2048, 256, 8192);
+    const maskDilatePx = clampNumber(req.body?.mask_dilate_px ?? req.body?.maskDilatePx ?? 8, 0, 64);
+    const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 8, 0, 64);
+    const cropToMask = req.body?.crop_to_mask ?? req.body?.cropToMask ?? true;
+    const cropMarginPx = clampNumber(req.body?.crop_margin_px ?? req.body?.cropMarginPx ?? 128, 0, 2048);
+
+    let result;
+    if (quality === 'hq') {
+      if (!isPhotoMagicHqConfigured()) {
+        return res.status(503).json({
+          success: false,
+          error: 'PHOTO_MAGIC_HQ_AI_URL is not configured. Deploy the HQ service and set PHOTO_MAGIC_HQ_AI_URL.'
+        });
+      }
+
+      const health = await getPhotoMagicHqHealth().catch(() => null);
+      if (!health?.ok) {
+        return res.status(503).json({
+          success: false,
+          error: 'Photo Magic HQ service is not ready (check /photo-magic/health)',
+          details: health
+        });
+      }
+
+      const steps = clampNumber(req.body?.num_inference_steps ?? req.body?.numInferenceSteps ?? 20, 5, 80);
+      const guidance = clampNumber(req.body?.guidance_scale ?? req.body?.guidanceScale ?? 8.0, 0.0, 20.0);
+      const strength = clampNumber(req.body?.strength ?? 0.99, 0.0, 1.0);
+      const seed = clampNumber(req.body?.seed ?? 0, 0, 2147483647);
+
+      result = await eraseSdxl({
+        imageBase64,
+        maskBase64,
+        numInferenceSteps: steps,
+        guidanceScale: guidance,
+        strength,
+        seed,
+        maskDilatePx,
+        maskFeatherPx,
+        cropToMask: Boolean(cropToMask),
+        cropMarginPx
+      });
+    } else {
+      if (!isPhotoMagicAiConfigured()) {
+        return res.status(503).json({
+          success: false,
+          error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+        });
+      }
+
+      result = await eraseLama({
+        imageBase64,
+        maskBase64,
+        maxSide,
+        maskDilatePx,
+        maskFeatherPx,
+        cropToMask: Boolean(cropToMask),
+        cropMarginPx
+      });
+    }
+
+    const outId = crypto.randomUUID();
+    const outPath = getPhotoMagicOutputPath(outId, 'png');
+    await fs.promises.writeFile(outPath, Buffer.from(String(result?.result_png || ''), 'base64'));
+
+    return res.json({
+      success: true,
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      output_id: outId,
+      url: `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(outId)}&filename=${encodeURIComponent('result.png')}`
+    });
+  } catch (error) {
+    console.error('Photo magic erase error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.get('/photo-magic/download', async (req, res) => {
+  try {
+    const outputId = String(req.query?.output_id || '').trim();
+    const filename = String(req.query?.filename || 'result.png');
+
+    if (!outputId) {
+      return res.status(400).json({ success: false, error: 'output_id is required' });
+    }
+    if (!isSafeTmpId(outputId)) {
+      return res.status(400).json({ success: false, error: 'Invalid output_id' });
+    }
+
+    const outPath = getPhotoMagicOutputPath(outputId, 'png');
+    if (!fs.existsSync(outPath)) {
+      return res.status(404).json({ success: false, error: 'Output not found (run again)' });
+    }
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    fs.createReadStream(outPath).pipe(res);
+  } catch (error) {
+    console.error('Photo magic download error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

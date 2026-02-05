@@ -188,7 +188,7 @@ function ProductThumbnail({ src, title }) {
   );
 }
 
-export default function CustomerInsightsTab({ data, loading, formatCurrency, store }) {
+export default function CustomerInsightsTab({ data, loading, formatCurrency, store, dateRange }) {
   const kpis = data?.kpis || [];
   const insights = data?.insights || [];
   const sections = data?.sections || {};
@@ -266,11 +266,11 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         subtitle="Age, gender, and country performance signals from Meta."
         icon={sectionIcons.demographics}
       >
-        <MetaDemographics
-          store={store}
-          dateParams={{ days: 30 }}
-          formatCurrency={formatCurrency}
-        />
+	        <MetaDemographics
+	          store={store}
+	          globalDateRange={dateRange}
+	          formatCurrency={formatCurrency}
+	        />
       </CollapsibleSectionCard>
 
       <div className="space-y-4">
