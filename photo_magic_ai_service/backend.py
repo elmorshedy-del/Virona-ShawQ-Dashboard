@@ -402,7 +402,7 @@ def remove_bg_sam2_refine():
 @app.route("/erase/lama", methods=["POST"])
 def erase_lama():
     try:
-        ok, err = require_ready({"rmbg2": True, "sam2": True, "lama": LAMA_AVAILABLE})
+        ok, err = require_ready({"lama": LAMA_AVAILABLE})
         if not ok:
             return err, 503
 
