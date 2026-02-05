@@ -1033,7 +1033,7 @@ export default function VideoOverlayEditor({ store }) {
                               style={{
                                 color: ov.textColor || '#fff',
                                 fontFamily: ov.fontFamily || 'Inter, system-ui, -apple-system',
-                                fontSize: ov.fontSize ? `${ov.fontSize}px` : undefined,
+                                fontSize: ov.fontSize ? `${ov.fontSize * Math.min(scale.x, scale.y)}px` : undefined,
                                 fontWeight: ov.fontWeight || 'normal',
                                 fontStyle: ov.fontStyle || 'normal'
                               }}

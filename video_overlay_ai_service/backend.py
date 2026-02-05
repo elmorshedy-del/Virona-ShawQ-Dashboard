@@ -394,6 +394,7 @@ def estimate_letter_spacing(text_width, text):
 
 def detect_overlays(frame):
     h, w = frame.shape[:2]
+    frame_area = h * w
     results = []
 
     if STRICT_MODE and not DINO_AVAILABLE:
@@ -404,7 +405,8 @@ def detect_overlays(frame):
     boxes = find_boxes_with_dino(frame) if DINO_AVAILABLE else []
 
     for box_info in boxes:
-        x1, y1, x2, y2 = box_info['box']
+        x1_orig, y1_orig, x2_orig, y2_orig = box_info['box']
+        x1, y1, x2, y2 = x1_orig, y1_orig, x2_orig, y2_orig
 
         if not SAM_AVAILABLE:
             if STRICT_MODE:
@@ -421,7 +423,27 @@ def detect_overlays(frame):
                 cols = np.any(mask, axis=0)
                 y1_new, y2_new = np.where(rows)[0][[0, -1]]
                 x1_new, x2_new = np.where(cols)[0][[0, -1]]
-                x1, y1, x2, y2 = x1_new, y1_new, x2_new, y2_new
+
+                # Sanity check: SAM mask should not expand more than 50% beyond DINO box
+                # If it does, the mask likely leaked into the background
+                orig_w = x2_orig - x1_orig
+                orig_h = y2_orig - y1_orig
+                new_w = x2_new - x1_new
+                new_h = y2_new - y1_new
+
+                max_expansion = 1.5  # Allow 50% expansion max
+                if new_w <= orig_w * max_expansion and new_h <= orig_h * max_expansion:
+                    x1, y1, x2, y2 = x1_new, y1_new, x2_new, y2_new
+                else:
+                    print(f"  SAM mask expanded too much ({new_w}x{new_h} vs {orig_w}x{orig_h}), using DINO box")
+                    # Fall back to DINO box, create rectangular mask
+                    mask = create_rect_mask(frame.shape[:2], [x1_orig, y1_orig, x2_orig, y2_orig])
+
+        # Final sanity check: skip if box is still too large
+        box_area = (x2 - x1) * (y2 - y1)
+        if box_area > frame_area * 0.25:
+            print(f"  Skipping final box too large: {int(x2-x1)}x{int(y2-y1)}")
+            continue
 
         colors = extract_colors_from_mask(frame, mask)
 
@@ -461,11 +483,20 @@ def detect_overlays(frame):
             'confidence': box_info.get('confidence', 0.9)
         })
 
+    # Sort by confidence and limit to max 5 overlays per frame
+    # (most videos have 1-3 text overlays at any given time)
+    results.sort(key=lambda r: r['confidence'], reverse=True)
+    MAX_OVERLAYS = 5
+    if len(results) > MAX_OVERLAYS:
+        print(f"  Limiting from {len(results)} to {MAX_OVERLAYS} overlays")
+        results = results[:MAX_OVERLAYS]
+
     return results
 
 
 def find_boxes_with_dino(frame):
     h, w = frame.shape[:2]
+    frame_area = h * w
     TEXT_PROMPT = "text box. subtitle. caption. text overlay. lower third. label."
 
     # GroundingDINO expects a normalized torch.Tensor image (C,H,W).
@@ -475,8 +506,8 @@ def find_boxes_with_dino(frame):
         model=dino_model,
         image=processed_image,
         caption=TEXT_PROMPT,
-        box_threshold=0.30,
-        text_threshold=0.25,
+        box_threshold=0.45,  # Increased from 0.30 - stricter detection
+        text_threshold=0.35,  # Increased from 0.25 - stricter detection
         device=DEVICE
     )
 
@@ -488,7 +519,25 @@ def find_boxes_with_dino(frame):
     for box, score in zip(boxes_xyxy, logits):
         x1, y1, x2, y2 = [float(v) for v in box.tolist()]
 
-        if (x2 - x1) < 20 or (y2 - y1) < 10:
+        box_w = x2 - x1
+        box_h = y2 - y1
+        box_area = box_w * box_h
+
+        # Skip boxes that are too small
+        if box_w < 20 or box_h < 10:
+            continue
+
+        # Skip boxes that are too large (more than 25% of frame area)
+        # Real text overlays are typically small - subtitles, lower thirds, etc.
+        if box_area > frame_area * 0.25:
+            print(f"  Skipping oversized box: {int(box_w)}x{int(box_h)} = {box_area/frame_area*100:.1f}% of frame")
+            continue
+
+        # Skip boxes that are too wide relative to height (likely not text boxes)
+        # Text boxes typically have aspect ratio between 2:1 and 20:1
+        aspect_ratio = box_w / max(box_h, 1)
+        if aspect_ratio > 25 or aspect_ratio < 1.5:
+            print(f"  Skipping unusual aspect ratio: {aspect_ratio:.1f}")
             continue
 
         results.append({
