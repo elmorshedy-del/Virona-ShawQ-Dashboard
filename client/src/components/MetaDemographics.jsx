@@ -430,6 +430,20 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
   const countryHighlights = useMemo(() => {
     if (!countryActionsAvailable) return [];
 
+    const COUNTRY_HIGHLIGHT_THRESHOLDS = {
+      winnerMinPurchases: 5,
+      winnerMaxSpendShare: 0.12,
+      winnerMinPurchaseFactor: 1.25,
+      wasteMinSpendShare: 0.07,
+      wasteMaxPurchaseFactor: 0.6,
+      intentMinAtc: 20,
+      intentMinSpendShare: 0.03,
+      intentMinAtcFactor: 1.35,
+      intentMaxPurchaseFactor: 0.75,
+      maxWinners: 2,
+      maxHighlights: 4
+    };
+
     const byCountry = new Map();
     countryGender.forEach((row) => {
       const code = String(row.country || '').trim().toUpperCase();
@@ -474,10 +488,12 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
     // Under-funded winner: high purchase rate on modest spend.
     if (Number.isFinite(avgPurchase) && avgPurchase > 0) {
       const winners = [...rows]
-        .filter((row) => row.purchases >= 5 && row.spendShare <= 0.12 && Number.isFinite(row.purchaseRate))
-        .filter((row) => row.purchaseRate >= avgPurchase * 1.25)
+        .filter((row) => row.purchases >= COUNTRY_HIGHLIGHT_THRESHOLDS.winnerMinPurchases
+          && row.spendShare <= COUNTRY_HIGHLIGHT_THRESHOLDS.winnerMaxSpendShare
+          && Number.isFinite(row.purchaseRate))
+        .filter((row) => row.purchaseRate >= avgPurchase * COUNTRY_HIGHLIGHT_THRESHOLDS.winnerMinPurchaseFactor)
         .sort((a, b) => (b.purchaseRate || 0) - (a.purchaseRate || 0))
-        .slice(0, 2);
+        .slice(0, COUNTRY_HIGHLIGHT_THRESHOLDS.maxWinners);
 
       winners.forEach((row) => {
         used.add(row.country);
@@ -488,8 +504,9 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
       });
 
       const losers = [...rows]
-        .filter((row) => row.spendShare >= 0.07 && Number.isFinite(row.purchaseRate))
-        .filter((row) => row.purchaseRate <= avgPurchase * 0.6)
+        .filter((row) => row.spendShare >= COUNTRY_HIGHLIGHT_THRESHOLDS.wasteMinSpendShare
+          && Number.isFinite(row.purchaseRate))
+        .filter((row) => row.purchaseRate <= avgPurchase * COUNTRY_HIGHLIGHT_THRESHOLDS.wasteMaxPurchaseFactor)
         .sort((a, b) => (b.spendShare || 0) - (a.spendShare || 0))[0];
 
       if (losers && !used.has(losers.country)) {
@@ -504,8 +521,12 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
     // High intent but low close: strong ATC vs weak purchases.
     if (Number.isFinite(avgAtc) && avgAtc > 0 && Number.isFinite(avgPurchase) && avgPurchase > 0) {
       const intent = [...rows]
-        .filter((row) => (row.atc || 0) >= 20 && row.spendShare >= 0.03 && Number.isFinite(row.atcRate) && Number.isFinite(row.purchaseRate))
-        .filter((row) => row.atcRate >= avgAtc * 1.35 && row.purchaseRate <= avgPurchase * 0.75)
+        .filter((row) => (row.atc || 0) >= COUNTRY_HIGHLIGHT_THRESHOLDS.intentMinAtc
+          && row.spendShare >= COUNTRY_HIGHLIGHT_THRESHOLDS.intentMinSpendShare
+          && Number.isFinite(row.atcRate)
+          && Number.isFinite(row.purchaseRate))
+        .filter((row) => row.atcRate >= avgAtc * COUNTRY_HIGHLIGHT_THRESHOLDS.intentMinAtcFactor
+          && row.purchaseRate <= avgPurchase * COUNTRY_HIGHLIGHT_THRESHOLDS.intentMaxPurchaseFactor)
         .sort((a, b) => ((b.atcRate || 0) - (a.atcRate || 0)))[0];
 
       if (intent && !used.has(intent.country)) {
@@ -517,7 +538,7 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
       }
     }
 
-    return insights.slice(0, 4);
+    return insights.slice(0, COUNTRY_HIGHLIGHT_THRESHOLDS.maxHighlights);
   }, [countryActionsAvailable, countryGender, data, minClicks, countryMap]);
 
   if (loading) {
