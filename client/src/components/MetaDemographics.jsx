@@ -9,7 +9,6 @@ import {
   Tooltip,
   ResponsiveContainer
 } from 'recharts';
-import { Sparkles } from 'lucide-react';
 import { COUNTRIES } from '../data/countries';
 
 const GENDER_COLORS = {
@@ -58,6 +57,9 @@ function formatSegmentLabel(row) {
   return `${row.country || 'ALL'} · ${row.genderLabel || 'Unknown'}`;
 }
 
+const getIstanbulDateString = (date = new Date()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(date);
+
 function SummaryCard({ label, value, hint }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -68,16 +70,42 @@ function SummaryCard({ label, value, hint }) {
   );
 }
 
-function InsightCard({ insight }) {
-  const tone = insight.impact === 'High'
-    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-    : 'border-rose-200 bg-rose-50 text-rose-700';
+function KeyInsightsPanel({ insights, title = 'Key Insights', showTitle = true, emptyMessage = 'Not enough data to generate demographic insights.' }) {
+  if (!insights || insights.length === 0) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500">
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  const getBulletColor = (type) => {
+    switch (type) {
+      case 'opportunity': return 'bg-emerald-500';
+      case 'waste': return 'bg-red-500';
+      case 'gender': return 'bg-indigo-500';
+      case 'sweetspot': return 'bg-amber-500';
+      case 'leak': return 'bg-orange-500';
+      case 'country': return 'bg-blue-500';
+      default: return 'bg-gray-400';
+    }
+  };
 
   return (
-    <div className={`rounded-2xl border p-4 ${tone}`}>
-      <div className="text-xs font-semibold uppercase tracking-wide">{insight.impact} impact</div>
-      <div className="mt-1 text-sm font-semibold text-gray-900">{insight.title}</div>
-      <div className="mt-2 text-xs text-gray-700">{insight.detail}</div>
+    <div className="rounded-xl border border-gray-200 bg-gradient-to-br from-slate-50 to-white p-4">
+      {showTitle ? (
+        <div className="mb-3 text-sm font-semibold text-gray-800">
+          🔍 {title}
+        </div>
+      ) : null}
+      <ul className="space-y-2">
+        {insights.map((insight, idx) => (
+          <li key={`${insight.id || insight.key || insight.type || 'insight'}-${idx}`} className="flex items-start gap-2 text-sm text-gray-700">
+            <span className={`mt-1.5 h-2 w-2 rounded-full ${getBulletColor(insight.type)} flex-shrink-0`} />
+            <span>{insight.text || insight.title || ''}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -109,13 +137,78 @@ function heatColor(value, min, max) {
   };
 }
 
-export default function MetaDemographics({ store, dateParams = { days: 30 }, formatCurrency }) {
+export default function MetaDemographics({ store, globalDateRange, formatCurrency }) {
   const storeId = store?.id || 'vironax';
+  const [rangePreset, setRangePreset] = useState('last90');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [heatMetric, setHeatMetric] = useState('atcRate');
   const [splitByGender, setSplitByGender] = useState(false);
+
+  const rangeOptions = useMemo(() => {
+    const options = [
+      { value: 'last30', label: 'Last 30 days' },
+      { value: 'last90', label: 'Last 90 days' },
+      { value: 'last180', label: 'Last 180 days' },
+      { value: 'last365', label: 'Last 365 days' },
+      { value: 'lifetime', label: 'Lifetime (all available)' }
+    ];
+
+    if (globalDateRange) {
+      options.unshift({ value: 'global', label: 'Use global period' });
+    }
+
+    return options;
+  }, [globalDateRange]);
+
+  const queryString = useMemo(() => {
+    const params = new URLSearchParams({ store: storeId });
+
+    const applyGlobal = () => {
+      if (!globalDateRange || typeof globalDateRange !== 'object') {
+        params.set('days', '90');
+        return;
+      }
+
+      if (globalDateRange.type === 'custom' && globalDateRange.start && globalDateRange.end) {
+        params.set('startDate', globalDateRange.start);
+        params.set('endDate', globalDateRange.end);
+        return;
+      }
+
+      if (globalDateRange.type === 'yesterday') {
+        params.set('yesterday', '1');
+        return;
+      }
+
+      if (globalDateRange.type === 'days' && globalDateRange.value) {
+        params.set('days', String(globalDateRange.value));
+        return;
+      }
+
+      params.set('days', '90');
+    };
+
+    if (rangePreset === 'global') {
+      applyGlobal();
+    } else if (rangePreset === 'lifetime') {
+      params.set('startDate', '2000-01-01');
+      params.set('endDate', globalDateRange?.type === 'custom' && globalDateRange.end
+        ? globalDateRange.end
+        : getIstanbulDateString());
+    } else {
+      const mapping = {
+        last30: 30,
+        last90: 90,
+        last180: 180,
+        last365: 365
+      };
+      params.set('days', String(mapping[rangePreset] || 90));
+    }
+
+    return params.toString();
+  }, [storeId, rangePreset, globalDateRange]);
 
   useEffect(() => {
     let mounted = true;
@@ -124,11 +217,7 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
       setLoading(true);
       setError('');
       try {
-        const params = new URLSearchParams({ store: storeId });
-        if (dateParams?.days) {
-          params.set('days', String(dateParams.days));
-        }
-        const response = await fetch(`/api/meta-demographics?${params.toString()}`);
+        const response = await fetch(`/api/meta-demographics?${queryString}`);
         const json = await response.json();
         if (!response.ok || json?.success === false) {
           throw new Error(json?.error || 'Failed to load Meta demographics.');
@@ -150,7 +239,7 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
     return () => {
       mounted = false;
     };
-  }, [storeId, dateParams?.days]);
+  }, [queryString]);
 
   const countryMap = useMemo(() => {
     const map = new Map();
@@ -316,39 +405,51 @@ export default function MetaDemographics({ store, dateParams = { days: 30 }, for
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Range</div>
+        <div className="flex items-center gap-3">
+          <select
+            value={rangePreset}
+            onChange={(e) => setRangePreset(e.target.value)}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm"
+          >
+            {rangeOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <div className="text-xs text-gray-400">
+            Range: {data?.range?.startDate} → {data?.range?.endDate}
+          </div>
+        </div>
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-4">
         {summaryCards.map((card) => (
           <SummaryCard key={card.label} {...card} />
         ))}
       </div>
 
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-              <Sparkles className="h-4 w-4 text-indigo-500" />
-              Significant insights
-            </div>
-            <div className="text-xs text-gray-500">
-              Only segments with ≥ {minClicks} clicks and |z| ≥ {data?.rules?.zThreshold || 2} are shown.
-            </div>
+      <KeyInsightsPanel insights={data?.keyInsights || []} />
+
+      <details className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+        <summary className="cursor-pointer text-sm font-semibold text-gray-900">
+          Statistical signals (z-score)
+        </summary>
+        <div className="mt-3">
+          <div className="text-xs text-gray-500">
+            Only segments with ≥ {minClicks} clicks and |z| ≥ {data?.rules?.zThreshold || 2} are shown.
           </div>
-          <div className="text-xs text-gray-400">
-            Range: {data?.range?.startDate} → {data?.range?.endDate}
+          <div className="mt-3">
+            <KeyInsightsPanel
+              insights={data?.insights || []}
+              showTitle={false}
+              emptyMessage="No statistically significant insights yet. Add more data or widen the date window."
+            />
           </div>
         </div>
-        {data?.insights?.length ? (
-          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {data.insights.map((insight) => (
-              <InsightCard key={insight.id} insight={insight} />
-            ))}
-          </div>
-        ) : (
-          <div className="mt-4 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
-            No statistically significant insights yet. Add more data or widen the date window.
-          </div>
-        )}
-      </div>
+      </details>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
