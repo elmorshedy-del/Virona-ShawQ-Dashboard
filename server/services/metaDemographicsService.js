@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import { getCountryInfo } from '../utils/countryData.js';
 import { getExchangeRateForDate } from './metaService.js';
 
 const META_API_VERSION = 'v19.0';
@@ -10,6 +11,26 @@ const Z_THRESHOLD = 2.0;
 const DEFAULT_DAYS = 90;
 const MAX_DAYS = 3650;
 const LEAK_MIN_ATC = 20;
+
+const KEY_INSIGHT_THRESHOLDS = {
+  genderConversionRatio: 1.2,
+  genderConversionGap: 0.002,
+  genderAtcGap: 0.01,
+  wasteSevereRateFactor: 0.4,
+  wasteMinSpendShare: 0.07,
+  wasteSevereMinSpendShare: 0.03,
+  sweetSpotRateFactor: 1.15,
+  leakMinAtc: 50,
+  leakMinDrop: 0.5,
+  leakMinSpendShare: 0.03,
+  countryRateFactor: 1.25,
+  placementWasteMinSpendShare: 0.05,
+  placementWasteRateFactor: 0.5,
+  placementOpportunityMaxSpendShare: 0.12,
+  placementOpportunityRateFactor: 1.4,
+  deviceRateRatio: 1.4,
+  maxKeyInsights: 8
+};
 
 const PURCHASE_ACTION_TYPES = [
   'omni_purchase',
@@ -252,6 +273,88 @@ function normalizeSegmentRow(row, segmentType, currencyRate = 1, actionsAvailabl
   };
 }
 
+function normalizePlacementRow(row, currencyRate = 1, actionsAvailable = true) {
+  const clicks = Math.round(toNumber(row.inline_link_clicks) || toNumber(row.clicks));
+  const spend = toNumber(row.spend) * currencyRate;
+  const impressions = Math.round(toNumber(row.impressions));
+
+  const atc = actionsAvailable ? Math.round(getActionValue(row.actions, 'add_to_cart')) : 0;
+  const checkout = actionsAvailable ? Math.round(getActionValue(row.actions, 'initiate_checkout')) : 0;
+  const purchases = actionsAvailable ? Math.round(getFirstActionValue(row.actions, PURCHASE_ACTION_TYPES)) : 0;
+
+  const publisherPlatform = String(row.publisher_platform || '').trim().toLowerCase() || 'unknown';
+  const platformPosition = String(row.platform_position || '').trim().toLowerCase() || 'unknown';
+
+  const atcRate = actionsAvailable ? safeDivide(atc, clicks) : null;
+  const checkoutRate = actionsAvailable ? safeDivide(checkout, clicks) : null;
+  const purchaseRate = actionsAvailable ? safeDivide(purchases, clicks) : null;
+
+  const eligible = clicks >= MIN_CLICKS;
+
+  return {
+    key: `${publisherPlatform}-${platformPosition}`,
+    segmentType: 'placement',
+    publisherPlatform,
+    platformPosition,
+    clicks,
+    impressions,
+    spend,
+    atc,
+    checkout,
+    purchases,
+    atcRate,
+    checkoutRate,
+    purchaseRate,
+    eligible,
+    spendShare: 0,
+    zScores: {
+      atcRate: null,
+      checkoutRate: null,
+      purchaseRate: null
+    }
+  };
+}
+
+function normalizeDeviceRow(row, currencyRate = 1, actionsAvailable = true) {
+  const clicks = Math.round(toNumber(row.inline_link_clicks) || toNumber(row.clicks));
+  const spend = toNumber(row.spend) * currencyRate;
+  const impressions = Math.round(toNumber(row.impressions));
+
+  const atc = actionsAvailable ? Math.round(getActionValue(row.actions, 'add_to_cart')) : 0;
+  const checkout = actionsAvailable ? Math.round(getActionValue(row.actions, 'initiate_checkout')) : 0;
+  const purchases = actionsAvailable ? Math.round(getFirstActionValue(row.actions, PURCHASE_ACTION_TYPES)) : 0;
+
+  const devicePlatform = String(row.device_platform || '').trim().toLowerCase() || 'unknown';
+
+  const atcRate = actionsAvailable ? safeDivide(atc, clicks) : null;
+  const checkoutRate = actionsAvailable ? safeDivide(checkout, clicks) : null;
+  const purchaseRate = actionsAvailable ? safeDivide(purchases, clicks) : null;
+
+  const eligible = clicks >= MIN_CLICKS;
+
+  return {
+    key: devicePlatform,
+    segmentType: 'device',
+    devicePlatform,
+    clicks,
+    impressions,
+    spend,
+    atc,
+    checkout,
+    purchases,
+    atcRate,
+    checkoutRate,
+    purchaseRate,
+    eligible,
+    spendShare: 0,
+    zScores: {
+      atcRate: null,
+      checkoutRate: null,
+      purchaseRate: null
+    }
+  };
+}
+
 function computeSpendShare(rows) {
   const totalSpend = rows.reduce((sum, row) => sum + (Number.isFinite(row.spend) ? row.spend : 0), 0);
   rows.forEach((row) => {
@@ -312,13 +415,49 @@ function formatPercent(value) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function titleCaseWords(value) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function formatCountryLabel(code) {
+  const upper = String(code || '').toUpperCase();
+  if (!upper || upper === 'UNKNOWN') return 'Unknown';
+  if (upper === 'ALL') return 'All countries';
+  const info = getCountryInfo(upper);
+  return info?.name || upper;
+}
+
+function formatPlacementLabel(row) {
+  const platform = titleCaseWords(row.publisherPlatform || 'Unknown');
+  const position = titleCaseWords(row.platformPosition || 'Unknown');
+  return `${platform} · ${position}`;
+}
+
+function formatDeviceLabel(row) {
+  return titleCaseWords(row.devicePlatform || 'Unknown');
+}
+
 function formatSegmentLabel(row) {
   if (row.segmentType === 'age_gender') {
     const age = row.age || 'Unknown';
     return `${age} · ${row.genderLabel}`;
   }
-  const country = row.country || 'ALL';
-  return `${country} · ${row.genderLabel}`;
+  if (row.segmentType === 'country_gender') {
+    const country = formatCountryLabel(row.country || 'ALL');
+    return `${country} · ${row.genderLabel}`;
+  }
+  if (row.segmentType === 'placement') {
+    return formatPlacementLabel(row);
+  }
+  if (row.segmentType === 'device') {
+    return formatDeviceLabel(row);
+  }
+  return 'Unknown segment';
 }
 
 function buildInsights(rows) {
@@ -363,148 +502,296 @@ function buildInsights(rows) {
     .slice(0, 12);
 }
 
-function buildKeyInsights({ ageGenderSegments, countryGenderSegments, actionsAvailable, countryActionsAvailable }) {
-  if (!actionsAvailable) {
+function buildKeyInsights({
+  ageGenderSegments,
+  countryGenderSegments,
+  placementSegments,
+  deviceSegments,
+  ageActionsAvailable,
+  countryActionsAvailable,
+  placementActionsAvailable,
+  deviceActionsAvailable
+}) {
+  const insights = [];
+  const thresholds = KEY_INSIGHT_THRESHOLDS;
+
+  const formatPct = (value) => {
+    if (!Number.isFinite(value)) return '—';
+    const pct = value * 100;
+    const digits = pct < 0.1 ? 2 : 1;
+    return `${pct.toFixed(digits)}%`;
+  };
+
+  const formatPp = (diff) => {
+    if (!Number.isFinite(diff)) return '—';
+    return `${(diff * 100).toFixed(1)}pp`;
+  };
+
+  const formatShare = (share) => {
+    if (!Number.isFinite(share)) return '—';
+    return `${Math.round(share * 100)}%`;
+  };
+
+  const genderShort = (gender) => (gender === 'female' ? 'F' : gender === 'male' ? 'M' : 'U');
+
+  const eligibleAge = (ageGenderSegments || []).filter((row) =>
+    row?.eligible && (row.gender === 'female' || row.gender === 'male')
+  );
+
+  const thresholdBase = eligibleAge.length
+    ? eligibleAge
+    : (Array.isArray(placementSegments) ? placementSegments.filter((row) => row?.eligible) : []);
+
+  const totalClicks = thresholdBase.reduce((sum, row) => sum + (row.clicks || 0), 0);
+  const totalPurchases = thresholdBase.reduce((sum, row) => sum + (row.purchases || 0), 0);
+
+  const keyMinClicks = totalClicks >= 30000 ? 600 : totalClicks >= 10000 ? 300 : totalClicks >= 3000 ? 200 : 100;
+  const keyMinPurchases = totalPurchases >= 200 ? 20 : totalPurchases >= 60 ? 10 : 5;
+
+  const anyActions = Boolean(ageActionsAvailable || countryActionsAvailable || placementActionsAvailable || deviceActionsAvailable);
+  if (!anyActions) {
     return [
       {
-        type: 'waste',
-        text: 'Meta did not return conversion actions for this breakdown, so demographic conversion insights are limited. Try widening the date window.'
+        type: 'info',
+        text: 'Meta did not return conversion actions for these breakdowns, so conversion-based insights are limited. Try widening the date window or verifying pixel events.'
       }
     ];
   }
 
-  const eligibleAge = (ageGenderSegments || []).filter((row) => row?.eligible);
-  const insights = [];
+  const overallPurchaseRateAge = ageActionsAvailable
+    ? safeDivide(
+      eligibleAge.reduce((sum, row) => sum + (row.purchases || 0), 0),
+      Math.max(1, eligibleAge.reduce((sum, row) => sum + (row.clicks || 0), 0))
+    )
+    : null;
 
-  const formatPct = (value, digits = 1) => `${(value * 100).toFixed(digits)}%`;
-  const genderShort = (gender) => (gender === 'female' ? 'F' : gender === 'male' ? 'M' : 'U');
-
-  // 1) Gender gap
-  const genderAgg = new Map();
-  eligibleAge.forEach((row) => {
-    const gender = row.gender;
-    if (gender !== 'female' && gender !== 'male') return;
-    if (!genderAgg.has(gender)) {
-      genderAgg.set(gender, { clicks: 0, atc: 0, purchases: 0 });
-    }
-    const acc = genderAgg.get(gender);
-    acc.clicks += row.clicks || 0;
-    acc.atc += row.atc || 0;
-    acc.purchases += row.purchases || 0;
-  });
-
-  const female = genderAgg.get('female');
-  const male = genderAgg.get('male');
-  if (female?.clicks >= MIN_CLICKS && male?.clicks >= MIN_CLICKS) {
-    const femaleConv = female.purchases / Math.max(1, female.clicks);
-    const maleConv = male.purchases / Math.max(1, male.clicks);
-    const femaleAtc = female.atc / Math.max(1, female.clicks);
-    const maleAtc = male.atc / Math.max(1, male.clicks);
-
-    const womenLead = femaleConv >= maleConv;
-    const leadLabel = womenLead ? 'Women' : 'Men';
-    const lagLabel = womenLead ? 'Men' : 'Women';
-    const leadConv = womenLead ? femaleConv : maleConv;
-    const lagConv = womenLead ? maleConv : femaleConv;
-    const leadAtc = womenLead ? femaleAtc : maleAtc;
-    const lagAtc = womenLead ? maleAtc : femaleAtc;
-
-    const atcRatio = lagAtc > 0 ? (leadAtc / lagAtc) : null;
-
-    insights.push({
-      type: 'gender',
-      text: `${leadLabel} convert at ${formatPct(leadConv)} vs ${lagLabel} ${formatPct(lagConv)} — ${atcRatio ? `${atcRatio.toFixed(1)}x` : '—'} better ATC rate`
+  // 1) Gender gap (only if meaningful)
+  if (ageActionsAvailable) {
+    const genderAgg = new Map();
+    eligibleAge.forEach((row) => {
+      if (!genderAgg.has(row.gender)) genderAgg.set(row.gender, { clicks: 0, atc: 0, purchases: 0 });
+      const acc = genderAgg.get(row.gender);
+      acc.clicks += row.clicks || 0;
+      acc.atc += row.atc || 0;
+      acc.purchases += row.purchases || 0;
     });
+
+    const female = genderAgg.get('female');
+    const male = genderAgg.get('male');
+    if (female?.clicks >= keyMinClicks && male?.clicks >= keyMinClicks && (female.purchases + male.purchases) >= keyMinPurchases) {
+      const femaleConv = female.purchases / Math.max(1, female.clicks);
+      const maleConv = male.purchases / Math.max(1, male.clicks);
+      const femaleAtc = female.atc / Math.max(1, female.clicks);
+      const maleAtc = male.atc / Math.max(1, male.clicks);
+
+      const womenLead = femaleConv > maleConv;
+      const leadLabel = womenLead ? 'Women' : 'Men';
+      const lagLabel = womenLead ? 'Men' : 'Women';
+      const leadConv = womenLead ? femaleConv : maleConv;
+      const lagConv = womenLead ? maleConv : femaleConv;
+      const leadAtc = womenLead ? femaleAtc : maleAtc;
+      const lagAtc = womenLead ? maleAtc : femaleAtc;
+
+      const convGap = leadConv - lagConv;
+      const convRatio = lagConv > 0 ? leadConv / lagConv : null;
+      const meaningful = Number.isFinite(convRatio)
+        ? (convRatio >= thresholds.genderConversionRatio && convGap >= thresholds.genderConversionGap)
+        : (convGap >= thresholds.genderConversionGap);
+
+      if (meaningful) {
+        const atcPart = (Number.isFinite(leadAtc)
+          && Number.isFinite(lagAtc)
+          && Math.abs(leadAtc - lagAtc) >= thresholds.genderAtcGap)
+          ? `; ATC ${formatPct(leadAtc)} vs ${formatPct(lagAtc)}`
+          : '';
+
+        insights.push({
+          type: 'gender',
+          text: `${leadLabel} convert ${formatPct(leadConv)} vs ${lagLabel} ${formatPct(lagConv)} (+${formatPp(convGap)})${atcPart}`
+        });
+      }
+    }
   }
 
-  // 2) Worst overspend (high spend share + low purchase rate)
-  const spendCandidates = eligibleAge
-    .filter((row) => Number.isFinite(row.spendShare) && Number.isFinite(row.purchaseRate))
-    .sort((a, b) => (b.spendShare || 0) - (a.spendShare || 0))
-    .slice(0, 10);
+  // 2) Demographic waste (overspend) — requires meaningful spend + sample size.
+  if (ageActionsAvailable && Number.isFinite(overallPurchaseRateAge) && overallPurchaseRateAge > 0) {
+    const candidates = eligibleAge
+      .filter((row) => Number.isFinite(row.spendShare) && Number.isFinite(row.purchaseRate))
+      .filter((row) => row.clicks >= keyMinClicks);
 
-  if (spendCandidates.length) {
-    const worst = [...spendCandidates].sort((a, b) => {
-      const aRate = Number.isFinite(a.purchaseRate) ? a.purchaseRate : 1;
-      const bRate = Number.isFinite(b.purchaseRate) ? b.purchaseRate : 1;
-      if (aRate !== bRate) return aRate - bRate;
-      return (b.spendShare || 0) - (a.spendShare || 0);
-    })[0];
+    let worst = null;
+    let worstScore = 0;
+
+    candidates.forEach((row) => {
+      const underPerf = Math.max(0, (overallPurchaseRateAge - row.purchaseRate) / overallPurchaseRateAge);
+      const score = (row.spendShare || 0) * underPerf;
+      if (score > worstScore) {
+        worstScore = score;
+        worst = row;
+      }
+    });
 
     if (worst) {
-      insights.push({
-        type: 'waste',
-        text: `${genderShort(worst.gender)} ${worst.age || 'Unknown'} gets ${Math.round((worst.spendShare || 0) * 100)}% of budget but converts at only ${formatPct(worst.purchaseRate)} — worst overspend`
-      });
+      const severe = worst.purchaseRate <= overallPurchaseRateAge * thresholds.wasteSevereRateFactor;
+      const meaningfulSpend = (worst.spendShare >= thresholds.wasteMinSpendShare)
+        || (worst.spendShare >= thresholds.wasteSevereMinSpendShare && severe);
+      if (meaningfulSpend) {
+        insights.push({
+          type: 'waste',
+          text: `Demographic waste: ${genderShort(worst.gender)} ${worst.age || 'Unknown'} is ${formatShare(worst.spendShare)} of spend but converts at ${formatPct(worst.purchaseRate)} (account ${formatPct(overallPurchaseRateAge)})`
+        });
+      }
     }
   }
 
   // 3) Best age sweet spot (click→purchase)
-  const ageAgg = new Map();
-  eligibleAge.forEach((row) => {
-    const age = row.age || 'unknown';
-    if (!ageAgg.has(age)) ageAgg.set(age, { clicks: 0, purchases: 0 });
-    const acc = ageAgg.get(age);
-    acc.clicks += row.clicks || 0;
-    acc.purchases += row.purchases || 0;
-  });
-
-  const bestAge = [...ageAgg.entries()]
-    .map(([age, agg]) => ({ age, clicks: agg.clicks, purchases: agg.purchases, rate: agg.clicks > 0 ? agg.purchases / agg.clicks : null }))
-    .filter((row) => row.clicks >= MIN_CLICKS && Number.isFinite(row.rate))
-    .sort((a, b) => (b.rate || 0) - (a.rate || 0))[0];
-
-  if (bestAge) {
-    insights.push({
-      type: 'sweetspot',
-      text: `Age ${bestAge.age} has best click→purchase at ${formatPct(bestAge.rate)}`
-    });
-  }
-
-  // 4) Funnel leak (ATC → checkout)
-  const leakCandidate = eligibleAge
-    .filter((row) => Number.isFinite(row.atc) && Number.isFinite(row.checkout) && row.atc >= LEAK_MIN_ATC)
-    .map((row) => ({
-      ...row,
-      leak: row.atc > 0 ? 1 - (row.checkout / row.atc) : null
-    }))
-    .filter((row) => Number.isFinite(row.leak))
-    .sort((a, b) => (b.leak || 0) - (a.leak || 0))[0];
-
-  if (leakCandidate) {
-    insights.push({
-      type: 'leak',
-      text: `${genderShort(leakCandidate.gender)} ${leakCandidate.age || 'Unknown'} loses ${Math.round(leakCandidate.leak * 100)}% between ATC and checkout — potential trust issue`
-    });
-  }
-
-  // 5) Country standout (optional)
-  if (countryActionsAvailable) {
-    const countryAgg = new Map();
-    (countryGenderSegments || []).forEach((row) => {
-      if (!row?.eligible) return;
-      const key = row.country || 'ALL';
-      if (!key || key === 'ALL' || key.toLowerCase() === 'unknown') return;
-      if (!countryAgg.has(key)) countryAgg.set(key, { clicks: 0, purchases: 0 });
-      const acc = countryAgg.get(key);
+  if (ageActionsAvailable && Number.isFinite(overallPurchaseRateAge) && overallPurchaseRateAge > 0) {
+    const ageAgg = new Map();
+    eligibleAge.forEach((row) => {
+      const age = row.age || 'unknown';
+      if (age === 'unknown') return;
+      if (!ageAgg.has(age)) ageAgg.set(age, { clicks: 0, purchases: 0 });
+      const acc = ageAgg.get(age);
       acc.clicks += row.clicks || 0;
       acc.purchases += row.purchases || 0;
     });
 
-    const bestCountry = [...countryAgg.entries()]
-      .map(([country, agg]) => ({ country, clicks: agg.clicks, purchases: agg.purchases, rate: agg.clicks > 0 ? agg.purchases / agg.clicks : null }))
-      .filter((row) => row.clicks >= MIN_CLICKS && Number.isFinite(row.rate))
+    const bestAge = [...ageAgg.entries()]
+      .map(([age, agg]) => ({ age, clicks: agg.clicks, purchases: agg.purchases, rate: agg.clicks > 0 ? agg.purchases / agg.clicks : null }))
+      .filter((row) => row.clicks >= keyMinClicks && row.purchases >= keyMinPurchases && Number.isFinite(row.rate))
       .sort((a, b) => (b.rate || 0) - (a.rate || 0))[0];
 
-    if (bestCountry) {
+    if (bestAge && bestAge.rate >= overallPurchaseRateAge * thresholds.sweetSpotRateFactor) {
       insights.push({
-        type: 'country',
-        text: `${bestCountry.country} converts at ${formatPct(bestCountry.rate)} click→purchase — strongest country cohort`
+        type: 'sweetspot',
+        text: `Sweet spot: Age ${bestAge.age} converts best at ${formatPct(bestAge.rate)} (account ${formatPct(overallPurchaseRateAge)})`
       });
     }
   }
 
-  return insights.slice(0, 8);
+  // 4) Funnel leak (ATC → checkout), only with enough ATCs.
+  if (ageActionsAvailable) {
+    const minAtc = Math.max(LEAK_MIN_ATC, thresholds.leakMinAtc);
+    const leakCandidates = eligibleAge
+      .filter((row) => Number.isFinite(row.atc) && Number.isFinite(row.checkout))
+      .filter((row) => row.atc >= minAtc && row.clicks >= keyMinClicks)
+      .map((row) => ({
+        ...row,
+        leak: row.atc > 0 ? 1 - (row.checkout / row.atc) : null
+      }))
+      .filter((row) => Number.isFinite(row.leak) && row.leak >= thresholds.leakMinDrop);
+
+    const worstLeak = leakCandidates
+      .sort((a, b) => ((b.leak || 0) * (b.spendShare || 0)) - ((a.leak || 0) * (a.spendShare || 0)))[0];
+
+    if (worstLeak && worstLeak.spendShare >= thresholds.leakMinSpendShare) {
+      insights.push({
+        type: 'leak',
+        text: `Funnel leak: ${genderShort(worstLeak.gender)} ${worstLeak.age || 'Unknown'} drops ${Math.round(worstLeak.leak * 100)}% from ATC→checkout (≥ ${minAtc} ATCs)`
+      });
+    }
+  }
+
+  // 5) Country standout (optional; full country name)
+  if (countryActionsAvailable) {
+    const countryAgg = new Map();
+    (countryGenderSegments || []).forEach((row) => {
+      if (!row?.eligible) return;
+      const code = String(row.country || 'ALL').toUpperCase();
+      if (!code || code === 'ALL' || code === 'UNKNOWN') return;
+      if (!countryAgg.has(code)) countryAgg.set(code, { clicks: 0, purchases: 0 });
+      const acc = countryAgg.get(code);
+      acc.clicks += row.clicks || 0;
+      acc.purchases += row.purchases || 0;
+    });
+
+    const rows = [...countryAgg.entries()]
+      .map(([country, agg]) => ({ country, clicks: agg.clicks, purchases: agg.purchases, rate: agg.clicks > 0 ? agg.purchases / agg.clicks : null }))
+      .filter((row) => row.clicks >= keyMinClicks && row.purchases >= keyMinPurchases && Number.isFinite(row.rate));
+
+    const avg = safeDivide(
+      rows.reduce((sum, row) => sum + row.purchases, 0),
+      Math.max(1, rows.reduce((sum, row) => sum + row.clicks, 0))
+    );
+
+    const best = rows.sort((a, b) => (b.rate || 0) - (a.rate || 0))[0];
+    if (best && Number.isFinite(avg) && avg > 0 && best.rate >= avg * thresholds.countryRateFactor) {
+      insights.push({
+        type: 'country',
+        text: `Country: ${formatCountryLabel(best.country)} converts at ${formatPct(best.rate)} click→purchase (avg ${formatPct(avg)})`
+      });
+    }
+  }
+
+  // 6) Placement insights
+  if (placementActionsAvailable && Array.isArray(placementSegments) && placementSegments.length) {
+    const eligiblePlacements = placementSegments
+      .filter((row) => row?.eligible && row.clicks >= keyMinClicks)
+      .filter((row) => Number.isFinite(row.spendShare) && Number.isFinite(row.purchaseRate));
+
+    const avg = safeDivide(
+      eligiblePlacements.reduce((sum, row) => sum + (row.purchases || 0), 0),
+      Math.max(1, eligiblePlacements.reduce((sum, row) => sum + (row.clicks || 0), 0))
+    );
+
+    if (Number.isFinite(avg) && avg > 0) {
+      const worst = eligiblePlacements
+        .filter((row) => row.spendShare >= thresholds.placementWasteMinSpendShare
+          && row.purchaseRate <= avg * thresholds.placementWasteRateFactor)
+        .sort((a, b) => ((b.spendShare || 0) * ((avg - b.purchaseRate) / avg)) - ((a.spendShare || 0) * ((avg - a.purchaseRate) / avg)))[0];
+
+      if (worst) {
+        insights.push({
+          type: 'placement',
+          text: `Placement waste: ${formatPlacementLabel(worst)} is ${formatShare(worst.spendShare)} of spend but converts at ${formatPct(worst.purchaseRate)} (avg ${formatPct(avg)})`
+        });
+      }
+
+      const opportunity = eligiblePlacements
+        .filter((row) => row.spendShare <= thresholds.placementOpportunityMaxSpendShare
+          && row.purchaseRate >= avg * thresholds.placementOpportunityRateFactor
+          && row.purchases >= keyMinPurchases)
+        .sort((a, b) => (b.purchaseRate || 0) - (a.purchaseRate || 0))[0];
+
+      if (opportunity) {
+        insights.push({
+          type: 'opportunity',
+          text: `Placement opportunity: ${formatPlacementLabel(opportunity)} converts at ${formatPct(opportunity.purchaseRate)} on only ${formatShare(opportunity.spendShare)} of spend`
+        });
+      }
+    }
+  }
+
+  // 7) Device insights
+  if (deviceActionsAvailable && Array.isArray(deviceSegments) && deviceSegments.length) {
+    const eligibleDevices = deviceSegments
+      .filter((row) => row?.eligible && row.clicks >= keyMinClicks)
+      .filter((row) => Number.isFinite(row.purchaseRate) && Number.isFinite(row.spendShare));
+
+    const best = [...eligibleDevices].sort((a, b) => (b.purchaseRate || 0) - (a.purchaseRate || 0))[0];
+    const worst = [...eligibleDevices].sort((a, b) => (a.purchaseRate || 0) - (b.purchaseRate || 0))[0];
+
+    if (best && worst && best.key !== worst.key && worst.purchaseRate > 0) {
+      const ratio = best.purchaseRate / worst.purchaseRate;
+      if (Number.isFinite(ratio) && ratio >= thresholds.deviceRateRatio && best.purchases >= keyMinPurchases) {
+        insights.push({
+          type: 'device',
+          text: `Device: ${formatDeviceLabel(best)} converts ${ratio.toFixed(1)}x better than ${formatDeviceLabel(worst)} (${formatPct(best.purchaseRate)} vs ${formatPct(worst.purchaseRate)})`
+        });
+      }
+    }
+  }
+
+  if (insights.length === 0) {
+    return [
+      {
+        type: 'info',
+        text: 'No strong signals detected for this period. Try widening the date window, or use placements/devices tables to explore.'
+      }
+    ];
+  }
+
+  return insights.slice(0, thresholds.maxKeyInsights);
 }
 
 function sortAgeGender(rows) {
@@ -628,9 +915,11 @@ export async function getMetaDemographics({ store = 'vironax', days, startDate, 
     }
   };
 
-  const [ageGenderResult, countryOnlyResult] = await Promise.all([
+  const [ageGenderResult, countryOnlyResult, placementResult, deviceResult] = await Promise.all([
     fetchWithFallback(['age', 'gender']),
-    fetchWithFallback(['country'])
+    fetchWithFallback(['country']),
+    fetchWithFallback(['publisher_platform', 'platform_position']),
+    fetchWithFallback(['device_platform'])
   ]);
 
   const ageGenderSegments = ageGenderResult.rows.map((row) => (
@@ -638,6 +927,12 @@ export async function getMetaDemographics({ store = 'vironax', days, startDate, 
   ));
   const countryOnlySegments = countryOnlyResult.rows.map((row) => (
     normalizeSegmentRow(row, 'country_gender', currencyRate, countryOnlyResult.actionsAvailable, { gender: 'all' })
+  ));
+  const placementSegments = placementResult.rows.map((row) => (
+    normalizePlacementRow(row, currencyRate, placementResult.actionsAvailable)
+  ));
+  const deviceSegments = deviceResult.rows.map((row) => (
+    normalizeDeviceRow(row, currencyRate, deviceResult.actionsAvailable)
   ));
 
   // Meta insights blocks breakdowns=country,gender (OAuthException #100), so we emulate the split by:
@@ -700,6 +995,8 @@ export async function getMetaDemographics({ store = 'vironax', days, startDate, 
 
   const totalSpendAge = computeSpendShare(ageGenderSegments);
   const totalSpendCountry = computeSpendShare(countryGenderSegments);
+  const totalSpendPlacement = computeSpendShare(placementSegments);
+  const totalSpendDevice = computeSpendShare(deviceSegments);
 
   const ageStats = {
     atcRate: applyZScores(ageGenderSegments, 'atcRate'),
@@ -713,15 +1010,35 @@ export async function getMetaDemographics({ store = 'vironax', days, startDate, 
     purchaseRate: applyZScores(countryGenderSegments, 'purchaseRate')
   };
 
-  const insights = buildInsights([...ageGenderSegments, ...countryGenderSegments]);
+  const placementStats = {
+    atcRate: applyZScores(placementSegments, 'atcRate'),
+    checkoutRate: applyZScores(placementSegments, 'checkoutRate'),
+    purchaseRate: applyZScores(placementSegments, 'purchaseRate')
+  };
+
+  const deviceStats = {
+    atcRate: applyZScores(deviceSegments, 'atcRate'),
+    checkoutRate: applyZScores(deviceSegments, 'checkoutRate'),
+    purchaseRate: applyZScores(deviceSegments, 'purchaseRate')
+  };
+
+  const insights = buildInsights([...ageGenderSegments, ...countryGenderSegments, ...placementSegments, ...deviceSegments]);
   const countryActionsAvailable = countryGenderSegments.some((row) =>
     row.atcRate !== null || row.checkoutRate !== null || row.purchaseRate !== null
   );
+
+  const placementActionsAvailable = placementResult.actionsAvailable;
+  const deviceActionsAvailable = deviceResult.actionsAvailable;
+
   const keyInsights = buildKeyInsights({
     ageGenderSegments,
     countryGenderSegments,
-    actionsAvailable: ageGenderResult.actionsAvailable,
-    countryActionsAvailable
+    placementSegments,
+    deviceSegments,
+    ageActionsAvailable: ageGenderResult.actionsAvailable,
+    countryActionsAvailable,
+    placementActionsAvailable,
+    deviceActionsAvailable
   });
 
   const totals = ageGenderSegments.reduce((acc, row) => {
@@ -749,8 +1066,12 @@ export async function getMetaDemographics({ store = 'vironax', days, startDate, 
       flags: {
         ageActionsAvailable: ageGenderResult.actionsAvailable,
         countryActionsAvailable,
+        placementActionsAvailable,
+        deviceActionsAvailable,
         ageActionValuesAvailable: ageGenderResult.actionValuesAvailable,
         countryActionValuesAvailable: false,
+        placementActionValuesAvailable: placementResult.actionValuesAvailable,
+        deviceActionValuesAvailable: deviceResult.actionValuesAvailable,
         countryGenderSplitAvailable,
         countryGenderSplitMode
       },
@@ -759,20 +1080,30 @@ export async function getMetaDemographics({ store = 'vironax', days, startDate, 
       segmentCounts: {
         ageGender: ageGenderSegments.length,
         countryGender: countryGenderSegments.length,
+        placement: placementSegments.length,
+        device: deviceSegments.length,
         eligibleAgeGender: ageGenderSegments.filter((row) => row.eligible).length,
-        eligibleCountryGender: countryGenderSegments.filter((row) => row.eligible).length
+        eligibleCountryGender: countryGenderSegments.filter((row) => row.eligible).length,
+        eligiblePlacement: placementSegments.filter((row) => row.eligible).length,
+        eligibleDevice: deviceSegments.filter((row) => row.eligible).length
       },
       segments: {
         ageGender: sortAgeGender(ageGenderSegments),
-        countryGender: [...countryGenderSegments].sort((a, b) => b.spend - a.spend)
+        countryGender: [...countryGenderSegments].sort((a, b) => b.spend - a.spend),
+        placement: [...placementSegments].sort((a, b) => b.spend - a.spend),
+        device: [...deviceSegments].sort((a, b) => b.spend - a.spend)
       },
       spendTotals: {
         ageGender: totalSpendAge,
-        countryGender: totalSpendCountry
+        countryGender: totalSpendCountry,
+        placement: totalSpendPlacement,
+        device: totalSpendDevice
       },
       stats: {
         ageGender: ageStats,
-        countryGender: countryStats
+        countryGender: countryStats,
+        placement: placementStats,
+        device: deviceStats
       },
       keyInsights,
       insights,
