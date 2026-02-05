@@ -304,6 +304,89 @@ function renderUniversalPixelScript() {
   var pendingDead = null;
   var pendingDeadTimer = 0;
 
+  function getScrollY() {
+    try {
+      return window.pageYOffset || (document.documentElement ? (document.documentElement.scrollTop || 0) : 0) || 0;
+    } catch (_e) {
+      return 0;
+    }
+  }
+
+  function getLabelControl(labelEl) {
+    if (!labelEl) return null;
+    try {
+      // Modern browsers expose label.control (best signal).
+      if (labelEl.control) return labelEl.control;
+    } catch (_e) {}
+
+    try {
+      var forId = labelEl.getAttribute ? (labelEl.getAttribute('for') || '') : '';
+      if (forId) return document.getElementById(forId);
+    } catch (_e2) {}
+
+    try {
+      return labelEl.querySelector ? labelEl.querySelector('input,select,textarea') : null;
+    } catch (_e3) {}
+
+    return null;
+  }
+
+  function isEditableFocus(el) {
+    try {
+      if (!el) return false;
+      if (el.isContentEditable) return true;
+      var tag = el.tagName ? el.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+      var role = el.getAttribute ? safeString(el.getAttribute('role') || '', 40).toLowerCase() : '';
+      if (role === 'textbox' || role === 'combobox') return true;
+    } catch (_e) {}
+    return false;
+  }
+
+  function didDeadClickSucceed(p) {
+    try {
+      if (!p) return false;
+
+      // 1) Click caused meaningful scroll movement (common for "scroll-to" / anchor-like buttons).
+      var nowScrollY = getScrollY();
+      if (typeof p.scrollY === 'number' && Math.abs(nowScrollY - p.scrollY) >= 40) return true;
+
+      // 2) Accordion/details toggled (common Shopify patterns).
+      if (p.detailsEl) {
+        try {
+          var openNow = !!p.detailsEl.open;
+          if (openNow !== !!p.detailsOpen) return true;
+        } catch (_e2) {}
+      }
+
+      // 3) aria-expanded toggled (drawers, menus, collapsibles).
+      if (p.ariaEl) {
+        try {
+          var expandedNow = p.ariaEl.getAttribute ? p.ariaEl.getAttribute('aria-expanded') : null;
+          if (expandedNow !== p.ariaExpanded) return true;
+        } catch (_e3) {}
+      }
+
+      // 4) Label/control toggled (checkbox/radio).
+      if (p.controlEl && typeof p.controlChecked === 'boolean') {
+        try {
+          var checkedNow = !!p.controlEl.checked;
+          if (checkedNow !== p.controlChecked) return true;
+        } catch (_e4) {}
+      }
+
+      // 5) Click moved focus into an editable control (search, inputs, etc.).
+      try {
+        var active = document.activeElement;
+        if (active && active !== p.activeEl && isEditableFocus(active)) return true;
+      } catch (_e5) {}
+
+      return false;
+    } catch (_e) {
+      return false;
+    }
+  }
+
   function scheduleDeadClick(point, rawTarget) {
     try {
       if (!isProbablyClickable(rawTarget)) return;
@@ -319,8 +402,40 @@ function renderUniversalPixelScript() {
         href: point.hrefAtClick,
         target: point.target,
         x: point.x,
-        y: point.y
+        y: point.y,
+        scrollY: getScrollY(),
+        detailsEl: null,
+        detailsOpen: null,
+        ariaEl: null,
+        ariaExpanded: null,
+        controlEl: null,
+        controlChecked: null,
+        activeEl: null
       };
+
+      try {
+        pendingDead.activeEl = document.activeElement || null;
+      } catch (_e0) {}
+
+      try {
+        pendingDead.detailsEl = rawTarget && rawTarget.closest ? rawTarget.closest('details') : null;
+        pendingDead.detailsOpen = pendingDead.detailsEl ? !!pendingDead.detailsEl.open : null;
+      } catch (_e1) {}
+
+      try {
+        pendingDead.ariaEl = rawTarget && rawTarget.closest ? rawTarget.closest('[aria-expanded]') : null;
+        pendingDead.ariaExpanded = pendingDead.ariaEl && pendingDead.ariaEl.getAttribute ? pendingDead.ariaEl.getAttribute('aria-expanded') : null;
+      } catch (_e2) {}
+
+      try {
+        var labelEl = rawTarget && rawTarget.closest ? rawTarget.closest('label') : null;
+        if (labelEl) {
+          pendingDead.controlEl = getLabelControl(labelEl);
+          pendingDead.controlChecked = pendingDead.controlEl && typeof pendingDead.controlEl.checked === 'boolean'
+            ? !!pendingDead.controlEl.checked
+            : null;
+        }
+      } catch (_e3) {}
 
       if (pendingDeadTimer) clearTimeout(pendingDeadTimer);
 
@@ -336,6 +451,13 @@ function renderUniversalPixelScript() {
 
         // If a submit just happened, assume it did something.
         if (Date.now() - lastFormSubmitAt < DEAD_CLICK_TIMEOUT_MS) {
+          pendingDead = null;
+          return;
+        }
+
+        // If the click triggered a non-navigation UI response (accordion open, drawer toggle, scroll, focus),
+        // it wasn't a dead click. This reduces false positives on modern Shopify themes.
+        if (didDeadClickSucceed(pendingDead)) {
           pendingDead = null;
           return;
         }
