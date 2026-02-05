@@ -44,9 +44,17 @@ function formatNumber(value) {
   return Math.round(value).toLocaleString();
 }
 
+function safeDivide(numerator, denominator) {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return null;
+  return numerator / denominator;
+}
+
 function formatCountryName(code, map) {
   if (!code) return 'Unknown';
-  return map.get(code) || code;
+  const normalized = String(code).trim().toUpperCase();
+  if (!normalized || normalized === 'UNKNOWN') return 'Unknown';
+  if (normalized === 'ALL') return 'All countries';
+  return map.get(normalized) || code;
 }
 
 function formatSegmentLabel(row) {
@@ -419,6 +427,99 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
       }));
   }, [countryGender, minClicks, splitByGender, countryMap]);
 
+  const countryHighlights = useMemo(() => {
+    if (!countryActionsAvailable) return [];
+
+    const byCountry = new Map();
+    countryGender.forEach((row) => {
+      const code = String(row.country || '').trim().toUpperCase();
+      if (!code || code === 'ALL' || code === 'UNKNOWN') return;
+
+      if (!byCountry.has(code)) {
+        byCountry.set(code, { country: code, spend: 0, clicks: 0, atc: 0, purchases: 0 });
+      }
+      const entry = byCountry.get(code);
+      entry.spend += row.spend || 0;
+      entry.clicks += row.clicks || 0;
+      entry.atc += row.atc || 0;
+      entry.purchases += row.purchases || 0;
+    });
+
+    const totalSpend = Number.isFinite(data?.spendTotals?.countryGender)
+      ? data.spendTotals.countryGender
+      : [...byCountry.values()].reduce((sum, row) => sum + (row.spend || 0), 0);
+
+    const rows = [...byCountry.values()]
+      .map((row) => ({
+        ...row,
+        spendShare: safeDivide(row.spend || 0, totalSpend),
+        atcRate: row.clicks >= minClicks ? safeDivide(row.atc || 0, row.clicks) : null,
+        purchaseRate: row.clicks >= minClicks ? safeDivide(row.purchases || 0, row.clicks) : null,
+        eligible: row.clicks >= minClicks
+      }))
+      .filter((row) => row.eligible && Number.isFinite(row.spendShare));
+
+    if (!rows.length) return [];
+
+    const totalClicks = rows.reduce((sum, row) => sum + (row.clicks || 0), 0);
+    const avgAtc = safeDivide(rows.reduce((sum, row) => sum + (row.atc || 0), 0), totalClicks);
+    const avgPurchase = safeDivide(rows.reduce((sum, row) => sum + (row.purchases || 0), 0), totalClicks);
+
+    const formatPct = (value) => (Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—');
+    const formatShare = (value) => (Number.isFinite(value) ? `${Math.round(value * 100)}%` : '—');
+
+    const insights = [];
+    const used = new Set();
+
+    // Under-funded winner: high purchase rate on modest spend.
+    if (Number.isFinite(avgPurchase) && avgPurchase > 0) {
+      const winners = [...rows]
+        .filter((row) => row.purchases >= 5 && row.spendShare <= 0.12 && Number.isFinite(row.purchaseRate))
+        .filter((row) => row.purchaseRate >= avgPurchase * 1.25)
+        .sort((a, b) => (b.purchaseRate || 0) - (a.purchaseRate || 0))
+        .slice(0, 2);
+
+      winners.forEach((row) => {
+        used.add(row.country);
+        insights.push({
+          type: 'opportunity',
+          text: `Country opportunity: ${formatCountryName(row.country, countryMap)} converts at ${formatPct(row.purchaseRate)} on ${formatShare(row.spendShare)} of spend (avg ${formatPct(avgPurchase)})`
+        });
+      });
+
+      const losers = [...rows]
+        .filter((row) => row.spendShare >= 0.07 && Number.isFinite(row.purchaseRate))
+        .filter((row) => row.purchaseRate <= avgPurchase * 0.6)
+        .sort((a, b) => (b.spendShare || 0) - (a.spendShare || 0))[0];
+
+      if (losers && !used.has(losers.country)) {
+        used.add(losers.country);
+        insights.push({
+          type: 'waste',
+          text: `Country waste: ${formatCountryName(losers.country, countryMap)} is ${formatShare(losers.spendShare)} of spend but converts at ${formatPct(losers.purchaseRate)} (avg ${formatPct(avgPurchase)})`
+        });
+      }
+    }
+
+    // High intent but low close: strong ATC vs weak purchases.
+    if (Number.isFinite(avgAtc) && avgAtc > 0 && Number.isFinite(avgPurchase) && avgPurchase > 0) {
+      const intent = [...rows]
+        .filter((row) => (row.atc || 0) >= 20 && row.spendShare >= 0.03 && Number.isFinite(row.atcRate) && Number.isFinite(row.purchaseRate))
+        .filter((row) => row.atcRate >= avgAtc * 1.35 && row.purchaseRate <= avgPurchase * 0.75)
+        .sort((a, b) => ((b.atcRate || 0) - (a.atcRate || 0)))[0];
+
+      if (intent && !used.has(intent.country)) {
+        used.add(intent.country);
+        insights.push({
+          type: 'leak',
+          text: `High intent, low close: ${formatCountryName(intent.country, countryMap)} ATC ${formatPct(intent.atcRate)} (avg ${formatPct(avgAtc)}) but purchase ${formatPct(intent.purchaseRate)}`
+        });
+      }
+    }
+
+    return insights.slice(0, 4);
+  }, [countryActionsAvailable, countryGender, data, minClicks, countryMap]);
+
   if (loading) {
     return <div className="text-sm text-gray-500">Loading Meta demographics…</div>;
   }
@@ -582,6 +683,12 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
               : (splitByGender ? 'Gender split on' : 'Gender split off')}
           </button>
         </div>
+        {countryHighlights.length ? (
+          <div className="mt-4">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Highlights</div>
+            <KeyInsightsPanel insights={countryHighlights} showTitle={false} />
+          </div>
+        ) : null}
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

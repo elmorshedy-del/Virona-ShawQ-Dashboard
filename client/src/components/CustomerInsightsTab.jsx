@@ -101,6 +101,8 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
 }
 
 function InsightCard({ insight, onInvestigate }) {
+  const canInvestigate = Boolean(insight?.target && onInvestigate);
+
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
       <div className="flex items-center justify-between">
@@ -110,21 +112,23 @@ function InsightCard({ insight, onInvestigate }) {
       <div className="mt-2 text-sm text-gray-600">{insight.detail}</div>
       <div className="mt-3 flex items-center justify-between text-xs text-gray-400">
         <span>{insight.confidence ? `Confidence: ${confidenceLabel(insight.confidence)}` : 'Confidence: —'}</span>
-        <button
-          type="button"
-          onClick={() => onInvestigate?.(insight)}
-          className="flex items-center gap-1 font-medium text-indigo-600 hover:text-indigo-700"
-        >
-          Investigate <ArrowUpRight className="h-3 w-3" />
-        </button>
+        {canInvestigate ? (
+          <button
+            type="button"
+            onClick={() => onInvestigate?.(insight)}
+            className="flex items-center gap-1 font-medium text-indigo-600 hover:text-indigo-700"
+          >
+            View details <ArrowUpRight className="h-3 w-3" />
+          </button>
+        ) : null}
       </div>
     </div>
   );
 }
 
-function SectionCard({ title, subtitle, icon: Icon, children }) {
+function SectionCard({ id, title, subtitle, icon: Icon, children }) {
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+    <section id={id} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="flex items-start gap-3">
         <div className="mt-1 flex h-9 w-9 items-center justify-center rounded-full bg-indigo-50 text-indigo-600">
           <Icon className="h-5 w-5" />
@@ -139,11 +143,11 @@ function SectionCard({ title, subtitle, icon: Icon, children }) {
   );
 }
 
-function CollapsibleSectionCard({ title, subtitle, icon: Icon, defaultOpen = true, children }) {
+function CollapsibleSectionCard({ id, title, subtitle, icon: Icon, defaultOpen = true, children }) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+    <section id={id} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3">
           <div className="mt-1 flex h-9 w-9 items-center justify-center rounded-full bg-indigo-50 text-indigo-600">
@@ -193,6 +197,7 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
   const insights = data?.insights || [];
   const sections = data?.sections || {};
   const dataQuality = data?.dataQuality || {};
+  const hero = data?.hero || null;
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
 
@@ -208,6 +213,13 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
     };
   }, []);
 
+  const scrollToSection = (target) => {
+    if (!target) return;
+    const el = document.getElementById(`ci-${target}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
     <div className="space-y-6">
       {toast ? (
@@ -222,14 +234,35 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         ))}
       </div>
 
+      {hero ? (
+        <div className="rounded-2xl border border-gray-200 bg-gradient-to-br from-indigo-50 via-white to-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Customer brief</div>
+              <div className="mt-2 text-base font-semibold text-gray-900">{hero.title}</div>
+              <div className="mt-1 text-sm text-gray-600">{hero.subtitle}</div>
+            </div>
+            <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 shadow-sm">
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">{hero.metricLabel}</div>
+              <div className="mt-1 text-xl font-semibold text-gray-900">
+                {hero.metricFormat === 'percent' ? formatPercent(hero.metricValue) : hero.metricValue}
+              </div>
+              <div className="mt-1 text-xs text-gray-500">
+                Confidence: {confidenceLabel(hero.confidence || 0)} · Sample: {formatNumber(hero.sampleSize || 0)}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div>
-        <div className="mb-3 text-sm font-semibold text-gray-700">Top Insights</div>
+        <div className="mb-3 text-sm font-semibold text-gray-700">Actionable Insights</div>
         <div className="grid gap-4 md:grid-cols-3">
           {insights.map((insight) => (
             <InsightCard
               key={insight.id}
               insight={insight}
-              onInvestigate={() => showToast('Investigate is coming soon — this will open the underlying orders, segments, and recommended next actions.')}
+              onInvestigate={() => scrollToSection(insight.target)}
             />
           ))}
           {insights.length === 0 && (
@@ -240,28 +273,8 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <div className="text-xs font-semibold uppercase text-gray-400">Discover</div>
-          <div className="mt-2 text-sm font-semibold text-gray-900">Top Products</div>
-          <div className="mt-2 text-sm text-gray-600">{sections.topProducts?.summary}</div>
-          <div className="mt-4 text-xs font-semibold text-indigo-600">Visual product ranking below</div>
-        </div>
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <div className="text-xs font-semibold uppercase text-gray-400">Understand</div>
-          <div className="mt-2 text-sm font-semibold text-gray-900">Cohorts & Paths</div>
-          <div className="mt-2 text-sm text-gray-600">{sections.cohorts?.summary}</div>
-          <div className="mt-4 text-xs font-semibold text-indigo-600">Retention and next purchase paths</div>
-        </div>
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <div className="text-xs font-semibold uppercase text-gray-400">Activate</div>
-          <div className="mt-2 text-sm font-semibold text-gray-900">Audience Actions</div>
-          <div className="mt-2 text-sm text-gray-600">{sections.activation?.summary}</div>
-          <div className="mt-4 text-xs font-semibold text-indigo-600">Export-ready segments</div>
-        </div>
-      </div>
-
       <CollapsibleSectionCard
+        id="ci-metaDemographics"
         title="Meta Demographics"
         subtitle="Age, gender, and country performance signals from Meta."
         icon={sectionIcons.demographics}
@@ -275,6 +288,7 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
 
       <div className="space-y-4">
         <SectionCard
+          id="ci-topProducts"
           title="Top Products"
           subtitle={sections.topProducts?.summary || 'Best products by revenue and order count'}
           icon={sectionIcons.topProducts}
@@ -300,6 +314,115 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         </SectionCard>
 
         <SectionCard
+          id="ci-segments"
+          title="Geography & Timing"
+          subtitle={sections.segments?.summary || 'Where your best buyers come from and when they order'}
+          icon={Users}
+        >
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-gray-100 bg-white p-4">
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Coverage</div>
+              <div className="mt-2 space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">City coverage</span>
+                  <span className="font-semibold text-gray-900">{formatPercent(sections.segments?.geo?.cityCoverage)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Country coverage</span>
+                  <span className="font-semibold text-gray-900">{formatPercent(sections.segments?.geo?.countryCoverage)}</span>
+                </div>
+              </div>
+              <div className="mt-3 text-xs text-gray-400">
+                Geo stats use segments with ≥ {sections.segments?.geo?.minOrders || '—'} orders in this window.
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-gray-100 bg-white p-4">
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Peak demand</div>
+              <div className="mt-2 space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Top day</span>
+                  <span className="font-semibold text-gray-900">{sections.segments?.timing?.topDay || '—'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Top hour</span>
+                  <span className="font-semibold text-gray-900">
+                    {sections.segments?.timing?.topHour != null ? `${sections.segments.timing.topHour}:00` : '—'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-gray-100 bg-white p-4">
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Top Cities</div>
+              {(sections.segments?.geo?.cities || []).length ? (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs uppercase text-gray-400">
+                        <th className="py-2">City</th>
+                        <th className="py-2 text-right">Revenue</th>
+                        <th className="py-2 text-right">Orders</th>
+                        <th className="py-2 text-right">AOV</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(sections.segments?.geo?.cities || []).map((row) => (
+                        <tr key={row.city} className="border-t border-gray-100">
+                          <td className="py-2 text-gray-700">{row.city}</td>
+                          <td className="py-2 text-right text-gray-700">{formatCurrency(row.revenue, 0)}</td>
+                          <td className="py-2 text-right text-gray-700">{formatNumber(row.orders)}</td>
+                          <td className="py-2 text-right text-gray-700">{formatCurrency(row.aov, 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="mt-3 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
+                  City ranking will appear once city data is present on orders.
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-gray-100 bg-white p-4">
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Top Countries</div>
+              {(sections.segments?.geo?.countries || []).length ? (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs uppercase text-gray-400">
+                        <th className="py-2">Country</th>
+                        <th className="py-2 text-right">Revenue</th>
+                        <th className="py-2 text-right">Orders</th>
+                        <th className="py-2 text-right">AOV</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(sections.segments?.geo?.countries || []).map((row) => (
+                        <tr key={row.code} className="border-t border-gray-100">
+                          <td className="py-2 text-gray-700">{row.name}</td>
+                          <td className="py-2 text-right text-gray-700">{formatCurrency(row.revenue, 0)}</td>
+                          <td className="py-2 text-right text-gray-700">{formatNumber(row.orders)}</td>
+                          <td className="py-2 text-right text-gray-700">{formatCurrency(row.aov, 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="mt-3 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
+                  Country ranking will appear once country data is present on orders.
+                </div>
+              )}
+            </div>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          id="ci-cohorts"
           title="Cohorts & LTV"
           subtitle="Retention signal and expected value over time"
           icon={sectionIcons.cohorts}
@@ -327,6 +450,7 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         </SectionCard>
 
         <SectionCard
+          id="ci-repeatPaths"
           title="Repeat Paths"
           subtitle={sections.repeatPaths?.summary || 'Next-purchase transitions'}
           icon={sectionIcons.repeat}
@@ -348,6 +472,7 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         </SectionCard>
 
         <SectionCard
+          id="ci-discountRefund"
           title="Discount & Refund Impact"
           subtitle={sections.discountRefund?.summary || 'Discount reliance and margin pressure'}
           icon={sectionIcons.discount}
@@ -382,18 +507,42 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         </SectionCard>
 
         <SectionCard
+          id="ci-bundles"
           title="Bundles"
           subtitle={sections.bundles?.summary || 'Frequently bought together'}
           icon={sectionIcons.bundles}
         >
           {(sections.bundles?.bundles || []).length ? (
-            <div className="space-y-2">
-              {(sections.bundles?.bundles || []).map((row) => (
-                <div key={`${row.pair[0]}-${row.pair[1]}`} className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2 text-sm">
-                  <span className="text-gray-600">{row.pair[0]} + {row.pair[1]}</span>
-                  <span className="font-semibold text-gray-900">{row.lift.toFixed(2)}x lift</span>
-                </div>
-              ))}
+            <div className="space-y-3">
+              <div className="text-xs text-gray-500">
+                Lift compares attach rate vs baseline purchase rate (higher = stronger bundle signal).
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase text-gray-400">
+                      <th className="py-2">Bundle</th>
+                      <th className="py-2 text-right">Seen</th>
+                      <th className="py-2 text-right">Attach</th>
+                      <th className="py-2 text-right">Baseline</th>
+                      <th className="py-2 text-right">Lift</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(sections.bundles?.bundles || []).map((row) => (
+                      <tr key={`${row.pairKeys?.[0] || row.pair[0]}-${row.pairKeys?.[1] || row.pair[1]}`} className="border-t border-gray-100">
+                        <td className="py-2 text-gray-700">
+                          {row.pair?.[0]} → {row.pair?.[1]}
+                        </td>
+                        <td className="py-2 text-right text-gray-700">{formatNumber(row.count)}</td>
+                        <td className="py-2 text-right text-gray-700">{formatPercent(row.attachRate)}</td>
+                        <td className="py-2 text-right text-gray-700">{formatPercent(row.baselineRate)}</td>
+                        <td className="py-2 text-right font-semibold text-gray-900">{Number(row.lift || 0).toFixed(2)}x</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
@@ -403,6 +552,7 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         </SectionCard>
 
         <SectionCard
+          id="ci-activation"
           title="Activation"
           subtitle={sections.activation?.summary || 'Create audiences from insights'}
           icon={sectionIcons.activation}
