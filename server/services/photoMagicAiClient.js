@@ -3,6 +3,12 @@ import fetch from 'node-fetch';
 const PHOTO_MAGIC_AI_URL = (process.env.PHOTO_MAGIC_AI_URL || '').trim().replace(/\/+$/, '');
 const PHOTO_MAGIC_AI_TIMEOUT_MS = Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000);
 const PHOTO_MAGIC_AI_HEALTH_TIMEOUT_MS = Number(process.env.PHOTO_MAGIC_AI_HEALTH_TIMEOUT_MS || 10000);
+const PHOTO_MAGIC_AI_TOKEN = (process.env.PHOTO_MAGIC_AI_TOKEN || '').trim();
+
+function getAuthHeaders() {
+  if (!PHOTO_MAGIC_AI_TOKEN) return {};
+  return { Authorization: `Bearer ${PHOTO_MAGIC_AI_TOKEN}` };
+}
 
 export function isPhotoMagicAiConfigured() {
   return Boolean(PHOTO_MAGIC_AI_URL);
@@ -23,7 +29,8 @@ async function fetchJson(url, options = {}) {
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
-        ...(options.headers || {})
+        ...(options.headers || {}),
+        ...getAuthHeaders()
       }
     });
 
@@ -57,7 +64,7 @@ export async function getPhotoMagicAiHealth() {
     const res = await fetch(`${PHOTO_MAGIC_AI_URL}/health`, {
       method: 'GET',
       signal: controller.signal,
-      headers: { Accept: 'application/json' }
+      headers: { Accept: 'application/json', ...getAuthHeaders() }
     });
 
     const text = await res.text();
@@ -133,4 +140,3 @@ export async function eraseLama({
     })
   });
 }
-

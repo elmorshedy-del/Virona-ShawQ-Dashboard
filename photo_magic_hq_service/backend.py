@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
-import traceback
+import warnings
 from typing import Any
 
 import cv2
@@ -30,8 +31,23 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from PIL import Image
 
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("photo_magic_hq_service")
+
 app = Flask(__name__)
-CORS(app)
+
+CORS_ORIGINS = [o.strip() for o in os.environ.get("PHOTO_MAGIC_HQ_CORS_ORIGINS", "").split(",") if o.strip()]
+if CORS_ORIGINS:
+    CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
+
+SERVICE_TOKEN = os.environ.get("PHOTO_MAGIC_HQ_TOKEN", "").strip()
+
+MAX_IMAGE_BYTES = int(os.environ.get("PHOTO_MAGIC_MAX_IMAGE_BYTES", str(25 * 1024 * 1024)))
+MAX_IMAGE_PIXELS = int(os.environ.get("PHOTO_MAGIC_MAX_IMAGE_PIXELS", "60000000"))
+
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+warnings.simplefilter("error", Image.DecompressionBombWarning)
 
 STRICT_MODE = os.environ.get("PHOTO_MAGIC_HQ_STRICT", "true").lower() in ("1", "true", "yes")
 ALLOW_CPU = os.environ.get("PHOTO_MAGIC_HQ_ALLOW_CPU", "false").lower() in ("1", "true", "yes")
@@ -52,14 +68,66 @@ def strip_data_prefix(b64: str) -> str:
     return text
 
 
+@app.before_request
+def _auth_guard():
+    if not SERVICE_TOKEN:
+        return None
+    auth = str(request.headers.get("authorization") or "")
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    else:
+        token = str(request.headers.get("x-photo-magic-token") or "").strip()
+    if token and token == SERVICE_TOKEN:
+        return None
+    return jsonify({"error": "Unauthorized"}), 401
+
+
+def decode_b64_to_bytes(b64: str, *, max_bytes: int) -> bytes:
+    text = strip_data_prefix(b64)
+    if not text:
+        raise ValueError("Empty input")
+    compact = "".join(text.split())
+    approx_size = (len(compact) * 3) // 4
+    if approx_size > max_bytes + 16:
+        raise ValueError("Input too large")
+    try:
+        raw = base64.b64decode(compact, validate=True)
+    except Exception as e:
+        raise ValueError("Invalid base64") from e
+    if len(raw) > max_bytes:
+        raise ValueError("Input too large")
+    return raw
+
+
 def decode_b64_to_pil_rgb(b64: str) -> Image.Image:
-    raw = base64.b64decode(strip_data_prefix(b64))
-    return Image.open(io.BytesIO(raw)).convert("RGB")
+    raw = decode_b64_to_bytes(b64, max_bytes=MAX_IMAGE_BYTES)
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception as e:
+        raise ValueError("Invalid image") from e
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        raise ValueError("Invalid image size")
+    if w * h > MAX_IMAGE_PIXELS:
+        raise ValueError("Image too large")
+    return img.convert("RGB")
 
 
 def decode_b64_to_pil_l(b64: str) -> Image.Image:
-    raw = base64.b64decode(strip_data_prefix(b64))
-    return Image.open(io.BytesIO(raw)).convert("L")
+    raw = decode_b64_to_bytes(b64, max_bytes=MAX_IMAGE_BYTES)
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception as e:
+        raise ValueError("Invalid mask image") from e
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        raise ValueError("Invalid mask size")
+    if w * h > MAX_IMAGE_PIXELS:
+        raise ValueError("Mask too large")
+    return img.convert("L")
 
 
 def pil_to_png_b64(img: Image.Image) -> str:
@@ -175,17 +243,17 @@ def load_pipeline() -> None:
     SDXL_ERROR = None
 
 
-print("[photo_magic_hq_service] Loading SDXL inpainting pipeline...")
+logger.info("Loading SDXL inpainting pipeline...")
 try:
     load_pipeline()
     if SDXL_AVAILABLE:
-        print("[photo_magic_hq_service] ✓ SDXL loaded")
+        logger.info("✓ SDXL loaded")
     else:
-        print(f"[photo_magic_hq_service] ✗ SDXL not ready: {SDXL_ERROR}")
+        logger.warning("✗ SDXL not ready: %s", SDXL_ERROR)
 except Exception as e:
     SDXL_AVAILABLE = False
     SDXL_ERROR = str(e)
-    print(f"[photo_magic_hq_service] ✗ SDXL load failed: {e}")
+    logger.warning("✗ SDXL load failed: %s", e)
 
 
 @app.route("/health", methods=["GET"])
@@ -223,7 +291,7 @@ def erase_sdxl():
         num_inference_steps = clamp_int(data.get("num_inference_steps", 20), 5, 80)
         guidance_scale = clamp_float(data.get("guidance_scale", 8.0), 0.0, 20.0, 8.0)
         strength = clamp_float(data.get("strength", 0.99), 0.0, 1.0, 0.99)
-        seed = clamp_int(data.get("seed", 0), 0, 2**31 - 1)
+        seed = clamp_int(data.get("seed", 0), 0, 2**63 - 1)
 
         dilate_px = clamp_int(data.get("mask_dilate_px", 8), 0, 64)
         feather_px = clamp_int(data.get("mask_feather_px", 8), 0, 64)
@@ -295,13 +363,12 @@ def erase_sdxl():
 
         return jsonify({"result_png": pil_to_png_b64(out_pil), "width": pil.size[0], "height": pil.size[1]})
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("erase/sdxl failed")
         return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5001"))
     debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
-    print(f"[photo_magic_hq_service] Starting on 0.0.0.0:{port} (device={DEVICE})")
+    logger.info("Starting on 0.0.0.0:%s (device=%s)", port, DEVICE)
     app.run(host="0.0.0.0", port=port, debug=debug)
-

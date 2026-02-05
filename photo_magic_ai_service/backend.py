@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
-import traceback
+import warnings
 from typing import Any
 
 import cv2
@@ -25,8 +26,23 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from PIL import Image
 
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("photo_magic_ai_service")
+
 app = Flask(__name__)
-CORS(app)
+
+CORS_ORIGINS = [o.strip() for o in os.environ.get("PHOTO_MAGIC_CORS_ORIGINS", "").split(",") if o.strip()]
+if CORS_ORIGINS:
+    CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
+
+SERVICE_TOKEN = os.environ.get("PHOTO_MAGIC_AI_TOKEN", "").strip()
+
+MAX_IMAGE_BYTES = int(os.environ.get("PHOTO_MAGIC_MAX_IMAGE_BYTES", str(25 * 1024 * 1024)))
+MAX_IMAGE_PIXELS = int(os.environ.get("PHOTO_MAGIC_MAX_IMAGE_PIXELS", "60000000"))
+
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+warnings.simplefilter("error", Image.DecompressionBombWarning)
 
 STRICT_MODE = os.environ.get("PHOTO_MAGIC_STRICT", "true").lower() in ("1", "true", "yes")
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -43,17 +59,79 @@ def strip_data_prefix(b64: str) -> str:
     return text
 
 
+@app.before_request
+def _auth_guard():
+    if not SERVICE_TOKEN:
+        return None
+    auth = str(request.headers.get("authorization") or "")
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    else:
+        token = str(request.headers.get("x-photo-magic-token") or "").strip()
+    if token and token == SERVICE_TOKEN:
+        return None
+    return jsonify({"error": "Unauthorized"}), 401
+
+
+def decode_b64_to_bytes(b64: str, *, max_bytes: int) -> bytes:
+    text = strip_data_prefix(b64)
+    if not text:
+        raise ValueError("Empty input")
+    compact = "".join(text.split())
+    approx_size = (len(compact) * 3) // 4
+    if approx_size > max_bytes + 16:
+        raise ValueError("Input too large")
+    try:
+        raw = base64.b64decode(compact, validate=True)
+    except Exception as e:
+        raise ValueError("Invalid base64") from e
+    if len(raw) > max_bytes:
+        raise ValueError("Input too large")
+    return raw
+
+
 def decode_b64_to_pil(b64: str) -> Image.Image:
-    raw = base64.b64decode(strip_data_prefix(b64))
-    return Image.open(io.BytesIO(raw)).convert("RGB")
+    raw = decode_b64_to_bytes(b64, max_bytes=MAX_IMAGE_BYTES)
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception as e:
+        raise ValueError("Invalid image") from e
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        raise ValueError("Invalid image size")
+    if w * h > MAX_IMAGE_PIXELS:
+        raise ValueError("Image too large")
+    return img.convert("RGB")
+
+
+def decode_b64_to_pil_l(b64: str) -> Image.Image:
+    raw = decode_b64_to_bytes(b64, max_bytes=MAX_IMAGE_BYTES)
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception as e:
+        raise ValueError("Invalid mask image") from e
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        raise ValueError("Invalid mask size")
+    if w * h > MAX_IMAGE_PIXELS:
+        raise ValueError("Mask too large")
+    return img.convert("L")
 
 
 def decode_b64_to_cv2_bgr(b64: str) -> np.ndarray:
-    raw = base64.b64decode(strip_data_prefix(b64))
+    raw = decode_b64_to_bytes(b64, max_bytes=MAX_IMAGE_BYTES)
     arr = np.frombuffer(raw, dtype=np.uint8)
     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if frame is None:
         raise ValueError("Invalid image")
+    h, w = frame.shape[:2]
+    if h <= 0 or w <= 0:
+        raise ValueError("Invalid image size")
+    if h * w > MAX_IMAGE_PIXELS:
+        raise ValueError("Image too large")
     return frame
 
 
@@ -121,7 +199,7 @@ def composite_with_alpha(base_rgb: np.ndarray, overlay_rgb: np.ndarray, alpha_u8
 # Model Loading
 # =============================================================================
 
-print("[photo_magic_ai_service] Loading models...")
+logger.info("Loading models...")
 
 # RMBG 2.0
 RMBG2_AVAILABLE = False
@@ -147,10 +225,10 @@ try:
     )
 
     RMBG2_AVAILABLE = True
-    print("[photo_magic_ai_service] ✓ RMBG2 loaded")
+    logger.info("✓ RMBG2 loaded")
 except Exception as e:
     RMBG2_ERROR = str(e)
-    print(f"[photo_magic_ai_service] ✗ RMBG2 not available: {e}")
+    logger.warning("✗ RMBG2 not available: %s", e)
 
 # SAM2
 SAM2_AVAILABLE = False
@@ -190,13 +268,13 @@ try:
 
         sam2_predictor = SAM2ImagePredictor(sam2_model)
         SAM2_AVAILABLE = True
-        print("[photo_magic_ai_service] ✓ SAM2 loaded")
+        logger.info("✓ SAM2 loaded")
     else:
         SAM2_ERROR = f"SAM2 weights not found at {SAM2_WEIGHTS_PATH}"
-        print(f"[photo_magic_ai_service] ✗ {SAM2_ERROR}")
+        logger.warning("✗ %s", SAM2_ERROR)
 except Exception as e:
     SAM2_ERROR = str(e)
-    print(f"[photo_magic_ai_service] ✗ SAM2 not available: {e}")
+    logger.warning("✗ SAM2 not available: %s", e)
 
 # LaMa
 LAMA_AVAILABLE = False
@@ -207,12 +285,12 @@ try:
 
     lama_model = SimpleLama(device=torch.device(DEVICE))
     LAMA_AVAILABLE = True
-    print("[photo_magic_ai_service] ✓ LaMa loaded")
+    logger.info("✓ LaMa loaded")
 except Exception as e:
     LAMA_ERROR = str(e)
-    print(f"[photo_magic_ai_service] ✗ LaMa not available: {e}")
+    logger.warning("✗ LaMa not available: %s", e)
 
-print("[photo_magic_ai_service] Models ready.\n")
+logger.info("Models ready.")
 
 
 def require_ready(models: dict[str, bool]) -> tuple[bool, Any]:
@@ -342,7 +420,7 @@ def remove_bg_rmbg2():
             resp["mask_png"] = pil_to_png_b64(mask)
         return jsonify(resp)
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("remove-bg/rmbg2 failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -395,7 +473,7 @@ def remove_bg_sam2_refine():
             }
         )
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("remove-bg/sam2-refine failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -419,7 +497,7 @@ def erase_lama():
             return jsonify({"error": "image and mask are required"}), 400
 
         pil = decode_b64_to_pil(image_b64)
-        mask_pil = Image.open(io.BytesIO(base64.b64decode(strip_data_prefix(mask_b64)))).convert("L")
+        mask_pil = decode_b64_to_pil_l(mask_b64)
 
         w0, h0 = pil.size
 
@@ -475,13 +553,12 @@ def erase_lama():
 
         return jsonify({"result_png": pil_to_png_b64(out_pil), "width": w0, "height": h0})
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("erase/lama failed")
         return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
-    print(f"[photo_magic_ai_service] Starting on 0.0.0.0:{port} (device={DEVICE})")
+    logger.info("Starting on 0.0.0.0:%s (device=%s)", port, DEVICE)
     app.run(host="0.0.0.0", port=port, debug=debug)
-

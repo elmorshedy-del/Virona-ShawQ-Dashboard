@@ -458,19 +458,25 @@ export default function PhotoMagicEditor({ store }) {
     [tool]
   );
 
-  const exportMaskBase64 = useCallback(async () => {
+  const exportMaskBlob = useCallback(async () => {
     const canvas = maskCanvasRef.current;
     if (!canvas) return null;
     const targetW = toNumber(imageMeta?.width, canvas.width);
     const targetH = toNumber(imageMeta?.height, canvas.height);
-    if (!targetW || !targetH) return canvas.toDataURL('image/png');
 
     const out = document.createElement('canvas');
-    out.width = targetW;
-    out.height = targetH;
+    out.width = Math.max(1, Math.round(targetW || canvas.width));
+    out.height = Math.max(1, Math.round(targetH || canvas.height));
     const outCtx = out.getContext('2d');
-    outCtx?.drawImage(canvas, 0, 0, targetW, targetH);
-    return out.toDataURL('image/png');
+    outCtx?.drawImage(canvas, 0, 0, out.width, out.height);
+
+    const blob = await new Promise((resolve) => out.toBlob(resolve, 'image/png'));
+    if (blob) return blob;
+
+    // Fallback: toBlob can return null in some environments.
+    const dataUrl = out.toDataURL('image/png');
+    const res = await fetch(dataUrl);
+    return await res.blob();
   }, [imageMeta?.height, imageMeta?.width]);
 
   const runErase = useCallback(async () => {
@@ -478,31 +484,29 @@ export default function PhotoMagicEditor({ store }) {
     setError(null);
     setIsRunning(true);
     try {
-      const maskB64 = await exportMaskBase64();
-      if (!maskB64) throw new Error('Mask not ready');
+      const maskBlob = await exportMaskBlob();
+      if (!maskBlob) throw new Error('Mask not ready');
 
-      const payload = {
-        image_id: imageId,
-        quality,
-        max_side: maxSide,
-        mask_png_base64: maskB64,
-        mask_dilate_px: maskDilatePx,
-        mask_feather_px: maskFeatherPx,
-        crop_to_mask: cropToMask,
-        crop_margin_px: cropMarginPx
-      };
+      const form = new FormData();
+      form.append('image_id', imageId);
+      form.append('quality', quality);
+      form.append('max_side', String(maxSide));
+      form.append('mask_dilate_px', String(maskDilatePx));
+      form.append('mask_feather_px', String(maskFeatherPx));
+      form.append('crop_to_mask', String(Boolean(cropToMask)));
+      form.append('crop_margin_px', String(cropMarginPx));
+      form.append('mask', maskBlob, 'mask.png');
 
       if (quality === 'hq') {
-        payload.num_inference_steps = sdxlSteps;
-        payload.guidance_scale = sdxlGuidance;
-        payload.strength = sdxlStrength;
-        payload.seed = sdxlSeed;
+        form.append('num_inference_steps', String(sdxlSteps));
+        form.append('guidance_scale', String(sdxlGuidance));
+        form.append('strength', String(sdxlStrength));
+        form.append('seed', String(sdxlSeed));
       }
 
       const res = await fetch(withStore('/creative-studio/photo-magic/erase', store), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: form
       });
       const data = await res.json();
       if (!res.ok || !data?.success) throw new Error(data?.error || 'Erase failed');
@@ -517,7 +521,7 @@ export default function PhotoMagicEditor({ store }) {
   }, [
     cropMarginPx,
     cropToMask,
-    exportMaskBase64,
+    exportMaskBlob,
     imageId,
     maskDilatePx,
     maskFeatherPx,
@@ -902,4 +906,3 @@ export default function PhotoMagicEditor({ store }) {
     </div>
   );
 }
-
