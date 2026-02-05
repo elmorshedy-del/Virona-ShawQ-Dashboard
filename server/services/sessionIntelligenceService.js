@@ -270,6 +270,17 @@ function makeSessionCodename(sessionId) {
   return `S${code.slice(0, 4)}-${code.slice(4, 8)}`;
 }
 
+function formatSessionNumberCode(sessionNumber, width = 6) {
+  const n = Number(sessionNumber);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const safeWidth = Math.min(Math.max(Math.trunc(width) || 6, 4), 12);
+  return `S-${String(Math.trunc(n)).padStart(safeWidth, '0')}`;
+}
+
+function makeSessionDisplayCode({ sessionNumber, sessionId }) {
+  return formatSessionNumberCode(sessionNumber) || makeSessionCodename(sessionId);
+}
+
 function extractProductIdsFromCart(cartJson) {
   if (!cartJson || typeof cartJson !== 'string') return new Set();
   const parsed = safeJsonParse(cartJson);
@@ -910,6 +921,7 @@ function scrubSensitive(value, seen = new WeakMap()) {
 export function recordSessionIntelligenceEvent({ store, payload, source = 'shopify' }) {
   if (!payload || typeof payload !== 'object') return { ok: false, reason: 'invalid_payload' };
   const db = getDb();
+  const normalizedStore = safeString(store).trim() || 'shawq';
 
   const eventName = normalizeEventName(payload);
   const eventTs = normalizeEventTimestamp(payload);
@@ -932,10 +944,10 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     null;
 
   const clientId = identifiers.clientId || null;
-  const shopperNumber = clientId ? getOrCreateShopperNumber(store, clientId, eventTs) : null;
+  const shopperNumber = clientId ? getOrCreateShopperNumber(normalizedStore, clientId, eventTs) : null;
   const sessionId =
     identifiers.sessionId ||
-    (clientId ? getOrCreateSessionId(store, clientId, eventTs) : null) ||
+    (clientId ? getOrCreateSessionId(normalizedStore, clientId, eventTs) : null) ||
     (checkoutToken ? `checkout:${checkoutToken}` : null) ||
     `anon:${randomUUID()}`;
 
@@ -998,6 +1010,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     INSERT INTO si_sessions (
       store,
       session_id,
+      session_number,
       client_id,
       started_at,
       last_event_at,
@@ -1035,9 +1048,11 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       ?,
       ?,
       ?,
+      ?,
       ?
     )
     ON CONFLICT(store, session_id) DO UPDATE SET
+      session_number = COALESCE(si_sessions.session_number, excluded.session_number),
       client_id = COALESCE(excluded.client_id, si_sessions.client_id),
       started_at = CASE
         WHEN si_sessions.started_at IS NULL THEN excluded.started_at
@@ -1115,9 +1130,47 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
   const status =
     purchaseAt ? 'purchased' : checkoutStartedAt ? 'checkout' : atcAt ? 'atc' : 'active';
 
-  db.transaction(() => {
+  let sessionNumber = null;
+
+  const tx = db.transaction(() => {
+    // Allocate a stable, per-store sequential session_number (S-000123).
+    try {
+      const existing = db.prepare(`
+        SELECT session_number
+        FROM si_sessions
+        WHERE store = ? AND session_id = ?
+      `).get(normalizedStore, sessionId);
+
+      sessionNumber = existing?.session_number ? Number(existing.session_number) : null;
+
+      if (!sessionNumber) {
+        db.prepare(`
+          INSERT OR IGNORE INTO si_store_counters (store, next_session_number)
+          VALUES (?, 1)
+        `).run(normalizedStore);
+
+        db.prepare(`
+          UPDATE si_store_counters
+          SET next_session_number = next_session_number + 1,
+              updated_at = datetime('now')
+          WHERE store = ?
+        `).run(normalizedStore);
+
+        const assigned = db.prepare(`
+          SELECT next_session_number - 1 AS assigned
+          FROM si_store_counters
+          WHERE store = ?
+        `).get(normalizedStore)?.assigned;
+
+        sessionNumber = Number(assigned) || null;
+      }
+    } catch (_e) {
+      // If the counters table/column is missing (early boot), fall back to hashed code.
+      sessionNumber = null;
+    }
+
     insertEvent.run(
-      store,
+      normalizedStore,
       sessionId,
       clientId,
       shopperNumber,
@@ -1148,8 +1201,9 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     );
 
     upsertSession.run(
-      store,
+      normalizedStore,
       sessionId,
+      sessionNumber,
       clientId,
       eventTs,
       eventTs,
@@ -1168,12 +1222,15 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       status,
       now
     );
-  })();
+  });
+
+  tx.immediate();
 
   return {
     ok: true,
-    store,
+    store: normalizedStore,
     sessionId,
+    sessionNumber,
     eventName,
     eventTs,
     checkoutToken,
@@ -1571,42 +1628,45 @@ export function getSessionIntelligenceRecentEvents(store, limit = 80) {
   const max = Math.min(Math.max(parseInt(limit, 10) || 80, 1), 500);
   return db.prepare(`
     SELECT
-      id,
-      store,
-      session_id,
-      client_id,
-      shopper_number,
-      source,
-      event_name,
-      event_ts,
-      page_url,
-      page_path,
-      checkout_token,
-      checkout_step,
-      device_type,
-      country_code,
-      product_id,
-      variant_id,
-      utm_source,
-      utm_medium,
-      utm_campaign,
-      utm_content,
-      utm_term,
-      fbclid,
-      gclid,
-      ttclid,
-      msclkid,
-      wbraid,
-      gbraid,
-      irclickid,
-      created_at
-    FROM si_events
-    WHERE store = ?
-    ORDER BY created_at DESC
+      e.id,
+      e.store,
+      e.session_id,
+      s.session_number,
+      e.client_id,
+      e.shopper_number,
+      e.source,
+      e.event_name,
+      e.event_ts,
+      e.page_url,
+      e.page_path,
+      e.checkout_token,
+      e.checkout_step,
+      e.device_type,
+      e.country_code,
+      e.product_id,
+      e.variant_id,
+      e.utm_source,
+      e.utm_medium,
+      e.utm_campaign,
+      e.utm_content,
+      e.utm_term,
+      e.fbclid,
+      e.gclid,
+      e.ttclid,
+      e.msclkid,
+      e.wbraid,
+      e.gbraid,
+      e.irclickid,
+      e.created_at
+    FROM si_events e
+      LEFT JOIN si_sessions s
+      ON s.store = e.store AND s.session_id = e.session_id
+    WHERE e.store = ?
+    ORDER BY e.created_at DESC
     LIMIT ?
   `).all(store, max).map((row) => ({
     ...row,
-    codename: makeSessionCodename(row.session_id)
+    codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
   }));
 }
 
@@ -1619,6 +1679,7 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
       id,
       store,
       session_id,
+      session_number,
       client_id,
       shopper_number,
       started_at,
@@ -1647,7 +1708,7 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
     LIMIT ?
   `).all(store, max).map((row) => ({
     ...row,
-    codename: makeSessionCodename(row.session_id)
+    codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
   }));
 }
 
@@ -2149,6 +2210,7 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
       NULLIF(d.variant_id, '') AS variant_id,
       NULLIF(d.utm_campaign, '') AS utm_campaign,
       NULLIF(d.utm_source, '') AS utm_source,
+      s.session_number,
       s.status,
       s.analyzed_at,
       s.primary_reason,
@@ -2175,9 +2237,9 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
   ];
 
   return db.prepare(query).all(...params).map((row) => ({
-      ...row,
-      codename: makeSessionCodename(row.session_id)
-    }));
+    ...row,
+    codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
+  }));
 }
 
 const SESSION_FLOW_STAGE_ORDER = [
@@ -2784,79 +2846,85 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
   if (sessionId) {
     return db.prepare(`
       SELECT
-        id,
-        store,
-        session_id,
-        event_name,
-        event_ts,
-        page_path,
-        checkout_step,
-        device_type,
-        country_code,
-        product_id,
-        variant_id,
-        utm_source,
-        utm_medium,
-        utm_campaign,
-        utm_content,
-        utm_term,
-        fbclid,
-        gclid,
-        ttclid,
-        msclkid,
-        wbraid,
-        gbraid,
-        irclickid,
-        data_json,
-        created_at
-      FROM si_events
-      WHERE store = ?
-        AND session_id = ?
-        AND created_at >= ?
-        AND created_at < ?
-      ORDER BY created_at ASC
+        e.id,
+        e.store,
+        e.session_id,
+        s.session_number,
+        e.event_name,
+        e.event_ts,
+        e.page_path,
+        e.checkout_step,
+        e.device_type,
+        e.country_code,
+        e.product_id,
+        e.variant_id,
+        e.utm_source,
+        e.utm_medium,
+        e.utm_campaign,
+        e.utm_content,
+        e.utm_term,
+        e.fbclid,
+        e.gclid,
+        e.ttclid,
+        e.msclkid,
+        e.wbraid,
+        e.gbraid,
+        e.irclickid,
+        e.data_json,
+        e.created_at
+      FROM si_events e
+        LEFT JOIN si_sessions s
+        ON s.store = e.store AND s.session_id = e.session_id
+      WHERE e.store = ?
+        AND e.session_id = ?
+        AND e.created_at >= ?
+        AND e.created_at < ?
+      ORDER BY e.created_at ASC
       LIMIT ?
     `).all(store, sessionId, range.start, range.end, max).map((row) => ({
       ...row,
-      codename: makeSessionCodename(row.session_id)
+      codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
     }));
   }
 
   return db.prepare(`
     SELECT
-      id,
-      store,
-      session_id,
-      event_name,
-      event_ts,
-      page_path,
-      checkout_step,
-      device_type,
-      country_code,
-      product_id,
-      variant_id,
-      utm_source,
-      utm_medium,
-      utm_campaign,
-      utm_content,
-      utm_term,
-      fbclid,
-      gclid,
-      ttclid,
-      msclkid,
-      wbraid,
-      gbraid,
-      irclickid,
-      created_at
-    FROM si_events
-    WHERE store = ?
-      AND created_at >= ?
-      AND created_at < ?
-    ORDER BY created_at DESC
+      e.id,
+      e.store,
+      e.session_id,
+      s.session_number,
+      e.event_name,
+      e.event_ts,
+      e.page_path,
+      e.checkout_step,
+      e.device_type,
+      e.country_code,
+      e.product_id,
+      e.variant_id,
+      e.utm_source,
+      e.utm_medium,
+      e.utm_campaign,
+      e.utm_content,
+      e.utm_term,
+      e.fbclid,
+      e.gclid,
+      e.ttclid,
+      e.msclkid,
+      e.wbraid,
+      e.gbraid,
+      e.irclickid,
+      e.created_at
+    FROM si_events e
+      LEFT JOIN si_sessions s
+      ON s.store = e.store AND s.session_id = e.session_id
+    WHERE e.store = ?
+      AND e.created_at >= ?
+      AND e.created_at < ?
+    ORDER BY e.created_at DESC
     LIMIT ?
   `).all(store, range.start, range.end, max).map((row) => ({
     ...row,
-    codename: makeSessionCodename(row.session_id)
+    codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
   }));
 }
 
@@ -2937,7 +3005,13 @@ export async function analyzeSessionIntelligenceSession({
     WHERE store = ? AND session_id = ?
   `).run(store, sessionId);
 
-  const codename = makeSessionCodename(sessionId);
+  const sessionRow = db.prepare(`
+    SELECT session_number
+    FROM si_sessions
+    WHERE store = ? AND session_id = ?
+  `).get(store, sessionId);
+
+  const codename = makeSessionDisplayCode({ sessionNumber: sessionRow?.session_number, sessionId });
   const timeline = buildAiTimeline(events);
 
   const systemPrompt = [
