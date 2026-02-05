@@ -57,6 +57,27 @@ function formatSegmentLabel(row) {
   return `${row.country || 'ALL'} · ${row.genderLabel || 'Unknown'}`;
 }
 
+function titleCaseWords(value) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function formatPlacementLabel(row) {
+  if (!row) return '—';
+  const platform = titleCaseWords(row.publisherPlatform || row.publisher_platform || 'Unknown');
+  const position = titleCaseWords(row.platformPosition || row.platform_position || 'Unknown');
+  return `${platform} · ${position}`;
+}
+
+function formatDeviceLabel(row) {
+  if (!row) return '—';
+  return titleCaseWords(row.devicePlatform || row.device_platform || 'Unknown');
+}
+
 const getIstanbulDateString = (date = new Date()) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(date);
 
@@ -87,6 +108,9 @@ function KeyInsightsPanel({ insights, title = 'Key Insights', showTitle = true, 
       case 'sweetspot': return 'bg-amber-500';
       case 'leak': return 'bg-orange-500';
       case 'country': return 'bg-blue-500';
+      case 'placement': return 'bg-cyan-500';
+      case 'device': return 'bg-violet-500';
+      case 'info': return 'bg-slate-400';
       default: return 'bg-gray-400';
     }
   };
@@ -249,8 +273,12 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
 
   const ageGender = data?.segments?.ageGender || [];
   const countryGender = data?.segments?.countryGender || [];
+  const placementSegments = data?.segments?.placement || [];
+  const deviceSegments = data?.segments?.device || [];
   const minClicks = data?.rules?.minClicks || 30;
   const countryActionsAvailable = data?.flags?.countryActionsAvailable !== false;
+  const placementActionsAvailable = data?.flags?.placementActionsAvailable !== false;
+  const deviceActionsAvailable = data?.flags?.deviceActionsAvailable !== false;
   const countryGenderSplitAvailable = data?.flags?.countryGenderSplitAvailable !== false;
 
   useEffect(() => {
@@ -592,6 +620,98 @@ export default function MetaDemographics({ store, globalDateRange, formatCurrenc
           Rates only computed for segments with ≥ {minClicks} clicks.
           {!countryActionsAvailable ? ' Meta API does not allow actions for this breakdown; rates are hidden.' : ''}
           {!countryGenderSplitAvailable ? ' Meta API does not support country + gender breakdown, so gender split is disabled.' : ''}
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div>
+            <div className="text-sm font-semibold text-gray-900">Placements</div>
+            <div className="text-xs text-gray-500">Performance by publisher platform + placement position.</div>
+          </div>
+          {placementSegments.length ? (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase text-gray-400">
+                    <th className="py-2">Placement</th>
+                    <th className="py-2 text-right">Spend share</th>
+                    <th className="py-2 text-right">Spend</th>
+                    <th className="py-2 text-right">Clicks</th>
+                    <th className="py-2 text-right">Purchase rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {placementSegments.slice(0, 12).map((row) => (
+                    <tr key={row.key} className="border-t border-gray-100">
+                      <td className="py-2 text-gray-700">{formatPlacementLabel(row)}</td>
+                      <td className="py-2 text-right text-gray-700">{formatPercent(row.spendShare)}</td>
+                      <td className="py-2 text-right text-gray-700">
+                        {formatCurrency ? formatCurrency(row.spend || 0, 0) : `$${Math.round(row.spend || 0)}`}
+                      </td>
+                      <td className="py-2 text-right text-gray-700">{formatNumber(row.clicks)}</td>
+                      <td className="py-2 text-right text-gray-700">
+                        {row.eligible && placementActionsAvailable ? formatPercent(row.purchaseRate) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="mt-4 rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-sm text-gray-500">
+              No placement segments returned for this range.
+            </div>
+          )}
+          <div className="mt-3 text-xs text-gray-400">
+            Rates only computed for segments with ≥ {minClicks} clicks.
+            {!placementActionsAvailable ? ' Meta API does not allow actions for this breakdown; rates are hidden.' : ''}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div>
+            <div className="text-sm font-semibold text-gray-900">Devices</div>
+            <div className="text-xs text-gray-500">Performance by device platform (mobile vs desktop).</div>
+          </div>
+          {deviceSegments.length ? (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase text-gray-400">
+                    <th className="py-2">Device</th>
+                    <th className="py-2 text-right">Spend share</th>
+                    <th className="py-2 text-right">Spend</th>
+                    <th className="py-2 text-right">Clicks</th>
+                    <th className="py-2 text-right">Purchase rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deviceSegments.map((row) => (
+                    <tr key={row.key} className="border-t border-gray-100">
+                      <td className="py-2 text-gray-700">{formatDeviceLabel(row)}</td>
+                      <td className="py-2 text-right text-gray-700">{formatPercent(row.spendShare)}</td>
+                      <td className="py-2 text-right text-gray-700">
+                        {formatCurrency ? formatCurrency(row.spend || 0, 0) : `$${Math.round(row.spend || 0)}`}
+                      </td>
+                      <td className="py-2 text-right text-gray-700">{formatNumber(row.clicks)}</td>
+                      <td className="py-2 text-right text-gray-700">
+                        {row.eligible && deviceActionsAvailable ? formatPercent(row.purchaseRate) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="mt-4 rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-sm text-gray-500">
+              No device segments returned for this range.
+            </div>
+          )}
+          <div className="mt-3 text-xs text-gray-400">
+            Rates only computed for segments with ≥ {minClicks} clicks.
+            {!deviceActionsAvailable ? ' Meta API does not allow actions for this breakdown; rates are hidden.' : ''}
+          </div>
         </div>
       </div>
     </div>
