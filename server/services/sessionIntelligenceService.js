@@ -2536,7 +2536,8 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
 
   const rageCounts = new Map(); // key => { count, sessions:Set, page, targetKey, sample:[] }
   const deadCounts = new Map();
-  const errorCounts = new Map(); // key => { count, sessions:Set, message, page, sample:[] }
+  // JS errors grouped by "root cause" (message + source host + category), with per-page impact rolled up.
+  const jsErrorCounts = new Map(); // key => { count, sessions:Set, message, category, source_host, source_url, pages:Map, sample:[] }
   const formCounts = new Map(); // key => { count, sessions:Set, field_type, field_name, sample:[] }
   const scrollMaxBySessionPage = new Map(); // `${sessionId}|${page}` => maxPercent
 
@@ -2552,6 +2553,107 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
     if (entry.sample.length >= 6) return;
     if (entry.sample.includes(sessionId)) return;
     entry.sample.push(sessionId);
+  };
+
+  const normalizeWhitespace = (value) => safeString(value).replace(/\s+/g, ' ').trim();
+
+  const extractFirstUrl = (value) => {
+    const text = normalizeWhitespace(value);
+    if (!text) return null;
+    const match = text.match(/https?:\/\/[^\s)]+/i);
+    return match ? match[0] : null;
+  };
+
+  const hostnameFromAbsoluteUrl = (value) => {
+    const raw = safeString(value).trim();
+    if (!/^https?:\/\//i.test(raw)) return null;
+    try {
+      return new URL(raw).hostname.toLowerCase();
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const stripUrlFromMessage = (message, url) => {
+    const raw = normalizeWhitespace(message);
+    if (!raw) return raw;
+    if (!url) return raw;
+    return normalizeWhitespace(raw.replace(url, ''));
+  };
+
+  const classifyJsError = ({ message, filename, stack }) => {
+    const rawMessage = normalizeWhitespace(message) || 'Unknown error';
+    const fromFilename = extractFirstUrl(filename);
+    const fromMessage = extractFirstUrl(rawMessage);
+    const fromStack = extractFirstUrl(stack);
+    const sourceUrl = fromFilename || fromMessage || fromStack || null;
+    const sourceHost = hostnameFromAbsoluteUrl(sourceUrl || '') || hostnameFromAbsoluteUrl(fromFilename || '') || null;
+    const normalizedMessage = stripUrlFromMessage(rawMessage, fromMessage || sourceUrl);
+    const lower = normalizedMessage.toLowerCase();
+
+    const isNetwork = (
+      lower.includes('load failed') ||
+      lower.includes('failed to load') ||
+      lower.includes('unable to fetch') ||
+      lower.includes('failed to fetch') ||
+      lower.includes('networkerror') ||
+      lower.includes('network error') ||
+      lower.includes('err_')
+    );
+
+    const isJson = (
+      lower.includes('unexpected end of json input') ||
+      lower.includes("failed to execute 'json'") ||
+      (lower.includes('unexpected token') && lower.includes('json'))
+    );
+
+    const isException = (
+      lower.startsWith('referenceerror') ||
+      lower.startsWith('typeerror') ||
+      lower.startsWith('syntaxerror') ||
+      lower.startsWith('rangeerror') ||
+      lower.startsWith('urierror')
+    );
+
+    let category = 'JavaScript error';
+    if (lower.includes('_autofillcallbackhandler')) category = 'Autofill / extension';
+    else if (isNetwork) category = 'Network / script load';
+    else if (isJson) category = 'JSON / API response';
+    else if (isException) category = 'JavaScript exception';
+
+    const isShopifyInfra = sourceHost
+      ? (sourceHost.includes('shopify') || sourceHost.includes('myshopify') || sourceHost.includes('shopifycloud'))
+      : false;
+
+    let recommendation = 'Inspect the sample session and browser console to reproduce, then fix the underlying script or request that triggered the error.';
+
+    if (category === 'Autofill / extension') {
+      recommendation = 'This often comes from browser autofill or an extension. Validate in an incognito window and on a second browser before spending time on theme changes.';
+    } else if (category === 'Network / script load') {
+      if (isShopifyInfra) {
+        recommendation = 'A Shopify or Shopify-hosted asset failed to load. Check Shopify status, and confirm the theme/app scripts are not intermittently failing (try disabling recently added apps).';
+      } else if (sourceHost) {
+        recommendation = `A third-party script failed to load (${sourceHost}). Check that the URL is reachable, not blocked by CSP/ad blockers, and that the app is compatible with the theme.`;
+      } else {
+        recommendation = 'A resource failed to load. Use the browser Network tab to find the failing request and confirm it isn’t blocked by CSP/ad blockers or an app script.';
+      }
+    } else if (category === 'JSON / API response') {
+      recommendation = 'A request returned invalid/truncated JSON. Check the failing endpoint in the session, and add retries/guarded parsing on the storefront or fix the upstream response.';
+    } else if (category === 'JavaScript exception') {
+      if (sourceHost) {
+        recommendation = `A script error occurred (likely from ${sourceHost}). Use the error message + stack in the sample session to locate the script and fix/rollback the responsible app or theme change.`;
+      } else {
+        recommendation = 'A script error occurred. Use the error message + stack in the sample session to locate the failing code path and fix/rollback the responsible theme/app change.';
+      }
+    }
+
+    return {
+      category,
+      message: safeTruncate(normalizedMessage || rawMessage, 220) || 'Unknown error',
+      source_url: safeTruncate(sourceUrl, 260) || null,
+      source_host: safeTruncate(sourceHost, 140) || null,
+      recommendation: safeTruncate(recommendation, 260) || null
+    };
   };
 
   const chunks = chunkArray(sessionIds, 450);
@@ -2606,13 +2708,30 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       }
 
       if (name === 'js_error' || name === 'unhandled_rejection') {
-        const message = safeString(data.message || data.reason || '').trim() || 'Unknown error';
-        const key = `${page}||${message.slice(0, 180)}`;
-        const entry = errorCounts.get(key) || { page, message: message.slice(0, 220), count: 0, sessions: new Set(), sample: [] };
+        const message = normalizeWhitespace(data.message || data.reason || '') || 'Unknown error';
+        const filename = normalizeWhitespace(data.filename || '') || '';
+        const stack = normalizeWhitespace(data.stack || '') || '';
+        const classified = classifyJsError({ message, filename, stack });
+        const fingerprint = `${classified.category}||${classified.source_host || ''}||${classified.message.slice(0, 180)}`;
+        const entry = jsErrorCounts.get(fingerprint) || {
+          message: classified.message,
+          category: classified.category,
+          source_host: classified.source_host,
+          source_url: classified.source_url,
+          recommendation: classified.recommendation,
+          count: 0,
+          sessions: new Set(),
+          pages: new Map(),
+          sample: []
+        };
         entry.count += 1;
         entry.sessions.add(sessionId);
         addSample(entry, sessionId);
-        errorCounts.set(key, entry);
+        const pageEntry = entry.pages.get(page) || { page, count: 0, sessions: new Set() };
+        pageEntry.count += 1;
+        pageEntry.sessions.add(sessionId);
+        entry.pages.set(page, pageEntry);
+        jsErrorCounts.set(fingerprint, entry);
         continue;
       }
 
@@ -2688,14 +2807,31 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
   );
 
   const js_errors = asTopList(
-    errorCounts,
-    (entry) => ({
-      page: entry.page,
-      message: entry.message,
-      count: entry.count,
-      sessions: entry.sessions.size,
-      sample_sessions: (entry.sample || []).map(sessionStub)
-    })
+    jsErrorCounts,
+    (entry) => {
+      const topPages = Array.from(entry.pages.values())
+        .sort((a, b) => (b.count || 0) - (a.count || 0))
+        .slice(0, 4)
+        .map((p) => ({
+          page: p.page,
+          count: p.count,
+          sessions: p.sessions.size
+        }));
+
+      return {
+        // Backwards-friendly: keep a "page" to show something even if the UI hasn't upgraded yet.
+        page: topPages[0]?.page || '/',
+        message: entry.message,
+        category: entry.category,
+        source_host: entry.source_host,
+        source_url: entry.source_url,
+        recommendation: entry.recommendation,
+        top_pages: topPages,
+        count: entry.count,
+        sessions: entry.sessions.size,
+        sample_sessions: (entry.sample || []).map(sessionStub)
+      };
+    }
   );
 
   const form_invalid = asTopList(

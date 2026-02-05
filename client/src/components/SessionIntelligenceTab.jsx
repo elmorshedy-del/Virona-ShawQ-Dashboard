@@ -211,10 +211,20 @@ function normalizeEventLabel(value) {
   const key = raw.toLowerCase();
   if (EVENT_LABEL_OVERRIDES[key]) return EVENT_LABEL_OVERRIDES[key];
 
-  // Fallback: "some_event-name" -> "Some event name"
+  // Fallback: "some_event-name" -> "Some Event Name"
   const cleaned = key.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!cleaned) return raw;
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+
+  const ACRONYMS = new Set(['atc', 'sku', 'utm', 'api', 'ai', 'js', 'id', 'url', 'ip', 'ga', 'ppc', 'cpc']);
+  return cleaned
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => {
+      if (ACRONYMS.has(word)) return word.toUpperCase();
+      if (/^\d+$/.test(word)) return word;
+      return `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+    })
+    .join(' ');
 }
 
 function normalizeTrafficSourceLabel(value) {
@@ -1738,35 +1748,69 @@ export default function SessionIntelligenceTab({ store }) {
                 <div className="si-empty">No JS errors detected.</div>
               ) : (
                 <ul className="si-insight-list">
-                  {(claritySignals?.signals?.js_errors || []).slice(0, 8).map((item, idx) => (
-                    <li key={`js-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-                        <span title={item.message}>
-                          {formatPathLabel(item.page)}{' '}
-                          <span className="si-muted" style={{ fontSize: 11 }}>
-                            {item.message ? `• ${String(item.message).slice(0, 80)}` : ''}
+                  {(claritySignals?.signals?.js_errors || []).slice(0, 8).map((item, idx) => {
+                    const shortUrl = item?.source_url
+                      ? String(item.source_url).replace(/^https?:\/\//, '').replace(/^www\./, '')
+                      : '';
+                    const topPages = Array.isArray(item?.top_pages) ? item.top_pages : [];
+                    const titleParts = [item?.category, item?.source_host, shortUrl, item?.message].filter(Boolean);
+
+                    return (
+                      <li key={`js-${item.page}-${idx}`} className="si-insight-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                          <span title={titleParts.join(' • ')}>
+                            <span style={{ fontWeight: 600 }}>{item.message ? String(item.message).slice(0, 110) : 'Unknown error'}</span>{' '}
+                            {item.source_host ? (
+                              <span className="si-muted" style={{ fontSize: 11 }}>
+                                • {item.source_host}
+                              </span>
+                            ) : null}
                           </span>
-                        </span>
-                        <span className="si-muted">
-                          {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} errors
-                        </span>
-                      </div>
-                      {(item.sample_sessions || []).length ? (
-                        <div className="si-cluster-samples">
-                          {(item.sample_sessions || []).slice(0, 5).map((s) => (
-                            <button
-                              key={s.session_id}
-                              type="button"
-                              className="si-sample"
-                              onClick={() => openStory(s.session_id, s)}
-                            >
-                              {s.codename || toCode('Session', s.session_id, 6)}
-                            </button>
-                          ))}
+                          <span className="si-muted">
+                            {formatNumber(item.sessions)} sessions • {formatNumber(item.count)} errors
+                          </span>
                         </div>
-                      ) : null}
-                    </li>
-                  ))}
+
+                        {item.category || shortUrl ? (
+                          <div className="si-muted" style={{ fontSize: 11, marginTop: 4 }}>
+                            {item.category || '—'}
+                            {shortUrl ? ` • ${shortUrl.slice(0, 70)}` : ''}
+                          </div>
+                        ) : null}
+
+                        {topPages.length ? (
+                          <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {topPages.slice(0, 3).map((p) => (
+                              <span key={`js-page-${p.page}`} className="si-chip" title={`${formatNumber(p.sessions)} sessions • ${formatNumber(p.count)} errors`}>
+                                {formatPathLabel(p.page)} <strong>{formatNumber(p.sessions)}</strong>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {item.recommendation ? (
+                          <div className="si-muted" style={{ marginTop: 6, fontSize: 11 }}>
+                            Fix: {item.recommendation}
+                          </div>
+                        ) : null}
+
+                        {(item.sample_sessions || []).length ? (
+                          <div className="si-cluster-samples">
+                            {(item.sample_sessions || []).slice(0, 5).map((s) => (
+                              <button
+                                key={s.session_id}
+                                type="button"
+                                className="si-sample"
+                                onClick={() => openStory(s.session_id, s)}
+                              >
+                                {s.codename || toCode('Session', s.session_id, 6)}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
