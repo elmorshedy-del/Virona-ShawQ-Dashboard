@@ -59,43 +59,49 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
 
   const textSizeClass = useMemo(() => {
     const len = String(displayValue).length;
-    if (len <= 8) return 'text-2xl';
-    if (len <= 12) return 'text-xl';
+    if (len <= 8) return 'text-3xl';
+    if (len <= 12) return 'text-2xl';
     if (len <= 20) return 'text-lg';
     if (len <= 30) return 'text-base';
     return 'text-sm';
   }, [displayValue]);
 
+  const accent = useMemo(() => {
+    const accents = [
+      'from-indigo-500/10 via-white to-white',
+      'from-emerald-500/10 via-white to-white',
+      'from-amber-500/10 via-white to-white',
+      'from-fuchsia-500/10 via-white to-white',
+      'from-cyan-500/10 via-white to-white',
+      'from-rose-500/10 via-white to-white',
+      'from-slate-500/10 via-white to-white'
+    ];
+    return accents[index % accents.length];
+  }, [index]);
+
   return (
     <div
-      className="group relative flex min-h-[124px] flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.10)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-[0_12px_30px_rgba(79,70,229,0.20)]"
-      style={{ backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' }}
+      className="group relative flex min-h-[128px] flex-col overflow-hidden rounded-3xl border border-gray-200/70 bg-white p-5 shadow-sm transition-shadow duration-200 hover:shadow-md"
       title={String(displayValue).length > 20 ? displayValue : undefined}
     >
-      <div className="pointer-events-none absolute inset-0 rounded-2xl border border-white/10" />
-      <div className="absolute left-0 top-0 h-full w-0.5 bg-indigo-500/40 opacity-70 transition-all duration-300 group-hover:w-1 group-hover:opacity-100" />
-      <div className="absolute left-0 top-0 h-0.5 w-full bg-indigo-500/30 opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
+      <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${accent}`} />
+      <div className="pointer-events-none absolute inset-0 rounded-3xl ring-1 ring-inset ring-gray-900/5" />
 
       <div className="relative z-10 flex h-full flex-col">
-        <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
           {label}
         </div>
-        <div className="mt-2 flex flex-1 items-start">
-          <div className={`${textSizeClass} font-semibold leading-snug text-gray-900 break-words hyphens-auto`}>
+        <div className="mt-3 flex flex-1 items-start">
+          <div className={`${textSizeClass} font-semibold leading-tight tracking-tight text-gray-950 break-words hyphens-auto tabular-nums`}>
             {displayValue}
           </div>
         </div>
         {hint && (
-          <div className="mt-auto pt-2 text-xs text-gray-500 line-clamp-2">
+          <div className="mt-auto pt-2 text-xs text-gray-600 line-clamp-2">
             {hint}
           </div>
         )}
       </div>
-
-      <div
-        className="pointer-events-none absolute -inset-3 rounded-[28px] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-        style={{ boxShadow: '0 0 24px rgba(79,70,229,0.18)' }}
-      />
     </div>
   );
 }
@@ -228,32 +234,44 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
-        {kpis.map((kpi, index) => (
-          <KpiCard key={kpi.id} {...kpi} formatter={formatCurrency} index={index} />
-        ))}
-      </div>
-
       {hero ? (
-        <div className="rounded-2xl border border-gray-200 bg-gradient-to-br from-indigo-50 via-white to-white p-5 shadow-sm">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Customer brief</div>
-              <div className="mt-2 text-base font-semibold text-gray-900">{hero.title}</div>
-              <div className="mt-1 text-sm text-gray-600">{hero.subtitle}</div>
+        <div className="relative overflow-hidden rounded-3xl border border-gray-200/70 bg-white p-6 shadow-sm">
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-indigo-500/8 via-white to-white" />
+          <div className="pointer-events-none absolute inset-0 rounded-3xl ring-1 ring-inset ring-gray-900/5" />
+
+          <div className="relative z-10 flex items-start justify-between gap-6 flex-wrap">
+            <div className="max-w-2xl">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
+                Customer brief
+              </div>
+              <div className="mt-3 text-2xl font-semibold tracking-tight text-gray-950">
+                {hero.title}
+              </div>
+              <div className="mt-2 text-sm leading-relaxed text-gray-600">
+                {hero.subtitle}
+              </div>
             </div>
-            <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 shadow-sm">
-              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">{hero.metricLabel}</div>
-              <div className="mt-1 text-xl font-semibold text-gray-900">
+
+            <div className="min-w-[220px] rounded-3xl border border-gray-200/70 bg-white/70 px-5 py-4 shadow-sm backdrop-blur">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
+                {hero.metricLabel}
+              </div>
+              <div className="mt-2 text-3xl font-semibold tracking-tight text-gray-950 tabular-nums">
                 {hero.metricFormat === 'percent' ? formatPercent(hero.metricValue) : hero.metricValue}
               </div>
-              <div className="mt-1 text-xs text-gray-500">
+              <div className="mt-2 text-xs text-gray-600">
                 Confidence: {confidenceLabel(hero.confidence || 0)} · Sample: {formatNumber(hero.sampleSize || 0)}
               </div>
             </div>
           </div>
         </div>
       ) : null}
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {kpis.map((kpi, index) => (
+          <KpiCard key={kpi.id} {...kpi} formatter={formatCurrency} index={index} />
+        ))}
+      </div>
 
       <div>
         <div className="mb-3 text-sm font-semibold text-gray-700">Actionable Insights</div>
