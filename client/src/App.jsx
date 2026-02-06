@@ -403,6 +403,10 @@ const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session
 const PRODUCT_RADAR_TAB_INDEX = TABS.indexOf('Product Radar');
 const WATCHTOWER_TAB_INDEX = TABS.indexOf('Watchtower');
 const TABS_VERSION = '2026-01-31-customer-insights-after-neometa-v1';
+const MOBILE_VIEWPORT_MAX_WIDTH_PX = 768;
+const MOBILE_VIEWPORT_QUERY = `(max-width: ${MOBILE_VIEWPORT_MAX_WIDTH_PX}px)`;
+const MOBILE_DASHBOARD_TREND_POINTS = 14;
+const MOBILE_DASHBOARD_TOP_LIST_LIMIT = 5;
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
@@ -426,6 +430,12 @@ export default function App() {
       console.error('Error reading localStorage:', e);
     }
     return 0;
+  });
+  const [isMobileViewport, setIsMobileViewport] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    return window.matchMedia(MOBILE_VIEWPORT_QUERY).matches;
   });
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
@@ -646,6 +656,27 @@ export default function App() {
       console.error('Error writing localStorage:', e);
     }
   }, [activeTab, storeLoaded]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+
+    const mediaQueryList = window.matchMedia(MOBILE_VIEWPORT_QUERY);
+    const handleViewportChange = (event) => {
+      setIsMobileViewport(event.matches);
+    };
+
+    setIsMobileViewport(mediaQueryList.matches);
+
+    if (typeof mediaQueryList.addEventListener === 'function') {
+      mediaQueryList.addEventListener('change', handleViewportChange);
+      return () => mediaQueryList.removeEventListener('change', handleViewportChange);
+    }
+
+    mediaQueryList.addListener(handleViewportChange);
+    return () => mediaQueryList.removeListener(handleViewportChange);
+  }, []);
 
   useEffect(() => {
     const newStore = STORES[currentStore];
@@ -1387,12 +1418,12 @@ export default function App() {
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
-        <div className="flex gap-1 bg-white p-1.5 rounded-xl shadow-sm mb-6 w-fit">
+        <div className="flex gap-1 bg-white p-1.5 rounded-xl shadow-sm mb-6 w-fit max-w-full overflow-x-auto">
           {TABS.map((tab, i) => (
             <button
               key={tab}
               onClick={() => setActiveTab(i)}
-              className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
                 activeTab === i 
                   ? 'bg-gray-900 text-white' 
                   : 'text-gray-600 hover:bg-gray-100'
@@ -1631,70 +1662,79 @@ export default function App() {
         </div>
 
         {activeTab === 0 && dashboard && (
-          <DashboardTab
-            dashboard={dashboard}
-            expandedKpis={expandedKpis}
-            setExpandedKpis={setExpandedKpis}
-            formatCurrency={formatCurrency}
-            formatNumber={formatNumber}
-            metaBreakdown={metaBreakdown}
-            setMetaBreakdown={setMetaBreakdown}
-            metaBreakdownData={metaBreakdownData}
-            store={store}
-            campaignScopeLabel={campaignScopeLabel}
-            availableCountries={availableCountries}
-            nyTrendData={nyTrendData}
-            diagnosticsCampaignOptions={diagnosticsCampaignOptions}
-            countryTrends={countryTrends}
-            countryTrendsDataSource={countryTrendsDataSource}
-            countryTrendsRangeMode={countryTrendsRangeMode}
-            setCountryTrendsRangeMode={setCountryTrendsRangeMode}
-            countryTrendsQuickRange={countryTrendsQuickRange}
-            setCountryTrendsQuickRange={setCountryTrendsQuickRange}
-            campaignTrendsRangeMode={campaignTrendsRangeMode}
-            setCampaignTrendsRangeMode={setCampaignTrendsRangeMode}
-            campaignTrendsQuickRange={campaignTrendsQuickRange}
-            setCampaignTrendsQuickRange={setCampaignTrendsQuickRange}
-            campaignTrends={campaignTrends}
-            campaignTrendsDataSource={campaignTrendsDataSource}
-            countriesDataSource={countriesDataSource}
-            regionCompareTrends={regionCompareTrends}
-            regionCompareEnabled={regionCompareEnabled}
-            timeOfDay={timeOfDay}
-            selectedShopifyRegion={selectedShopifyRegion}
-            setSelectedShopifyRegion={setSelectedShopifyRegion}
-            daysOfWeek={daysOfWeek}
-            daysOfWeekPeriod={daysOfWeekPeriod}
-            setDaysOfWeekPeriod={setDaysOfWeekPeriod}
-            loading={loading}
-            analyticsMode={analyticsMode}
-            setAnalyticsMode={setAnalyticsMode}
-            metaAdManagerData={metaAdManagerData}
-            metaAdManagerNotice={metaAdManagerNotice}
-            adManagerBreakdown={adManagerBreakdown}
-            setAdManagerBreakdown={setAdManagerBreakdown}
-            expandedCampaigns={expandedCampaigns}
-            setExpandedCampaigns={setExpandedCampaigns}
-            expandedAdsets={expandedAdsets}
-            setExpandedAdsets={setExpandedAdsets}
-            funnelDiagnostics={funnelDiagnostics}
-            diagnosticsExpanded={diagnosticsExpanded}
-            setDiagnosticsExpanded={setDiagnosticsExpanded}
-            selectedDiagnosticsCampaign={selectedDiagnosticsCampaign}
-            setSelectedDiagnosticsCampaign={setSelectedDiagnosticsCampaign}
-            hiddenCampaigns={hiddenCampaigns}
-            setHiddenCampaigns={setHiddenCampaigns}
-            showHiddenDropdown={showHiddenDropdown}
-            setShowHiddenDropdown={setShowHiddenDropdown}
-            includeInactive={includeInactive}
-            selectedCampaignId={selectedCampaignId}
-            setIncludeInactive={setIncludeInactive}
-            selectedMonthKey={selectedMonthKey}
-            monthMode={monthMode}
-            dateRange={dashboard?.dateRange}
-            chartMode={chartMode}
-          />
-          )}
+          isMobileViewport ? (
+            <MobileDashboardTab
+              dashboard={dashboard}
+              formatCurrency={formatCurrency}
+              formatNumber={formatNumber}
+              campaignScopeLabel={campaignScopeLabel}
+            />
+          ) : (
+            <DashboardTab
+              dashboard={dashboard}
+              expandedKpis={expandedKpis}
+              setExpandedKpis={setExpandedKpis}
+              formatCurrency={formatCurrency}
+              formatNumber={formatNumber}
+              metaBreakdown={metaBreakdown}
+              setMetaBreakdown={setMetaBreakdown}
+              metaBreakdownData={metaBreakdownData}
+              store={store}
+              campaignScopeLabel={campaignScopeLabel}
+              availableCountries={availableCountries}
+              nyTrendData={nyTrendData}
+              diagnosticsCampaignOptions={diagnosticsCampaignOptions}
+              countryTrends={countryTrends}
+              countryTrendsDataSource={countryTrendsDataSource}
+              countryTrendsRangeMode={countryTrendsRangeMode}
+              setCountryTrendsRangeMode={setCountryTrendsRangeMode}
+              countryTrendsQuickRange={countryTrendsQuickRange}
+              setCountryTrendsQuickRange={setCountryTrendsQuickRange}
+              campaignTrendsRangeMode={campaignTrendsRangeMode}
+              setCampaignTrendsRangeMode={setCampaignTrendsRangeMode}
+              campaignTrendsQuickRange={campaignTrendsQuickRange}
+              setCampaignTrendsQuickRange={setCampaignTrendsQuickRange}
+              campaignTrends={campaignTrends}
+              campaignTrendsDataSource={campaignTrendsDataSource}
+              countriesDataSource={countriesDataSource}
+              regionCompareTrends={regionCompareTrends}
+              regionCompareEnabled={regionCompareEnabled}
+              timeOfDay={timeOfDay}
+              selectedShopifyRegion={selectedShopifyRegion}
+              setSelectedShopifyRegion={setSelectedShopifyRegion}
+              daysOfWeek={daysOfWeek}
+              daysOfWeekPeriod={daysOfWeekPeriod}
+              setDaysOfWeekPeriod={setDaysOfWeekPeriod}
+              loading={loading}
+              analyticsMode={analyticsMode}
+              setAnalyticsMode={setAnalyticsMode}
+              metaAdManagerData={metaAdManagerData}
+              metaAdManagerNotice={metaAdManagerNotice}
+              adManagerBreakdown={adManagerBreakdown}
+              setAdManagerBreakdown={setAdManagerBreakdown}
+              expandedCampaigns={expandedCampaigns}
+              setExpandedCampaigns={setExpandedCampaigns}
+              expandedAdsets={expandedAdsets}
+              setExpandedAdsets={setExpandedAdsets}
+              funnelDiagnostics={funnelDiagnostics}
+              diagnosticsExpanded={diagnosticsExpanded}
+              setDiagnosticsExpanded={setDiagnosticsExpanded}
+              selectedDiagnosticsCampaign={selectedDiagnosticsCampaign}
+              setSelectedDiagnosticsCampaign={setSelectedDiagnosticsCampaign}
+              hiddenCampaigns={hiddenCampaigns}
+              setHiddenCampaigns={setHiddenCampaigns}
+              showHiddenDropdown={showHiddenDropdown}
+              setShowHiddenDropdown={setShowHiddenDropdown}
+              includeInactive={includeInactive}
+              selectedCampaignId={selectedCampaignId}
+              setIncludeInactive={setIncludeInactive}
+              selectedMonthKey={selectedMonthKey}
+              monthMode={monthMode}
+              dateRange={dashboard?.dateRange}
+              chartMode={chartMode}
+            />
+          )
+        )}
 
         {activeTab === 1 && (
           <MetricsChartsTab
@@ -7622,6 +7662,225 @@ function DashboardTab({
           If campaign spend is far below Ads Manager, suspect pagination, date
           filters, or currency conversion.
         </p>
+      </div>
+    </div>
+  );
+}
+
+function MobileDashboardTab({
+  dashboard = {},
+  formatCurrency = () => '$0',
+  formatNumber = () => '0',
+  campaignScopeLabel = 'All Campaigns'
+}) {
+  const { overview = {}, trends = [], campaigns = [], countries = [], dateRange = {} } = dashboard || {};
+
+  const formatTrendDate = useCallback((value) => {
+    if (!value) return 'N/A';
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) {
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${month}/${day}`;
+    }
+    const asText = String(value);
+    return asText.length >= 10 ? asText.slice(5, 10) : asText;
+  }, []);
+
+  const kpis = useMemo(() => ([
+    { key: 'revenue', label: 'Revenue', value: toNumber(overview.revenue), change: toNumber(overview.revenueChange), format: 'currency' },
+    { key: 'spend', label: 'Ad Spend', value: toNumber(overview.spend), change: toNumber(overview.spendChange), format: 'currency' },
+    { key: 'orders', label: 'Orders', value: toNumber(overview.orders), change: toNumber(overview.ordersChange), format: 'number' },
+    { key: 'aov', label: 'AOV', value: toNumber(overview.aov), change: toNumber(overview.aovChange), format: 'currency' },
+    { key: 'cac', label: 'CAC', value: toNumber(overview.cac), change: toNumber(overview.cacChange), format: 'currency' },
+    { key: 'roas', label: 'ROAS', value: toNumber(overview.roas), change: toNumber(overview.roasChange), format: 'roas' }
+  ]), [overview]);
+
+  const trendData = useMemo(() => (
+    (Array.isArray(trends) ? trends : [])
+      .slice(-MOBILE_DASHBOARD_TREND_POINTS)
+      .map((point, index) => ({
+        id: point?.date || point?.bucketExpectedEndDate || point?.bucketEndDate || `pt-${index}`,
+        dateLabel: formatTrendDate(point?.date || point?.bucketExpectedEndDate || point?.bucketEndDate),
+        orders: toNumber(point?.orders)
+      }))
+  ), [formatTrendDate, trends]);
+
+  const topCampaigns = useMemo(() => (
+    (Array.isArray(campaigns) ? campaigns : [])
+      .map((campaign, index) => {
+        const spend = toNumber(campaign?.spend);
+        const revenue = getFirstPositiveMetric(campaign?.revenue, campaign?.conversionValue);
+        const orders = getFirstPositiveMetric(campaign?.orders, campaign?.conversions, campaign?.metaOrders);
+        const computedRoas = spend > 0 ? revenue / spend : toNumber(campaign?.roas || campaign?.metaRoas);
+        return {
+          id: campaign?.campaignId || campaign?.campaign_id || campaign?.id || `campaign-${index}`,
+          name: campaign?.campaignName || campaign?.campaign_name || campaign?.name || 'Unnamed campaign',
+          spend,
+          orders,
+          roas: Number.isFinite(computedRoas) ? computedRoas : null
+        };
+      })
+      .sort((a, b) => b.spend - a.spend)
+      .slice(0, MOBILE_DASHBOARD_TOP_LIST_LIMIT)
+  ), [campaigns]);
+
+  const topCountries = useMemo(() => (
+    (Array.isArray(countries) ? countries : [])
+      .map((country, index) => {
+        const spend = toNumber(country?.spend);
+        const revenue = getFirstPositiveMetric(country?.revenue, country?.conversionValue);
+        const orders = getFirstPositiveMetric(country?.totalOrders, country?.orders, country?.conversions);
+        const computedRoas = spend > 0 ? revenue / spend : toNumber(country?.roas);
+        return {
+          id: country?.code || country?.countryCode || `country-${index}`,
+          flag: country?.flag || '🏳️',
+          name: country?.name || country?.countryName || country?.country || country?.code || 'Unknown',
+          spend,
+          orders,
+          roas: Number.isFinite(computedRoas) ? computedRoas : null
+        };
+      })
+      .sort((a, b) => b.spend - a.spend)
+      .slice(0, MOBILE_DASHBOARD_TOP_LIST_LIMIT)
+  ), [countries]);
+
+  const dateRangeLabel = dateRange?.startDate && dateRange?.endDate
+    ? `${dateRange.startDate} to ${dateRange.endDate}`
+    : 'Current period';
+
+  const formatKpiValue = (kpi) => {
+    if (kpi.format === 'currency') return formatCurrency(kpi.value);
+    if (kpi.format === 'roas') return `${kpi.value.toFixed(2)}x`;
+    return formatNumber(kpi.value);
+  };
+
+  const getChangeTone = (kpiKey, change) => {
+    if (!Number.isFinite(change) || change === 0) return 'neutral';
+    const decreaseIsBetter = kpiKey === 'cac' || kpiKey === 'spend';
+    if (decreaseIsBetter) {
+      return change < 0 ? 'good' : 'bad';
+    }
+    return change > 0 ? 'good' : 'bad';
+  };
+
+  const getChangeLabel = (change) => {
+    if (!Number.isFinite(change) || change === 0) return 'No change';
+    return `${change > 0 ? '+' : ''}${change.toFixed(1)}%`;
+  };
+
+  return (
+    <div className="space-y-4 animate-fade-in">
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <div className="text-xs uppercase tracking-wide text-gray-500">Scope</div>
+        <div className="mt-1 text-sm font-semibold text-gray-900">{campaignScopeLabel}</div>
+        <div className="mt-1 text-xs text-gray-500">{dateRangeLabel}</div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {kpis.map((kpi) => {
+          const tone = getChangeTone(kpi.key, kpi.change);
+          const toneClasses = tone === 'good'
+            ? 'bg-emerald-50 text-emerald-700'
+            : tone === 'bad'
+              ? 'bg-rose-50 text-rose-700'
+              : 'bg-gray-100 text-gray-600';
+          return (
+            <div key={kpi.key} className="bg-white rounded-xl p-4 shadow-sm">
+              <div className="text-[11px] uppercase tracking-wide text-gray-500">{kpi.label}</div>
+              <div className="mt-1 text-xl font-bold text-gray-900">{formatKpiValue(kpi)}</div>
+              <div className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClasses}`}>
+                {getChangeLabel(kpi.change)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-gray-900">Orders Trend</h3>
+          <span className="text-xs text-gray-500">Last {trendData.length} points</span>
+        </div>
+        {trendData.length > 0 ? (
+          <div className="h-52 mt-3">
+            <ResponsiveContainer>
+              <LineChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="dateLabel" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <Tooltip formatter={(value) => [formatNumber(value), 'Orders']} />
+                <Line
+                  type="monotone"
+                  dataKey="orders"
+                  stroke="#22c55e"
+                  strokeWidth={2.5}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="mt-3 text-xs text-gray-500">No trend data available for this range.</div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <h3 className="text-sm font-semibold text-gray-900">Top Campaigns</h3>
+        {topCampaigns.length === 0 ? (
+          <div className="mt-2 text-xs text-gray-500">No campaign data available.</div>
+        ) : (
+          <div className="mt-3 space-y-3">
+            {topCampaigns.map((campaign, index) => (
+              <div key={campaign.id} className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] text-gray-500">#{index + 1}</div>
+                  <div className="text-sm font-semibold text-gray-900 truncate" title={campaign.name}>
+                    {campaign.name}
+                  </div>
+                  <div className="text-xs text-gray-500">{formatNumber(campaign.orders)} orders</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-gray-900">{formatCurrency(campaign.spend)}</div>
+                  <div className="text-xs text-emerald-600">
+                    ROAS {campaign.roas != null ? `${campaign.roas.toFixed(2)}x` : '—'}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <h3 className="text-sm font-semibold text-gray-900">Top Countries</h3>
+        {topCountries.length === 0 ? (
+          <div className="mt-2 text-xs text-gray-500">No country data available.</div>
+        ) : (
+          <div className="mt-3 space-y-3">
+            {topCountries.map((country, index) => (
+              <div key={country.id} className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex items-center gap-2">
+                  <span className="text-base">{country.flag}</span>
+                  <div className="min-w-0">
+                    <div className="text-[11px] text-gray-500">#{index + 1}</div>
+                    <div className="text-sm font-semibold text-gray-900 truncate" title={country.name}>
+                      {country.name}
+                    </div>
+                    <div className="text-xs text-gray-500">{formatNumber(country.orders)} orders</div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-gray-900">{formatCurrency(country.spend)}</div>
+                  <div className="text-xs text-emerald-600">
+                    ROAS {country.roas != null ? `${country.roas.toFixed(2)}x` : '—'}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
