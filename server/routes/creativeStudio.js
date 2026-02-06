@@ -103,13 +103,14 @@ function getOverlayTextFilePath(exportId, index) {
 }
 
 const VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS = [
-  'gemini-3-pro',
+  'gemini-3-pro-preview',
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite'
 ];
 const VIDEO_OVERLAY_DEFAULT_SCAN_MODEL = 'gemini-2.5-flash-lite';
 const VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP = {
+  'gemini-3-pro': 'gemini-3-pro-preview',
   'gemini-2.0-flash-lite': VIDEO_OVERLAY_DEFAULT_SCAN_MODEL
 };
 
