@@ -270,18 +270,28 @@ function buildSegmentsFromFrameKeys({ frames, durationSec, intervalSec }) {
   return ranged;
 }
 
-function toOverlayBox(det, { startTime, endTime } = {}) {
+function toOverlayBox(det, { startTime, endTime, videoWidth: maxVideoWidth = 0, videoHeight: maxVideoHeight = 0 } = {}) {
   const font = det?.font || {};
   const colors = det?.colors || {};
   const backgroundHex = colors?.background?.hex || '#333333';
   const textHex = colors?.text?.hex || '#ffffff';
+  const videoWidth = Math.max(0, Math.round(safeParseNumber(maxVideoWidth, 0)));
+  const videoHeight = Math.max(0, Math.round(safeParseNumber(maxVideoHeight, 0)));
+  const rawWidth = Math.max(1, Math.round(safeParseNumber(det?.width, 1)));
+  const rawHeight = Math.max(1, Math.round(safeParseNumber(det?.height, 1)));
+  const width = videoWidth > 1 ? clampNumber(rawWidth, 1, videoWidth) : rawWidth;
+  const height = videoHeight > 1 ? clampNumber(rawHeight, 1, videoHeight) : rawHeight;
+  const rawX = Math.round(safeParseNumber(det?.x, 0));
+  const rawY = Math.round(safeParseNumber(det?.y, 0));
+  const x = videoWidth > 1 ? clampNumber(rawX, 0, Math.max(0, videoWidth - width)) : Math.max(0, rawX);
+  const y = videoHeight > 1 ? clampNumber(rawY, 0, Math.max(0, videoHeight - height)) : Math.max(0, rawY);
 
   return {
     id: crypto.randomUUID(),
-    x: det?.x ?? 0,
-    y: det?.y ?? 0,
-    width: det?.width ?? 0,
-    height: det?.height ?? 0,
+    x,
+    y,
+    width,
+    height,
     text: det?.text || 'Detected',
     backgroundColor: backgroundHex,
     textColor: textHex,
@@ -295,6 +305,48 @@ function toOverlayBox(det, { startTime, endTime } = {}) {
     startTime: typeof startTime === 'number' ? startTime : null,
     endTime: typeof endTime === 'number' ? endTime : null
   };
+}
+
+function tokenizeOverlayKey(text) {
+  return new Set(
+    normalizeOverlayKey(text)
+      .split(' ')
+      .map((token) => token.trim())
+      .filter(Boolean)
+  );
+}
+
+function scoreOverlayTextMatch({ segmentKey, overlayText }) {
+  const segNorm = normalizeOverlayKey(segmentKey);
+  const overlayNorm = normalizeOverlayKey(overlayText);
+  if (!segNorm || !overlayNorm) return 0;
+  if (segNorm === overlayNorm) return 4;
+  if (segNorm.includes(overlayNorm) || overlayNorm.includes(segNorm)) return 2.5;
+
+  const segTokens = tokenizeOverlayKey(segNorm);
+  const overlayTokens = tokenizeOverlayKey(overlayNorm);
+  if (!segTokens.size || !overlayTokens.size) return 0;
+
+  let intersection = 0;
+  for (const token of segTokens) {
+    if (overlayTokens.has(token)) intersection += 1;
+  }
+
+  const union = new Set([...segTokens, ...overlayTokens]).size || 1;
+  return (intersection / union) * 2;
+}
+
+function scoreSampleOverlaySet({ segmentKey, overlays, sampleTime, preferredTime }) {
+  if (!Array.isArray(overlays) || overlays.length === 0) return Number.NEGATIVE_INFINITY;
+
+  const bestOverlayScore = overlays.reduce((best, overlay) => {
+    const confidence = safeParseNumber(overlay?.confidence, 0);
+    const textScore = scoreOverlayTextMatch({ segmentKey, overlayText: overlay?.text || '' });
+    return Math.max(best, confidence + textScore);
+  }, Number.NEGATIVE_INFINITY);
+
+  const timePenalty = Math.abs(safeParseNumber(sampleTime, 0) - safeParseNumber(preferredTime, 0)) * 0.01;
+  return bestOverlayScore - timePenalty;
 }
 
 function buildSegmentSampleTimes(seg, durationSec) {
@@ -2036,6 +2088,7 @@ router.post('/video-overlay/scan', async (req, res) => {
         let resolvedSampleTime = seg.sample_t;
         let hadDetectorResponse = false;
         let lastDetectorError = null;
+        let bestSampleScore = Number.NEGATIVE_INFINITY;
 
         for (const sampleTime of sampleTimes) {
           try {
@@ -2043,13 +2096,28 @@ router.post('/video-overlay/scan', async (req, res) => {
             const detections = await detectVideoOverlays({ imageBase64: fullFrameB64 });
             hadDetectorResponse = true;
             const candidateOverlays = Array.isArray(detections)
-              ? detections.map((det) => toOverlayBox(det, { startTime: seg.start, endTime: seg.end }))
+              ? detections.map((det) => toOverlayBox(det, {
+                startTime: seg.start,
+                endTime: seg.end,
+                videoWidth,
+                videoHeight
+              }))
               : [];
 
             if (candidateOverlays.length) {
-              overlays = candidateOverlays;
-              resolvedSampleTime = sampleTime;
-              break;
+              const sampleScore = scoreSampleOverlaySet({
+                segmentKey: seg.key || seg.label || '',
+                overlays: candidateOverlays,
+                sampleTime,
+                preferredTime: seg.sample_t
+              });
+
+              if (!Number.isFinite(sampleScore)) continue;
+              if (sampleScore > bestSampleScore) {
+                bestSampleScore = sampleScore;
+                overlays = candidateOverlays;
+                resolvedSampleTime = sampleTime;
+              }
             }
           } catch (sampleErr) {
             lastDetectorError = sampleErr;
