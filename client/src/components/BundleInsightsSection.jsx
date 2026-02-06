@@ -363,7 +363,7 @@ export default function BundleInsightsSection({
                   const attachRateCaution = toNumber(row?.anchorOrders) < displayRules.T2_MIN_ANCHOR_ORDERS;
 
                   return (
-                    <tr key={`${row.pairKeys?.[0] || row.pair?.[0]}-${row.pairKeys?.[1] || row.pair?.[1]}`} className="border-t border-gray-100">
+                    <tr key={`${row.pairKeys?.[0] ?? row.pair?.[0]}-${row.pairKeys?.[1] ?? row.pair?.[1]}`} className="border-t border-gray-100">
                       <td className="py-3 pl-4 pr-2">
                         <div className="flex flex-col gap-1">
                           <div className="text-sm font-semibold text-gray-900">
