@@ -7710,18 +7710,51 @@ function MobileDashboardTab({
     (Array.isArray(campaigns) ? campaigns : [])
       .map((campaign, index) => {
         const spend = toNumber(campaign?.spend);
-        const revenue = getFirstPositiveMetric(campaign?.revenue, campaign?.conversionValue);
-        const orders = getFirstPositiveMetric(campaign?.orders, campaign?.conversions, campaign?.metaOrders);
-        const computedRoas = spend > 0 ? revenue / spend : toNumber(campaign?.roas || campaign?.metaRoas);
+        const revenue = toNumber(campaign?.conversionValue ?? campaign?.revenue);
+        const orders = toNumber(campaign?.conversions ?? campaign?.orders ?? campaign?.metaOrders);
+        const impressions = toNumber(campaign?.impressions);
+        const clicks = toNumber(campaign?.clicks);
+
+        let computedRoas = null;
+        if (spend > EPSILON) {
+          computedRoas = revenue / spend;
+        } else if (Number.isFinite(campaign?.metaRoas)) {
+          computedRoas = Number(campaign.metaRoas);
+        } else if (Number.isFinite(campaign?.roas)) {
+          computedRoas = Number(campaign.roas);
+        }
+
+        let computedAov = null;
+        if (orders > EPSILON) {
+          computedAov = revenue / orders;
+        } else if (Number.isFinite(campaign?.metaAov)) {
+          computedAov = Number(campaign.metaAov);
+        } else if (Number.isFinite(campaign?.aov)) {
+          computedAov = Number(campaign.aov);
+        }
+
         return {
           id: campaign?.campaignId || campaign?.campaign_id || campaign?.id || `campaign-${index}`,
           name: campaign?.campaignName || campaign?.campaign_name || campaign?.name || 'Unnamed campaign',
           spend,
           orders,
-          roas: Number.isFinite(computedRoas) ? computedRoas : null
+          revenue,
+          aov: Number.isFinite(computedAov) ? computedAov : null,
+          roas: Number.isFinite(computedRoas) ? computedRoas : null,
+          hasActivity:
+            spend > EPSILON ||
+            orders > EPSILON ||
+            revenue > EPSILON ||
+            impressions > EPSILON ||
+            clicks > EPSILON
         };
       })
-      .sort((a, b) => b.spend - a.spend)
+      .filter((campaign) => campaign.hasActivity)
+      .sort((a, b) => {
+        if (b.orders !== a.orders) return b.orders - a.orders;
+        if (b.spend !== a.spend) return b.spend - a.spend;
+        return b.revenue - a.revenue;
+      })
       .slice(0, MOBILE_DASHBOARD_TOP_LIST_LIMIT)
   ), [campaigns]);
 
@@ -7729,19 +7762,39 @@ function MobileDashboardTab({
     (Array.isArray(countries) ? countries : [])
       .map((country, index) => {
         const spend = toNumber(country?.spend);
-        const revenue = getFirstPositiveMetric(country?.revenue, country?.conversionValue);
-        const orders = getFirstPositiveMetric(country?.totalOrders, country?.orders, country?.conversions);
-        const computedRoas = spend > 0 ? revenue / spend : toNumber(country?.roas);
+        const revenue = toNumber(country?.revenue ?? country?.conversionValue ?? country?.totalRevenue);
+        const orders = toNumber(country?.totalOrders ?? country?.orders ?? country?.conversions);
+
+        let computedRoas = null;
+        if (spend > EPSILON) {
+          computedRoas = revenue / spend;
+        } else if (Number.isFinite(country?.roas)) {
+          computedRoas = Number(country.roas);
+        }
+
+        let computedAov = null;
+        if (orders > EPSILON) {
+          computedAov = revenue / orders;
+        } else if (Number.isFinite(country?.aov)) {
+          computedAov = Number(country.aov);
+        }
+
         return {
           id: country?.code || country?.countryCode || `country-${index}`,
           flag: country?.flag || '🏳️',
           name: country?.name || country?.countryName || country?.country || country?.code || 'Unknown',
           spend,
           orders,
+          revenue,
+          aov: Number.isFinite(computedAov) ? computedAov : null,
           roas: Number.isFinite(computedRoas) ? computedRoas : null
         };
       })
-      .sort((a, b) => b.spend - a.spend)
+      .sort((a, b) => {
+        if (b.orders !== a.orders) return b.orders - a.orders;
+        if (b.revenue !== a.revenue) return b.revenue - a.revenue;
+        return b.spend - a.spend;
+      })
       .slice(0, MOBILE_DASHBOARD_TOP_LIST_LIMIT)
   ), [countries]);
 
@@ -7768,6 +7821,10 @@ function MobileDashboardTab({
     if (!Number.isFinite(change) || change === 0) return 'No change';
     return `${change > 0 ? '+' : ''}${change.toFixed(1)}%`;
   };
+
+  const formatRoasLabel = (value) => (
+    Number.isFinite(value) ? `${value.toFixed(2)}x` : '—'
+  );
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -7829,7 +7886,7 @@ function MobileDashboardTab({
       <div className="bg-white rounded-xl p-4 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-900">Top Campaigns</h3>
         {topCampaigns.length === 0 ? (
-          <div className="mt-2 text-xs text-gray-500">No campaign data available.</div>
+          <div className="mt-2 text-xs text-gray-500">No campaign activity for this period.</div>
         ) : (
           <div className="mt-3 space-y-3">
             {topCampaigns.map((campaign, index) => (
@@ -7839,12 +7896,13 @@ function MobileDashboardTab({
                   <div className="text-sm font-semibold text-gray-900 truncate" title={campaign.name}>
                     {campaign.name}
                   </div>
-                  <div className="text-xs text-gray-500">{formatNumber(campaign.orders)} orders</div>
+                  <div className="text-xs text-gray-500">{formatNumber(campaign.orders)} attributed orders</div>
                 </div>
                 <div className="text-right">
                   <div className="text-sm font-semibold text-gray-900">{formatCurrency(campaign.spend)}</div>
+                  <div className="text-xs text-gray-500">AOV {campaign.aov != null ? formatCurrency(campaign.aov) : '—'}</div>
                   <div className="text-xs text-emerald-600">
-                    ROAS {campaign.roas != null ? `${campaign.roas.toFixed(2)}x` : '—'}
+                    ROAS {formatRoasLabel(campaign.roas)}
                   </div>
                 </div>
               </div>
@@ -7873,8 +7931,9 @@ function MobileDashboardTab({
                 </div>
                 <div className="text-right">
                   <div className="text-sm font-semibold text-gray-900">{formatCurrency(country.spend)}</div>
+                  <div className="text-xs text-gray-500">AOV {country.aov != null ? formatCurrency(country.aov) : '—'}</div>
                   <div className="text-xs text-emerald-600">
-                    ROAS {country.roas != null ? `${country.roas.toFixed(2)}x` : '—'}
+                    ROAS {formatRoasLabel(country.roas)}
                   </div>
                 </div>
               </div>
