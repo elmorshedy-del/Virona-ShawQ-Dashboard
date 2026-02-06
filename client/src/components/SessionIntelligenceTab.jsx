@@ -341,16 +341,50 @@ const ISSUE_META = {
   }
 };
 
+const TARGET_KEY_RULES = [
+  { key: 'summary.accordion__summary', label: 'Accordion toggle' },
+  { key: 'product-card__media', label: 'Product card image' },
+  { key: 'scroll-marker', label: 'Scroll indicator' },
+  { key: 'wizz-checkout-button', label: 'Checkout button' },
+  { key: 'tap-area', label: 'Tap action button' }
+];
+
+const ERROR_SIGNATURE_RULES = [
+  {
+    keywords: ['mutationobserver', 'observe'],
+    label: 'MutationObserver target invalid',
+    match: 'all'
+  },
+  {
+    keywords: ['_autofillcallbackhandler'],
+    label: 'Autofill callback missing',
+    match: 'any'
+  },
+  {
+    keywords: ['load failed'],
+    label: 'External script failed to load',
+    match: 'any'
+  },
+  {
+    keywords: ['failed to fetch', 'networkerror'],
+    label: 'Network request failed',
+    match: 'any'
+  },
+  {
+    keywords: ['unexpected end of json'],
+    label: 'JSON response truncated',
+    match: 'any'
+  }
+];
+
 function normalizeTargetKey(rawValue) {
   const raw = (rawValue || '').toString().trim();
   if (!raw) return 'Unknown target';
   const lower = raw.toLowerCase();
 
-  if (lower.includes('summary.accordion__summary')) return 'Accordion toggle';
-  if (lower.includes('product-card__media')) return 'Product card image';
-  if (lower.includes('scroll-marker')) return 'Scroll indicator';
-  if (lower.includes('wizz-checkout-button')) return 'Checkout button';
-  if (lower.includes('tap-area')) return 'Tap action button';
+  for (const rule of TARGET_KEY_RULES) {
+    if (lower.includes(rule.key)) return rule.label;
+  }
 
   const normalized = raw
     .replace(/\[[^\]]+\]/g, '')
@@ -371,11 +405,12 @@ function normalizeErrorSignature(rawValue) {
   const raw = (rawValue || '').toString().trim();
   if (!raw) return 'Unknown runtime error';
   const lower = raw.toLowerCase();
-  if (lower.includes('mutationobserver') && lower.includes('observe')) return 'MutationObserver target invalid';
-  if (lower.includes('_autofillcallbackhandler')) return 'Autofill callback missing';
-  if (lower.includes('load failed')) return 'External script failed to load';
-  if (lower.includes('failed to fetch') || lower.includes('networkerror')) return 'Network request failed';
-  if (lower.includes('unexpected end of json')) return 'JSON response truncated';
+  for (const rule of ERROR_SIGNATURE_RULES) {
+    const matches = rule.match === 'all'
+      ? rule.keywords.every((keyword) => lower.includes(keyword))
+      : rule.keywords.some((keyword) => lower.includes(keyword));
+    if (matches) return rule.label;
+  }
   return raw.length > 90 ? `${raw.slice(0, 90)}...` : raw;
 }
 
@@ -424,7 +459,7 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
 
   const collected = [];
   const signalMap = claritySignals?.signals || {};
-  const issueTypes = ['js_errors', 'dead_clicks', 'rage_clicks', 'form_invalid', 'scroll_dropoff'];
+  const issueTypes = Object.keys(ISSUE_META);
 
   issueTypes.forEach((type) => {
     const list = Array.isArray(signalMap[type]) ? signalMap[type] : [];
