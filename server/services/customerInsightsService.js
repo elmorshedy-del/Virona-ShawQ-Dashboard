@@ -12,6 +12,27 @@ const ARABIC_REGEX = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/g;
 const TIP_REGEX = /\btip\b|gratuity/i;
 const TEST_REGEX = /\btest\b/i;
 const UNKNOWN_TEXT_REGEX = /^(unknown|unk|n\/a|na|null|undefined|none|-)$/i;
+const BUNDLE_FDR_TARGET = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_BUNDLE_FDR || '0.1'),
+  0.01,
+  0.25
+);
+const BUNDLE_MIN_ANCHOR_ORDERS = Math.max(
+  1,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_BUNDLE_MIN_ANCHOR_ORDERS || '18', 10) || 18
+);
+const BUNDLE_MIN_PAIR_ORDERS = Math.max(
+  1,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_BUNDLE_MIN_PAIR_ORDERS || '5', 10) || 5
+);
+const BUNDLE_MIN_STATISTICAL_CONFIDENCE = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_BUNDLE_MIN_CONFIDENCE || '0.75'),
+  0.5,
+  0.99
+);
+const WILSON_CONFIDENCE_Z_95 = 1.959963984540054;
+const MIN_PROBABILITY = 1e-9;
+const BUNDLE_INSIGHT_MAX_COUNT = Number.parseInt(process.env.CUSTOMER_INSIGHTS_BUNDLE_INSIGHTS_MAX || '3', 10) || 3;
 
 const DEFAULT_STORE_TIMEZONE = process.env.STORE_TIMEZONE_DEFAULT || 'UTC';
 
@@ -201,6 +222,7 @@ function getOrderItems(db, store, startDate, endDate) {
       oi.quantity,
       oi.price,
       oi.discount,
+      oi.net_price,
       o.customer_id,
       o.order_created_at,
       o.date
@@ -441,79 +463,341 @@ function describeDaypart(hour) {
   return 'late night';
 }
 
+function formatPercentValue(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function clampProbability(value) {
+  if (!Number.isFinite(value)) return MIN_PROBABILITY;
+  return clamp(value, MIN_PROBABILITY, 1 - MIN_PROBABILITY);
+}
+
+function logAddExp(a, b) {
+  if (!Number.isFinite(a)) return b;
+  if (!Number.isFinite(b)) return a;
+  const max = Math.max(a, b);
+  return max + Math.log(Math.exp(a - max) + Math.exp(b - max));
+}
+
+function logCombination(n, k) {
+  if (k < 0 || k > n) return Number.NEGATIVE_INFINITY;
+  const reduced = Math.min(k, n - k);
+  if (reduced === 0) return 0;
+  let logValue = 0;
+  for (let i = 1; i <= reduced; i += 1) {
+    logValue += Math.log(n - reduced + i) - Math.log(i);
+  }
+  return logValue;
+}
+
+function logBinomialPmf(k, n, p) {
+  const safeP = clampProbability(p);
+  return logCombination(n, k) + k * Math.log(safeP) + (n - k) * Math.log(1 - safeP);
+}
+
+function exactBinomialTailProbability(n, k, p, direction = 'greater') {
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  if (!Number.isFinite(k)) return 1;
+
+  const successes = clamp(Math.round(k), 0, n);
+  const safeP = clampProbability(p);
+  let logTail = Number.NEGATIVE_INFINITY;
+
+  if (direction === 'less') {
+    for (let i = 0; i <= successes; i += 1) {
+      logTail = logAddExp(logTail, logBinomialPmf(i, n, safeP));
+    }
+  } else {
+    for (let i = successes; i <= n; i += 1) {
+      logTail = logAddExp(logTail, logBinomialPmf(i, n, safeP));
+    }
+  }
+
+  if (!Number.isFinite(logTail)) return 1;
+  return clamp(Math.exp(logTail), 0, 1);
+}
+
+function computeWilsonInterval(successes, trials, z = WILSON_CONFIDENCE_Z_95) {
+  const n = Math.max(0, Math.round(trials || 0));
+  const x = clamp(Math.round(successes || 0), 0, n);
+  if (!n) return { low: 0, high: 0 };
+
+  const phat = x / n;
+  const z2 = z * z;
+  const denominator = 1 + z2 / n;
+  const center = (phat + z2 / (2 * n)) / denominator;
+  const margin = (z / denominator) * Math.sqrt((phat * (1 - phat)) / n + z2 / (4 * n * n));
+
+  return {
+    low: clamp(center - margin, 0, 1),
+    high: clamp(center + margin, 0, 1)
+  };
+}
+
+function computeBenjaminiHochbergQValues(pValues = []) {
+  const indexed = pValues
+    .map((pValue, index) => ({
+      index,
+      pValue: Number.isFinite(pValue) ? clamp(pValue, 0, 1) : 1
+    }))
+    .sort((a, b) => a.pValue - b.pValue);
+
+  const total = indexed.length;
+  if (!total) return [];
+
+  const qValues = new Array(total).fill(1);
+  let runningMin = 1;
+
+  for (let i = total - 1; i >= 0; i -= 1) {
+    const rank = i + 1;
+    const adjusted = (indexed[i].pValue * total) / rank;
+    runningMin = Math.min(runningMin, adjusted);
+    qValues[indexed[i].index] = clamp(runningMin, 0, 1);
+  }
+
+  return qValues;
+}
+
+function getBundleSignalLabel(falseDiscoveryRisk) {
+  if (!Number.isFinite(falseDiscoveryRisk)) return 'Uncertain';
+  if (falseDiscoveryRisk <= 0.05) return 'Strong';
+  if (falseDiscoveryRisk <= 0.1) return 'Reliable';
+  if (falseDiscoveryRisk <= 0.2) return 'Directional';
+  return 'Weak';
+}
+
+function formatSignedPercentPoints(value) {
+  if (!Number.isFinite(value)) return '—';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${(value * 100).toFixed(1)}pp`;
+}
+
+function formatLiftMultiplier(value) {
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  return `${value.toFixed(2)}x`;
+}
+
+function formatCountValue(value) {
+  if (!Number.isFinite(value)) return '0';
+  return Math.round(value).toLocaleString('en-US');
+}
+
+function buildBundleNarrative(bundle) {
+  if (!bundle || !Array.isArray(bundle.pair)) return null;
+  const anchor = bundle.pair[0] || 'Anchor product';
+  const attach = bundle.pair[1] || 'Attach product';
+  const pairOrders = Math.max(0, Math.round(toNumber(bundle.count)));
+  const anchorOrders = Math.max(0, Math.round(toNumber(bundle.anchorOrders)));
+  const attachRateText = formatPercentValue(bundle.attachRate);
+  const baselineRateText = formatPercentValue(bundle.baselineRate);
+  const liftText = formatLiftMultiplier(bundle.lift);
+  const absoluteLiftText = formatSignedPercentPoints(bundle.absoluteLift);
+  const falseDiscoveryRiskText = formatPercentValue(bundle.falseDiscoveryRisk);
+  const confidenceText = formatPercentValue(bundle.statisticalConfidence);
+  const incrementalAttachOrders = Math.max(0, toNumber(bundle.expectedIncrementalAttachOrders));
+  const incrementalRevenue = Math.max(0, toNumber(bundle.expectedIncrementalRevenue));
+
+  const sentence = `${anchor} buyers add ${attach} at ${attachRateText} vs ${baselineRateText} baseline (${absoluteLiftText}, ${liftText} lift).`;
+
+  const eli5 = [
+    `Think of ${formatCountValue(anchorOrders)} orders that include ${anchor}.`,
+    `${formatCountValue(pairOrders)} of those also included ${attach}, so attach rate is ${attachRateText}.`,
+    `Normally ${attach} appears in ${baselineRateText} of all orders, so this pair performs above normal by ${absoluteLiftText}.`
+  ].join(' ');
+
+  const analystLogic = [
+    `Attach rate = pair_orders / anchor_orders = ${formatCountValue(pairOrders)} / ${formatCountValue(anchorOrders)} = ${attachRateText}.`,
+    `Baseline = attach_orders / total_orders = ${baselineRateText}; lift = attach_rate / baseline = ${liftText}.`,
+    `Significance uses an exact one-sided binomial test, then Benjamini-Hochberg false discovery control across tested pairs.`,
+    `This pair has false discovery risk ${falseDiscoveryRiskText} and statistical confidence ${confidenceText}.`,
+    `Estimated incremental impact: +${formatCountValue(incrementalAttachOrders)} attach orders and +${formatCountValue(incrementalRevenue)} revenue units if activated on anchor traffic.`
+  ].join(' ');
+
+  const title = `${anchor} materially increases ${attach}`;
+
+  return {
+    title,
+    sentence,
+    eli5,
+    analystLogic
+  };
+}
+
+function buildBundleKeyInsights(bundles = [], maxCount = BUNDLE_INSIGHT_MAX_COUNT) {
+  if (!Array.isArray(bundles) || !bundles.length) return [];
+  return bundles.slice(0, Math.max(1, maxCount)).map((bundle, index) => {
+    const narrative = buildBundleNarrative(bundle);
+    return {
+      id: `bundle-key-${index + 1}-${bundle.pairKeys?.[0] || 'a'}-${bundle.pairKeys?.[1] || 'b'}`,
+      type: 'bundle',
+      text: narrative?.sentence || 'Bundle signal detected from product-level co-purchase behavior.',
+      title: narrative?.title || 'Bundle signal detected',
+      eli5: narrative?.eli5 || null,
+      analystLogic: narrative?.analystLogic || null,
+      signal: bundle.signal || 'Uncertain',
+      falseDiscoveryRisk: Number.isFinite(bundle.falseDiscoveryRisk) ? bundle.falseDiscoveryRisk : null,
+      statisticalConfidence: Number.isFinite(bundle.statisticalConfidence) ? bundle.statisticalConfidence : null,
+      pair: bundle.pair,
+      pairKeys: bundle.pairKeys
+    };
+  });
+}
+
 function computeBundles(items) {
-  const orderMap = new Map();
+  const orderProducts = new Map();
+  const orderRevenueByProduct = new Map();
   const labelByKey = new Map();
 
   items.forEach((row) => {
     if (!row.order_id) return;
     const productKey = getProductKey(row);
     if (!productKey) return;
+    const normalizedKey = String(productKey);
     const label = getProductLabel(row);
-    if (label && !labelByKey.has(productKey)) labelByKey.set(productKey, label);
+    if (label && !labelByKey.has(normalizedKey)) labelByKey.set(normalizedKey, label);
 
-    const entry = orderMap.get(row.order_id) || new Set();
-    entry.add(String(productKey));
-    orderMap.set(row.order_id, entry);
+    const productSet = orderProducts.get(row.order_id) || new Set();
+    productSet.add(normalizedKey);
+    orderProducts.set(row.order_id, productSet);
+
+    const quantity = Math.max(1, toNumber(row.quantity || 1));
+    const netFromRow = toNumber(row.price) * quantity - toNumber(row.discount);
+    const netRevenue = Math.max(0, Number.isFinite(row.net_price) ? toNumber(row.net_price) : netFromRow);
+    const revenueByProduct = orderRevenueByProduct.get(row.order_id) || new Map();
+    revenueByProduct.set(normalizedKey, (revenueByProduct.get(normalizedKey) || 0) + netRevenue);
+    orderRevenueByProduct.set(row.order_id, revenueByProduct);
   });
 
-  const itemCounts = new Map();
+  const totalOrders = orderProducts.size;
+  if (!totalOrders) return [];
+
+  const productOrderCounts = new Map();
+  const productRevenueTotals = new Map();
   const pairCounts = new Map();
 
-  orderMap.forEach((products) => {
-    const arr = Array.from(products);
-    arr.forEach((p) => itemCounts.set(p, (itemCounts.get(p) || 0) + 1));
-    for (let i = 0; i < arr.length; i += 1) {
-      for (let j = i + 1; j < arr.length; j += 1) {
-        const [a, b] = [arr[i], arr[j]].sort();
-        const key = `${a}||${b}`;
-        pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
+  orderProducts.forEach((products, orderId) => {
+    const rows = Array.from(products);
+    const revenueMap = orderRevenueByProduct.get(orderId) || new Map();
+
+    rows.forEach((productKey) => {
+      productOrderCounts.set(productKey, (productOrderCounts.get(productKey) || 0) + 1);
+      productRevenueTotals.set(productKey, (productRevenueTotals.get(productKey) || 0) + (revenueMap.get(productKey) || 0));
+    });
+
+    for (let i = 0; i < rows.length; i += 1) {
+      for (let j = i + 1; j < rows.length; j += 1) {
+        const [a, b] = [rows[i], rows[j]].sort();
+        const pairKey = `${a}||${b}`;
+        pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
       }
     }
   });
 
-  const totalOrders = orderMap.size;
-  const pairs = [];
+  const directionalCandidates = [];
 
-  pairCounts.forEach((count, key) => {
-    if (count < 2) return;
-    const [a, b] = key.split('||');
-    const countA = itemCounts.get(a) || 0;
-    const countB = itemCounts.get(b) || 0;
-    if (!totalOrders || !countA || !countB) return;
+  pairCounts.forEach((pairCount, pairKey) => {
+    const [a, b] = pairKey.split('||');
+    const countA = productOrderCounts.get(a) || 0;
+    const countB = productOrderCounts.get(b) || 0;
+    if (!countA || !countB) return;
 
-    const support = count / totalOrders;
+    const directions = [
+      { anchorKey: a, attachKey: b, anchorOrders: countA, attachOrders: countB },
+      { anchorKey: b, attachKey: a, anchorOrders: countB, attachOrders: countA }
+    ];
 
-    const attachAB = count / countA; // P(b | a)
-    const baselineB = countB / totalOrders; // P(b)
-    const liftAB = baselineB ? attachAB / baselineB : 0;
+    directions.forEach((direction) => {
+      const baselineRate = safeDivide(direction.attachOrders, totalOrders);
+      const attachRate = safeDivide(pairCount, direction.anchorOrders);
+      const absoluteLift = attachRate - baselineRate;
+      const lift = baselineRate > 0 ? attachRate / baselineRate : 0;
+      const interval = computeWilsonInterval(pairCount, direction.anchorOrders, WILSON_CONFIDENCE_Z_95);
+      const pValue = exactBinomialTailProbability(
+        direction.anchorOrders,
+        pairCount,
+        baselineRate,
+        absoluteLift >= 0 ? 'greater' : 'less'
+      );
 
-    const attachBA = count / countB; // P(a | b)
-    const baselineA = countA / totalOrders; // P(a)
-    const liftBA = baselineA ? attachBA / baselineA : 0;
+      const avgAttachRevenue = safeDivide(
+        productRevenueTotals.get(direction.attachKey) || 0,
+        direction.attachOrders
+      );
+      const expectedIncrementalAttachOrders = absoluteLift * direction.anchorOrders;
+      const expectedIncrementalRevenue = expectedIncrementalAttachOrders * avgAttachRevenue;
 
-    const useAB = liftAB >= liftBA;
-    const anchorKey = useAB ? a : b;
-    const attachKey = useAB ? b : a;
-    const attachRate = useAB ? attachAB : attachBA;
-    const baselineRate = useAB ? baselineB : baselineA;
-    const lift = useAB ? liftAB : liftBA;
-
-    const anchorLabel = labelByKey.get(anchorKey) || anchorKey;
-    const attachLabel = labelByKey.get(attachKey) || attachKey;
-
-    pairs.push({
-      pair: [anchorLabel, attachLabel],
-      pairKeys: [anchorKey, attachKey],
-      count,
-      support,
-      attachRate,
-      baselineRate,
-      lift
+      directionalCandidates.push({
+        pairKey,
+        pair: [
+          labelByKey.get(direction.anchorKey) || direction.anchorKey,
+          labelByKey.get(direction.attachKey) || direction.attachKey
+        ],
+        pairKeys: [direction.anchorKey, direction.attachKey],
+        count: pairCount,
+        support: safeDivide(pairCount, totalOrders),
+        anchorOrders: direction.anchorOrders,
+        attachOrders: direction.attachOrders,
+        attachRate,
+        attachRateCiLow: interval.low,
+        attachRateCiHigh: interval.high,
+        baselineRate,
+        absoluteLift,
+        lift,
+        pValue,
+        avgAttachRevenue,
+        expectedIncrementalAttachOrders,
+        expectedIncrementalRevenue
+      });
     });
   });
 
-  return pairs.sort((a, b) => b.lift - a.lift).slice(0, 8);
+  const qValues = computeBenjaminiHochbergQValues(directionalCandidates.map((row) => row.pValue));
+  const scored = directionalCandidates.map((row, index) => {
+    const falseDiscoveryRisk = qValues[index] ?? 1;
+    const statisticalConfidence = clamp(1 - falseDiscoveryRisk, 0, 1);
+    const positiveIncrementalRevenue = Math.max(0, row.expectedIncrementalRevenue);
+    const positiveIncrementalAttachOrders = Math.max(0, row.expectedIncrementalAttachOrders);
+    const rankScore = (positiveIncrementalRevenue + positiveIncrementalAttachOrders) * statisticalConfidence;
+
+    return {
+      ...row,
+      falseDiscoveryRisk,
+      statisticalConfidence,
+      controlsFalseDiscoveries: falseDiscoveryRisk <= BUNDLE_FDR_TARGET,
+      signal: getBundleSignalLabel(falseDiscoveryRisk),
+      rankScore
+    };
+  });
+
+  const topDirectionByPair = new Map();
+  scored.forEach((row) => {
+    const current = topDirectionByPair.get(row.pairKey);
+    if (!current) {
+      topDirectionByPair.set(row.pairKey, row);
+      return;
+    }
+    if ((row.rankScore || 0) > (current.rankScore || 0)) {
+      topDirectionByPair.set(row.pairKey, row);
+      return;
+    }
+    if ((row.rankScore || 0) === (current.rankScore || 0) && row.falseDiscoveryRisk < current.falseDiscoveryRisk) {
+      topDirectionByPair.set(row.pairKey, row);
+    }
+  });
+
+  return Array.from(topDirectionByPair.values())
+    .sort((a, b) => {
+      if ((b.rankScore || 0) !== (a.rankScore || 0)) return (b.rankScore || 0) - (a.rankScore || 0);
+      if ((a.falseDiscoveryRisk || 1) !== (b.falseDiscoveryRisk || 1)) return (a.falseDiscoveryRisk || 1) - (b.falseDiscoveryRisk || 1);
+      return (b.count || 0) - (a.count || 0);
+    })
+    .slice(0, 8)
+    .map((row) => ({
+      ...row,
+      pValue: clamp(row.pValue, 0, 1),
+      falseDiscoveryRisk: clamp(row.falseDiscoveryRisk, 0, 1)
+    }));
 }
 
 function computeRepeatPaths(items) {
@@ -848,8 +1132,6 @@ function buildInsights({
   const DISCOUNT_REVENUE_SHARE_RISK = 0.35;
   const REPEAT_RATE_OPPORTUNITY = 0.25;
   const TIMING_MIN_ORDERS = 20;
-  const BUNDLE_MIN_COUNT = 4;
-  const BUNDLE_MIN_LIFT = 1.6;
 
   if (discountMetrics.discountRevenueShare > DISCOUNT_REVENUE_SHARE_RISK) {
     insights.push({
@@ -884,17 +1166,27 @@ function buildInsights({
     });
   }
 
-  if (bundleTop && (bundleTop.count || 0) >= BUNDLE_MIN_COUNT && (bundleTop.lift || 0) >= BUNDLE_MIN_LIFT) {
-    const attachPct = bundleTop.attachRate != null ? (bundleTop.attachRate * 100).toFixed(1) + '%' : null;
-    const baselinePct = bundleTop.baselineRate != null ? (bundleTop.baselineRate * 100).toFixed(1) + '%' : null;
-    const statPart = attachPct && baselinePct ? `Attach ${attachPct} vs baseline ${baselinePct}. ` : '';
+  const bundleConfidence = Number.isFinite(bundleTop?.statisticalConfidence) ? bundleTop.statisticalConfidence : 0;
+  const bundleHasEvidence = Boolean(
+    bundleTop
+      && (bundleTop.anchorOrders || 0) >= BUNDLE_MIN_ANCHOR_ORDERS
+      && (bundleTop.count || 0) >= BUNDLE_MIN_PAIR_ORDERS
+      && (bundleTop.falseDiscoveryRisk || 1) <= BUNDLE_FDR_TARGET
+      && bundleConfidence >= BUNDLE_MIN_STATISTICAL_CONFIDENCE
+  );
+
+  if (bundleHasEvidence) {
+    const narrative = buildBundleNarrative(bundleTop);
     insights.push({
       id: 'bundle',
-      title: 'Bundle opportunity spotted',
-      detail: `${bundleTop.pair[0]} → ${bundleTop.pair[1]} shows lift (${bundleTop.lift.toFixed(2)}x). ${statPart}Seen in ${bundleTop.count} orders.`,
+      title: narrative?.title || 'Bundle opportunity spotted',
+      detail: `${narrative?.sentence || 'A statistically reliable bundle signal was detected.'} Signal: ${bundleTop.signal || 'Uncertain'} (false-discovery risk ${formatPercentValue(bundleTop.falseDiscoveryRisk)}).`,
       impact: 'AOV lift',
       target: 'bundles',
-      confidence: scoreConfidence(bundleTop.count)
+      confidence: clamp(bundleConfidence, 0.35, 0.99),
+      text: narrative?.sentence || null,
+      eli5: narrative?.eli5 || null,
+      analystLogic: narrative?.analystLogic || null
     });
   }
 
@@ -968,6 +1260,7 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const metaSegment = getMetaTopSegment(db, store, startDate, endDate);
   const timing = getTopTiming(orders, store);
   const bundles = computeBundles(items);
+  const bundleKeyInsights = buildBundleKeyInsights(bundles, BUNDLE_INSIGHT_MAX_COUNT);
   const repeatPaths = computeRepeatPaths(items);
   const topProducts = computeTopProducts(items);
   const discountSkus = computeDiscountSkus(items);
@@ -1157,7 +1450,14 @@ export async function getCustomerInsightsPayload(store, params = {}) {
         discountSkus
       },
       bundles: {
-        summary: bundles.length ? 'Frequent bundles detected.' : 'Bundle insights need product-level data.',
+        summary: bundles.length ? 'Bundle patterns ranked by expected impact and statistical confidence.' : 'Bundle insights need product-level data.',
+        methodology: {
+          baselineDefinition: 'Baseline is the attach-product order share across all eligible orders in the selected window.',
+          significance: 'Exact one-sided binomial test with Benjamini-Hochberg false-discovery control across tested bundle pairs.',
+          falseDiscoveryTarget: BUNDLE_FDR_TARGET,
+          ranking: 'Pairs are ranked by expected incremental revenue and incremental attach orders, weighted by statistical confidence.'
+        },
+        keyInsights: bundleKeyInsights,
         bundles
       },
       activation: {
