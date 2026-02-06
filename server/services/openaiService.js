@@ -451,25 +451,28 @@ function getStoreData(db, storeName, today, yesterday, periodStart, periodEnd) {
 
     // E-commerce orders
     const orderTable = storeName === 'vironax' ? 'salla_orders' : 'shopify_orders';
+    const exclusionClause = ['shopify_orders', 'salla_orders'].includes(orderTable)
+      ? ' AND COALESCE(is_excluded, 0) = 0'
+      : '';
     try {
       storeData.ordersOverview = db.prepare(`
         SELECT COUNT(*) as totalOrders, SUM(order_total) as totalRevenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?${exclusionClause}
       `).get(storeName, periodStart);
 
       storeData.ordersToday = db.prepare(`
         SELECT COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?${exclusionClause}
       `).get(storeName, today);
 
       storeData.ordersYesterday = db.prepare(`
         SELECT COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?${exclusionClause}
       `).get(storeName, yesterday);
 
       storeData.ordersByCountry = db.prepare(`
         SELECT country_code, COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?${exclusionClause}
         GROUP BY country_code ORDER BY orders DESC LIMIT 15
       `).all(storeName, periodStart);
     } catch (e) {}

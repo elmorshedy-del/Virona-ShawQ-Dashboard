@@ -1,35 +1,139 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 import { createOrderNotifications } from './notificationService.js';
-import { getLatestShopifyAccessToken, getShopifyAccessToken, getShopifyTokenRecord } from './shopifyAuthService.js';
+import {
+  getLatestShopifyAccessToken,
+  getShopifyAccessToken,
+  getShopifyTokenRecord,
+  listShopifyAccessTokens
+} from './shopifyAuthService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import {
+  classifyNonRevenueLineItem,
+  classifyNonRevenueOrder,
+  resolveNonRevenueKeywords
+} from './orderExclusionService.js';
 
-function getShopifyCredentials() {
-  const envStore = process.env.SHAWQ_SHOPIFY_STORE;
-  const envToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
+function normalizeShopDomain(shop) {
+  if (!shop || typeof shop !== 'string') return null;
+  const trimmed = shop.trim().toLowerCase();
+  if (!trimmed) return null;
+  return trimmed.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+}
 
-  if (envStore && envToken) {
-    return { shopifyStore: envStore, accessToken: envToken, source: 'env' };
+function sanitizeStoreKey(value, fallback = 'shawq') {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return normalized || fallback;
+}
+
+function parseStoreAliasMap() {
+  const raw = process.env.SHOPIFY_STORE_ALIAS_MAP;
+  if (!raw || typeof raw !== 'string') return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const entries = Object.entries(parsed)
+      .map(([shop, store]) => [normalizeShopDomain(shop), sanitizeStoreKey(store, '')])
+      .filter(([shop, store]) => shop && store);
+    return Object.fromEntries(entries);
+  } catch (error) {
+    return {};
+  }
+}
+
+function resolveStoreKeyForShop(shopifyStore, aliasMap = {}) {
+  const normalizedShop = normalizeShopDomain(shopifyStore);
+  if (!normalizedShop) {
+    return sanitizeStoreKey(process.env.SHOPIFY_DEFAULT_STORE_KEY || process.env.SHAWQ_STORE_KEY || 'shawq');
   }
 
-  if (envStore) {
+  if (aliasMap[normalizedShop]) {
+    return sanitizeStoreKey(aliasMap[normalizedShop]);
+  }
+
+  const envStore = normalizeShopDomain(process.env.SHAWQ_SHOPIFY_STORE);
+  if (envStore && envStore === normalizedShop) {
+    return sanitizeStoreKey(process.env.SHAWQ_STORE_KEY || 'shawq');
+  }
+
+  const defaultKey = normalizedShop.replace(/\.myshopify\.com$/i, '');
+  return sanitizeStoreKey(defaultKey, 'shopify_store');
+}
+
+function getAllShopifyCredentials() {
+  const envStore = normalizeShopDomain(process.env.SHAWQ_SHOPIFY_STORE);
+  const envToken = process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN;
+  const aliasMap = parseStoreAliasMap();
+  const credentialsByShop = new Map();
+
+  const upsertCredential = ({ shopifyStore, accessToken, source }) => {
+    const normalizedShop = normalizeShopDomain(shopifyStore);
+    if (!normalizedShop || !accessToken) return;
+
+    const next = {
+      shopifyStore: normalizedShop,
+      accessToken,
+      source,
+      analyticsStore: resolveStoreKeyForShop(normalizedShop, aliasMap)
+    };
+
+    const current = credentialsByShop.get(normalizedShop);
+    if (!current || current.source !== 'env') {
+      credentialsByShop.set(normalizedShop, next);
+    }
+  };
+
+  if (envStore && envToken) {
+    upsertCredential({ shopifyStore: envStore, accessToken: envToken, source: 'env' });
+  }
+
+  if (envStore && !envToken) {
     const oauthToken = getShopifyAccessToken(envStore);
     if (oauthToken) {
-      return { shopifyStore: envStore, accessToken: oauthToken, source: 'oauth' };
+      upsertCredential({ shopifyStore: envStore, accessToken: oauthToken, source: 'oauth' });
     }
   }
 
-  const latest = getLatestShopifyAccessToken();
-  if (latest?.token) {
-    return { shopifyStore: latest.shop, accessToken: latest.token, source: 'oauth' };
+  listShopifyAccessTokens().forEach((row) => {
+    upsertCredential({ shopifyStore: row.shop, accessToken: row.token, source: 'oauth' });
+  });
+
+  if (credentialsByShop.size === 0) {
+    const latest = getLatestShopifyAccessToken();
+    if (latest?.shop && latest?.token) {
+      upsertCredential({ shopifyStore: latest.shop, accessToken: latest.token, source: 'oauth' });
+    }
   }
 
-  return { shopifyStore: envStore || null, accessToken: envToken || null, source: 'missing' };
+  return Array.from(credentialsByShop.values()).sort((a, b) => {
+    if (a.source === b.source) return a.shopifyStore.localeCompare(b.shopifyStore);
+    return a.source === 'env' ? -1 : 1;
+  });
+}
+
+function getPrimaryShopifyCredential() {
+  const all = getAllShopifyCredentials();
+  if (all.length) return all[0];
+
+  const fallbackStore = normalizeShopDomain(process.env.SHAWQ_SHOPIFY_STORE);
+  return {
+    shopifyStore: fallbackStore || null,
+    accessToken: process.env.SHAWQ_SHOPIFY_ACCESS_TOKEN || null,
+    source: 'missing',
+    analyticsStore: resolveStoreKeyForShop(fallbackStore)
+  };
+}
+
+function getShopifyCredentials() {
+  return getPrimaryShopifyCredential();
 }
 
 export function isShopifyConfigured() {
-  const { shopifyStore, accessToken } = getShopifyCredentials();
-  return Boolean(shopifyStore && accessToken);
+  return getAllShopifyCredentials().length > 0;
 }
 
 function getShopifyHeaders(accessToken) {
@@ -113,7 +217,7 @@ export function getShopifyProductCacheMap(store = 'shawq', productIds = []) {
   return new Map(rows.map((row) => [String(row.product_id), { title: row.title || null, image_url: row.image_url || null }]));
 }
 
-export async function ensureShopifyProductsCached(store = 'shawq', productIds = []) {
+export async function ensureShopifyProductsCached(store = 'shawq', productIds = [], options = {}) {
   const ids = Array.from(new Set((productIds || []).map((id) => (id != null ? String(id) : null)).filter(Boolean)));
   if (!ids.length) return new Map();
 
@@ -134,7 +238,7 @@ export async function ensureShopifyProductsCached(store = 'shawq', productIds = 
   });
 
   if (missingOrStale.length) {
-    const credentials = getShopifyCredentials();
+    const credentials = options?.credentials || getShopifyCredentials();
     if (credentials.shopifyStore && credentials.accessToken) {
       const fetchLimit = parseInt(process.env.SHOPIFY_PRODUCT_CACHE_FETCH_LIMIT || '60', 10);
       const toFetch = missingOrStale.slice(0, Math.max(fetchLimit, 1));
@@ -185,11 +289,18 @@ function extractAttributionAttributes(noteAttributes = []) {
   return attributes;
 }
 
-export async function fetchShopifyOrders(dateStart, dateEnd) {
-  const { shopifyStore, accessToken } = getShopifyCredentials();
+export async function fetchShopifyOrders(dateStart, dateEnd, options = {}) {
+  const credential = options?.credentials || getShopifyCredentials();
+  const { shopifyStore, accessToken } = credential;
+  const analyticsStore = sanitizeStoreKey(
+    credential?.analyticsStore || resolveStoreKeyForShop(shopifyStore),
+    'shawq'
+  );
+  const exclusionKeywords = resolveNonRevenueKeywords({ account: shopifyStore, store: analyticsStore });
+  const exclusionOptions = { keywords: exclusionKeywords };
 
   if (!shopifyStore || !accessToken) {
-    console.log('Shopify credentials not configured for Shawq - returning empty array (no demo data)');
+    console.log('Shopify credentials not configured - returning empty array (no demo data)');
     return [];
   }
 
@@ -242,7 +353,20 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
               }))
             : [];
 
+          const lineClassifications = lineItems.map((item) => classifyNonRevenueLineItem(item, exclusionOptions));
+          const orderClassification = classifyNonRevenueOrder(
+            {
+              order_total: parseFloat(order.total_price) || 0,
+              subtotal: parseFloat(order.subtotal_price) || 0,
+              tags: order.tags || '',
+              note: order.note || ''
+            },
+            lineClassifications,
+            exclusionOptions
+          );
+
           orders.push({
+            store: analyticsStore,
             order_id: order.id.toString(),
             date: dateGmt3,
             country: getCountryName(countryCode),
@@ -265,6 +389,8 @@ export async function fetchShopifyOrders(dateStart, dateEnd) {
             customer_id: customerId,
             customer_email: customerEmail,
             line_items: lineItems,
+            is_excluded: orderClassification.exclude,
+            exclusion_reason: orderClassification.reason,
             createdAtUtcMs: createdAtUtc ? createdAtDate.getTime() : null
           });
         }
@@ -295,159 +421,186 @@ export async function syncShopifyOrders() {
   const startDate = formatDateAsGmt3(
     new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
   );
+  const credentialsList = getAllShopifyCredentials();
 
-  if (!isShopifyConfigured()) {
+  if (!credentialsList.length) {
+    const fallbackStore = sanitizeStoreKey(process.env.SHOPIFY_DEFAULT_STORE_KEY || process.env.SHAWQ_STORE_KEY || 'shawq');
     db.prepare(`
       INSERT INTO sync_log (store, source, status, error_message)
-      VALUES ('shawq', 'shopify', 'error', 'Missing Shopify credentials for Shawq')
-    `).run();
+      VALUES (?, 'shopify', 'error', 'Missing Shopify credentials')
+    `).run(fallbackStore);
 
     return {
       success: false,
       records: 0,
-      message: 'Missing Shopify credentials for Shawq'
+      message: 'Missing Shopify credentials'
     };
   }
 
-  try {
-    const orders = await fetchShopifyOrders(startDate, endDate);
+  const insertStmt = db.prepare(`
+    INSERT OR REPLACE INTO shopify_orders
+    (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount,
+     items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at, attribution_json, customer_id, customer_email,
+     is_excluded, exclusion_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
 
-    const insertStmt = db.prepare(`
-      INSERT OR REPLACE INTO shopify_orders
-      (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount,
-       items_count, status, financial_status, fulfillment_status, payment_method, currency, order_created_at, attribution_json, customer_id, customer_email)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+  const deleteItemsStmt = db.prepare(`
+    DELETE FROM shopify_order_items
+    WHERE store = ? AND order_id = ?
+  `);
 
-    const deleteItemsStmt = db.prepare(`
-      DELETE FROM shopify_order_items
-      WHERE store = 'shawq' AND order_id = ?
-    `);
+  const insertItemStmt = db.prepare(`
+    INSERT OR REPLACE INTO shopify_order_items
+    (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount, net_price, is_excluded, exclusion_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
 
-    const insertItemStmt = db.prepare(`
-      INSERT OR REPLACE INTO shopify_order_items
-      (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount)
-      VALUES ('shawq', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+  const insertOrders = db.transaction(({ storeKey, ordersToInsert, productCacheMap, exclusionOptions }) => {
+    let inserted = 0;
+    for (const order of ordersToInsert) {
+      insertStmt.run(
+        storeKey,
+        order.order_id,
+        order.date,
+        order.country,
+        order.country_code,
+        order.city,
+        order.state,
+        order.order_total,
+        order.subtotal,
+        order.shipping,
+        order.tax,
+        order.discount,
+        order.items_count,
+        order.status,
+        order.financial_status,
+        order.fulfillment_status,
+        order.payment_method,
+        order.currency,
+        order.order_created_at,
+        order.attribution_json,
+        order.customer_id,
+        order.customer_email,
+        order.is_excluded ? 1 : 0,
+        order.exclusion_reason || null
+      );
 
-    const productIds = Array.from(new Set(orders
-      .flatMap((order) => (Array.isArray(order.line_items) ? order.line_items : []))
-      .map((item) => item.product_id)
-      .filter(Boolean)
-      .map((id) => String(id))
-    ));
+      deleteItemsStmt.run(storeKey, order.order_id);
 
-    const productCacheMap = await ensureShopifyProductsCached('shawq', productIds);
+      if (Array.isArray(order.line_items)) {
+        for (const item of order.line_items) {
+          const productCache = item.product_id ? productCacheMap.get(String(item.product_id)) : null;
+          const itemTitle = item.title || productCache?.title || null;
+          const itemImageUrl = productCache?.image_url || null;
+          const classification = classifyNonRevenueLineItem(
+            {
+              ...item,
+              title: itemTitle
+            },
+            exclusionOptions
+          );
 
-    let recordsInserted = 0;
-
-    const insertOrders = db.transaction((ordersToInsert) => {
-      for (const order of ordersToInsert) {
-        insertStmt.run(
-          order.order_id,
-          order.date,
-          order.country,
-          order.country_code,
-          order.city,
-          order.state,
-          order.order_total,
-          order.subtotal,
-          order.shipping,
-          order.tax,
-          order.discount,
-          order.items_count,
-          order.status,
-          order.financial_status,
-          order.fulfillment_status,
-          order.payment_method,
-          order.currency,
-          order.order_created_at,
-          order.attribution_json,
-          order.customer_id,
-          order.customer_email
-        );
-
-        deleteItemsStmt.run(order.order_id);
-
-        if (Array.isArray(order.line_items)) {
-          for (const item of order.line_items) {
-            const productCache = item.product_id ? productCacheMap.get(String(item.product_id)) : null;
-            const itemTitle = item.title || productCache?.title || null;
-            const itemImageUrl = productCache?.image_url || null;
-
-            insertItemStmt.run(
-              order.order_id,
-              item.line_item_id,
-              item.product_id,
-              item.variant_id,
-              item.sku,
-              itemTitle,
-              itemImageUrl,
-              item.quantity,
-              item.price,
-              item.discount
-            );
-          }
+          insertItemStmt.run(
+            storeKey,
+            order.order_id,
+            item.line_item_id,
+            item.product_id,
+            item.variant_id,
+            item.sku,
+            itemTitle,
+            itemImageUrl,
+            item.quantity,
+            item.price,
+            item.discount,
+            classification.net,
+            classification.exclude ? 1 : 0,
+            classification.reason
+          );
         }
-
-        recordsInserted++;
       }
-    });
 
-    insertOrders(orders);
+      inserted += 1;
+    }
+    return inserted;
+  });
 
-    db.prepare(`
-      INSERT INTO sync_log (store, source, status, records_synced)
-      VALUES ('shawq', 'shopify', 'success', ?)
-    `).run(recordsInserted);
+  let totalInserted = 0;
 
-    const notificationCount = createOrderNotifications('shawq', 'shopify', orders);
-    console.log(`[Shopify] Created ${notificationCount} notifications`);
+  for (const credentials of credentialsList) {
+    const storeKey = credentials.analyticsStore;
+    try {
+      const orders = await fetchShopifyOrders(startDate, endDate, { credentials });
+      const exclusionKeywords = resolveNonRevenueKeywords({ account: credentials.shopifyStore, store: storeKey });
+      const exclusionOptions = { keywords: exclusionKeywords };
+      const productIds = Array.from(
+        new Set(
+          orders
+            .flatMap((order) => (Array.isArray(order.line_items) ? order.line_items : []))
+            .map((item) => item.product_id)
+            .filter(Boolean)
+            .map((id) => String(id))
+        )
+      );
 
-    return { success: true, records: recordsInserted };
-  } catch (error) {
-    db.prepare(`
-      INSERT INTO sync_log (store, source, status, error_message)
-      VALUES ('shawq', 'shopify', 'error', ?)
-    `).run(error.message);
+      const productCacheMap = await ensureShopifyProductsCached(storeKey, productIds, { credentials });
+      const recordsInserted = insertOrders({ storeKey, ordersToInsert: orders, productCacheMap, exclusionOptions });
+      totalInserted += recordsInserted;
 
-    throw error;
+      db.prepare(`
+        INSERT INTO sync_log (store, source, status, records_synced)
+        VALUES (?, 'shopify', 'success', ?)
+      `).run(storeKey, recordsInserted);
+
+      const notificationCount = createOrderNotifications(storeKey, 'shopify', orders);
+      console.log(`[Shopify] ${storeKey}: inserted ${recordsInserted} orders, created ${notificationCount} notifications`);
+    } catch (error) {
+      db.prepare(`
+        INSERT INTO sync_log (store, source, status, error_message)
+        VALUES (?, 'shopify', 'error', ?)
+      `).run(storeKey, error.message);
+      throw error;
+    }
   }
+
+  return { success: true, records: totalInserted, storesSynced: credentialsList.length };
 }
 
 export function getShopifyConnectionStatus() {
   const db = getDb();
-  const { shopifyStore, accessToken, source } = getShopifyCredentials();
+  const { shopifyStore, accessToken, source, analyticsStore } = getShopifyCredentials();
   const configured = Boolean(shopifyStore && accessToken);
+  const statusStore = analyticsStore || 'shawq';
 
   const lastSync = db
     .prepare(
       `SELECT status, records_synced, error_message, created_at
        FROM sync_log
-       WHERE store = 'shawq' AND source = 'shopify'
+       WHERE store = ? AND source = 'shopify'
        ORDER BY created_at DESC
        LIMIT 1`
     )
-    .get();
+    .get(statusStore);
 
   const latestOrder = db
     .prepare(
       `SELECT order_id, order_created_at, date, created_at
        FROM shopify_orders
-       WHERE store = 'shawq'
+       WHERE store = ?
        ORDER BY (order_created_at IS NULL), order_created_at DESC, created_at DESC
        LIMIT 1`
     )
-    .get();
+    .get(statusStore);
 
   const totalOrders = db
-    .prepare(`SELECT COUNT(*) as count FROM shopify_orders WHERE store = 'shawq'`)
-    .get()?.count || 0;
+    .prepare(`SELECT COUNT(*) as count FROM shopify_orders WHERE store = ?`)
+    .get(statusStore)?.count || 0;
 
   const oauthRecord = shopifyStore ? getShopifyTokenRecord(shopifyStore) : null;
 
   return {
     configured,
+    storeKey: statusStore,
     storeDomain: shopifyStore || oauthRecord?.shop || null,
     authSource: source || (accessToken ? 'oauth' : 'missing'),
     lastSync: lastSync || null,
