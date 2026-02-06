@@ -546,6 +546,29 @@ function normalizeEventType(payload) {
   return typeof raw === 'string' && raw.trim() ? raw.trim() : 'unknown';
 }
 
+const CLARITY_SIGNAL_EVENT_TYPES = new Set([
+  'rage_click',
+  'dead_click',
+  'js_error',
+  'unhandled_rejection',
+  'form_invalid',
+  'scroll_depth',
+  'scroll_max'
+]);
+
+function resolveSessionIntelligenceSource(payload, eventType) {
+  const explicit = (typeof payload?.source === 'string' ? payload.source.trim() : '').toLowerCase();
+  if (explicit) {
+    if (explicit.includes('virona-pixel')) return 'theme_pixel';
+    if (explicit.includes('shopify_custom_pixel')) return 'shopify_custom_pixel';
+    return explicit.slice(0, 80);
+  }
+
+  const normalizedEventType = (typeof eventType === 'string' ? eventType.trim().toLowerCase() : '');
+  if (CLARITY_SIGNAL_EVENT_TYPES.has(normalizedEventType)) return 'theme_pixel';
+  return 'shopify_custom_pixel';
+}
+
 function normalizeEventTimestamp(payload) {
   const raw =
     payload?.timestamp ||
@@ -770,7 +793,8 @@ router.post('/shopify', async (req, res) => {
 
     // Session Intelligence normalized ingest (best-effort).
     try {
-      recordSessionIntelligenceEvent({ store, payload, source: 'shopify_pixel' });
+      const sessionIntelligenceSource = resolveSessionIntelligenceSource(payload, type);
+      recordSessionIntelligenceEvent({ store, payload, source: sessionIntelligenceSource });
     } catch (siError) {
       console.warn('[Pixels] Session Intelligence ingest failed:', siError?.message || siError);
     }

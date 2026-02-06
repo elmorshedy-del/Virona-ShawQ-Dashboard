@@ -23,6 +23,18 @@ const CHECKOUT_STEP_LABELS = {
   thank_you: 'Thank you'
 };
 
+const CLARITY_SIGNAL_EVENT_NAMES = [
+  'rage_click',
+  'dead_click',
+  'js_error',
+  'unhandled_rejection',
+  'form_invalid',
+  'scroll_depth',
+  'scroll_max'
+];
+
+const THEME_SIGNAL_SOURCES = ['theme_pixel', 'virona-pixel-v1'];
+
 const SHOPPER_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 const lastShopperBackfillByStore = new Map();
 
@@ -1500,6 +1512,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
   const window = Math.min(Math.max(parseInt(windowMinutes, 10) || 30, 1), 180);
   const max = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
   const windowExpr = `-${window} minutes`;
+  const clarityPlaceholders = CLARITY_SIGNAL_EVENT_NAMES.map(() => '?').join(',');
+  const themeSourcePlaceholders = THEME_SIGNAL_SOURCES.map(() => '?').join(',');
 
   const totals = db.prepare(`
     SELECT
@@ -1509,7 +1523,14 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
-  `).get(normalizedStore, windowExpr);
+      AND lower(event_name) NOT IN (${clarityPlaceholders})
+      AND COALESCE(lower(source), '') NOT IN (${themeSourcePlaceholders})
+  `).get(
+    normalizedStore,
+    windowExpr,
+    ...CLARITY_SIGNAL_EVENT_NAMES,
+    ...THEME_SIGNAL_SOURCES
+  );
 
   const latest = db.prepare(`
     WITH recent AS (
@@ -1517,6 +1538,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       FROM si_events
       WHERE store = ?
         AND created_at >= datetime('now', ?)
+        AND lower(event_name) NOT IN (${clarityPlaceholders})
+        AND COALESCE(lower(source), '') NOT IN (${themeSourcePlaceholders})
       GROUP BY session_id
     )
     SELECT
@@ -1536,7 +1559,13 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     JOIN recent r ON r.last_id = e.id
     WHERE e.store = ?
     ORDER BY e.id DESC
-  `).all(normalizedStore, windowExpr, normalizedStore);
+  `).all(
+    normalizedStore,
+    windowExpr,
+    ...CLARITY_SIGNAL_EVENT_NAMES,
+    ...THEME_SIGNAL_SOURCES,
+    normalizedStore
+  );
 
   const visitors = new Set();
   const stageCounts = new Map();
@@ -1585,9 +1614,16 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
+      AND lower(event_name) NOT IN (${clarityPlaceholders})
+      AND COALESCE(lower(source), '') NOT IN (${themeSourcePlaceholders})
     GROUP BY lower(event_name)
     ORDER BY count DESC
-  `).all(normalizedStore, windowExpr);
+  `).all(
+    normalizedStore,
+    windowExpr,
+    ...CLARITY_SIGNAL_EVENT_NAMES,
+    ...THEME_SIGNAL_SOURCES
+  );
 
   const topEvents = eventCounts.slice(0, max);
 

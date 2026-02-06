@@ -22,6 +22,7 @@ I’ll keep it updated after each code change during this session.
 
 ## Workflow (PRs)
 - Default workflow for code changes: create a `codex/*` branch, commit with a clear message, push to `origin`, and open a Pull Request.
+- Branch hygiene rule (requested): always start from a clean branch/worktree and commit only Codex-authored changes.
 - Note: This only works when git remote auth/tools are available in the environment; otherwise I’ll push the branch and tell you what to click to open the PR.
 - GitHub CLI (`gh`) note: PR creation via CLI requires a valid `gh auth login` session.
 
