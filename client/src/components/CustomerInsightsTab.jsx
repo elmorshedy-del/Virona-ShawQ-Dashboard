@@ -20,6 +20,7 @@ import {
   YAxis
 } from 'recharts';
 import MetaDemographics from './MetaDemographics';
+import BundleInsightsSection from './BundleInsightsSection';
 
 const formatPercent = (value) => {
   if (value == null || Number.isNaN(value)) return '—';
@@ -29,17 +30,6 @@ const formatPercent = (value) => {
 const formatNumber = (value) => {
   if (value == null || Number.isNaN(value)) return '—';
   return Math.round(value).toLocaleString();
-};
-
-const formatSignedNumber = (value) => {
-  if (value == null || Number.isNaN(value)) return '—';
-  const rounded = Math.round(value);
-  return `${rounded > 0 ? '+' : ''}${rounded.toLocaleString()}`;
-};
-
-const formatSignedPercent = (value, fractionDigits = 0) => {
-  if (value == null || Number.isNaN(value)) return '—';
-  return `${value > 0 ? '+' : ''}${(value * 100).toFixed(fractionDigits)}%`;
 };
 
 const confidenceLabel = (value) => {
@@ -139,99 +129,6 @@ function InsightCard({ insight, onInvestigate }) {
           </button>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function InsightFlipPanel({ title, insights, emptyMessage }) {
-  const [showLogic, setShowLogic] = useState(false);
-
-  const rows = useMemo(
-    () => (Array.isArray(insights) ? insights : [])
-      .map((insight, index) => ({
-        id: insight?.id || `insight-${index + 1}`,
-        title: insight?.title || `Insight ${index + 1}`,
-        summary: insight?.businessSummary || insight?.text || [insight?.title, insight?.detail].filter(Boolean).join(': '),
-        methodology: insight?.methodology || null,
-        computationLogic: insight?.computationLogic || null,
-        recommendedAction: insight?.recommendedAction || null,
-        successKpi: insight?.successKpi || null,
-        classification: insight?.classification || null
-      }))
-      .filter((row) => Boolean(row.summary)),
-    [insights]
-  );
-
-  const hasLogic = rows.some((row) => row.methodology || row.computationLogic || row.recommendedAction || row.successKpi);
-
-  if (!rows.length) {
-    return (
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-500">
-        {emptyMessage}
-      </div>
-    );
-  }
-
-  return (
-    <div className="w-full rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-semibold text-gray-900">{title}</div>
-        {hasLogic ? (
-          <button
-            type="button"
-            onClick={() => setShowLogic((prev) => !prev)}
-            className="rounded-full border border-gray-200 px-3 py-1 text-xs font-semibold text-gray-600 hover:border-gray-300 hover:text-gray-800"
-          >
-            {showLogic ? 'Back to Summary' : 'View Methodology'}
-          </button>
-        ) : null}
-      </div>
-
-      {!showLogic ? (
-        <ul className="mt-4 space-y-2">
-          {rows.map((row) => (
-            <li key={row.id} className="flex items-start gap-2 text-sm text-gray-700">
-              <span className="mt-1.5 h-2 w-2 flex-shrink-0 rounded-full bg-indigo-500" />
-              <span>
-                {row.summary}
-                {row.recommendedAction ? (
-                  <span className="mt-1 block text-xs text-gray-500">Next: {row.recommendedAction}</span>
-                ) : null}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div className="mt-4 space-y-3">
-          {rows.map((row) => (
-            <div key={row.id} className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="text-sm font-semibold text-gray-900">{row.title}</div>
-                {row.classification ? (
-                  <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-600">
-                    {row.classification}
-                  </span>
-                ) : null}
-              </div>
-              {row.methodology ? (
-                <p className="mt-2 text-xs text-gray-600">
-                  <span className="font-semibold text-gray-700">Methodology:</span> {row.methodology}
-                </p>
-              ) : null}
-              {row.computationLogic ? (
-                <p className="mt-2 text-xs text-gray-600">
-                  <span className="font-semibold text-gray-700">Computation Logic:</span> {row.computationLogic}
-                </p>
-              ) : null}
-              {row.successKpi ? (
-                <p className="mt-2 text-xs text-gray-600">
-                  <span className="font-semibold text-gray-700">Success KPI:</span> {row.successKpi}
-                </p>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -634,66 +531,12 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
           subtitle={sections.bundles?.summary || 'Frequently bought together'}
           icon={sectionIcons.bundles}
         >
-          <div className="space-y-4">
-            <InsightFlipPanel
-              title="Business Summary"
-              insights={sections.bundles?.keyInsights || []}
-              emptyMessage="Bundle insights need more multi-item orders."
-            />
-
-            {(sections.bundles?.bundles || []).length ? (
-              <>
-                <div className="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-600">
-                  <p>{sections.bundles?.methodology?.baselineDefinition || 'Baseline is the attach-product order share across all orders in this window.'}</p>
-                  <p className="mt-1">{sections.bundles?.methodology?.classification || 'Pairs are classified as Configured Bundle or Organic Co-Purchase using Shopify product metadata markers.'}</p>
-                  <p className="mt-1">{sections.bundles?.methodology?.significance || 'Significance uses controlled false-discovery testing across bundle candidates.'}</p>
-                  <p className="mt-1">
-                    False-discovery target: {formatPercent(sections.bundles?.methodology?.falseDiscoveryTarget)}
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-xs uppercase text-gray-400">
-                        <th className="py-2">Bundle</th>
-                        <th className="py-2 text-right">Type</th>
-                        <th className="py-2 text-right">Orders (This)</th>
-                        <th className="py-2 text-right">Orders (Last)</th>
-                        <th className="py-2 text-right">Delta</th>
-                        <th className="py-2 text-right">Attach (This)</th>
-                        <th className="py-2 text-right">Attach (Last)</th>
-                        <th className="py-2 text-right">Lift</th>
-                        <th className="py-2 text-right">Evidence</th>
-                        <th className="py-2 text-right">FDR</th>
-                        <th className="py-2 text-right">Est. Incremental Revenue</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(sections.bundles?.bundles || []).map((row) => (
-                        <tr key={`${row.pairKeys?.[0] || row.pair[0]}-${row.pairKeys?.[1] || row.pair[1]}`} className="border-t border-gray-100">
-                          <td className="py-2 text-gray-700">
-                            {row.pair?.[0]} → {row.pair?.[1]}
-                          </td>
-                          <td className="py-2 text-right text-gray-700">{row.bundleTypeLabel || 'Organic Co-Purchase'}</td>
-                          <td className="py-2 text-right text-gray-700">{formatNumber(row.count)}</td>
-                          <td className="py-2 text-right text-gray-700">{formatNumber(row.previousCount)}</td>
-                          <td className="py-2 text-right text-gray-700">
-                            {formatSignedNumber(row.countDelta)} ({formatSignedPercent(row.countDeltaRate)})
-                          </td>
-                          <td className="py-2 text-right text-gray-700">{formatPercent(row.attachRate)}</td>
-                          <td className="py-2 text-right text-gray-700">{formatPercent(row.previousAttachRate)}</td>
-                          <td className="py-2 text-right font-semibold text-gray-900">{Number(row.lift || 0).toFixed(2)}x</td>
-                          <td className="py-2 text-right text-gray-700">{row.signal || '—'}</td>
-                          <td className="py-2 text-right text-gray-700">{formatPercent(row.falseDiscoveryRisk)}</td>
-                          <td className="py-2 text-right text-gray-700">{formatCurrency(row.expectedIncrementalRevenue || 0, 0)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : null}
-          </div>
+          <BundleInsightsSection
+            section={sections.bundles}
+            window={data?.window}
+            eligibleOrders={dataQuality.orders}
+            formatCurrency={formatCurrency}
+          />
         </SectionCard>
 
         <SectionCard
