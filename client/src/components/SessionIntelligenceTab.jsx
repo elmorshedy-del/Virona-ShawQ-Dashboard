@@ -352,12 +352,12 @@ const TARGET_KEY_RULES = [
 const ERROR_SIGNATURE_RULES = [
   {
     keywords: ['mutationobserver', 'observe'],
-    label: 'MutationObserver target invalid',
+    label: 'Script conflict on page',
     match: 'all'
   },
   {
     keywords: ['_autofillcallbackhandler'],
-    label: 'Autofill callback missing',
+    label: 'Autofill script conflict',
     match: 'any'
   },
   {
@@ -376,6 +376,71 @@ const ERROR_SIGNATURE_RULES = [
     match: 'any'
   }
 ];
+
+const DEVELOPER_FIX_PLAYBOOK = {
+  js_errors: {
+    default: [
+      'Open the affected page in browser devtools and reproduce the issue in Console + Network.',
+      'Identify the failing app/script, then disable or patch that integration in theme code.',
+      'Redeploy and verify the same page shows zero repeated JS errors for 24 hours.'
+    ],
+    bySignature: {
+      'Script conflict on page': [
+        'Find duplicated DOM observers or scripts attaching to removed elements.',
+        'Guard observer setup with element existence checks before calling observe().',
+        'Deploy and confirm this error group stops growing on the affected page.'
+      ],
+      'Autofill script conflict': [
+        'Search installed apps/theme scripts for `_AutofillCallbackHandler` references.',
+        'Load the required script earlier or remove the stale callback dependency.',
+        'Retest checkout and product pages in Safari and Chrome.'
+      ],
+      'External script failed to load': [
+        'Open Network tab and locate the failing third-party script URL and status.',
+        'Fix CSP, domain allowlist, or script URL/version mismatch in theme/app settings.',
+        'Verify retries are not flooding errors after deployment.'
+      ],
+      'Network request failed': [
+        'Inspect failing endpoint calls and confirm CORS/auth headers are valid.',
+        'Add retry/backoff only for transient failures; avoid infinite retry loops.',
+        'Verify affected action succeeds for both mobile and desktop sessions.'
+      ],
+      'JSON response truncated': [
+        'Inspect endpoint payloads and ensure they return valid JSON on all branches.',
+        'Handle empty/partial payloads defensively before `response.json()` parsing.',
+        'Deploy and verify parsing errors no longer occur in recent sessions.'
+      ]
+    }
+  },
+  dead_clicks: {
+    default: [
+      'Confirm the clicked element is truly interactive (button/link) and has a bound action.',
+      'If it is decorative only, remove pointer cursor/click handlers to avoid false affordance.',
+      'Retest the element and confirm clicks lead to visible UI change or navigation.'
+    ]
+  },
+  rage_clicks: {
+    default: [
+      'Measure interaction latency on the target and identify slow script/network paths.',
+      'Provide immediate visual feedback on click and prevent duplicate blocked clicks.',
+      'Retest under mobile throttling to confirm frustration pattern disappears.'
+    ]
+  },
+  form_invalid: {
+    default: [
+      'Log invalid field names/types and identify the highest-frequency failing inputs.',
+      'Add inline validation hints before submit, not only after submit failure.',
+      'Relax strict rules where possible and confirm conversion improves next day.'
+    ]
+  },
+  scroll_dropoff: {
+    default: [
+      'Move key product value, trust, and CTA blocks above the first major fold break.',
+      'Reduce heavy media before CTA and improve mobile rendering speed.',
+      'Compare 75% reach rate day-over-day after layout update.'
+    ]
+  }
+};
 
 function normalizeTargetKey(rawValue) {
   const raw = (rawValue || '').toString().trim();
@@ -435,8 +500,23 @@ function buildIssueWhereLabel(type, issue) {
   return page;
 }
 
+function buildDeveloperFixSteps(row) {
+  const entry = DEVELOPER_FIX_PLAYBOOK[row?.type];
+  if (!entry) return [];
+  if (row?.type === 'js_errors') {
+    const signature = row?.errorLabel || '';
+    if (signature && entry.bySignature?.[signature]) {
+      return entry.bySignature[signature];
+    }
+  }
+  return entry.default || [];
+}
+
 function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay }) {
   const sessions = Array.isArray(librarySessions) ? librarySessions : [];
+  const claritySelectedSessions = Math.max(0, Number(claritySignals?.totals?.sessions) || 0);
+  const claritySourceSessions = Math.max(0, Number(claritySignals?.totals?.source_sessions) || 0);
+  const totalSessionUniverse = Math.max(sessions.length, claritySourceSessions, claritySelectedSessions);
   const highIntentNoPurchaseSessions = sessions.filter((s) => {
     const atc = Number(s?.atc_events) || 0;
     const checkout = Number(s?.checkout_started_events) || 0;
@@ -444,9 +524,13 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
     return (atc > 0 || checkout > 0) && purchase === 0;
   });
 
-  const eligibleHighIntent = Math.max(
-    highIntentNoPurchaseSessions.length,
-    Number(claritySignals?.totals?.sessions) || 0
+  const highIntentFromLibrary = highIntentNoPurchaseSessions.length;
+  const highIntentFromClarity = claritySignals?.mode === 'high_intent_no_purchase'
+    ? claritySelectedSessions
+    : 0;
+  const eligibleHighIntent = Math.min(
+    totalSessionUniverse,
+    Math.max(highIntentFromLibrary, highIntentFromClarity)
   );
 
   const dayRecencyWeight = (() => {
@@ -482,6 +566,9 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
         id: `${type}-${index}`,
         type,
         issueLabel: meta.label,
+        pageLabel: formatPathLabel(issue?.page || ''),
+        targetLabel: type === 'dead_clicks' || type === 'rage_clicks' ? normalizeTargetKey(issue?.target_key) : '',
+        errorLabel: type === 'js_errors' ? normalizeErrorSignature(issue?.message) : '',
         whereLabel: buildIssueWhereLabel(type, issue),
         action: meta.action,
         severityWeight: meta.severityWeight,
@@ -492,6 +579,7 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
         observations,
         confidenceRaw: posteriorMean * evidenceStrength,
         recencyWeight: dayRecencyWeight,
+        rawErrorMessage: type === 'js_errors' ? (issue?.message || '') : '',
         sampleSessions: Array.isArray(issue?.sample_sessions) ? issue.sample_sessions : []
       });
     });
@@ -501,7 +589,8 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
     return {
       rows: [],
       eligibleHighIntent,
-      totalSessions: sessions.length,
+      highIntentSessions: eligibleHighIntent,
+      totalSessions: totalSessionUniverse,
       purchases: sessions.filter((s) => (Number(s?.purchase_events) || 0) > 0).length
     };
   }
@@ -534,7 +623,8 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
   return {
     rows,
     eligibleHighIntent,
-    totalSessions: sessions.length,
+    highIntentSessions: eligibleHighIntent,
+    totalSessions: totalSessionUniverse,
     purchases
   };
 }
@@ -1227,17 +1317,18 @@ export default function SessionIntelligenceTab({ store }) {
   const issueRows = issueModel.rows || [];
   const visibleIssueRows = showAllIssues ? issueRows : issueRows.slice(0, 8);
   const topIssue = issueRows[0] || null;
+  const developerGuideRows = issueRows.slice(0, 3);
 
   const summaryTotals = useMemo(() => {
     const sessionsTotal = Number(issueModel.totalSessions) || 0;
-    const highIntent = Number(issueModel.eligibleHighIntent) || 0;
+    const highIntent = Number(issueModel.highIntentSessions ?? issueModel.eligibleHighIntent) || 0;
     const purchases = Number(issueModel.purchases) || 0;
     const estimatedAtRisk = Math.min(
       highIntent,
       issueRows.reduce((sum, row) => sum + (Number(row.affectedHighIntent) || 0), 0)
     );
     return { sessionsTotal, highIntent, purchases, estimatedAtRisk };
-  }, [issueModel.eligibleHighIntent, issueModel.purchases, issueModel.totalSessions, issueRows]);
+  }, [issueModel.eligibleHighIntent, issueModel.highIntentSessions, issueModel.purchases, issueModel.totalSessions, issueRows]);
 
   const summaryLine = topIssue
     ? `Today: ${formatNumber(summaryTotals.sessionsTotal)} sessions, ${formatNumber(summaryTotals.highIntent)} high-intent, ${formatNumber(summaryTotals.purchases)} purchases, biggest leak = ${topIssue.issueLabel} (${pluralize(topIssue.affectedHighIntent, 'session', 'sessions')}).`
@@ -1564,6 +1655,40 @@ export default function SessionIntelligenceTab({ store }) {
                 >
                   {showAllIssues ? 'Show top 8' : 'Show more'}
                 </button>
+              </div>
+            ) : null}
+
+            {developerGuideRows.length > 0 ? (
+              <div className="si-dev-guide">
+                <div className="si-card-title" style={{ marginTop: 14 }}>
+                  <h3>Developer fix instructions</h3>
+                  <span className="si-muted">How to resolve each top issue</span>
+                </div>
+                <div className="si-fix-grid">
+                  {developerGuideRows.map((row) => {
+                    const steps = buildDeveloperFixSteps(row);
+                    const technical = row.rawErrorMessage
+                      ? (row.rawErrorMessage.length > 140 ? `${row.rawErrorMessage.slice(0, 140)}...` : row.rawErrorMessage)
+                      : '';
+                    return (
+                      <div key={`fix-${row.id}`} className="si-fix-card">
+                        <div className="si-fix-title">{row.issueLabel}</div>
+                        <div className="si-fix-where">{row.whereLabel}</div>
+                        <ol className="si-fix-list">
+                          {steps.map((step, idx) => (
+                            <li key={`${row.id}-step-${idx}`}>{step}</li>
+                          ))}
+                        </ol>
+                        {technical ? (
+                          <div className="si-fix-tech">
+                            <span className="si-muted">Technical signature</span>
+                            <code className="si-code">{technical}</code>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             ) : null}
           </>

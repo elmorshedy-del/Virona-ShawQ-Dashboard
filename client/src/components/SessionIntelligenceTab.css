@@ -1159,3 +1159,56 @@
   background: rgba(148, 163, 184, 0.18);
   color: #334155;
 }
+
+.si-dev-guide {
+  margin-top: 14px;
+}
+
+.si-fix-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 1100px) {
+  .si-fix-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.si-fix-card {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.65);
+  padding: 10px;
+}
+
+.si-fix-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--si-text);
+}
+
+.si-fix-where {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--si-muted);
+}
+
+.si-fix-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--si-text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.si-fix-tech {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
