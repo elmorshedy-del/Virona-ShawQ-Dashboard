@@ -18,19 +18,6 @@ import {
 
 const API_BASE = '/api';
 const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
-const DEFAULT_GEMINI_SCAN_MODEL = 'gemini-2.5-flash-lite';
-const GEMINI_SCAN_MODEL_LABELS = {
-  'gemini-3-pro': 'Gemini 3 Pro',
-  'gemini-2.5-pro': 'Gemini 2.5 Pro',
-  'gemini-2.5-flash': 'Gemini 2.5 Flash',
-  'gemini-2.5-flash-lite': 'Gemini 2.5 Flash-Lite'
-};
-const GEMINI_SCAN_MODEL_FALLBACK_OPTIONS = [
-  'gemini-3-pro',
-  'gemini-2.5-pro',
-  'gemini-2.5-flash',
-  DEFAULT_GEMINI_SCAN_MODEL
-];
 
 const cn = (...classes) => classes.filter(Boolean).join(' ');
 
@@ -39,6 +26,22 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const toNumber = (value, fallback = 0) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+};
+
+const toGeminiModelLabel = (modelName) => {
+  const raw = String(modelName || '').trim();
+  if (!raw) return 'Gemini';
+  const pretty = raw
+    .split('-')
+    .filter(Boolean)
+    .map((part, index) => {
+      if (index === 0) return part.charAt(0).toUpperCase() + part.slice(1);
+      if (/^\d+(\.\d+)?$/.test(part)) return part;
+      if (part.toLowerCase() === 'pro') return 'Pro';
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(' ');
+  return pretty || raw;
 };
 
 const makeId = () => {
@@ -160,7 +163,7 @@ export default function VideoOverlayEditor({ store }) {
     intervalSec: 1,
     maxFrames: 30,
     detectionMode: 'gemini',
-    scanModel: DEFAULT_GEMINI_SCAN_MODEL
+    scanModel: ''
   });
 
   const videoRef = useRef(null);
@@ -211,6 +214,12 @@ export default function VideoOverlayEditor({ store }) {
   useEffect(() => {
     refreshHealth();
   }, [refreshHealth]);
+
+  useEffect(() => {
+    const serverModel = String(health?.gemini?.model || '').trim();
+    if (!serverModel) return;
+    setScanConfig((prev) => (prev.scanModel ? prev : { ...prev, scanModel: serverModel }));
+  }, [health?.gemini?.model]);
 
   // Keep overlay alignment correct when the <video> is scaled.
   useEffect(() => {
@@ -720,16 +729,23 @@ export default function VideoOverlayEditor({ store }) {
     { id: 'gemini', label: 'Gemini Vision' }
   ];
   const scanModelOptions = useMemo(() => {
-    const supportedModels = Array.isArray(health?.gemini?.supported_models) && health.gemini.supported_models.length
+    const supportedModels = Array.isArray(health?.gemini?.supported_models)
       ? health.gemini.supported_models
-      : GEMINI_SCAN_MODEL_FALLBACK_OPTIONS;
-    const unique = [...new Set(supportedModels.map((model) => String(model || '').trim()).filter(Boolean))];
-    if (!unique.includes(scanConfig.scanModel)) unique.push(scanConfig.scanModel);
+      : [];
+    const configuredModel = String(health?.gemini?.model || '').trim();
+    const selectedModel = String(scanConfig.scanModel || '').trim();
+
+    const unique = [...new Set([
+      ...supportedModels.map((model) => String(model || '').trim()),
+      configuredModel,
+      selectedModel
+    ].filter(Boolean))];
+
     return unique.map((model) => ({
       id: model,
-      label: GEMINI_SCAN_MODEL_LABELS[model] || model
+      label: toGeminiModelLabel(model)
     }));
-  }, [health?.gemini?.supported_models, scanConfig.scanModel]);
+  }, [health?.gemini?.supported_models, health?.gemini?.model, scanConfig.scanModel]);
 
   const canScan = Boolean(videoId) && !isUploading && !isScanning;
   const canExport = Boolean(videoId) && segments.length > 0 && !isUploading && !isScanning && !isExporting;
@@ -1015,7 +1031,9 @@ export default function VideoOverlayEditor({ store }) {
                     <Select
                       value={scanConfig.scanModel}
                       onChange={(e) => setScanConfig((p) => ({ ...p, scanModel: e.target.value }))}
+                      disabled={!scanModelOptions.length}
                     >
+                      {!scanModelOptions.length ? <option value="">Loading models…</option> : null}
                       {scanModelOptions.map((option) => (
                         <option key={option.id} value={option.id}>{option.label}</option>
                       ))}
