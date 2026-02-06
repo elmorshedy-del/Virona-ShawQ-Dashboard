@@ -281,6 +281,264 @@ function normalizeLooseKey(value) {
   return (value || '').toString().toLowerCase().trim();
 }
 
+function pluralize(value, singular, plural) {
+  const count = Number(value) || 0;
+  return `${formatNumber(count)} ${count === 1 ? singular : plural}`;
+}
+
+function clamp01(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+function quantile(values, q) {
+  const list = (Array.isArray(values) ? values : [])
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v))
+    .sort((a, b) => a - b);
+  if (list.length === 0) return 0;
+  const position = clamp01(q) * (list.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return list[lower];
+  const weight = position - lower;
+  return list[lower] * (1 - weight) + list[upper] * weight;
+}
+
+const ISSUE_META = {
+  js_errors: {
+    label: 'JS error cluster',
+    severityWeight: 1.0,
+    countLabel: 'errors',
+    action: 'Identify and remove the failing script or runtime hook; redeploy and confirm errors drop to zero.'
+  },
+  dead_clicks: {
+    label: 'Dead click cluster',
+    severityWeight: 0.85,
+    countLabel: 'dead clicks',
+    action: 'Make the element produce a visible state change or navigation; remove non-interactive click targets.'
+  },
+  rage_clicks: {
+    label: 'Rage click cluster',
+    severityWeight: 0.92,
+    countLabel: 'rage clicks',
+    action: 'Reduce interaction delay and make the clicked target respond immediately.'
+  },
+  form_invalid: {
+    label: 'Form validation friction',
+    severityWeight: 0.9,
+    countLabel: 'invalid submits',
+    action: 'Relax strict validation and surface inline field guidance before submit.'
+  },
+  scroll_dropoff: {
+    label: 'Scroll drop-off',
+    severityWeight: 0.72,
+    countLabel: 'sessions',
+    action: 'Move primary CTA and trust signals higher on page to reduce early drop-off.'
+  }
+};
+
+const TARGET_KEY_RULES = [
+  { key: 'summary.accordion__summary', label: 'Accordion toggle' },
+  { key: 'product-card__media', label: 'Product card image' },
+  { key: 'scroll-marker', label: 'Scroll indicator' },
+  { key: 'wizz-checkout-button', label: 'Checkout button' },
+  { key: 'tap-area', label: 'Tap action button' }
+];
+
+const ERROR_SIGNATURE_RULES = [
+  {
+    keywords: ['mutationobserver', 'observe'],
+    label: 'MutationObserver target invalid',
+    match: 'all'
+  },
+  {
+    keywords: ['_autofillcallbackhandler'],
+    label: 'Autofill callback missing',
+    match: 'any'
+  },
+  {
+    keywords: ['load failed'],
+    label: 'External script failed to load',
+    match: 'any'
+  },
+  {
+    keywords: ['failed to fetch', 'networkerror'],
+    label: 'Network request failed',
+    match: 'any'
+  },
+  {
+    keywords: ['unexpected end of json'],
+    label: 'JSON response truncated',
+    match: 'any'
+  }
+];
+
+function normalizeTargetKey(rawValue) {
+  const raw = (rawValue || '').toString().trim();
+  if (!raw) return 'Unknown target';
+  const lower = raw.toLowerCase();
+
+  for (const rule of TARGET_KEY_RULES) {
+    if (lower.includes(rule.key)) return rule.label;
+  }
+
+  const normalized = raw
+    .replace(/\[[^\]]+\]/g, '')
+    .replace(/[.#]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return 'Interactive element';
+  const short = normalized
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(' ');
+  return short.charAt(0).toUpperCase() + short.slice(1);
+}
+
+function normalizeErrorSignature(rawValue) {
+  const raw = (rawValue || '').toString().trim();
+  if (!raw) return 'Unknown runtime error';
+  const lower = raw.toLowerCase();
+  for (const rule of ERROR_SIGNATURE_RULES) {
+    const matches = rule.match === 'all'
+      ? rule.keywords.every((keyword) => lower.includes(keyword))
+      : rule.keywords.some((keyword) => lower.includes(keyword));
+    if (matches) return rule.label;
+  }
+  return raw.length > 90 ? `${raw.slice(0, 90)}...` : raw;
+}
+
+function buildIssueWhereLabel(type, issue) {
+  const page = formatPathLabel(issue?.page || '');
+  if (type === 'dead_clicks' || type === 'rage_clicks') {
+    return `${page} • ${normalizeTargetKey(issue?.target_key)}`;
+  }
+  if (type === 'js_errors') {
+    return `${page} • ${normalizeErrorSignature(issue?.message)}`;
+  }
+  if (type === 'form_invalid') {
+    const field = [issue?.field_type, issue?.field_name].filter(Boolean).join(' ');
+    return field ? `${page} • ${field}` : `${page} • Form validation`;
+  }
+  if (type === 'scroll_dropoff') {
+    const reached75 = Number(issue?.reached_75) || 0;
+    const total = Number(issue?.total_sessions) || 0;
+    const ratio = total > 0 ? reached75 / total : 0;
+    return `${page} • 75% reach ${formatPercent(ratio, 0)}`;
+  }
+  return page;
+}
+
+function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay }) {
+  const sessions = Array.isArray(librarySessions) ? librarySessions : [];
+  const highIntentNoPurchaseSessions = sessions.filter((s) => {
+    const atc = Number(s?.atc_events) || 0;
+    const checkout = Number(s?.checkout_started_events) || 0;
+    const purchase = Number(s?.purchase_events) || 0;
+    return (atc > 0 || checkout > 0) && purchase === 0;
+  });
+
+  const eligibleHighIntent = Math.max(
+    highIntentNoPurchaseSessions.length,
+    Number(claritySignals?.totals?.sessions) || 0
+  );
+
+  const dayRecencyWeight = (() => {
+    if (!selectedDay) return 1;
+    const timestamp = Date.parse(`${selectedDay}T23:59:59Z`);
+    if (!Number.isFinite(timestamp)) return 1;
+    const dayDiff = Math.max(0, (Date.now() - timestamp) / (24 * 60 * 60 * 1000));
+    return 1 / (1 + dayDiff);
+  })();
+
+  const collected = [];
+  const signalMap = claritySignals?.signals || {};
+  const issueTypes = Object.keys(ISSUE_META);
+
+  issueTypes.forEach((type) => {
+    const list = Array.isArray(signalMap[type]) ? signalMap[type] : [];
+    const meta = ISSUE_META[type];
+    list.forEach((issue, index) => {
+      const sessionsAffected = Math.max(0, Number(issue?.sessions) || 0);
+      const observations = Math.max(sessionsAffected, Number(issue?.count || issue?.total_sessions) || 0);
+      const affectedHighIntent = eligibleHighIntent > 0
+        ? Math.min(sessionsAffected, eligibleHighIntent)
+        : sessionsAffected;
+
+      const priorAlpha = 1;
+      const priorBeta = 1;
+      const posteriorMean = eligibleHighIntent > 0
+        ? (affectedHighIntent + priorAlpha) / (eligibleHighIntent + priorAlpha + priorBeta)
+        : 0;
+      const evidenceStrength = Math.log1p(observations);
+
+      collected.push({
+        id: `${type}-${index}`,
+        type,
+        issueLabel: meta.label,
+        whereLabel: buildIssueWhereLabel(type, issue),
+        action: meta.action,
+        severityWeight: meta.severityWeight,
+        countLabel: meta.countLabel,
+        sessionsAffected,
+        affectedHighIntent,
+        highIntentRate: eligibleHighIntent > 0 ? affectedHighIntent / eligibleHighIntent : 0,
+        observations,
+        confidenceRaw: posteriorMean * evidenceStrength,
+        recencyWeight: dayRecencyWeight,
+        sampleSessions: Array.isArray(issue?.sample_sessions) ? issue.sample_sessions : []
+      });
+    });
+  });
+
+  if (collected.length === 0) {
+    return {
+      rows: [],
+      eligibleHighIntent,
+      totalSessions: sessions.length,
+      purchases: sessions.filter((s) => (Number(s?.purchase_events) || 0) > 0).length
+    };
+  }
+
+  const maxConfidence = Math.max(...collected.map((row) => row.confidenceRaw), 1);
+  const withScores = collected.map((row) => {
+    const confidenceScore = clamp01(row.confidenceRaw / maxConfidence);
+    const impactScore = row.affectedHighIntent * row.severityWeight * row.recencyWeight;
+    const score = impactScore * (0.4 + confidenceScore * 0.6);
+    return { ...row, confidenceScore, impactScore, score };
+  });
+
+  const confidenceValues = withScores.map((row) => row.confidenceScore);
+  const medCut = quantile(confidenceValues, 0.34);
+  const highCut = quantile(confidenceValues, 0.67);
+
+  const rows = withScores
+    .sort((a, b) => b.score - a.score)
+    .map((row, idx) => ({
+      ...row,
+      rank: idx + 1,
+      confidenceLabel: row.confidenceScore >= highCut
+        ? 'High'
+        : row.confidenceScore >= medCut
+          ? 'Med'
+          : 'Low'
+    }));
+
+  const purchases = sessions.filter((s) => (Number(s?.purchase_events) || 0) > 0).length;
+  return {
+    rows,
+    eligibleHighIntent,
+    totalSessions: sessions.length,
+    purchases
+  };
+}
+
 function inferDropoffStageFromBriefText(text) {
   const raw = (text || '').toString().toLowerCase();
   if (!raw) return null;
@@ -419,7 +677,7 @@ export default function SessionIntelligenceTab({ store }) {
   const [realtimeLoading, setRealtimeLoading] = useState(false);
   const [realtimeError, setRealtimeError] = useState('');
   const [realtimeMapMode, setRealtimeMapMode] = useState('world');
-  const [flowMode, setFlowMode] = useState('all');
+  const [flowMode, setFlowMode] = useState('high_intent_no_purchase');
   const [flowData, setFlowData] = useState(null);
   const [flowLoading, setFlowLoading] = useState(false);
   const [flowError, setFlowError] = useState('');
@@ -441,6 +699,8 @@ export default function SessionIntelligenceTab({ store }) {
   const [loading, setLoading] = useState(true);
   const [eventsStatus, setEventsStatus] = useState('idle');
   const [sanityOpen, setSanityOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [showAllIssues, setShowAllIssues] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
   const [libraryDays, setLibraryDays] = useState([]);
@@ -956,6 +1216,33 @@ export default function SessionIntelligenceTab({ store }) {
     setDropoffCampaignFilter('');
   }, []);
 
+  const issueModel = useMemo(() => (
+    buildClarityIssueRows({
+      claritySignals,
+      librarySessions,
+      selectedDay: libraryDay
+    })
+  ), [claritySignals, libraryDay, librarySessions]);
+
+  const issueRows = issueModel.rows || [];
+  const visibleIssueRows = showAllIssues ? issueRows : issueRows.slice(0, 8);
+  const topIssue = issueRows[0] || null;
+
+  const summaryTotals = useMemo(() => {
+    const sessionsTotal = Number(issueModel.totalSessions) || 0;
+    const highIntent = Number(issueModel.eligibleHighIntent) || 0;
+    const purchases = Number(issueModel.purchases) || 0;
+    const estimatedAtRisk = Math.min(
+      highIntent,
+      issueRows.reduce((sum, row) => sum + (Number(row.affectedHighIntent) || 0), 0)
+    );
+    return { sessionsTotal, highIntent, purchases, estimatedAtRisk };
+  }, [issueModel.eligibleHighIntent, issueModel.purchases, issueModel.totalSessions, issueRows]);
+
+  const summaryLine = topIssue
+    ? `Today: ${formatNumber(summaryTotals.sessionsTotal)} sessions, ${formatNumber(summaryTotals.highIntent)} high-intent, ${formatNumber(summaryTotals.purchases)} purchases, biggest leak = ${topIssue.issueLabel} (${pluralize(topIssue.affectedHighIntent, 'session', 'sessions')}).`
+    : `Today: ${formatNumber(summaryTotals.sessionsTotal)} sessions, ${formatNumber(summaryTotals.highIntent)} high-intent, ${formatNumber(summaryTotals.purchases)} purchases. No major issue surfaced yet.`;
+
   return (
 	    <div className="si-root">
 	      <div className="si-header">
@@ -1153,6 +1440,149 @@ export default function SessionIntelligenceTab({ store }) {
         </div>
       </div>
 
+      <div className="si-card si-summary-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Summary</h3>
+          <span className="si-muted">{libraryDay || 'Today'} • Ranked by impact</span>
+        </div>
+        <div className="si-summary-line">{summaryLine}</div>
+        {topIssue?.sampleSessions?.[0]?.session_id ? (
+          <div className="si-row" style={{ marginTop: 10 }}>
+            <button
+              className="si-button si-button-small"
+              type="button"
+              onClick={() => openStory(topIssue.sampleSessions[0].session_id, topIssue.sampleSessions[0])}
+            >
+              Fix biggest issue
+            </button>
+          </div>
+        ) : null}
+        <div className="si-summary-kpis">
+          <div className="si-summary-kpi">
+            <div className="si-summary-kpi-label">Sessions</div>
+            <div className="si-summary-kpi-value">{formatNumber(summaryTotals.sessionsTotal)}</div>
+          </div>
+          <div className="si-summary-kpi">
+            <div className="si-summary-kpi-label">High-intent sessions</div>
+            <div className="si-summary-kpi-value">{formatNumber(summaryTotals.highIntent)}</div>
+          </div>
+          <div className="si-summary-kpi">
+            <div className="si-summary-kpi-label">Purchases</div>
+            <div className="si-summary-kpi-value">{formatNumber(summaryTotals.purchases)}</div>
+          </div>
+          <div className="si-summary-kpi">
+            <div className="si-summary-kpi-label">Estimated sessions at risk</div>
+            <div className="si-summary-kpi-value">{formatNumber(summaryTotals.estimatedAtRisk)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="si-card si-issues-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Top issues</h3>
+          <span className="si-muted">Top {Math.min(issueRows.length, 8)} visible • Mid strictness</span>
+        </div>
+
+        {clarityLoading ? (
+          <div className="si-empty">Loading ranked issues…</div>
+        ) : null}
+
+        {!clarityLoading && clarityError ? (
+          <div className="si-empty" style={{ color: '#b42318' }}>{clarityError}</div>
+        ) : null}
+
+        {!clarityLoading && !clarityError && issueRows.length === 0 ? (
+          <div className="si-empty">
+            No issue rows yet. Once the storefront script captures interactions, ranked issues will appear here.
+          </div>
+        ) : null}
+
+        {!clarityLoading && !clarityError && issueRows.length > 0 ? (
+          <>
+            <table className="si-event-table si-issues-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Issue</th>
+                  <th>Where</th>
+                  <th>Sessions affected</th>
+                  <th>% high-intent affected</th>
+                  <th>Confidence</th>
+                  <th>Action</th>
+                  <th>Proof</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleIssueRows.map((row) => {
+                  const confidenceClass = row.confidenceLabel === 'High'
+                    ? 'si-confidence-high'
+                    : row.confidenceLabel === 'Med'
+                      ? 'si-confidence-med'
+                      : 'si-confidence-low';
+                  const sampleList = Array.isArray(row.sampleSessions) ? row.sampleSessions : [];
+                  const proofSession = sampleList[0];
+                  const proofCount = Math.min(sampleList.length, 5);
+                  return (
+                    <tr key={row.id} className={`si-issue-row si-issue-${row.type}`}>
+                      <td><strong>{row.rank}</strong></td>
+                      <td>{row.issueLabel}</td>
+                      <td title={row.whereLabel}>{row.whereLabel}</td>
+                      <td>{pluralize(row.sessionsAffected, 'session', 'sessions')}</td>
+                      <td>{formatPercent(row.highIntentRate, 0)}</td>
+                      <td>
+                        <span className={`si-chip ${confidenceClass}`}>{row.confidenceLabel}</span>
+                      </td>
+                      <td title={row.action}>{row.action}</td>
+                      <td>
+                        {proofSession?.session_id ? (
+                          <button
+                            className="si-button si-button-small"
+                            type="button"
+                            onClick={() => openStory(proofSession.session_id, proofSession)}
+                          >
+                            View {proofCount || 1} sessions
+                          </button>
+                        ) : (
+                          <span className="si-muted">No sample</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            {issueRows.length > 8 ? (
+              <div className="si-row" style={{ justifyContent: 'space-between', marginTop: 10 }}>
+                <span className="si-muted">
+                  Showing {visibleIssueRows.length} of {issueRows.length} issue rows
+                </span>
+                <button
+                  className="si-button si-button-small"
+                  type="button"
+                  onClick={() => setShowAllIssues((prev) => !prev)}
+                >
+                  {showAllIssues ? 'Show top 8' : 'Show more'}
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+
+      <div className="si-row" style={{ marginBottom: 12, justifyContent: 'space-between', gap: 10 }}>
+        <div className="si-muted">Evidence + Advanced</div>
+        <button
+          className={`si-button si-button-small ${advancedOpen ? 'si-button-active' : ''}`}
+          type="button"
+          onClick={() => setAdvancedOpen((prev) => !prev)}
+        >
+          {advancedOpen ? 'Hide advanced' : 'Show advanced'}
+        </button>
+      </div>
+
+      {advancedOpen ? (
+        <>
 	      <div className="si-card si-intro-card">
 	        <div className="si-card-title">
 	          <h3>What this page is</h3>
@@ -2212,6 +2642,8 @@ export default function SessionIntelligenceTab({ store }) {
             </table>
           )}
         </div>
+      ) : null}
+        </>
       ) : null}
 
       {storyOpen ? (
