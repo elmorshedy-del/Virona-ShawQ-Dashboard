@@ -143,7 +143,7 @@ export default function VideoOverlayEditor({ store }) {
   const [isScanning, setIsScanning] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState(null);
-  const [scanConfig, setScanConfig] = useState({ intervalSec: 1, maxFrames: 30 });
+  const [scanConfig, setScanConfig] = useState({ intervalSec: 1, maxFrames: 30, detectionMode: 'gemini' });
 
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -513,7 +513,8 @@ export default function VideoOverlayEditor({ store }) {
           video_id: videoId,
           interval_sec: scanConfig.intervalSec,
           max_frames: scanConfig.maxFrames,
-          use_gemini: true
+          use_gemini: true,
+          detectionMode: scanConfig.detectionMode
         })
       });
       const data = await res.json();
@@ -682,18 +683,19 @@ export default function VideoOverlayEditor({ store }) {
   const geminiConfigured = Boolean(health?.gemini?.configured);
   const overlayAiUrl = health?.overlay_ai?.url || null;
   const overlayAiHealthPayload = health?.overlay_ai?.health?.payload || null;
+  const isDinoDetectionMode = scanConfig.detectionMode === 'dino';
 
   const canScan = Boolean(videoId) && !isUploading && !isScanning;
   const canExport = Boolean(videoId) && segments.length > 0 && !isUploading && !isScanning && !isExporting;
 
   const disableScanReason = !videoId
     ? 'Upload a video first.'
-    : !overlayAiConfigured
-      ? 'Configure VIDEO_OVERLAY_AI_URL on the Node server.'
-      : !overlayAiOk
-        ? 'Detector service is not ready (DINO + SAM2 must be loaded).'
-        : !geminiConfigured
-          ? 'Configure GEMINI_API_KEY on the Node server.'
+    : !geminiConfigured
+      ? 'Configure GEMINI_API_KEY on the Node server.'
+      : isDinoDetectionMode && !overlayAiConfigured
+        ? 'Configure VIDEO_OVERLAY_AI_URL on the Node server for DINO+SAM mode.'
+        : isDinoDetectionMode && !overlayAiOk
+          ? 'Detector service is not ready (DINO + SAM2 must be loaded).'
           : null;
 
   const disableExportReason = !videoId
@@ -940,6 +942,35 @@ export default function VideoOverlayEditor({ store }) {
                     <CheckCircle2 className="h-3.5 w-3.5" />
                     Required
                   </span>
+                </div>
+                <div className="col-span-2">
+                  <Label>Detection mode</Label>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setScanConfig((p) => ({ ...p, detectionMode: 'dino' }))}
+                      className={cn(
+                        'rounded-xl border px-3 py-2 text-sm font-semibold transition',
+                        scanConfig.detectionMode === 'dino'
+                          ? 'border-violet-300 bg-violet-50 text-violet-700'
+                          : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                      )}
+                    >
+                      DINO+SAM
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScanConfig((p) => ({ ...p, detectionMode: 'gemini' }))}
+                      className={cn(
+                        'rounded-xl border px-3 py-2 text-sm font-semibold transition',
+                        scanConfig.detectionMode === 'gemini'
+                          ? 'border-violet-300 bg-violet-50 text-violet-700'
+                          : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                      )}
+                    >
+                      Gemini Vision
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

@@ -1735,6 +1735,192 @@ async function detectOverlayKeysWithDetector({ videoPath, times } = {}) {
   return frames;
 }
 
+async function detectSegmentOverlaysWithGeminiVision({
+  frameBase64,
+  videoWidth,
+  videoHeight,
+  startTime = null,
+  endTime = null
+} = {}) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
+  }
+  if (!frameBase64) {
+    throw new Error('Frame image is required for Gemini Vision detection.');
+  }
+
+  const DEFAULT_VIDEO_OVERLAY_SCAN_MODEL = 'gemini-2.5-flash-lite';
+  const resolveVideoOverlayScanModel = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return DEFAULT_VIDEO_OVERLAY_SCAN_MODEL;
+    if (raw.toLowerCase() === 'gemini-2.0-flash-lite') return DEFAULT_VIDEO_OVERLAY_SCAN_MODEL;
+    return raw;
+  };
+
+  const modelName = resolveVideoOverlayScanModel(process.env.VIDEO_OVERLAY_SCAN_MODEL || '');
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 2048,
+      responseMimeType: 'application/json'
+    }
+  });
+
+  const prompt = `Analyze this video frame and detect all text overlay boxes (banners, captions, labels with colored backgrounds and text on top).
+
+For each overlay found, return a JSON array where each item has:
+- "box_2d": [y0, x0, y1, x1] — bounding box coordinates normalized to 0-1000 scale
+- "text": the exact text content displayed in the overlay
+- "bg_color": background color as hex string (e.g. "#8B1A1A")
+- "text_color": text color as hex string (e.g. "#FFFFFF")
+- "font_size_ratio": estimated font height as a ratio of the overlay box height (0.0 to 1.0)
+- "font_weight": "normal" or "bold"
+- "font_style": "normal" or "italic"
+
+Only detect overlays that are clearly added/burned-in text boxes with solid or gradient backgrounds — NOT text that is naturally part of the scene (signs, clothing, etc).
+
+Return ONLY a JSON array. No explanation, no markdown.`;
+
+  const extractFirstJsonArray = (rawText) => {
+    const text = String(rawText || '');
+    const start = text.indexOf('[');
+    if (start < 0) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '[') {
+        depth += 1;
+        continue;
+      }
+      if (ch === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+
+    return null;
+  };
+
+  const parseGeminiArray = (rawText) => {
+    const cleaned = String(rawText || '')
+      .replace(/```json|```/g, '')
+      .trim();
+
+    if (!cleaned) return [];
+
+    try {
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed?.overlays)) return parsed.overlays;
+    } catch {}
+
+    const extracted = extractFirstJsonArray(cleaned);
+    if (!extracted) {
+      throw new Error(`Gemini returned invalid JSON array. Preview: ${cleaned.slice(0, 200)}`);
+    }
+
+    try {
+      const parsed = JSON.parse(extracted);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+
+    throw new Error(`Gemini returned invalid JSON array. Preview: ${cleaned.slice(0, 200)}`);
+  };
+
+  const result = await model.generateContent([
+    { text: prompt },
+    { inlineData: { mimeType: 'image/jpeg', data: frameBase64 } }
+  ]);
+
+  const rawText = String(result?.response?.text?.() ?? '').trim();
+  const geminiRows = parseGeminiArray(rawText);
+  const safeVideoWidth = Math.max(1, Math.round(safeParseNumber(videoWidth, 1)));
+  const safeVideoHeight = Math.max(1, Math.round(safeParseNumber(videoHeight, 1)));
+
+  const overlays = [];
+  for (const item of geminiRows) {
+    const box = Array.isArray(item?.box_2d) ? item.box_2d : null;
+    if (!box || box.length !== 4) continue;
+
+    const y0Norm = clampNumber(box[0], 0, 1000);
+    const x0Norm = clampNumber(box[1], 0, 1000);
+    const y1Norm = clampNumber(box[2], 0, 1000);
+    const x1Norm = clampNumber(box[3], 0, 1000);
+
+    const yMinNorm = Math.min(y0Norm, y1Norm);
+    const yMaxNorm = Math.max(y0Norm, y1Norm);
+    const xMinNorm = Math.min(x0Norm, x1Norm);
+    const xMaxNorm = Math.max(x0Norm, x1Norm);
+
+    const x = Math.round((xMinNorm / 1000) * safeVideoWidth);
+    const y = Math.round((yMinNorm / 1000) * safeVideoHeight);
+    const width = Math.round(((xMaxNorm - xMinNorm) / 1000) * safeVideoWidth);
+    const height = Math.round(((yMaxNorm - yMinNorm) / 1000) * safeVideoHeight);
+
+    const clampedX = Math.max(0, Math.min(x, safeVideoWidth - 1));
+    const clampedY = Math.max(0, Math.min(y, safeVideoHeight - 1));
+    const clampedW = Math.max(1, Math.min(width, safeVideoWidth - clampedX));
+    const clampedH = Math.max(1, Math.min(height, safeVideoHeight - clampedY));
+
+    const text = String(item?.text || '').trim() || 'Detected';
+    const bgHex = parseHexColor(item?.bg_color)?.hex || '#000000';
+    const textHex = parseHexColor(item?.text_color)?.hex || '#ffffff';
+    const fontSizeRatio = clampNumber(item?.font_size_ratio ?? 0.5, 0, 1);
+    const fontSize = Math.max(8, Math.round(fontSizeRatio * clampedH)) || 40;
+    const fontWeight = String(item?.font_weight || '').trim().toLowerCase() === 'bold' ? 'bold' : 'normal';
+    const fontStyle = String(item?.font_style || '').trim().toLowerCase() === 'italic' ? 'italic' : 'normal';
+
+    overlays.push({
+      id: crypto.randomUUID(),
+      x: clampedX,
+      y: clampedY,
+      width: clampedW,
+      height: clampedH,
+      text,
+      backgroundColor: bgHex,
+      textColor: textHex,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      fontFamily: 'Arial',
+      isGradient: false,
+      gradient: null,
+      confidence: 0.9,
+      startTime: typeof startTime === 'number' ? startTime : null,
+      endTime: typeof endTime === 'number' ? endTime : null
+    });
+  }
+
+  return overlays;
+}
+
 router.post('/video-overlay/scan', async (req, res) => {
   try {
     await ensureVideoOverlayDirs();
@@ -1784,21 +1970,8 @@ router.post('/video-overlay/scan', async (req, res) => {
       scanFrames.push({ t, b64 });
     }
 
-    if (!isVideoOverlayAiConfigured()) {
-      return res.status(503).json({
-        success: false,
-        error: 'VIDEO_OVERLAY_AI_URL is not configured. This feature requires the DINO+SAM2 overlay detector service.'
-      });
-    }
-
-    const overlayHealth = await getVideoOverlayAiHealth().catch(() => null);
-    if (!overlayHealth?.ok) {
-      return res.status(503).json({
-        success: false,
-        error: 'Video Overlay AI service is not ready. DINO + SAM2 must be loaded (no fallback mode).',
-        details: overlayHealth?.payload || null
-      });
-    }
+    const detectionModeRaw = String(req.body?.detectionMode ?? req.body?.detection_mode ?? 'gemini').trim().toLowerCase();
+    const detectionMode = detectionModeRaw === 'dino' ? 'dino' : 'gemini';
 
     const useGemini = req.body?.use_gemini !== false;
     if (!useGemini) {
@@ -1827,77 +2000,178 @@ router.post('/video-overlay/scan', async (req, res) => {
         interval_sec: intervalSec,
         max_frames: maxFrames,
         frames_analyzed: scanFrames.length,
-        segments: []
+        detection_mode: detectionMode,
+        segments: [],
+        warnings: []
       });
     }
 
-    // For each segment, run detector on several representative frames.
-    // If no overlays are found but detector calls succeed, inject a placeholder so editing can continue.
+    // For each segment, run either DINO+SAM detector (existing path) or Gemini Vision overlay detection.
     const segments = [];
     const warnings = [];
     const videoWidth = Math.max(1, Math.round(safeParseNumber(info?.width, 1080)));
     const videoHeight = Math.max(1, Math.round(safeParseNumber(info?.height, 1920)));
 
-    for (const seg of segmentsRaw) {
-      const sampleTimes = buildSegmentSampleTimes(seg, durationSec);
-      let overlays = [];
-      let resolvedSampleTime = seg.sample_t;
-      let hadDetectorResponse = false;
-      let lastDetectorError = null;
+    if (detectionMode === 'dino') {
+      if (!isVideoOverlayAiConfigured()) {
+        return res.status(503).json({
+          success: false,
+          error: 'VIDEO_OVERLAY_AI_URL is not configured. This feature requires the DINO+SAM2 overlay detector service.'
+        });
+      }
 
-      for (const sampleTime of sampleTimes) {
-        try {
-          const fullFrameB64 = await extractFrameBase64(videoPath, { t: sampleTime, width: null });
-          const detections = await detectVideoOverlays({ imageBase64: fullFrameB64 });
-          hadDetectorResponse = true;
-          const candidateOverlays = Array.isArray(detections)
-            ? detections.map((det) => toOverlayBox(det, { startTime: seg.start, endTime: seg.end }))
-            : [];
+      const overlayHealth = await getVideoOverlayAiHealth().catch(() => null);
+      if (!overlayHealth?.ok) {
+        return res.status(503).json({
+          success: false,
+          error: 'Video Overlay AI service is not ready. DINO + SAM2 must be loaded (no fallback mode).',
+          details: overlayHealth?.payload || null
+        });
+      }
 
-          if (candidateOverlays.length) {
-            overlays = candidateOverlays;
-            resolvedSampleTime = sampleTime;
+      // Existing DINO+SAM path: keep behavior unchanged.
+      for (const seg of segmentsRaw) {
+        const sampleTimes = buildSegmentSampleTimes(seg, durationSec);
+        let overlays = [];
+        let resolvedSampleTime = seg.sample_t;
+        let hadDetectorResponse = false;
+        let lastDetectorError = null;
+
+        for (const sampleTime of sampleTimes) {
+          try {
+            const fullFrameB64 = await extractFrameBase64(videoPath, { t: sampleTime, width: null });
+            const detections = await detectVideoOverlays({ imageBase64: fullFrameB64 });
+            hadDetectorResponse = true;
+            const candidateOverlays = Array.isArray(detections)
+              ? detections.map((det) => toOverlayBox(det, { startTime: seg.start, endTime: seg.end }))
+              : [];
+
+            if (candidateOverlays.length) {
+              overlays = candidateOverlays;
+              resolvedSampleTime = sampleTime;
+              break;
+            }
+          } catch (sampleErr) {
+            lastDetectorError = sampleErr;
+          }
+        }
+
+        if (!overlays.length && !hadDetectorResponse && lastDetectorError) {
+          const baseMsg = lastDetectorError?.message || String(lastDetectorError);
+          throw new Error(
+            `Detector failed for segment start=${seg.start}s end=${seg.end}s after ${sampleTimes.length} attempts: ${baseMsg}`
+          );
+        }
+
+        if (!overlays.length) {
+          overlays = [buildPlaceholderOverlay({ seg, videoWidth, videoHeight })];
+          warnings.push(
+            `No overlays detected for segment ${seg.start.toFixed(3)}-${seg.end.toFixed(3)}s. Inserted placeholder for manual edit.`
+          );
+        }
+
+        segments.push({
+          id: seg.id,
+          label: seg.label,
+          start: seg.start,
+          end: seg.end,
+          sample_time: resolvedSampleTime,
+          overlays
+        });
+      }
+    } else {
+      const findNearestScanFrame = (targetT) => {
+        if (!scanFrames.length) return null;
+        const target = safeParseNumber(targetT, 0) || 0;
+        let nearest = scanFrames[0];
+        let minDelta = Math.abs(safeParseNumber(nearest.t, 0) - target);
+        for (let i = 1; i < scanFrames.length; i += 1) {
+          const frame = scanFrames[i];
+          const delta = Math.abs(safeParseNumber(frame.t, 0) - target);
+          if (delta < minDelta) {
+            minDelta = delta;
+            nearest = frame;
+          }
+        }
+        return nearest;
+      };
+
+      for (const seg of segmentsRaw) {
+        const sampleTimes = buildSegmentSampleTimes(seg, durationSec);
+        const preferredTimes = [seg.sample_t, ...sampleTimes];
+        let chosenFrame = null;
+        for (const tCandidate of preferredTimes) {
+          const nearest = findNearestScanFrame(tCandidate);
+          if (nearest?.b64) {
+            chosenFrame = nearest;
             break;
           }
-        } catch (sampleErr) {
-          lastDetectorError = sampleErr;
         }
-      }
 
-      if (!overlays.length && !hadDetectorResponse && lastDetectorError) {
-        const baseMsg = lastDetectorError?.message || String(lastDetectorError);
-        throw new Error(
-          `Detector failed for segment start=${seg.start}s end=${seg.end}s after ${sampleTimes.length} attempts: ${baseMsg}`
-        );
-      }
+        if (!chosenFrame?.b64) {
+          warnings.push(
+            `Gemini Vision could not find a sample frame for segment ${seg.start.toFixed(3)}-${seg.end.toFixed(3)}s.`
+          );
+          segments.push({
+            id: seg.id,
+            label: seg.label,
+            start: seg.start,
+            end: seg.end,
+            sample_time: seg.sample_t,
+            overlays: []
+          });
+          continue;
+        }
 
-      if (!overlays.length) {
-        overlays = [buildPlaceholderOverlay({ seg, videoWidth, videoHeight })];
-        warnings.push(
-          `No overlays detected for segment ${seg.start.toFixed(3)}-${seg.end.toFixed(3)}s. Inserted placeholder for manual edit.`
-        );
-      }
+        let overlays = [];
+        try {
+          overlays = await detectSegmentOverlaysWithGeminiVision({
+            frameBase64: chosenFrame.b64,
+            videoWidth,
+            videoHeight,
+            startTime: seg.start,
+            endTime: seg.end
+          });
+        } catch (visionErr) {
+          console.error('Gemini Vision overlay detection error:', visionErr);
+          warnings.push(
+            `Gemini Vision failed for segment ${seg.start.toFixed(3)}-${seg.end.toFixed(3)}s: ${visionErr?.message || 'unknown error'}`
+          );
+          overlays = [];
+        }
 
-      segments.push({
-        id: seg.id,
-        label: seg.label,
-        start: seg.start,
-        end: seg.end,
-        sample_time: resolvedSampleTime,
-        overlays
-      });
+        if (!overlays.length) {
+          warnings.push(
+            `Gemini Vision returned 0 overlays for segment ${seg.start.toFixed(3)}-${seg.end.toFixed(3)}s.`
+          );
+        }
+
+        segments.push({
+          id: seg.id,
+          label: seg.label,
+          start: seg.start,
+          end: seg.end,
+          sample_time: safeParseNumber(chosenFrame.t, seg.sample_t) ?? seg.sample_t,
+          overlays
+        });
+      }
     }
+
+    const placeholderCount = detectionMode === 'dino'
+      ? warnings.filter((msg) => String(msg || '').includes('Inserted placeholder')).length
+      : 0;
 
     res.json({
       success: true,
       scan_method: scanMethod,
+      detection_mode: detectionMode,
       duration: durationSec,
       interval_sec: intervalSec,
       max_frames: maxFrames,
       frames_analyzed: scanFrames.length,
       segments,
       warnings,
-      segments_with_placeholder: warnings.length
+      segments_with_placeholder: placeholderCount
     });
   } catch (error) {
     console.error('Video overlay scan error:', error);
