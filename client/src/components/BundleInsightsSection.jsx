@@ -360,7 +360,7 @@ export default function BundleInsightsSection({
                   const tier = getTier(row, displayRules);
                   const delta = getDeltaDisplay(row, displayRules);
                   const watchlistStatus = tier === 'T2' ? getWatchlistStatus(row, displayRules) : null;
-                  const attachRateCaution = toNumber(row?.anchorOrders) < 10;
+                  const attachRateCaution = toNumber(row?.anchorOrders) < displayRules.T2_MIN_ANCHOR_ORDERS;
 
                   return (
                     <tr key={`${row.pairKeys?.[0] || row.pair?.[0]}-${row.pairKeys?.[1] || row.pair?.[1]}`} className="border-t border-gray-100">
