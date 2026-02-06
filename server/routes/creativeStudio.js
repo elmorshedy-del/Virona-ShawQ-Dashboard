@@ -103,13 +103,14 @@ function getOverlayTextFilePath(exportId, index) {
 }
 
 const VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS = [
-  'gemini-3-pro',
+  'gemini-3-pro-preview',
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite'
 ];
 const VIDEO_OVERLAY_DEFAULT_SCAN_MODEL = 'gemini-2.5-flash-lite';
 const VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP = {
+  'gemini-3-pro': 'gemini-3-pro-preview',
   'gemini-2.0-flash-lite': VIDEO_OVERLAY_DEFAULT_SCAN_MODEL
 };
 
@@ -1644,14 +1645,18 @@ async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
     model: resolvedModelName,
     generationConfig: {
       temperature: 0,
-      maxOutputTokens: 1024,
+      maxOutputTokens: Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_MAX_OUTPUT_TOKENS ?? 2048, 512, 8192)),
       responseMimeType: 'application/json',
       responseSchema
     }
   });
 
   const results = [];
-  const chunkSize = 8;
+  const configuredChunkSize = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_CHUNK_SIZE ?? 8, 1, 16));
+  const chunkSize = resolvedModelName === 'gemini-3-pro-preview'
+    ? Math.min(configuredChunkSize, 4)
+    : configuredChunkSize;
+  const parseRetries = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_PARSE_RETRIES ?? 2, 0, 5));
   const maxRetries = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_RETRIES ?? 6, 0, 10));
   const minDelayMs = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_MIN_DELAY_MS ?? 250, 0, 5000));
 
@@ -1683,8 +1688,8 @@ async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
         if (!isRetryable(error) || attempt >= maxRetries) {
           const err = new Error(
             status === 429
-              ? `Gemini rate limit / quota exceeded (HTTP 429). Try again in a minute, lower max frames, or increase quota. Model=${modelName}.`
-              : `Gemini request failed${status ? ` (HTTP ${status})` : ''}. Model=${modelName}. ${error?.message || ''}`.trim()
+              ? `Gemini rate limit / quota exceeded (HTTP 429). Try again in a minute, lower max frames, or increase quota. Model=${resolvedModelName}.`
+              : `Gemini request failed${status ? ` (HTTP ${status})` : ''}. Model=${resolvedModelName}. ${error?.message || ''}`.trim()
           );
           err.statusCode = status || 500;
           err.cause = error;
@@ -1751,6 +1756,10 @@ async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
       .replace(/```json|```/g, '')
       .trim();
 
+    if (!cleaned) {
+      throw new Error('Gemini returned an empty response body.');
+    }
+
     try {
       return JSON.parse(cleaned);
     } catch {}
@@ -1767,9 +1776,7 @@ async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
     }
   };
 
-  for (let i = 0; i < frames.length; i += chunkSize) {
-    const chunk = frames.slice(i, i + chunkSize);
-
+  const buildChunkParts = (chunk) => {
     const prompt = `You analyze video frames to find when a burnt-in text overlay changes.
 
 For each frame, read ONLY the prominent burnt-in text overlay (lower-third/subtitle/caption) that appears as a boxed/overlayed text element.
@@ -1781,34 +1788,89 @@ Return ONLY valid JSON with this exact shape:
 {"frames":[{"t":0.0,"overlay_text":null}]}`;
 
     const parts = [{ text: prompt }];
-
     for (const frame of chunk) {
       parts.push({ text: `FRAME t=${frame.t}` });
       parts.push({ inlineData: { mimeType: 'image/jpeg', data: frame.b64 } });
     }
+    return parts;
+  };
 
-    const result = await generateWithRetry(parts);
-    const text = String(result?.response?.text?.() ?? '').trim();
-    let parsed = null;
-    try {
-      parsed = parseGeminiJson(text);
-    } catch (e) {
-      throw new Error(`${e.message} Model=${modelName}`);
-    }
-
+  const normalizeFrameRows = (parsed) => {
     const frameRows = Array.isArray(parsed?.frames) ? parsed.frames : [];
+    const rows = [];
     for (const row of frameRows) {
       const t = safeParseNumber(row?.t, null);
       if (t === null) continue;
-      results.push({ t, overlay_text: row?.overlay_text ?? null });
+      rows.push({ t, overlay_text: row?.overlay_text ?? null });
     }
+    return rows;
+  };
+
+  const requestChunkRows = async (chunk, { allowSplit = true } = {}) => {
+    let lastParseError = null;
+    for (let attempt = 0; attempt <= parseRetries; attempt += 1) {
+      const result = await generateWithRetry(buildChunkParts(chunk));
+      const text = String(result?.response?.text?.() ?? '').trim();
+      try {
+        const parsed = parseGeminiJson(text);
+        const rows = normalizeFrameRows(parsed);
+        if (rows.length > 0) {
+          return rows;
+        }
+        lastParseError = new Error('Gemini returned no frame rows.');
+      } catch (error) {
+        lastParseError = error;
+      }
+
+      if (attempt < parseRetries) {
+        await sleep(300 * (attempt + 1));
+      }
+    }
+
+    if (allowSplit && chunk.length > 1) {
+      const splitRows = [];
+      for (const frame of chunk) {
+        const rows = await requestChunkRows([frame], { allowSplit: false });
+        splitRows.push(...rows);
+      }
+      return splitRows;
+    }
+
+    const fallbackRows = chunk
+      .map((frame) => ({ t: safeParseNumber(frame?.t, null), overlay_text: null }))
+      .filter((row) => row.t !== null);
+
+    if (lastParseError) {
+      console.warn(
+        `[video-overlay] Gemini parse fallback used for ${chunk.length} frame(s). Model=${resolvedModelName}. Reason=${lastParseError.message}`
+      );
+    }
+
+    return fallbackRows;
+  };
+
+  for (let i = 0; i < frames.length; i += chunkSize) {
+    const chunk = frames.slice(i, i + chunkSize);
+    const rows = await requestChunkRows(chunk);
+    results.push(...rows);
 
     if (minDelayMs > 0 && i + chunkSize < frames.length) {
       await sleep(minDelayMs);
     }
   }
 
-  return results;
+  const dedupByTime = new Map();
+  for (const row of results) {
+    const t = safeParseNumber(row?.t, null);
+    if (t === null) continue;
+    const key = Number(t).toFixed(3);
+    const prev = dedupByTime.get(key);
+    if (!prev || (prev.overlay_text == null && row.overlay_text != null)) {
+      dedupByTime.set(key, { t, overlay_text: row?.overlay_text ?? null });
+    }
+  }
+
+  return Array.from(dedupByTime.values()).sort((a, b) => a.t - b.t);
 }
 
 async function detectOverlayKeysWithDetector({ videoPath, times } = {}) {
