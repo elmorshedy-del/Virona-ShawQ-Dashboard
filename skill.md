@@ -9,3 +9,8 @@
 - Keep changes review-friendly: avoid large monolithic code drops; split into focused modules/functions with clear responsibilities.
 - Keep account evolution flexible: support future account/shop onboarding, account-specific rules, and schema changes through configuration and scoped extension points.
 - Apply secure engineering defaults for external attacker resistance: validate/sanitize untrusted inputs, enforce authN/authZ and tenant boundaries, avoid exposing sensitive data, apply least-privilege access, and add abuse controls (rate limits, safe error handling, audit-friendly logs).
+
+## Required pre-PR checks
+- Multi-tenant completeness check: after any tenant/account refactor, verify there are no hardcoded store identifiers left in write/read/query/log paths.
+- Schema reality check: before using any table, confirm it exists in `server/db/database.js`; if provider data may be absent, implement fallback behavior.
+- Migration observability check: do not use silent catch blocks for data backfills; log warnings with operation context.

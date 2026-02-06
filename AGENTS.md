@@ -13,3 +13,6 @@
 - No magic numbers or hardcoded business tunables in core logic; use named constants/config with clear meaning and units.
 - Design for account/shop evolution: support future account changes and onboarding without brittle conditionals or tenant-specific rewrites.
 - Security is a first-class requirement against outside attackers: validate/sanitize inputs, enforce authN/authZ, enforce tenant isolation, protect secrets, implement abuse defenses (rate limiting and safe error responses), and avoid any data paths that could cause cross-tenant leakage.
+- Multi-tenant changes must be complete: when account-aware logic is introduced, eliminate hardcoded tenant/store values across writes, reads, filters, and logs in the same task.
+- Validate schema usage before coding queries: any referenced table/column must exist in `server/db/database.js` or be guarded by a safe fallback path.
+- Never silently swallow migration/data-backfill failures; log warning/error context for operational visibility.

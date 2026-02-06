@@ -9,3 +9,9 @@
 - Keep code reviewable: avoid giant monolithic files/blocks. Break large implementations into smaller cohesive functions/modules with clear interfaces.
 - Keep implementations flexible for future account changes: design for evolving shops/accounts/tenants, changing schemas, and per-account overrides without rewrites.
 - Build with security by default against external attackers: strict input validation/sanitization, authN/authZ checks, tenant data isolation, least-privilege access, safe secret handling, rate limiting, and no cross-tenant data leakage in queries, APIs, logs, or exports.
+
+## Postmortem lessons (must enforce)
+- Multi-tenant refactors must be end-to-end: when introducing account-aware logic, remove all remaining hardcoded tenant/store writes, reads, logs, and notifications in the same change.
+- Never assume a table exists. Any query touching optional/provider-specific tables must be validated against `database.js` schema and have a safe fallback path.
+- Best-effort migrations must not fail silently. Catch blocks must log warnings with enough context to investigate data integrity risks.
+- Pre-PR tenant safety sweep is required: grep for legacy store keys and confirm all persistence/query paths are tenant-scoped.

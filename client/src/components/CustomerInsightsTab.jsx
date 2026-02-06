@@ -132,6 +132,79 @@ function InsightCard({ insight, onInvestigate }) {
   );
 }
 
+function InsightFlipPanel({ title, insights, emptyMessage }) {
+  const [showLogic, setShowLogic] = useState(false);
+
+  const rows = useMemo(
+    () => (Array.isArray(insights) ? insights : [])
+      .map((insight, index) => ({
+        id: insight?.id || `insight-${index + 1}`,
+        title: insight?.title || `Insight ${index + 1}`,
+        sentence: insight?.text || [insight?.title, insight?.detail].filter(Boolean).join(': '),
+        eli5: insight?.eli5 || null,
+        analystLogic: insight?.analystLogic || null
+      }))
+      .filter((row) => Boolean(row.sentence)),
+    [insights]
+  );
+
+  const hasLogic = rows.some((row) => row.eli5 || row.analystLogic);
+
+  if (!rows.length) {
+    return (
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 text-sm text-gray-500">
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-semibold text-gray-900">{title}</div>
+        {hasLogic ? (
+          <button
+            type="button"
+            onClick={() => setShowLogic((prev) => !prev)}
+            className="rounded-full border border-gray-200 px-3 py-1 text-xs font-semibold text-gray-600 hover:border-gray-300 hover:text-gray-800"
+          >
+            {showLogic ? 'Show insights' : 'Flip to logic'}
+          </button>
+        ) : null}
+      </div>
+
+      {!showLogic ? (
+        <ul className="mt-4 space-y-2">
+          {rows.map((row) => (
+            <li key={row.id} className="flex items-start gap-2 text-sm text-gray-700">
+              <span className="mt-1.5 h-2 w-2 flex-shrink-0 rounded-full bg-indigo-500" />
+              <span>{row.sentence}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-4 space-y-3">
+          {rows.map((row) => (
+            <div key={row.id} className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3">
+              <div className="text-sm font-semibold text-gray-900">{row.title}</div>
+              {row.eli5 ? (
+                <p className="mt-2 text-xs text-gray-600">
+                  <span className="font-semibold text-gray-700">ELI5:</span> {row.eli5}
+                </p>
+              ) : null}
+              {row.analystLogic ? (
+                <p className="mt-2 text-xs text-gray-600">
+                  <span className="font-semibold text-gray-700">Analyst:</span> {row.analystLogic}
+                </p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SectionCard({ id, title, subtitle, icon: Icon, children }) {
   return (
     <section id={id} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
@@ -530,43 +603,59 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
           subtitle={sections.bundles?.summary || 'Frequently bought together'}
           icon={sectionIcons.bundles}
         >
-          {(sections.bundles?.bundles || []).length ? (
-            <div className="space-y-3">
-              <div className="text-xs text-gray-500">
-                Lift compares attach rate vs baseline purchase rate (higher = stronger bundle signal).
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs uppercase text-gray-400">
-                      <th className="py-2">Bundle</th>
-                      <th className="py-2 text-right">Seen</th>
-                      <th className="py-2 text-right">Attach</th>
-                      <th className="py-2 text-right">Baseline</th>
-                      <th className="py-2 text-right">Lift</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(sections.bundles?.bundles || []).map((row) => (
-                      <tr key={`${row.pairKeys?.[0] || row.pair[0]}-${row.pairKeys?.[1] || row.pair[1]}`} className="border-t border-gray-100">
-                        <td className="py-2 text-gray-700">
-                          {row.pair?.[0]} → {row.pair?.[1]}
-                        </td>
-                        <td className="py-2 text-right text-gray-700">{formatNumber(row.count)}</td>
-                        <td className="py-2 text-right text-gray-700">{formatPercent(row.attachRate)}</td>
-                        <td className="py-2 text-right text-gray-700">{formatPercent(row.baselineRate)}</td>
-                        <td className="py-2 text-right font-semibold text-gray-900">{Number(row.lift || 0).toFixed(2)}x</td>
+          <div className="space-y-4">
+            <InsightFlipPanel
+              title="Bundle Insights"
+              insights={sections.bundles?.keyInsights || []}
+              emptyMessage="Bundle insights need more multi-item orders."
+            />
+
+            {(sections.bundles?.bundles || []).length ? (
+              <>
+                <div className="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-600">
+                  <p>{sections.bundles?.methodology?.baselineDefinition || 'Baseline is the attach-product order share across all orders in this window.'}</p>
+                  <p className="mt-1">{sections.bundles?.methodology?.significance || 'Significance uses controlled false-discovery testing across bundle candidates.'}</p>
+                  <p className="mt-1">
+                    False-discovery target: {formatPercent(sections.bundles?.methodology?.falseDiscoveryTarget)}
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs uppercase text-gray-400">
+                        <th className="py-2">Bundle</th>
+                        <th className="py-2 text-right">Pair Orders</th>
+                        <th className="py-2 text-right">Anchor Orders</th>
+                        <th className="py-2 text-right">Attach</th>
+                        <th className="py-2 text-right">Baseline</th>
+                        <th className="py-2 text-right">Lift</th>
+                        <th className="py-2 text-right">Signal</th>
+                        <th className="py-2 text-right">FDR</th>
+                        <th className="py-2 text-right">Est. Incremental Revenue</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
-              Bundle insights need more multi-item orders.
-            </div>
-          )}
+                    </thead>
+                    <tbody>
+                      {(sections.bundles?.bundles || []).map((row) => (
+                        <tr key={`${row.pairKeys?.[0] || row.pair[0]}-${row.pairKeys?.[1] || row.pair[1]}`} className="border-t border-gray-100">
+                          <td className="py-2 text-gray-700">
+                            {row.pair?.[0]} → {row.pair?.[1]}
+                          </td>
+                          <td className="py-2 text-right text-gray-700">{formatNumber(row.count)}</td>
+                          <td className="py-2 text-right text-gray-700">{formatNumber(row.anchorOrders)}</td>
+                          <td className="py-2 text-right text-gray-700">{formatPercent(row.attachRate)}</td>
+                          <td className="py-2 text-right text-gray-700">{formatPercent(row.baselineRate)}</td>
+                          <td className="py-2 text-right font-semibold text-gray-900">{Number(row.lift || 0).toFixed(2)}x</td>
+                          <td className="py-2 text-right text-gray-700">{row.signal || '—'}</td>
+                          <td className="py-2 text-right text-gray-700">{formatPercent(row.falseDiscoveryRisk)}</td>
+                          <td className="py-2 text-right text-gray-700">{formatCurrency(row.expectedIncrementalRevenue || 0, 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : null}
+          </div>
         </SectionCard>
 
         <SectionCard
