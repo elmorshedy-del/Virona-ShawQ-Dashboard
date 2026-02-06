@@ -54,6 +54,7 @@ export function runSessionIntelligenceMigration() {
       checkout_token TEXT,
       checkout_step TEXT,
       device_type TEXT,
+      device_os TEXT,
       country_code TEXT,
       product_id TEXT,
       variant_id TEXT,
@@ -83,6 +84,7 @@ export function runSessionIntelligenceMigration() {
   } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN shopper_number INTEGER`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN device_type TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN device_os TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN country_code TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN product_id TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN variant_id TEXT`); } catch (e) { /* column exists */ }
@@ -136,6 +138,7 @@ export function runSessionIntelligenceMigration() {
       last_cart_json TEXT,
       shopper_number INTEGER,
       last_device_type TEXT,
+      last_device_os TEXT,
       last_country_code TEXT,
       last_product_id TEXT,
       last_variant_id TEXT,
@@ -166,6 +169,7 @@ export function runSessionIntelligenceMigration() {
   } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN shopper_number INTEGER`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_device_type TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_device_os TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_country_code TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_product_id TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_variant_id TEXT`); } catch (e) { /* column exists */ }
