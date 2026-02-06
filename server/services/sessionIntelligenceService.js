@@ -1505,6 +1505,80 @@ function topCountsFromMap(map, limit = 10) {
     .map(([value, count]) => ({ value, count }));
 }
 
+function toTitleCaseWords(value) {
+  const raw = safeString(value).trim().toLowerCase();
+  if (!raw) return '';
+  const words = raw.split(' ').filter(Boolean);
+  return words.map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(' ');
+}
+
+function normalizeTrafficSourceLabel(rawSource) {
+  const raw = safeString(rawSource).trim();
+  if (!raw) return 'Direct';
+
+  const lower = raw.toLowerCase().trim();
+  const host = lower
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0];
+  const key = host || lower;
+
+  if (key === 'direct' || key === '(direct)' || key === '(none)' || key === 'none') return 'Direct';
+  if (key === '(not set)' || key === 'not set' || key === '(not_set)' || key === 'not_set') return 'Not set';
+
+  if (key === 'ig' || key.includes('instagram')) return 'Instagram';
+  if (key === 'fb' || key.includes('facebook') || key.includes('meta')) return 'Facebook';
+  if (key === 'tt' || key.includes('tiktok')) return 'TikTok';
+  if (key.includes('snapchat') || key === 'snap') return 'Snapchat';
+  if (key.includes('google') || key.includes('adwords') || key.includes('gads')) return 'Google';
+  if (key.includes('bing') || key.includes('microsoft') || key.includes('msn')) return 'Microsoft Ads';
+
+  const cleaned = lower
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return toTitleCaseWords(cleaned) || raw;
+}
+
+function inferSourceFromCampaign(campaign) {
+  if (!campaign || typeof campaign !== 'object') return '';
+  const explicit = safeString(campaign.utm_source).trim();
+  if (explicit) return explicit;
+
+  if (campaign.fbclid) return 'facebook';
+  if (campaign.ttclid) return 'tiktok';
+  if (campaign.gclid || campaign.wbraid || campaign.gbraid) return 'google';
+  if (campaign.msclkid) return 'microsoft';
+  if (campaign.irclickid) return 'affiliate';
+
+  return '';
+}
+
+function resolveRealtimeSource(row) {
+  const fromEvent = safeString(row?.utm_source).trim();
+  if (fromEvent) return normalizeTrafficSourceLabel(fromEvent);
+
+  const sessionCampaign = safeJsonParse(row?.session_campaign_json);
+  const inferred = inferSourceFromCampaign(sessionCampaign);
+  if (inferred) return normalizeTrafficSourceLabel(inferred);
+
+  return 'Direct';
+}
+
+function resolveRealtimeCampaign(row, sourceLabel) {
+  const fromEvent = safeString(row?.utm_campaign).trim();
+  if (fromEvent) return fromEvent;
+
+  const sessionCampaign = safeJsonParse(row?.session_campaign_json);
+  const fromSession = safeString(sessionCampaign?.utm_campaign).trim();
+  if (fromSession) return fromSession;
+
+  return sourceLabel === 'Direct' ? 'Direct' : '(not set)';
+}
+
 export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 30, limit = 10 } = {}) {
   const db = getDb();
   const normalizedStore = safeString(store).trim() || 'shawq';
@@ -1554,9 +1628,13 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       e.device_type,
       e.country_code,
       e.utm_source,
-      e.utm_campaign
+      e.utm_campaign,
+      s.last_campaign_json AS session_campaign_json
     FROM si_events e
     JOIN recent r ON r.last_id = e.id
+    LEFT JOIN si_sessions s
+      ON s.store = e.store
+      AND s.session_id = e.session_id
     WHERE e.store = ?
     ORDER BY e.id DESC
   `).all(
@@ -1596,10 +1674,10 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     const page = safeString(row?.page_path).trim();
     if (page) pageCounts.set(page, (pageCounts.get(page) || 0) + 1);
 
-    const source = safeString(row?.utm_source).trim() || 'Direct';
+    const source = resolveRealtimeSource(row);
     sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1);
 
-    const campaign = safeString(row?.utm_campaign).trim() || (source === 'Direct' ? 'Direct' : '(not set)');
+    const campaign = resolveRealtimeCampaign(row, source);
     campaignCounts.set(campaign, (campaignCounts.get(campaign) || 0) + 1);
 
     const device = safeString(row?.device_type).trim() || '—';
