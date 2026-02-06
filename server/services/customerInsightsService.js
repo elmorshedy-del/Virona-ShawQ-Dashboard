@@ -12,6 +12,13 @@ const ARABIC_REGEX = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/g;
 const TIP_REGEX = /\btip\b|gratuity/i;
 const TEST_REGEX = /\btest\b/i;
 const UNKNOWN_TEXT_REGEX = /^(unknown|unk|n\/a|na|null|undefined|none|-)$/i;
+const BUNDLE_CONFIGURED_MARKER_REGEX = /\b(bundle|set|pack|kit|combo|duo|trio|pair)\b/i;
+const BUNDLE_TYPE_CONFIGURED = 'configured';
+const BUNDLE_TYPE_ORGANIC = 'organic';
+const BUNDLE_TYPE_LABELS = {
+  [BUNDLE_TYPE_CONFIGURED]: 'Configured Bundle',
+  [BUNDLE_TYPE_ORGANIC]: 'Organic Co-Purchase'
+};
 const BUNDLE_FDR_TARGET = clamp(
   Number.parseFloat(process.env.CUSTOMER_INSIGHTS_BUNDLE_FDR || '0.1'),
   0.01,
@@ -560,17 +567,11 @@ function computeBenjaminiHochbergQValues(pValues = []) {
 }
 
 function getBundleSignalLabel(falseDiscoveryRisk) {
-  if (!Number.isFinite(falseDiscoveryRisk)) return 'Uncertain';
+  if (!Number.isFinite(falseDiscoveryRisk)) return 'Emerging';
   if (falseDiscoveryRisk <= 0.05) return 'Strong';
   if (falseDiscoveryRisk <= 0.1) return 'Reliable';
   if (falseDiscoveryRisk <= 0.2) return 'Directional';
-  return 'Weak';
-}
-
-function formatSignedPercentPoints(value) {
-  if (!Number.isFinite(value)) return '—';
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${(value * 100).toFixed(1)}pp`;
+  return 'Emerging';
 }
 
 function formatLiftMultiplier(value) {
@@ -583,44 +584,138 @@ function formatCountValue(value) {
   return Math.round(value).toLocaleString('en-US');
 }
 
+function formatSignedCount(value) {
+  if (!Number.isFinite(value)) return '0';
+  const rounded = Math.round(value);
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${formatCountValue(rounded)}`;
+}
+
+function formatSignedPercentChange(value) {
+  if (!Number.isFinite(value)) return '—';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${(value * 100).toFixed(0)}%`;
+}
+
+function isConfiguredBundleMarkerRow(row) {
+  const text = [row?.title, row?.cache_title, row?.sku]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  if (!text) return false;
+  return BUNDLE_CONFIGURED_MARKER_REGEX.test(text);
+}
+
+function getBundleTypeLabel(bundleType) {
+  return BUNDLE_TYPE_LABELS[bundleType] || BUNDLE_TYPE_LABELS[BUNDLE_TYPE_ORGANIC];
+}
+
+function describeOrdersChange(currentCount, previousCount) {
+  const curr = Math.max(0, Math.round(toNumber(currentCount)));
+  const prev = Math.max(0, Math.round(toNumber(previousCount)));
+  const delta = curr - prev;
+
+  if (!prev) {
+    if (!curr) {
+      return {
+        delta,
+        changeRate: 0,
+        description: 'flat at zero versus last period'
+      };
+    }
+    return {
+      delta,
+      changeRate: null,
+      description: `up ${formatCountValue(curr)} from zero last period`
+    };
+  }
+
+  if (delta === 0) {
+    return {
+      delta: 0,
+      changeRate: 0,
+      description: 'flat versus last period'
+    };
+  }
+
+  const changeRate = delta / prev;
+  const direction = delta > 0 ? 'up' : 'down';
+  return {
+    delta,
+    changeRate,
+    description: `${direction} ${formatCountValue(Math.abs(delta))} (${Math.abs(changeRate * 100).toFixed(0)}%)`
+  };
+}
+
+function getBundleAction(bundle) {
+  const isConfigured = bundle?.bundleType === BUNDLE_TYPE_CONFIGURED;
+  const orderDelta = toNumber(bundle?.countDelta);
+  const attachDelta = toNumber(bundle?.attachRateDelta);
+
+  if (isConfigured) {
+    if (orderDelta < 0 || attachDelta < 0) {
+      return {
+        recommendedAction: 'Audit bundle pricing, visibility, and stock on PDP/cart, then relaunch with focused creatives for 7 days.',
+        successKpi: 'Configured bundle orders and bundle gross margin over the next 7 days.'
+      };
+    }
+    return {
+      recommendedAction: 'Scale traffic to the anchor product bundle placements while keeping margin guardrails active.',
+      successKpi: 'Configured bundle orders and blended margin hold at or above the current period baseline.'
+    };
+  }
+
+  if (orderDelta >= 0 || attachDelta >= 0) {
+    return {
+      recommendedAction: 'Launch this as a formal bundle offer in PDP/cart and test anchor-led creatives.',
+      successKpi: 'Offer take rate and incremental AOV versus a no-offer control.'
+    };
+  }
+
+  return {
+    recommendedAction: 'Keep this as a cross-sell placement and test a light incentive before committing to a formal bundle.',
+    successKpi: 'Attach-rate recovery and incremental revenue per anchor session in the next test window.'
+  };
+}
+
 function buildBundleNarrative(bundle) {
   if (!bundle || !Array.isArray(bundle.pair)) return null;
   const anchor = bundle.pair[0] || 'Anchor product';
   const attach = bundle.pair[1] || 'Attach product';
-  const pairOrders = Math.max(0, Math.round(toNumber(bundle.count)));
-  const anchorOrders = Math.max(0, Math.round(toNumber(bundle.anchorOrders)));
-  const attachRateText = formatPercentValue(bundle.attachRate);
-  const baselineRateText = formatPercentValue(bundle.baselineRate);
+  const pairOrdersCurrent = Math.max(0, Math.round(toNumber(bundle.count)));
+  const pairOrdersPrevious = Math.max(0, Math.round(toNumber(bundle.previousCount)));
+  const attachRateCurrent = Number.isFinite(bundle.attachRate) ? bundle.attachRate : 0;
+  const attachRatePrevious = Number.isFinite(bundle.previousAttachRate) ? bundle.previousAttachRate : 0;
+  const baselineCurrent = Number.isFinite(bundle.baselineRate) ? bundle.baselineRate : 0;
+  const baselinePrevious = Number.isFinite(bundle.previousBaselineRate) ? bundle.previousBaselineRate : 0;
   const liftText = formatLiftMultiplier(bundle.lift);
-  const absoluteLiftText = formatSignedPercentPoints(bundle.absoluteLift);
   const falseDiscoveryRiskText = formatPercentValue(bundle.falseDiscoveryRisk);
   const confidenceText = formatPercentValue(bundle.statisticalConfidence);
-  const incrementalAttachOrders = Math.max(0, toNumber(bundle.expectedIncrementalAttachOrders));
-  const incrementalRevenue = Math.max(0, toNumber(bundle.expectedIncrementalRevenue));
+  const orderChange = describeOrdersChange(pairOrdersCurrent, pairOrdersPrevious);
+  const attachRateDeltaText = formatSignedPercentChange(bundle.attachRateDeltaRate);
+  const action = getBundleAction(bundle);
+  const bundleTypeLabel = bundle.bundleTypeLabel || getBundleTypeLabel(bundle.bundleType);
 
-  const sentence = `${anchor} buyers add ${attach} at ${attachRateText} vs ${baselineRateText} baseline (${absoluteLiftText}, ${liftText} lift).`;
+  const businessSummary = `${bundleTypeLabel}: ${anchor} + ${attach} recorded ${formatCountValue(pairOrdersCurrent)} orders this period vs ${formatCountValue(pairOrdersPrevious)} last period, ${orderChange.description}. Attach rate moved from ${formatPercentValue(attachRatePrevious)} to ${formatPercentValue(attachRateCurrent)} (${attachRateDeltaText}).`;
 
-  const eli5 = [
-    `Think of ${formatCountValue(anchorOrders)} orders that include ${anchor}.`,
-    `${formatCountValue(pairOrders)} of those also included ${attach}, so attach rate is ${attachRateText}.`,
-    `Normally ${attach} appears in ${baselineRateText} of all orders, so this pair performs above normal by ${absoluteLiftText}.`
+  const methodology = `Compared this period with the immediately preceding window of equal length. Classified as ${bundleTypeLabel} using Shopify product-name/SKU markers; all remaining pairs are treated as Organic Co-Purchase.`;
+
+  const computationLogic = [
+    `Orders change: ${formatCountValue(pairOrdersCurrent)} this period vs ${formatCountValue(pairOrdersPrevious)} last period (delta ${formatSignedCount(orderChange.delta)}).`,
+    `Attach rate = pair orders / anchor orders = ${formatPercentValue(attachRateCurrent)} this period vs ${formatPercentValue(attachRatePrevious)} last period.`,
+    `Baseline = attach-product order share across all orders = ${formatPercentValue(baselineCurrent)} this period vs ${formatPercentValue(baselinePrevious)} last period.`,
+    `Lift = attach rate / baseline = ${liftText}. Reliability uses exact binomial testing with false-discovery control (risk ${falseDiscoveryRiskText}, confidence ${confidenceText}).`
   ].join(' ');
 
-  const analystLogic = [
-    `Attach rate = pair_orders / anchor_orders = ${formatCountValue(pairOrders)} / ${formatCountValue(anchorOrders)} = ${attachRateText}.`,
-    `Baseline = attach_orders / total_orders = ${baselineRateText}; lift = attach_rate / baseline = ${liftText}.`,
-    `Significance uses an exact one-sided binomial test, then Benjamini-Hochberg false discovery control across tested pairs.`,
-    `This pair has false discovery risk ${falseDiscoveryRiskText} and statistical confidence ${confidenceText}.`,
-    `Estimated incremental impact: +${formatCountValue(incrementalAttachOrders)} attach orders and +${formatCountValue(incrementalRevenue)} revenue units if activated on anchor traffic.`
-  ].join(' ');
-
-  const title = `${anchor} materially increases ${attach}`;
+  const title = `${anchor} with ${attach}`;
 
   return {
     title,
-    sentence,
-    eli5,
-    analystLogic
+    businessSummary,
+    methodology,
+    computationLogic,
+    recommendedAction: action.recommendedAction,
+    successKpi: action.successKpi
   };
 }
 
@@ -631,11 +726,15 @@ function buildBundleKeyInsights(bundles = [], maxCount = BUNDLE_INSIGHT_MAX_COUN
     return {
       id: `bundle-key-${index + 1}-${bundle.pairKeys?.[0] || 'a'}-${bundle.pairKeys?.[1] || 'b'}`,
       type: 'bundle',
-      text: narrative?.sentence || 'Bundle signal detected from product-level co-purchase behavior.',
+      text: narrative?.businessSummary || 'Bundle signal detected from product-level co-purchase behavior.',
       title: narrative?.title || 'Bundle signal detected',
-      eli5: narrative?.eli5 || null,
-      analystLogic: narrative?.analystLogic || null,
-      signal: bundle.signal || 'Uncertain',
+      businessSummary: narrative?.businessSummary || null,
+      methodology: narrative?.methodology || null,
+      computationLogic: narrative?.computationLogic || null,
+      recommendedAction: narrative?.recommendedAction || null,
+      successKpi: narrative?.successKpi || null,
+      classification: bundle.bundleTypeLabel || getBundleTypeLabel(bundle.bundleType),
+      signal: bundle.signal || 'Emerging',
       falseDiscoveryRisk: Number.isFinite(bundle.falseDiscoveryRisk) ? bundle.falseDiscoveryRisk : null,
       statisticalConfidence: Number.isFinite(bundle.statisticalConfidence) ? bundle.statisticalConfidence : null,
       pair: bundle.pair,
@@ -644,10 +743,100 @@ function buildBundleKeyInsights(bundles = [], maxCount = BUNDLE_INSIGHT_MAX_COUN
   });
 }
 
+function computeDirectionalBundleLookup(items) {
+  const orderProducts = new Map();
+
+  items.forEach((row) => {
+    if (!row.order_id) return;
+    const productKey = getProductKey(row);
+    if (!productKey) return;
+    const normalizedKey = String(productKey);
+    const productSet = orderProducts.get(row.order_id) || new Set();
+    productSet.add(normalizedKey);
+    orderProducts.set(row.order_id, productSet);
+  });
+
+  const totalOrders = orderProducts.size;
+  const productOrderCounts = new Map();
+  const pairCounts = new Map();
+
+  orderProducts.forEach((products) => {
+    const rows = Array.from(products);
+    rows.forEach((productKey) => {
+      productOrderCounts.set(productKey, (productOrderCounts.get(productKey) || 0) + 1);
+    });
+
+    for (let i = 0; i < rows.length; i += 1) {
+      for (let j = i + 1; j < rows.length; j += 1) {
+        const [a, b] = [rows[i], rows[j]].sort();
+        const pairKey = `${a}||${b}`;
+        pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+      }
+    }
+  });
+
+  const lookup = new Map();
+  pairCounts.forEach((pairCount, pairKey) => {
+    const [a, b] = pairKey.split('||');
+    const countA = productOrderCounts.get(a) || 0;
+    const countB = productOrderCounts.get(b) || 0;
+    if (!countA || !countB) return;
+
+    const metricsAtoB = {
+      count: pairCount,
+      anchorOrders: countA,
+      attachOrders: countB,
+      attachRate: safeDivide(pairCount, countA),
+      baselineRate: safeDivide(countB, totalOrders)
+    };
+
+    const metricsBtoA = {
+      count: pairCount,
+      anchorOrders: countB,
+      attachOrders: countA,
+      attachRate: safeDivide(pairCount, countB),
+      baselineRate: safeDivide(countA, totalOrders)
+    };
+
+    lookup.set(`${a}||${b}`, metricsAtoB);
+    lookup.set(`${b}||${a}`, metricsBtoA);
+  });
+
+  return lookup;
+}
+
+function enrichBundlesWithPeriodComparison(bundles, previousLookup) {
+  if (!Array.isArray(bundles) || !bundles.length) return [];
+
+  return bundles.map((bundle) => {
+    const directionKey = `${bundle.pairKeys?.[0] || ''}||${bundle.pairKeys?.[1] || ''}`;
+    const previous = previousLookup?.get(directionKey) || null;
+    const previousCount = Number.isFinite(previous?.count) ? previous.count : 0;
+    const previousAttachRate = Number.isFinite(previous?.attachRate) ? previous.attachRate : 0;
+    const previousBaselineRate = Number.isFinite(previous?.baselineRate) ? previous.baselineRate : 0;
+    const countDelta = toNumber(bundle.count) - previousCount;
+    const countDeltaRate = previousCount > 0 ? countDelta / previousCount : null;
+    const attachRateDelta = toNumber(bundle.attachRate) - previousAttachRate;
+    const attachRateDeltaRate = previousAttachRate > 0 ? attachRateDelta / previousAttachRate : null;
+
+    return {
+      ...bundle,
+      previousCount,
+      countDelta,
+      countDeltaRate,
+      previousAttachRate,
+      attachRateDelta,
+      attachRateDeltaRate,
+      previousBaselineRate
+    };
+  });
+}
+
 function computeBundles(items) {
   const orderProducts = new Map();
   const orderRevenueByProduct = new Map();
   const labelByKey = new Map();
+  const productMetadataByKey = new Map();
 
   items.forEach((row) => {
     if (!row.order_id) return;
@@ -656,6 +845,9 @@ function computeBundles(items) {
     const normalizedKey = String(productKey);
     const label = getProductLabel(row);
     if (label && !labelByKey.has(normalizedKey)) labelByKey.set(normalizedKey, label);
+    const metadata = productMetadataByKey.get(normalizedKey) || { hasConfiguredMarker: false };
+    if (isConfiguredBundleMarkerRow(row)) metadata.hasConfiguredMarker = true;
+    productMetadataByKey.set(normalizedKey, metadata);
 
     const productSet = orderProducts.get(row.order_id) || new Set();
     productSet.add(normalizedKey);
@@ -724,6 +916,19 @@ function computeBundles(items) {
         productRevenueTotals.get(direction.attachKey) || 0,
         direction.attachOrders
       );
+      const anchorAvgRevenue = safeDivide(
+        productRevenueTotals.get(direction.anchorKey) || 0,
+        direction.anchorOrders
+      );
+      const attachAvgRevenue = safeDivide(
+        productRevenueTotals.get(direction.attachKey) || 0,
+        direction.attachOrders
+      );
+      const anchorMeta = productMetadataByKey.get(direction.anchorKey) || {};
+      const attachMeta = productMetadataByKey.get(direction.attachKey) || {};
+      const bundleType = (anchorMeta.hasConfiguredMarker || attachMeta.hasConfiguredMarker)
+        ? BUNDLE_TYPE_CONFIGURED
+        : BUNDLE_TYPE_ORGANIC;
       const expectedIncrementalAttachOrders = absoluteLift * direction.anchorOrders;
       const expectedIncrementalRevenue = expectedIncrementalAttachOrders * avgAttachRevenue;
 
@@ -746,8 +951,12 @@ function computeBundles(items) {
         lift,
         pValue,
         avgAttachRevenue,
+        anchorAvgRevenue,
+        attachAvgRevenue,
         expectedIncrementalAttachOrders,
-        expectedIncrementalRevenue
+        expectedIncrementalRevenue,
+        bundleType,
+        bundleTypeLabel: getBundleTypeLabel(bundleType)
       });
     });
   });
@@ -770,20 +979,27 @@ function computeBundles(items) {
     };
   });
 
-  const topDirectionByPair = new Map();
+  const scoredByPair = new Map();
   scored.forEach((row) => {
-    const current = topDirectionByPair.get(row.pairKey);
-    if (!current) {
-      topDirectionByPair.set(row.pairKey, row);
-      return;
-    }
-    if ((row.rankScore || 0) > (current.rankScore || 0)) {
-      topDirectionByPair.set(row.pairKey, row);
-      return;
-    }
-    if ((row.rankScore || 0) === (current.rankScore || 0) && row.falseDiscoveryRisk < current.falseDiscoveryRisk) {
-      topDirectionByPair.set(row.pairKey, row);
-    }
+    const list = scoredByPair.get(row.pairKey) || [];
+    list.push(row);
+    scoredByPair.set(row.pairKey, list);
+  });
+
+  const topDirectionByPair = new Map();
+  scoredByPair.forEach((pairRows, pairKey) => {
+    const strategicRows = pairRows.filter((row) =>
+      Number.isFinite(row.anchorAvgRevenue)
+        && Number.isFinite(row.attachAvgRevenue)
+        && row.anchorAvgRevenue >= row.attachAvgRevenue
+    );
+    const pool = strategicRows.length ? strategicRows : pairRows;
+    const sortedPool = [...pool].sort((a, b) => {
+      if ((b.rankScore || 0) !== (a.rankScore || 0)) return (b.rankScore || 0) - (a.rankScore || 0);
+      if ((a.falseDiscoveryRisk || 1) !== (b.falseDiscoveryRisk || 1)) return (a.falseDiscoveryRisk || 1) - (b.falseDiscoveryRisk || 1);
+      return (b.count || 0) - (a.count || 0);
+    });
+    topDirectionByPair.set(pairKey, sortedPool[0]);
   });
 
   return Array.from(topDirectionByPair.values())
@@ -1180,13 +1396,15 @@ function buildInsights({
     insights.push({
       id: 'bundle',
       title: narrative?.title || 'Bundle opportunity spotted',
-      detail: `${narrative?.sentence || 'A statistically reliable bundle signal was detected.'} Signal: ${bundleTop.signal || 'Uncertain'} (false-discovery risk ${formatPercentValue(bundleTop.falseDiscoveryRisk)}).`,
+      detail: `${narrative?.businessSummary || 'A statistically reliable bundle signal was detected.'} Action: ${narrative?.recommendedAction || 'Test bundle placement.'} Signal: ${bundleTop.signal || 'Emerging'} (false-discovery risk ${formatPercentValue(bundleTop.falseDiscoveryRisk)}).`,
       impact: 'AOV lift',
       target: 'bundles',
       confidence: clamp(bundleConfidence, 0.35, 0.99),
-      text: narrative?.sentence || null,
-      eli5: narrative?.eli5 || null,
-      analystLogic: narrative?.analystLogic || null
+      text: narrative?.businessSummary || null,
+      methodology: narrative?.methodology || null,
+      computationLogic: narrative?.computationLogic || null,
+      recommendedAction: narrative?.recommendedAction || null,
+      successKpi: narrative?.successKpi || null
     });
   }
 
@@ -1259,7 +1477,8 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const customerStats = computeCustomerStats(orders);
   const metaSegment = getMetaTopSegment(db, store, startDate, endDate);
   const timing = getTopTiming(orders, store);
-  const bundles = computeBundles(items);
+  const previousBundleLookup = computeDirectionalBundleLookup(previousItems);
+  const bundles = enrichBundlesWithPeriodComparison(computeBundles(items), previousBundleLookup);
   const bundleKeyInsights = buildBundleKeyInsights(bundles, BUNDLE_INSIGHT_MAX_COUNT);
   const repeatPaths = computeRepeatPaths(items);
   const topProducts = computeTopProducts(items);
@@ -1452,8 +1671,9 @@ export async function getCustomerInsightsPayload(store, params = {}) {
       bundles: {
         summary: bundles.length ? 'Bundle patterns ranked by expected impact and statistical confidence.' : 'Bundle insights need product-level data.',
         methodology: {
-          baselineDefinition: 'Baseline is the attach-product order share across all eligible orders in the selected window.',
-          significance: 'Exact one-sided binomial test with Benjamini-Hochberg false-discovery control across tested bundle pairs.',
+          baselineDefinition: 'Each row compares this period versus the immediately previous period of equal length. Baseline is attach-product order share across all orders in each period.',
+          classification: 'Bundle type is Configured Bundle when Shopify product naming/SKU markers indicate an explicit offer; all other surfaced pairs are Organic Co-Purchase.',
+          significance: 'Reliability is measured with an exact one-sided binomial test and Benjamini-Hochberg false-discovery control.',
           falseDiscoveryTarget: BUNDLE_FDR_TARGET,
           ranking: 'Pairs are ranked by expected incremental revenue and incremental attach orders, weighted by statistical confidence.'
         },
