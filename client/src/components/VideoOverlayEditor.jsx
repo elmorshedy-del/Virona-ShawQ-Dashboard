@@ -196,16 +196,28 @@ export default function VideoOverlayEditor({ store }) {
 
   // Keep overlay alignment correct when the <video> is scaled.
   useEffect(() => {
-    if (!overlayLayerRef.current) return;
     const el = overlayLayerRef.current;
-    const ro = new ResizeObserver((entries) => {
-      const rect = entries?.[0]?.contentRect;
+    if (!el) {
+      setOverlayLayerSize({ w: 0, h: 0 });
+      return;
+    }
+
+    const syncFromRect = (rect) => {
       if (!rect) return;
-      setOverlayLayerSize({ w: rect.width, h: rect.height });
+      const w = Number(rect.width) || 0;
+      const h = Number(rect.height) || 0;
+      setOverlayLayerSize({ w, h });
+    };
+
+    syncFromRect(el.getBoundingClientRect());
+
+    const ro = new ResizeObserver((entries) => {
+      syncFromRect(entries?.[0]?.contentRect);
     });
+
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [videoSrc]);
 
   // Video events.
   useEffect(() => {
@@ -1003,7 +1015,7 @@ export default function VideoOverlayEditor({ store }) {
                   controls={false}
                 />
 
-                <div ref={overlayLayerRef} className="absolute inset-0">
+                <div ref={overlayLayerRef} className="absolute inset-0 overflow-hidden rounded-2xl">
                   {activeOverlays.map((ov) => {
                     const isSelected = ov.id === selectedOverlayId && ov._segmentId === selectedSegmentId;
                     const left = (ov.x || 0) * scale.x;
