@@ -2617,7 +2617,10 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
         store,
         date: iso,
         mode: scope,
-        totals: { sessions: 0 },
+        totals: {
+          sessions: 0,
+          source_sessions: sessions.length
+        },
         signals: {
           rage_clicks: [],
           dead_clicks: [],
@@ -2860,7 +2863,10 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       store,
       date: iso,
       mode: scope,
-      totals: { sessions: selectedSessions.length },
+      totals: {
+        sessions: selectedSessions.length,
+        source_sessions: sessions.length
+      },
       signals: {
         rage_clicks,
         dead_clicks,
