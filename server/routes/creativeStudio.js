@@ -1893,7 +1893,7 @@ Return ONLY a JSON array. No explanation, no markdown.`;
     const bgHex = parseHexColor(item?.bg_color)?.hex || '#000000';
     const textHex = parseHexColor(item?.text_color)?.hex || '#ffffff';
     const fontSizeRatio = clampNumber(item?.font_size_ratio ?? 0.5, 0, 1);
-    const fontSize = Math.max(8, Math.round(fontSizeRatio * clampedH)) || 40;
+    const fontSize = Math.max(8, Math.round(fontSizeRatio * clampedH));
     const fontWeight = String(item?.font_weight || '').trim().toLowerCase() === 'bold' ? 'bold' : 'normal';
     const fontStyle = String(item?.font_style || '').trim().toLowerCase() === 'italic' ? 'italic' : 'normal';
 
@@ -2082,18 +2082,35 @@ router.post('/video-overlay/scan', async (req, res) => {
     } else {
       const findNearestScanFrame = (targetT) => {
         if (!scanFrames.length) return null;
+
         const target = safeParseNumber(targetT, 0) || 0;
-        let nearest = scanFrames[0];
-        let minDelta = Math.abs(safeParseNumber(nearest.t, 0) - target);
-        for (let i = 1; i < scanFrames.length; i += 1) {
-          const frame = scanFrames[i];
-          const delta = Math.abs(safeParseNumber(frame.t, 0) - target);
-          if (delta < minDelta) {
-            minDelta = delta;
-            nearest = frame;
-          }
+        let low = 0;
+        let high = scanFrames.length - 1;
+
+        const lowTime = safeParseNumber(scanFrames[low]?.t, 0);
+        if (target <= lowTime) return scanFrames[low];
+
+        const highTime = safeParseNumber(scanFrames[high]?.t, 0);
+        if (target >= highTime) return scanFrames[high];
+
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          const midTime = safeParseNumber(scanFrames[mid]?.t, 0);
+
+          if (midTime === target) return scanFrames[mid];
+          if (midTime < target) low = mid + 1;
+          else high = mid - 1;
         }
-        return nearest;
+
+        const prevIndex = Math.max(0, high);
+        const nextIndex = Math.min(scanFrames.length - 1, low);
+        const prevFrame = scanFrames[prevIndex];
+        const nextFrame = scanFrames[nextIndex];
+
+        const prevDelta = Math.abs(target - safeParseNumber(prevFrame?.t, 0));
+        const nextDelta = Math.abs(safeParseNumber(nextFrame?.t, 0) - target);
+
+        return prevDelta <= nextDelta ? prevFrame : nextFrame;
       };
 
       for (const seg of segmentsRaw) {

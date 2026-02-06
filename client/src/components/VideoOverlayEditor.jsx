@@ -684,6 +684,10 @@ export default function VideoOverlayEditor({ store }) {
   const overlayAiUrl = health?.overlay_ai?.url || null;
   const overlayAiHealthPayload = health?.overlay_ai?.health?.payload || null;
   const isDinoDetectionMode = scanConfig.detectionMode === 'dino';
+  const detectionModes = [
+    { id: 'dino', label: 'DINO+SAM' },
+    { id: 'gemini', label: 'Gemini Vision' }
+  ];
 
   const canScan = Boolean(videoId) && !isUploading && !isScanning;
   const canExport = Boolean(videoId) && segments.length > 0 && !isUploading && !isScanning && !isExporting;
@@ -946,30 +950,21 @@ export default function VideoOverlayEditor({ store }) {
                 <div className="col-span-2">
                   <Label>Detection mode</Label>
                   <div className="mt-2 grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setScanConfig((p) => ({ ...p, detectionMode: 'dino' }))}
-                      className={cn(
-                        'rounded-xl border px-3 py-2 text-sm font-semibold transition',
-                        scanConfig.detectionMode === 'dino'
-                          ? 'border-violet-300 bg-violet-50 text-violet-700'
-                          : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-                      )}
-                    >
-                      DINO+SAM
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setScanConfig((p) => ({ ...p, detectionMode: 'gemini' }))}
-                      className={cn(
-                        'rounded-xl border px-3 py-2 text-sm font-semibold transition',
-                        scanConfig.detectionMode === 'gemini'
-                          ? 'border-violet-300 bg-violet-50 text-violet-700'
-                          : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-                      )}
-                    >
-                      Gemini Vision
-                    </button>
+                    {detectionModes.map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => setScanConfig((p) => ({ ...p, detectionMode: mode.id }))}
+                        className={cn(
+                          'rounded-xl border px-3 py-2 text-sm font-semibold transition',
+                          scanConfig.detectionMode === mode.id
+                            ? 'border-violet-300 bg-violet-50 text-violet-700'
+                            : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                        )}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
