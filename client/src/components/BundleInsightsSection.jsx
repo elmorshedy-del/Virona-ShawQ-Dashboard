@@ -171,7 +171,7 @@ function MetricCell({ label, value, hint, caution = false }) {
 function BundleActionableCard({ bundle, insight, methodology, formatCurrency, displayRules }) {
   const [showMethodology, setShowMethodology] = useState(false);
   const delta = useMemo(() => getDeltaDisplay(bundle, displayRules), [bundle, displayRules]);
-  const attachRateCaution = toNumber(bundle?.anchorOrders) < 10;
+  const attachRateCaution = toNumber(bundle?.anchorOrders) < displayRules.T2_MIN_ANCHOR_ORDERS;
 
   const businessSummary = insight?.businessSummary
     || insight?.text
