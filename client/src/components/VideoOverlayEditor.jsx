@@ -28,6 +28,22 @@ const toNumber = (value, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+const toGeminiModelLabel = (modelName) => {
+  const raw = String(modelName || '').trim();
+  if (!raw) return 'Gemini';
+  const pretty = raw
+    .split('-')
+    .filter(Boolean)
+    .map((part, index) => {
+      if (index === 0) return part.charAt(0).toUpperCase() + part.slice(1);
+      if (/^\d+(\.\d+)?$/.test(part)) return part;
+      if (part.toLowerCase() === 'pro') return 'Pro';
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(' ');
+  return pretty || raw;
+};
+
 const makeId = () => {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -143,7 +159,12 @@ export default function VideoOverlayEditor({ store }) {
   const [isScanning, setIsScanning] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState(null);
-  const [scanConfig, setScanConfig] = useState({ intervalSec: 1, maxFrames: 30, detectionMode: 'gemini' });
+  const [scanConfig, setScanConfig] = useState({
+    intervalSec: 1,
+    maxFrames: 30,
+    detectionMode: 'gemini',
+    scanModel: ''
+  });
 
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -193,6 +214,12 @@ export default function VideoOverlayEditor({ store }) {
   useEffect(() => {
     refreshHealth();
   }, [refreshHealth]);
+
+  useEffect(() => {
+    const serverModel = String(health?.gemini?.model || '').trim();
+    if (!serverModel) return;
+    setScanConfig((prev) => (prev.scanModel ? prev : { ...prev, scanModel: serverModel }));
+  }, [health?.gemini?.model]);
 
   // Keep overlay alignment correct when the <video> is scaled.
   useEffect(() => {
@@ -526,7 +553,8 @@ export default function VideoOverlayEditor({ store }) {
           interval_sec: scanConfig.intervalSec,
           max_frames: scanConfig.maxFrames,
           use_gemini: true,
-          detectionMode: scanConfig.detectionMode
+          detectionMode: scanConfig.detectionMode,
+          scan_model: scanConfig.scanModel
         })
       });
       const data = await res.json();
@@ -700,6 +728,24 @@ export default function VideoOverlayEditor({ store }) {
     { id: 'dino', label: 'DINO+SAM' },
     { id: 'gemini', label: 'Gemini Vision' }
   ];
+  const scanModelOptions = useMemo(() => {
+    const supportedModels = Array.isArray(health?.gemini?.supported_models)
+      ? health.gemini.supported_models
+      : [];
+    const configuredModel = String(health?.gemini?.model || '').trim();
+    const selectedModel = String(scanConfig.scanModel || '').trim();
+
+    const unique = [...new Set([
+      ...supportedModels.map((model) => String(model || '').trim()),
+      configuredModel,
+      selectedModel
+    ].filter(Boolean))];
+
+    return unique.map((model) => ({
+      id: model,
+      label: toGeminiModelLabel(model)
+    }));
+  }, [health?.gemini?.supported_models, health?.gemini?.model, scanConfig.scanModel]);
 
   const canScan = Boolean(videoId) && !isUploading && !isScanning;
   const canExport = Boolean(videoId) && segments.length > 0 && !isUploading && !isScanning && !isExporting;
@@ -977,6 +1023,21 @@ export default function VideoOverlayEditor({ store }) {
                         {mode.label}
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <Label>Gemini model</Label>
+                  <div className="mt-2">
+                    <Select
+                      value={scanConfig.scanModel}
+                      onChange={(e) => setScanConfig((p) => ({ ...p, scanModel: e.target.value }))}
+                      disabled={!scanModelOptions.length}
+                    >
+                      {!scanModelOptions.length ? <option value="">Loading models…</option> : null}
+                      {scanModelOptions.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </Select>
                   </div>
                 </div>
               </div>
