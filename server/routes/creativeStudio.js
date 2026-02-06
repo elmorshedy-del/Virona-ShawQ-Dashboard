@@ -102,6 +102,67 @@ function getOverlayTextFilePath(exportId, index) {
   return path.join(VIDEO_OVERLAY_TEXTS_DIR, `${exportId}-${index}.txt`);
 }
 
+const VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS = [
+  'gemini-3-pro',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite'
+];
+const VIDEO_OVERLAY_DEFAULT_SCAN_MODEL = 'gemini-2.5-flash-lite';
+const VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP = {
+  'gemini-2.0-flash-lite': VIDEO_OVERLAY_DEFAULT_SCAN_MODEL
+};
+
+function normalizeVideoOverlayScanModelName(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function resolveVideoOverlayScanModel({ requestedModel = null, configuredModel = null } = {}) {
+  const normalizeCandidate = (rawValue) => {
+    const raw = String(rawValue || '').trim();
+    if (!raw) return null;
+    const normalized = normalizeVideoOverlayScanModelName(raw);
+    return VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP[normalized] || normalized;
+  };
+
+  const requested = normalizeCandidate(requestedModel);
+  if (requested) {
+    if (!VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS.includes(requested)) {
+      const err = new Error(
+        `Unsupported scan model "${requestedModel}". Supported models: ${VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS.join(', ')}`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+    return requested;
+  }
+
+  const configured = normalizeCandidate(configuredModel);
+  if (configured && VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS.includes(configured)) {
+    return configured;
+  }
+
+  return VIDEO_OVERLAY_DEFAULT_SCAN_MODEL;
+}
+
+function getVideoOverlayScanModelWarning(configuredModel) {
+  const raw = String(configuredModel || '').trim();
+  if (!raw) return null;
+
+  const normalized = normalizeVideoOverlayScanModelName(raw);
+  if (VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP[normalized]) {
+    const mapped = VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP[normalized];
+    return `VIDEO_OVERLAY_SCAN_MODEL=${raw} is deprecated. Using ${mapped} instead.`;
+  }
+
+  const resolved = resolveVideoOverlayScanModel({ configuredModel: raw });
+  if (resolved !== normalized) {
+    return `VIDEO_OVERLAY_SCAN_MODEL=${raw} is unsupported. Falling back to ${resolved}.`;
+  }
+
+  return null;
+}
+
 // ============================================================================
 // PHOTO MAGIC (background removal + magic eraser) - temp storage + helpers
 // ============================================================================
@@ -1424,19 +1485,16 @@ router.get('/video/download', async (req, res) => {
 // VIDEO TEXT OVERLAY EDITOR (burnt-in overlay editing)
 // ============================================================================
 
-	router.get('/video-overlay/health', async (req, res) => {
-	  try {
-	    const overlayAiConfigured = isVideoOverlayAiConfigured();
-	    const overlayAiHealth = overlayAiConfigured ? await getVideoOverlayAiHealth().catch(() => null) : null;
-	    const rawModel = String(process.env.VIDEO_OVERLAY_SCAN_MODEL || '').trim();
-	    const defaultModel = 'gemini-2.5-flash-lite';
-	    const resolvedModel = rawModel && rawModel.toLowerCase() === 'gemini-2.0-flash-lite' ? defaultModel : (rawModel || defaultModel);
-	    const modelWarning = rawModel && rawModel.toLowerCase() === 'gemini-2.0-flash-lite'
-	      ? `VIDEO_OVERLAY_SCAN_MODEL=${rawModel} is deprecated. Using ${resolvedModel} instead.`
-	      : null;
-	
-	    res.json({
-	      success: true,
+router.get('/video-overlay/health', async (req, res) => {
+  try {
+    const overlayAiConfigured = isVideoOverlayAiConfigured();
+    const overlayAiHealth = overlayAiConfigured ? await getVideoOverlayAiHealth().catch(() => null) : null;
+    const configuredModel = String(process.env.VIDEO_OVERLAY_SCAN_MODEL || '').trim();
+    const resolvedModel = resolveVideoOverlayScanModel({ configuredModel });
+    const modelWarning = getVideoOverlayScanModelWarning(configuredModel);
+
+    res.json({
+      success: true,
       overlay_ai: {
         configured: overlayAiConfigured,
         url: process.env.VIDEO_OVERLAY_AI_URL || null,
@@ -1447,15 +1505,16 @@ router.get('/video/download', async (req, res) => {
           detect: Number(process.env.VIDEO_OVERLAY_AI_DETECT_TIMEOUT_MS || Number(process.env.VIDEO_OVERLAY_AI_TIMEOUT_MS || 120000))
         }
       },
-	      gemini: {
-	        configured: Boolean(process.env.GEMINI_API_KEY),
-	        model: resolvedModel,
-	        configured_model: rawModel || null,
-	        warning: modelWarning
-	      },
-	      tools: {
-	        ffmpeg: true,
-	        ffprobe: true
+      gemini: {
+        configured: Boolean(process.env.GEMINI_API_KEY),
+        model: resolvedModel,
+        configured_model: configuredModel || null,
+        supported_models: VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS,
+        warning: modelWarning
+      },
+      tools: {
+        ffmpeg: true,
+        ffprobe: true
       }
     });
   } catch (error) {
@@ -1551,25 +1610,16 @@ async function extractFrameBase64(videoPath, { t, width = null } = {}) {
   return b64;
 }
 
-async function detectOverlayKeysWithGemini({ frames } = {}) {
+async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not configured.');
   }
 
-  const DEFAULT_VIDEO_OVERLAY_SCAN_MODEL = 'gemini-2.5-flash-lite';
-  const resolveVideoOverlayScanModel = (value) => {
-    const raw = String(value || '').trim();
-    if (!raw) return DEFAULT_VIDEO_OVERLAY_SCAN_MODEL;
-
-    // Back-compat: older deployments used gemini-2.0-flash-lite, which is deprecated / frequently errors.
-    if (raw.toLowerCase() === 'gemini-2.0-flash-lite') return DEFAULT_VIDEO_OVERLAY_SCAN_MODEL;
-
-    return raw;
-  };
-
-  const configuredModelName = process.env.VIDEO_OVERLAY_SCAN_MODEL || '';
-  const modelName = resolveVideoOverlayScanModel(configuredModelName);
+  const resolvedModelName = resolveVideoOverlayScanModel({
+    requestedModel: modelName,
+    configuredModel: process.env.VIDEO_OVERLAY_SCAN_MODEL || ''
+  });
   const genAI = new GoogleGenerativeAI(apiKey);
 
   const responseSchema = {
@@ -1591,7 +1641,7 @@ async function detectOverlayKeysWithGemini({ frames } = {}) {
   };
 
   const model = genAI.getGenerativeModel({
-    model: modelName,
+    model: resolvedModelName,
     generationConfig: {
       temperature: 0,
       maxOutputTokens: 1024,
@@ -1787,6 +1837,7 @@ async function detectSegmentOverlaysWithGeminiVision({
   frameBase64,
   videoWidth,
   videoHeight,
+  modelName = null,
   startTime = null,
   endTime = null
 } = {}) {
@@ -1798,18 +1849,13 @@ async function detectSegmentOverlaysWithGeminiVision({
     throw new Error('Frame image is required for Gemini Vision detection.');
   }
 
-  const DEFAULT_VIDEO_OVERLAY_SCAN_MODEL = 'gemini-2.5-flash-lite';
-  const resolveVideoOverlayScanModel = (value) => {
-    const raw = String(value || '').trim();
-    if (!raw) return DEFAULT_VIDEO_OVERLAY_SCAN_MODEL;
-    if (raw.toLowerCase() === 'gemini-2.0-flash-lite') return DEFAULT_VIDEO_OVERLAY_SCAN_MODEL;
-    return raw;
-  };
-
-  const modelName = resolveVideoOverlayScanModel(process.env.VIDEO_OVERLAY_SCAN_MODEL || '');
+  const resolvedModelName = resolveVideoOverlayScanModel({
+    requestedModel: modelName,
+    configuredModel: process.env.VIDEO_OVERLAY_SCAN_MODEL || ''
+  });
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
-    model: modelName,
+    model: resolvedModelName,
     generationConfig: {
       temperature: 0,
       maxOutputTokens: 2048,
@@ -2020,6 +2066,11 @@ router.post('/video-overlay/scan', async (req, res) => {
 
     const detectionModeRaw = String(req.body?.detectionMode ?? req.body?.detection_mode ?? 'gemini').trim().toLowerCase();
     const detectionMode = detectionModeRaw === 'dino' ? 'dino' : 'gemini';
+    const requestedScanModel = String(req.body?.scan_model ?? req.body?.scanModel ?? '').trim();
+    const scanModel = resolveVideoOverlayScanModel({
+      requestedModel: requestedScanModel || null,
+      configuredModel: process.env.VIDEO_OVERLAY_SCAN_MODEL || ''
+    });
 
     const useGemini = req.body?.use_gemini !== false;
     if (!useGemini) {
@@ -2036,7 +2087,7 @@ router.post('/video-overlay/scan', async (req, res) => {
       });
     }
 
-    const frameKeys = await detectOverlayKeysWithGemini({ frames: scanFrames });
+    const frameKeys = await detectOverlayKeysWithGemini({ frames: scanFrames, modelName: scanModel });
     const scanMethod = 'gemini';
 
     const segmentsRaw = buildSegmentsFromFrameKeys({ frames: frameKeys, durationSec, intervalSec });
@@ -2049,6 +2100,7 @@ router.post('/video-overlay/scan', async (req, res) => {
         max_frames: maxFrames,
         frames_analyzed: scanFrames.length,
         detection_mode: detectionMode,
+        scan_model: scanModel,
         segments: [],
         warnings: []
       });
@@ -2210,6 +2262,7 @@ router.post('/video-overlay/scan', async (req, res) => {
             frameBase64: chosenFrame.b64,
             videoWidth,
             videoHeight,
+            modelName: scanModel,
             startTime: seg.start,
             endTime: seg.end
           });
@@ -2246,6 +2299,7 @@ router.post('/video-overlay/scan', async (req, res) => {
       success: true,
       scan_method: scanMethod,
       detection_mode: detectionMode,
+      scan_model: scanModel,
       duration: durationSec,
       interval_sec: intervalSec,
       max_frames: maxFrames,

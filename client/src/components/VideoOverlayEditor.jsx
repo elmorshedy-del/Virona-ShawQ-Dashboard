@@ -18,6 +18,19 @@ import {
 
 const API_BASE = '/api';
 const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
+const DEFAULT_GEMINI_SCAN_MODEL = 'gemini-2.5-flash-lite';
+const GEMINI_SCAN_MODEL_LABELS = {
+  'gemini-3-pro': 'Gemini 3 Pro',
+  'gemini-2.5-pro': 'Gemini 2.5 Pro',
+  'gemini-2.5-flash': 'Gemini 2.5 Flash',
+  'gemini-2.5-flash-lite': 'Gemini 2.5 Flash-Lite'
+};
+const GEMINI_SCAN_MODEL_FALLBACK_OPTIONS = [
+  'gemini-3-pro',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  DEFAULT_GEMINI_SCAN_MODEL
+];
 
 const cn = (...classes) => classes.filter(Boolean).join(' ');
 
@@ -143,7 +156,12 @@ export default function VideoOverlayEditor({ store }) {
   const [isScanning, setIsScanning] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState(null);
-  const [scanConfig, setScanConfig] = useState({ intervalSec: 1, maxFrames: 30, detectionMode: 'gemini' });
+  const [scanConfig, setScanConfig] = useState({
+    intervalSec: 1,
+    maxFrames: 30,
+    detectionMode: 'gemini',
+    scanModel: DEFAULT_GEMINI_SCAN_MODEL
+  });
 
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -526,7 +544,8 @@ export default function VideoOverlayEditor({ store }) {
           interval_sec: scanConfig.intervalSec,
           max_frames: scanConfig.maxFrames,
           use_gemini: true,
-          detectionMode: scanConfig.detectionMode
+          detectionMode: scanConfig.detectionMode,
+          scan_model: scanConfig.scanModel
         })
       });
       const data = await res.json();
@@ -700,6 +719,17 @@ export default function VideoOverlayEditor({ store }) {
     { id: 'dino', label: 'DINO+SAM' },
     { id: 'gemini', label: 'Gemini Vision' }
   ];
+  const scanModelOptions = useMemo(() => {
+    const supportedModels = Array.isArray(health?.gemini?.supported_models) && health.gemini.supported_models.length
+      ? health.gemini.supported_models
+      : GEMINI_SCAN_MODEL_FALLBACK_OPTIONS;
+    const unique = [...new Set(supportedModels.map((model) => String(model || '').trim()).filter(Boolean))];
+    if (!unique.includes(scanConfig.scanModel)) unique.push(scanConfig.scanModel);
+    return unique.map((model) => ({
+      id: model,
+      label: GEMINI_SCAN_MODEL_LABELS[model] || model
+    }));
+  }, [health?.gemini?.supported_models, scanConfig.scanModel]);
 
   const canScan = Boolean(videoId) && !isUploading && !isScanning;
   const canExport = Boolean(videoId) && segments.length > 0 && !isUploading && !isScanning && !isExporting;
@@ -977,6 +1007,19 @@ export default function VideoOverlayEditor({ store }) {
                         {mode.label}
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <Label>Gemini model</Label>
+                  <div className="mt-2">
+                    <Select
+                      value={scanConfig.scanModel}
+                      onChange={(e) => setScanConfig((p) => ({ ...p, scanModel: e.target.value }))}
+                    >
+                      {scanModelOptions.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </Select>
                   </div>
                 </div>
               </div>
