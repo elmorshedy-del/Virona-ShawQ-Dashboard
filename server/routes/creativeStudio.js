@@ -82,10 +82,12 @@ function photoMagicSingle(fieldName) {
 const VIDEO_OVERLAY_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'video-overlay');
 const VIDEO_OVERLAY_UPLOADS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'uploads');
 const VIDEO_OVERLAY_OUTPUTS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'outputs');
+const VIDEO_OVERLAY_TEXTS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'texts');
 
 async function ensureVideoOverlayDirs() {
   await fs.promises.mkdir(VIDEO_OVERLAY_UPLOADS_DIR, { recursive: true });
   await fs.promises.mkdir(VIDEO_OVERLAY_OUTPUTS_DIR, { recursive: true });
+  await fs.promises.mkdir(VIDEO_OVERLAY_TEXTS_DIR, { recursive: true });
 }
 
 function getUploadedVideoPath(videoId) {
@@ -94,6 +96,10 @@ function getUploadedVideoPath(videoId) {
 
 function getExportedVideoPath(exportId) {
   return path.join(VIDEO_OVERLAY_OUTPUTS_DIR, `${exportId}.mp4`);
+}
+
+function getOverlayTextFilePath(exportId, index) {
+  return path.join(VIDEO_OVERLAY_TEXTS_DIR, `${exportId}-${index}.txt`);
 }
 
 // ============================================================================
@@ -187,16 +193,6 @@ function parseHexColor(hex) {
   return { r, g, b, hex: `#${normalized.toLowerCase()}` };
 }
 
-function escapeDrawtext(text) {
-  // drawtext parsing is `:` separated, and supports expansions by default.
-  // We disable expansion and still escape chars that break parsing.
-  return String(text ?? '')
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/:/g, '\\:')
-    .replace(/%/g, '\\%');
-}
-
 async function ffprobeVideoInfo(videoPath) {
   const { stdout: durationOut } = await execFileAsync('ffprobe', [
     '-v', 'error',
@@ -270,18 +266,30 @@ function buildSegmentsFromFrameKeys({ frames, durationSec, intervalSec }) {
   return ranged;
 }
 
-function toOverlayBox(det, { startTime, endTime } = {}) {
+function toOverlayBox(det, { startTime, endTime, videoWidth: maxVideoWidth = 0, videoHeight: maxVideoHeight = 0 } = {}) {
   const font = det?.font || {};
   const colors = det?.colors || {};
   const backgroundHex = colors?.background?.hex || '#333333';
   const textHex = colors?.text?.hex || '#ffffff';
 
+  const videoWidth = Math.max(0, Math.round(safeParseNumber(maxVideoWidth, 0)));
+  const videoHeight = Math.max(0, Math.round(safeParseNumber(maxVideoHeight, 0)));
+
+  const rawWidth = Math.max(1, Math.round(safeParseNumber(det?.width, 1)));
+  const rawHeight = Math.max(1, Math.round(safeParseNumber(det?.height, 1)));
+  const width = videoWidth > 1 ? clampNumber(rawWidth, 1, videoWidth) : rawWidth;
+  const height = videoHeight > 1 ? clampNumber(rawHeight, 1, videoHeight) : rawHeight;
+  const rawX = Math.round(safeParseNumber(det?.x, 0));
+  const rawY = Math.round(safeParseNumber(det?.y, 0));
+  const x = videoWidth > 1 ? clampNumber(rawX, 0, Math.max(0, videoWidth - width)) : Math.max(0, rawX);
+  const y = videoHeight > 1 ? clampNumber(rawY, 0, Math.max(0, videoHeight - height)) : Math.max(0, rawY);
+
   return {
     id: crypto.randomUUID(),
-    x: det?.x ?? 0,
-    y: det?.y ?? 0,
-    width: det?.width ?? 0,
-    height: det?.height ?? 0,
+    x,
+    y,
+    width,
+    height,
     text: det?.text || 'Detected',
     backgroundColor: backgroundHex,
     textColor: textHex,
@@ -295,6 +303,48 @@ function toOverlayBox(det, { startTime, endTime } = {}) {
     startTime: typeof startTime === 'number' ? startTime : null,
     endTime: typeof endTime === 'number' ? endTime : null
   };
+}
+
+function tokenizeOverlayKey(text) {
+  return new Set(
+    normalizeOverlayKey(text)
+      .split(' ')
+      .map((token) => token.trim())
+      .filter(Boolean)
+  );
+}
+
+function scoreOverlayTextMatch({ segmentKey, overlayText }) {
+  const segNorm = normalizeOverlayKey(segmentKey);
+  const overlayNorm = normalizeOverlayKey(overlayText);
+  if (!segNorm || !overlayNorm) return 0;
+  if (segNorm === overlayNorm) return 4;
+  if (segNorm.includes(overlayNorm) || overlayNorm.includes(segNorm)) return 2.5;
+
+  const segTokens = tokenizeOverlayKey(segNorm);
+  const overlayTokens = tokenizeOverlayKey(overlayNorm);
+  if (!segTokens.size || !overlayTokens.size) return 0;
+
+  let intersection = 0;
+  for (const token of segTokens) {
+    if (overlayTokens.has(token)) intersection += 1;
+  }
+
+  const union = new Set([...segTokens, ...overlayTokens]).size || 1;
+  return (intersection / union) * 2;
+}
+
+function scoreSampleOverlaySet({ segmentKey, overlays, sampleTime, preferredTime }) {
+  if (!Array.isArray(overlays) || overlays.length === 0) return Number.NEGATIVE_INFINITY;
+
+  const bestOverlayScore = overlays.reduce((best, overlay) => {
+    const confidence = safeParseNumber(overlay?.confidence, 0);
+    const textScore = scoreOverlayTextMatch({ segmentKey, overlayText: overlay?.text || '' });
+    return Math.max(best, confidence + textScore);
+  }, Number.NEGATIVE_INFINITY);
+
+  const timePenalty = Math.abs(safeParseNumber(sampleTime, 0) - safeParseNumber(preferredTime, 0)) * 0.01;
+  return bestOverlayScore - timePenalty;
 }
 
 function buildSegmentSampleTimes(seg, durationSec) {
@@ -1844,6 +1894,7 @@ router.post('/video-overlay/scan', async (req, res) => {
       let resolvedSampleTime = seg.sample_t;
       let hadDetectorResponse = false;
       let lastDetectorError = null;
+      let bestSampleScore = Number.NEGATIVE_INFINITY;
 
       for (const sampleTime of sampleTimes) {
         try {
@@ -1851,13 +1902,28 @@ router.post('/video-overlay/scan', async (req, res) => {
           const detections = await detectVideoOverlays({ imageBase64: fullFrameB64 });
           hadDetectorResponse = true;
           const candidateOverlays = Array.isArray(detections)
-            ? detections.map((det) => toOverlayBox(det, { startTime: seg.start, endTime: seg.end }))
+            ? detections.map((det) => toOverlayBox(det, {
+              startTime: seg.start,
+              endTime: seg.end,
+              videoWidth,
+              videoHeight
+            }))
             : [];
 
           if (candidateOverlays.length) {
-            overlays = candidateOverlays;
-            resolvedSampleTime = sampleTime;
-            break;
+            const sampleScore = scoreSampleOverlaySet({
+              segmentKey: seg.key || seg.label || '',
+              overlays: candidateOverlays,
+              sampleTime,
+              preferredTime: seg.sample_t
+            });
+
+            if (!Number.isFinite(sampleScore)) continue;
+            if (sampleScore > bestSampleScore) {
+              bestSampleScore = sampleScore;
+              overlays = candidateOverlays;
+              resolvedSampleTime = sampleTime;
+            }
           }
         } catch (sampleErr) {
           lastDetectorError = sampleErr;
@@ -1911,10 +1977,19 @@ router.post('/video-overlay/scan', async (req, res) => {
   }
 });
 
-function buildOverlayFiltergraph({ durationSec, segments, fontPath } = {}) {
+function escapeDrawtextPath(filePath) {
+  return String(filePath || '')
+    .replace(/\\/g, '/')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\'");
+}
+
+function buildOverlayFiltergraph({ durationSec, segments, fontPath, textFileResolver, videoWidth = 0, videoHeight = 0 } = {}) {
   const filters = [];
   let label = '[0:v]';
   let step = 0;
+  const maxVideoWidth = Math.max(1, Math.round(safeParseNumber(videoWidth, 1)));
+  const maxVideoHeight = Math.max(1, Math.round(safeParseNumber(videoHeight, 1)));
 
   // Make sure we always have a working font file path.
   const fallbackFont = fontPath || path.join(__dirname, '..', 'assets', 'fonts', 'Inter-Regular.ttf');
@@ -1928,17 +2003,19 @@ function buildOverlayFiltergraph({ durationSec, segments, fontPath } = {}) {
     const overlays = Array.isArray(seg?.overlays) ? seg.overlays : [];
 
     for (const ov of overlays) {
-      const x = Math.max(0, Math.round(ov?.x || 0));
-      const y = Math.max(0, Math.round(ov?.y || 0));
-      const w = Math.max(1, Math.round(ov?.width || 1));
-      const h = Math.max(1, Math.round(ov?.height || 1));
+      const w = clampNumber(Math.round(safeParseNumber(ov?.width, 1)), 1, maxVideoWidth);
+      const h = clampNumber(Math.round(safeParseNumber(ov?.height, 1)), 1, maxVideoHeight);
+      const x = clampNumber(Math.round(safeParseNumber(ov?.x, 0)), 0, Math.max(0, maxVideoWidth - w));
+      const y = clampNumber(Math.round(safeParseNumber(ov?.y, 0)), 0, Math.max(0, maxVideoHeight - h));
 
       const enable = `between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})`;
 
       const bgHex = parseHexColor(ov?.backgroundColor)?.hex || '#333333';
       const textHex = parseHexColor(ov?.textColor)?.hex || '#ffffff';
       const fontsize = Math.max(8, Math.round(safeParseNumber(ov?.fontSize, 24)));
-      const text = escapeDrawtext(ov?.text || '');
+      const textFilePath = typeof textFileResolver === 'function' ? textFileResolver(ov?.text || '') : '';
+      if (!textFilePath) continue;
+      const textfile = escapeDrawtextPath(textFilePath);
 
       // Background: prefer gradient when provided; fall back to solid color.
       let bgStream = `[bg${step}]`;
@@ -1970,7 +2047,7 @@ function buildOverlayFiltergraph({ durationSec, segments, fontPath } = {}) {
       label = out1;
 
       const out2 = `[v${++step}]`;
-      const draw = `drawtext=fontfile='${resolvedFontPath}':text='${text}':` +
+      const draw = `drawtext=fontfile='${resolvedFontPath}':textfile='${textfile}':` +
         `x=${x}+((${w}-text_w)/2):y=${y}+((${h}-text_h)/2):` +
         `fontsize=${fontsize}:fontcolor=${textHex}:` +
         `expansion=none:enable='${enable}'`;
@@ -2017,38 +2094,57 @@ router.post('/video-overlay/export', async (req, res) => {
 
     const exportId = crypto.randomUUID();
     const outPath = getExportedVideoPath(exportId);
+    const textFiles = [];
 
-    // Build filtergraph (includes gradients when provided). No fallback mode.
-    const fontPath = path.join(__dirname, '..', 'assets', 'fonts', 'Inter-Regular.ttf');
-    const graph = buildOverlayFiltergraph({ durationSec: info.duration, segments, fontPath });
-    if (!graph.filterComplex) {
-      return res.status(400).json({ success: false, error: 'No overlays found in segments (nothing to export)' });
+    try {
+      const writeOverlayTextFile = (text) => {
+        const filePath = getOverlayTextFilePath(exportId, textFiles.length);
+        fs.writeFileSync(filePath, String(text ?? ''), 'utf8');
+        textFiles.push(filePath);
+        return filePath;
+      };
+
+      // Build filtergraph (includes gradients when provided). No fallback mode.
+      const fontPath = path.join(__dirname, '..', 'assets', 'fonts', 'Inter-Regular.ttf');
+      const graph = buildOverlayFiltergraph({
+        durationSec: info.duration,
+        segments,
+        fontPath,
+        textFileResolver: writeOverlayTextFile,
+        videoWidth: info.width,
+        videoHeight: info.height
+      });
+      if (!graph.filterComplex) {
+        return res.status(400).json({ success: false, error: 'No overlays found in segments (nothing to export)' });
+      }
+
+      const baseArgs = [
+        '-i', videoPath,
+        '-filter_complex', graph.filterComplex,
+        '-map', graph.finalLabel,
+        '-map', '0:a?',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '18',
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        '-y',
+        outPath
+      ];
+
+      await execFileAsync('ffmpeg', baseArgs);
+
+      const filename = String(req.body?.filename || 'edited_video.mp4');
+      const downloadUrl = `/api/creative-studio/video-overlay/download?output_id=${encodeURIComponent(exportId)}&filename=${encodeURIComponent(filename)}`;
+
+      return res.json({
+        success: true,
+        output_id: exportId,
+        url: downloadUrl
+      });
+    } finally {
+      await Promise.all(textFiles.map((filePath) => fs.promises.unlink(filePath).catch(() => null)));
     }
-
-    const baseArgs = [
-      '-i', videoPath,
-      '-filter_complex', graph.filterComplex,
-      '-map', graph.finalLabel,
-      '-map', '0:a?',
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-crf', '18',
-      '-c:a', 'copy',
-      '-movflags', '+faststart',
-      '-y',
-      outPath
-    ];
-
-    await execFileAsync('ffmpeg', baseArgs);
-
-    const filename = String(req.body?.filename || 'edited_video.mp4');
-    const downloadUrl = `/api/creative-studio/video-overlay/download?output_id=${encodeURIComponent(exportId)}&filename=${encodeURIComponent(filename)}`;
-
-    return res.json({
-      success: true,
-      output_id: exportId,
-      url: downloadUrl
-    });
   } catch (error) {
     console.error('Video overlay export error:', error);
     const msg = error?.code === 'ENOENT'
