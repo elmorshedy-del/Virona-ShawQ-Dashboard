@@ -5,6 +5,7 @@ import {
   Target,
   ShoppingBag,
   Activity,
+  ArrowUpRight,
   Package,
   Users,
   ChevronDown,
@@ -100,6 +101,32 @@ function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
             {hint}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function InsightCard({ insight, onInvestigate }) {
+  const canInvestigate = Boolean(insight?.target && onInvestigate);
+
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-semibold text-gray-900">{insight.title}</div>
+        <div className="text-xs font-semibold text-indigo-600">{insight.impact}</div>
+      </div>
+      <div className="mt-2 text-sm text-gray-600">{insight.detail}</div>
+      <div className="mt-3 flex items-center justify-between text-xs text-gray-400">
+        <span>{insight.confidence ? `Confidence: ${confidenceLabel(insight.confidence)}` : 'Confidence: —'}</span>
+        {canInvestigate ? (
+          <button
+            type="button"
+            onClick={() => onInvestigate?.(insight)}
+            className="flex items-center gap-1 font-medium text-indigo-600 hover:text-indigo-700"
+          >
+            View details <ArrowUpRight className="h-3 w-3" />
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -265,6 +292,13 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
     };
   }, []);
 
+  const scrollToSection = (target) => {
+    if (!target) return;
+    const el = document.getElementById(`ci-${target}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
     <div className="space-y-6">
       {toast ? (
@@ -313,11 +347,21 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
       </div>
 
       <div>
-        <InsightFlipPanel
-          title="Actionable Insights"
-          insights={insights}
-          emptyMessage="Insights will appear once enough data accumulates."
-        />
+        <div className="mb-3 text-sm font-semibold text-gray-700">Actionable Insights</div>
+        <div className="grid gap-4 md:grid-cols-3">
+          {insights.map((insight) => (
+            <InsightCard
+              key={insight.id}
+              insight={insight}
+              onInvestigate={() => scrollToSection(insight.target)}
+            />
+          ))}
+          {insights.length === 0 && (
+            <div className="col-span-full rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500">
+              Insights will appear once enough data accumulates.
+            </div>
+          )}
+        </div>
       </div>
 
       <CollapsibleSectionCard
