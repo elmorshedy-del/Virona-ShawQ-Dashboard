@@ -434,7 +434,7 @@ function inferCheckoutStepFromEvent(eventName, eventDataRaw) {
   return null;
 }
 
-function inferDeviceType(payload) {
+function inferDeviceInfo(payload) {
   const envelope = getEventEnvelope(payload);
   const ua =
     payload?.context?.navigator?.userAgent ||
@@ -452,10 +452,27 @@ function inferDeviceType(payload) {
     '';
 
   const agent = safeString(ua);
-  if (!agent) return null;
-  if (/ipad|tablet|silk/i.test(agent)) return 'tablet';
-  if (/mobi|iphone|android/i.test(agent)) return 'mobile';
-  return 'desktop';
+  if (!agent) return { deviceType: null, deviceOs: null };
+
+  const lower = agent.toLowerCase();
+  const isIos = /iphone|ipad|ipod|cpu (iphone )?os|ios/i.test(agent);
+  const isAndroid = /android/i.test(agent);
+  const isTablet = /ipad|tablet|silk/i.test(agent);
+  const isMobile = /mobi|iphone|android/i.test(agent);
+
+  let deviceType = 'desktop';
+  if (isTablet) deviceType = 'tablet';
+  else if (isMobile) deviceType = 'mobile';
+
+  let deviceOs = null;
+  if (isIos) deviceOs = 'iOS';
+  else if (isAndroid) deviceOs = 'Android';
+  else if (lower.includes('windows')) deviceOs = 'Windows';
+  else if (lower.includes('mac os') || lower.includes('macintosh')) deviceOs = 'macOS';
+  else if (lower.includes('cros')) deviceOs = 'ChromeOS';
+  else if (lower.includes('linux')) deviceOs = 'Linux';
+
+  return { deviceType, deviceOs };
 }
 
 function extractCountryCode(payload) {
@@ -478,6 +495,28 @@ function extractCountryCode(payload) {
     }
   }
   return null;
+}
+
+function formatDeviceLabel(deviceTypeRaw, deviceOsRaw) {
+  const deviceType = safeString(deviceTypeRaw).trim().toLowerCase();
+  const deviceOs = safeString(deviceOsRaw).trim().toLowerCase();
+
+  if (deviceType === 'mobile') {
+    if (deviceOs === 'ios') return 'iOS';
+    if (deviceOs === 'android') return 'Android';
+    return 'Mobile';
+  }
+
+  if (deviceType === 'tablet') {
+    if (deviceOs === 'ios') return 'iPadOS';
+    if (deviceOs === 'android') return 'Android Tablet';
+    return 'Tablet';
+  }
+
+  if (deviceType === 'desktop') return 'Desktop';
+
+  const fallback = safeString(deviceTypeRaw).trim();
+  return fallback || '—';
 }
 
 const ALLOWED_QUERY_KEYS = new Set([
@@ -942,7 +981,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
 
   const location = extractLocation(payload);
   const identifiers = extractSessionIdentifiers(payload);
-  const deviceType = inferDeviceType(payload);
+  const { deviceType, deviceOs } = inferDeviceInfo(payload);
   const countryCode = extractCountryCode(payload);
   const attribution = extractAttributionFields(location?.campaign);
   const product = extractProductIdentifiers(eventDataRaw);
@@ -968,6 +1007,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
 
   const siMeta = {};
   if (deviceType) siMeta.device_type = deviceType;
+  if (deviceOs) siMeta.device_os = deviceOs;
   if (countryCode) siMeta.country_code = countryCode;
   if (location?.campaign) siMeta.campaign = location.campaign;
   if (product?.productId) siMeta.product_id = product.productId;
@@ -995,6 +1035,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       checkout_token,
       checkout_step,
       device_type,
+      device_os,
       country_code,
       product_id,
       variant_id,
@@ -1012,7 +1053,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       irclickid,
       data_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const now = normalizeSqliteDateTime();
@@ -1034,6 +1075,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       last_cart_json,
       shopper_number,
       last_device_type,
+      last_device_os,
       last_country_code,
       last_product_id,
       last_variant_id,
@@ -1101,6 +1143,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       last_cart_json = COALESCE(excluded.last_cart_json, si_sessions.last_cart_json),
       shopper_number = COALESCE(excluded.shopper_number, si_sessions.shopper_number),
       last_device_type = COALESCE(excluded.last_device_type, si_sessions.last_device_type),
+      last_device_os = COALESCE(excluded.last_device_os, si_sessions.last_device_os),
       last_country_code = COALESCE(excluded.last_country_code, si_sessions.last_country_code),
       last_product_id = COALESCE(excluded.last_product_id, si_sessions.last_product_id),
       last_variant_id = COALESCE(excluded.last_variant_id, si_sessions.last_variant_id),
@@ -1194,6 +1237,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       checkoutToken,
       checkoutStep,
       deviceType,
+      deviceOs,
       countryCode,
       product?.productId || null,
       product?.variantId || null,
@@ -1227,6 +1271,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       cartJson,
       shopperNumber,
       deviceType,
+      deviceOs,
       countryCode,
       product?.productId || null,
       product?.variantId || null,
@@ -1505,6 +1550,80 @@ function topCountsFromMap(map, limit = 10) {
     .map(([value, count]) => ({ value, count }));
 }
 
+function toTitleCaseWords(value) {
+  const raw = safeString(value).trim().toLowerCase();
+  if (!raw) return '';
+  const words = raw.split(' ').filter(Boolean);
+  return words.map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(' ');
+}
+
+function normalizeTrafficSourceLabel(rawSource) {
+  const raw = safeString(rawSource).trim();
+  if (!raw) return 'Direct';
+
+  const lower = raw.toLowerCase().trim();
+  const host = lower
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0];
+  const key = host || lower;
+
+  if (key === 'direct' || key === '(direct)' || key === '(none)' || key === 'none') return 'Direct';
+  if (key === '(not set)' || key === 'not set' || key === '(not_set)' || key === 'not_set') return 'Not set';
+
+  if (key === 'ig' || key.includes('instagram')) return 'Instagram';
+  if (key === 'fb' || key.includes('facebook') || key.includes('meta')) return 'Facebook';
+  if (key === 'tt' || key.includes('tiktok')) return 'TikTok';
+  if (key.includes('snapchat') || key === 'snap') return 'Snapchat';
+  if (key.includes('google') || key.includes('adwords') || key.includes('gads')) return 'Google';
+  if (key.includes('bing') || key.includes('microsoft') || key.includes('msn')) return 'Microsoft Ads';
+
+  const cleaned = lower
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return toTitleCaseWords(cleaned) || raw;
+}
+
+function inferSourceFromCampaign(campaign) {
+  if (!campaign || typeof campaign !== 'object') return '';
+  const explicit = safeString(campaign.utm_source).trim();
+  if (explicit) return explicit;
+
+  if (campaign.fbclid) return 'facebook';
+  if (campaign.ttclid) return 'tiktok';
+  if (campaign.gclid || campaign.wbraid || campaign.gbraid) return 'google';
+  if (campaign.msclkid) return 'microsoft';
+  if (campaign.irclickid) return 'affiliate';
+
+  return '';
+}
+
+function resolveRealtimeSource(row) {
+  const fromEvent = safeString(row?.utm_source).trim();
+  if (fromEvent) return normalizeTrafficSourceLabel(fromEvent);
+
+  const sessionCampaign = safeJsonParse(row?.session_campaign_json);
+  const inferred = inferSourceFromCampaign(sessionCampaign);
+  if (inferred) return normalizeTrafficSourceLabel(inferred);
+
+  return 'Direct';
+}
+
+function resolveRealtimeCampaign(row, sourceLabel) {
+  const fromEvent = safeString(row?.utm_campaign).trim();
+  if (fromEvent) return fromEvent;
+
+  const sessionCampaign = safeJsonParse(row?.session_campaign_json);
+  const fromSession = safeString(sessionCampaign?.utm_campaign).trim();
+  if (fromSession) return fromSession;
+
+  return sourceLabel === 'Direct' ? 'Direct' : '(not set)';
+}
+
 export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 30, limit = 10 } = {}) {
   const db = getDb();
   const normalizedStore = safeString(store).trim() || 'shawq';
@@ -1552,11 +1671,16 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       e.page_path,
       e.checkout_step,
       e.device_type,
+      e.device_os,
       e.country_code,
       e.utm_source,
-      e.utm_campaign
+      e.utm_campaign,
+      s.last_campaign_json AS session_campaign_json
     FROM si_events e
     JOIN recent r ON r.last_id = e.id
+    LEFT JOIN si_sessions s
+      ON s.store = e.store
+      AND s.session_id = e.session_id
     WHERE e.store = ?
     ORDER BY e.id DESC
   `).all(
@@ -1596,13 +1720,13 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     const page = safeString(row?.page_path).trim();
     if (page) pageCounts.set(page, (pageCounts.get(page) || 0) + 1);
 
-    const source = safeString(row?.utm_source).trim() || 'Direct';
+    const source = resolveRealtimeSource(row);
     sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1);
 
-    const campaign = safeString(row?.utm_campaign).trim() || (source === 'Direct' ? 'Direct' : '(not set)');
+    const campaign = resolveRealtimeCampaign(row, source);
     campaignCounts.set(campaign, (campaignCounts.get(campaign) || 0) + 1);
 
-    const device = safeString(row?.device_type).trim() || '—';
+    const device = formatDeviceLabel(row?.device_type, row?.device_os);
     deviceCounts.set(device, (deviceCounts.get(device) || 0) + 1);
 
     const country = safeString(row?.country_code).trim().toUpperCase();
@@ -1678,6 +1802,7 @@ export function getSessionIntelligenceRecentEvents(store, limit = 80) {
       e.checkout_token,
       e.checkout_step,
       e.device_type,
+      e.device_os,
       e.country_code,
       e.product_id,
       e.variant_id,
@@ -1702,6 +1827,7 @@ export function getSessionIntelligenceRecentEvents(store, limit = 80) {
     LIMIT ?
   `).all(store, max).map((row) => ({
     ...row,
+    device_type: formatDeviceLabel(row.device_type, row.device_os),
     codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
   }));
 }
@@ -1727,6 +1853,7 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
       last_checkout_step,
       last_cart_json,
       last_device_type,
+      last_device_os,
       last_country_code,
       last_product_id,
       last_variant_id,
@@ -1744,6 +1871,7 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
     LIMIT ?
   `).all(store, max).map((row) => ({
     ...row,
+    device_type: formatDeviceLabel(row.last_device_type, row.last_device_os),
     codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
   }));
 }
@@ -2218,6 +2346,7 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
         SUM(CASE WHEN lower(event_name) IN (${purchaseIn.clause}) THEN 1 ELSE 0 END) AS purchase_events,
         MAX(COALESCE(checkout_step, '')) AS last_checkout_step,
         MAX(COALESCE(device_type, '')) AS device_type,
+        MAX(COALESCE(device_os, '')) AS device_os,
         MAX(COALESCE(country_code, '')) AS country_code,
         MAX(COALESCE(product_id, '')) AS product_id,
         MAX(COALESCE(variant_id, '')) AS variant_id,
@@ -2241,6 +2370,7 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
       d.purchase_events,
       NULLIF(d.last_checkout_step, '') AS last_checkout_step,
       NULLIF(d.device_type, '') AS device_type,
+      NULLIF(d.device_os, '') AS device_os,
       NULLIF(d.country_code, '') AS country_code,
       NULLIF(d.product_id, '') AS product_id,
       NULLIF(d.variant_id, '') AS variant_id,
@@ -2274,6 +2404,7 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
 
   return db.prepare(query).all(...params).map((row) => ({
     ...row,
+    device_type: formatDeviceLabel(row.device_type, row.device_os),
     codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
   }));
 }
@@ -2897,6 +3028,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
         e.page_path,
         e.checkout_step,
         e.device_type,
+        e.device_os,
         e.country_code,
         e.product_id,
         e.variant_id,
@@ -2925,6 +3057,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
       LIMIT ?
     `).all(store, sessionId, range.start, range.end, max).map((row) => ({
       ...row,
+      device_type: formatDeviceLabel(row.device_type, row.device_os),
       codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
     }));
   }
@@ -2940,6 +3073,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
       e.page_path,
       e.checkout_step,
       e.device_type,
+      e.device_os,
       e.country_code,
       e.product_id,
       e.variant_id,
@@ -2966,6 +3100,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
     LIMIT ?
   `).all(store, range.start, range.end, max).map((row) => ({
     ...row,
+    device_type: formatDeviceLabel(row.device_type, row.device_os),
     codename: makeSessionDisplayCode({ sessionNumber: row.session_number, sessionId: row.session_id })
   }));
 }
