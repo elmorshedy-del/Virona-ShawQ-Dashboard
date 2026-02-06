@@ -306,11 +306,7 @@ const getOrderItemData = (store, recentStart, endDate) => {
           AND COALESCE(oi.is_excluded, 0) = 0
       `).all(store, recentStart, endDate);
     } else {
-      rows = db.prepare(`
-        SELECT order_id, order_date, name, sku, product_id, variant_id
-        FROM salla_order_items
-        WHERE store = ? AND order_date BETWEEN ? AND ?
-      `).all(store, recentStart, endDate);
+      rows = [];
     }
 
     if (!rows.length) return { orders: [], edges: [] };

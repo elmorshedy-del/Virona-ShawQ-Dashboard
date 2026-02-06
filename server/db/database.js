@@ -118,7 +118,9 @@ export function initDb() {
       SET net_price = (COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0))
       WHERE net_price IS NULL
     `);
-  } catch (e) { /* best effort */ }
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_order_items.net_price', e?.message || e);
+  }
   try {
     db.exec(`
       UPDATE shopify_order_items
@@ -127,7 +129,9 @@ export function initDb() {
       WHERE COALESCE(is_excluded, 0) = 0
         AND (COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0)) <= 0
     `);
-  } catch (e) { /* best effort */ }
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_order_items.is_excluded', e?.message || e);
+  }
   try {
     db.exec(`
       UPDATE shopify_orders
@@ -137,7 +141,9 @@ export function initDb() {
         AND COALESCE(order_total, 0) <= 0
         AND COALESCE(subtotal, 0) <= 0
     `);
-  } catch (e) { /* best effort */ }
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_orders.is_excluded', e?.message || e);
+  }
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
