@@ -757,9 +757,9 @@ async function lookupCountryCode(ip) {
 }
 
 router.post('/shopify', async (req, res) => {
+  const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
   try {
     const payload = req.body || {};
-    const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
     const store = resolveStore(payload);
     const type = normalizeEventType(payload);
     const ts = normalizeEventTimestamp(payload);
