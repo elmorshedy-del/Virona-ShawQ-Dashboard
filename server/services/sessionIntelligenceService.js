@@ -535,6 +535,26 @@ const ALLOWED_QUERY_KEYS = new Set([
   'irclickid'
 ]);
 
+const CAMPAIGN_ATTR_KEYS = [
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_content',
+  'utm_term',
+  'fbclid',
+  'gclid',
+  'ttclid',
+  'msclkid',
+  'wbraid',
+  'gbraid',
+  'irclickid'
+];
+
+const SESSION_CAMPAIGN_FALLBACK_LOOKBACK_DAYS = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_CAMPAIGN_FALLBACK_LOOKBACK_DAYS || '14', 10) || 14, 1),
+  90
+);
+
 function buildSafeQuery(url, forcedStep) {
   const params = new URLSearchParams();
   for (const key of ALLOWED_QUERY_KEYS) {
@@ -549,26 +569,55 @@ function buildSafeQuery(url, forcedStep) {
 }
 
 function extractCampaign(url) {
-  const keys = [
-    'utm_source',
-    'utm_medium',
-    'utm_campaign',
-    'utm_content',
-    'utm_term',
-    'fbclid',
-    'gclid',
-    'ttclid',
-    'msclkid',
-    'wbraid',
-    'gbraid',
-    'irclickid'
-  ];
   const out = {};
-  for (const key of keys) {
+  for (const key of CAMPAIGN_ATTR_KEYS) {
     const value = url.searchParams.get(key);
     if (value) out[key] = value.slice(0, 240);
   }
   return Object.keys(out).length ? out : null;
+}
+
+function hasCampaignAttribution(campaign) {
+  if (!campaign || typeof campaign !== 'object') return false;
+  return CAMPAIGN_ATTR_KEYS.some((key) => safeString(campaign[key]).trim() !== '');
+}
+
+function mergeCampaignData(primaryCampaign, fallbackCampaign) {
+  if (!hasCampaignAttribution(primaryCampaign) && !hasCampaignAttribution(fallbackCampaign)) return null;
+  const merged = {};
+  for (const key of CAMPAIGN_ATTR_KEYS) {
+    const primary = safeString(primaryCampaign?.[key]).trim();
+    const fallback = safeString(fallbackCampaign?.[key]).trim();
+    if (primary) merged[key] = primary.slice(0, 240);
+    else if (fallback) merged[key] = fallback.slice(0, 240);
+  }
+  return Object.keys(merged).length ? merged : null;
+}
+
+function findRecentSessionCampaign(db, store, sessionId) {
+  if (!sessionId) return null;
+  const row = db.prepare(`
+    SELECT last_campaign_json
+    FROM si_sessions
+    WHERE store = ? AND session_id = ?
+    LIMIT 1
+  `).get(store, sessionId);
+  return safeJsonParse(row?.last_campaign_json);
+}
+
+function findRecentClientCampaign(db, store, clientId) {
+  if (!clientId) return null;
+  const row = db.prepare(`
+    SELECT last_campaign_json
+    FROM si_sessions
+    WHERE store = ?
+      AND client_id = ?
+      AND COALESCE(last_campaign_json, '') <> ''
+      AND COALESCE(updated_at, created_at) >= datetime('now', ?)
+    ORDER BY COALESCE(last_event_at, updated_at, created_at) DESC
+    LIMIT 1
+  `).get(store, clientId, `-${SESSION_CAMPAIGN_FALLBACK_LOOKBACK_DAYS} days`);
+  return safeJsonParse(row?.last_campaign_json);
 }
 
 function extractAttributionFields(campaign) {
@@ -677,6 +726,11 @@ function extractLocation(payload) {
 function extractSessionIdentifiers(payload) {
   const envelope = getEventEnvelope(payload);
   const sessionCandidates = [
+    payload?.event?.context?.sessionId,
+    payload?.event?.context?.session_id,
+    payload?.event?.sessionId,
+    payload?.event?.session_id,
+    payload?.event?.id,
     payload?.context?.sessionId,
     payload?.context?.session_id,
     payload?.sessionId,
@@ -688,6 +742,10 @@ function extractSessionIdentifiers(payload) {
   ];
 
   const clientCandidates = [
+    payload?.event?.context?.clientId,
+    payload?.event?.context?.client_id,
+    payload?.event?.clientId,
+    payload?.event?.client_id,
     payload?.context?.clientId,
     payload?.context?.client_id,
     payload?.clientId,
@@ -1165,7 +1223,6 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
   const identifiers = extractSessionIdentifiers(payload);
   const { deviceType, deviceOs } = inferDeviceInfo(payload);
   const countryCode = extractCountryCode(payload);
-  const attribution = extractAttributionFields(location?.campaign);
   const product = extractProductIdentifiers(eventDataRaw);
   const checkoutTokenFromData =
     safeString(eventDataRaw?.checkout?.token || eventDataRaw?.checkout?.id || eventDataRaw?.checkoutToken).trim() ||
@@ -1202,6 +1259,14 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     (checkoutToken ? `checkout:${checkoutToken}` : null) ||
     `anon:${randomUUID()}`;
 
+  const sessionCampaign = findRecentSessionCampaign(db, normalizedStore, sessionId);
+  const clientCampaign = findRecentClientCampaign(db, normalizedStore, clientId);
+  const resolvedCampaign = mergeCampaignData(
+    location?.campaign,
+    mergeCampaignData(sessionCampaign, clientCampaign)
+  );
+  const attribution = extractAttributionFields(resolvedCampaign);
+
   const cartSnapshot = extractCartSnapshot(eventDataRaw);
   const cartJson = cartSnapshot ? JSON.stringify(scrubSensitive(cartSnapshot)) : null;
 
@@ -1209,7 +1274,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
   if (deviceType) siMeta.device_type = deviceType;
   if (deviceOs) siMeta.device_os = deviceOs;
   if (countryCode) siMeta.country_code = countryCode;
-  if (location?.campaign) siMeta.campaign = location.campaign;
+  if (resolvedCampaign) siMeta.campaign = resolvedCampaign;
   if (product?.productId) siMeta.product_id = product.productId;
   if (product?.variantId) siMeta.variant_id = product.variantId;
 
@@ -1257,7 +1322,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
   `);
 
   const now = normalizeSqliteDateTime();
-  const lastCampaignJson = location?.campaign ? JSON.stringify(location.campaign) : null;
+  const lastCampaignJson = resolvedCampaign ? JSON.stringify(resolvedCampaign) : null;
 
   const upsertSession = db.prepare(`
     INSERT INTO si_sessions (
@@ -1849,7 +1914,58 @@ function inferSourceFromCampaign(campaign) {
   return '';
 }
 
-function resolveRealtimeSource(row) {
+function inferSourceFromRowAttribution(row) {
+  const directSource = safeString(row?.utm_source).trim();
+  if (directSource) return directSource;
+  if (safeString(row?.fbclid).trim()) return 'facebook';
+  if (safeString(row?.ttclid).trim()) return 'tiktok';
+  if (safeString(row?.gclid).trim() || safeString(row?.wbraid).trim() || safeString(row?.gbraid).trim()) return 'google';
+  if (safeString(row?.msclkid).trim()) return 'microsoft';
+  if (safeString(row?.irclickid).trim()) return 'affiliate';
+  return '';
+}
+
+function buildRealtimeCampaignFallbackMaps(db, store) {
+  const lookbackExpr = `-${SESSION_CAMPAIGN_FALLBACK_LOOKBACK_DAYS} days`;
+  const rows = db.prepare(`
+    SELECT
+      client_id,
+      shopper_number,
+      last_campaign_json,
+      COALESCE(last_event_at, updated_at, created_at) AS rank_ts
+    FROM si_sessions
+    WHERE store = ?
+      AND COALESCE(last_campaign_json, '') <> ''
+      AND COALESCE(last_event_at, updated_at, created_at) >= datetime('now', ?)
+    ORDER BY rank_ts DESC
+    LIMIT 5000
+  `).all(store, lookbackExpr);
+
+  const byClient = new Map();
+  const byShopper = new Map();
+
+  for (const row of rows) {
+    const campaign = safeJsonParse(row?.last_campaign_json);
+    if (!hasCampaignAttribution(campaign)) continue;
+
+    const clientId = safeString(row?.client_id).trim();
+    if (clientId && !byClient.has(clientId)) {
+      byClient.set(clientId, campaign);
+    }
+
+    const shopperNumber = Number(row?.shopper_number);
+    if (Number.isFinite(shopperNumber) && shopperNumber > 0 && !byShopper.has(shopperNumber)) {
+      byShopper.set(shopperNumber, campaign);
+    }
+  }
+
+  return { byClient, byShopper };
+}
+
+function resolveRealtimeSource(row, fallbackCampaign = null) {
+  const inferredFromRow = inferSourceFromRowAttribution(row);
+  if (inferredFromRow) return normalizeTrafficSourceLabel(inferredFromRow);
+
   const fromEvent = safeString(row?.utm_source).trim();
   if (fromEvent) return normalizeTrafficSourceLabel(fromEvent);
 
@@ -1857,16 +1973,22 @@ function resolveRealtimeSource(row) {
   const inferred = inferSourceFromCampaign(sessionCampaign);
   if (inferred) return normalizeTrafficSourceLabel(inferred);
 
+  const inferredFromFallback = inferSourceFromCampaign(fallbackCampaign);
+  if (inferredFromFallback) return normalizeTrafficSourceLabel(inferredFromFallback);
+
   return 'Direct';
 }
 
-function resolveRealtimeCampaign(row, sourceLabel) {
+function resolveRealtimeCampaign(row, sourceLabel, fallbackCampaign = null) {
   const fromEvent = safeString(row?.utm_campaign).trim();
   if (fromEvent) return fromEvent;
 
   const sessionCampaign = safeJsonParse(row?.session_campaign_json);
   const fromSession = safeString(sessionCampaign?.utm_campaign).trim();
   if (fromSession) return fromSession;
+
+  const fromFallback = safeString(fallbackCampaign?.utm_campaign).trim();
+  if (fromFallback) return fromFallback;
 
   return sourceLabel === 'Direct' ? 'Direct' : '(not set)';
 }
@@ -1922,6 +2044,13 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       e.country_code,
       e.utm_source,
       e.utm_campaign,
+      e.fbclid,
+      e.gclid,
+      e.ttclid,
+      e.msclkid,
+      e.wbraid,
+      e.gbraid,
+      e.irclickid,
       s.last_campaign_json AS session_campaign_json
     FROM si_events e
     JOIN recent r ON r.last_id = e.id
@@ -1945,6 +2074,7 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
   const campaignCounts = new Map();
   const deviceCounts = new Map();
   const countryCounts = new Map();
+  const campaignFallbackMaps = buildRealtimeCampaignFallbackMaps(db, normalizedStore);
 
   for (const row of latest) {
     const shopperNumber = Number(row?.shopper_number);
@@ -1967,10 +2097,16 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     const page = safeString(row?.page_path).trim();
     if (page) pageCounts.set(page, (pageCounts.get(page) || 0) + 1);
 
-    const source = resolveRealtimeSource(row);
+    const fallbackCampaign = campaignFallbackMaps.byClient.get(safeString(row?.client_id).trim())
+      || (Number.isFinite(shopperNumber) && shopperNumber > 0
+        ? campaignFallbackMaps.byShopper.get(shopperNumber)
+        : null)
+      || null;
+
+    const source = resolveRealtimeSource(row, fallbackCampaign);
     sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1);
 
-    const campaign = resolveRealtimeCampaign(row, source);
+    const campaign = resolveRealtimeCampaign(row, source, fallbackCampaign);
     campaignCounts.set(campaign, (campaignCounts.get(campaign) || 0) + 1);
 
     const device = formatDeviceLabel(row?.device_type, row?.device_os);

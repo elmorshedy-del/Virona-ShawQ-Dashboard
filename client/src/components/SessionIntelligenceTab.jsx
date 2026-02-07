@@ -271,9 +271,13 @@ function normalizeDeviceLabel(value) {
   const raw = (value || '').toString().trim();
   if (!raw) return '—';
   const key = raw.toLowerCase().trim();
+  if (key === 'ios') return 'iOS';
+  if (key === 'android') return 'Android';
+  if (key === 'ipados') return 'iPadOS';
   if (key === 'mobile') return 'Mobile';
   if (key === 'desktop') return 'Desktop';
   if (key === 'tablet') return 'Tablet';
+  if (key === 'android tablet') return 'Android Tablet';
   return raw;
 }
 
@@ -1320,8 +1324,10 @@ export default function SessionIntelligenceTab({ store }) {
   const developerGuideRows = issueRows.slice(0, 3);
 
   const summaryTotals = useMemo(() => {
-    const sessionsTotal = Number(issueModel.totalSessions) || 0;
-    const highIntent = Number(issueModel.highIntentSessions ?? issueModel.eligibleHighIntent) || 0;
+    const sessionsCandidate = Number(issueModel.totalSessions) || 0;
+    const highIntentRaw = Number(issueModel.highIntentSessions ?? issueModel.eligibleHighIntent) || 0;
+    const sessionsTotal = Math.max(sessionsCandidate, highIntentRaw);
+    const highIntent = Math.min(highIntentRaw, sessionsTotal);
     const purchases = Number(issueModel.purchases) || 0;
     const estimatedAtRisk = Math.min(
       highIntent,
