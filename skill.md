@@ -1,6 +1,7 @@
 # Skill: Insight Engineering (Guidelines)
 
 ## Rules
+- After every commit, include the PR link in the status update to the user.
 - No magic numbers for thresholds/heuristics. Use named constants/config objects (e.g., `INSIGHT_THRESHOLDS`) so they’re readable, reviewable, and easy to tune later.
 - No hardcoded tunables (thresholds, time windows, scoring cutoffs). Use named constants/config and keep them centralized.
 - Build as future SaaS by default: every feature/function must be tenant-aware and work for any client shop/account, not only a single brand/store.
