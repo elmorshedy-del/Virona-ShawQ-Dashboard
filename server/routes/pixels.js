@@ -757,11 +757,14 @@ async function lookupCountryCode(ip) {
 }
 
 router.post('/shopify', async (req, res) => {
+  const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
   try {
     const payload = req.body || {};
     const store = resolveStore(payload);
     const type = normalizeEventType(payload);
     const ts = normalizeEventTimestamp(payload);
+    let dbWriteError = null;
+    let siIngest = null;
 
     // Best-effort GeoIP enrichment: prefer explicit checkout address country (when available),
     // then edge-provided headers, then IP-based lookup.
@@ -788,18 +791,32 @@ router.post('/shopify', async (req, res) => {
       `).run(store, type, ts, JSON.stringify(payload));
     } catch (dbError) {
       // Don't break live tracking if DB is unavailable/read-only.
+      dbWriteError = dbError;
       console.warn('[Pixels] Shopify DB insert failed:', dbError?.message || dbError);
     }
 
     // Session Intelligence normalized ingest (best-effort).
     try {
       const sessionIntelligenceSource = resolveSessionIntelligenceSource(payload, type);
-      recordSessionIntelligenceEvent({ store, payload, source: sessionIntelligenceSource });
+      siIngest = recordSessionIntelligenceEvent({ store, payload, source: sessionIntelligenceSource });
     } catch (siError) {
+      siIngest = { ok: false, error: siError?.message || String(siError) };
       console.warn('[Pixels] Session Intelligence ingest failed:', siError?.message || siError);
     }
 
-    res.json({ success: true });
+    res.json({
+      success: true,
+      ...(wantsDebug ? {
+        debug: {
+          store,
+          type,
+          timestamp: ts,
+          dbWriteOk: !dbWriteError,
+          dbWriteError: dbWriteError ? (dbWriteError?.message || String(dbWriteError)) : null,
+          siIngest: siIngest || { ok: false, reason: 'ingest_not_executed' }
+        }
+      } : {})
+    });
   } catch (error) {
     const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
     console.error('[Pixels] Shopify error:', error);
