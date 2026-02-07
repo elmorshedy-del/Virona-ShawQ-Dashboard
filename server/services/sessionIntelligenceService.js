@@ -1303,6 +1303,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       ?,
       ?,
       ?,
+      ?,
       ?
     )
     ON CONFLICT(store, session_id) DO UPDATE SET
