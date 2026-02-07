@@ -126,7 +126,7 @@ class AIBudgetService {
       const daysMap = {
         '7d': 7, '1week': 7,
         '14d': 14, '2weeks': 14,
-        '30d': 30, '4weeks': 30, '1month': 30,
+        '30d': 30, '4weeks': 28, '1month': 30,
         '90d': 90, '3months': 90, '12weeks': 84,
         'alltime': 365, 'full': 365
       };
