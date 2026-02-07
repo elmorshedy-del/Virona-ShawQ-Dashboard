@@ -969,6 +969,188 @@ function scrubSensitive(value, seen = new WeakMap()) {
   return obj;
 }
 
+function shouldUseSchemaFallback(error) {
+  const message = safeString(error?.message).toLowerCase();
+  return (
+    message.includes('no such column') ||
+    message.includes('has no column named') ||
+    message.includes('no such table')
+  );
+}
+
+function getTableColumnSet(db, tableName) {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${tableName})`).all();
+    return new Set(rows.map((row) => safeString(row?.name)));
+  } catch (_error) {
+    return new Set();
+  }
+}
+
+function buildDynamicInsertSql(tableName, row, allowedColumns) {
+  const entries = Object.entries(row).filter(([key, value]) => (
+    allowedColumns.has(key) && value !== undefined
+  ));
+  if (!entries.length) return null;
+  const columns = entries.map(([key]) => key);
+  const placeholders = columns.map(() => '?').join(', ');
+  return {
+    sql: `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`,
+    values: entries.map(([, value]) => value)
+  };
+}
+
+function buildDynamicUpdateSql(tableName, row, allowedColumns, where) {
+  const whereKeys = Object.keys(where);
+  const entries = Object.entries(row).filter(([key, value]) => (
+    allowedColumns.has(key) &&
+    value !== undefined &&
+    !whereKeys.includes(key)
+  ));
+  if (!entries.length) return null;
+  const setClause = entries.map(([key]) => `${key} = ?`).join(', ');
+  const whereClause = whereKeys.map((key) => `${key} = ?`).join(' AND ');
+  return {
+    sql: `UPDATE ${tableName} SET ${setClause} WHERE ${whereClause}`,
+    values: [
+      ...entries.map(([, value]) => value),
+      ...whereKeys.map((key) => where[key])
+    ]
+  };
+}
+
+function tryRecordSessionIntelligenceEventFallback({
+  db,
+  normalizedStore,
+  sessionId,
+  clientId,
+  shopperNumber,
+  source,
+  eventName,
+  eventTs,
+  location,
+  checkoutToken,
+  checkoutStep,
+  deviceType,
+  deviceOs,
+  countryCode,
+  product,
+  attribution,
+  dataToStore,
+  cartJson,
+  lastCampaignJson,
+  atcAt,
+  checkoutStartedAt,
+  purchaseAt,
+  status,
+  now
+}) {
+  const eventColumns = getTableColumnSet(db, 'si_events');
+  const sessionColumns = getTableColumnSet(db, 'si_sessions');
+  if (!eventColumns.size || !sessionColumns.size) {
+    return { ok: false, reason: 'missing_si_tables' };
+  }
+
+  const eventRow = {
+    store: normalizedStore,
+    session_id: sessionId,
+    client_id: clientId,
+    shopper_number: shopperNumber,
+    source,
+    event_name: eventName,
+    event_ts: eventTs,
+    page_url: location.pageUrl,
+    page_path: location.pagePath,
+    checkout_token: checkoutToken,
+    checkout_step: checkoutStep,
+    device_type: deviceType,
+    device_os: deviceOs,
+    country_code: countryCode,
+    product_id: product?.productId || null,
+    variant_id: product?.variantId || null,
+    utm_source: attribution.utm_source,
+    utm_medium: attribution.utm_medium,
+    utm_campaign: attribution.utm_campaign,
+    utm_content: attribution.utm_content,
+    utm_term: attribution.utm_term,
+    fbclid: attribution.fbclid,
+    gclid: attribution.gclid,
+    ttclid: attribution.ttclid,
+    msclkid: attribution.msclkid,
+    wbraid: attribution.wbraid,
+    gbraid: attribution.gbraid,
+    irclickid: attribution.irclickid,
+    data_json: dataToStore ? JSON.stringify(dataToStore) : null,
+    created_at: now
+  };
+
+  const baseSessionRow = {
+    store: normalizedStore,
+    session_id: sessionId,
+    client_id: clientId,
+    started_at: eventTs,
+    last_event_at: eventTs,
+    atc_at: atcAt,
+    checkout_started_at: checkoutStartedAt,
+    purchase_at: purchaseAt,
+    last_checkout_token: checkoutToken,
+    last_checkout_step: checkoutStep,
+    last_cart_json: cartJson,
+    shopper_number: shopperNumber,
+    last_device_type: deviceType,
+    last_device_os: deviceOs,
+    last_country_code: countryCode,
+    last_product_id: product?.productId || null,
+    last_variant_id: product?.variantId || null,
+    last_campaign_json: lastCampaignJson,
+    status,
+    updated_at: now
+  };
+
+  const fallbackTx = db.transaction(() => {
+    const eventInsert = buildDynamicInsertSql('si_events', eventRow, eventColumns);
+    if (eventInsert) db.prepare(eventInsert.sql).run(...eventInsert.values);
+
+    const where = { store: normalizedStore, session_id: sessionId };
+    const existing = db.prepare(`
+      SELECT 1
+      FROM si_sessions
+      WHERE store = ? AND session_id = ?
+      LIMIT 1
+    `).get(normalizedStore, sessionId);
+
+    if (existing) {
+      const updatePayload = {
+        client_id: clientId || undefined,
+        last_event_at: eventTs,
+        atc_at: atcAt || undefined,
+        checkout_started_at: checkoutStartedAt || undefined,
+        purchase_at: purchaseAt || undefined,
+        last_checkout_token: checkoutToken || undefined,
+        last_checkout_step: checkoutStep || undefined,
+        last_cart_json: cartJson || undefined,
+        shopper_number: shopperNumber || undefined,
+        last_device_type: deviceType || undefined,
+        last_device_os: deviceOs || undefined,
+        last_country_code: countryCode || undefined,
+        last_product_id: product?.productId || undefined,
+        last_variant_id: product?.variantId || undefined,
+        last_campaign_json: lastCampaignJson || undefined,
+        status,
+        updated_at: now
+      };
+      const updateSql = buildDynamicUpdateSql('si_sessions', updatePayload, sessionColumns, where);
+      if (updateSql) db.prepare(updateSql.sql).run(...updateSql.values);
+    } else {
+      const insertSql = buildDynamicInsertSql('si_sessions', baseSessionRow, sessionColumns);
+      if (insertSql) db.prepare(insertSql.sql).run(...insertSql.values);
+    }
+  });
+
+  fallbackTx.immediate();
+  return { ok: true };
+}
+
 export function recordSessionIntelligenceEvent({ store, payload, source = 'shopify' }) {
   if (!payload || typeof payload !== 'object') return { ok: false, reason: 'invalid_payload' };
   const db = getDb();
@@ -995,10 +1177,28 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     null;
 
   const clientId = identifiers.clientId || null;
-  const shopperNumber = clientId ? getOrCreateShopperNumber(normalizedStore, clientId, eventTs) : null;
+  let shopperNumber = null;
+  if (clientId) {
+    try {
+      shopperNumber = getOrCreateShopperNumber(normalizedStore, clientId, eventTs);
+    } catch (error) {
+      // Continue ingestion even if shopper table/index is unhealthy.
+      console.warn('[SessionIntelligence] shopper_number resolution failed:', error?.message || error);
+    }
+  }
+
+  let resolvedSessionId = identifiers.sessionId || null;
+  if (!resolvedSessionId && clientId) {
+    try {
+      resolvedSessionId = getOrCreateSessionId(normalizedStore, clientId, eventTs);
+    } catch (error) {
+      // Continue ingestion with a deterministic fallback if session mapping table is unhealthy.
+      console.warn('[SessionIntelligence] session_id resolution failed:', error?.message || error);
+    }
+  }
+
   const sessionId =
-    identifiers.sessionId ||
-    (clientId ? getOrCreateSessionId(normalizedStore, clientId, eventTs) : null) ||
+    resolvedSessionId ||
     (checkoutToken ? `checkout:${checkoutToken}` : null) ||
     `anon:${randomUUID()}`;
 
@@ -1281,7 +1481,52 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     );
   });
 
-  tx.immediate();
+  try {
+    tx.immediate();
+  } catch (writeError) {
+    if (!shouldUseSchemaFallback(writeError)) throw writeError;
+
+    const fallbackResult = tryRecordSessionIntelligenceEventFallback({
+      db,
+      normalizedStore,
+      sessionId,
+      clientId,
+      shopperNumber,
+      source,
+      eventName,
+      eventTs,
+      location,
+      checkoutToken,
+      checkoutStep,
+      deviceType,
+      deviceOs,
+      countryCode,
+      product,
+      attribution,
+      dataToStore,
+      cartJson,
+      lastCampaignJson,
+      atcAt,
+      checkoutStartedAt,
+      purchaseAt,
+      status,
+      now
+    });
+
+    if (!fallbackResult?.ok) throw writeError;
+
+    return {
+      ok: true,
+      store: normalizedStore,
+      sessionId,
+      sessionNumber: null,
+      eventName,
+      eventTs,
+      checkoutToken,
+      checkoutStep,
+      degradedWrite: true
+    };
+  }
 
   return {
     ok: true,
@@ -1291,7 +1536,8 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     eventName,
     eventTs,
     checkoutToken,
-    checkoutStep
+    checkoutStep,
+    degradedWrite: false
   };
 }
 

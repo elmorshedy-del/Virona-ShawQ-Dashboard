@@ -1,6 +1,7 @@
 # Notes
 
 ## Engineering rules
+- Always implement on a clean dedicated `codex/*` branch containing only this task's changes.
 - Avoid **magic numbers** (especially thresholds/guardrails used for insights). Extract them into named constants or a config object close to the logic, and name them with units/meaning.
 - Avoid hardcoded thresholds/time windows in business logic. Put tunable values in named constants/config so they can be changed safely later.
 - Treat every implementation as **future SaaS multi-tenant** work. Any code/function must support many clients, each with their own connected shop(s), account(s), rules, and data boundaries.
