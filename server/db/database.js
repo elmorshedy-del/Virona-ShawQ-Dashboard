@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -11,11 +12,9 @@ export function initDb() {
 
   // Ensure data directory exists
   const dataDir = path.dirname(dbPath);
-  import('fs').then(fs => {
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-  });
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
 
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
@@ -75,6 +74,12 @@ export function initDb() {
     db.exec(`ALTER TABLE salla_orders ADD COLUMN state TEXT`);
   } catch (e) { /* column exists */ }
   try {
+    db.exec(`ALTER TABLE salla_orders ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE salla_orders ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN city TEXT`);
   } catch (e) { /* column exists */ }
   try {
@@ -83,6 +88,62 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE shopify_orders ADD COLUMN order_created_at TEXT`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN attribution_json TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN customer_id TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN customer_email TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_orders ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN net_price REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN exclusion_reason TEXT`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`
+      UPDATE shopify_order_items
+      SET net_price = (COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0))
+      WHERE net_price IS NULL
+    `);
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_order_items.net_price', e?.message || e);
+  }
+  try {
+    db.exec(`
+      UPDATE shopify_order_items
+      SET is_excluded = 1,
+          exclusion_reason = COALESCE(exclusion_reason, 'legacy_non_revenue_zero_net')
+      WHERE COALESCE(is_excluded, 0) = 0
+        AND (COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0)) <= 0
+    `);
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_order_items.is_excluded', e?.message || e);
+  }
+  try {
+    db.exec(`
+      UPDATE shopify_orders
+      SET is_excluded = 1,
+          exclusion_reason = COALESCE(exclusion_reason, 'legacy_non_revenue_non_positive_total')
+      WHERE COALESCE(is_excluded, 0) = 0
+        AND COALESCE(order_total, 0) <= 0
+        AND COALESCE(subtotal, 0) <= 0
+    `);
+  } catch (e) {
+    console.warn('[DB] Non-blocking migration: failed to backfill shopify_orders.is_excluded', e?.message || e);
+  }
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -141,6 +202,8 @@ export function initDb() {
       status TEXT,
       payment_method TEXT,
       currency TEXT DEFAULT 'SAR',
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -168,9 +231,184 @@ export function initDb() {
       payment_method TEXT,
       currency TEXT DEFAULT 'USD',
       order_created_at TEXT,
+      attribution_json TEXT,
+      customer_id TEXT,
+      customer_email TEXT,
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store, order_id)
     )
+  `);
+
+  
+  // Shopify order items (line items)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      order_id TEXT NOT NULL,
+      line_item_id TEXT,
+      product_id TEXT,
+      variant_id TEXT,
+      sku TEXT,
+      title TEXT,
+      image_url TEXT,
+      quantity INTEGER DEFAULT 1,
+      price REAL DEFAULT 0,
+      discount REAL DEFAULT 0,
+      net_price REAL DEFAULT 0,
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, order_id, line_item_id)
+    )
+  `);
+
+  // Ensure the schema uses a stable unique key (Shopify line_item_id).
+  try {
+    const columns = db
+      .prepare("PRAGMA table_info('shopify_order_items')")
+      .all()
+      .map((col) => col.name);
+
+    const hasLineItemId = columns.includes('line_item_id');
+
+    const desiredUniqueColumns = ['store', 'order_id', 'line_item_id'];
+    const indexList = db.prepare("PRAGMA index_list('shopify_order_items')").all();
+    const uniqueIndexes = indexList.filter((idx) => idx.unique);
+
+    const hasDesiredUnique = uniqueIndexes.some((idx) => {
+      const cols = db
+        .prepare(`PRAGMA index_info('${idx.name}')`)
+        .all()
+        .map((col) => col.name);
+      return (
+        cols.length === desiredUniqueColumns.length &&
+        cols.every((col, i) => col === desiredUniqueColumns[i])
+      );
+    });
+
+    if (!hasLineItemId || !hasDesiredUnique) {
+      const backupTable = `shopify_order_items_backup_${Date.now()}`;
+
+      db.exec('BEGIN');
+
+      db.exec(`ALTER TABLE shopify_order_items RENAME TO "${backupTable}"`);
+
+      db.exec(`
+        CREATE TABLE shopify_order_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          store TEXT NOT NULL DEFAULT 'shawq',
+          order_id TEXT NOT NULL,
+          line_item_id TEXT,
+          product_id TEXT,
+          variant_id TEXT,
+          sku TEXT,
+          title TEXT,
+          image_url TEXT,
+          quantity INTEGER DEFAULT 1,
+          price REAL DEFAULT 0,
+          discount REAL DEFAULT 0,
+          net_price REAL DEFAULT 0,
+          is_excluded INTEGER DEFAULT 0,
+          exclusion_reason TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(store, order_id, line_item_id)
+        )
+      `);
+
+      const lineItemSelect = hasLineItemId ? 'line_item_id' : 'NULL AS line_item_id';
+      const imageUrlSelect = columns.includes('image_url') ? 'image_url' : 'NULL AS image_url';
+      const netPriceSelect = columns.includes('net_price')
+        ? 'net_price'
+        : '(COALESCE(quantity, 1) * COALESCE(price, 0) - COALESCE(discount, 0)) AS net_price';
+      const itemExcludedSelect = columns.includes('is_excluded') ? 'is_excluded' : '0 AS is_excluded';
+      const itemExclusionReasonSelect = columns.includes('exclusion_reason')
+        ? 'exclusion_reason'
+        : 'NULL AS exclusion_reason';
+
+      db.exec(`
+        INSERT INTO shopify_order_items
+          (store, order_id, line_item_id, product_id, variant_id, sku, title, image_url, quantity, price, discount, net_price, is_excluded, exclusion_reason, created_at)
+        SELECT
+          store,
+          order_id,
+          ${lineItemSelect},
+          product_id,
+          variant_id,
+          sku,
+          title,
+          ${imageUrlSelect},
+          quantity,
+          price,
+          discount,
+          ${netPriceSelect},
+          ${itemExcludedSelect},
+          ${itemExclusionReasonSelect},
+          created_at
+        FROM "${backupTable}"
+      `);
+
+      db.exec(`DROP TABLE "${backupTable}"`);
+
+      db.exec('COMMIT');
+    }
+  } catch (e) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (_) {
+      /* noop */
+    }
+  }
+
+  try {
+    db.exec(`ALTER TABLE shopify_order_items ADD COLUMN image_url TEXT`);
+  } catch (e) { /* column exists */ }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_order_items_order
+    ON shopify_order_items(store, order_id)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_order_items_product
+    ON shopify_order_items(store, product_id)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_products_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      product_id TEXT NOT NULL,
+      title TEXT,
+      image_url TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, product_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_products_cache_store_product
+    ON shopify_products_cache(store, product_id)
+  `);
+
+// Shopify pixel events (session-level / live behavior)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_pixel_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      event_type TEXT NOT NULL,
+      event_ts TEXT NOT NULL,
+      payload_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_pixel_events_store_created_at
+    ON shopify_pixel_events(store, created_at)
   `);
 
   // Manual orders - with store column
@@ -313,6 +551,23 @@ export function initDb() {
     db.exec('ALTER TABLE exchange_rates ADD COLUMN fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP');
   } catch (e) { /* column exists */ }
 
+  // Exchange rate API usage log (tracks actual external calls; not number of rows inserted)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exchange_rate_api_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      date TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      status TEXT NOT NULL,
+      http_status INTEGER,
+      error_code TEXT,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Notifications table
   db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -371,6 +626,59 @@ export function initDb() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(store)
+    )
+  `);
+
+  // Meta OAuth tokens - stores encrypted user access token for Ad Library
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_auth_tokens (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      access_token_encrypted TEXT,
+      access_token_iv TEXT,
+      access_token_tag TEXT,
+      is_encrypted INTEGER DEFAULT 0,
+      token_type TEXT,
+      scopes TEXT,
+      expires_at TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_api_status TEXT,
+      last_api_error TEXT,
+      last_api_at TEXT,
+      last_fbtrace_id TEXT
+    )
+  `);
+
+  // OAuth state storage for CSRF protection
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      return_to TEXT
+    )
+  `);
+
+  // Shopify OAuth tokens
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_auth_tokens (
+      shop TEXT PRIMARY KEY,
+      access_token_encrypted TEXT,
+      access_token_iv TEXT,
+      access_token_tag TEXT,
+      is_encrypted INTEGER DEFAULT 0,
+      scopes TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )
+  `);
+
+  // Shopify OAuth state storage
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shopify_oauth_states (
+      state TEXT PRIMARY KEY,
+      shop TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      return_to TEXT
     )
   `);
 
@@ -518,6 +826,8 @@ export function initDb() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meta_ad_store_date ON meta_ad_metrics(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_salla_store_date ON salla_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date ON shopify_orders(store, date)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_store_date_excluded ON shopify_orders(store, date, is_excluded)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_shopify_items_store_order_excluded ON shopify_order_items(store, order_id, is_excluded)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_store_date ON manual_orders(store, date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_manual_spend_store_date ON manual_spend_overrides(store, date)`);
 
@@ -555,6 +865,37 @@ export function initDb() {
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_conversations_store ON ai_conversations(store)`);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      verbosity TEXT NOT NULL DEFAULT 'low',
+      content TEXT NOT NULL,
+      model TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      source TEXT DEFAULT 'manual',
+      period TEXT DEFAULT 'custom',
+      generated_at TEXT DEFAULT (datetime('now')),
+      dismissed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_funnel_summary_settings (
+      store TEXT PRIMARY KEY,
+      auto_enabled INTEGER DEFAULT 1,
+      analyze_prompt TEXT,
+      summarize_prompt TEXT,
+      analyze_verbosity TEXT DEFAULT 'low',
+      summarize_verbosity TEXT DEFAULT 'low',
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
 
   console.log('✅ Database initialized');
   return db;

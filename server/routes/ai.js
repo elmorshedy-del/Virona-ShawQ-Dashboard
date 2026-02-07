@@ -6,11 +6,19 @@ import {
   decideQuestionStream,
   analyzeQuestionStream,
   summarizeDataStream,
+  generateCreativeFunnelSummary,
   dailySummary,
   dailySummaryStream,
   deleteDemoSallaData,
   runQuery
 } from '../services/openaiService.js';
+import {
+  dismissCreativeFunnelSummary,
+  getCreativeFunnelSummarySettings,
+  getLatestCreativeFunnelSummary,
+  saveCreativeFunnelSummary,
+  updateCreativeFunnelSummarySettings
+} from '../services/creativeFunnelSummaryService.js';
 import { getDb } from '../db/database.js';
 
 const router = express.Router();
@@ -168,7 +176,7 @@ function getConversationHistory(conversationId, limit = 10) {
 // ============================================================================
 router.post('/analyze', async (req, res) => {
   try {
-    const { question, store, conversationId, startDate, endDate } = req.body;
+    const { question, store, conversationId, startDate, endDate, llm, provider, model, temperature } = req.body;
 
     if (!question) {
       return res.status(400).json({ success: false, error: 'Question required' });
@@ -179,6 +187,11 @@ router.post('/analyze', async (req, res) => {
     }
 
     const history = conversationId ? getConversationHistory(conversationId) : [];
+    const llmOptions = {
+      provider: llm?.provider || provider || null,
+      model: llm?.model || model || null,
+      temperature: llm?.temperature ?? temperature
+    };
 
     console.log(`\n========================================`);
     console.log(`[API] POST /ai/analyze`);
@@ -189,7 +202,7 @@ router.post('/analyze', async (req, res) => {
     console.log(`[API] History: ${history.length} messages`);
     console.log(`========================================`);
 
-    const result = await analyzeQuestion(question, store, history, startDate, endDate);
+    const result = await analyzeQuestion(question, store, history, startDate, endDate, llmOptions);
 
     console.log(`[API] Response model: ${result.model}`);
     console.log(`[API] Response length: ${result.text?.length || 0} chars`);
@@ -214,7 +227,7 @@ router.post('/analyze', async (req, res) => {
 // ============================================================================
 router.post('/summarize', async (req, res) => {
   try {
-    const { question, store, conversationId, startDate, endDate } = req.body;
+    const { question, store, conversationId, startDate, endDate, llm, provider, model, temperature } = req.body;
 
     if (!question) {
       return res.status(400).json({ success: false, error: 'Question required' });
@@ -225,6 +238,11 @@ router.post('/summarize', async (req, res) => {
     }
 
     const history = conversationId ? getConversationHistory(conversationId) : [];
+    const llmOptions = {
+      provider: llm?.provider || provider || null,
+      model: llm?.model || model || null,
+      temperature: llm?.temperature ?? temperature
+    };
 
     console.log(`\n========================================`);
     console.log(`[API] POST /ai/summarize`);
@@ -235,7 +253,7 @@ router.post('/summarize', async (req, res) => {
     console.log(`[API] History: ${history.length} messages`);
     console.log(`========================================`);
 
-    const result = await summarizeData(question, store, history, startDate, endDate);
+    const result = await summarizeData(question, store, history, startDate, endDate, llmOptions);
 
     console.log(`[API] Response model: ${result.model}`);
     console.log(`[API] Response length: ${result.text?.length || 0} chars`);
@@ -260,7 +278,7 @@ router.post('/summarize', async (req, res) => {
 // ============================================================================
 router.post('/decide', async (req, res) => {
   try {
-    const { question, store, depth, conversationId, startDate, endDate } = req.body;
+    const { question, store, depth, conversationId, startDate, endDate, llm, provider, model, temperature } = req.body;
 
     if (!question) {
       return res.status(400).json({ success: false, error: 'Question required' });
@@ -271,6 +289,11 @@ router.post('/decide', async (req, res) => {
     }
 
     const history = conversationId ? getConversationHistory(conversationId) : [];
+    const llmOptions = {
+      provider: llm?.provider || provider || null,
+      model: llm?.model || model || null,
+      temperature: llm?.temperature ?? temperature
+    };
 
     console.log(`\n========================================`);
     console.log(`[API] POST /ai/decide`);
@@ -282,7 +305,7 @@ router.post('/decide', async (req, res) => {
     console.log(`[API] History: ${history.length} messages`);
     console.log(`========================================`);
 
-    const result = await decideQuestion(question, store, depth || 'balanced', history, startDate, endDate);
+    const result = await decideQuestion(question, store, depth || 'balanced', history, startDate, endDate, llmOptions);
 
     console.log(`[API] Response model: ${result.model}`);
     console.log(`[API] Reasoning effort: ${result.reasoning}`);
@@ -309,10 +332,31 @@ router.post('/decide', async (req, res) => {
 // ============================================================================
 router.post('/stream', async (req, res) => {
   try {
-    const { question, store, depth, mode, conversationId, reportType, startDate, endDate } = req.body;
+    const {
+      question,
+      store,
+      depth,
+      mode,
+      llm,
+      provider,
+      model,
+      temperature,
+      conversationId,
+      reportType,
+      startDate,
+      endDate,
+      verbosity,
+      summaryType,
+      summarySettings,
+      action,
+      summaryMode
+    } = req.body;
+
+    const activeMode = mode || 'decide';
+    const allowEmptyQuestion = ['daily-summary', 'creative-funnel-summary'].includes(activeMode);
 
     // Daily summary mode doesn't need a question
-    if (mode !== 'daily-summary' && !question) {
+    if (!allowEmptyQuestion && !question) {
       return res.status(400).json({ success: false, error: 'Question required' });
     }
 
@@ -327,7 +371,34 @@ router.post('/stream', async (req, res) => {
     res.flushHeaders();
 
     const history = conversationId ? getConversationHistory(conversationId) : [];
-    const activeMode = mode || 'decide';
+    const effectiveSummaryMode = summaryMode || activeMode;
+    const llmOptions = {
+      provider: llm?.provider || provider || null,
+      model: llm?.model || model || null,
+      temperature: llm?.temperature ?? temperature
+    };
+
+    if (activeMode === 'creative-funnel-summary') {
+      if (action === 'dismiss') {
+        dismissCreativeFunnelSummary(store, summaryMode || 'analyze');
+        res.write(`data: ${JSON.stringify({ type: 'done', summary: null })}\n\n`);
+        res.end();
+        return;
+      }
+
+      if (action === 'update-settings') {
+        const settings = updateCreativeFunnelSummarySettings(store, summarySettings || {});
+        res.write(`data: ${JSON.stringify({ type: 'done', settings })}\n\n`);
+        res.end();
+        return;
+      }
+
+      const settings = getCreativeFunnelSummarySettings(store);
+      const summary = getLatestCreativeFunnelSummary(store, effectiveSummaryMode);
+      res.write(`data: ${JSON.stringify({ type: 'done', summary, settings })}\n\n`);
+      res.end();
+      return;
+    }
 
     console.log(`\n========================================`);
     console.log(`[API] POST /ai/stream`);
@@ -336,6 +407,9 @@ router.post('/stream', async (req, res) => {
     console.log(`[API] Store: ${store}`);
     console.log(`[API] Depth: ${depth || 'balanced'}`);
     console.log(`[API] Date Range: ${startDate || 'default'} to ${endDate || 'default'}`);
+    if (llmOptions.provider || llmOptions.model) {
+      console.log(`[API] LLM: ${llmOptions.provider || 'openai'} ${llmOptions.model || '(auto)'}`);
+    }
     console.log(`[API] Conversation: ${conversationId || 'none'}`);
     console.log(`[API] History: ${history.length} messages`);
     if (activeMode === 'daily-summary') {
@@ -345,22 +419,62 @@ router.post('/stream', async (req, res) => {
     console.log(`========================================`);
 
     let result;
+    let fullText = '';
     const onDelta = (delta) => {
+      fullText += delta;
       res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
     };
 
     if (activeMode === 'daily-summary') {
       // Daily summary uses GPT-5.1 deep - always for both stores
-      result = await dailySummaryStream(reportType || 'am', onDelta);
+      result = await dailySummaryStream(reportType || 'am', onDelta, llmOptions);
+    } else if (summaryType === 'creative-funnel' && (activeMode === 'analyze' || activeMode === 'summarize')) {
+      if (summarySettings) {
+        updateCreativeFunnelSummarySettings(store, summarySettings);
+      }
+      result = await generateCreativeFunnelSummary({
+        store,
+        mode: activeMode,
+        prompt: question,
+        verbosity: verbosity || 'low',
+        startDate,
+        endDate,
+        onDelta,
+        llm: llmOptions
+      });
     } else if (activeMode === 'analyze') {
-      result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate);
+      result = await analyzeQuestionStream(question, store, onDelta, history, startDate, endDate, llmOptions);
     } else if (activeMode === 'summarize') {
-      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate);
+      result = await summarizeDataStream(question, store, onDelta, history, startDate, endDate, llmOptions);
     } else {
-      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate);
+      result = await decideQuestionStream(question, store, depth || 'balanced', onDelta, history, startDate, endDate, llmOptions);
     }
 
     console.log(`[API] Stream complete. Model: ${result.model}`);
+
+    if (summaryType === 'creative-funnel' && (activeMode === 'analyze' || activeMode === 'summarize')) {
+      const summaryId = saveCreativeFunnelSummary({
+        store,
+        mode: activeMode,
+        prompt: question,
+        verbosity: verbosity || 'low',
+        content: fullText,
+        model: result.model,
+        startDate,
+        endDate,
+        source: 'manual',
+        period: startDate && endDate && startDate === endDate ? 'daily' : 'custom'
+      });
+
+      res.write(`data: ${JSON.stringify({
+        type: 'done',
+        model: result.model,
+        reasoning: result.reasoning,
+        summaryId
+      })}\n\n`);
+      res.end();
+      return;
+    }
 
     res.write(`data: ${JSON.stringify({
       type: 'done',

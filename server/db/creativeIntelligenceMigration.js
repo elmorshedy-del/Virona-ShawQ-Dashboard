@@ -15,6 +15,7 @@ export function runCreativeIntelligenceMigration() {
       video_url TEXT,
       thumbnail_url TEXT,
       duration TEXT,
+      gemini_model TEXT,
       script JSON,
       status TEXT DEFAULT 'pending',
       error_message TEXT,
@@ -25,20 +26,51 @@ export function runCreativeIntelligenceMigration() {
     )
   `);
 
+  const creativeScriptsColumns = db.prepare(`PRAGMA table_info(creative_scripts)`).all();
+  const hasCreativeScriptsGeminiModel = creativeScriptsColumns.some(column => column.name === 'gemini_model');
+  if (!hasCreativeScriptsGeminiModel) {
+    db.exec(`ALTER TABLE creative_scripts ADD COLUMN gemini_model TEXT`);
+  }
+
   // AI settings - user preferences for Claude
   db.exec(`
     CREATE TABLE IF NOT EXISTS ai_creative_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL UNIQUE,
       model TEXT DEFAULT 'sonnet-4.5',
+      gemini_analysis_model TEXT DEFAULT 'gemini-2.5-flash-lite',
+      reasoning_effort TEXT DEFAULT 'medium',
+      temperature REAL DEFAULT 1.0,
       streaming INTEGER DEFAULT 1,
       tone TEXT DEFAULT 'balanced',
       custom_prompt TEXT,
       capabilities JSON DEFAULT '{"analyze":true,"clone":true,"ideate":true,"audit":true}',
+      verbosity TEXT DEFAULT 'medium',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     )
   `);
+
+  const settingsColumns = db.prepare(`PRAGMA table_info(ai_creative_settings)`).all();
+  const hasGeminiAnalysisModel = settingsColumns.some(column => column.name === 'gemini_analysis_model');
+  if (!hasGeminiAnalysisModel) {
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN gemini_analysis_model TEXT DEFAULT 'gemini-2.5-flash-lite'`);
+  }
+
+  const hasReasoningEffort = settingsColumns.some(column => column.name === 'reasoning_effort');
+  if (!hasReasoningEffort) {
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN reasoning_effort TEXT DEFAULT 'medium'`);
+  }
+
+  const hasVerbosity = settingsColumns.some(column => column.name === 'verbosity');
+  if (!hasVerbosity) {
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN verbosity TEXT DEFAULT 'medium'`);
+  }
+
+  const hasTemperature = settingsColumns.some(column => column.name === 'temperature');
+  if (!hasTemperature) {
+    db.exec(`ALTER TABLE ai_creative_settings ADD COLUMN temperature REAL DEFAULT 1.0`);
+  }
 
   // Creative chat conversations (separate from main AI chat)
   db.exec(`

@@ -1,9 +1,13 @@
 import fetch from 'node-fetch';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import { classifyNonRevenueOrder, resolveNonRevenueKeywords } from './orderExclusionService.js';
 
 export async function fetchSallaOrders(dateStart, dateEnd) {
   const accessToken = process.env.VIRONAX_SALLA_ACCESS_TOKEN;
+  const sallaAccount = process.env.VIRONAX_SALLA_ACCOUNT || process.env.VIRONAX_SALLA_STORE || 'vironax';
+  const exclusionKeywords = resolveNonRevenueKeywords({ account: sallaAccount, store: 'vironax' });
+  const exclusionOptions = { keywords: exclusionKeywords };
 
   if (!accessToken) {
     console.log('Salla credentials not configured - returning empty (no demo data)');
@@ -30,12 +34,24 @@ export async function fetchSallaOrders(dateStart, dateEnd) {
           const orderDate = order.date?.date?.split(' ')[0] || order.created_at?.split('T')[0];
           
           if (orderDate >= dateStart && orderDate <= dateEnd) {
+            const orderClassification = classifyNonRevenueOrder(
+              {
+                order_total: parseFloat(order.amounts?.total?.amount) || 0,
+                subtotal: parseFloat(order.amounts?.sub_total?.amount) || 0,
+                tags: Array.isArray(order.tags) ? order.tags.join(',') : (order.tags || ''),
+                note: order.notes || order.note || ''
+              },
+              [],
+              exclusionOptions
+            );
+
             orders.push({
               order_id: order.id.toString(),
               date: orderDate,
               country: order.shipping?.country?.name || 'Saudi Arabia',
               country_code: order.shipping?.country?.code || 'SA',
               city: order.shipping?.city?.name || order.shipping?.address?.city || null,
+              state: order.shipping?.address?.region || order.shipping?.address?.state || null,
               order_total: parseFloat(order.amounts?.total?.amount) || 0,
               subtotal: parseFloat(order.amounts?.sub_total?.amount) || 0,
               shipping: parseFloat(order.amounts?.shipping_cost?.amount) || 0,
@@ -44,7 +60,9 @@ export async function fetchSallaOrders(dateStart, dateEnd) {
               items_count: order.items?.length || 1,
               status: order.status?.name || 'completed',
               payment_method: order.payment_method || 'unknown',
-              currency: order.currency || 'SAR'
+              currency: order.currency || 'SAR',
+              is_excluded: orderClassification.exclude,
+              exclusion_reason: orderClassification.reason
             });
           }
         }
@@ -79,8 +97,8 @@ export async function syncSallaOrders() {
 
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO salla_orders
-      (store, order_id, date, country, country_code, city, order_total, subtotal, shipping, tax, discount, items_count, status, payment_method, currency)
-      VALUES ('vironax', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (store, order_id, date, country, country_code, city, state, order_total, subtotal, shipping, tax, discount, items_count, status, payment_method, currency, is_excluded, exclusion_reason)
+      VALUES ('vironax', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let recordsInserted = 0;
@@ -91,6 +109,7 @@ export async function syncSallaOrders() {
         order.country,
         order.country_code,
         order.city,
+        order.state || null,
         order.order_total,
         order.subtotal,
         order.shipping,
@@ -99,7 +118,9 @@ export async function syncSallaOrders() {
         order.items_count,
         order.status,
         order.payment_method,
-        order.currency
+        order.currency,
+        order.is_excluded ? 1 : 0,
+        order.exclusion_reason || null
       );
       recordsInserted++;
     }

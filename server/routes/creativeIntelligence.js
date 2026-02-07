@@ -1,14 +1,14 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import crypto from 'crypto';
+import { extractAndDownloadMedia, getYtdlpStatus, updateYtdlp } from '../utils/videoExtractor.js';
+import { askOpenAIChat, streamOpenAIChat } from '../services/openaiService.js';
+import { streamDeepSeekChat } from '../services/deepseekService.js';
 
-const execPromise = promisify(exec);
 const router = express.Router();
+
+const GEMINI_ANALYSIS_MODELS = new Set(['gemini-2.5-flash-lite', 'gemini-2.5-flash']);
+const DEFAULT_GEMINI_ANALYSIS_MODEL = 'gemini-2.5-flash-lite';
+const MAX_CREATIVE_CHAT_CONTEXT_ADS = 5;
 
 // ============================================================================
 // TONE PRESETS
@@ -61,226 +61,98 @@ When analyzing ads, focus on:
 }
 
 // ============================================================================
-// DOWNLOAD VIDEO FILE
-// ============================================================================
-async function downloadVideo(url, outputPath) {
-  const fetch = (await import('node-fetch')).default;
-  
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-  });
-  
-  if (!response.ok) {
-    throw new Error(`Failed to download: ${response.status}`);
-  }
-  
-  const buffer = await response.buffer();
-  fs.writeFileSync(outputPath, buffer);
-  return outputPath;
-}
-
-// ============================================================================
-// EXTRACT VIDEO URL WITH YT-DLP
-// ============================================================================
-async function extractVideoUrl(embedHtml) {
-  if (!embedHtml) return null;
-
-  const match = embedHtml.match(/href=([^&"]+)/);
-  if (!match) return null;
-
-  const fbUrl = decodeURIComponent(match[1]);
-
-  try {
-    const { stdout } = await execPromise(`yt-dlp -g "${fbUrl}" 2>/dev/null`, { timeout: 30000 });
-    return stdout.trim();
-  } catch (err) {
-    console.error('[yt-dlp] Extraction failed:', err.message);
-    return null;
-  }
-}
-
-// ============================================================================
-// DOWNLOAD VIDEO WITH YT-DLP (BETTER FOR FB VIDEOS)
-// ============================================================================
-async function downloadWithYtdlp(url, outputPath) {
-  try {
-    await execPromise(`yt-dlp -o "${outputPath}" --no-playlist "${url}"`, { timeout: 120000 });
-    return outputPath;
-  } catch (err) {
-    console.error('[yt-dlp] Download failed:', err.message);
-    return null;
-  }
-}
-
-// ============================================================================
-// GEMINI VIDEO ANALYSIS WITH FILE UPLOAD
+// GEMINI VIDEO ANALYSIS
 // ============================================================================
 router.post('/analyze-video', async (req, res) => {
   const { GoogleGenerativeAI } = await import('@google/generative-ai');
-  const { GoogleAIFileManager } = await import('@google/generative-ai/server');
-  
-  const debug = {
-    requestId: crypto.randomUUID(),
-    route: '/api/creative-intelligence/analyze-video',
-    receivedAt: new Date().toISOString(),
-    steps: []
-  };
-  const recordStep = (step, details = {}) => {
-    debug.steps.push({ step, at: new Date().toISOString(), ...details });
-  };
-
-  let tempFilePath = null;
-  let geminiUsage = null;
   
   try {
-    const { store, adId, adName, campaignId, campaignName, sourceUrl, embedHtml, thumbnailUrl } = req.body;
+    const { store, adId, adName, campaignId, campaignName, sourceUrl, embedHtml, thumbnailUrl, gemini_analysis_model } = req.body;
 
-    recordStep('request_received', {
-      store,
-      adId,
-      adName,
-      campaignId,
-      campaignName,
-      hasSourceUrl: !!sourceUrl,
-      hasEmbedHtml: !!embedHtml,
-      hasThumbnailUrl: !!thumbnailUrl
-    });
+    // Validate
+    if (!store || !adId) {
+      return res.status(400).json({ error: 'Missing store or adId' });
+    }
 
     if (!process.env.GEMINI_API_KEY) {
-      recordStep('missing_env', { key: 'GEMINI_API_KEY' });
-      return res.status(500).json({ error: 'GEMINI_API_KEY not configured', debug });
+      return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
     }
 
     const db = getDb();
+
+    // Resolve Gemini analysis model (settings → request override → default)
+    let settings = db.prepare(`SELECT gemini_analysis_model FROM ai_creative_settings WHERE store = ?`).get(store);
+    if (!settings) {
+      db.prepare(`INSERT INTO ai_creative_settings (store) VALUES (?)`).run(store);
+      settings = { gemini_analysis_model: DEFAULT_GEMINI_ANALYSIS_MODEL };
+    }
+
+    const requestedModel = typeof gemini_analysis_model === 'string' ? gemini_analysis_model.trim() : '';
+    const settingsModel = typeof settings?.gemini_analysis_model === 'string' ? settings.gemini_analysis_model.trim() : '';
+    const resolvedGeminiModel = GEMINI_ANALYSIS_MODELS.has(requestedModel)
+      ? requestedModel
+      : (GEMINI_ANALYSIS_MODELS.has(settingsModel) ? settingsModel : DEFAULT_GEMINI_ANALYSIS_MODEL);
 
     // Check if already analyzed
     const existing = db.prepare(`
       SELECT * FROM creative_scripts WHERE store = ? AND ad_id = ?
     `).get(store, adId);
 
-    if (existing && existing.status === 'complete') {
-      recordStep('cache_hit', { status: existing.status });
-      return res.json({ 
-        success: true, 
-        script: JSON.parse(existing.script),
-        cached: true,
-        tokenUsage: { gemini: null },
-        debug 
-      });
+    if (existing && existing.status === 'complete' && existing.script) {
+      let existingScript;
+      try {
+        existingScript = JSON.parse(existing.script);
+      } catch {
+        existingScript = null;
+      }
+
+      const existingModel = typeof existing.gemini_model === 'string' ? existing.gemini_model : null;
+      const cacheHit = !!existingScript && existingModel === resolvedGeminiModel;
+
+      if (cacheHit) {
+        return res.json({ 
+          success: true, 
+          script: existingScript,
+          cached: true,
+          method: existingScript?.method || 'unknown',
+          model: existingModel
+        });
+      }
     }
 
     // Mark as processing
-    recordStep('db_status_update', { status: 'processing' });
     db.prepare(`
-      INSERT INTO creative_scripts (store, ad_id, ad_name, campaign_id, campaign_name, status)
-      VALUES (?, ?, ?, ?, ?, 'processing')
-      ON CONFLICT(store, ad_id) DO UPDATE SET status = 'processing', updated_at = datetime('now')
-    `).run(store, adId, adName, campaignId, campaignName);
+      INSERT INTO creative_scripts (store, ad_id, ad_name, campaign_id, campaign_name, gemini_model, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'processing')
+      ON CONFLICT(store, ad_id) DO UPDATE SET
+        status = 'processing',
+        gemini_model = excluded.gemini_model,
+        error_message = NULL,
+        updated_at = datetime('now')
+    `).run(store, adId, adName || '', campaignId || '', campaignName || '', resolvedGeminiModel);
 
-    // Get video URL
-    let videoUrl = sourceUrl;
-    if (!videoUrl && embedHtml) {
-      videoUrl = await extractVideoUrl(embedHtml);
-      recordStep('video_url_extracted', { success: !!videoUrl });
-    }
+    // Extract and download media using the robust extractor
+    const media = await extractAndDownloadMedia({ sourceUrl, embedHtml, thumbnailUrl });
 
-    // Determine what we're analyzing
-    const hasVideo = !!videoUrl;
-    const mediaUrl = videoUrl || thumbnailUrl;
-
-    if (!mediaUrl) {
-      recordStep('media_unavailable', { hasVideo, hasThumbnailUrl: !!thumbnailUrl });
+    if (!media.success) {
       db.prepare(`
-        UPDATE creative_scripts SET status = 'failed', error_message = 'No media URL available', updated_at = datetime('now')
+        UPDATE creative_scripts 
+        SET status = 'failed', error_message = ?, updated_at = datetime('now')
         WHERE store = ? AND ad_id = ?
-      `).run(store, adId);
-      return res.status(400).json({ error: 'No video or thumbnail URL available', debug });
+      `).run(media.error, store, adId);
+      
+      return res.status(400).json({ error: media.error });
     }
+
+    console.log(`[Gemini] Media extracted via ${media.method}, type: ${media.type}`);
 
     // Initialize Gemini
-    recordStep('gemini_init', { model: 'gemini-2.0-flash-exp', hasVideo });
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    const model = genAI.getGenerativeModel({ model: resolvedGeminiModel });
 
-    let script;
-    let analysisType = 'thumbnail';
-
-    if (hasVideo) {
-      // TRY TO DOWNLOAD AND UPLOAD VIDEO
-      try {
-        const tempDir = os.tmpdir();
-        tempFilePath = path.join(tempDir, `ad_${adId}_${Date.now()}.mp4`);
-        
-        console.log(`[Gemini] Downloading video for ad ${adId}...`);
-        recordStep('video_download_start', { tempFilePath });
-        
-        // Try direct download first, then yt-dlp
-        let downloaded = false;
-        try {
-          await downloadVideo(videoUrl, tempFilePath);
-          downloaded = fs.existsSync(tempFilePath) && fs.statSync(tempFilePath).size > 0;
-          recordStep('video_download_direct', { success: downloaded });
-        } catch (e) {
-          console.log('[Gemini] Direct download failed, trying yt-dlp...');
-          recordStep('video_download_direct_failed', { error: e.message });
-        }
-        
-        if (!downloaded) {
-          // Try yt-dlp
-          const ytdlpPath = path.join(tempDir, `ad_${adId}_${Date.now()}_ytdlp.mp4`);
-          const result = await downloadWithYtdlp(videoUrl, ytdlpPath);
-          if (result && fs.existsSync(ytdlpPath)) {
-            tempFilePath = ytdlpPath;
-            downloaded = true;
-            recordStep('video_download_ytdlp', { success: true, path: ytdlpPath });
-          } else {
-            recordStep('video_download_ytdlp', { success: false });
-          }
-        }
-
-        if (downloaded && fs.existsSync(tempFilePath)) {
-          const fileSize = fs.statSync(tempFilePath).size;
-          console.log(`[Gemini] Video downloaded: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
-          recordStep('video_downloaded', { fileSize });
-
-          // Upload to Gemini File API
-          console.log('[Gemini] Uploading to Gemini File API...');
-          recordStep('gemini_upload_start');
-          const uploadResult = await fileManager.uploadFile(tempFilePath, {
-            mimeType: 'video/mp4',
-            displayName: `Ad ${adId} Video`
-          });
-
-          console.log(`[Gemini] Upload complete: ${uploadResult.file.name}`);
-          recordStep('gemini_upload_complete', { fileName: uploadResult.file.name });
-
-          // Wait for processing
-          let file = uploadResult.file;
-          while (file.state === 'PROCESSING') {
-            await new Promise(r => setTimeout(r, 2000));
-            file = await fileManager.getFile(file.name);
-          }
-
-          if (file.state === 'FAILED') {
-            recordStep('gemini_file_processing_failed');
-            throw new Error('Video processing failed');
-          }
-
-          console.log('[Gemini] Analyzing video frame-by-frame...');
-          recordStep('gemini_video_analysis_start', { fileUri: file.uri });
-
-          // Analyze with frame-by-frame prompt
-          const result = await model.generateContent([
-            {
-              fileData: {
-                fileUri: file.uri,
-                mimeType: 'video/mp4'
-              }
-            },
-            `Analyze this video ad FRAME BY FRAME with FULL AUDIO ANALYSIS.
+    // Build prompt based on media type
+    const prompt = media.type === 'video'
+      ? `Analyze this video ad FRAME BY FRAME with FULL AUDIO ANALYSIS.
 
 For each scene, provide:
 - time: exact timestamp range (e.g., "0:00-0:02", "0:02-0:05")
@@ -301,153 +173,104 @@ IMPORTANT:
 - Be specific about timing
 
 Return ONLY valid JSON array, no markdown:
-[
-  {"time": "0:00-0:02", "visual": "...", "text": "...", "action": "...", "voiceover": "...", "music": "...", "sound_effects": "...", "hook_element": "..."},
-  ...
-]`
-          ]);
-          geminiUsage = result.response.usageMetadata || null;
+[{"time": "0:00-0:02", "visual": "...", "text": "...", "action": "...", "voiceover": "...", "music": "...", "sound_effects": "...", "hook_element": "..."}]`
+      : `Analyze this ad thumbnail. Return ONLY valid JSON, no markdown, no explanation:
+{
+  "visual": "what's shown",
+  "text": "any text visible or null",
+  "mood": "overall feeling",
+  "product_visible": true or false,
+  "hook_elements": ["what grabs attention"],
+  "colors": ["dominant colors"],
+  "cta": "call to action if visible or null"
+}`;
 
-          const responseText = result.response.text();
-          
-          // Parse JSON
-          try {
-            const cleanJson = responseText.replace(/```json\n?|\n?```/g, '').trim();
-            script = JSON.parse(cleanJson);
-            analysisType = 'video_frames';
-            console.log(`[Gemini] Extracted ${Array.isArray(script) ? script.length : 0} frames`);
-            recordStep('gemini_video_parse_success', { frameCount: Array.isArray(script) ? script.length : 0 });
-          } catch (parseErr) {
-            console.error('[Gemini] JSON parse error:', parseErr.message);
-            script = { raw: responseText, parseError: true, type: 'video' };
-            analysisType = 'video_raw';
-            recordStep('gemini_video_parse_failed', { error: parseErr.message });
-          }
-
-          // Clean up uploaded file
-          try {
-            await fileManager.deleteFile(file.name);
-          } catch (e) {
-            console.log('[Gemini] Could not delete uploaded file');
-            recordStep('gemini_file_delete_failed', { error: e.message });
-          }
-        } else {
-          recordStep('video_download_failed');
-          throw new Error('Could not download video');
+    // Call Gemini with inlineData (base64)
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          data: media.data,
+          mimeType: media.mimeType
         }
-      } catch (videoErr) {
-        console.error('[Gemini] Video analysis failed, falling back to thumbnail:', videoErr.message);
-        recordStep('gemini_video_analysis_failed', { error: videoErr.message });
-        // Fall through to thumbnail analysis
-      }
+      },
+      prompt
+    ]);
+
+    const responseText = result.response.text();
+    const usage = result?.response?.usageMetadata || null;
+    
+    // Parse JSON from response
+    let script;
+    let analysisType = media.type === 'video' ? 'video_frames' : 'thumbnail';
+    
+    try {
+      const cleanJson = responseText
+        .replace(/```json\n?/g, '')
+        .replace(/```\n?/g, '')
+        .trim();
+      script = JSON.parse(cleanJson);
+    } catch (parseErr) {
+      console.error('[Gemini] JSON parse error:', parseErr.message);
+      console.error('[Gemini] Raw response:', responseText.substring(0, 500));
+      script = { raw: responseText, parseError: true };
+      analysisType = media.type === 'video' ? 'video_raw' : 'thumbnail_raw';
     }
 
-    // FALLBACK: Thumbnail analysis if video failed or not available
-    if (!script) {
-      console.log('[Gemini] Analyzing thumbnail image...');
-      recordStep('gemini_thumbnail_analysis_start', { mediaUrl: thumbnailUrl || mediaUrl });
-      
-      const result = await model.generateContent([
-        {
-          fileData: {
-            fileUri: thumbnailUrl || mediaUrl,
-            mimeType: 'image/jpeg'
-          }
-        },
-        `Analyze this ad image in detail:
-
-1. Visual Elements:
-   - Main subject/product
-   - Background and setting
-   - Colors and contrast
-   - Composition
-
-2. Text/Copy:
-   - All visible text (exact wording)
-   - Text placement and hierarchy
-   - Language used
-
-3. Marketing Elements:
-   - Hook/attention grabber
-   - Value proposition
-   - Call to action
-   - Social proof elements
-
-4. Target Audience Signals:
-   - Who is this ad targeting?
-   - Cultural/regional indicators
-   - Price/value positioning
-
-Return as JSON object with these sections. No markdown.`
-      ]);
-      geminiUsage = result.response.usageMetadata || null;
-
-      const responseText = result.response.text();
-      
-      try {
-        const cleanJson = responseText.replace(/```json\n?|\n?```/g, '').trim();
-        script = JSON.parse(cleanJson);
-        analysisType = 'thumbnail';
-        recordStep('gemini_thumbnail_parse_success');
-      } catch (parseErr) {
-        script = { raw: responseText, parseError: true, type: 'thumbnail' };
-        analysisType = 'thumbnail_raw';
-        recordStep('gemini_thumbnail_parse_failed', { error: parseErr.message });
-      }
-    }
-
-    // Clean up temp file
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try {
-        fs.unlinkSync(tempFilePath);
-      } catch (e) {}
-    }
-
-    // Store result
+    // Build script data structure
     const scriptData = {
+      model: resolvedGeminiModel,
       analysisType,
       frames: analysisType === 'video_frames' ? script : null,
-      thumbnail: analysisType !== 'video_frames' ? script : null,
+      thumbnail: analysisType.startsWith('thumbnail') ? script : null,
+      method: media.method,
       analyzedAt: new Date().toISOString()
     };
 
-    recordStep('db_status_update', { status: 'complete', analysisType });
+    // Store result
     db.prepare(`
       UPDATE creative_scripts 
-      SET script = ?, video_url = ?, thumbnail_url = ?, status = 'complete', analyzed_at = datetime('now'), updated_at = datetime('now')
+      SET script = ?, 
+          video_url = ?, 
+          thumbnail_url = ?, 
+          gemini_model = ?,
+          status = 'complete', 
+          analyzed_at = datetime('now'), 
+          updated_at = datetime('now')
       WHERE store = ? AND ad_id = ?
-    `).run(JSON.stringify(scriptData), videoUrl, thumbnailUrl, store, adId);
+    `).run(
+      JSON.stringify(scriptData), 
+      sourceUrl || null, 
+      thumbnailUrl || null, 
+      resolvedGeminiModel,
+      store, 
+      adId
+    );
 
-    res.json({
-      success: true,
-      script: scriptData,
+    res.json({ 
+      success: true, 
+      script: scriptData, 
       cached: false,
-      analysisType,
-      tokenUsage: { gemini: geminiUsage },
-      debug
+      method: media.method,
+      mediaType: media.type,
+      model: resolvedGeminiModel,
+      usage: usage ? { gemini: usage } : undefined
     });
 
   } catch (error) {
     console.error('[Gemini] Analysis error:', error);
-    recordStep('analysis_error', { error: error.message });
-    
-    // Clean up temp file on error
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try {
-        fs.unlinkSync(tempFilePath);
-      } catch (e) {}
-    }
     
     const db = getDb();
     const { store, adId } = req.body;
+    
     if (store && adId) {
       db.prepare(`
-        UPDATE creative_scripts SET status = 'failed', error_message = ?, updated_at = datetime('now')
+        UPDATE creative_scripts 
+        SET status = 'failed', error_message = ?, updated_at = datetime('now')
         WHERE store = ? AND ad_id = ?
       `).run(error.message, store, adId);
     }
 
-    res.status(500).json({ error: error.message, debug });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -472,8 +295,43 @@ router.get('/script/:adId', (req, res) => {
       exists: true,
       status: script.status,
       script: script.script ? JSON.parse(script.script) : null,
+      model: script.gemini_model || null,
       analyzedAt: script.analyzed_at,
       error: script.error_message
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// GET SCRIPTS FOR CAMPAIGN
+// ============================================================================
+router.get('/scripts', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const { campaignId } = req.query;
+    const db = getDb();
+
+    const rows = campaignId
+      ? db.prepare(`
+          SELECT ad_id, status, analyzed_at
+          FROM creative_scripts
+          WHERE store = ? AND campaign_id = ?
+        `).all(store, campaignId)
+      : db.prepare(`
+          SELECT ad_id, status, analyzed_at
+          FROM creative_scripts
+          WHERE store = ?
+        `).all(store);
+
+    res.json({
+      success: true,
+      scripts: rows.map((row) => ({
+        ad_id: row.ad_id,
+        status: row.status,
+        analyzed_at: row.analyzed_at
+      }))
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -502,26 +360,11 @@ router.delete('/script/:adId', (req, res) => {
 // ============================================================================
 router.post('/chat', async (req, res) => {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const debug = {
-    requestId: crypto.randomUUID(),
-    route: '/api/creative-intelligence/chat',
-    receivedAt: new Date().toISOString(),
-    steps: []
-  };
-  const recordStep = (step, details = {}) => {
-    debug.steps.push({ step, at: new Date().toISOString(), ...details });
-  };
 
   try {
-    const { store, message, adId, conversationId } = req.body;
-
-    if (!process.env.ANTHROPIC_API_KEY) {
-      recordStep('missing_env', { key: 'ANTHROPIC_API_KEY' });
-      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured', debug });
-    }
+    const { store, message, adId, adIds, conversationId, reasoning_effort } = req.body;
 
     const db = getDb();
-    recordStep('request_received', { store, adId, hasConversationId: !!conversationId, messageLength: message?.length || 0 });
 
     // Get user settings
     let settings = db.prepare(`
@@ -534,23 +377,44 @@ router.post('/chat', async (req, res) => {
       `).run(store);
       settings = {
         model: 'sonnet-4.5',
+        reasoning_effort: 'medium',
+        temperature: 1.0,
         streaming: 1,
+        verbosity: 'medium',
         tone: 'balanced',
         capabilities: { analyze: true, clone: true, ideate: true, audit: true }
       };
     }
-    recordStep('settings_loaded', { model: settings.model, streaming: !!settings.streaming, tone: settings.tone });
+
+    // Resolve ad context set (primary + comparisons)
+    const primaryAdId = typeof adId === 'string' ? adId.trim() : '';
+    const adIdList = [];
+    const seenAdIds = new Set();
+
+    const pushAdId = (candidate) => {
+      const next = typeof candidate === 'string' ? candidate.trim() : '';
+      if (!next) return;
+      if (seenAdIds.has(next)) return;
+      if (adIdList.length >= MAX_CREATIVE_CHAT_CONTEXT_ADS) return;
+      seenAdIds.add(next);
+      adIdList.push(next);
+    };
+
+    pushAdId(primaryAdId);
+    if (Array.isArray(adIds)) {
+      adIds.forEach(pushAdId);
+    }
+
+    const conversationAdId = adIdList[0] || null;
 
     // Get or create conversation
     let convId = conversationId;
     if (!convId) {
       const result = db.prepare(`
         INSERT INTO creative_conversations (store, ad_id, title) VALUES (?, ?, ?)
-      `).run(store, adId, message.slice(0, 50) + (message.length > 50 ? '...' : ''));
+      `).run(store, conversationAdId, message.slice(0, 50) + (message.length > 50 ? '...' : ''));
       convId = result.lastInsertRowid;
-      recordStep('conversation_created', { conversationId: convId });
     }
-    recordStep('conversation_ready', { conversationId: convId });
 
     // Get conversation history
     const history = db.prepare(`
@@ -562,43 +426,67 @@ router.post('/chat', async (req, res) => {
 
     // Get ad script if adId provided
     let adContext = '';
-    if (adId) {
-      const scriptRow = db.prepare(`
-        SELECT * FROM creative_scripts WHERE store = ? AND ad_id = ?
-      `).get(store, adId);
+    if (adIdList.length > 0) {
+      const clip = (value, maxChars = 900) => {
+        const text = typeof value === 'string' ? value : '';
+        if (!text) return text;
+        if (text.length <= maxChars) return text;
+        return `${text.slice(0, maxChars - 1)}…`;
+      };
 
-      if (scriptRow && scriptRow.script) {
-        const scriptData = JSON.parse(scriptRow.script);
-        
-        adContext = `\n\n--- CURRENT AD CONTEXT ---
-Ad Name: ${scriptRow.ad_name || adId}
-Campaign: ${scriptRow.campaign_name || 'Unknown'}
-Analysis Type: ${scriptData.analysisType || 'unknown'}
-`;
+      adContext = `\n\n--- SELECTED AD CONTEXT (${adIdList.length} ad${adIdList.length === 1 ? '' : 's'}) ---\n`;
+      adContext += `You may compare ads. The first one is the PRIMARY ad.\n`;
 
-        if (scriptData.analysisType === 'video_frames' && scriptData.frames) {
-          adContext += `\nFRAME-BY-FRAME BREAKDOWN:\n`;
-          if (Array.isArray(scriptData.frames)) {
-            scriptData.frames.forEach((frame, i) => {
-              adContext += `\n[${frame.time || `Frame ${i+1}`}]
-  Visual: ${frame.visual || 'N/A'}
-  Text on screen: ${frame.text || 'None'}
-  Action/Movement: ${frame.action || 'N/A'}
-  Voiceover: ${frame.voiceover || 'None'}
-  Music: ${frame.music || 'N/A'}
-  Sound Effects: ${frame.sound_effects || 'None'}
-  Hook Element: ${frame.hook_element || 'N/A'}
-`;
-            });
-          }
-        } else if (scriptData.thumbnail) {
-          adContext += `\nTHUMBNAIL ANALYSIS:\n${JSON.stringify(scriptData.thumbnail, null, 2)}\n`;
-        } else if (scriptData.raw) {
-          adContext += `\nANALYSIS:\n${scriptData.raw}\n`;
+      const scriptLookup = db.prepare(`SELECT * FROM creative_scripts WHERE store = ? AND ad_id = ?`);
+
+      adIdList.forEach((contextAdId, index) => {
+        const label = index === 0 ? 'PRIMARY AD' : `COMPARE AD ${index + 1}`;
+        const frameLimit = index === 0 ? 40 : 16;
+
+        const scriptRow = scriptLookup.get(store, contextAdId);
+        if (!scriptRow || !scriptRow.script || scriptRow.status !== 'complete') {
+          adContext += `\n--- ${label} ---\nAd ID: ${contextAdId}\nStatus: ${scriptRow?.status || 'not_found'}\n(No completed analysis available.)\n`;
+          return;
         }
-        
-        adContext += `\n--- END AD CONTEXT ---\n`;
-      }
+
+        let scriptData;
+        try {
+          scriptData = JSON.parse(scriptRow.script);
+        } catch {
+          adContext += `\n--- ${label} ---\nAd ID: ${contextAdId}\nStatus: complete\n(Analysis payload is not valid JSON.)\n`;
+          return;
+        }
+
+        adContext += `\n--- ${label} ---\n`;
+        adContext += `Ad ID: ${contextAdId}\n`;
+        adContext += `Ad Name: ${scriptRow.ad_name || contextAdId}\n`;
+        adContext += `Campaign: ${scriptRow.campaign_name || 'Unknown'}\n`;
+        adContext += `Analysis Type: ${scriptData?.analysisType || 'unknown'}\n`;
+        adContext += `Extraction Method: ${scriptData?.method || 'unknown'}\n`;
+
+        if (scriptData?.analysisType === 'video_frames' && Array.isArray(scriptData.frames)) {
+          const frames = scriptData.frames.slice(0, frameLimit);
+          adContext += `\nFRAME-BY-FRAME BREAKDOWN (first ${frames.length} scene${frames.length === 1 ? '' : 's'}):\n`;
+          frames.forEach((frame, i) => {
+            adContext += `\n[${frame?.time || `Frame ${i + 1}`}]\n`;
+            adContext += `  Visual: ${clip(frame?.visual || 'N/A', 360)}\n`;
+            adContext += `  Text on screen: ${clip(frame?.text || 'None', 240)}\n`;
+            adContext += `  Action/Movement: ${clip(frame?.action || 'N/A', 240)}\n`;
+            adContext += `  Voiceover: ${clip(frame?.voiceover || 'None', 360)}\n`;
+            adContext += `  Music: ${clip(frame?.music || 'N/A', 220)}\n`;
+            adContext += `  Sound Effects: ${clip(frame?.sound_effects || 'None', 160)}\n`;
+            adContext += `  Hook Element: ${clip(frame?.hook_element || 'N/A', 220)}\n`;
+          });
+        } else if (scriptData?.thumbnail) {
+          adContext += `\nTHUMBNAIL ANALYSIS:\n${clip(JSON.stringify(scriptData.thumbnail, null, 2), 2400)}\n`;
+        } else if (scriptData?.raw) {
+          adContext += `\nANALYSIS:\n${clip(String(scriptData.raw), 2400)}\n`;
+        } else {
+          adContext += `\n(Analysis did not include frames/thumbnail/raw payload.)\n`;
+        }
+      });
+
+      adContext += `\n--- END SELECTED AD CONTEXT ---\n`;
     }
 
     // Build messages
@@ -608,23 +496,150 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       ...history.map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: message }
     ];
-    recordStep('prompt_built', { historyCount: history.length, contextLength: adContext.length });
 
     // Save user message
     db.prepare(`
       INSERT INTO creative_messages (conversation_id, role, content) VALUES (?, 'user', ?)
     `).run(convId, message);
 
+    const modelSelection = settings.model || 'sonnet-4.5';
+    const effort = reasoning_effort || settings.reasoning_effort || 'medium';
+    const verbosity = settings.verbosity || 'medium';
+    const openAIModelMap = {
+      'gpt-5.2': 'gpt-5.2',
+      'gpt-5.2-pro': 'gpt-5.2-pro',
+      'gpt-5.1': 'gpt-5.1-chat-latest'
+    };
+    const openAIModel = openAIModelMap[modelSelection];
+    const deepSeekModels = new Set(['deepseek-chat', 'deepseek-reasoner']);
+    const deepSeekModel = deepSeekModels.has(modelSelection) ? modelSelection : null;
+    const temperature = Number.isFinite(Number(settings.temperature)) ? Number(settings.temperature) : 1.0;
+
+    if (deepSeekModel) {
+      if (!process.env.DEEPSEEK_API_KEY) {
+        return res.status(500).json({ error: 'DEEPSEEK_API_KEY not configured' });
+      }
+
+      // Always stream DeepSeek (client-side UX expects streaming when using DeepSeek).
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
+
+      let fullResponse = '';
+
+      try {
+        await streamDeepSeekChat({
+          model: deepSeekModel,
+          systemPrompt,
+          messages,
+          maxOutputTokens: 3600,
+          temperature,
+          onDelta: (text) => {
+            fullResponse += text;
+            res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+          }
+        });
+      } catch (err) {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, model: modelSelection })}\n\n`);
+        return res.end();
+      }
+
+      db.prepare(`
+        INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+      `).run(convId, fullResponse, modelSelection);
+
+      db.prepare(`
+        UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+      `).run(convId);
+
+      res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, model: modelSelection })}\n\n`);
+      return res.end();
+    }
+
+    if (openAIModel) {
+      if (!process.env.OPENAI_API_KEY) {
+        return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+      }
+
+      const shouldStreamOpenAI = ['gpt-5.2', 'gpt-5.2-pro'].includes(modelSelection);
+
+      if (shouldStreamOpenAI) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        let fullResponse = '';
+
+        try {
+          await streamOpenAIChat({
+            model: openAIModel,
+            reasoningEffort: effort,
+            systemPrompt,
+            messages,
+            maxOutputTokens: 3600,
+            verbosity,
+            onDelta: (text) => {
+              fullResponse += text;
+              res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+            }
+          });
+        } catch (err) {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, model: modelSelection })}\n\n`);
+          return res.end();
+        }
+
+        db.prepare(`
+          INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+        `).run(convId, fullResponse, modelSelection);
+
+        db.prepare(`
+          UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+        `).run(convId);
+
+        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, model: modelSelection })}\n\n`);
+        return res.end();
+      }
+
+      const assistantMessage = await askOpenAIChat({
+        model: openAIModel,
+        reasoningEffort: effort,
+        systemPrompt,
+        messages,
+        maxOutputTokens: 3600,
+        verbosity
+      });
+
+      db.prepare(`
+        INSERT INTO creative_messages (conversation_id, role, content, model) VALUES (?, 'assistant', ?, ?)
+      `).run(convId, assistantMessage, modelSelection);
+
+      db.prepare(`
+        UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
+      `).run(convId);
+
+      return res.json({
+        success: true,
+        message: assistantMessage,
+        conversationId: convId,
+        model: modelSelection
+      });
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+    }
+
     // Model mapping
     const modelMap = {
       'sonnet-4.5': 'claude-sonnet-4-20250514',
       'opus-4.5': 'claude-opus-4-20250514'
     };
-    const modelId = modelMap[settings.model] || 'claude-sonnet-4-20250514';
+    const modelId = modelMap[modelSelection] || 'claude-sonnet-4-20250514';
 
     // Initialize Claude
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    recordStep('anthropic_init', { modelId });
 
     if (settings.streaming) {
       // Streaming response
@@ -634,7 +649,6 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.flushHeaders();
 
       let fullResponse = '';
-      let finalUsage = null;
 
       const stream = anthropic.messages.stream({
         model: modelId,
@@ -648,10 +662,6 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
         res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
       });
 
-      stream.on('finalMessage', (message) => {
-        finalUsage = message?.usage || null;
-      });
-
       stream.on('end', () => {
         // Save assistant message
         db.prepare(`
@@ -663,13 +673,12 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
           UPDATE creative_conversations SET updated_at = datetime('now') WHERE id = ?
         `).run(convId);
 
-        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId, usage: finalUsage, debug })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', conversationId: convId })}\n\n`);
         res.end();
       });
 
       stream.on('error', (err) => {
-        recordStep('stream_error', { error: err.message });
-        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message, debug })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
         res.end();
       });
 
@@ -697,16 +706,13 @@ Analysis Type: ${scriptData.analysisType || 'unknown'}
       res.json({
         success: true,
         message: assistantMessage,
-        conversationId: convId,
-        usage: response.usage || null,
-        debug
+        conversationId: convId
       });
     }
 
   } catch (error) {
     console.error('[Claude] Chat error:', error);
-    recordStep('chat_error', { error: error.message });
-    res.status(500).json({ error: error.message, debug });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -789,7 +795,11 @@ router.get('/settings', (req, res) => {
       settings = {
         store,
         model: 'sonnet-4.5',
+        gemini_analysis_model: DEFAULT_GEMINI_ANALYSIS_MODEL,
+        reasoning_effort: 'medium',
+        temperature: 1.0,
         streaming: 1,
+        verbosity: 'medium',
         tone: 'balanced',
         custom_prompt: null,
         capabilities: { analyze: true, clone: true, ideate: true, audit: true }
@@ -798,6 +808,12 @@ router.get('/settings', (req, res) => {
       settings.capabilities = typeof settings.capabilities === 'string'
         ? JSON.parse(settings.capabilities)
         : settings.capabilities;
+      settings.gemini_analysis_model = GEMINI_ANALYSIS_MODELS.has(settings.gemini_analysis_model)
+        ? settings.gemini_analysis_model
+        : DEFAULT_GEMINI_ANALYSIS_MODEL;
+      settings.reasoning_effort = settings.reasoning_effort || 'medium';
+      settings.temperature = Number.isFinite(Number(settings.temperature)) ? Number(settings.temperature) : 1.0;
+      settings.verbosity = settings.verbosity || 'medium';
     }
 
     res.json({ success: true, settings });
@@ -808,26 +824,38 @@ router.get('/settings', (req, res) => {
 
 router.put('/settings', (req, res) => {
   try {
-    const { store, model, streaming, tone, custom_prompt, capabilities } = req.body;
+    const { store, model, gemini_analysis_model, reasoning_effort, temperature, streaming, tone, custom_prompt, capabilities, verbosity } = req.body;
     const db = getDb();
 
+    const nextGeminiAnalysisModel = GEMINI_ANALYSIS_MODELS.has(gemini_analysis_model)
+      ? gemini_analysis_model
+      : DEFAULT_GEMINI_ANALYSIS_MODEL;
+
     db.prepare(`
-      INSERT INTO ai_creative_settings (store, model, streaming, tone, custom_prompt, capabilities)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO ai_creative_settings (store, model, gemini_analysis_model, reasoning_effort, temperature, streaming, tone, custom_prompt, capabilities, verbosity)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(store) DO UPDATE SET
         model = excluded.model,
+        gemini_analysis_model = excluded.gemini_analysis_model,
+        reasoning_effort = excluded.reasoning_effort,
+        temperature = excluded.temperature,
         streaming = excluded.streaming,
         tone = excluded.tone,
         custom_prompt = excluded.custom_prompt,
         capabilities = excluded.capabilities,
+        verbosity = excluded.verbosity,
         updated_at = datetime('now')
     `).run(
       store,
       model || 'sonnet-4.5',
+      nextGeminiAnalysisModel,
+      reasoning_effort || 'medium',
+      Number.isFinite(Number(temperature)) ? Number(temperature) : 1.0,
       streaming ? 1 : 0,
       tone || 'balanced',
       custom_prompt || null,
-      JSON.stringify(capabilities || { analyze: true, clone: true, ideate: true, audit: true })
+      JSON.stringify(capabilities || { analyze: true, clone: true, ideate: true, audit: true }),
+      verbosity || 'medium'
     );
 
     res.json({ success: true });
@@ -840,19 +868,30 @@ router.put('/settings', (req, res) => {
 // STATUS CHECK
 // ============================================================================
 router.get('/status', async (req, res) => {
-  let ytdlpVersion = null;
-  try {
-    const { stdout } = await execPromise('yt-dlp --version');
-    ytdlpVersion = stdout.trim();
-  } catch (e) {
-    ytdlpVersion = null;
-  }
+  const ytdlp = await getYtdlpStatus();
 
   res.json({
     gemini: !!process.env.GEMINI_API_KEY,
     anthropic: !!process.env.ANTHROPIC_API_KEY,
-    ytdlp: ytdlpVersion ? { installed: true, version: ytdlpVersion } : { installed: false }
+    ytdlp
   });
+});
+
+// ============================================================================
+// YT-DLP STATUS
+// ============================================================================
+router.get('/yt-dlp-status', async (req, res) => {
+  const status = await getYtdlpStatus();
+  res.json(status);
+});
+
+// ============================================================================
+// YT-DLP UPDATE
+// ============================================================================
+router.post('/yt-dlp-update', async (req, res) => {
+  const success = await updateYtdlp();
+  const status = await getYtdlpStatus();
+  res.json({ updated: success, ...status });
 });
 
 export default router;

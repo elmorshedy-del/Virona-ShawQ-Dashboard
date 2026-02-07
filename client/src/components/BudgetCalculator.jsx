@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { parseCalculatorNumber } from '../utils/mathExpression.js';
 
 const DEFAULT_SPEND_LEVELS = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200];
 const DEFAULT_MARGIN = '35';
@@ -9,26 +10,64 @@ const AUTO_GPT_REQUEST = `Auto-analyze the calculator inputs with GPT-5.1 high e
 Provide insights, recommendations, and compare matching countries (two-campaign mode) or the top 2 unified countries.
 Use clear markdown tables and math-style equations where helpful.`;
 
+const INPUT_NUMBER_EXAMPLE = 'Supports math like 1200/30, 49*1.2, $1,200.';
+
 function formatCurrency(value) {
-  if (!Number.isFinite(value)) {
+  if (Number.isNaN(value)) {
+    return '—';
+  }
+
+  if (value === Infinity) {
     return '∞';
   }
 
-  return `$${Math.round(value)}`;
+  if (value === -Infinity) {
+    return '-∞';
+  }
+
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+
+  const rounded = Math.round(value);
+  return `$${Object.is(rounded, -0) ? 0 : rounded}`;
 }
 
 function formatProfit(value) {
-  if (!Number.isFinite(value)) {
+  if (Number.isNaN(value)) {
+    return '—';
+  }
+
+  if (value === Infinity) {
     return '∞';
   }
 
-  return value >= 0 ? `$${Math.round(value)}` : `-$${Math.round(Math.abs(value))}`;
+  if (value === -Infinity) {
+    return '-∞';
+  }
+
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+
+  const rounded = Math.round(value);
+  if (rounded === 0) {
+    return '$0';
+  }
+  return rounded > 0 ? `$${rounded}` : `-$${Math.abs(rounded)}`;
 }
 
 function buildInterpretation({ B, optimal, profitAtOptimal, ceiling, realCeiling, hasOverhead, monthlyOverhead }) {
   const overheadText = hasOverhead
     ? `<br>🏢 <strong>Real Ceiling: $${Math.round(realCeiling)}/day</strong> (covers $${Math.round(monthlyOverhead)}/mo overhead)`
     : '';
+
+  if (!Number.isFinite(B) || B <= 0) {
+    return `<strong>B = ${Number.isFinite(B) ? B.toFixed(2) : '—'} → Invalid curve</strong><br><br>
+      Your two points imply conversions don’t increase with spend (or the inputs are too noisy).<br>
+      This breaks the assumptions of the two-point power model, so “optimal” and “breakeven” aren’t reliable.<br><br>
+      Try using two tests from the same geo, same objective, and stable attribution window (or increase the time window).`;
+  }
 
   if (B >= 1) {
     return `<strong>B = ${B.toFixed(2)} → INCREASING RETURNS!</strong><br><br>
@@ -256,6 +295,28 @@ ${followupContext}
 User request: ${request}`;
 }
 
+const BUDGET_CALCULATOR_LLM_KEY = 'virona.budgetCalculator.llm.v1';
+
+function loadBudgetCalculatorLlmSettings() {
+  try {
+    const raw = window.localStorage.getItem(BUDGET_CALCULATOR_LLM_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function persistBudgetCalculatorLlmSettings(value) {
+  try {
+    window.localStorage.setItem(BUDGET_CALCULATOR_LLM_KEY, JSON.stringify(value));
+  } catch (_error) {
+    // ignore
+  }
+}
+
 export default function BudgetCalculator({ campaigns = [], periodDays = 30, storeName = '' }) {
   const [inputs, setInputs] = useState({
     spend1: '',
@@ -280,6 +341,9 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   const [gptFollowup, setGptFollowup] = useState('');
   const [gptRequest, setGptRequest] = useState('');
   const [shikiHighlighter, setShikiHighlighter] = useState(null);
+  const [llmSettings, setLlmSettings] = useState(() => (
+    loadBudgetCalculatorLlmSettings() || { provider: 'openai', model: '', temperature: 1.0 }
+  ));
 
   useEffect(() => {
     let isMounted = true;
@@ -299,6 +363,10 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    persistBudgetCalculatorLlmSettings(llmSettings);
+  }, [llmSettings]);
 
   const updateInput = (key) => (event) => {
     setInputs((prev) => ({ ...prev, [key]: event.target.value }));
@@ -444,18 +512,34 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
   };
 
   const handleCalculate = () => {
-    const spend1 = parseFloat(inputs.spend1);
-    const conv1 = parseFloat(inputs.conv1);
-    const spend2 = parseFloat(inputs.spend2);
-    const conv2 = parseFloat(inputs.conv2);
-    const aov = parseFloat(inputs.aov);
-    const margin = parseFloat(inputs.margin) / 100;
-    const monthlyOverhead = parseFloat(inputs.overhead) || 0;
+    const spend1 = parseCalculatorNumber(inputs.spend1);
+    const conv1 = parseCalculatorNumber(inputs.conv1);
+    const spend2 = parseCalculatorNumber(inputs.spend2);
+    const conv2 = parseCalculatorNumber(inputs.conv2);
+    const aov = parseCalculatorNumber(inputs.aov);
+    const marginPercent = parseCalculatorNumber(inputs.margin);
+    const margin = marginPercent / 100;
+    const monthlyOverhead = parseCalculatorNumber(inputs.overhead) || 0;
     const dailyOverhead = monthlyOverhead / 30;
     const hasOverhead = monthlyOverhead > 0;
 
-    if (!spend1 || !conv1 || !spend2 || !conv2 || !aov || !margin) {
-      window.alert('Please fill in all fields (overhead is optional)');
+    if (![spend1, conv1, spend2, conv2, aov, marginPercent].every(Number.isFinite)) {
+      window.alert(`Please enter valid numbers. ${INPUT_NUMBER_EXAMPLE}`);
+      return;
+    }
+
+    if (monthlyOverhead < 0) {
+      window.alert('Monthly overhead must be ≥ 0.');
+      return;
+    }
+
+    if (spend1 <= 0 || conv1 <= 0 || spend2 <= 0 || conv2 <= 0 || aov <= 0 || marginPercent <= 0) {
+      window.alert('Spend, conversions, AOV, and margin must all be > 0 (overhead is optional).');
+      return;
+    }
+
+    if (marginPercent > 100) {
+      window.alert('Profit margin must be ≤ 100%.');
       return;
     }
 
@@ -466,6 +550,11 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
 
     const B = Math.log(conv2 / conv1) / Math.log(spend2 / spend1);
     const a = conv1 / Math.pow(spend1, B);
+
+    if (!Number.isFinite(B) || !Number.isFinite(a)) {
+      window.alert('Those two points can’t form a valid curve (check spend/conv values).');
+      return;
+    }
 
     const breakevenRoas = 1 / margin;
 
@@ -500,11 +589,15 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       optimal = Infinity;
     }
 
-    const convAtOptimal = a * Math.pow(optimal, B);
-    const revenueAtOptimal = convAtOptimal * aov;
-    const profitAtOptimal = revenueAtOptimal * margin - optimal - dailyOverhead;
+    const profitAtOptimal = Number.isFinite(optimal)
+      ? (a * Math.pow(optimal, B) * aov) * margin - optimal - dailyOverhead
+      : B >= 1
+        ? Infinity
+        : NaN;
 
     const spendLevels = [...DEFAULT_SPEND_LEVELS];
+    if (Number.isFinite(spend1)) spendLevels.push(Math.round(spend1));
+    if (Number.isFinite(spend2)) spendLevels.push(Math.round(spend2));
     if (optimal !== Infinity && optimal > 5 && optimal < 200) {
       spendLevels.push(Math.round(optimal));
     }
@@ -582,9 +675,12 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       return 'Your Formula: Conversions = — × Spend^—';
     }
 
+    const aov = parseCalculatorNumber(inputs.aov);
+    const aovSafe = Number.isFinite(aov) ? aov : 0;
+
     return `<strong>Your Formula:</strong><br>
       Conversions = ${results.a.toFixed(4)} × Spend<sup>${results.B.toFixed(2)}</sup><br>
-      ROAS = ${(results.a * parseFloat(inputs.aov)).toFixed(2)} × Spend<sup>${(results.B - 1).toFixed(2)}</sup>`;
+      ROAS = ${(results.a * aovSafe).toFixed(2)} × Spend<sup>${(results.B - 1).toFixed(2)}</sup>`;
   }, [inputs.aov, results]);
 
   const interpretationHtml = useMemo(() => {
@@ -673,7 +769,8 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       body: JSON.stringify({
         question: prompt,
         store: storeName || 'vironax',
-        depth: 'deep'
+        depth: 'deep',
+        llm: llmSettings
       })
     });
 
@@ -925,6 +1022,45 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
         <div className="border-b border-gray-100 px-6 py-4">
           <h2 className="text-lg font-semibold text-gray-900">🤖 ChatGPT 5.1 (High Effort)</h2>
           <p className="text-xs text-gray-400 mt-1">Auto-insights trigger after campaign autofill, with markdown tables, equations, and comparison insights.</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <select
+              value={`${llmSettings.provider}:${llmSettings.model || 'auto'}`}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value === 'openai:auto') {
+                  setLlmSettings((prev) => ({ ...prev, provider: 'openai', model: '' }));
+                  return;
+                }
+                if (value === 'deepseek:deepseek-chat') {
+                  setLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-chat' }));
+                  return;
+                }
+                if (value === 'deepseek:deepseek-reasoner') {
+                  setLlmSettings((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-reasoner' }));
+                }
+              }}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700"
+              title="AI model"
+            >
+              <option value="openai:auto">OpenAI (auto)</option>
+              <option value="deepseek:deepseek-chat">DeepSeek Chat</option>
+              <option value="deepseek:deepseek-reasoner">DeepSeek Reasoner</option>
+            </select>
+
+            {llmSettings.provider === 'deepseek' && (
+              <select
+                value={String(llmSettings.temperature ?? 1.0)}
+                onChange={(event) => setLlmSettings((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700"
+                title="Temperature"
+              >
+                <option value="0">Coding / Math (0.0)</option>
+                <option value="1">Data Analysis (1.0)</option>
+                <option value="1.3">General / Translation (1.3)</option>
+                <option value="1.5">Creative Writing (1.5)</option>
+              </select>
+            )}
+          </div>
         </div>
         <div className="p-6 space-y-4">
           <div className="rounded-2xl border border-purple-100 bg-purple-50/60 p-4">
@@ -1012,98 +1148,108 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
-        <div className="border-b border-gray-100 px-6 py-4">
-          <h2 className="text-lg font-semibold text-gray-900">📊 Input Your Data</h2>
-        </div>
-        <div className="p-6 space-y-6">
-          <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-600">Test 1: Daily Spend ($)</label>
-              <input
-                type="number"
-                value={inputs.spend1}
-                onChange={updateInput('spend1')}
-                placeholder="8"
-                step="0.01"
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <p className="text-xs text-gray-400">Lower budget test</p>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-600">Test 1: Daily Conversions</label>
-              <input
-                type="number"
-                value={inputs.conv1}
-                onChange={updateInput('conv1')}
-                placeholder="0.33"
-                step="0.01"
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <p className="text-xs text-gray-400">Purchases per day</p>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-600">Test 2: Daily Spend ($)</label>
-              <input
-                type="number"
-                value={inputs.spend2}
-                onChange={updateInput('spend2')}
-                placeholder="49"
-                step="0.01"
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <p className="text-xs text-gray-400">Higher budget test</p>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-600">Test 2: Daily Conversions</label>
-              <input
-                type="number"
-                value={inputs.conv2}
-                onChange={updateInput('conv2')}
-                placeholder="1.0"
-                step="0.01"
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <p className="text-xs text-gray-400">Purchases per day</p>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-600">Average Order Value ($)</label>
-              <input
-                type="number"
-                value={inputs.aov}
-                onChange={updateInput('aov')}
-                placeholder="113"
-                step="0.01"
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <p className="text-xs text-gray-400">Revenue per purchase</p>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-600">Profit Margin (%)</label>
-              <input
-                type="number"
-                value={inputs.margin}
-                onChange={updateInput('margin')}
-                placeholder="35"
-                step="1"
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <p className="text-xs text-gray-400">Your profit margin</p>
-            </div>
-            <div className="space-y-2">
+	        <div className="border-b border-gray-100 px-6 py-4">
+	          <h2 className="text-lg font-semibold text-gray-900">📊 Input Your Data</h2>
+	        </div>
+	        <div className="p-6 space-y-6">
+	          <div className="text-xs text-gray-500">
+	            Tip: {INPUT_NUMBER_EXAMPLE}
+	          </div>
+	          <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+	            <div className="space-y-2">
+	              <label className="text-sm font-medium text-gray-600">Test 1: Daily Spend ($)</label>
+	              <input
+	                type="text"
+	                inputMode="decimal"
+	                value={inputs.spend1}
+	                onChange={updateInput('spend1')}
+	                placeholder="8"
+	                autoComplete="off"
+	                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	              />
+	              <p className="text-xs text-gray-400">Lower budget test</p>
+	            </div>
+	            <div className="space-y-2">
+	              <label className="text-sm font-medium text-gray-600">Test 1: Daily Conversions</label>
+	              <input
+	                type="text"
+	                inputMode="decimal"
+	                value={inputs.conv1}
+	                onChange={updateInput('conv1')}
+	                placeholder="0.33"
+	                autoComplete="off"
+	                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	              />
+	              <p className="text-xs text-gray-400">Purchases per day</p>
+	            </div>
+	            <div className="space-y-2">
+	              <label className="text-sm font-medium text-gray-600">Test 2: Daily Spend ($)</label>
+	              <input
+	                type="text"
+	                inputMode="decimal"
+	                value={inputs.spend2}
+	                onChange={updateInput('spend2')}
+	                placeholder="49"
+	                autoComplete="off"
+	                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	              />
+	              <p className="text-xs text-gray-400">Higher budget test</p>
+	            </div>
+	            <div className="space-y-2">
+	              <label className="text-sm font-medium text-gray-600">Test 2: Daily Conversions</label>
+	              <input
+	                type="text"
+	                inputMode="decimal"
+	                value={inputs.conv2}
+	                onChange={updateInput('conv2')}
+	                placeholder="1.0"
+	                autoComplete="off"
+	                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	              />
+	              <p className="text-xs text-gray-400">Purchases per day</p>
+	            </div>
+	            <div className="space-y-2">
+	              <label className="text-sm font-medium text-gray-600">Average Order Value ($)</label>
+	              <input
+	                type="text"
+	                inputMode="decimal"
+	                value={inputs.aov}
+	                onChange={updateInput('aov')}
+	                placeholder="113"
+	                autoComplete="off"
+	                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	              />
+	              <p className="text-xs text-gray-400">Revenue per purchase</p>
+	            </div>
+	            <div className="space-y-2">
+	              <label className="text-sm font-medium text-gray-600">Profit Margin (%)</label>
+	              <input
+	                type="text"
+	                inputMode="decimal"
+	                value={inputs.margin}
+	                onChange={updateInput('margin')}
+	                placeholder="35"
+	                autoComplete="off"
+	                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	              />
+	              <p className="text-xs text-gray-400">Your profit margin</p>
+	            </div>
+	            <div className="space-y-2">
               <label className="text-sm font-medium text-gray-600">
                 Monthly Overhead <span className="text-xs text-gray-400">(optional)</span>
-              </label>
-              <input
-                type="number"
-                value={inputs.overhead}
-                onChange={updateInput('overhead')}
-                placeholder="0"
-                step="1"
-                className="w-full rounded-lg border border-dashed border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <p className="text-xs text-gray-400">Rent, salaries, software, etc.</p>
-            </div>
-          </div>
+	              </label>
+	              <input
+	                type="text"
+	                inputMode="decimal"
+	                value={inputs.overhead}
+	                onChange={updateInput('overhead')}
+	                placeholder="0"
+	                autoComplete="off"
+	                className="w-full rounded-lg border border-dashed border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+	              />
+	              <p className="text-xs text-gray-400">Rent, salaries, software, etc.</p>
+	            </div>
+	          </div>
 
           <button
             type="button"
@@ -1141,24 +1287,42 @@ export default function BudgetCalculator({ campaigns = [], periodDays = 30, stor
                   <div className="text-2xl font-semibold text-indigo-600">{results.a.toFixed(4)}</div>
                   <p className="text-xs text-gray-500">a (Base Efficiency)</p>
                 </div>
-                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center">
-                  <div className="text-2xl font-semibold text-emerald-600">{formatCurrency(results.optimal)}</div>
-                  <p className="text-xs text-gray-500">💰 Optimal Spend</p>
-                </div>
-                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center">
-                  <div className="text-2xl font-semibold text-emerald-600">{formatCurrency(results.profitAtOptimal)}</div>
-                  <p className="text-xs text-gray-500">💵 Max Daily Profit</p>
-                </div>
-                {results.hasOverhead && (
-                  <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center">
-                    <div className="text-2xl font-semibold text-sky-600">{formatCurrency(results.realCeiling)}</div>
-                    <p className="text-xs text-gray-500">🎯 Real Ceiling</p>
-                  </div>
-                )}
-                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center">
-                  <div className="text-2xl font-semibold text-rose-500">{formatCurrency(results.ceiling)}</div>
-                  <p className="text-xs text-gray-500">⚠️ Ad Breakeven</p>
-                </div>
+	                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center">
+	                  <div className="text-2xl font-semibold text-emerald-600">
+	                    {Number.isFinite(results.optimal)
+	                      ? formatCurrency(results.optimal)
+	                      : results.B >= 1
+	                        ? 'No max'
+	                        : '—'}
+	                  </div>
+	                  <p className="text-xs text-gray-500">💰 Optimal Spend</p>
+	                </div>
+	                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center">
+	                  <div className="text-2xl font-semibold text-emerald-600">
+	                    {Number.isFinite(results.profitAtOptimal)
+	                      ? formatCurrency(results.profitAtOptimal)
+	                      : results.B >= 1
+	                        ? 'No max'
+	                        : '—'}
+	                  </div>
+	                  <p className="text-xs text-gray-500">💵 Max Daily Profit</p>
+	                </div>
+	                {results.hasOverhead && results.B < 1 && Number.isFinite(results.realCeiling) && (
+	                  <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center">
+	                    <div className="text-2xl font-semibold text-sky-600">{formatCurrency(results.realCeiling)}</div>
+	                    <p className="text-xs text-gray-500">🎯 Real Ceiling</p>
+	                  </div>
+	                )}
+	                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center">
+	                  <div className="text-2xl font-semibold text-rose-500">
+	                    {Number.isFinite(results.ceiling)
+	                      ? formatCurrency(results.ceiling)
+	                      : results.B >= 1
+	                        ? 'No ceiling'
+	                        : '—'}
+	                  </div>
+	                  <p className="text-xs text-gray-500">⚠️ Ad Breakeven</p>
+	                </div>
               </div>
 
               <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">

@@ -217,7 +217,6 @@ function extractVideoId(creative) {
 function extractThumbnailUrl(creative) {
   if (!creative) return null;
 
-  if (creative.thumbnail_url) return creative.thumbnail_url;
   if (creative.image_url) return creative.image_url;
 
   const videoImage = creative?.object_story_spec?.video_data?.image_url;
@@ -254,6 +253,8 @@ function extractThumbnailUrl(creative) {
     if (first?.image_url) return first.image_url;
   }
 
+  // `thumbnail_url` is often returned at a very small size (blurry when upscaled).
+  if (creative.thumbnail_url) return creative.thumbnail_url;
   return null;
 }
 
@@ -388,7 +389,7 @@ router.get('/ads/:adId/video', async (req, res) => {
 
   const videoResult = await fetchMetaJson({
     path: `/${videoId}`,
-    params: { fields: 'source,picture,thumbnails{uri},length,permalink_url,embed_html' },
+    params: { fields: 'source,picture,thumbnails{uri,height,width},length,permalink_url,embed_html' },
     store,
     adAccountId,
     localEndpoint: '/api/meta/ads/:adId/video'
@@ -410,9 +411,19 @@ router.get('/ads/:adId/video', async (req, res) => {
   }
 
   const videoData = videoResult.data || {};
+  const thumbnails = Array.isArray(videoData?.thumbnails?.data) ? videoData.thumbnails.data : [];
+  const bestThumbnail = thumbnails.reduce((best, item) => {
+    if (!item?.uri) return best;
+    if (!best) return item;
+    const bestArea = (Number(best.width) || 0) * (Number(best.height) || 0);
+    const itemArea = (Number(item.width) || 0) * (Number(item.height) || 0);
+    if (itemArea > bestArea) return item;
+    return best;
+  }, null);
   const thumbnailUrl =
+    bestThumbnail?.uri ||
     videoData?.picture ||
-    videoData?.thumbnails?.data?.[0]?.uri ||
+    thumbnails[0]?.uri ||
     null;
 
   res.json({
