@@ -121,7 +121,7 @@ export default function PhotoMagicEditor({ store }) {
   const [isHealthLoading, setIsHealthLoading] = useState(false);
   const [showStatusDetails, setShowStatusDetails] = useState(false);
 
-  const [tool, setTool] = useState('remove_bg'); // remove_bg | erase
+  const [tool, setTool] = useState('remove_bg'); // remove_bg | erase | enhance
   const [error, setError] = useState(null);
 
   const [imageId, setImageId] = useState(null);
@@ -155,6 +155,12 @@ export default function PhotoMagicEditor({ store }) {
   const [sdxlStrength, setSdxlStrength] = useState(0.99);
   const [sdxlSeed, setSdxlSeed] = useState(0);
 
+  // Enhance settings + results
+  const [enhanceMode, setEnhanceMode] = useState('upscale'); // upscale | denoise | deblur | sharpen | low_light
+  const [enhanceStrength, setEnhanceStrength] = useState(0.5);
+  const [upscaleFactor, setUpscaleFactor] = useState(2);
+  const [enhanceUrl, setEnhanceUrl] = useState(null);
+
   const imgRef = useRef(null);
   const maskCanvasRef = useRef(null);
   const paintStateRef = useRef({ painting: false, lastX: 0, lastY: 0 });
@@ -166,6 +172,7 @@ export default function PhotoMagicEditor({ store }) {
   const rmbg2Ready = Boolean(aiConfigured && aiModels?.rmbg2);
   const sam2Ready = Boolean(aiConfigured && aiModels?.sam2);
   const lamaReady = Boolean(aiConfigured && aiModels?.lama);
+  const realEsrganReady = Boolean(aiConfigured && aiModels?.realesrgan);
 
   const hqConfigured = Boolean(health?.photo_magic?.hq?.configured);
   const hqOk = Boolean(health?.photo_magic?.hq?.health?.ok);
@@ -206,6 +213,7 @@ export default function PhotoMagicEditor({ store }) {
     setCutoutUrl(null);
     setMaskUrl(null);
     setEraseUrl(null);
+    setEnhanceUrl(null);
     setPoints([]);
     undoStackRef.current = [];
     const canvas = maskCanvasRef.current;
@@ -535,7 +543,35 @@ export default function PhotoMagicEditor({ store }) {
     store
   ]);
 
-  const stageTitle = tool === 'remove_bg' ? 'Background Removal' : 'Magic Eraser';
+  const runEnhance = useCallback(async () => {
+    if (!imageId) return;
+    setError(null);
+    setIsRunning(true);
+    try {
+      const res = await fetch(withStore('/creative-studio/photo-magic/enhance', store), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_id: imageId,
+          mode: enhanceMode,
+          source_max_side: maxSide,
+          strength: enhanceStrength,
+          upscale_factor: upscaleFactor
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) throw new Error(data?.error || 'Enhance failed');
+      setEnhanceUrl(data.url || null);
+    } catch (e) {
+      console.error(e);
+      setError(e?.message || 'Enhance failed');
+    } finally {
+      setIsRunning(false);
+      refreshHealth();
+    }
+  }, [enhanceMode, enhanceStrength, imageId, maxSide, refreshHealth, store, upscaleFactor]);
+
+  const stageTitle = tool === 'remove_bg' ? 'Background Removal' : (tool === 'erase' ? 'Magic Eraser' : 'Enhance');
 
   return (
     <div className="px-4 py-6">
@@ -585,6 +621,7 @@ export default function PhotoMagicEditor({ store }) {
               <StatusPill ok={rmbg2Ready} label="RMBG2" title={aiHealthPayload?.errors?.rmbg2 || ''} />
               <StatusPill ok={sam2Ready} label="SAM2" title={aiHealthPayload?.errors?.sam2 || ''} />
               <StatusPill ok={lamaReady} label="LaMa" title={aiHealthPayload?.errors?.lama || ''} />
+              <StatusPill ok={realEsrganReady} label="Real-ESRGAN" title={aiHealthPayload?.errors?.realesrgan || ''} />
               <StatusPill ok={Boolean(hqOk)} label="SDXL HQ" title={hqReason || ''} />
             </div>
 
@@ -606,7 +643,8 @@ export default function PhotoMagicEditor({ store }) {
                   }}
                   options={[
                     { value: 'remove_bg', label: 'Background' },
-                    { value: 'erase', label: 'Eraser' }
+                    { value: 'erase', label: 'Eraser' },
+                    { value: 'enhance', label: 'Enhance' }
                   ]}
                 />
               </div>
@@ -759,6 +797,60 @@ export default function PhotoMagicEditor({ store }) {
               </div>
             )}
 
+            {tool === 'enhance' && (
+              <div className="mt-4 space-y-3">
+                <div>
+                  <Label>Mode</Label>
+                  <select
+                    value={enhanceMode}
+                    onChange={(e) => setEnhanceMode(e.target.value)}
+                    className="mt-2 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                  >
+                    <option value="upscale">Upscale (Real-ESRGAN)</option>
+                    <option value="denoise">Denoise</option>
+                    <option value="deblur">Deblur</option>
+                    <option value="sharpen">Sharpen</option>
+                    <option value="low_light">Low-light</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Strength (0-1)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step="0.05"
+                      value={enhanceStrength}
+                      onChange={(e) => setEnhanceStrength(clamp(toNumber(e.target.value, 0.5), 0, 1))}
+                    />
+                  </div>
+                  <div>
+                    <Label>Upscale</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={4}
+                      step="1"
+                      value={upscaleFactor}
+                      onChange={(e) => setUpscaleFactor(clamp(toNumber(e.target.value, 2), 1, 4))}
+                      disabled={enhanceMode !== 'upscale'}
+                    />
+                  </div>
+                </div>
+
+                <Button
+                  variant="violet"
+                  onClick={runEnhance}
+                  disabled={!imageId || isRunning || (enhanceMode === 'upscale' && !realEsrganReady)}
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Enhance
+                </Button>
+              </div>
+            )}
+
             {error && (
               <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 mt-0.5" />
@@ -892,6 +984,23 @@ export default function PhotoMagicEditor({ store }) {
                   {eraseUrl && (
                     <div className="mt-2">
                       <a className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 hover:text-violet-800" href={eraseUrl} target="_blank" rel="noreferrer">
+                        <Download className="h-4 w-4" />
+                        Download result
+                      </a>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {tool === 'enhance' && (
+                <div>
+                  <Label>Result</Label>
+                  <div className="mt-2 rounded-2xl border border-gray-100 overflow-hidden bg-gray-50">
+                    {enhanceUrl ? <img src={enhanceUrl} alt="Enhance result" className="w-full h-auto block" /> : <div className="p-8 text-center text-sm text-gray-500">Choose mode and run Enhance.</div>}
+                  </div>
+                  {enhanceUrl && (
+                    <div className="mt-2">
+                      <a className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 hover:text-violet-800" href={enhanceUrl} target="_blank" rel="noreferrer">
                         <Download className="h-4 w-4" />
                         Download result
                       </a>

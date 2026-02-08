@@ -16,6 +16,7 @@ import base64
 import io
 import logging
 import os
+import urllib.request
 import warnings
 from typing import Any
 
@@ -149,6 +150,16 @@ def clamp_int(value: Any, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
+def clamp_float(value: Any, lo: float, hi: float, default: float) -> float:
+    try:
+        n = float(value)
+        if not np.isfinite(n):
+            n = default
+    except (ValueError, TypeError):
+        n = default
+    return max(lo, min(hi, n))
+
+
 def resize_to_max_side(image: np.ndarray, max_side: int) -> tuple[np.ndarray, float]:
     h, w = image.shape[:2]
     if max_side <= 0 or max(h, w) <= max_side:
@@ -175,6 +186,16 @@ def feather_mask(mask_u8: np.ndarray, feather_px: int) -> np.ndarray:
     k = px * 2 + 1
     blurred = cv2.GaussianBlur(mask_u8, (k, k), 0)
     return blurred
+
+
+def resize_pil_to_max_side(img: Image.Image, max_side: int) -> tuple[Image.Image, float]:
+    w, h = img.size
+    if max_side <= 0 or max(w, h) <= max_side:
+        return img, 1.0
+    scale = max_side / float(max(w, h))
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    return img.resize((new_w, new_h), resample=Image.LANCZOS), scale
 
 
 def mask_bbox(mask_u8: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -290,6 +311,56 @@ except Exception as e:
     LAMA_ERROR = str(e)
     logger.warning("✗ LaMa not available: %s", e)
 
+# Real-ESRGAN (upscale)
+REALESRGAN_AVAILABLE = False
+REALESRGAN_ERROR = None
+realesrgan_upsampler = None
+REALESRGAN_ENABLED = os.environ.get("PHOTO_MAGIC_ENABLE_REALESRGAN", "true").lower() in ("1", "true", "yes")
+REALESRGAN_WEIGHTS_PATH = os.environ.get("REALESRGAN_WEIGHTS_PATH", "weights/RealESRGAN_x4plus.pth")
+REALESRGAN_WEIGHTS_URL = os.environ.get(
+    "REALESRGAN_WEIGHTS_URL",
+    "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+)
+REALESRGAN_AUTO_DOWNLOAD = os.environ.get("REALESRGAN_AUTO_DOWNLOAD", "true").lower() in ("1", "true", "yes")
+REALESRGAN_TILE = clamp_int(os.environ.get("REALESRGAN_TILE", "0"), 0, 2048)
+REALESRGAN_TILE_PAD = clamp_int(os.environ.get("REALESRGAN_TILE_PAD", "10"), 0, 512)
+REALESRGAN_PRE_PAD = clamp_int(os.environ.get("REALESRGAN_PRE_PAD", "0"), 0, 512)
+
+if REALESRGAN_ENABLED:
+    try:
+        from basicsr.archs.rrdbnet_arch import RRDBNet
+        from realesrgan import RealESRGANer
+
+        weights_dir = os.path.dirname(REALESRGAN_WEIGHTS_PATH)
+        if weights_dir:
+            os.makedirs(weights_dir, exist_ok=True)
+
+        if not os.path.exists(REALESRGAN_WEIGHTS_PATH) and REALESRGAN_AUTO_DOWNLOAD and REALESRGAN_WEIGHTS_URL:
+            logger.info("Downloading Real-ESRGAN weights from %s", REALESRGAN_WEIGHTS_URL)
+            urllib.request.urlretrieve(REALESRGAN_WEIGHTS_URL, REALESRGAN_WEIGHTS_PATH)
+
+        if not os.path.exists(REALESRGAN_WEIGHTS_PATH):
+            raise FileNotFoundError(f"Real-ESRGAN weights not found: {REALESRGAN_WEIGHTS_PATH}")
+
+        rrdb_model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+        realesrgan_upsampler = RealESRGANer(
+            scale=4,
+            model_path=REALESRGAN_WEIGHTS_PATH,
+            model=rrdb_model,
+            tile=REALESRGAN_TILE,
+            tile_pad=REALESRGAN_TILE_PAD,
+            pre_pad=REALESRGAN_PRE_PAD,
+            half=(DEVICE != "cpu"),
+            gpu_id=0 if DEVICE != "cpu" else None,
+        )
+        REALESRGAN_AVAILABLE = True
+        logger.info("✓ Real-ESRGAN loaded")
+    except (ImportError, FileNotFoundError, RuntimeError) as e:
+        REALESRGAN_ERROR = str(e)
+        logger.warning("✗ Real-ESRGAN not available: %s", e)
+else:
+    REALESRGAN_ERROR = "Real-ESRGAN disabled by PHOTO_MAGIC_ENABLE_REALESRGAN=false"
+
 logger.info("Models ready.")
 
 
@@ -302,7 +373,12 @@ def require_ready(models: dict[str, bool]) -> tuple[bool, Any]:
         {
             "error": "Models not ready (strict mode)",
             "models": models,
-            "errors": {"rmbg2": RMBG2_ERROR, "sam2": SAM2_ERROR, "lama": LAMA_ERROR},
+            "errors": {
+                "rmbg2": RMBG2_ERROR,
+                "sam2": SAM2_ERROR,
+                "lama": LAMA_ERROR,
+                "realesrgan": REALESRGAN_ERROR,
+            },
         }
     )
 
@@ -371,15 +447,88 @@ def sam2_predict_mask_from_points(
     return mask
 
 
+def enhance_upscale_realesrgan(pil_rgb: Image.Image, outscale: float) -> Image.Image:
+    if not REALESRGAN_AVAILABLE or realesrgan_upsampler is None:
+        raise RuntimeError("Real-ESRGAN not available")
+
+    np_rgb = np.array(pil_rgb.convert("RGB"))
+    np_bgr = cv2.cvtColor(np_rgb, cv2.COLOR_RGB2BGR)
+    out_bgr, _ = realesrgan_upsampler.enhance(np_bgr, outscale=float(outscale))
+    out_rgb = cv2.cvtColor(out_bgr, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(out_rgb)
+
+
+def _enhance_unsharp(np_bgr: np.ndarray, amount: float, sigma: float) -> np.ndarray:
+    blurred = cv2.GaussianBlur(np_bgr, (0, 0), sigmaX=max(0.1, sigma))
+    sharpened = cv2.addWeighted(np_bgr, 1.0 + amount, blurred, -amount, 0)
+    return np.clip(sharpened, 0, 255).astype(np.uint8)
+
+
+def enhance_with_opencv(pil_rgb: Image.Image, mode: str, strength: float) -> Image.Image:
+    np_rgb = np.array(pil_rgb.convert("RGB"))
+    np_bgr = cv2.cvtColor(np_rgb, cv2.COLOR_RGB2BGR)
+    s = float(np.clip(strength, 0.0, 1.0))
+
+    if mode == "denoise":
+        h_luma = int(round(3 + 12 * s))
+        h_color = int(round(3 + 12 * s))
+        np_bgr = cv2.fastNlMeansDenoisingColored(np_bgr, None, h_luma, h_color, 7, 21)
+    elif mode == "deblur":
+        sigma = 0.8 + (2.6 * s)
+        amount = 1.1 + (1.8 * s)
+        np_bgr = _enhance_unsharp(np_bgr, amount=amount, sigma=sigma)
+    elif mode == "sharpen":
+        sigma = 0.7 + (2.0 * s)
+        amount = 0.8 + (2.6 * s)
+        np_bgr = _enhance_unsharp(np_bgr, amount=amount, sigma=sigma)
+    elif mode == "low_light":
+        lab = cv2.cvtColor(np_bgr, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
+        mean_l = float(np.mean(l_channel) / 255.0)
+        if mean_l <= 0:
+            gamma = 0.85
+        else:
+            target = 0.58 + (0.12 * s)
+            gamma = float(np.clip(np.log(target) / np.log(max(mean_l, 1e-3)), 0.45, 1.35))
+        lut = (np.power(np.arange(256) / 255.0, gamma) * 255).clip(0, 255).astype(np.uint8)
+        l_gamma = cv2.LUT(l_channel, lut)
+        clahe = cv2.createCLAHE(clipLimit=(2.0 + 4.0 * s), tileGridSize=(8, 8))
+        l_enhanced = clahe.apply(l_gamma)
+        lab_enhanced = cv2.merge((l_enhanced, a_channel, b_channel))
+        np_bgr = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+        np_bgr = cv2.fastNlMeansDenoisingColored(np_bgr, None, int(round(3 + 8 * s)), int(round(3 + 8 * s)), 7, 21)
+    else:
+        raise ValueError(f"Unsupported enhance mode: {mode}")
+
+    out_rgb = cv2.cvtColor(np_bgr, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(out_rgb)
+
+
 @app.route("/health", methods=["GET"])
 def health():
     payload = {
         "status": "ok" if (RMBG2_AVAILABLE and SAM2_AVAILABLE and LAMA_AVAILABLE) else "not_ready",
         "strict": STRICT_MODE,
         "device": DEVICE,
-        "models": {"rmbg2": RMBG2_AVAILABLE, "sam2": SAM2_AVAILABLE, "lama": LAMA_AVAILABLE},
-        "errors": {"rmbg2": RMBG2_ERROR, "sam2": SAM2_ERROR, "lama": LAMA_ERROR},
-        "config": {"rmbg2_model_id": RMBG2_MODEL_ID, "sam2_config": SAM2_CONFIG_NAME, "sam2_weights": SAM2_WEIGHTS_PATH},
+        "models": {
+            "rmbg2": RMBG2_AVAILABLE,
+            "sam2": SAM2_AVAILABLE,
+            "lama": LAMA_AVAILABLE,
+            "realesrgan": REALESRGAN_AVAILABLE,
+        },
+        "errors": {
+            "rmbg2": RMBG2_ERROR,
+            "sam2": SAM2_ERROR,
+            "lama": LAMA_ERROR,
+            "realesrgan": REALESRGAN_ERROR,
+        },
+        "config": {
+            "rmbg2_model_id": RMBG2_MODEL_ID,
+            "sam2_config": SAM2_CONFIG_NAME,
+            "sam2_weights": SAM2_WEIGHTS_PATH,
+            "realesrgan_weights_path": REALESRGAN_WEIGHTS_PATH,
+            "realesrgan_enabled": REALESRGAN_ENABLED,
+        },
     }
     if STRICT_MODE and not (RMBG2_AVAILABLE and SAM2_AVAILABLE and LAMA_AVAILABLE):
         return jsonify(payload), 503
@@ -554,6 +703,56 @@ def erase_lama():
         return jsonify({"result_png": pil_to_png_b64(out_pil), "width": w0, "height": h0})
     except Exception as e:
         logger.exception("erase/lama failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/enhance", methods=["POST"])
+def enhance():
+    try:
+        data = request.json or {}
+        image_b64 = data.get("image") or ""
+        if not image_b64:
+            return jsonify({"error": "image is required"}), 400
+
+        mode = str(data.get("mode", "upscale")).strip().lower()
+        supported_modes = {"upscale", "denoise", "deblur", "sharpen", "low_light"}
+        if mode not in supported_modes:
+            return jsonify({"error": f"Unsupported mode: {mode}"}), 400
+
+        source_max_side = clamp_int(data.get("source_max_side", 2048), 256, 8192)
+        strength = clamp_float(data.get("strength", 0.5), 0.0, 1.0, 0.5)
+        upscale_factor = clamp_float(data.get("upscale_factor", 2.0), 1.0, 4.0, 2.0)
+
+        pil = decode_b64_to_pil(image_b64)
+        source_w, source_h = pil.size
+        model_input, scale = resize_pil_to_max_side(pil, source_max_side)
+
+        if mode == "upscale":
+            ok, err = require_ready({"realesrgan": REALESRGAN_AVAILABLE})
+            if not ok:
+                return err, 503
+            outscale = 4.0 if upscale_factor >= 3.0 else 2.0
+            out_pil = enhance_upscale_realesrgan(model_input, outscale=outscale)
+            engine = "realesrgan"
+        else:
+            out_pil = enhance_with_opencv(model_input, mode=mode, strength=strength)
+            if scale != 1.0:
+                out_pil = out_pil.resize((source_w, source_h), resample=Image.LANCZOS)
+            engine = "opencv"
+
+        return jsonify(
+            {
+                "mode": mode,
+                "engine": engine,
+                "source_width": source_w,
+                "source_height": source_h,
+                "width": out_pil.size[0],
+                "height": out_pil.size[1],
+                "result_png": pil_to_png_b64(out_pil),
+            }
+        )
+    except (ValueError, RuntimeError) as e:
+        logger.exception("enhance failed")
         return jsonify({"error": str(e)}), 500
 
 
