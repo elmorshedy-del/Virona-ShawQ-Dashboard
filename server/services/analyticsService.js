@@ -192,6 +192,7 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause}
   `).get(store, startDate, endDate, ...campaignArgs) || {};
 
+  const useMetaSpendOnly = store === 'shawq';
   let totalSpend = metaTotals.spend || 0;
   let totalRevenue = metaTotals.revenue || 0;
   let totalOrders = metaTotals.orders || 0;
@@ -234,14 +235,18 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
     FROM manual_orders WHERE store = ? AND date BETWEEN ? AND ?${manualCampaignClause}
   `).get(store, startDate, endDate, ...manualCampaignArgs) || {};
 
-  totalSpend += manualData.spend || 0;
+  if (!useMetaSpendOnly) {
+    totalSpend += manualData.spend || 0;
+  }
   totalRevenue += manualData.revenue || 0;
   totalOrders += manualData.orders || 0;
 
-  const override = db.prepare(`
-    SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
-  `).get(store, startDate, endDate);
-  if (override?.amount) totalSpend = override.amount;
+  if (!useMetaSpendOnly) {
+    const override = db.prepare(`
+      SELECT SUM(amount) as amount FROM manual_spend_overrides WHERE store = ? AND date BETWEEN ? AND ?
+    `).get(store, startDate, endDate);
+    if (override?.amount) totalSpend = override.amount;
+  }
 
   return {
     spend: totalSpend,
