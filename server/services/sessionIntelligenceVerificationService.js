@@ -56,6 +56,12 @@ const VERIFIER_MUTATION_THRESHOLD = clampInt(
   0,
   100
 );
+const VERIFIER_ALLOW_NO_SANDBOX = safeString(process.env.SESSION_INTELLIGENCE_VERIFIER_ALLOW_NO_SANDBOX)
+  .toLowerCase()
+  .trim() === 'true';
+const VERIFIER_ALLOW_PRIVATE_NETWORK_TARGETS = safeString(process.env.SESSION_INTELLIGENCE_VERIFIER_ALLOW_PRIVATE_NETWORK_TARGETS)
+  .toLowerCase()
+  .trim() === 'true';
 
 let parsedStoreBaseUrls = null;
 const verificationJobByScope = new Map();
@@ -119,6 +125,32 @@ function normalizePagePath(value) {
 
 function normalizeIssueToken(value) {
   return safeString(value).toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+function isPrivateOrLocalHostname(hostname) {
+  const host = safeString(hostname).toLowerCase().trim();
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (host === '::1' || host === '[::1]' || host === '0.0.0.0') return true;
+
+  const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const octets = ipv4Match.slice(1).map((part) => Number(part));
+    if (octets.some((part) => !Number.isFinite(part) || part < 0 || part > 255)) return true;
+    const [a, b] = octets;
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 169 && b === 254) return true;
+    return false;
+  }
+
+  const ipv6 = host.replace(/^\[/, '').replace(/\]$/, '');
+  if (ipv6.includes(':')) {
+    if (ipv6 === '::1' || ipv6.startsWith('fe80:') || ipv6.startsWith('fc') || ipv6.startsWith('fd')) return true;
+  }
+
+  return false;
 }
 
 function normalizeErrorSignature(value) {
@@ -194,15 +226,28 @@ function normalizeBaseUrl(value) {
   if (!raw) return '';
   try {
     const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    if (!VERIFIER_ALLOW_PRIVATE_NETWORK_TARGETS && isPrivateOrLocalHostname(url.hostname)) return '';
     return `${url.origin}/`;
   } catch (_error) {
     return '';
   }
 }
 
+function normalizeRelativeVerifierPath(value) {
+  const asPath = normalizePagePath(value);
+  let normalized = safeString(asPath).trim();
+  if (!normalized) return '/';
+  normalized = normalized.replace(/\\/g, '/');
+  if (!normalized.startsWith('/')) normalized = `/${normalized}`;
+  if (normalized.startsWith('//')) {
+    normalized = `/${normalized.replace(/^\/+/, '')}`;
+  }
+  return normalized;
+}
+
 function resolveIssueUrl(store, page) {
-  const pagePath = normalizePagePath(page);
-  if (/^https?:\/\//i.test(pagePath)) return pagePath;
+  const pagePath = normalizeRelativeVerifierPath(page);
 
   const storeMap = parseStoreBaseUrlMap();
   const storeKey = normalizeIssueToken(store);
@@ -210,7 +255,11 @@ function resolveIssueUrl(store, page) {
   if (!configuredBase) return null;
 
   try {
-    return new URL(pagePath, configuredBase).toString();
+    const base = new URL(configuredBase);
+    const resolved = new URL(pagePath, base);
+    if (resolved.origin !== base.origin) return null;
+    if (!['http:', 'https:'].includes(resolved.protocol)) return null;
+    return resolved.toString();
   } catch (_error) {
     return null;
   }
@@ -684,6 +733,20 @@ async function loadPuppeteer() {
   }
 }
 
+async function launchVerifierBrowser(puppeteer) {
+  try {
+    return await puppeteer.launch({
+      headless: 'new'
+    });
+  } catch (launchError) {
+    if (!VERIFIER_ALLOW_NO_SANDBOX) throw launchError;
+    return puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+  }
+}
+
 async function runVerificationJob({ store, date, signals, force = false }) {
   const db = getDb();
   const normalizedStore = safeString(store).trim() || 'shawq';
@@ -726,10 +789,24 @@ async function runVerificationJob({ store, date, signals, force = false }) {
     return { success: false, verified: 0, skipped: candidates.length - candidatesToVerify.length, reason };
   }
 
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+  let browser = null;
+  try {
+    browser = await launchVerifierBrowser(puppeteer);
+  } catch (launchError) {
+    const reason = `Verifier launch failed: ${safeString(launchError?.message || launchError).slice(0, 180)}`;
+    candidatesToVerify.forEach((issue) => {
+      upsertVerificationRow(db, {
+        store: normalizedStore,
+        date: normalizedDate,
+        issue,
+        status: 'unverified',
+        confidence: 0,
+        reason,
+        evidence: null
+      });
+    });
+    return { success: false, verified: 0, skipped: candidates.length - candidatesToVerify.length, reason };
+  }
 
   let verifiedCount = 0;
   try {
@@ -760,7 +837,7 @@ async function runVerificationJob({ store, date, signals, force = false }) {
       }
     }
   } finally {
-    await browser.close().catch(() => {});
+    await browser?.close().catch(() => {});
   }
 
   return {
