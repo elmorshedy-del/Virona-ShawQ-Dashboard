@@ -285,6 +285,21 @@ function normalizeLooseKey(value) {
   return (value || '').toString().toLowerCase().trim();
 }
 
+function normalizeVerificationStatus(status, issueType) {
+  if (!VERIFIABLE_ISSUE_TYPES.has(issueType)) return 'not_applicable';
+  const normalized = normalizeLooseKey(status);
+  if (normalized === 'confirmed') return 'confirmed';
+  if (normalized === 'false_positive') return 'false_positive';
+  return 'unverified';
+}
+
+function verificationUi(status) {
+  if (status === 'confirmed') return { label: 'Confirmed', className: 'si-verify-confirmed' };
+  if (status === 'false_positive') return { label: 'False alert', className: 'si-verify-false-positive' };
+  if (status === 'not_applicable') return { label: 'N/A', className: 'si-verify-na' };
+  return { label: 'Pending', className: 'si-verify-pending' };
+}
+
 function pluralize(value, singular, plural) {
   const count = Number(value) || 0;
   return `${formatNumber(count)} ${count === 1 ? singular : plural}`;
@@ -343,6 +358,13 @@ const ISSUE_META = {
     countLabel: 'sessions',
     action: 'Move primary CTA and trust signals higher on page to reduce early drop-off.'
   }
+};
+
+const VERIFIABLE_ISSUE_TYPES = new Set(['js_errors', 'dead_clicks', 'rage_clicks']);
+
+const ISSUE_VERIFICATION_VIEW = {
+  CONFIRMED_FIRST: 'confirmed_first',
+  ALL: 'all'
 };
 
 const TARGET_KEY_RULES = [
@@ -558,6 +580,9 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
       const affectedHighIntent = eligibleHighIntent > 0
         ? Math.min(sessionsAffected, eligibleHighIntent)
         : sessionsAffected;
+      const verificationStatus = normalizeVerificationStatus(issue?.verification?.status, type);
+      const verificationReason = (issue?.verification?.reason || '').toString().trim() || null;
+      const isVerifiable = VERIFIABLE_ISSUE_TYPES.has(type);
 
       const priorAlpha = 1;
       const priorBeta = 1;
@@ -584,7 +609,10 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
         confidenceRaw: posteriorMean * evidenceStrength,
         recencyWeight: dayRecencyWeight,
         rawErrorMessage: type === 'js_errors' ? (issue?.message || '') : '',
-        sampleSessions: Array.isArray(issue?.sample_sessions) ? issue.sample_sessions : []
+        sampleSessions: Array.isArray(issue?.sample_sessions) ? issue.sample_sessions : [],
+        isVerifiable,
+        verificationStatus,
+        verificationReason
       });
     });
   });
@@ -795,6 +823,7 @@ export default function SessionIntelligenceTab({ store }) {
   const [sanityOpen, setSanityOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showAllIssues, setShowAllIssues] = useState(false);
+  const [issueVerificationView, setIssueVerificationView] = useState(ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
   const [libraryDays, setLibraryDays] = useState([]);
@@ -908,7 +937,8 @@ export default function SessionIntelligenceTab({ store }) {
         store: storeId,
         date: day,
         mode: mode || 'high_intent_no_purchase',
-        limitSessions: '5000'
+        limitSessions: '5000',
+        verify: '1'
       });
       const payload = await fetchJson(`/api/session-intelligence/clarity?${params.toString()}`);
       setClaritySignals(payload?.data || null);
@@ -1319,9 +1349,24 @@ export default function SessionIntelligenceTab({ store }) {
   ), [claritySignals, libraryDay, librarySessions]);
 
   const issueRows = issueModel.rows || [];
-  const visibleIssueRows = showAllIssues ? issueRows : issueRows.slice(0, 8);
-  const topIssue = issueRows[0] || null;
-  const developerGuideRows = issueRows.slice(0, 3);
+  const verificationSummary = claritySignals?.verification || null;
+  const hasConfirmedVerifiableIssues = issueRows.some((row) => (
+    row.isVerifiable && row.verificationStatus === 'confirmed'
+  ));
+  const filteredIssueRows = useMemo(() => {
+    if (issueVerificationView !== ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST) return issueRows;
+    if (!hasConfirmedVerifiableIssues) return issueRows;
+    return issueRows.filter((row) => !row.isVerifiable || row.verificationStatus === 'confirmed');
+  }, [hasConfirmedVerifiableIssues, issueRows, issueVerificationView]);
+  const visibleIssueRows = showAllIssues ? filteredIssueRows : filteredIssueRows.slice(0, 8);
+  const topIssue = filteredIssueRows[0] || issueRows[0] || null;
+  const developerGuideRows = filteredIssueRows.slice(0, 3);
+
+  useEffect(() => {
+    if (hasConfirmedVerifiableIssues) return;
+    if (issueVerificationView !== ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST) return;
+    setIssueVerificationView(ISSUE_VERIFICATION_VIEW.ALL);
+  }, [hasConfirmedVerifiableIssues, issueVerificationView]);
 
   const summaryTotals = useMemo(() => {
     const sessionsCandidate = Number(issueModel.totalSessions) || 0;
@@ -1331,10 +1376,10 @@ export default function SessionIntelligenceTab({ store }) {
     const purchases = Number(issueModel.purchases) || 0;
     const estimatedAtRisk = Math.min(
       highIntent,
-      issueRows.reduce((sum, row) => sum + (Number(row.affectedHighIntent) || 0), 0)
+      filteredIssueRows.reduce((sum, row) => sum + (Number(row.affectedHighIntent) || 0), 0)
     );
     return { sessionsTotal, highIntent, purchases, estimatedAtRisk };
-  }, [issueModel.eligibleHighIntent, issueModel.highIntentSessions, issueModel.purchases, issueModel.totalSessions, issueRows]);
+  }, [filteredIssueRows, issueModel.eligibleHighIntent, issueModel.highIntentSessions, issueModel.purchases, issueModel.totalSessions]);
 
   const summaryLine = topIssue
     ? `Today: ${formatNumber(summaryTotals.sessionsTotal)} sessions, ${formatNumber(summaryTotals.highIntent)} high-intent, ${formatNumber(summaryTotals.purchases)} purchases, biggest leak = ${topIssue.issueLabel} (${pluralize(topIssue.affectedHighIntent, 'session', 'sessions')}).`
@@ -1577,7 +1622,33 @@ export default function SessionIntelligenceTab({ store }) {
       <div className="si-card si-issues-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
           <h3>Top issues</h3>
-          <span className="si-muted">Top {Math.min(issueRows.length, 8)} visible • Mid strictness</span>
+          <span className="si-muted">
+            Top {formatNumber(visibleIssueRows.length)} visible • {issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST ? 'Confirmed first' : 'All issues'}
+          </span>
+        </div>
+
+        <div className="si-row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+          <button
+            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST ? 'si-chip-active' : ''}`}
+            type="button"
+            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST)}
+            disabled={!hasConfirmedVerifiableIssues}
+            title={hasConfirmedVerifiableIssues ? 'Show only confirmed verifier issues (+ non-verifiable issues).' : 'No confirmed verifier issues yet.'}
+          >
+            Confirmed first
+          </button>
+          <button
+            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.ALL ? 'si-chip-active' : ''}`}
+            type="button"
+            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.ALL)}
+          >
+            All issues
+          </button>
+          {verificationSummary?.total > 0 ? (
+            <span className="si-muted">
+              Verifier: {formatNumber(verificationSummary.confirmed)} confirmed, {formatNumber(verificationSummary.false_positive)} false alerts, {formatNumber(verificationSummary.unverified)} pending
+            </span>
+          ) : null}
         </div>
 
         {clarityLoading ? (
@@ -1594,7 +1665,13 @@ export default function SessionIntelligenceTab({ store }) {
           </div>
         ) : null}
 
-        {!clarityLoading && !clarityError && issueRows.length > 0 ? (
+        {!clarityLoading && !clarityError && issueRows.length > 0 && filteredIssueRows.length === 0 ? (
+          <div className="si-empty">
+            No rows match the current verification filter. Switch to <strong>All issues</strong> to inspect pending/false alerts.
+          </div>
+        ) : null}
+
+        {!clarityLoading && !clarityError && filteredIssueRows.length > 0 ? (
           <>
             <table className="si-event-table si-issues-table">
               <thead>
@@ -1605,29 +1682,34 @@ export default function SessionIntelligenceTab({ store }) {
                   <th>Sessions affected</th>
                   <th>% high-intent affected</th>
                   <th>Confidence</th>
+                  <th>Verification</th>
                   <th>Action</th>
                   <th>Proof</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleIssueRows.map((row) => {
+                {visibleIssueRows.map((row, rowIndex) => {
                   const confidenceClass = row.confidenceLabel === 'High'
                     ? 'si-confidence-high'
                     : row.confidenceLabel === 'Med'
                       ? 'si-confidence-med'
                       : 'si-confidence-low';
+                  const verificationState = verificationUi(row.verificationStatus);
                   const sampleList = Array.isArray(row.sampleSessions) ? row.sampleSessions : [];
                   const proofSession = sampleList[0];
                   const proofCount = Math.min(sampleList.length, 5);
                   return (
                     <tr key={row.id} className={`si-issue-row si-issue-${row.type}`}>
-                      <td><strong>{row.rank}</strong></td>
+                      <td><strong>{rowIndex + 1}</strong></td>
                       <td>{row.issueLabel}</td>
                       <td title={row.whereLabel}>{row.whereLabel}</td>
                       <td>{pluralize(row.sessionsAffected, 'session', 'sessions')}</td>
                       <td>{formatPercent(row.highIntentRate, 0)}</td>
                       <td>
                         <span className={`si-chip ${confidenceClass}`}>{row.confidenceLabel}</span>
+                      </td>
+                      <td title={row.verificationReason || ''}>
+                        <span className={`si-chip ${verificationState.className}`}>{verificationState.label}</span>
                       </td>
                       <td title={row.action}>{row.action}</td>
                       <td>
@@ -1649,10 +1731,10 @@ export default function SessionIntelligenceTab({ store }) {
               </tbody>
             </table>
 
-            {issueRows.length > 8 ? (
+            {filteredIssueRows.length > 8 ? (
               <div className="si-row" style={{ justifyContent: 'space-between', marginTop: 10 }}>
                 <span className="si-muted">
-                  Showing {visibleIssueRows.length} of {issueRows.length} issue rows
+                  Showing {visibleIssueRows.length} of {filteredIssueRows.length} issue rows
                 </span>
                 <button
                   className="si-button si-button-small"

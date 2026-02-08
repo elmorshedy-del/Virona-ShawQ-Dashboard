@@ -17,8 +17,18 @@ import {
   generateSessionIntelligenceDailyBrief,
   listSessionIntelligenceDays
 } from '../services/sessionIntelligenceService.js';
+import {
+  attachCachedClarityVerifications,
+  triggerClarityVerificationForSignals
+} from '../services/sessionIntelligenceVerificationService.js';
 
 const router = express.Router();
+
+function normalizeFlag(value) {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!raw) return false;
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
 
 router.get('/overview', (req, res) => {
   try {
@@ -97,16 +107,64 @@ router.get('/flow', (req, res) => {
   }
 });
 
-router.get('/clarity', (req, res) => {
+router.get('/clarity', async (req, res) => {
   try {
     const store = req.query.store || 'shawq';
     const date = req.query.date;
     const mode = req.query.mode || 'high_intent_no_purchase';
     const limitSessions = req.query.limitSessions ? Number(req.query.limitSessions) : 5000;
+    const verifyValue = typeof req.query.verify === 'string' ? req.query.verify.trim().toLowerCase() : '';
+    const shouldVerify = normalizeFlag(req.query.verify) || verifyValue === 'wait';
+    const waitForVerify = verifyValue === 'wait' || normalizeFlag(req.query.verifyWait);
+    const forceVerify = normalizeFlag(req.query.forceVerify) || normalizeFlag(req.query.force);
     if (!date) return res.status(400).json({ success: false, error: 'Missing date (YYYY-MM-DD)' });
 
     const result = getSessionIntelligenceClaritySignalsForDay(store, date, { mode, limitSessions });
     if (!result.success) return res.status(400).json(result);
+
+    const attachVerificationSummary = () => {
+      const attached = attachCachedClarityVerifications({
+        store,
+        date,
+        signals: result?.data?.signals
+      });
+      result.data.signals = attached.signals;
+      result.data.verification = {
+        ...(result.data.verification || {}),
+        ...attached.summary
+      };
+    };
+
+    attachVerificationSummary();
+
+    if (shouldVerify) {
+      const verificationJob = triggerClarityVerificationForSignals({
+        store,
+        date,
+        signals: result?.data?.signals,
+        force: forceVerify
+      });
+
+      if (waitForVerify) {
+        const verificationResult = await verificationJob;
+        attachVerificationSummary();
+        result.data.verification = {
+          ...(result.data.verification || {}),
+          mode: 'wait',
+          ...verificationResult
+        };
+      } else {
+        verificationJob.catch((error) => {
+          console.warn('[SessionIntelligence] clarity verification job failed:', error?.message || error);
+        });
+        result.data.verification = {
+          ...(result.data.verification || {}),
+          mode: 'async',
+          queued: true
+        };
+      }
+    }
+
     res.json(result);
   } catch (error) {
     console.error('[SessionIntelligence] clarity error:', error);
