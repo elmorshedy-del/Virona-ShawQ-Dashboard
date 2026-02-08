@@ -27,6 +27,7 @@ import productRadarRouter from './routes/productRadar.js';
 import customerInsightsRouter from './routes/customerInsights.js';
 import metaDemographicsRoutes from './routes/metaDemographics.js';
 import watchtowerRouter from './routes/watchtower.js';
+import croForensicsRouter from './routes/croForensics.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
@@ -239,6 +240,7 @@ app.use('/api/meta-demographics', metaDemographicsRoutes);
 app.use('/api/watchtower', watchtowerRouter);
 app.use('/api/fatigue', fatigueRouter);
 app.use('/api/testimonials', testimonialExtractorRouter);
+app.use('/api/cro-forensics', croForensicsRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
