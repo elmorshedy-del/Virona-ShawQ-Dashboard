@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Rocket, Users, Image as ImageIcon, CheckCircle, ChevronRight, AlertCircle, Loader2 } from 'lucide-react';
 
 const API_BASE = '/api';
+const CAMPAIGN_LAUNCHER_API_KEY = import.meta.env.VITE_META_CAMPAIGN_LAUNCHER_API_KEY || '';
 
 const OBJECTIVES = [
   { id: 'OUTCOME_SALES', label: 'Sales', desc: 'Drive conversions and sales', icon: '💰' },
@@ -209,9 +210,14 @@ export default function CampaignLauncher({ store }) {
         imageFilename
       };
 
+      const requestHeaders = { 'Content-Type': 'application/json' };
+      if (CAMPAIGN_LAUNCHER_API_KEY) {
+        requestHeaders['X-Meta-Launcher-Key'] = CAMPAIGN_LAUNCHER_API_KEY;
+      }
+
       const response = await fetch(`${API_BASE}/meta/campaign-launcher`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: requestHeaders,
         body: JSON.stringify(payload)
       });
 
