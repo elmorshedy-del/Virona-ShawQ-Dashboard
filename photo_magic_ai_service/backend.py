@@ -355,7 +355,7 @@ if REALESRGAN_ENABLED:
         )
         REALESRGAN_AVAILABLE = True
         logger.info("✓ Real-ESRGAN loaded")
-    except Exception as e:
+    except (ImportError, FileNotFoundError, RuntimeError) as e:
         REALESRGAN_ERROR = str(e)
         logger.warning("✗ Real-ESRGAN not available: %s", e)
 else:
