@@ -28,7 +28,6 @@ import CreativeStudio from './components/CreativeStudio';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
 import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
-import CampaignLauncher from './components/CampaignLauncher';
 import ProductRadar from './components/ProductRadar';
 import CustomerInsightsTab from './components/CustomerInsightsTab';
 import WatchtowerTab from './components/WatchtowerTab';
@@ -400,8 +399,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher', 'Product Radar', 'Watchtower', 'CRO Forensics'];
-const CAMPAIGN_LAUNCHER_TAB_INDEX = TABS.indexOf('Campaign Launcher');
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Product Radar', 'Watchtower', 'CRO Forensics'];
 const PRODUCT_RADAR_TAB_INDEX = TABS.indexOf('Product Radar');
 const WATCHTOWER_TAB_INDEX = TABS.indexOf('Watchtower');
 const CRO_FORENSICS_TAB_INDEX = TABS.indexOf('CRO Forensics');
@@ -1770,10 +1768,7 @@ export default function App() {
         )}
 
         {activeTab === 5 && (
-          <NeoMetaTab
-            store={store}
-            onOpenCampaignLauncher={() => setActiveTab(CAMPAIGN_LAUNCHER_TAB_INDEX)}
-          />
+          <NeoMetaTab store={store} />
         )}
 
 	        {activeTab === 6 && (
@@ -1860,10 +1855,6 @@ export default function App() {
 
         {activeTab === 16 && (
           <ExchangeRateDebug />
-        )}
-
-        {activeTab === CAMPAIGN_LAUNCHER_TAB_INDEX && (
-          <CampaignLauncher store={store} />
         )}
 
         {activeTab === PRODUCT_RADAR_TAB_INDEX && (

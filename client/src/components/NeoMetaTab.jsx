@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Layers, Rocket, Megaphone, Image as ImageIcon, AlertTriangle } from 'lucide-react';
+import CampaignLauncher from './CampaignLauncher';
 
 const API_BASE = '/api';
 
@@ -56,7 +57,7 @@ function SummaryCard({ icon: Icon, label, value, subLabel }) {
   );
 }
 
-export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} }) {
+export default function NeoMetaTab({ store }) {
   const storeId = store?.id || 'vironax';
   const [adAccounts, setAdAccounts] = useState([]);
   const [selectedAdAccountId, setSelectedAdAccountId] = useState('');
@@ -64,6 +65,7 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
   const [selectedCampaignId, setSelectedCampaignId] = useState('');
   const [adSets, setAdSets] = useState([]);
   const [ads, setAds] = useState([]);
+  const [showLauncher, setShowLauncher] = useState(false);
 
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
@@ -236,15 +238,21 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
             </button>
             <button
               type="button"
-              onClick={onOpenCampaignLauncher}
+              onClick={() => setShowLauncher((prev) => !prev)}
               className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
             >
               <Rocket className="h-4 w-4" />
-              Open Launcher
+              {showLauncher ? 'Hide Launcher' : 'Open Launcher'}
             </button>
           </div>
         </div>
       </div>
+
+      {showLauncher ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <CampaignLauncher store={store} />
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <SummaryCard icon={Layers} label="Ad Accounts" value={adAccounts.length} subLabel={storeId} />
