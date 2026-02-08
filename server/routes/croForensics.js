@@ -1,5 +1,9 @@
 import express from 'express';
+import net from 'net';
 import puppeteer from 'puppeteer';
+import dns from 'dns/promises';
+import { fetchGooglePerformanceBundle } from '../services/croForensicsPerformanceService.js';
+import { generateCroNarrative } from '../services/croForensicsNarrativeService.js';
 
 const router = express.Router();
 
@@ -23,9 +27,26 @@ const SOURCE_ALIGNMENT_TARGETS = {
 const CRAWLER_TUNABLES = {
   viewportWidthPx: 1440,
   viewportHeightPx: 900,
+  mobileViewportWidthPx: 390,
+  mobileViewportHeightPx: 844,
   gotoTimeoutMs: 45000,
   networkIdleThresholdMs: 500,
-  networkIdleTimeoutMs: 5000
+  networkIdleTimeoutMs: 5000,
+  maxRedirects: 3,
+  screenshotJpegQuality: 55,
+  screenshotClipPaddingPx: 0,
+  allowUnsafeNoSandbox: process.env.CRO_FORENSICS_ALLOW_UNSAFE_NO_SANDBOX === 'true'
+};
+
+const URL_SECURITY_TUNABLES = {
+  allowHttp: false,
+  dnsLookupTimeoutMs: 5000,
+  blockedHostnames: new Set([
+    'localhost',
+    '127.0.0.1',
+    '::1',
+    '0.0.0.0'
+  ])
 };
 
 // Risk/scoring constants are centralized here to avoid hidden heuristics and
@@ -224,7 +245,78 @@ function logit(p) {
   return Math.log(bounded / (1 - bounded));
 }
 
-function normalizeUrl(rawUrl) {
+function isPrivateIpv4(address) {
+  const parts = String(address || '').split('.').map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part) || part < 0 || part > 255)) {
+    return false;
+  }
+
+  const [a, b] = parts;
+  if (a === 10 || a === 127 || a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+function isPrivateIpv6(address) {
+  const normalized = String(address || '').toLowerCase();
+  if (!normalized) return false;
+  if (normalized === '::1') return true;
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+  if (normalized.startsWith('fe80')) return true;
+  if (normalized.startsWith('::ffff:')) {
+    const mapped = normalized.slice('::ffff:'.length);
+    return isPrivateIpv4(mapped);
+  }
+  return false;
+}
+
+function isPrivateAddress(address) {
+  const ipVersion = net.isIP(address);
+  if (ipVersion === 4) return isPrivateIpv4(address);
+  if (ipVersion === 6) return isPrivateIpv6(address);
+  return false;
+}
+
+async function lookupAddressesWithTimeout(hostname) {
+  const lookupTask = dns.lookup(hostname, { all: true, verbatim: true });
+  const timeoutTask = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('DNS lookup timed out.')), URL_SECURITY_TUNABLES.dnsLookupTimeoutMs);
+  });
+  const records = await Promise.race([lookupTask, timeoutTask]);
+  return Array.isArray(records) ? records.map((record) => record.address).filter(Boolean) : [];
+}
+
+async function assertPublicTarget(hostname) {
+  const normalized = String(hostname || '').trim().toLowerCase();
+  if (!normalized) {
+    throw new Error('Hostname is required.');
+  }
+
+  if (URL_SECURITY_TUNABLES.blockedHostnames.has(normalized)) {
+    throw new Error('Localhost/private network targets are blocked.');
+  }
+
+  if (normalized.endsWith('.local') || normalized.endsWith('.internal')) {
+    throw new Error('Local network hostnames are blocked.');
+  }
+
+  if (isPrivateAddress(normalized)) {
+    throw new Error('Private IP targets are blocked.');
+  }
+
+  const resolvedAddresses = await lookupAddressesWithTimeout(normalized);
+  if (!resolvedAddresses.length) {
+    throw new Error('Unable to resolve target hostname.');
+  }
+
+  if (resolvedAddresses.some((address) => isPrivateAddress(address))) {
+    throw new Error('Resolved target points to a private network address.');
+  }
+}
+
+async function normalizeUrl(rawUrl) {
   const trimmed = String(rawUrl || '').trim();
   if (!trimmed) {
     throw new Error('URL is required.');
@@ -234,6 +326,10 @@ function normalizeUrl(rawUrl) {
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new Error('Only HTTP and HTTPS URLs are supported.');
   }
+  if (parsed.protocol === 'http:' && !URL_SECURITY_TUNABLES.allowHttp) {
+    throw new Error('HTTP URLs are blocked by default; use HTTPS.');
+  }
+  await assertPublicTarget(parsed.hostname);
   return parsed.toString();
 }
 
@@ -397,11 +493,112 @@ function buildExperiments(models) {
   return queue.sort((a, b) => b.priorityScore - a.priorityScore).slice(0, 5);
 }
 
-async function extractWithPuppeteer(url) {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+async function waitForNetworkIdleSafely(page) {
+  await page.waitForNetworkIdle({
+    idleTime: CRAWLER_TUNABLES.networkIdleThresholdMs,
+    timeout: CRAWLER_TUNABLES.networkIdleTimeoutMs
+  }).catch(() => {
+    console.warn('[CRO Forensics] Timed out waiting for network idle. Proceeding anyway.');
   });
+}
+
+function getViewportClip(viewport) {
+  return {
+    x: CRAWLER_TUNABLES.screenshotClipPaddingPx,
+    y: CRAWLER_TUNABLES.screenshotClipPaddingPx,
+    width: Math.max(1, Math.floor((viewport?.width || CRAWLER_TUNABLES.viewportWidthPx) - (CRAWLER_TUNABLES.screenshotClipPaddingPx * 2))),
+    height: Math.max(1, Math.floor((viewport?.height || CRAWLER_TUNABLES.viewportHeightPx) - (CRAWLER_TUNABLES.screenshotClipPaddingPx * 2)))
+  };
+}
+
+function buildPuppeteerLaunchOptions() {
+  if (CRAWLER_TUNABLES.allowUnsafeNoSandbox) {
+    console.warn('[CRO Forensics] Running Puppeteer with unsafe no-sandbox flags.');
+    return {
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    };
+  }
+
+  return {
+    headless: true
+  };
+}
+
+async function captureAuditScreenshots(page) {
+  const screenshots = {
+    desktopHero: null,
+    mobileHero: null,
+    desktopFull: null
+  };
+
+  const desktopViewport = {
+    width: CRAWLER_TUNABLES.viewportWidthPx,
+    height: CRAWLER_TUNABLES.viewportHeightPx
+  };
+  const mobileViewport = {
+    width: CRAWLER_TUNABLES.mobileViewportWidthPx,
+    height: CRAWLER_TUNABLES.mobileViewportHeightPx
+  };
+
+  const desktopClip = getViewportClip(desktopViewport);
+  const desktopHeroBase64 = await page.screenshot({
+    type: 'jpeg',
+    quality: CRAWLER_TUNABLES.screenshotJpegQuality,
+    encoding: 'base64',
+    clip: desktopClip
+  });
+
+  screenshots.desktopHero = {
+    label: 'Desktop first screen',
+    mimeType: 'image/jpeg',
+    widthPx: desktopClip.width,
+    heightPx: desktopClip.height,
+    base64: desktopHeroBase64
+  };
+
+  const desktopFullBase64 = await page.screenshot({
+    type: 'jpeg',
+    quality: CRAWLER_TUNABLES.screenshotJpegQuality,
+    encoding: 'base64',
+    fullPage: true
+  });
+
+  screenshots.desktopFull = {
+    label: 'Desktop full page',
+    mimeType: 'image/jpeg',
+    widthPx: desktopViewport.width,
+    heightPx: null,
+    base64: desktopFullBase64
+  };
+
+  await page.setViewport(mobileViewport);
+  await waitForNetworkIdleSafely(page);
+
+  const mobileClip = getViewportClip(mobileViewport);
+  const mobileHeroBase64 = await page.screenshot({
+    type: 'jpeg',
+    quality: CRAWLER_TUNABLES.screenshotJpegQuality,
+    encoding: 'base64',
+    clip: mobileClip
+  });
+
+  screenshots.mobileHero = {
+    label: 'Mobile first screen',
+    mimeType: 'image/jpeg',
+    widthPx: mobileClip.width,
+    heightPx: mobileClip.height,
+    base64: mobileHeroBase64
+  };
+
+  await page.setViewport(desktopViewport);
+  await waitForNetworkIdleSafely(page);
+
+  return screenshots;
+}
+
+async function extractWithPuppeteer(url) {
+  const browser = await puppeteer.launch(buildPuppeteerLaunchOptions());
 
   try {
     const page = await browser.newPage();
@@ -424,12 +621,7 @@ async function extractWithPuppeteer(url) {
       waitUntil: 'domcontentloaded',
       timeout: CRAWLER_TUNABLES.gotoTimeoutMs
     });
-    await page.waitForNetworkIdle({
-      idleTime: CRAWLER_TUNABLES.networkIdleThresholdMs,
-      timeout: CRAWLER_TUNABLES.networkIdleTimeoutMs
-    }).catch(() => {
-      console.warn('[CRO Forensics] Timed out waiting for network idle. Proceeding anyway.');
-    });
+    await waitForNetworkIdleSafely(page);
 
     const performance = await page.evaluate(() => {
       const nav = performance.getEntriesByType('navigation')[0];
@@ -542,20 +734,36 @@ async function extractWithPuppeteer(url) {
       };
     });
 
-    return { ...data, performance };
+    const screenshots = await captureAuditScreenshots(page);
+    return { ...data, performance, screenshots };
   } finally {
     await browser.close();
   }
 }
 
-async function extractWithFetch(url) {
+async function extractWithFetch(url, redirectCount = 0) {
+  if (redirectCount > CRAWLER_TUNABLES.maxRedirects) {
+    throw new Error('Too many redirects while fetching target URL.');
+  }
+
   const response = await fetch(url, {
     method: 'GET',
-    redirect: 'follow',
+    redirect: 'manual',
     headers: {
       'user-agent': 'Mozilla/5.0 (compatible; CROForensics/1.0)'
     }
   });
+
+  const isRedirect = response.status >= 300 && response.status < 400;
+  if (isRedirect) {
+    const location = response.headers.get('location');
+    if (!location) {
+      throw new Error('Redirect response missing location header.');
+    }
+    const redirectedUrl = await normalizeUrl(new URL(location, url).toString());
+    return extractWithFetch(redirectedUrl, redirectCount + 1);
+  }
+
   if (!response.ok) {
     throw new Error(`Failed to fetch target URL (HTTP ${response.status}).`);
   }
@@ -608,6 +816,7 @@ async function extractWithFetch(url) {
     policyLinks,
     hiddenCostMentions: /(shipping calculated at checkout|taxes calculated at checkout|fees apply|non-refundable|final sale)/i.test(bodyText),
     performance: null,
+    screenshots: null,
     extractionMode: 'fetch-fallback'
   };
 }
@@ -799,7 +1008,25 @@ function calculatePriceAnxietyRisk({ unresolvedFearRisk, priceRiskFactor }) {
   );
 }
 
-function buildAudit(body, pageData, url) {
+function buildScreenshotManifest(screenshots) {
+  const entries = [
+    ['desktop_hero', screenshots?.desktopHero],
+    ['mobile_hero', screenshots?.mobileHero],
+    ['desktop_full', screenshots?.desktopFull]
+  ];
+
+  return entries
+    .filter(([, item]) => Boolean(item))
+    .map(([id, item]) => ({
+      id,
+      label: item.label || id,
+      widthPx: item.widthPx || null,
+      heightPx: item.heightPx || null,
+      mimeType: item.mimeType || 'image/jpeg'
+    }));
+}
+
+function buildAudit(body, pageData, url, googlePerformance = null) {
   const conversionGoal = String(body?.conversionGoal || 'Purchase').trim();
   const trafficSource = String(body?.trafficSource || 'paid_social').trim().toLowerCase();
   const audienceSophistication = String(body?.audienceSophistication || 'cold').trim().toLowerCase();
@@ -1092,6 +1319,7 @@ function buildAudit(body, pageData, url) {
   const overall = round(weightedScore, 1);
   const status = scoreStatus(overall);
   const experiments = buildExperiments(models);
+  const screenshotManifest = buildScreenshotManifest(pageData.screenshots);
 
   const findings = models
     .flatMap((model) =>
@@ -1161,16 +1389,32 @@ function buildAudit(body, pageData, url) {
         riskReversalCount,
         anxietyCount
       },
-      performance: pageData.performance || null
+      visual: {
+        screenshotCount: screenshotManifest.length,
+        screenshots: screenshotManifest
+      },
+      performance: {
+        pageNavigation: pageData.performance || null,
+        google: googlePerformance || null
+      }
     }
   };
 }
 
 router.post('/audit', async (req, res) => {
   try {
-    const url = normalizeUrl(req.body?.url);
+    const url = await normalizeUrl(req.body?.url);
     const pageData = await extractWebsiteSignals(url);
-    const audit = buildAudit(req.body, pageData, url);
+    const googlePerformance = await fetchGooglePerformanceBundle(url);
+    const audit = buildAudit(req.body, pageData, url, googlePerformance);
+    const narrative = await generateCroNarrative({
+      audit,
+      googlePerformance,
+      screenshots: pageData.screenshots || null,
+      llmInput: req.body?.llm || {}
+    });
+
+    audit.narrative = narrative;
 
     res.json({
       success: true,

@@ -41,6 +41,13 @@ const OFFER_TYPE_OPTIONS = [
   { value: 'checkout', label: 'Checkout/offer step' }
 ];
 
+const LLM_PROVIDER_OPTIONS = [
+  { value: 'auto', label: 'Auto (DeepSeek -> OpenAI)' },
+  { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'none', label: 'Disable narrative' }
+];
+
 const MODEL_ICON = {
   decision_friction: Activity,
   message_intent_alignment: BrainCircuit,
@@ -67,6 +74,19 @@ function formatPercent(value, digits = 0) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '-';
   return `${num.toFixed(digits)}%`;
+}
+
+function formatMilliseconds(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  if (num >= 1000) return `${(num / 1000).toFixed(2)}s`;
+  return `${Math.round(num)}ms`;
+}
+
+function formatScore(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  return `${Math.round(num)}`;
 }
 
 function postJson(url, body) {
@@ -176,6 +196,142 @@ function ExperimentRow({ item, index }) {
   );
 }
 
+function PerformanceStrategyCard({ label, strategy }) {
+  if (!strategy) {
+    return (
+      <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_14px_30px_rgba(88,28,135,0.07)]">
+        <p className="text-xs uppercase tracking-[0.14em] text-slate-500">{label}</p>
+        <p className="mt-3 text-sm text-slate-600">No Google performance data available for this strategy.</p>
+      </div>
+    );
+  }
+
+  const metrics = strategy.metrics || {};
+  const lcp = metrics.largestContentfulPaint;
+  const inp = metrics.interactionToNextPaint;
+  const cls = metrics.cumulativeLayoutShift;
+  const tbt = metrics.totalBlockingTime;
+  const opportunities = Array.isArray(strategy.opportunities) ? strategy.opportunities : [];
+
+  return (
+    <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_14px_30px_rgba(88,28,135,0.07)]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.14em] text-slate-500">{label}</p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">Google Lighthouse Performance</p>
+        </div>
+        <div className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-1.5">
+          <p className="text-[11px] uppercase tracking-[0.12em] text-violet-700">Score</p>
+          <p className="text-base font-semibold text-violet-700">{formatScore(strategy.score)}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-xl border border-violet-100 bg-violet-50/40 px-3 py-2">
+          <p className="text-slate-500">LCP</p>
+          <p className="font-semibold text-slate-900">{lcp?.displayValue || formatMilliseconds(lcp?.value)}</p>
+        </div>
+        <div className="rounded-xl border border-violet-100 bg-violet-50/40 px-3 py-2">
+          <p className="text-slate-500">INP</p>
+          <p className="font-semibold text-slate-900">{inp?.displayValue || formatMilliseconds(inp?.value)}</p>
+        </div>
+        <div className="rounded-xl border border-violet-100 bg-violet-50/40 px-3 py-2">
+          <p className="text-slate-500">CLS</p>
+          <p className="font-semibold text-slate-900">{cls?.displayValue || (Number.isFinite(cls?.value) ? cls.value.toFixed(3) : '-')}</p>
+        </div>
+        <div className="rounded-xl border border-violet-100 bg-violet-50/40 px-3 py-2">
+          <p className="text-slate-500">TBT</p>
+          <p className="font-semibold text-slate-900">{tbt?.displayValue || formatMilliseconds(tbt?.value)}</p>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">Top opportunities</p>
+        <div className="mt-2 space-y-1.5">
+          {opportunities.slice(0, 2).map((item) => (
+            <div key={`${label}-${item.id}`} className="rounded-lg border border-violet-100 bg-violet-50/50 px-2.5 py-2 text-xs text-slate-700">
+              <p className="font-medium text-slate-900">{item.title}</p>
+              <p className="mt-0.5">Potential savings: {formatMilliseconds(item.potentialSavingsMs)}</p>
+            </div>
+          ))}
+          {!opportunities.length && (
+            <p className="text-xs text-slate-600">No major performance opportunities flagged by Lighthouse.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NarrativeSection({ narrative }) {
+  if (!narrative?.enabled) {
+    return (
+      <div className="rounded-2xl border border-violet-100 bg-white p-5 shadow-[0_14px_30px_rgba(88,28,135,0.07)]">
+        <p className="text-sm font-semibold text-slate-900">Analyst Narrative</p>
+        <p className="mt-2 text-sm text-slate-600">{narrative?.reason || 'Narrative is disabled for this audit run.'}</p>
+      </div>
+    );
+  }
+
+  const sections = narrative.sections || {};
+  const findings = Array.isArray(sections.forensicFindings) ? sections.forensicFindings : [];
+  const actions = Array.isArray(sections.priorityActions) ? sections.priorityActions : [];
+  const walkthrough = Array.isArray(sections.modelWalkthrough) ? sections.modelWalkthrough : [];
+
+  return (
+    <div className="rounded-2xl border border-violet-100 bg-white p-5 shadow-[0_14px_30px_rgba(88,28,135,0.07)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Analyst narrative</p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">
+            Provider {narrative.provider} • Model {narrative.model}
+          </p>
+        </div>
+        <div className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs text-violet-700">
+          Screenshots to LLM: {narrative.screenshotContextUsed ? 'yes' : 'no'}
+        </div>
+      </div>
+
+      <p className="mt-3 text-sm leading-relaxed text-slate-700">{sections.executiveSummary || 'No narrative summary generated.'}</p>
+
+      <div className="mt-4 space-y-3">
+        {findings.slice(0, 3).map((item, index) => (
+          <div key={`narrative-finding-${index}`} className="rounded-xl border border-violet-100 bg-violet-50/50 p-3">
+            <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+            <p className="mt-1 text-xs text-slate-700"><span className="font-medium">Observed:</span> {item.observedEvidence}</p>
+            <p className="mt-1 text-xs text-slate-700"><span className="font-medium">Mechanism:</span> {item.behavioralMechanism}</p>
+            <p className="mt-1 text-xs text-slate-700"><span className="font-medium">Test:</span> {item.recommendedTest}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-600">Model transparency</p>
+          <div className="mt-2 space-y-1.5">
+            {walkthrough.slice(0, 3).map((item, index) => (
+              <p key={`walkthrough-${index}`} className="text-xs text-slate-700">
+                <span className="font-medium">{item.modelId}:</span> {item.howModelWorks}
+              </p>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-600">Priority actions</p>
+          <div className="mt-2 space-y-1.5">
+            {actions.slice(0, 3).map((item, index) => (
+              <p key={`action-${index}`} className="text-xs text-slate-700">
+                <span className="font-medium">{item.title}:</span> {item.whyNow}
+              </p>
+            ))}
+            {!actions.length && <p className="text-xs text-slate-600">No actions generated.</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CROForensicsTab() {
   const [form, setForm] = useState({
     url: '',
@@ -183,7 +339,9 @@ export default function CROForensicsTab() {
     trafficSource: 'paid_social',
     audienceSophistication: 'cold',
     priceRisk: 'medium',
-    offerType: 'single-product'
+    offerType: 'single-product',
+    llmProvider: 'auto',
+    llmModel: ''
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -205,7 +363,14 @@ export default function CROForensicsTab() {
     setError('');
 
     try {
-      const response = await postJson(`${API_BASE}/cro-forensics/audit`, form);
+      const payload = {
+        ...form,
+        llm: {
+          provider: form.llmProvider,
+          model: form.llmModel || undefined
+        }
+      };
+      const response = await postJson(`${API_BASE}/cro-forensics/audit`, payload);
       setAudit(response?.audit || null);
     } catch (err) {
       setError(err.message || 'Audit failed.');
@@ -304,6 +469,28 @@ export default function CROForensicsTab() {
                 ))}
               </select>
             </div>
+            <div className="md:col-span-6">
+              <label className="text-xs font-medium uppercase tracking-[0.14em] text-slate-600">Narrative LLM provider</label>
+              <select
+                value={form.llmProvider}
+                onChange={handleField('llmProvider')}
+                className="mt-2 w-full rounded-xl border border-violet-200 bg-violet-50/40 px-3 py-2.5 text-sm text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/25"
+              >
+                {LLM_PROVIDER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-6">
+              <label className="text-xs font-medium uppercase tracking-[0.14em] text-slate-600">Narrative model override (optional)</label>
+              <input
+                type="text"
+                value={form.llmModel}
+                onChange={handleField('llmModel')}
+                placeholder="deepseek-reasoner or gpt-4o-mini"
+                className="mt-2 w-full rounded-xl border border-violet-200 bg-violet-50/40 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-500 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/25"
+              />
+            </div>
           </div>
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
@@ -391,6 +578,27 @@ export default function CROForensicsTab() {
               ))}
             </div>
 
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              <PerformanceStrategyCard
+                label="Mobile performance"
+                strategy={audit.evidence?.performance?.google?.mobile || null}
+              />
+              <PerformanceStrategyCard
+                label="Desktop performance"
+                strategy={audit.evidence?.performance?.google?.desktop || null}
+              />
+            </div>
+
+            {Array.isArray(audit.evidence?.performance?.google?.errors) && audit.evidence.performance.google.errors.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {audit.evidence.performance.google.errors.map((item, index) => (
+                  <p key={`perf-error-${index}`}>{item.strategy}: {item.message}</p>
+                ))}
+              </div>
+            )}
+
+            <NarrativeSection narrative={audit.narrative} />
+
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
               <div className="xl:col-span-8">
                 <h3 className="mb-3 text-lg font-semibold text-slate-900">Top 5 Experiments</h3>
@@ -425,6 +633,7 @@ export default function CROForensicsTab() {
                       <p>Claims detected: {audit.evidence?.language?.claimCount ?? 0}</p>
                       <p>Evidence markers: {(audit.evidence?.language?.evidenceKeywordCount ?? 0) + (audit.evidence?.language?.numericEvidenceCount ?? 0)}</p>
                       <p>Risk reversal cues: {audit.evidence?.language?.riskReversalCount ?? 0}</p>
+                      <p>Screenshots captured: {audit.evidence?.visual?.screenshotCount ?? 0}</p>
                     </div>
                   </div>
                 </div>
