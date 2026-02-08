@@ -23,7 +23,7 @@
 
 ### Network and SSRF controls
 - For any server-side URL fetch/navigation (`fetch`, SDK HTTP, Puppeteer), enforce:
-- `https`/`http` only
+- `https` by default; `http` should be an explicit, justified exception.
 - explicit host allowlist (per tenant when needed)
 - no private/local/loopback/link-local ranges unless explicitly enabled by secure config
 - fixed origin checks after URL resolution to prevent host-escape via redirects or `//host` paths
