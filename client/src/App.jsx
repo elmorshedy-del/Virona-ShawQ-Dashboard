@@ -1726,7 +1726,10 @@ export default function App() {
         )}
 
         {activeTab === 5 && (
-          <NeoMetaTab onOpenCampaignLauncher={() => setActiveTab(CAMPAIGN_LAUNCHER_TAB_INDEX)} />
+          <NeoMetaTab
+            store={store}
+            onOpenCampaignLauncher={() => setActiveTab(CAMPAIGN_LAUNCHER_TAB_INDEX)}
+          />
         )}
 
         {activeTab === 6 && (
