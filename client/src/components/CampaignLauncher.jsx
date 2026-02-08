@@ -176,6 +176,9 @@ export default function CampaignLauncher({ store }) {
     setError(null);
 
     try {
+      if (!CAMPAIGN_LAUNCHER_API_KEY) {
+        throw new Error('Campaign launcher key is missing. Set VITE_META_CAMPAIGN_LAUNCHER_API_KEY in client env.');
+      }
       if (!formData.campaignName.trim()) throw new Error('Campaign name is required');
       if (!formData.adAccountId) throw new Error('Please select an ad account');
       if (!formData.pageId) throw new Error('Please select a page');
