@@ -7,6 +7,7 @@ const POLL_EVENTS_MS = 1000;
 const POLL_REALTIME_MS = 5000;
 const POLL_OVERVIEW_MS = 20000;
 const REALTIME_WINDOW_MINUTES = 30;
+const REQUEST_TIMEOUT_MS = 15000;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -95,10 +96,38 @@ function safeJsonParse(value) {
   }
 }
 
-async function fetchJson(url, options) {
-  const res = await fetch(url, { cache: 'no-store', ...options });
+async function fetchJson(url, options = {}) {
+  const { timeoutMs, ...fetchOptions } = options || {};
+  const effectiveTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Number(timeoutMs)
+    : REQUEST_TIMEOUT_MS;
+
+  const requestOptions = { cache: 'no-store', ...fetchOptions };
+  let timeoutId = null;
+  let controller = null;
+  if (!requestOptions.signal && effectiveTimeoutMs > 0) {
+    controller = new AbortController();
+    requestOptions.signal = controller.signal;
+    timeoutId = setTimeout(() => {
+      controller.abort();
+    }, effectiveTimeoutMs);
+  }
+
+  let res;
+  let raw;
+  try {
+    res = await fetch(url, requestOptions);
+    raw = await res.text();
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`Request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+
   const contentType = res.headers.get('content-type') || '';
-  const raw = await res.text();
 
   if (!contentType.includes('application/json')) {
     const snippet = raw.slice(0, 200);
@@ -937,8 +966,7 @@ export default function SessionIntelligenceTab({ store }) {
         store: storeId,
         date: day,
         mode: mode || 'high_intent_no_purchase',
-        limitSessions: '5000',
-        verify: '1'
+        limitSessions: '5000'
       });
       const payload = await fetchJson(`/api/session-intelligence/clarity?${params.toString()}`);
       setClaritySignals(payload?.data || null);
