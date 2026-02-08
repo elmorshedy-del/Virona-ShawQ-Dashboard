@@ -1,4 +1,5 @@
 import express from 'express';
+import { timingSafeEqual } from 'crypto';
 import fetch from 'node-fetch';
 
 const router = express.Router();
@@ -7,6 +8,11 @@ const META_API_VERSION = 'v19.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 const DEBUG_BUFFER_LIMIT = 100;
 const META_BODY_LIMIT = 20000;
+const CAMPAIGN_OBJECTIVES = new Set(['OUTCOME_SALES', 'OUTCOME_TRAFFIC', 'OUTCOME_AWARENESS']);
+const CTA_TYPES = new Set(['SHOP_NOW', 'LEARN_MORE', 'SIGN_UP', 'CONTACT_US']);
+const STORE_IDS = new Set(['vironax', 'shawq']);
+const AD_ACCOUNT_ID_PATTERN = /^(?:act_)?([0-9]{5,32})$/;
+const GRAPH_NODE_ID_PATTERN = /^[0-9]{5,32}$/;
 
 const debugEvents = [];
 
@@ -88,9 +94,58 @@ function getStoreConfig(store) {
   }
   return {
     store: 'vironax',
-    accessToken: process.env.META_ACCESS_TOKEN,
-    adAccountId: process.env.META_AD_ACCOUNT_ID
+    accessToken: process.env.META_ACCESS_TOKEN || process.env.VIRONAX_META_ACCESS_TOKEN,
+    adAccountId: process.env.META_AD_ACCOUNT_ID || process.env.VIRONAX_META_AD_ACCOUNT_ID
   };
+}
+
+function getStorePixelId(store) {
+  if ((store || 'vironax') === 'shawq') {
+    return process.env.SHAWQ_META_PIXEL_ID || process.env.META_PIXEL_ID || '';
+  }
+  return process.env.META_PIXEL_ID || process.env.VIRONAX_META_PIXEL_ID || '';
+}
+
+function normalizeStoreValue(rawStore) {
+  const normalized = String(rawStore || 'vironax').trim().toLowerCase();
+  if (STORE_IDS.has(normalized)) return normalized;
+  return '';
+}
+
+function extractBearerToken(authHeader) {
+  if (typeof authHeader !== 'string') return '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || '';
+}
+
+function timingSafeEqualString(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  if (leftBuffer.length !== rightBuffer.length) return false;
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function getCampaignLauncherAuthSecret(req) {
+  const directHeaderSecret = String(req.get('x-meta-launcher-key') || req.get('x-api-key') || '').trim();
+  if (directHeaderSecret) return directHeaderSecret;
+  return extractBearerToken(req.get('authorization'));
+}
+
+function requireCampaignLauncherAuth(req, res, next) {
+  const expectedSecret = String(process.env.META_CAMPAIGN_LAUNCHER_API_KEY || '').trim();
+  if (!expectedSecret) {
+    return res.status(503).json({
+      error: 'Campaign launcher is disabled. Configure META_CAMPAIGN_LAUNCHER_API_KEY.'
+    });
+  }
+
+  const providedSecret = getCampaignLauncherAuthSecret(req);
+  if (!providedSecret || !timingSafeEqualString(providedSecret, expectedSecret)) {
+    return res.status(401).json({ error: 'Unauthorized campaign launcher request.' });
+  }
+
+  return next();
 }
 
 function buildGraphPath(path, params) {
@@ -98,6 +153,23 @@ function buildGraphPath(path, params) {
   query.delete('access_token');
   const queryString = query.toString();
   return queryString ? `${path}?${queryString}` : path;
+}
+
+function buildPostDebugPath(path, params = {}) {
+  const debugParams = {};
+  Object.entries(params).forEach(([key, value]) => {
+    if (key === 'access_token') return;
+    if (key === 'bytes') {
+      debugParams[key] = '[BASE64_IMAGE]';
+      return;
+    }
+    if (typeof value === 'string' && value.length > 120) {
+      debugParams[key] = `${value.slice(0, 117)}...`;
+      return;
+    }
+    debugParams[key] = value;
+  });
+  return buildGraphPath(path, debugParams);
 }
 
 async function fetchMetaJson({ path, params = {}, store, localEndpoint, adAccountId }) {
@@ -185,9 +257,209 @@ async function fetchMetaJson({ path, params = {}, store, localEndpoint, adAccoun
   }
 }
 
+function toMetaFormValue(value) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
+}
+
+async function postMetaJson({ path, body = {}, store, localEndpoint, adAccountId }) {
+  const { accessToken } = getStoreConfig(store);
+  if (!accessToken) {
+    const debugPath = buildPostDebugPath(path, body);
+    addDebugEvent({
+      ts: new Date().toISOString(),
+      localEndpoint,
+      store,
+      adAccountId,
+      graphPath: debugPath,
+      metaStatus: null,
+      metaBody: { message: 'Missing Meta access token' }
+    });
+    return {
+      ok: false,
+      status: 400,
+      data: { error: { message: 'Missing Meta access token' } },
+      graphPath: debugPath
+    };
+  }
+
+  const requestBody = { ...body, access_token: accessToken };
+  const form = new URLSearchParams();
+  Object.entries(requestBody).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      form.set(key, toMetaFormValue(value));
+    }
+  });
+
+  const graphPath = buildPostDebugPath(path, requestBody);
+
+  try {
+    const response = await fetch(`${META_BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString()
+    });
+    const text = await response.text();
+    let parsed;
+
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch (parseError) {
+      parsed = text || null;
+    }
+
+    const isError = !response.ok || (parsed && typeof parsed === 'object' && parsed.error);
+    if (isError) {
+      const redacted = redactTokensDeep(parsed);
+      const { body: redactedBody, truncated } = truncateMetaBody(redacted);
+
+      addDebugEvent({
+        ts: new Date().toISOString(),
+        localEndpoint,
+        store,
+        adAccountId,
+        graphPath,
+        metaStatus: response.status,
+        metaBody: truncated ? { truncated: true, body: redactedBody } : redactedBody
+      });
+    }
+
+    return {
+      ok: !isError,
+      status: response.status,
+      data: parsed,
+      graphPath
+    };
+  } catch (error) {
+    const redactedMessage = redactTokenString(error.message || 'Meta request failed');
+    addDebugEvent({
+      ts: new Date().toISOString(),
+      localEndpoint,
+      store,
+      adAccountId,
+      graphPath,
+      metaStatus: null,
+      metaBody: { message: redactedMessage }
+    });
+
+    return {
+      ok: false,
+      status: 500,
+      data: { error: { message: redactedMessage } },
+      graphPath
+    };
+  }
+}
+
 function normalizeAdAccountId(adAccountId) {
   if (!adAccountId) return '';
-  return adAccountId.replace(/^act_/, '');
+  const match = String(adAccountId).trim().match(AD_ACCOUNT_ID_PATTERN);
+  return match?.[1] || '';
+}
+
+function normalizeGraphNodeId(rawId) {
+  if (!rawId) return '';
+  const cleaned = String(rawId).trim();
+  if (!GRAPH_NODE_ID_PATTERN.test(cleaned)) return '';
+  return cleaned;
+}
+
+function collectAuthorizedAdAccountIds(store) {
+  const config = getStoreConfig(store);
+  const storeAllowlistEnv = store === 'shawq'
+    ? process.env.SHAWQ_META_ALLOWED_AD_ACCOUNT_IDS
+    : process.env.VIRONAX_META_ALLOWED_AD_ACCOUNT_IDS;
+  const globalAllowlistEnv = process.env.META_ALLOWED_AD_ACCOUNT_IDS;
+  const authorized = new Set();
+
+  const addId = (value) => {
+    const normalized = normalizeAdAccountId(value);
+    if (normalized) authorized.add(normalized);
+  };
+
+  const addCsvIds = (value) => {
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach(addId);
+  };
+
+  addId(config.adAccountId);
+  addCsvIds(storeAllowlistEnv);
+  addCsvIds(globalAllowlistEnv);
+
+  return authorized;
+}
+
+function normalizeGenderValue(rawGender) {
+  if (!Array.isArray(rawGender) || rawGender.length === 0) return [1, 2];
+  const parsed = rawGender
+    .map((value) => Number(value))
+    .filter((value) => value === 1 || value === 2);
+  return parsed.length > 0 ? Array.from(new Set(parsed)) : [1, 2];
+}
+
+function parsePositiveBudget(value) {
+  const budget = Number(value);
+  if (!Number.isFinite(budget) || budget <= 0) return null;
+  return Math.round(budget * 100);
+}
+
+function buildAdSetGoal(objective, store) {
+  if (objective === 'OUTCOME_AWARENESS') {
+    return {
+      optimizationGoal: 'REACH',
+      billingEvent: 'IMPRESSIONS',
+      warnings: []
+    };
+  }
+
+  if (objective === 'OUTCOME_TRAFFIC') {
+    return {
+      optimizationGoal: 'LINK_CLICKS',
+      billingEvent: 'IMPRESSIONS',
+      warnings: []
+    };
+  }
+
+  const pixelId = getStorePixelId(store);
+  if (pixelId) {
+    return {
+      optimizationGoal: 'OFFSITE_CONVERSIONS',
+      billingEvent: 'IMPRESSIONS',
+      promotedObject: {
+        pixel_id: pixelId,
+        custom_event_type: 'PURCHASE'
+      },
+      warnings: []
+    };
+  }
+
+  return {
+    optimizationGoal: 'LINK_CLICKS',
+    billingEvent: 'LINK_CLICKS',
+    warnings: [
+      'No pixel ID configured for this store. Falling back to traffic optimization for the ad set.'
+    ]
+  };
+}
+
+function isHttpUrl(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
+function compactObject(obj) {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, value]) => value !== undefined && value !== null && value !== '')
+  );
 }
 
 function extractVideoId(creative) {
@@ -258,7 +530,10 @@ function extractThumbnailUrl(creative) {
 }
 
 router.get('/adaccounts', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const config = getStoreConfig(store);
   const { accessToken } = config;
 
@@ -289,8 +564,325 @@ router.get('/adaccounts', async (req, res) => {
   res.json({ data: accounts });
 });
 
+router.get('/pages', async (req, res) => {
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
+  const config = getStoreConfig(store);
+  const { accessToken } = config;
+
+  if (!accessToken) {
+    return res.status(400).json({ error: 'Missing Meta credentials.' });
+  }
+
+  const result = await fetchMetaJson({
+    path: '/me/accounts',
+    params: { fields: 'id,name,category,tasks', limit: '200' },
+    store,
+    localEndpoint: '/api/meta/pages'
+  });
+
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.data?.error?.message || 'Meta request failed' });
+  }
+
+  const pages = Array.isArray(result.data?.data)
+    ? result.data.data.map((page) => ({
+      id: page.id,
+      name: page.name,
+      category: page.category || null,
+      tasks: Array.isArray(page.tasks) ? page.tasks : []
+    }))
+    : [];
+
+  res.json({ data: pages });
+});
+
+router.post('/campaign-launcher', requireCampaignLauncherAuth, async (req, res) => {
+  const store = normalizeStoreValue(req.body?.store || req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
+  const adAccountIdRaw = String(req.body?.adAccountId || '').trim();
+  const campaignName = String(req.body?.campaignName || '').trim();
+  const pageId = String(req.body?.pageId || '').trim();
+  const objective = String(req.body?.objective || 'OUTCOME_SALES').trim().toUpperCase();
+  const adName = String(req.body?.adName || '').trim() || `${campaignName || 'New Campaign'} - Ad`;
+  const primaryText = String(req.body?.primaryText || '').trim();
+  const headline = String(req.body?.headline || '').trim();
+  const description = String(req.body?.description || '').trim();
+  const linkUrl = String(req.body?.linkUrl || '').trim();
+  const cta = String(req.body?.cta || 'SHOP_NOW').trim().toUpperCase();
+  const imageUrl = String(req.body?.imageUrl || '').trim();
+  const imageBase64 = String(req.body?.imageBase64 || '').trim();
+  const imageFilename = String(req.body?.imageFilename || '').trim() || `campaign-${Date.now()}.jpg`;
+  const country = String(req.body?.country || '').trim().toUpperCase();
+  const gender = normalizeGenderValue(req.body?.gender);
+  const budgetCents = parsePositiveBudget(req.body?.dailyBudget);
+  const ageMinRaw = Number(req.body?.ageMin);
+  const ageMaxRaw = Number(req.body?.ageMax);
+  const ageMin = Number.isFinite(ageMinRaw) ? Math.max(13, Math.floor(ageMinRaw)) : 18;
+  const ageMax = Number.isFinite(ageMaxRaw)
+    ? Math.max(ageMin, Math.min(65, Math.floor(ageMaxRaw)))
+    : 65;
+
+  if (!adAccountIdRaw) {
+    return res.status(400).json({ error: 'adAccountId is required' });
+  }
+  if (!campaignName) {
+    return res.status(400).json({ error: 'campaignName is required' });
+  }
+  if (!pageId) {
+    return res.status(400).json({ error: 'pageId is required' });
+  }
+  if (!CAMPAIGN_OBJECTIVES.has(objective)) {
+    return res.status(400).json({ error: 'Unsupported objective value' });
+  }
+  if (!CTA_TYPES.has(cta)) {
+    return res.status(400).json({ error: 'Unsupported CTA type' });
+  }
+  if (!budgetCents) {
+    return res.status(400).json({ error: 'dailyBudget must be a positive number' });
+  }
+  if (!/^[A-Z]{2}$/.test(country)) {
+    return res.status(400).json({ error: 'country must be a 2-letter ISO code' });
+  }
+  if (!isHttpUrl(linkUrl)) {
+    return res.status(400).json({ error: 'linkUrl must be a valid HTTP(S) URL' });
+  }
+  if (imageUrl && !isHttpUrl(imageUrl)) {
+    return res.status(400).json({ error: 'imageUrl must be a valid HTTP(S) URL when provided' });
+  }
+
+  const cleanAccountId = normalizeAdAccountId(adAccountIdRaw);
+  if (!cleanAccountId) {
+    return res.status(400).json({ error: 'adAccountId is invalid' });
+  }
+  const authorizedAdAccountIds = collectAuthorizedAdAccountIds(store);
+  if (authorizedAdAccountIds.size === 0) {
+    return res.status(500).json({
+      error: 'No authorized ad account configured for this store. Set *_META_AD_ACCOUNT_ID or *_META_ALLOWED_AD_ACCOUNT_IDS.'
+    });
+  }
+  if (!authorizedAdAccountIds.has(cleanAccountId)) {
+    return res.status(403).json({ error: 'adAccountId is not authorized for this store' });
+  }
+  const warnings = [];
+
+  const respondStepError = (step, result, fallbackMessage, partialIds = {}) => {
+    const status = result?.status && Number.isInteger(result.status) ? result.status : 502;
+    const errorMessage = result?.data?.error?.message || fallbackMessage;
+    return res.status(status).json({
+      error: errorMessage,
+      step,
+      ...partialIds,
+      details: redactTokensDeep(result?.data || null)
+    });
+  };
+
+  const campaignResult = await postMetaJson({
+    path: `/act_${cleanAccountId}/campaigns`,
+    body: {
+      name: campaignName,
+      objective,
+      special_ad_categories: '[]',
+      is_adset_budget_sharing_enabled: false,
+      status: 'PAUSED'
+    },
+    store,
+    adAccountId: adAccountIdRaw,
+    localEndpoint: '/api/meta/campaign-launcher'
+  });
+
+  if (!campaignResult.ok) {
+    return respondStepError('campaign', campaignResult, 'Failed to create campaign');
+  }
+
+  const campaignId = campaignResult.data?.id;
+  if (!campaignId) {
+    return res.status(502).json({ error: 'Meta did not return campaign id', step: 'campaign' });
+  }
+
+  const adSetGoal = buildAdSetGoal(objective, store);
+  warnings.push(...adSetGoal.warnings);
+
+  const targeting = compactObject({
+    geo_locations: { countries: [country] },
+    age_min: ageMin,
+    age_max: ageMax,
+    genders: gender.length === 2 ? undefined : gender
+  });
+
+  const adSetBody = compactObject({
+    name: `${campaignName} - Ad Set`,
+    campaign_id: campaignId,
+    daily_budget: budgetCents,
+    billing_event: adSetGoal.billingEvent,
+    optimization_goal: adSetGoal.optimizationGoal,
+    bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
+    destination_type: 'WEBSITE',
+    targeting: JSON.stringify(targeting),
+    promoted_object: adSetGoal.promotedObject ? JSON.stringify(adSetGoal.promotedObject) : undefined,
+    status: 'PAUSED'
+  });
+
+  const adSetResult = await postMetaJson({
+    path: `/act_${cleanAccountId}/adsets`,
+    body: adSetBody,
+    store,
+    adAccountId: adAccountIdRaw,
+    localEndpoint: '/api/meta/campaign-launcher'
+  });
+
+  if (!adSetResult.ok) {
+    return respondStepError(
+      'adset',
+      adSetResult,
+      'Campaign created but ad set creation failed',
+      { campaign_id: campaignId }
+    );
+  }
+
+  const adSetId = adSetResult.data?.id;
+  if (!adSetId) {
+    return res.status(502).json({
+      error: 'Meta did not return ad set id',
+      step: 'adset',
+      campaign_id: campaignId
+    });
+  }
+
+  let uploadedImageHash = null;
+  if (imageBase64) {
+    const imageUploadResult = await postMetaJson({
+      path: `/act_${cleanAccountId}/adimages`,
+      body: {
+        bytes: imageBase64,
+        name: imageFilename
+      },
+      store,
+      adAccountId: adAccountIdRaw,
+      localEndpoint: '/api/meta/campaign-launcher'
+    });
+
+    if (!imageUploadResult.ok) {
+      return respondStepError(
+        'image_upload',
+        imageUploadResult,
+        'Campaign and ad set created, but image upload failed',
+        { campaign_id: campaignId, adset_id: adSetId }
+      );
+    }
+
+    const uploadedImages = imageUploadResult.data?.images || {};
+    const firstImage = Object.values(uploadedImages)[0];
+    uploadedImageHash = firstImage?.hash || null;
+    if (!uploadedImageHash) {
+      return res.status(502).json({
+        error: 'Image upload did not return an image hash',
+        step: 'image_upload',
+        campaign_id: campaignId,
+        adset_id: adSetId
+      });
+    }
+  }
+
+  const linkData = compactObject({
+    link: linkUrl,
+    message: primaryText || campaignName,
+    name: headline || campaignName,
+    description: description || undefined,
+    image_hash: uploadedImageHash || undefined,
+    image_url: !uploadedImageHash && imageUrl ? imageUrl : undefined,
+    call_to_action: {
+      type: cta,
+      value: { link: linkUrl }
+    }
+  });
+
+  const creativeResult = await postMetaJson({
+    path: `/act_${cleanAccountId}/adcreatives`,
+    body: {
+      name: `${adName} Creative`,
+      object_story_spec: JSON.stringify({
+        page_id: pageId,
+        link_data: linkData
+      })
+    },
+    store,
+    adAccountId: adAccountIdRaw,
+    localEndpoint: '/api/meta/campaign-launcher'
+  });
+
+  if (!creativeResult.ok) {
+    return respondStepError(
+      'creative',
+      creativeResult,
+      'Campaign and ad set created, but creative creation failed',
+      { campaign_id: campaignId, adset_id: adSetId }
+    );
+  }
+
+  const creativeId = creativeResult.data?.id;
+  if (!creativeId) {
+    return res.status(502).json({
+      error: 'Meta did not return creative id',
+      step: 'creative',
+      campaign_id: campaignId,
+      adset_id: adSetId
+    });
+  }
+
+  const adResult = await postMetaJson({
+    path: `/act_${cleanAccountId}/ads`,
+    body: {
+      name: adName,
+      adset_id: adSetId,
+      creative: JSON.stringify({ creative_id: creativeId }),
+      status: 'PAUSED'
+    },
+    store,
+    adAccountId: adAccountIdRaw,
+    localEndpoint: '/api/meta/campaign-launcher'
+  });
+
+  if (!adResult.ok) {
+    return respondStepError(
+      'ad',
+      adResult,
+      'Campaign, ad set, and creative created, but ad creation failed',
+      { campaign_id: campaignId, adset_id: adSetId, creative_id: creativeId }
+    );
+  }
+
+  const adId = adResult.data?.id;
+  if (!adId) {
+    return res.status(502).json({
+      error: 'Meta did not return ad id',
+      step: 'ad',
+      campaign_id: campaignId,
+      adset_id: adSetId,
+      creative_id: creativeId
+    });
+  }
+
+  return res.json({
+    success: true,
+    campaign_id: campaignId,
+    adset_id: adSetId,
+    creative_id: creativeId,
+    ad_id: adId,
+    warnings,
+    mode: 'live'
+  });
+});
+
 router.get('/campaigns', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const adAccountId = req.query.adAccountId;
 
   if (!adAccountId) {
@@ -298,6 +890,9 @@ router.get('/campaigns', async (req, res) => {
   }
 
   const cleanId = normalizeAdAccountId(adAccountId);
+  if (!cleanId) {
+    return res.status(400).json({ error: 'adAccountId is invalid' });
+  }
   const result = await fetchMetaJson({
     path: `/act_${cleanId}/campaigns`,
     params: { fields: 'id,name,status,effective_status', limit: '500' },
@@ -316,16 +911,20 @@ router.get('/campaigns', async (req, res) => {
 });
 
 router.get('/campaigns/:campaignId/ads', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const adAccountId = req.query.adAccountId;
   const { campaignId } = req.params;
 
-  if (!campaignId) {
-    return res.status(400).json({ error: 'campaignId is required' });
+  const cleanCampaignId = normalizeGraphNodeId(campaignId);
+  if (!cleanCampaignId) {
+    return res.status(400).json({ error: 'campaignId is invalid' });
   }
 
   const result = await fetchMetaJson({
-    path: `/${campaignId}/ads`,
+    path: `/${cleanCampaignId}/ads`,
     params: {
       fields:
         'id,name,status,effective_status,creative{thumbnail_url,image_url,object_story_spec{video_data,link_data,photo_data},asset_feed_spec{videos,images}}',
@@ -349,16 +948,20 @@ router.get('/campaigns/:campaignId/ads', async (req, res) => {
 });
 
 router.get('/ads/:adId/video', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const adAccountId = req.query.adAccountId;
   const { adId } = req.params;
 
-  if (!adId) {
-    return res.status(400).json({ error: 'adId is required' });
+  const cleanAdId = normalizeGraphNodeId(adId);
+  if (!cleanAdId) {
+    return res.status(400).json({ error: 'adId is invalid' });
   }
 
   const creativeResult = await fetchMetaJson({
-    path: `/${adId}`,
+    path: `/${cleanAdId}`,
     params: { fields: 'creative{object_story_spec,asset_feed_spec}' },
     store,
     adAccountId,

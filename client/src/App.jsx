@@ -399,6 +399,7 @@ const STORES = {
 };
 
 const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher', 'Product Radar'];
+const CAMPAIGN_LAUNCHER_TAB_INDEX = TABS.indexOf('Campaign Launcher');
 const PRODUCT_RADAR_TAB_INDEX = TABS.indexOf('Product Radar');
 const TABS_VERSION = '2026-01-31-customer-insights-after-neometa-v1';
 
@@ -1725,7 +1726,7 @@ export default function App() {
         )}
 
         {activeTab === 5 && (
-          <NeoMetaTab />
+          <NeoMetaTab onOpenCampaignLauncher={() => setActiveTab(CAMPAIGN_LAUNCHER_TAB_INDEX)} />
         )}
 
         {activeTab === 6 && (
@@ -1812,7 +1813,7 @@ export default function App() {
           <ExchangeRateDebug />
         )}
 
-        {activeTab === 17 && (
+        {activeTab === CAMPAIGN_LAUNCHER_TAB_INDEX && (
           <CampaignLauncher store={store} />
         )}
 

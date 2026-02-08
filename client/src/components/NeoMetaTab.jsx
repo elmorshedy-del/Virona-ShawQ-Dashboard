@@ -268,7 +268,7 @@ function FlowStep({ step }) {
   );
 }
 
-export default function NeoMetaTab() {
+export default function NeoMetaTab({ onOpenCampaignLauncher = () => {} }) {
   const [concept, setConcept] = useState('blueprint');
   const activeConcept = CONCEPTS.find((item) => item.id === concept) || CONCEPTS[0];
 
@@ -296,8 +296,11 @@ export default function NeoMetaTab() {
             <button className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
               Generate from brief
             </button>
-            <button className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800">
-              Launch sandbox
+            <button
+              onClick={onOpenCampaignLauncher}
+              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+            >
+              Open launcher
             </button>
           </div>
         </div>
@@ -655,7 +658,10 @@ export default function NeoMetaTab() {
           <button className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
             Export to CSV
           </button>
-          <button className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-500">
+          <button
+            onClick={onOpenCampaignLauncher}
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-500"
+          >
             Launch Campaign
           </button>
         </div>
