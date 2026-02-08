@@ -490,7 +490,7 @@ def enhance_with_opencv(pil_rgb: Image.Image, mode: str, strength: float) -> Ima
         else:
             target = 0.58 + (0.12 * s)
             gamma = float(np.clip(np.log(target) / np.log(max(mean_l, 1e-3)), 0.45, 1.35))
-        lut = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)], dtype=np.float32).clip(0, 255).astype(np.uint8)
+        lut = (np.power(np.arange(256) / 255.0, gamma) * 255).clip(0, 255).astype(np.uint8)
         l_gamma = cv2.LUT(l_channel, lut)
         clahe = cv2.createCLAHE(clipLimit=(2.0 + 4.0 * s), tileGridSize=(8, 8))
         l_enhanced = clahe.apply(l_gamma)
