@@ -153,11 +153,11 @@ def clamp_int(value: Any, lo: int, hi: int) -> int:
 def clamp_float(value: Any, lo: float, hi: float, default: float) -> float:
     try:
         n = float(value)
-    except Exception:
-        n = float(default)
-    if not np.isfinite(n):
-        n = float(default)
-    return float(max(lo, min(hi, n)))
+        if not np.isfinite(n):
+            n = default
+    except (ValueError, TypeError):
+        n = default
+    return max(lo, min(hi, n))
 
 
 def resize_to_max_side(image: np.ndarray, max_side: int) -> tuple[np.ndarray, float]:
