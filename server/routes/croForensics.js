@@ -20,6 +20,115 @@ const SOURCE_ALIGNMENT_TARGETS = {
   referral: 0.18
 };
 
+const CRAWLER_TUNABLES = {
+  viewportWidthPx: 1440,
+  viewportHeightPx: 900,
+  gotoTimeoutMs: 45000,
+  networkIdleThresholdMs: 500,
+  networkIdleTimeoutMs: 5000
+};
+
+// Risk/scoring constants are centralized here to avoid hidden heuristics and
+// make calibration straightforward during future model tuning.
+const AUDIT_TUNABLES = {
+  minAlignmentTarget: 0.01,
+  findingsLimit: 10,
+  severity: {
+    highRiskThreshold: 0.7,
+    mediumRiskThreshold: 0.5
+  },
+  richness: {
+    targetWordCount: 1200,
+    targetHeadings: 8,
+    targetActions: 14
+  },
+  decision: {
+    attention: {
+      heroHeadingPresentRisk: 0.15,
+      heroHeadingMissingRisk: 0.82,
+      noCtaRisk: 0.9,
+      crowdedCtaThreshold: 2,
+      crowdedCtaRisk: 0.58,
+      balancedCtaRisk: 0.2,
+      firstScreenComfortWords: 160,
+      firstScreenWordScale: 180
+    },
+    comprehension: {
+      referenceReadabilityScore: 55
+    },
+    belief: {
+      numericEvidenceWeight: 0.4,
+      claimBalanceFloor: 2,
+      mechanismNumericWeight: 0.35,
+      mechanismTargetSignals: 8
+    },
+    action: {
+      crowdedCtaThreshold: 3,
+      crowdedCtaRisk: 0.85,
+      noCtaRisk: 0.78,
+      balancedCtaRisk: 0.25,
+      includedFormFields: 4,
+      formFieldScale: 8,
+      includedLinksAboveFold: 12,
+      linkScale: 24
+    },
+    risk: {
+      policyLinkWeight: 0.6,
+      policyCoverageTarget: 8,
+      hiddenCostPresentRisk: 0.8,
+      hiddenCostAbsentRisk: 0.2
+    }
+  },
+  messageIntent: {
+    missingHeroRisk: 0.65,
+    shortMetaDescriptionThresholdChars: 40,
+    shortMetaRisk: 0.45,
+    descriptiveMetaRisk: 0.15,
+    coldAudienceCrowdedCtaThreshold: 2,
+    coldAudienceCrowdedRisk: 0.55,
+    coldAudienceDefaultRisk: 0.22,
+    hotAudienceNoCtaRisk: 0.65,
+    hotAudienceDefaultRisk: 0.18
+  },
+  proof: {
+    evidenceDenominatorNumericWeight: 0.5,
+    claimEvidenceRiskScale: 3,
+    mechanismTargetSignals: 4,
+    specificityNumericWeight: 0.7,
+    specificityTargetSignals: 10
+  },
+  choice: {
+    ctaCompetitionRiskByCount: {
+      singleOrLess: 0.2,
+      two: 0.42,
+      three: 0.68,
+      fourOrMore: 0.85
+    },
+    includedLinksAboveFold: 10,
+    branchingScale: 22,
+    heroHeadingPresentRisk: 0.15,
+    heroHeadingMissingRisk: 0.75,
+    noCtaRisk: 0.7,
+    hasCtaRisk: 0.2,
+    includedFormFields: 5,
+    formFieldScale: 8
+  },
+  anxiety: {
+    unresolvedFearScale: 8,
+    hiddenCostPresentRisk: 0.85,
+    hiddenCostAbsentRisk: 0.18,
+    policyLinkWeight: 0.5,
+    policyCoverageTarget: 6,
+    unresolvedFearWeight: 0.6,
+    priceRiskWeight: 0.4,
+    priceRiskFactors: {
+      high: 0.72,
+      medium: 0.52,
+      low: 0.35
+    }
+  }
+};
+
 const STOPWORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'by', 'for', 'from', 'in', 'into',
   'is', 'it', 'its', 'of', 'on', 'or', 'that', 'the', 'their', 'this', 'to', 'was', 'were',
@@ -296,7 +405,10 @@ async function extractWithPuppeteer(url) {
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 900 });
+    await page.setViewport({
+      width: CRAWLER_TUNABLES.viewportWidthPx,
+      height: CRAWLER_TUNABLES.viewportHeightPx
+    });
     await page.setUserAgent(
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
@@ -308,8 +420,16 @@ async function extractWithPuppeteer(url) {
       else req.continue();
     });
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await page.waitForTimeout(1800);
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: CRAWLER_TUNABLES.gotoTimeoutMs
+    });
+    await page.waitForNetworkIdle({
+      idleTime: CRAWLER_TUNABLES.networkIdleThresholdMs,
+      timeout: CRAWLER_TUNABLES.networkIdleTimeoutMs
+    }).catch(() => {
+      console.warn('[CRO Forensics] Timed out waiting for network idle. Proceeding anyway.');
+    });
 
     const performance = await page.evaluate(() => {
       const nav = performance.getEntriesByType('navigation')[0];
@@ -506,6 +626,179 @@ async function extractWebsiteSignals(url) {
   }
 }
 
+function calculateRichness(pageData) {
+  const cfg = AUDIT_TUNABLES.richness;
+  return clamp(
+    (
+      Math.min(1, (pageData.wordCount || 0) / cfg.targetWordCount) +
+      Math.min(1, (pageData.headings?.length || 0) / cfg.targetHeadings) +
+      Math.min(1, (pageData.actionCount || 0) / cfg.targetActions)
+    ) / 3,
+    0,
+    1
+  );
+}
+
+function calculateAttentionRisk(pageData) {
+  const cfg = AUDIT_TUNABLES.decision.attention;
+  const ctaCount = pageData.ctasAboveFold || 0;
+  const ctaRisk = ctaCount === 0
+    ? cfg.noCtaRisk
+    : ctaCount > cfg.crowdedCtaThreshold
+      ? cfg.crowdedCtaRisk
+      : cfg.balancedCtaRisk;
+  const heroRisk = pageData.hasHeroHeading ? cfg.heroHeadingPresentRisk : cfg.heroHeadingMissingRisk;
+  const verbosityRisk = clamp(
+    ((pageData.firstScreenWordCount || 0) - cfg.firstScreenComfortWords) / cfg.firstScreenWordScale,
+    0,
+    1
+  );
+  return clamp((heroRisk + ctaRisk + verbosityRisk) / 3, 0, 1);
+}
+
+function calculateComprehensionRisk(readingEase) {
+  const cfg = AUDIT_TUNABLES.decision.comprehension;
+  return clamp((cfg.referenceReadabilityScore - readingEase) / cfg.referenceReadabilityScore, 0, 1);
+}
+
+function calculateBeliefRisk({ claimCount, evidenceKeywordCount, numericEvidenceCount, mechanismCount }) {
+  const cfg = AUDIT_TUNABLES.decision.belief;
+  const claimEvidenceRisk = clamp(
+    (
+      claimCount - (evidenceKeywordCount + (numericEvidenceCount * cfg.numericEvidenceWeight))
+    ) / Math.max(claimCount + 1, cfg.claimBalanceFloor),
+    0,
+    1
+  );
+  const mechanismCoverageRisk = 1 - clamp(
+    (
+      mechanismCount + (numericEvidenceCount * cfg.mechanismNumericWeight)
+    ) / cfg.mechanismTargetSignals,
+    0,
+    1
+  );
+  return clamp((claimEvidenceRisk + mechanismCoverageRisk) / 2, 0, 1);
+}
+
+function calculateActionRisk(pageData) {
+  const cfg = AUDIT_TUNABLES.decision.action;
+  const ctaCount = pageData.ctasAboveFold || 0;
+  const ctaRisk = ctaCount > cfg.crowdedCtaThreshold
+    ? cfg.crowdedCtaRisk
+    : ctaCount === 0
+      ? cfg.noCtaRisk
+      : cfg.balancedCtaRisk;
+  const formRisk = clamp(((pageData.formFieldCount || 0) - cfg.includedFormFields) / cfg.formFieldScale, 0, 1);
+  const linkRisk = clamp(((pageData.linksAboveFold || 0) - cfg.includedLinksAboveFold) / cfg.linkScale, 0, 1);
+  return clamp((ctaRisk + formRisk + linkRisk) / 3, 0, 1);
+}
+
+function calculateRiskFriction({ riskReversalCount, policyLinkCount, hiddenCostMentions }) {
+  const cfg = AUDIT_TUNABLES.decision.risk;
+  const policyCoverageRisk = 1 - clamp(
+    (riskReversalCount + (policyLinkCount * cfg.policyLinkWeight)) / cfg.policyCoverageTarget,
+    0,
+    1
+  );
+  const hiddenCostRisk = hiddenCostMentions ? cfg.hiddenCostPresentRisk : cfg.hiddenCostAbsentRisk;
+  return clamp((policyCoverageRisk + hiddenCostRisk) / 2, 0, 1);
+}
+
+function calculatePromiseContinuityRisk({ intentMismatchRisk, pageData }) {
+  const cfg = AUDIT_TUNABLES.messageIntent;
+  const heroRisk = pageData.h1 ? 0 : cfg.missingHeroRisk;
+  const metaRisk = (pageData.metaDescription || '').length < cfg.shortMetaDescriptionThresholdChars
+    ? cfg.shortMetaRisk
+    : cfg.descriptiveMetaRisk;
+  return clamp((intentMismatchRisk + heroRisk + metaRisk) / 3, 0, 1);
+}
+
+function calculateStageMismatchRisk({ audienceSophistication, ctasAboveFold }) {
+  const cfg = AUDIT_TUNABLES.messageIntent;
+  const coldRisk = audienceSophistication === 'cold' && ctasAboveFold > cfg.coldAudienceCrowdedCtaThreshold
+    ? cfg.coldAudienceCrowdedRisk
+    : cfg.coldAudienceDefaultRisk;
+  const hotRisk = audienceSophistication === 'hot' && ctasAboveFold === 0
+    ? cfg.hotAudienceNoCtaRisk
+    : cfg.hotAudienceDefaultRisk;
+  return clamp((coldRisk + hotRisk) / 2, 0, 1);
+}
+
+function calculateClaimEvidenceRisk({ claimCount, evidenceKeywordCount, numericEvidenceCount }) {
+  const cfg = AUDIT_TUNABLES.proof;
+  const denominator = Math.max(
+    evidenceKeywordCount + (numericEvidenceCount * cfg.evidenceDenominatorNumericWeight),
+    1
+  );
+  return clamp(((claimCount / denominator) - 1) / cfg.claimEvidenceRiskScale, 0, 1);
+}
+
+function calculateSpecificityRisk({ numericEvidenceCount, evidenceKeywordCount }) {
+  const cfg = AUDIT_TUNABLES.proof;
+  return 1 - clamp(
+    (
+      numericEvidenceCount + (evidenceKeywordCount * cfg.specificityNumericWeight)
+    ) / cfg.specificityTargetSignals,
+    0,
+    1
+  );
+}
+
+function calculateCtaCompetitionRisk(ctasAboveFold) {
+  const cfg = AUDIT_TUNABLES.choice.ctaCompetitionRiskByCount;
+  if (ctasAboveFold <= 1) return cfg.singleOrLess;
+  if (ctasAboveFold === 2) return cfg.two;
+  if (ctasAboveFold === 3) return cfg.three;
+  return cfg.fourOrMore;
+}
+
+function calculateBranchingRisk(linksAboveFold) {
+  const cfg = AUDIT_TUNABLES.choice;
+  return clamp((linksAboveFold - cfg.includedLinksAboveFold) / cfg.branchingScale, 0, 1);
+}
+
+function calculateSequenceRisk(pageData) {
+  const cfg = AUDIT_TUNABLES.choice;
+  const heroRisk = pageData.hasHeroHeading ? cfg.heroHeadingPresentRisk : cfg.heroHeadingMissingRisk;
+  const ctaRisk = (pageData.ctasAboveFold || 0) === 0 ? cfg.noCtaRisk : cfg.hasCtaRisk;
+  return clamp((heroRisk + ctaRisk) / 2, 0, 1);
+}
+
+function calculateFormFrictionRisk(formFieldCount) {
+  const cfg = AUDIT_TUNABLES.choice;
+  return clamp((formFieldCount - cfg.includedFormFields) / cfg.formFieldScale, 0, 1);
+}
+
+function calculateUnresolvedFearRisk({ anxietyCount, riskReversalCount, hiddenCostMentions }) {
+  const cfg = AUDIT_TUNABLES.anxiety;
+  const anxietyGapRisk = clamp((anxietyCount - riskReversalCount) / cfg.unresolvedFearScale, 0, 1);
+  const hiddenCostRisk = hiddenCostMentions ? cfg.hiddenCostPresentRisk : cfg.hiddenCostAbsentRisk;
+  return clamp((anxietyGapRisk + hiddenCostRisk) / 2, 0, 1);
+}
+
+function calculateGuaranteeSpecificityRisk({ riskReversalCount, policyLinkCount }) {
+  const cfg = AUDIT_TUNABLES.anxiety;
+  return 1 - clamp(
+    (riskReversalCount + (policyLinkCount * cfg.policyLinkWeight)) / cfg.policyCoverageTarget,
+    0,
+    1
+  );
+}
+
+function getPriceRiskFactor(priceRisk) {
+  const cfg = AUDIT_TUNABLES.anxiety.priceRiskFactors;
+  return cfg[priceRisk] ?? cfg.medium;
+}
+
+function calculatePriceAnxietyRisk({ unresolvedFearRisk, priceRiskFactor }) {
+  const cfg = AUDIT_TUNABLES.anxiety;
+  return clamp(
+    (unresolvedFearRisk * cfg.unresolvedFearWeight) + (priceRiskFactor * cfg.priceRiskWeight),
+    0,
+    1
+  );
+}
+
 function buildAudit(body, pageData, url) {
   const conversionGoal = String(body?.conversionGoal || 'Purchase').trim();
   const trafficSource = String(body?.trafficSource || 'paid_social').trim().toLowerCase();
@@ -533,7 +826,11 @@ function buildAudit(body, pageData, url) {
 
   const intentSimilarity = jaccardSimilarity(uniqueTokenSet(intentText), uniqueTokenSet(pageNarrative));
   const alignmentTarget = SOURCE_ALIGNMENT_TARGETS[trafficSource] || 0.2;
-  const intentMismatchRisk = clamp((alignmentTarget - intentSimilarity) / Math.max(alignmentTarget, 0.01), 0, 1);
+  const intentMismatchRisk = clamp(
+    (alignmentTarget - intentSimilarity) / Math.max(alignmentTarget, AUDIT_TUNABLES.minAlignmentTarget),
+    0,
+    1
+  );
 
   const claimCount = countMatches(lowerCorpus, CLAIM_WORDS);
   const evidenceKeywordCount = countMatches(lowerCorpus, EVIDENCE_WORDS);
@@ -542,52 +839,24 @@ function buildAudit(body, pageData, url) {
   const riskReversalCount = countMatches(lowerCorpus, RISK_REVERSAL_WORDS);
   const anxietyCount = countMatches(lowerCorpus, ANXIETY_WORDS);
   const objectionCoverage = coverageScore(lowerCorpus, OBJECTION_CATEGORIES);
+  const policyLinkCount = pageData.policyLinks?.length || 0;
+  const ctasAboveFold = pageData.ctasAboveFold || 0;
 
-  const richness = clamp(
-    (
-      Math.min(1, (pageData.wordCount || 0) / 1200) +
-      Math.min(1, (pageData.headings?.length || 0) / 8) +
-      Math.min(1, (pageData.actionCount || 0) / 14)
-    ) / 3,
-    0,
-    1
-  );
-
-  const attentionRisk = clamp(
-    (
-      (pageData.hasHeroHeading ? 0.15 : 0.82) +
-      ((pageData.ctasAboveFold || 0) === 0 ? 0.9 : (pageData.ctasAboveFold > 2 ? 0.58 : 0.2)) +
-      clamp(((pageData.firstScreenWordCount || 0) - 160) / 180, 0, 1)
-    ) / 3,
-    0,
-    1
-  );
-  const comprehensionRisk = clamp(((55 - readingEase) / 55), 0, 1);
-  const beliefRisk = clamp(
-    (
-      clamp((claimCount - (evidenceKeywordCount + numericEvidenceCount * 0.4)) / Math.max(claimCount + 1, 2), 0, 1) +
-      (1 - clamp((mechanismCount + (numericEvidenceCount * 0.35)) / 8, 0, 1))
-    ) / 2,
-    0,
-    1
-  );
-  const actionRisk = clamp(
-    (
-      (((pageData.ctasAboveFold || 0) > 3) ? 0.85 : ((pageData.ctasAboveFold || 0) === 0 ? 0.78 : 0.25)) +
-      clamp(((pageData.formFieldCount || 0) - 4) / 8, 0, 1) +
-      clamp(((pageData.linksAboveFold || 0) - 12) / 24, 0, 1)
-    ) / 3,
-    0,
-    1
-  );
-  const riskFriction = clamp(
-    (
-      (1 - clamp((riskReversalCount + (pageData.policyLinks?.length || 0) * 0.6) / 8, 0, 1)) +
-      (pageData.hiddenCostMentions ? 0.8 : 0.2)
-    ) / 2,
-    0,
-    1
-  );
+  const richness = calculateRichness(pageData);
+  const attentionRisk = calculateAttentionRisk(pageData);
+  const comprehensionRisk = calculateComprehensionRisk(readingEase);
+  const beliefRisk = calculateBeliefRisk({
+    claimCount,
+    evidenceKeywordCount,
+    numericEvidenceCount,
+    mechanismCount
+  });
+  const actionRisk = calculateActionRisk(pageData);
+  const riskFriction = calculateRiskFriction({
+    riskReversalCount,
+    policyLinkCount,
+    hiddenCostMentions: pageData.hiddenCostMentions
+  });
 
   const modelDecision = scoreBayesianModel({
     id: 'decision_friction',
@@ -629,29 +898,19 @@ function buildAudit(body, pageData, url) {
         label: 'Risk friction',
         beta: 0.9,
         risk: riskFriction,
-        evidence: `Risk reversal mentions: ${riskReversalCount}, policy links: ${pageData.policyLinks?.length || 0}`
+        evidence: `Risk reversal mentions: ${riskReversalCount}, policy links: ${policyLinkCount}`
       }
     ]
   });
 
-  const promiseContinuityRisk = clamp(
-    (
-      intentMismatchRisk +
-      clamp((pageData.h1 ? 0 : 0.65), 0, 1) +
-      clamp(((pageData.metaDescription || '').length < 40 ? 0.45 : 0.15), 0, 1)
-    ) / 3,
-    0,
-    1
-  );
-
-  const stageMismatchRisk = clamp(
-    (
-      (audienceSophistication === 'cold' && (pageData.ctasAboveFold || 0) > 2 ? 0.55 : 0.22) +
-      (audienceSophistication === 'hot' && (pageData.ctasAboveFold || 0) === 0 ? 0.65 : 0.18)
-    ) / 2,
-    0,
-    1
-  );
+  const promiseContinuityRisk = calculatePromiseContinuityRisk({
+    intentMismatchRisk,
+    pageData
+  });
+  const stageMismatchRisk = calculateStageMismatchRisk({
+    audienceSophistication,
+    ctasAboveFold
+  });
 
   const modelIntent = scoreBayesianModel({
     id: 'message_intent_alignment',
@@ -679,18 +938,25 @@ function buildAudit(body, pageData, url) {
         label: 'Funnel-stage fit',
         beta: 0.8,
         risk: stageMismatchRisk,
-        evidence: `Audience sophistication: ${audienceSophistication}, above-fold CTA count: ${pageData.ctasAboveFold || 0}`
+        evidence: `Audience sophistication: ${audienceSophistication}, above-fold CTA count: ${ctasAboveFold}`
       }
     ]
   });
 
-  const claimEvidenceRisk = clamp(
-    (claimCount / Math.max((evidenceKeywordCount + numericEvidenceCount * 0.5), 1) - 1) / 3,
+  const claimEvidenceRisk = calculateClaimEvidenceRisk({
+    claimCount,
+    evidenceKeywordCount,
+    numericEvidenceCount
+  });
+  const mechanismRisk = 1 - clamp(
+    mechanismCount / AUDIT_TUNABLES.proof.mechanismTargetSignals,
     0,
     1
   );
-  const mechanismRisk = 1 - clamp(mechanismCount / 4, 0, 1);
-  const specificityRisk = 1 - clamp((numericEvidenceCount + evidenceKeywordCount * 0.7) / 10, 0, 1);
+  const specificityRisk = calculateSpecificityRisk({
+    numericEvidenceCount,
+    evidenceKeywordCount
+  });
   const objectionRisk = 1 - objectionCoverage;
 
   const modelProof = scoreBayesianModel({
@@ -731,28 +997,10 @@ function buildAudit(body, pageData, url) {
     ]
   });
 
-  const ctaCompetitionRisk = clamp(
-    (pageData.ctasAboveFold || 0) <= 1
-      ? 0.2
-      : (pageData.ctasAboveFold || 0) === 2
-        ? 0.42
-        : (pageData.ctasAboveFold || 0) === 3
-          ? 0.68
-          : 0.85,
-    0,
-    1
-  );
-
-  const branchingRisk = clamp(((pageData.linksAboveFold || 0) - 10) / 22, 0, 1);
-  const sequenceRisk = clamp(
-    (
-      ((pageData.hasHeroHeading ? 0.15 : 0.75)) +
-      ((pageData.ctasAboveFold || 0) === 0 ? 0.7 : 0.2)
-    ) / 2,
-    0,
-    1
-  );
-  const formFrictionRisk = clamp(((pageData.formFieldCount || 0) - 5) / 8, 0, 1);
+  const ctaCompetitionRisk = calculateCtaCompetitionRisk(ctasAboveFold);
+  const branchingRisk = calculateBranchingRisk(pageData.linksAboveFold || 0);
+  const sequenceRisk = calculateSequenceRisk(pageData);
+  const formFrictionRisk = calculateFormFrictionRisk(pageData.formFieldCount || 0);
 
   const modelChoice = scoreBayesianModel({
     id: 'choice_architecture',
@@ -766,7 +1014,7 @@ function buildAudit(body, pageData, url) {
         label: 'CTA competition',
         beta: 1.05,
         risk: ctaCompetitionRisk,
-        evidence: `Above-fold CTAs: ${pageData.ctasAboveFold || 0}, unique: ${pageData.uniqueCtasAboveFold || 0}`
+        evidence: `Above-fold CTAs: ${ctasAboveFold}, unique: ${pageData.uniqueCtasAboveFold || 0}`
       },
       {
         key: 'branching_complexity',
@@ -792,18 +1040,20 @@ function buildAudit(body, pageData, url) {
     ]
   });
 
-  const unresolvedFearRisk = clamp(
-    (
-      clamp((anxietyCount - riskReversalCount) / 8, 0, 1) +
-      (pageData.hiddenCostMentions ? 0.85 : 0.18)
-    ) / 2,
-    0,
-    1
-  );
-
-  const guaranteeSpecificityRisk = 1 - clamp((riskReversalCount + (pageData.policyLinks?.length || 0) * 0.5) / 6, 0, 1);
-  const priceRiskFactor = priceRisk === 'high' ? 0.72 : priceRisk === 'medium' ? 0.52 : 0.35;
-  const priceAnxietyRisk = clamp((unresolvedFearRisk * 0.6) + (priceRiskFactor * 0.4), 0, 1);
+  const unresolvedFearRisk = calculateUnresolvedFearRisk({
+    anxietyCount,
+    riskReversalCount,
+    hiddenCostMentions: pageData.hiddenCostMentions
+  });
+  const guaranteeSpecificityRisk = calculateGuaranteeSpecificityRisk({
+    riskReversalCount,
+    policyLinkCount
+  });
+  const priceRiskFactor = getPriceRiskFactor(priceRisk);
+  const priceAnxietyRisk = calculatePriceAnxietyRisk({
+    unresolvedFearRisk,
+    priceRiskFactor
+  });
 
   const modelAnxiety = scoreBayesianModel({
     id: 'anxiety_risk_reversal',
@@ -824,7 +1074,7 @@ function buildAudit(body, pageData, url) {
         label: 'Risk reversal strength',
         beta: 1.0,
         risk: guaranteeSpecificityRisk,
-        evidence: `Risk reversal mentions: ${riskReversalCount}, policy links: ${pageData.policyLinks?.length || 0}`
+        evidence: `Risk reversal mentions: ${riskReversalCount}, policy links: ${policyLinkCount}`
       },
       {
         key: 'price_uncertainty',
@@ -848,7 +1098,11 @@ function buildAudit(body, pageData, url) {
       model.dominantRisks.map((risk) => ({
         modelId: model.id,
         modelLabel: model.label,
-        severity: risk.risk >= 0.7 ? 'high' : risk.risk >= 0.5 ? 'medium' : 'low',
+        severity: risk.risk >= AUDIT_TUNABLES.severity.highRiskThreshold
+          ? 'high'
+          : risk.risk >= AUDIT_TUNABLES.severity.mediumRiskThreshold
+            ? 'medium'
+            : 'low',
         label: risk.label,
         evidence: risk.evidence,
         risk: risk.risk,
@@ -856,7 +1110,7 @@ function buildAudit(body, pageData, url) {
       }))
     )
     .sort((a, b) => b.risk - a.risk)
-    .slice(0, 10);
+    .slice(0, AUDIT_TUNABLES.findingsLimit);
 
   return {
     version: 'cro-forensics-bayesian-v1',
