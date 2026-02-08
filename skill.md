@@ -15,3 +15,69 @@
 - Multi-tenant completeness check: after any tenant/account refactor, verify there are no hardcoded store identifiers left in write/read/query/log paths.
 - Schema reality check: before using any table, confirm it exists in `server/db/database.js`; if provider data may be absent, implement fallback behavior.
 - Migration observability check: do not use silent catch blocks for data backfills; log warnings with operation context.
+
+## Security Engineering Baseline (Mandatory)
+- Treat every external input as untrusted: HTTP body/query/headers, webhooks, pixel events, LLM responses, file uploads, third-party API responses, and DB-loaded JSON.
+- Enforce deny-by-default boundaries: allowlist protocols, hosts, paths, MIME types, and enum values. Reject unknowns with safe errors.
+- Never rely on client-side checks for security decisions. Server must revalidate all critical data.
+
+### Network and SSRF controls
+- For any server-side URL fetch/navigation (`fetch`, SDK HTTP, Puppeteer), enforce:
+- `https`/`http` only
+- explicit host allowlist (per tenant when needed)
+- no private/local/loopback/link-local ranges unless explicitly enabled by secure config
+- fixed origin checks after URL resolution to prevent host-escape via redirects or `//host` paths
+- Keep redirects restricted (`redirect: manual` where possible) and cap timeout/retry budgets.
+- Do not pass user-provided absolute URLs directly into browser automation or backend fetches.
+
+### Browser automation controls
+- Prefer sandboxed browser launch by default.
+- Do not use `--no-sandbox`/`--disable-setuid-sandbox` unless explicitly enabled by audited env flag and documented risk acceptance.
+- Run automation with least privilege and strict scope (short timeouts, limited pages, bounded concurrency).
+- Capture only non-sensitive evidence; avoid storing full HTML/cookies/session tokens.
+
+### AuthN/AuthZ and tenant isolation
+- Every read/write query must be tenant-scoped (`store/account/client`) and must not return cross-tenant data.
+- Never trust tenant identifiers from UI alone; verify against authenticated context where available.
+- For privileged actions, require explicit authorization checks and auditable logs.
+
+### Input validation and output safety
+- Validate schema/types/ranges before processing.
+- Normalize and truncate untrusted strings before persistence/logging/rendering.
+- Avoid dynamic SQL string interpolation; use parameterized statements only.
+- Sanitize user-facing rendered data to prevent injection/XSS.
+
+### Secrets and sensitive data
+- Never commit secrets, tokens, cookies, raw credentials, or webhook signatures.
+- Redact secrets in logs/errors/debug payloads (`[REDACTED]` pattern).
+- Store minimum required data only; avoid unnecessary PII retention.
+
+### Data integrity and resilience
+- Do not silently swallow migration/backfill failures.
+- Log operation context on best-effort failure paths.
+- Use idempotency keys or dedupe guards for repeatable ingest/webhook flows.
+- Add bounded fallbacks, not unbounded retries.
+
+### AI/LLM-specific safeguards
+- Treat model output as untrusted.
+- Validate structured output against schema before use.
+- Do not let model output directly trigger privileged operations without rule-based checks.
+- Strip secrets and tenant-sensitive data from prompts unless strictly required.
+
+### Dependency and supply-chain hygiene
+- Prefer maintained official packages and pin major versions deliberately.
+- Review new dependencies for security implications before adoption.
+- Keep runtime flags and env defaults secure-first.
+
+### Security review checklist for each feature
+- Threat model written in 3 lines: attacker input, target asset, abuse path.
+- New external calls audited for SSRF/private-network access.
+- Auth/tenant boundaries verified on all new queries/routes.
+- Logs/errors verified for secret leakage.
+- Failure modes tested (timeout, malformed payload, unavailable upstream).
+
+### Forbidden patterns
+- No default hardcoded secrets.
+- No `eval`-style dynamic execution from untrusted data.
+- No broad CORS or permissive wildcard auth in production paths.
+- No security-sensitive behavior hidden behind undocumented env toggles.
