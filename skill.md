@@ -78,6 +78,6 @@
 
 ### Forbidden patterns
 - No default hardcoded secrets.
-- No `eval`-style dynamic execution from untrusted data.
+- No `eval`-style dynamic execution from untrusted data (e.g., `eval()`, `new Function()`, `setTimeout(<string>)`, `setInterval(<string>)).
 - No broad CORS or permissive wildcard auth in production paths.
 - No security-sensitive behavior hidden behind undocumented env toggles.
