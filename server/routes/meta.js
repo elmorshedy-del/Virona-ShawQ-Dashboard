@@ -884,6 +884,10 @@ router.get('/campaigns', async (req, res) => {
     return res.status(400).json({ error: 'Unsupported store value' });
   }
   const adAccountId = req.query.adAccountId;
+  const limitParam = Number(req.query.limit);
+  const limit = Number.isFinite(limitParam) && limitParam > 0
+    ? Math.min(Math.floor(limitParam), 100)
+    : 500;
 
   if (!adAccountId) {
     return res.status(400).json({ error: 'adAccountId is required' });
@@ -895,7 +899,10 @@ router.get('/campaigns', async (req, res) => {
   }
   const result = await fetchMetaJson({
     path: `/act_${cleanId}/campaigns`,
-    params: { fields: 'id,name,status,effective_status', limit: '500' },
+    params: {
+      fields: 'id,name,status,effective_status,created_time,updated_time',
+      limit: String(Math.max(limit, 100))
+    },
     store,
     adAccountId,
     localEndpoint: '/api/meta/campaigns'
@@ -905,9 +912,14 @@ router.get('/campaigns', async (req, res) => {
     return res.status(result.status).json({ error: result.data?.error?.message || 'Meta request failed' });
   }
 
-  res.json({
-    data: Array.isArray(result.data?.data) ? result.data.data : []
+  const campaigns = Array.isArray(result.data?.data) ? result.data.data : [];
+  const sortedCampaigns = [...campaigns].sort((left, right) => {
+    const leftTs = Date.parse(left?.updated_time || left?.created_time || '') || 0;
+    const rightTs = Date.parse(right?.updated_time || right?.created_time || '') || 0;
+    return rightTs - leftTs;
   });
+
+  res.json({ data: sortedCampaigns.slice(0, limit) });
 });
 
 router.get('/campaigns/:campaignId/ads', async (req, res) => {
@@ -945,6 +957,44 @@ router.get('/campaigns/:campaignId/ads', async (req, res) => {
     thumbnail_url: extractThumbnailUrl(ad.creative)
   }));
   res.json({ data: formattedAds });
+});
+
+router.get('/campaigns/:campaignId/adsets', async (req, res) => {
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
+  const adAccountId = req.query.adAccountId;
+  const { campaignId } = req.params;
+
+  const cleanCampaignId = normalizeGraphNodeId(campaignId);
+  if (!cleanCampaignId) {
+    return res.status(400).json({ error: 'campaignId is invalid' });
+  }
+
+  const result = await fetchMetaJson({
+    path: `/${cleanCampaignId}/adsets`,
+    params: {
+      fields:
+        'id,name,status,effective_status,daily_budget,lifetime_budget,bid_strategy,optimization_goal,created_time,updated_time',
+      limit: '500'
+    },
+    store,
+    adAccountId,
+    localEndpoint: '/api/meta/campaigns/:campaignId/adsets'
+  });
+
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.data?.error?.message || 'Meta request failed' });
+  }
+
+  const adSets = Array.isArray(result.data?.data) ? result.data.data : [];
+  const sortedAdSets = [...adSets].sort((left, right) => {
+    const leftTs = Date.parse(left?.updated_time || left?.created_time || '') || 0;
+    const rightTs = Date.parse(right?.updated_time || right?.created_time || '') || 0;
+    return rightTs - leftTs;
+  });
+  res.json({ data: sortedAdSets });
 });
 
 router.get('/ads/:adId/video', async (req, res) => {
