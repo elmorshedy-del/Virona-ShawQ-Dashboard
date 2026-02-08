@@ -22,6 +22,7 @@ import { getOrCreateStoreProfile } from '../services/storeProfileService.js';
 import { detectVideoOverlays, getVideoOverlayAiHealth, isVideoOverlayAiConfigured } from '../services/videoOverlayAiClient.js';
 import sharp from 'sharp';
 import {
+  enhancePhoto,
   eraseLama,
   getPhotoMagicAiHealth,
   isPhotoMagicAiConfigured,
@@ -2938,6 +2939,73 @@ router.post('/photo-magic/erase', photoMagicSingle('mask'), async (req, res) => 
     });
   } catch (error) {
     console.error('Photo magic erase error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/enhance', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!isPhotoMagicAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    const mode = String(req.body?.mode || 'upscale').trim().toLowerCase();
+    const supportedModes = new Set(['upscale', 'denoise', 'deblur', 'sharpen', 'low_light']);
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+    if (!supportedModes.has(mode)) {
+      return res.status(400).json({ success: false, error: `Unsupported mode: ${mode}` });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const sourceMaxSide = clampNumber(req.body?.source_max_side ?? req.body?.sourceMaxSide ?? 2048, 256, 8192);
+    const strength = clampNumber(req.body?.strength ?? 0.5, 0.0, 1.0);
+    const upscaleFactor = clampNumber(req.body?.upscale_factor ?? req.body?.upscaleFactor ?? 2, 1, 4);
+
+    const buf = await fs.promises.readFile(imagePath);
+    const imageBase64 = buf.toString('base64');
+
+    const result = await enhancePhoto({
+      imageBase64,
+      mode,
+      sourceMaxSide,
+      strength,
+      upscaleFactor
+    });
+
+    const outId = crypto.randomUUID();
+    const outPath = getPhotoMagicOutputPath(store, outId, 'png');
+    await fs.promises.writeFile(outPath, Buffer.from(String(result?.result_png || ''), 'base64'));
+
+    return res.json({
+      success: true,
+      mode: result?.mode ?? mode,
+      engine: result?.engine ?? null,
+      source_width: result?.source_width ?? null,
+      source_height: result?.source_height ?? null,
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      output_id: outId,
+      url: withStoreParam(
+        `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(outId)}&filename=${encodeURIComponent(`enhance-${mode}.png`)}`,
+        store
+      )
+    });
+  } catch (error) {
+    console.error('Photo magic enhance error:', error?.payload || error);
     const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
     res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
   }

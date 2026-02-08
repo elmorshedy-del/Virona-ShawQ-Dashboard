@@ -140,3 +140,25 @@ export async function eraseLama({
     })
   });
 }
+
+export async function enhancePhoto({
+  imageBase64,
+  mode = 'upscale',
+  sourceMaxSide = 2048,
+  strength = 0.5,
+  upscaleFactor = 2
+} = {}) {
+  if (!isPhotoMagicAiConfigured()) return null;
+  if (!imageBase64) return null;
+  return fetchJson(`${PHOTO_MAGIC_AI_URL}/enhance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      image: imageBase64,
+      mode,
+      source_max_side: sourceMaxSide,
+      strength,
+      upscale_factor: upscaleFactor
+    })
+  });
+}
