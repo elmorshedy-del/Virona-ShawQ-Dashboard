@@ -901,7 +901,8 @@ router.get('/campaigns', async (req, res) => {
     path: `/act_${cleanId}/campaigns`,
     params: {
       fields: 'id,name,status,effective_status,created_time,updated_time',
-      limit: String(Math.max(limit, 100))
+      limit: String(limit),
+      sorting: JSON.stringify([{ field: 'updated_time', direction: 'descending' }])
     },
     store,
     adAccountId,
