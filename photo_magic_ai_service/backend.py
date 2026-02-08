@@ -751,7 +751,7 @@ def enhance():
                 "result_png": pil_to_png_b64(out_pil),
             }
         )
-    except Exception as e:
+    except (ValueError, RuntimeError) as e:
         logger.exception("enhance failed")
         return jsonify({"error": str(e)}), 500
 
