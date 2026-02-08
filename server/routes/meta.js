@@ -337,7 +337,7 @@ function buildAdSetGoal(objective, store) {
   if (objective === 'OUTCOME_TRAFFIC') {
     return {
       optimizationGoal: 'LINK_CLICKS',
-      billingEvent: 'LINK_CLICKS',
+      billingEvent: 'IMPRESSIONS',
       warnings: []
     };
   }
