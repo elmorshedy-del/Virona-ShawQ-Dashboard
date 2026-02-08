@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { askDeepSeekChat, normalizeTemperature } from './deepseekService.js';
 
 const NARRATIVE_TUNABLES = {
@@ -10,7 +11,8 @@ const NARRATIVE_TUNABLES = {
   temperature: 0.25,
   maxOutputTokens: 2400,
   maxFindings: 5,
-  maxVisualsInPrompt: 2
+  maxVisualsInPrompt: 2,
+  screenshotSummaryModel: 'gemini-2.5-flash-lite'
 };
 
 const MODEL_PRIMER = {
@@ -320,6 +322,51 @@ function pickPromptScreenshots(screenshots) {
   return pool.slice(0, NARRATIVE_TUNABLES.maxVisualsInPrompt);
 }
 
+async function generateVisualSummary(promptScreenshots) {
+  if (!process.env.GEMINI_API_KEY) {
+    return null;
+  }
+  if (!promptScreenshots.length) {
+    return null;
+  }
+
+  try {
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: NARRATIVE_TUNABLES.screenshotSummaryModel });
+
+    const prompt = [
+      'You are auditing screenshots for conversion optimization.',
+      'Return concise JSON only with this schema:',
+      '{',
+      '  "summary": "2-3 sentence objective visual summary",',
+      '  "visual_findings": [',
+      '    {"signal":"string","impact":"string","confidence":"high|medium|low"}',
+      '  ]',
+      '}',
+      'Focus on hierarchy clarity, CTA visibility, clutter, trust framing, and action path friction.'
+    ].join('\n');
+
+    const parts = [prompt];
+    promptScreenshots.forEach((shot) => {
+      parts.push({
+        inlineData: {
+          mimeType: shot.mimeType || 'image/jpeg',
+          data: shot.base64
+        }
+      });
+    });
+
+    const result = await model.generateContent(parts);
+    const text = result?.response?.text?.() || '';
+    return parseJsonLoose(text);
+  } catch (error) {
+    return {
+      summary: `Visual summary unavailable: ${error?.message || 'Vision model failed.'}`,
+      visual_findings: []
+    };
+  }
+}
+
 async function requestOpenAiNarrative({ model, prompt, promptScreenshots }) {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not configured.');
@@ -376,13 +423,18 @@ export async function generateCroNarrative({
   llmInput = {}
 }) {
   const resolved = resolveProvider(llmInput);
+  const promptScreenshots = pickPromptScreenshots(screenshots);
+  const visualSummary = await generateVisualSummary(promptScreenshots);
   const payload = buildPromptPayload({
     audit,
     googlePerformance,
     screenshots
   });
-  const promptScreenshots = pickPromptScreenshots(screenshots);
-  const screenshotContextUsed = resolved.provider === 'openai' && promptScreenshots.length > 0;
+  payload.visual_summary = visualSummary;
+  const screenshotContextUsed = Boolean(
+    (resolved.provider === 'openai' && promptScreenshots.length > 0) ||
+    visualSummary
+  );
 
   if (!resolved.enabled) {
     return {
