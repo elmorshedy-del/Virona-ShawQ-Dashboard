@@ -229,6 +229,33 @@ export function runSessionIntelligenceMigration() {
     ON si_daily_briefs(store, date)
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_clarity_issue_verifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      date TEXT NOT NULL,
+      issue_key TEXT NOT NULL,
+      issue_type TEXT NOT NULL,
+      page TEXT,
+      target_key TEXT,
+      error_signature TEXT,
+      status TEXT NOT NULL DEFAULT 'unverified',
+      confidence REAL DEFAULT 0,
+      reason TEXT,
+      evidence_json TEXT,
+      last_verified_at TEXT,
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, date, issue_key)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_clarity_issue_verifications_scope
+    ON si_clarity_issue_verifications(store, date, status, expires_at)
+  `);
+
   // Backfill session_number for existing sessions (per-store sequential IDs).
   // Also initialize/update store counters so new sessions keep incrementing correctly.
   try {

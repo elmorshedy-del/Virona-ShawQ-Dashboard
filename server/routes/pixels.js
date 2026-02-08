@@ -729,6 +729,27 @@ function extractCountryCodeFromPayload(payload) {
   return null;
 }
 
+function ensureRequestContext(payload, req) {
+  if (!payload || typeof payload !== 'object') return;
+  if (!payload.context || typeof payload.context !== 'object') payload.context = {};
+  if (!payload.context.navigator || typeof payload.context.navigator !== 'object') payload.context.navigator = {};
+  if (!payload.context.document || typeof payload.context.document !== 'object') payload.context.document = {};
+
+  const headerUserAgent = typeof req?.headers?.['user-agent'] === 'string'
+    ? req.headers['user-agent'].trim()
+    : '';
+  if (headerUserAgent && !payload.context.navigator.userAgent) {
+    payload.context.navigator.userAgent = headerUserAgent.slice(0, 512);
+  }
+
+  const headerReferrer = typeof req?.headers?.referer === 'string'
+    ? req.headers.referer.trim()
+    : '';
+  if (headerReferrer && !payload.context.document.referrer) {
+    payload.context.document.referrer = headerReferrer.slice(0, 600);
+  }
+}
+
 async function lookupCountryCode(ip) {
   if (!ip || typeof ip !== 'string') return null;
   const now = Date.now();
@@ -760,6 +781,7 @@ router.post('/shopify', async (req, res) => {
   const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
   try {
     const payload = req.body || {};
+    ensureRequestContext(payload, req);
     const store = resolveStore(payload);
     const type = normalizeEventType(payload);
     const ts = normalizeEventTimestamp(payload);
