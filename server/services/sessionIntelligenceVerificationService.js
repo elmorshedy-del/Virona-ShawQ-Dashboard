@@ -106,7 +106,7 @@ function parseSqliteDateTimeToMs(value) {
 
 function normalizePagePath(value) {
   const raw = safeString(value).trim();
-  if (!raw) return '/';
+  if (!raw || raw.startsWith('//')) return '/';
   if (/^https?:\/\//i.test(raw)) {
     try {
       return new URL(raw).pathname || '/';
