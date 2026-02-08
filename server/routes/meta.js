@@ -1,4 +1,5 @@
 import express from 'express';
+import { timingSafeEqual } from 'crypto';
 import fetch from 'node-fetch';
 
 const router = express.Router();
@@ -9,6 +10,9 @@ const DEBUG_BUFFER_LIMIT = 100;
 const META_BODY_LIMIT = 20000;
 const CAMPAIGN_OBJECTIVES = new Set(['OUTCOME_SALES', 'OUTCOME_TRAFFIC', 'OUTCOME_AWARENESS']);
 const CTA_TYPES = new Set(['SHOP_NOW', 'LEARN_MORE', 'SIGN_UP', 'CONTACT_US']);
+const STORE_IDS = new Set(['vironax', 'shawq']);
+const AD_ACCOUNT_ID_PATTERN = /^(?:act_)?([0-9]{5,32})$/;
+const GRAPH_NODE_ID_PATTERN = /^[0-9]{5,32}$/;
 
 const debugEvents = [];
 
@@ -100,6 +104,48 @@ function getStorePixelId(store) {
     return process.env.SHAWQ_META_PIXEL_ID || process.env.META_PIXEL_ID || '';
   }
   return process.env.META_PIXEL_ID || process.env.VIRONAX_META_PIXEL_ID || '';
+}
+
+function normalizeStoreValue(rawStore) {
+  const normalized = String(rawStore || 'vironax').trim().toLowerCase();
+  if (STORE_IDS.has(normalized)) return normalized;
+  return '';
+}
+
+function extractBearerToken(authHeader) {
+  if (typeof authHeader !== 'string') return '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || '';
+}
+
+function timingSafeEqualString(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  if (leftBuffer.length !== rightBuffer.length) return false;
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function getCampaignLauncherAuthSecret(req) {
+  const directHeaderSecret = String(req.get('x-meta-launcher-key') || req.get('x-api-key') || '').trim();
+  if (directHeaderSecret) return directHeaderSecret;
+  return extractBearerToken(req.get('authorization'));
+}
+
+function requireCampaignLauncherAuth(req, res, next) {
+  const expectedSecret = String(process.env.META_CAMPAIGN_LAUNCHER_API_KEY || '').trim();
+  if (!expectedSecret) {
+    return res.status(503).json({
+      error: 'Campaign launcher is disabled. Configure META_CAMPAIGN_LAUNCHER_API_KEY.'
+    });
+  }
+
+  const providedSecret = getCampaignLauncherAuthSecret(req);
+  if (!providedSecret || !timingSafeEqualString(providedSecret, expectedSecret)) {
+    return res.status(401).json({ error: 'Unauthorized campaign launcher request.' });
+  }
+
+  return next();
 }
 
 function buildGraphPath(path, params) {
@@ -308,7 +354,43 @@ async function postMetaJson({ path, body = {}, store, localEndpoint, adAccountId
 
 function normalizeAdAccountId(adAccountId) {
   if (!adAccountId) return '';
-  return adAccountId.replace(/^act_/, '');
+  const match = String(adAccountId).trim().match(AD_ACCOUNT_ID_PATTERN);
+  return match?.[1] || '';
+}
+
+function normalizeGraphNodeId(rawId) {
+  if (!rawId) return '';
+  const cleaned = String(rawId).trim();
+  if (!GRAPH_NODE_ID_PATTERN.test(cleaned)) return '';
+  return cleaned;
+}
+
+function collectAuthorizedAdAccountIds(store) {
+  const config = getStoreConfig(store);
+  const storeAllowlistEnv = store === 'shawq'
+    ? process.env.SHAWQ_META_ALLOWED_AD_ACCOUNT_IDS
+    : process.env.VIRONAX_META_ALLOWED_AD_ACCOUNT_IDS;
+  const globalAllowlistEnv = process.env.META_ALLOWED_AD_ACCOUNT_IDS;
+  const authorized = new Set();
+
+  const addId = (value) => {
+    const normalized = normalizeAdAccountId(value);
+    if (normalized) authorized.add(normalized);
+  };
+
+  const addCsvIds = (value) => {
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach(addId);
+  };
+
+  addId(config.adAccountId);
+  addCsvIds(storeAllowlistEnv);
+  addCsvIds(globalAllowlistEnv);
+
+  return authorized;
 }
 
 function normalizeGenderValue(rawGender) {
@@ -448,7 +530,10 @@ function extractThumbnailUrl(creative) {
 }
 
 router.get('/adaccounts', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const config = getStoreConfig(store);
   const { accessToken } = config;
 
@@ -480,7 +565,10 @@ router.get('/adaccounts', async (req, res) => {
 });
 
 router.get('/pages', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const config = getStoreConfig(store);
   const { accessToken } = config;
 
@@ -511,8 +599,11 @@ router.get('/pages', async (req, res) => {
   res.json({ data: pages });
 });
 
-router.post('/campaign-launcher', async (req, res) => {
-  const store = req.body?.store || req.query.store || 'vironax';
+router.post('/campaign-launcher', requireCampaignLauncherAuth, async (req, res) => {
+  const store = normalizeStoreValue(req.body?.store || req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const adAccountIdRaw = String(req.body?.adAccountId || '').trim();
   const campaignName = String(req.body?.campaignName || '').trim();
   const pageId = String(req.body?.pageId || '').trim();
@@ -567,6 +658,15 @@ router.post('/campaign-launcher', async (req, res) => {
   const cleanAccountId = normalizeAdAccountId(adAccountIdRaw);
   if (!cleanAccountId) {
     return res.status(400).json({ error: 'adAccountId is invalid' });
+  }
+  const authorizedAdAccountIds = collectAuthorizedAdAccountIds(store);
+  if (authorizedAdAccountIds.size === 0) {
+    return res.status(500).json({
+      error: 'No authorized ad account configured for this store. Set *_META_AD_ACCOUNT_ID or *_META_ALLOWED_AD_ACCOUNT_IDS.'
+    });
+  }
+  if (!authorizedAdAccountIds.has(cleanAccountId)) {
+    return res.status(403).json({ error: 'adAccountId is not authorized for this store' });
   }
   const warnings = [];
 
@@ -779,7 +879,10 @@ router.post('/campaign-launcher', async (req, res) => {
 });
 
 router.get('/campaigns', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const adAccountId = req.query.adAccountId;
 
   if (!adAccountId) {
@@ -787,6 +890,9 @@ router.get('/campaigns', async (req, res) => {
   }
 
   const cleanId = normalizeAdAccountId(adAccountId);
+  if (!cleanId) {
+    return res.status(400).json({ error: 'adAccountId is invalid' });
+  }
   const result = await fetchMetaJson({
     path: `/act_${cleanId}/campaigns`,
     params: { fields: 'id,name,status,effective_status', limit: '500' },
@@ -805,16 +911,20 @@ router.get('/campaigns', async (req, res) => {
 });
 
 router.get('/campaigns/:campaignId/ads', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const adAccountId = req.query.adAccountId;
   const { campaignId } = req.params;
 
-  if (!campaignId) {
-    return res.status(400).json({ error: 'campaignId is required' });
+  const cleanCampaignId = normalizeGraphNodeId(campaignId);
+  if (!cleanCampaignId) {
+    return res.status(400).json({ error: 'campaignId is invalid' });
   }
 
   const result = await fetchMetaJson({
-    path: `/${campaignId}/ads`,
+    path: `/${cleanCampaignId}/ads`,
     params: {
       fields:
         'id,name,status,effective_status,creative{thumbnail_url,image_url,object_story_spec{video_data,link_data,photo_data},asset_feed_spec{videos,images}}',
@@ -838,16 +948,20 @@ router.get('/campaigns/:campaignId/ads', async (req, res) => {
 });
 
 router.get('/ads/:adId/video', async (req, res) => {
-  const store = req.query.store || 'vironax';
+  const store = normalizeStoreValue(req.query.store);
+  if (!store) {
+    return res.status(400).json({ error: 'Unsupported store value' });
+  }
   const adAccountId = req.query.adAccountId;
   const { adId } = req.params;
 
-  if (!adId) {
-    return res.status(400).json({ error: 'adId is required' });
+  const cleanAdId = normalizeGraphNodeId(adId);
+  if (!cleanAdId) {
+    return res.status(400).json({ error: 'adId is invalid' });
   }
 
   const creativeResult = await fetchMetaJson({
-    path: `/${adId}`,
+    path: `/${cleanAdId}`,
     params: { fields: 'creative{object_story_spec,asset_feed_spec}' },
     store,
     adAccountId,
