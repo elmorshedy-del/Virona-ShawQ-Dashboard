@@ -18,6 +18,13 @@ function formatStatusLabel(status) {
   return String(status).replace(/_/g, ' ');
 }
 
+function formatMetaTimestamp(value) {
+  if (!value) return 'N/A';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'N/A';
+  return parsed.toLocaleDateString();
+}
+
 function StatusBadge({ status }) {
   const normalized = String(status || '').toUpperCase();
   const styleMap = {
@@ -55,14 +62,17 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
   const [selectedAdAccountId, setSelectedAdAccountId] = useState('');
   const [campaigns, setCampaigns] = useState([]);
   const [selectedCampaignId, setSelectedCampaignId] = useState('');
+  const [adSets, setAdSets] = useState([]);
   const [ads, setAds] = useState([]);
 
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
+  const [loadingAdSets, setLoadingAdSets] = useState(false);
   const [loadingAds, setLoadingAds] = useState(false);
 
   const [accountsError, setAccountsError] = useState('');
   const [campaignsError, setCampaignsError] = useState('');
+  const [adSetsError, setAdSetsError] = useState('');
   const [adsError, setAdsError] = useState('');
 
   const selectedCampaign = useMemo(
@@ -106,7 +116,8 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
     try {
       const params = new URLSearchParams({
         store: storeId,
-        adAccountId: selectedAdAccountId
+        adAccountId: selectedAdAccountId,
+        limit: '6'
       });
       const response = await fetch(`${API_BASE}/meta/campaigns?${params.toString()}`);
       const payload = await readJsonResponse(response);
@@ -127,6 +138,33 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
       setLoadingCampaigns(false);
     }
   }, [storeId, selectedAdAccountId]);
+
+  const fetchAdSets = useCallback(async () => {
+    if (!selectedCampaignId || !selectedAdAccountId) {
+      setAdSets([]);
+      return;
+    }
+
+    setLoadingAdSets(true);
+    setAdSetsError('');
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        adAccountId: selectedAdAccountId
+      });
+      const response = await fetch(`${API_BASE}/meta/campaigns/${selectedCampaignId}/adsets?${params.toString()}`);
+      const payload = await readJsonResponse(response);
+      if (!response.ok) {
+        throw new Error(payload?.error || `Failed to load ad sets (HTTP ${response.status})`);
+      }
+      setAdSets(Array.isArray(payload?.data) ? payload.data : []);
+    } catch (error) {
+      setAdSets([]);
+      setAdSetsError(error?.message || 'Failed to load ad sets');
+    } finally {
+      setLoadingAdSets(false);
+    }
+  }, [storeId, selectedAdAccountId, selectedCampaignId]);
 
   const fetchAds = useCallback(async () => {
     if (!selectedCampaignId || !selectedAdAccountId) {
@@ -162,6 +200,10 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
+
+  useEffect(() => {
+    fetchAdSets();
+  }, [fetchAdSets]);
 
   useEffect(() => {
     fetchAds();
@@ -206,7 +248,7 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <SummaryCard icon={Layers} label="Ad Accounts" value={adAccounts.length} subLabel={storeId} />
         <SummaryCard icon={Megaphone} label="Campaigns" value={campaigns.length} subLabel="Selected account" />
-        <SummaryCard icon={ImageIcon} label="Ads" value={ads.length} subLabel={selectedCampaign?.name || 'No campaign selected'} />
+        <SummaryCard icon={ImageIcon} label="Ad Sets / Ads" value={`${adSets.length} / ${ads.length}`} subLabel={selectedCampaign?.name || 'No campaign selected'} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -237,7 +279,7 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
 
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-900">Campaigns</h3>
+            <h3 className="text-sm font-semibold text-slate-900">Recent Campaigns (6)</h3>
             {loadingCampaigns ? <span className="text-xs text-slate-500">Loading...</span> : null}
           </div>
           <div className="max-h-72 space-y-2 overflow-auto pr-1">
@@ -258,6 +300,7 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium text-slate-900">{campaign.name || campaign.id}</div>
                       <div className="mt-1 text-xs text-slate-500">{campaign.id}</div>
+                      <div className="mt-1 text-xs text-slate-500">Updated {formatMetaTimestamp(campaign.updated_time || campaign.created_time)}</div>
                     </div>
                     <StatusBadge status={campaign.effective_status || campaign.status} />
                   </div>
@@ -280,7 +323,7 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-900">Selected Campaign</h3>
-            {loadingAds ? <span className="text-xs text-slate-500">Loading ads...</span> : null}
+            {(loadingAdSets || loadingAds) ? <span className="text-xs text-slate-500">Loading...</span> : null}
           </div>
           {selectedCampaign ? (
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -288,6 +331,9 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
               <div className="mt-1 text-xs text-slate-500">{selectedCampaign.id}</div>
               <div className="mt-2">
                 <StatusBadge status={selectedCampaign.effective_status || selectedCampaign.status} />
+              </div>
+              <div className="mt-2 text-xs text-slate-500">
+                Updated {formatMetaTimestamp(selectedCampaign.updated_time || selectedCampaign.created_time)}
               </div>
             </div>
           ) : (
@@ -304,41 +350,81 @@ export default function NeoMetaTab({ store, onOpenCampaignLauncher = () => {} })
         </div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-900">Ads</h3>
-          <span className="text-xs text-slate-500">{ads.length} items</span>
-        </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {ads.map((ad) => (
-            <div key={ad.id} className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-slate-900">{ad.name || ad.id}</div>
-                  <div className="mt-1 text-xs text-slate-500">{ad.id}</div>
-                </div>
-                <StatusBadge status={ad.effective_status || ad.status} />
-              </div>
-              {ad.thumbnail_url ? (
-                <img
-                  src={ad.thumbnail_url}
-                  alt={ad.name || 'Ad preview'}
-                  className="mt-3 h-36 w-full rounded-md border border-slate-200 object-cover"
-                />
-              ) : (
-                <div className="mt-3 flex h-36 items-center justify-center rounded-md border border-dashed border-slate-200 bg-slate-50 text-xs text-slate-400">
-                  No preview available
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-        {!loadingAds && ads.length === 0 ? (
-          <div className="mt-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-            <AlertTriangle className="h-4 w-4" />
-            No ads found for the selected campaign.
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-900">Ad Sets</h3>
+            <span className="text-xs text-slate-500">{adSets.length} items</span>
           </div>
-        ) : null}
+          <div className="space-y-2">
+            {adSets.map((adSet) => (
+              <div key={adSet.id} className="rounded-lg border border-slate-200 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-slate-900">{adSet.name || adSet.id}</div>
+                    <div className="mt-1 text-xs text-slate-500">{adSet.id}</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      Updated {formatMetaTimestamp(adSet.updated_time || adSet.created_time)}
+                    </div>
+                  </div>
+                  <StatusBadge status={adSet.effective_status || adSet.status} />
+                </div>
+              </div>
+            ))}
+          </div>
+          {adSetsError ? (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {adSetsError}
+            </div>
+          ) : null}
+          {!loadingAdSets && adSets.length === 0 ? (
+            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+              No ad sets found for the selected campaign.
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-900">Ads</h3>
+            <span className="text-xs text-slate-500">{ads.length} items</span>
+          </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {ads.map((ad) => (
+              <div key={ad.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-slate-900">{ad.name || ad.id}</div>
+                    <div className="mt-1 text-xs text-slate-500">{ad.id}</div>
+                  </div>
+                  <StatusBadge status={ad.effective_status || ad.status} />
+                </div>
+                {ad.thumbnail_url ? (
+                  <img
+                    src={ad.thumbnail_url}
+                    alt={ad.name || 'Ad preview'}
+                    className="mt-3 h-32 w-full rounded-md border border-slate-200 object-cover"
+                  />
+                ) : (
+                  <div className="mt-3 flex h-32 items-center justify-center rounded-md border border-dashed border-slate-200 bg-slate-50 text-xs text-slate-400">
+                    No preview available
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          {adsError ? (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {adsError}
+            </div>
+          ) : null}
+          {!loadingAds && ads.length === 0 ? (
+            <div className="mt-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+              <AlertTriangle className="h-4 w-4" />
+              No ads found for the selected campaign.
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
