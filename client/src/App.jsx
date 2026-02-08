@@ -401,6 +401,7 @@ const STORES = {
 };
 
 const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Campaign Launcher', 'Product Radar', 'Watchtower', 'CRO Forensics'];
+const CAMPAIGN_LAUNCHER_TAB_INDEX = TABS.indexOf('Campaign Launcher');
 const PRODUCT_RADAR_TAB_INDEX = TABS.indexOf('Product Radar');
 const WATCHTOWER_TAB_INDEX = TABS.indexOf('Watchtower');
 const CRO_FORENSICS_TAB_INDEX = TABS.indexOf('CRO Forensics');
@@ -1769,7 +1770,10 @@ export default function App() {
         )}
 
         {activeTab === 5 && (
-          <NeoMetaTab />
+          <NeoMetaTab
+            store={store}
+            onOpenCampaignLauncher={() => setActiveTab(CAMPAIGN_LAUNCHER_TAB_INDEX)}
+          />
         )}
 
 	        {activeTab === 6 && (
@@ -1858,7 +1862,7 @@ export default function App() {
           <ExchangeRateDebug />
         )}
 
-        {activeTab === 17 && (
+        {activeTab === CAMPAIGN_LAUNCHER_TAB_INDEX && (
           <CampaignLauncher store={store} />
         )}
 

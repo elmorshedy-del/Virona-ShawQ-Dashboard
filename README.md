@@ -36,6 +36,13 @@ SHAWQ_META_AD_ACCOUNT_ID=1026963365133388
 SHAWQ_META_ACCESS_TOKEN=...
 SHAWQ_SHOPIFY_STORE=shawqq.myshopify.com
 SHAWQ_SHOPIFY_ACCESS_TOKEN=shpat_...
+
+# Campaign launcher protection (required for POST /api/meta/campaign-launcher)
+META_CAMPAIGN_LAUNCHER_API_KEY=replace-with-strong-secret
+# Optional ad-account allowlists (comma-separated)
+META_ALLOWED_AD_ACCOUNT_IDS=
+VIRONAX_META_ALLOWED_AD_ACCOUNT_IDS=
+SHAWQ_META_ALLOWED_AD_ACCOUNT_IDS=
 ```
 
 4. Deploy
@@ -45,6 +52,12 @@ SHAWQ_SHOPIFY_ACCESS_TOKEN=shpat_...
 ```bash
 npm run install:all
 npm run dev
+```
+
+For the Neo campaign launcher UI, set a client env var in `client/.env.local`:
+
+```bash
+VITE_META_CAMPAIGN_LAUNCHER_API_KEY=replace-with-the-same-secret
 ```
 
 ## Demo Mode
