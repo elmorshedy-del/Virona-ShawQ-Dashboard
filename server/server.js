@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -244,7 +245,14 @@ app.use('/api/cro-forensics', croForensicsRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
-app.use(express.static(clientDist));
+const clientIndexPath = path.join(clientDist, 'index.html');
+const hasClientBuild = fs.existsSync(clientIndexPath);
+
+if (hasClientBuild) {
+  app.use(express.static(clientDist));
+} else {
+  console.warn(`[Static] Client build not found at ${clientIndexPath}. Running in API-only mode.`);
+}
 
 // Convenience URL for installs on non-Shopify storefronts:
 // <script src="https://YOUR-DOMAIN/pixel.js?store=shawq"></script>
@@ -257,7 +265,10 @@ app.get('/pixel.js', (req, res) => {
 app.get('*', (req, res, next) => {
   // Don't serve the SPA shell for API routes (prevents "Unexpected token <" JSON errors).
   if (req.path.startsWith('/api')) return next();
-  res.sendFile(path.join(clientDist, 'index.html'));
+  if (hasClientBuild) {
+    return res.sendFile(clientIndexPath);
+  }
+  return res.status(200).send('Virona backend is running. Frontend build is not available on this instance.');
 });
 
 // Background sync every 15 minutes
