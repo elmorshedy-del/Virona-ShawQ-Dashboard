@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: virona-shawq-dashboard
+    env: node
+    buildCommand: npm install && cd client && npm install && npm run build && cd ../server && npm install
+    startCommand: cd server && npm start
