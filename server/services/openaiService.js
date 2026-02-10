@@ -12,9 +12,42 @@ import {
 } from '../features/meta-awareness/index.js';
 
 // OpenAI Service - GPT-5 + GPT-4 fallback
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const OPENAI_API_KEY_ENV = 'OPENAI_API_KEY';
+const DEEPSEEK_API_KEY_ENV = 'DEEPSEEK_API_KEY';
+let openAiClient = null;
+
+function hasConfiguredEnvKey(envName) {
+  const value = process.env[envName];
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isOpenAiConfigured() {
+  return hasConfiguredEnvKey(OPENAI_API_KEY_ENV);
+}
+
+function isDeepSeekConfigured() {
+  return hasConfiguredEnvKey(DEEPSEEK_API_KEY_ENV);
+}
+
+function getOpenAiClient() {
+  if (openAiClient) return openAiClient;
+
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    const error = new Error(`${OPENAI_API_KEY_ENV} is not configured.`);
+    error.code = 'OPENAI_API_KEY_MISSING';
+    throw error;
+  }
+
+  openAiClient = new OpenAI({ apiKey });
+  return openAiClient;
+}
+
+if (!isOpenAiConfigured()) {
+  console.warn(
+    `[OpenAI] ${OPENAI_API_KEY_ENV} is not configured. OpenAI calls are disabled; set provider=deepseek with ${DEEPSEEK_API_KEY_ENV} if available.`
+  );
+}
 
 const EFFORT_OPTIONS_BY_MODEL = {
   'gpt-5.2': ['none', 'medium', 'xhigh'],
@@ -50,7 +83,7 @@ export async function askOpenAIChat({
     ...messages.map((message) => ({ role: message.role, content: message.content }))
   ];
 
-  const resp = await client.responses.create({
+  const resp = await getOpenAiClient().responses.create({
     model,
     reasoning: normalizedEffort ? { effort: normalizedEffort } : undefined,
     input,
@@ -83,7 +116,7 @@ export async function streamOpenAIChat({
     ...messages.map((message) => ({ role: message.role, content: message.content }))
   ];
 
-  const stream = await client.responses.create({
+  const stream = await getOpenAiClient().responses.create({
     model,
     reasoning: normalizedEffort ? { effort: normalizedEffort } : undefined,
     input,
@@ -135,6 +168,7 @@ function resolveAiProvider(options = {}) {
     return options.provider.trim().toLowerCase();
   }
   if (typeof options?.model === 'string' && options.model.startsWith('deepseek-')) return 'deepseek';
+  if (!isOpenAiConfigured() && isDeepSeekConfigured()) return 'deepseek';
   return 'openai';
 }
 
@@ -1245,13 +1279,13 @@ async function callResponsesAPI(model, systemPrompt, userMessage, maxTokens, rea
   }
 
   console.log(`[OpenAI] Calling ${model} (max_tokens: ${maxTokens})`);
-  const response = await client.responses.create(requestBody);
+  const response = await getOpenAiClient().responses.create(requestBody);
   return response.output_text;
 }
 
 async function callChatCompletionsAPI(model, systemPrompt, userMessage, maxTokens, temperature = 0.7) {
   console.log(`[OpenAI] Fallback to ${model} (max_tokens: ${maxTokens}, temp: ${temperature})`);
-  const response = await client.chat.completions.create({
+  const response = await getOpenAiClient().chat.completions.create({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -1295,7 +1329,7 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
     }
 
     console.log(`[OpenAI] Streaming ${primary}`);
-    const stream = await client.responses.create(requestBody);
+    const stream = await getOpenAiClient().responses.create(requestBody);
 
     for await (const event of stream) {
       if (event.type === 'response.output_text.delta') {
@@ -1307,7 +1341,7 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
   } catch (error) {
     console.log(`[OpenAI] Stream ${primary} failed: ${error.message}, trying ${fallback}`);
 
-    const response = await client.chat.completions.create({
+    const response = await getOpenAiClient().chat.completions.create({
       model: fallback,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -1520,7 +1554,7 @@ export async function analyzeQuestionStream(question, store, onDelta, history = 
   
   // Use GPT-4o directly for Ask mode - faster streaming
   console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
-  const response = await client.chat.completions.create({
+  const response = await getOpenAiClient().chat.completions.create({
     model: MODELS.ASK,
     messages: [
       { role: 'system', content: systemPrompt },
