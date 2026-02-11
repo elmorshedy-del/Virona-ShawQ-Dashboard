@@ -9,7 +9,7 @@ import {
 } from 'recharts';
 import {
   AlertTriangle, CheckCircle, TrendingDown, TrendingUp, Minus,
-  Info, ChevronDown, ChevronUp, HelpCircle, Zap, Users, Eye,
+  Info, ChevronDown, ChevronUp, ChevronRight, HelpCircle, Zap, Users, Eye,
   RefreshCw, ExternalLink, BookOpen
 } from 'lucide-react';
 
@@ -62,6 +62,26 @@ const STATUS_CONFIG = {
   }
 };
 
+const CAMPAIGN_STATUS_CONFIG = {
+  ACTIVE: { bg: 'bg-emerald-100', text: 'text-emerald-700', label: 'Active' },
+  PAUSED: { bg: 'bg-amber-100', text: 'text-amber-700', label: 'Paused' },
+  ARCHIVED: { bg: 'bg-gray-200', text: 'text-gray-700', label: 'Archived' },
+  UNKNOWN: { bg: 'bg-slate-100', text: 'text-slate-600', label: 'Unknown' }
+};
+
+const ADSET_STATUS_PRIORITY = {
+  saturated: 0,
+  fatigued: 1,
+  warning: 2,
+  healthy: 3
+};
+
+function normalizeCampaignStatus(status) {
+  if (!status || typeof status !== 'string') return 'UNKNOWN';
+  const value = status.toUpperCase();
+  return CAMPAIGN_STATUS_CONFIG[value] ? value : 'UNKNOWN';
+}
+
 // ============================================================================
 // EDUCATIONAL CONTENT
 // ============================================================================
@@ -75,7 +95,12 @@ const EDUCATIONAL_CONTENT = {
 • r = 0: No relationship
 • r = +1.0: Perfect positive correlation (they move together)
 
-For fatigue detection, we look for negative correlation between frequency and CTR. A value of r < -0.5 with p < 0.05 indicates statistically significant fatigue.`
+For fatigue detection, we track frequency against Link CTR (link clicks / impressions).
+
+Why this matters:
+• If frequency rises while Link CTR falls, the same audience is seeing the ad too often.
+• Strong negative r with p < 0.05 means this is likely real fatigue, not random noise.
+• Weak or non-significant correlation means look at other drivers (targeting, offer, seasonality).`
   },
   pValue: {
     title: 'What is a p-value?',
@@ -175,6 +200,16 @@ function StatusBadge({ status, size = 'md' }) {
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full font-medium ${config.bgColor} ${config.textColor} ${sizeClasses[size]}`}>
       <Icon className={`w-3.5 h-3.5 ${config.iconColor}`} />
+      {config.label}
+    </span>
+  );
+}
+
+function CampaignStatusBadge({ status }) {
+  const normalizedStatus = normalizeCampaignStatus(status);
+  const config = CAMPAIGN_STATUS_CONFIG[normalizedStatus];
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${config.bg} ${config.text}`}>
       {config.label}
     </span>
   );
@@ -410,7 +445,7 @@ function CorrelationScatter({ daily, correlation }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
       <div className="flex items-center justify-between mb-3">
-        <h4 className="text-sm font-medium text-gray-700">Frequency vs CTR Correlation</h4>
+        <h4 className="text-sm font-medium text-gray-700">Frequency vs Link CTR Correlation</h4>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-500">r = {correlation.frequencyCtr.r}</span>
           <InfoTooltip contentKey="correlation" />
@@ -431,14 +466,14 @@ function CorrelationScatter({ daily, correlation }) {
             <YAxis 
               tick={{ fontSize: 10 }}
               tickFormatter={(val) => `${val.toFixed(1)}%`}
-              label={{ value: 'CTR', angle: -90, position: 'insideLeft', fontSize: 10 }}
+              label={{ value: 'Link CTR', angle: -90, position: 'insideLeft', fontSize: 10 }}
               domain={['auto', 'auto']}
             />
             <Tooltip 
               contentStyle={{ fontSize: 11 }}
               formatter={(value, name) => [
                 name === 'ctr' ? `${value.toFixed(2)}%` : value.toFixed(2),
-                name === 'ctr' ? 'CTR' : 'Frequency'
+                name === 'ctr' ? 'Link CTR' : 'Frequency'
               ]}
             />
             <Scatter 
@@ -460,10 +495,10 @@ function CorrelationScatter({ daily, correlation }) {
       </div>
       <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-600">
         <strong>Pattern:</strong> {correlation.frequencyCtr.r < -0.5 
-          ? 'Strong negative correlation — as frequency rises, CTR falls. Classic fatigue signal.'
+          ? 'Strong negative correlation — as frequency rises, Link CTR falls. This is a high-confidence fatigue signal.'
           : correlation.frequencyCtr.r < -0.3
-          ? 'Moderate negative correlation — some fatigue may be occurring.'
-          : 'No significant correlation — performance not clearly tied to frequency.'}
+          ? 'Moderate negative correlation — Link CTR may be softening from repeat exposure.'
+          : 'No significant correlation — fatigue is not strongly explained by frequency yet.'}
       </div>
     </div>
   );
@@ -596,7 +631,7 @@ function HowToUseGuide({ isOpen, onToggle }) {
               <div className="space-y-3 text-sm">
                 <div className="flex items-start gap-2">
                   <span className="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">1</span>
-                  <span className="text-gray-600">Select an Ad Set from the left panel</span>
+                  <span className="text-gray-600">Select a campaign, then pick an ad set from the left hierarchy</span>
                 </div>
                 <div className="flex items-start gap-2">
                   <span className="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">2</span>
@@ -719,13 +754,61 @@ function AdSetListItem({ adSet, isSelected, onClick }) {
   );
 }
 
+function CampaignGroup({
+  campaign,
+  isExpanded,
+  onToggle,
+  selectedAdSetId,
+  onSelectAdSet
+}) {
+  const campaignKey = campaign.campaign_id || campaign.campaign_name || 'unknown-campaign';
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-gray-50 rounded-t-lg"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
+          )}
+          <span className="text-sm font-semibold text-gray-900 truncate" title={campaign.campaign_name || 'Unnamed Campaign'}>
+            {campaign.campaign_name || 'Unnamed Campaign'}
+          </span>
+        </div>
+        <CampaignStatusBadge status={campaign.effective_status} />
+      </button>
+
+      <div className="px-3 pb-2 text-xs text-gray-500">
+        {campaign.adSets.length} ad set{campaign.adSets.length === 1 ? '' : 's'}
+      </div>
+
+      {isExpanded && (
+        <div className="px-2 pb-2 space-y-2">
+          {campaign.adSets.map((adSet) => (
+            <AdSetListItem
+              key={`${campaignKey}:${adSet.adset_id}`}
+              adSet={adSet}
+              isSelected={selectedAdSetId === adSet.adset_id}
+              onClick={() => onSelectAdSet(adSet.adset_id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
   if (!adSet) {
     return (
       <div className="flex-1 flex items-center justify-center bg-gray-50 rounded-xl border-2 border-dashed border-gray-200">
         <div className="text-center p-8">
           <Eye className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-500">Select an ad set to see analysis</p>
+          <p className="text-gray-500">Select a campaign and ad set to see analysis</p>
         </div>
       </div>
     );
@@ -768,11 +851,11 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
       
       {/* Charts Row */}
       <div className="grid grid-cols-2 gap-4">
-        {/* All Ads CTR Chart */}
+        {/* All Ads Link CTR Chart */}
         <MultiLineChart 
           ads={adSet.ads} 
           metric="ctr" 
-          title="CTR Over Time — All Ads in This Ad Set"
+          title="Link CTR Over Time — All Ads in This Ad Set"
         />
         
         {/* Frequency Chart */}
@@ -816,7 +899,7 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
             {/* Metrics Row */}
             <div className="grid grid-cols-4 gap-3">
               <MetricCard
-                label="Current CTR"
+                label="Current Link CTR"
                 value={`${ad.metrics.currentCtr}%`}
                 trend={ad.trends.ctr}
               />
@@ -840,13 +923,16 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
             </div>
             
             {/* Charts Row */}
+            <div className="text-xs text-gray-500 -mb-2">
+              Chart metric audit: Link CTR = link clicks / impressions (link clicks prefer inline link clicks, then outbound clicks when inline is unavailable).
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <DualAxisChart
                 data={ad.daily}
-                title="CTR vs Frequency"
+                title="Link CTR vs Frequency"
                 leftKey="ctr"
                 rightKey="frequency"
-                leftLabel="CTR (%)"
+                leftLabel="Link CTR (%)"
                 rightLabel="Frequency"
                 leftColor="#3b82f6"
                 rightColor="#f59e0b"
@@ -867,7 +953,7 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
               </div>
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="text-gray-600">Frequency ↔ CTR Correlation:</span>
+                  <span className="text-gray-600">Frequency ↔ Link CTR Correlation:</span>
                   <span className={`ml-2 font-mono font-medium ${ad.correlation.frequencyCtr.r < -0.5 ? 'text-rose-700' : 'text-gray-700'}`}>
                     r = {ad.correlation.frequencyCtr.r || 'N/A'}
                   </span>
@@ -882,7 +968,7 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
                   </span>
                 </div>
                 <div>
-                  <span className="text-gray-600">CTR Change:</span>
+                  <span className="text-gray-600">Link CTR Change:</span>
                   <span className={`ml-2 font-medium ${ad.trends.ctr.change < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
                     {ad.trends.ctr.change > 0 ? '+' : ''}{ad.trends.ctr.change}%
                   </span>
@@ -919,6 +1005,8 @@ export default function FatigueDetector({ store, formatCurrency }) {
   const [selectedAd, setSelectedAd] = useState(null);
   const [showGuide, setShowGuide] = useState(true);
   const [days, setDays] = useState(30);
+  const [includeInactiveCampaigns, setIncludeInactiveCampaigns] = useState(false);
+  const [expandedCampaignIds, setExpandedCampaignIds] = useState(new Set());
   
   // Load fatigue data
   const loadData = async () => {
@@ -927,7 +1015,8 @@ export default function FatigueDetector({ store, formatCurrency }) {
     try {
       const params = new URLSearchParams({
         store: store.id,
-        days: days.toString()
+        days: days.toString(),
+        includeInactive: includeInactiveCampaigns ? 'true' : 'false'
       });
       const response = await fetch(`${API_BASE}/fatigue?${params}`);
       const result = await response.json();
@@ -937,6 +1026,10 @@ export default function FatigueDetector({ store, formatCurrency }) {
         // Auto-select first problematic ad set, or first ad set
         const problemAdSet = result.adSets.find(a => a.status === 'fatigued' || a.status === 'saturated');
         setSelectedAdSetId(problemAdSet?.adset_id || result.adSets[0]?.adset_id);
+        const campaignIds = (result.campaigns || [])
+          .map((campaign) => campaign.campaign_id || campaign.campaign_name)
+          .filter(Boolean);
+        setExpandedCampaignIds(new Set(campaignIds));
         setSelectedAd(null);
       } else {
         setError(result.error || 'Failed to load data');
@@ -949,11 +1042,55 @@ export default function FatigueDetector({ store, formatCurrency }) {
   
   useEffect(() => {
     loadData();
-  }, [store.id, days]);
+  }, [store.id, days, includeInactiveCampaigns]);
   
   const selectedAdSet = useMemo(() => {
     return data?.adSets?.find(a => a.adset_id === selectedAdSetId);
   }, [data, selectedAdSetId]);
+
+  const campaignHierarchy = useMemo(() => {
+    if (Array.isArray(data?.campaigns) && data.campaigns.length > 0) {
+      return data.campaigns;
+    }
+    if (!Array.isArray(data?.adSets) || data.adSets.length === 0) {
+      return [];
+    }
+
+    const campaignMap = new Map();
+    data.adSets.forEach((adSet) => {
+      const key = adSet.campaign_id || adSet.campaign_name || 'unknown-campaign';
+      if (!campaignMap.has(key)) {
+        campaignMap.set(key, {
+          campaign_id: adSet.campaign_id || null,
+          campaign_name: adSet.campaign_name || 'Unnamed Campaign',
+          effective_status: adSet.campaign_effective_status || 'UNKNOWN',
+          adSets: []
+        });
+      }
+      campaignMap.get(key).adSets.push(adSet);
+    });
+
+    return Array.from(campaignMap.values()).map((campaign) => ({
+      ...campaign,
+      adSets: [...campaign.adSets].sort(
+        (a, b) =>
+          (ADSET_STATUS_PRIORITY[a.status] ?? ADSET_STATUS_PRIORITY.healthy) -
+          (ADSET_STATUS_PRIORITY[b.status] ?? ADSET_STATUS_PRIORITY.healthy)
+      )
+    }));
+  }, [data]);
+
+  const toggleCampaignExpanded = (campaignId) => {
+    setExpandedCampaignIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(campaignId)) {
+        next.delete(campaignId);
+      } else {
+        next.add(campaignId);
+      }
+      return next;
+    });
+  };
   
   if (loading) {
     return (
@@ -1009,6 +1146,15 @@ export default function FatigueDetector({ store, formatCurrency }) {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <label className="inline-flex items-center gap-2 text-sm text-gray-600">
+            <input
+              type="checkbox"
+              checked={includeInactiveCampaigns}
+              onChange={(e) => setIncludeInactiveCampaigns(e.target.checked)}
+              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span>{includeInactiveCampaigns ? 'Active + inactive campaigns' : 'Active campaigns only'}</span>
+          </label>
           <select
             value={days}
             onChange={(e) => setDays(parseInt(e.target.value))}
@@ -1036,23 +1182,38 @@ export default function FatigueDetector({ store, formatCurrency }) {
       
       {/* Main Content */}
       <div className="flex gap-6 min-h-[600px]">
-        {/* Left Panel - Ad Set List */}
-        <div className="w-72 flex-shrink-0 space-y-2">
-          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide px-1 mb-2">
-            Ad Sets ({data.adSets.length})
+        {/* Left Panel - Campaign -> Ad Set Hierarchy */}
+        <div className="w-80 flex-shrink-0 space-y-2">
+          <div className="px-1 mb-2">
+            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+              Campaigns ({campaignHierarchy.length})
+            </div>
+            <div className="text-xs text-gray-400 mt-1">
+              Ad Sets ({data.adSets.length})
+            </div>
           </div>
           <div className="space-y-2 max-h-[600px] overflow-y-auto pr-2">
-            {data.adSets.map(adSet => (
-              <AdSetListItem
-                key={adSet.adset_id}
-                adSet={adSet}
-                isSelected={selectedAdSetId === adSet.adset_id}
-                onClick={() => {
-                  setSelectedAdSetId(adSet.adset_id);
-                  setSelectedAd(null);
-                }}
-              />
-            ))}
+            {campaignHierarchy.map((campaign) => {
+              const campaignKey = campaign.campaign_id || campaign.campaign_name || 'unknown-campaign';
+              return (
+                <CampaignGroup
+                  key={campaignKey}
+                  campaign={campaign}
+                  isExpanded={expandedCampaignIds.has(campaignKey)}
+                  onToggle={() => toggleCampaignExpanded(campaignKey)}
+                  selectedAdSetId={selectedAdSetId}
+                  onSelectAdSet={(adsetId) => {
+                    setSelectedAdSetId(adsetId);
+                    setSelectedAd(null);
+                  }}
+                />
+              );
+            })}
+            {campaignHierarchy.length === 0 && (
+              <div className="text-xs text-gray-500 px-2 py-3 border border-dashed border-gray-200 rounded-lg bg-gray-50">
+                No campaigns found for the selected filters.
+              </div>
+            )}
           </div>
         </div>
         
@@ -1067,7 +1228,7 @@ export default function FatigueDetector({ store, formatCurrency }) {
       {/* Footer */}
       <div className="text-center text-xs text-gray-400 pt-4 border-t border-gray-100">
         Analysis based on {data.dateRange.start} to {data.dateRange.end} • 
-        Using Pearson correlation with p &lt; 0.05 significance threshold
+        Using Pearson correlation on Link CTR (link clicks ÷ impressions) with p &lt; 0.05 significance threshold
       </div>
     </div>
   );

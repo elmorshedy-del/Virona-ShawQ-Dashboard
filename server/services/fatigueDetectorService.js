@@ -4,6 +4,83 @@
 
 import { getDb } from '../db/database.js';
 
+const DEFAULT_LOOKBACK_DAYS = 30;
+const ADSET_STATUS_PRIORITY = {
+  saturated: 0,
+  fatigued: 1,
+  warning: 2,
+  healthy: 3
+};
+const ACTIVE_CAMPAIGN_STATUS_SQL_FILTER = `
+  AND (effective_status = 'ACTIVE' OR effective_status = 'UNKNOWN' OR effective_status IS NULL)
+`;
+
+function isTruthy(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+  return false;
+}
+
+function toStatus(value) {
+  if (!value || typeof value !== 'string') return 'UNKNOWN';
+  return value.toUpperCase();
+}
+
+function getLinkClicks(inlineLinkClicks, outboundClicks) {
+  const inlineClicks = Number(inlineLinkClicks) || 0;
+  const outbound = Number(outboundClicks) || 0;
+  return inlineClicks > 0 ? inlineClicks : Math.max(0, outbound);
+}
+
+function getLinkCtr(impressions, inlineLinkClicks, outboundClicks) {
+  const totalImpressions = Number(impressions) || 0;
+  if (totalImpressions <= 0) return 0;
+  return (getLinkClicks(inlineLinkClicks, outboundClicks) / totalImpressions) * 100;
+}
+
+function buildCampaignHierarchy(adSets) {
+  const campaignMap = new Map();
+
+  for (const adSet of adSets) {
+    const campaignKey = adSet.campaign_id || `campaign:${adSet.campaign_name || 'unknown'}`;
+    if (!campaignMap.has(campaignKey)) {
+      campaignMap.set(campaignKey, {
+        campaign_id: adSet.campaign_id || null,
+        campaign_name: adSet.campaign_name || 'Unnamed Campaign',
+        effective_status: toStatus(adSet.campaign_effective_status),
+        isActive: toStatus(adSet.campaign_effective_status) === 'ACTIVE',
+        adSets: [],
+        summary: { total: 0, healthy: 0, warning: 0, fatigued: 0, saturated: 0 }
+      });
+    }
+
+    const campaign = campaignMap.get(campaignKey);
+    campaign.adSets.push(adSet);
+    campaign.summary.total += 1;
+    if (Object.prototype.hasOwnProperty.call(campaign.summary, adSet.status)) {
+      campaign.summary[adSet.status] += 1;
+    }
+  }
+
+  return Array.from(campaignMap.values())
+    .map((campaign) => ({
+      ...campaign,
+      adSets: [...campaign.adSets].sort(
+        (a, b) =>
+          (ADSET_STATUS_PRIORITY[a.status] ?? ADSET_STATUS_PRIORITY.healthy) -
+          (ADSET_STATUS_PRIORITY[b.status] ?? ADSET_STATUS_PRIORITY.healthy)
+      )
+    }))
+    .sort((a, b) => {
+      const activeDiff = Number(b.isActive) - Number(a.isActive);
+      if (activeDiff !== 0) return activeDiff;
+      return (a.campaign_name || '').localeCompare(b.campaign_name || '');
+    });
+}
+
 // ============================================================================
 // STATISTICAL FUNCTIONS
 // ============================================================================
@@ -140,15 +217,20 @@ function avgPairwiseCorrelation(seriesArray) {
  */
 export function getFatigueAnalysis(store, params = {}) {
   const db = getDb();
-  const days = parseInt(params.days) || 30;
+  const days = parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS;
+  const includeInactive = isTruthy(params.includeInactive);
   
   // Calculate date range
   const endDate = params.endDate || new Date().toISOString().split('T')[0];
   const startDate = params.startDate || new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const statusFilter = includeInactive ? '' : ACTIVE_CAMPAIGN_STATUS_SQL_FILTER;
   
   // Get all ad sets with their ads
   const adSetData = db.prepare(`
     SELECT 
+      campaign_id,
+      campaign_name,
+      MAX(effective_status) as campaign_effective_status,
       adset_id,
       adset_name,
       ad_id,
@@ -156,6 +238,8 @@ export function getFatigueAnalysis(store, params = {}) {
       date,
       SUM(impressions) as impressions,
       SUM(reach) as reach,
+      SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
       SUM(clicks) as clicks,
       SUM(conversions) as conversions,
       SUM(spend) as spend
@@ -164,8 +248,9 @@ export function getFatigueAnalysis(store, params = {}) {
       AND date BETWEEN ? AND ?
       AND adset_id IS NOT NULL
       AND ad_id IS NOT NULL
-    GROUP BY adset_id, ad_id, date
-    ORDER BY adset_id, ad_id, date
+      ${statusFilter}
+    GROUP BY campaign_id, campaign_name, adset_id, ad_id, date
+    ORDER BY campaign_name, adset_name, ad_id, date
   `).all(store, startDate, endDate);
   
   if (!adSetData.length) {
@@ -173,6 +258,9 @@ export function getFatigueAnalysis(store, params = {}) {
       success: true,
       summary: { total: 0, healthy: 0, warning: 0, fatigued: 0, saturated: 0 },
       adSets: [],
+      campaigns: [],
+      includeInactive,
+      ctrDefinition: 'link_ctr = link_clicks / impressions',
       dateRange: { start: startDate, end: endDate }
     };
   }
@@ -183,6 +271,9 @@ export function getFatigueAnalysis(store, params = {}) {
   for (const row of adSetData) {
     if (!adSetMap.has(row.adset_id)) {
       adSetMap.set(row.adset_id, {
+        campaign_id: row.campaign_id,
+        campaign_name: row.campaign_name,
+        campaign_effective_status: toStatus(row.campaign_effective_status),
         adset_id: row.adset_id,
         adset_name: row.adset_name,
         ads: new Map()
@@ -200,8 +291,9 @@ export function getFatigueAnalysis(store, params = {}) {
     }
     
     const ad = adSet.ads.get(row.ad_id);
-    const ctr = row.impressions > 0 ? (row.clicks / row.impressions) * 100 : 0;
-    const cvr = row.clicks > 0 ? (row.conversions / row.clicks) * 100 : 0;
+    const linkClicks = getLinkClicks(row.inline_link_clicks, row.outbound_clicks);
+    const ctr = getLinkCtr(row.impressions, row.inline_link_clicks, row.outbound_clicks);
+    const cvr = linkClicks > 0 ? (row.conversions / linkClicks) * 100 : 0;
     const frequency = row.reach > 0 ? row.impressions / row.reach : 0;
     const newReachRatio = row.impressions > 0 ? row.reach / row.impressions : 0;
     
@@ -209,7 +301,10 @@ export function getFatigueAnalysis(store, params = {}) {
       date: row.date,
       impressions: row.impressions,
       reach: row.reach,
-      clicks: row.clicks,
+      clicks: linkClicks,
+      rawClicks: row.clicks,
+      inlineLinkClicks: row.inline_link_clicks,
+      outboundClicks: row.outbound_clicks,
       conversions: row.conversions,
       spend: row.spend,
       ctr,
@@ -249,6 +344,9 @@ export function getFatigueAnalysis(store, params = {}) {
     summary[adSetStatus.status]++;
     
     analyzedAdSets.push({
+      campaign_id: adSet.campaign_id,
+      campaign_name: adSet.campaign_name,
+      campaign_effective_status: adSet.campaign_effective_status,
       adset_id: adsetId,
       adset_name: adSet.adset_name,
       status: adSetStatus.status,
@@ -272,13 +370,21 @@ export function getFatigueAnalysis(store, params = {}) {
   }
   
   // Sort by status priority (fatigued/saturated first)
-  const statusPriority = { saturated: 0, fatigued: 1, warning: 2, healthy: 3 };
-  analyzedAdSets.sort((a, b) => statusPriority[a.status] - statusPriority[b.status]);
+  analyzedAdSets.sort(
+    (a, b) =>
+      (ADSET_STATUS_PRIORITY[a.status] ?? ADSET_STATUS_PRIORITY.healthy) -
+      (ADSET_STATUS_PRIORITY[b.status] ?? ADSET_STATUS_PRIORITY.healthy)
+  );
+
+  const campaigns = buildCampaignHierarchy(analyzedAdSets);
   
   return {
     success: true,
     summary,
     adSets: analyzedAdSets,
+    campaigns,
+    includeInactive,
+    ctrDefinition: 'link_ctr = link_clicks / impressions',
     dateRange: { start: startDate, end: endDate }
   };
 }
@@ -546,7 +652,7 @@ function determineAdSetStatus(adAnalyses, saturationAnalysis) {
  */
 export function getAdFatigueDetail(store, adId, params = {}) {
   const db = getDb();
-  const days = parseInt(params.days) || 30;
+  const days = parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS;
   
   const endDate = params.endDate || new Date().toISOString().split('T')[0];
   const startDate = params.startDate || new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -560,6 +666,8 @@ export function getAdFatigueDetail(store, adId, params = {}) {
       date,
       SUM(impressions) as impressions,
       SUM(reach) as reach,
+      SUM(inline_link_clicks) as inline_link_clicks,
+      SUM(outbound_clicks) as outbound_clicks,
       SUM(clicks) as clicks,
       SUM(conversions) as conversions,
       SUM(spend) as spend
@@ -580,8 +688,9 @@ export function getAdFatigueDetail(store, adId, params = {}) {
     ad_id: adData[0].ad_id,
     ad_name: adData[0].ad_name,
     daily: adData.map(row => {
-      const ctr = row.impressions > 0 ? (row.clicks / row.impressions) * 100 : 0;
-      const cvr = row.clicks > 0 ? (row.conversions / row.clicks) * 100 : 0;
+      const linkClicks = getLinkClicks(row.inline_link_clicks, row.outbound_clicks);
+      const ctr = getLinkCtr(row.impressions, row.inline_link_clicks, row.outbound_clicks);
+      const cvr = linkClicks > 0 ? (row.conversions / linkClicks) * 100 : 0;
       const frequency = row.reach > 0 ? row.impressions / row.reach : 0;
       const newReachRatio = row.impressions > 0 ? row.reach / row.impressions : 0;
       
@@ -589,7 +698,10 @@ export function getAdFatigueDetail(store, adId, params = {}) {
         date: row.date,
         impressions: row.impressions,
         reach: row.reach,
-        clicks: row.clicks,
+        clicks: linkClicks,
+        rawClicks: row.clicks,
+        inlineLinkClicks: row.inline_link_clicks,
+        outboundClicks: row.outbound_clicks,
         conversions: row.conversions,
         spend: row.spend,
         ctr,
@@ -617,6 +729,7 @@ export function getAdFatigueDetail(store, adId, params = {}) {
     analysis,
     adsetId: adData[0].adset_id,
     adsetName: adData[0].adset_name,
+    ctrDefinition: 'link_ctr = link_clicks / impressions',
     siblingAds: siblings,
     dateRange: { start: startDate, end: endDate }
   };
