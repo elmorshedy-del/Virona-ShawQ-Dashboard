@@ -30,6 +30,7 @@ import customerInsightsRouter from './routes/customerInsights.js';
 import metaDemographicsRoutes from './routes/metaDemographics.js';
 import watchtowerRouter from './routes/watchtower.js';
 import croForensicsRouter from './routes/croForensics.js';
+import conversionUiFixLabRouter from './routes/conversionUiFixLab.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
@@ -38,6 +39,7 @@ import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js'
 import { runMigration as runCompetitorSpyMigration } from './db/competitorSpyMigration.js';
 import { runSessionIntelligenceMigration } from './db/sessionIntelligenceMigration.js';
 import { runWatchtowerMigration } from './db/watchtowerMigration.js';
+import { runConversionUiFixLabMigration } from './db/conversionUiFixLabMigration.js';
 import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
 import { syncMetaData, getExchangeRateForDate } from './services/metaService.js';
 import { syncShopifyOrders } from './services/shopifyService.js';
@@ -180,6 +182,7 @@ runCreativeStudioMigration();
 runCompetitorSpyMigration();
 runSessionIntelligenceMigration();
 runWatchtowerMigration();
+runConversionUiFixLabMigration();
 
 // Schedule creative funnel summaries (daily/weekly + spend reset checks)
 scheduleCreativeFunnelSummaryJobs();
@@ -244,6 +247,7 @@ app.use('/api/watchtower', watchtowerRouter);
 app.use('/api/fatigue', fatigueRouter);
 app.use('/api/testimonials', testimonialExtractorRouter);
 app.use('/api/cro-forensics', croForensicsRouter);
+app.use('/api/conversion-ui-fix-lab', conversionUiFixLabRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
