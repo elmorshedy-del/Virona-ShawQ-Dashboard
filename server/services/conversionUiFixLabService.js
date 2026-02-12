@@ -202,13 +202,16 @@ export function getConversionUiFixLabSession(sessionId) {
     return null;
   }
 
+  const rawReport = row.report_json ? JSON.parse(row.report_json) : {};
+  const hydratedReport = hydrateReportWithFixStateOverrides(row.session_id, rawReport);
+
   return {
     sessionId: row.session_id,
     store: row.store,
     rootUrl: row.root_url,
     status: row.status,
     request: row.request_json ? JSON.parse(row.request_json) : {},
-    report: row.report_json ? JSON.parse(row.report_json) : {},
+    report: hydratedReport,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -270,6 +273,66 @@ function updateSummaryWithFixes(summary, fixes) {
     ...summary,
     openFixes,
     approvedFixes
+  };
+}
+
+function normalizeFixNote(note) {
+  if (typeof note !== 'string') return null;
+  const trimmed = note.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 600);
+}
+
+function applyStoredFixStateOverrides(sessionId, fixes) {
+  if (!Array.isArray(fixes) || fixes.length === 0) return [];
+
+  const db = getDb();
+  let rows = [];
+  try {
+    rows = db.prepare(`
+      SELECT fix_id, state, note
+      FROM conversion_ui_fix_lab_fix_states
+      WHERE session_id = ?
+    `).all(sessionId);
+  } catch (error) {
+    console.warn('[Conversion/UI Fix Lab] Failed to load fix-state overrides:', error?.message || error);
+    return fixes;
+  }
+
+  if (!rows.length) return fixes;
+
+  const overrides = new Map(rows.map((row) => [row.fix_id, row]));
+  return fixes.map((fix) => {
+    const override = overrides.get(fix.id);
+    if (!override) return fix;
+
+    const next = { ...fix };
+    const nextState = String(override.state || '').toLowerCase();
+    if (VALID_FIX_STATES.has(nextState)) {
+      next.state = nextState;
+    }
+
+    const note = normalizeFixNote(override.note);
+    if (note) {
+      next.note = note;
+    } else if ('note' in next) {
+      delete next.note;
+    }
+
+    return next;
+  });
+}
+
+function hydrateReportWithFixStateOverrides(sessionId, report) {
+  const baseReport = report && typeof report === 'object' ? report : {};
+  const baseFixes = Array.isArray(baseReport.fixes) ? baseReport.fixes : [];
+  const fixes = applyStoredFixStateOverrides(sessionId, baseFixes);
+
+  return {
+    ...baseReport,
+    fixes,
+    applyPlan: buildApplyPlanFromFixes(fixes),
+    summary: updateSummaryWithFixes(baseReport.summary || {}, fixes)
   };
 }
 
@@ -945,46 +1008,68 @@ export function updateConversionUiFixLabApprovals({ sessionId, updates = [] }) {
   }
 
   const report = session.report || {};
-  const fixes = Array.isArray(report.fixes) ? [...report.fixes] : [];
+  const fixes = Array.isArray(report.fixes) ? report.fixes : [];
+  const validFixIds = new Set(
+    fixes
+      .map((fix) => String(fix?.id || '').trim())
+      .filter(Boolean)
+  );
 
-  const fixById = new Map(fixes.map((fix) => [fix.id, fix]));
-
+  const updatesByFixId = new Map();
   updates.forEach((update) => {
     const fixId = String(update?.fixId || '').trim();
     const state = String(update?.state || '').trim().toLowerCase();
-    if (!fixId || !VALID_FIX_STATES.has(state)) return;
-
-    const existing = fixById.get(fixId);
-    if (!existing) return;
-
-    existing.state = state;
-    if (typeof update?.note === 'string') {
-      existing.note = update.note.slice(0, 600);
+    if (!fixId || !validFixIds.has(fixId) || !VALID_FIX_STATES.has(state)) {
+      return;
     }
+
+    updatesByFixId.set(fixId, {
+      fixId,
+      state,
+      note: normalizeFixNote(update?.note)
+    });
   });
 
-  const nextFixes = Array.from(fixById.values());
-  const nextApplyPlan = buildApplyPlanFromFixes(nextFixes);
-  const nextSummary = updateSummaryWithFixes(report.summary || {}, nextFixes);
+  const normalizedUpdates = Array.from(updatesByFixId.values());
+  if (!normalizedUpdates.length) {
+    return hydrateReportWithFixStateOverrides(sessionId, report);
+  }
 
-  const nextReport = {
-    ...report,
-    fixes: nextFixes,
-    applyPlan: nextApplyPlan,
-    summary: nextSummary,
-    updatedAt: new Date().toISOString()
-  };
+  const db = getDb();
+  const upsertFixState = db.prepare(`
+    INSERT INTO conversion_ui_fix_lab_fix_states (
+      session_id, fix_id, state, note, updated_at
+    ) VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(session_id, fix_id) DO UPDATE SET
+      state = excluded.state,
+      note = excluded.note,
+      updated_at = datetime('now')
+  `);
+  const clearFixState = db.prepare(`
+    DELETE FROM conversion_ui_fix_lab_fix_states
+    WHERE session_id = ? AND fix_id = ?
+  `);
+  const touchSession = db.prepare(`
+    UPDATE conversion_ui_fix_lab_sessions
+    SET updated_at = datetime('now')
+    WHERE session_id = ?
+  `);
 
-  persistSession({
-    sessionId,
-    store: session.store,
-    rootUrl: session.rootUrl,
-    status: 'completed',
-    request: session.request,
-    report: nextReport
+  const writeUpdates = db.transaction((rows) => {
+    rows.forEach((item) => {
+      // "open" without note means fallback to the base report state.
+      if (item.state === 'open' && !item.note) {
+        clearFixState.run(sessionId, item.fixId);
+        return;
+      }
+      upsertFixState.run(sessionId, item.fixId, item.state, item.note);
+    });
+    touchSession.run(sessionId);
   });
 
-  return nextReport;
+  writeUpdates(normalizedUpdates);
+
+  return hydrateReportWithFixStateOverrides(sessionId, report);
 }
 
 export function resolveConversionUiFixLabScreenshotPath(sessionId, fileName) {

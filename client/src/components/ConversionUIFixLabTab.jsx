@@ -118,7 +118,8 @@ export default function ConversionUIFixLabTab() {
           setSession(payload.session);
           setTargetUrl(payload.session.rootUrl || 'https://shawq.co');
         }
-      } catch {
+      } catch (err) {
+        console.error('Failed to load Conversion/UI Fix Lab session:', err);
         localStorage.removeItem(SESSION_STORAGE_KEY);
       }
     };
@@ -147,9 +148,20 @@ export default function ConversionUIFixLabTab() {
   const chapter = chapters.find((item) => item.id === activeChapter) || chapters[0];
 
   const fixes = Array.isArray(session?.fixes) ? session.fixes : [];
-  const approvedCount = fixes.filter((item) => item.state === 'approved').length;
-  const openCount = fixes.filter((item) => item.state === 'open').length;
-  const approvalPercent = fixes.length ? Math.round((approvedCount / fixes.length) * 100) : 0;
+  const { approvedCount, openCount, approvalPercent } = useMemo(() => {
+    const stats = fixes.reduce((acc, item) => {
+      if (item?.state === 'approved') acc.approved += 1;
+      if (item?.state === 'open') acc.open += 1;
+      return acc;
+    }, { approved: 0, open: 0 });
+
+    const percent = fixes.length ? Math.round((stats.approved / fixes.length) * 100) : 0;
+    return {
+      approvedCount: stats.approved,
+      openCount: stats.open,
+      approvalPercent: percent
+    };
+  }, [fixes]);
 
   const qaGates = session?.qaGates?.length ? session.qaGates : FALLBACK_QA_GATES;
 
