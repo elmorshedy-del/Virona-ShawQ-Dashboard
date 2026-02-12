@@ -3,6 +3,7 @@ nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "yt-dlp", "ffmpeg"]
 
 [variables]
 PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "false"
+PUPPETEER_CACHE_DIR = "/app/.cache/puppeteer"
 
 [phases.install]
 cmds = ["npm install"]
@@ -11,7 +12,13 @@ cmds = ["npm install"]
 PYTHON = "python3"
 
 [phases.build]
-cmds = ["npm --prefix client install", "npm --prefix client run build"]
+cmds = [
+  "npm --prefix client install",
+  "npm --prefix client run build",
+  "npm --prefix server install",
+  "mkdir -p /app/.cache/puppeteer",
+  "./server/node_modules/.bin/puppeteer browsers install chrome"
+]
 
 [start]
 cmd = "node server/server.js"
