@@ -366,27 +366,45 @@ function buildGuardrails(data, actions) {
   const compareDays = data?.window?.days;
 
   if (compareDays) {
-    notes.push(`Window logic: current period is compared to the immediately previous ${compareDays}-day window.`);
+    notes.push({
+      id: 'window-logic',
+      text: `Window logic: current period is compared to the immediately previous ${compareDays}-day window.`
+    });
   }
 
   if (orders < ACTION_PLANNER_RULES.minOrdersForStrongSignal) {
-    notes.push(`Signal volume is light (${formatNumber(orders)} orders). Treat movement as directional until volume increases.`);
+    notes.push({
+      id: 'low-signal',
+      text: `Signal volume is light (${formatNumber(orders)} orders). Treat movement as directional until volume increases.`
+    });
   }
 
   if (!hasItems) {
-    notes.push('Line-item detail is incomplete, so product-level actions are provisional.');
+    notes.push({
+      id: 'incomplete-items',
+      text: 'Line-item detail is incomplete, so product-level actions are provisional.'
+    });
   }
 
   if (cityCoverage != null && cityCoverage < ACTION_PLANNER_RULES.lowCityCoverage) {
-    notes.push(`City coverage (${formatPercent(cityCoverage)}) is below the quality floor (${formatPercent(ACTION_PLANNER_RULES.lowCityCoverage)}).`);
+    notes.push({
+      id: 'low-city-coverage',
+      text: `City coverage (${formatPercent(cityCoverage)}) is below the quality floor (${formatPercent(ACTION_PLANNER_RULES.lowCityCoverage)}).`
+    });
   }
 
   if (countryCoverage != null && countryCoverage < ACTION_PLANNER_RULES.lowCountryCoverage) {
-    notes.push(`Country coverage (${formatPercent(countryCoverage)}) is below the quality floor (${formatPercent(ACTION_PLANNER_RULES.lowCountryCoverage)}).`);
+    notes.push({
+      id: 'low-country-coverage',
+      text: `Country coverage (${formatPercent(countryCoverage)}) is below the quality floor (${formatPercent(ACTION_PLANNER_RULES.lowCountryCoverage)}).`
+    });
   }
 
   if (!actions.length) {
-    notes.push('No high-priority actions were triggered this cycle. Keep monitoring and run one controlled test per week.');
+    notes.push({
+      id: 'no-actions',
+      text: 'No high-priority actions were triggered this cycle. Keep monitoring and run one controlled test per week.'
+    });
   }
 
   return notes.slice(0, 5);
