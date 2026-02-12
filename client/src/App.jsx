@@ -32,6 +32,7 @@ import ProductRadar from './components/ProductRadar';
 import CustomerInsightsTab from './components/CustomerInsightsTab';
 import WatchtowerTab from './components/WatchtowerTab';
 import CROForensicsTab from './components/CROForensicsTab';
+import ConversionUIFixLabTab from './components/ConversionUIFixLabTab';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -399,11 +400,12 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Product Radar', 'Watchtower', 'CRO Forensics'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Product Radar', 'Watchtower', 'CRO Forensics'];
+const CONVERSION_UI_FIX_LAB_TAB_INDEX = TABS.indexOf('Conversion/UI Fix Lab');
 const PRODUCT_RADAR_TAB_INDEX = TABS.indexOf('Product Radar');
 const WATCHTOWER_TAB_INDEX = TABS.indexOf('Watchtower');
 const CRO_FORENSICS_TAB_INDEX = TABS.indexOf('CRO Forensics');
-const TABS_VERSION = '2026-01-31-customer-insights-after-neometa-v1';
+const TABS_VERSION = '2026-02-12-conversion-ui-fix-lab-after-customer-insights-v1';
 const MOBILE_VIEWPORT_MAX_WIDTH_PX = 768;
 const MOBILE_VIEWPORT_QUERY = `(max-width: ${MOBILE_VIEWPORT_MAX_WIDTH_PX}px)`;
 const MOBILE_DASHBOARD_TREND_POINTS = 14;
@@ -1781,7 +1783,11 @@ export default function App() {
 	          />
 	        )}
 
-        {activeTab === 7 && efficiency && (
+        {activeTab === CONVERSION_UI_FIX_LAB_TAB_INDEX && (
+          <ConversionUIFixLabTab />
+        )}
+
+        {activeTab === 8 && efficiency && (
           <EfficiencyTab
             efficiency={efficiency}
             trends={efficiencyTrends}
@@ -1790,7 +1796,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 8 && budgetIntelligence && (
+        {activeTab === 9 && budgetIntelligence && (
           <BudgetIntelligenceTab
             data={budgetIntelligence}
             formatCurrency={formatCurrency}
@@ -1798,7 +1804,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 9 && (
+        {activeTab === 10 && (
           <ManualDataTab
             orders={manualOrders}
             form={orderForm}
@@ -1817,35 +1823,35 @@ export default function App() {
           />
         )}
 
-        {activeTab === 10 && (
+        {activeTab === 11 && (
           <FatigueDetector
             store={store}
             formatCurrency={formatCurrency}
           />
         )}
 
-        {activeTab === 11 && (
+        {activeTab === 12 && (
           <>
             <CreativeIntelligence store={currentStore} />
             <CreativeAnalysis store={store} />
           </>
         )}
 
-        {activeTab === 12 && (
+        {activeTab === 13 && (
           <CreativeStudio store={currentStore} />
         )}
 
-        {activeTab === 13 && (
+        {activeTab === 14 && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 14 && (
+        {activeTab === 15 && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 15 && (
+        {activeTab === 16 && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1853,7 +1859,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 16 && (
+        {activeTab === 17 && (
           <ExchangeRateDebug />
         )}
 
