@@ -2,9 +2,9 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "NIXPACKS",
-    "buildCommand": "npm install && cd client && npm install && npm run build && cd ../server && npm install"
+    "buildCommand": "npm install && cd client && npm install && npm run build && cd ../server && npm install && mkdir -p /app/.cache/puppeteer && PUPPETEER_CACHE_DIR=/app/.cache/puppeteer ./node_modules/.bin/puppeteer browsers install chrome"
   },
   "deploy": {
-    "startCommand": "cd server && npm start"
+    "startCommand": "cd server && PUPPETEER_CACHE_DIR=/app/.cache/puppeteer npm start"
   }
 }
