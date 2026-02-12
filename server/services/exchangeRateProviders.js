@@ -370,3 +370,61 @@ export async function fetchFrankfurterTryToUsdRate(dateStr) {
     return result;
   }
 }
+
+export async function fetchFrankfurterTimeseriesTryToUsdRates(startDate, endDate) {
+  const url = `https://api.frankfurter.app/${startDate}..${endDate}?from=TRY&to=USD`;
+
+  try {
+    const { res, json } = await fetchJson(url);
+
+    let result;
+    if (!res.ok) {
+      result = err('frankfurter', 'timeseries', res.status, 'http_error', `Frankfurter request failed (HTTP ${res.status}).`);
+    } else {
+      const rates = json?.rates;
+      if (!rates || typeof rates !== 'object') {
+        result = err('frankfurter', 'timeseries', res.status, 'invalid_response', 'Frankfurter timeseries response was missing rates.');
+      } else {
+        const out = new Map();
+        for (const [dateStr, dayRates] of Object.entries(rates)) {
+          const rate = parsePositiveNumber(dayRates?.USD);
+          if (!rate) continue;
+          out.set(dateStr, rate);
+        }
+        result = {
+          ok: true,
+          provider: 'frankfurter',
+          kind: 'timeseries',
+          source: 'frankfurter',
+          ratesByDate: out
+        };
+      }
+    }
+
+    logApiUsage({
+      provider: 'frankfurter',
+      kind: 'timeseries',
+      status: result.ok ? 'success' : 'error',
+      httpStatus: res.status,
+      startDate,
+      endDate,
+      errorCode: result.ok ? null : result.code,
+      errorMessage: result.ok ? null : result.message
+    });
+
+    return result;
+  } catch (e) {
+    const result = err('frankfurter', 'timeseries', null, 'network_error', `Frankfurter request failed: ${e.message}`);
+    logApiUsage({
+      provider: 'frankfurter',
+      kind: 'timeseries',
+      status: 'error',
+      httpStatus: null,
+      startDate,
+      endDate,
+      errorCode: result.code,
+      errorMessage: result.message
+    });
+    return result;
+  }
+}

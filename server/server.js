@@ -51,9 +51,8 @@ import { formatDateAsGmt3 } from './utils/dateUtils.js';
 import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
 import {
   fetchApilayerHistoricalTryToUsdRate,
-  fetchCurrencyFreaksHistoricalTryToUsdRate,
   fetchCurrencyFreaksTimeseriesTryToUsdRates,
-  fetchFrankfurterTryToUsdRate,
+  fetchFrankfurterTimeseriesTryToUsdRates,
   fetchOXRHistoricalTryToUsdRate
 } from './services/exchangeRateProviders.js';
 
@@ -65,6 +64,9 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '60000', 10);
 const GMT3_OFFSET_MS = 3 * 60 * 60 * 1000;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_EXCHANGE_BOOTSTRAP_DAYS = 730;
+const DEFAULT_EXCHANGE_BOOTSTRAP_MAX_DAYS = 3650;
 const META_DAYTURN_PULSE_MINUTES = (process.env.META_DAYTURN_PULSE_MINUTES || '5,15')
   .split(',')
   .map((value) => parseInt(value.trim(), 10))
@@ -341,10 +343,61 @@ async function dayTurnMetaSync() {
   }
 }
 
-// Backfill missing exchange rates on startup (historical only)
-async function backfillMissingExchangeRates(daysBack = 60) {
+function parsePositiveInt(value, fallback) {
+  const parsed = parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function getEarliestShawqMetaDate() {
   const db = getDb();
-  const maxCalls = parseInt(process.env.EXCHANGE_RATE_BACKFILL_MAX_CALLS || '100', 10);
+  const tables = ['meta_daily_metrics', 'meta_adset_metrics', 'meta_ad_metrics'];
+  let earliest = null;
+
+  for (const table of tables) {
+    try {
+      const row = db.prepare(`SELECT MIN(date) as minDate FROM ${table} WHERE store = 'shawq'`).get();
+      if (row?.minDate && (!earliest || row.minDate < earliest)) {
+        earliest = row.minDate;
+      }
+    } catch (error) {
+      // Keep going when a table does not exist in older databases.
+    }
+  }
+
+  return earliest;
+}
+
+function resolveExchangeBootstrapDays() {
+  const configuredDays = parsePositiveInt(
+    process.env.EXCHANGE_RATE_BOOTSTRAP_DAYS || process.env.EXCHANGE_RATE_BACKFILL_DAYS,
+    DEFAULT_EXCHANGE_BOOTSTRAP_DAYS
+  );
+  const maxDays = parsePositiveInt(process.env.EXCHANGE_RATE_BOOTSTRAP_MAX_DAYS, DEFAULT_EXCHANGE_BOOTSTRAP_MAX_DAYS);
+  let days = Math.min(configuredDays, maxDays);
+
+  const earliestMetaDate = getEarliestShawqMetaDate();
+  if (!earliestMetaDate) {
+    return days;
+  }
+
+  const today = new Date(`${formatDateAsGmt3(new Date())}T00:00:00Z`);
+  const earliest = new Date(`${earliestMetaDate}T00:00:00Z`);
+  if (Number.isNaN(today.getTime()) || Number.isNaN(earliest.getTime())) {
+    return days;
+  }
+
+  const neededDays = Math.floor((today.getTime() - earliest.getTime()) / ONE_DAY_MS) + 2;
+  days = Math.max(days, neededDays);
+  return Math.min(days, maxDays);
+}
+
+// Backfill missing exchange rates on startup (historical only)
+async function backfillMissingExchangeRates(daysBack = DEFAULT_EXCHANGE_BOOTSTRAP_DAYS) {
+  const db = getDb();
+  const maxCalls = parsePositiveInt(process.env.EXCHANGE_RATE_BACKFILL_MAX_CALLS, 100);
   const { primaryBackfillProvider, secondaryBackfillProvider } = resolveExchangeRateProviders();
 
   if (!primaryBackfillProvider) {
@@ -353,7 +406,7 @@ async function backfillMissingExchangeRates(daysBack = 60) {
   }
 
   const missingDates = [];
-  const yesterday = formatDateAsGmt3(new Date(Date.now() - 24 * 60 * 60 * 1000));
+  const yesterday = formatDateAsGmt3(new Date(Date.now() - ONE_DAY_MS));
 
   for (let i = 1; i <= daysBack; i++) {
     const date = new Date();
@@ -410,37 +463,53 @@ async function backfillMissingExchangeRates(daysBack = 60) {
     console.log(`[Exchange] Backfilled ${dateStr}: TRY→USD = ${rate.toFixed(6)} (${source})`);
   };
 
-  const remainingDates = [];
-
-  // Primary backfill
-  if (primary === 'currencyfreaks') {
-    const sortedDates = [...missingDates].sort();
-    const startDate = sortedDates[0];
-    const endDate = sortedDates[sortedDates.length - 1];
-
+  const fillWithTimeseriesProvider = async (provider, dateList, unresolved) => {
+    if (!dateList.length) return;
     if (callBudget < 1) {
-      console.log('[Exchange] No call budget remaining for CurrencyFreaks timeseries.');
+      unresolved.push(...dateList);
       return;
     }
 
-    const series = await fetchCurrencyFreaksTimeseriesTryToUsdRates(startDate, endDate);
+    const sortedDates = [...dateList].sort();
+    const startDate = sortedDates[0];
+    const endDate = sortedDates[sortedDates.length - 1];
+
+    let series = null;
+    if (provider === 'currencyfreaks') {
+      series = await fetchCurrencyFreaksTimeseriesTryToUsdRates(startDate, endDate);
+    } else if (provider === 'frankfurter') {
+      series = await fetchFrankfurterTimeseriesTryToUsdRates(startDate, endDate);
+    } else {
+      unresolved.push(...dateList);
+      return;
+    }
 
     // Count this as a single call attempt for throttling purposes.
     callBudget -= 1;
 
     if (!series.ok) {
-      console.warn(`[Exchange] CurrencyFreaks timeseries failed (${series.code}${series.status ? `, HTTP ${series.status}` : ''}): ${series.message}`);
-      remainingDates.push(...missingDates);
-    } else {
-      for (const dateStr of missingDates) {
-        const rate = series.ratesByDate.get(dateStr);
-        if (!Number.isFinite(rate) || rate <= 0) {
-          remainingDates.push(dateStr);
-          continue;
-        }
-        insertRate(rate, dateStr, series.source || 'currencyfreaks');
-      }
+      console.warn(
+        `[Exchange] ${provider} timeseries failed (${series.code}${series.status ? `, HTTP ${series.status}` : ''}): ${series.message}`
+      );
+      unresolved.push(...dateList);
+      return;
     }
+
+    for (const dateStr of dateList) {
+      const rate = series.ratesByDate.get(dateStr);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        unresolved.push(dateStr);
+        continue;
+      }
+      insertRate(rate, dateStr, series.source || provider);
+    }
+  };
+
+  const remainingDates = [];
+
+  // Primary backfill
+  if (primary === 'currencyfreaks' || primary === 'frankfurter') {
+    await fillWithTimeseriesProvider(primary, missingDates, remainingDates);
   } else {
     for (const dateStr of missingDates) {
       if (callBudget < 1) {
@@ -455,8 +524,6 @@ async function backfillMissingExchangeRates(daysBack = 60) {
         result = await fetchOXRHistoricalTryToUsdRate(dateStr);
       } else if (primary === 'apilayer') {
         result = await fetchApilayerHistoricalTryToUsdRate(dateStr);
-      } else if (primary === 'frankfurter') {
-        result = await fetchFrankfurterTryToUsdRate(dateStr);
       } else {
         console.warn(`[Exchange] Unknown primary backfill provider "${primary}"; skipping.`);
         remainingDates.push(dateStr);
@@ -469,7 +536,6 @@ async function backfillMissingExchangeRates(daysBack = 60) {
         insertRate(result.tryToUsd, dateStr, result.source || primary);
       } else {
         remainingDates.push(dateStr);
-        failed += 1;
       }
 
       await new Promise(resolve => setTimeout(resolve, 250));
@@ -477,41 +543,46 @@ async function backfillMissingExchangeRates(daysBack = 60) {
   }
 
   // Secondary fallback (only for the dates primary couldn't fill)
+  let unresolvedAfterFallback = [...remainingDates];
   if (secondary && remainingDates.length && callBudget > 0) {
     console.log(`[Exchange] Trying secondary backfill for ${remainingDates.length} remaining dates (${secondary})...`);
+    unresolvedAfterFallback = [];
 
-    for (const dateStr of remainingDates) {
-      if (callBudget < 1) {
-        console.log(`[Exchange] Reached max backfill calls (${maxCalls}). Stopping secondary.`);
-        break;
+    if (secondary === 'currencyfreaks' || secondary === 'frankfurter') {
+      await fillWithTimeseriesProvider(secondary, remainingDates, unresolvedAfterFallback);
+    } else {
+      for (const dateStr of remainingDates) {
+        if (callBudget < 1) {
+          console.log(`[Exchange] Reached max backfill calls (${maxCalls}). Stopping secondary.`);
+          unresolvedAfterFallback.push(dateStr);
+          continue;
+        }
+
+        let result = null;
+        if (secondary === 'oxr') {
+          result = await fetchOXRHistoricalTryToUsdRate(dateStr);
+        } else if (secondary === 'apilayer') {
+          result = await fetchApilayerHistoricalTryToUsdRate(dateStr);
+        } else {
+          console.warn(`[Exchange] Unknown secondary backfill provider "${secondary}"; skipping.`);
+          unresolvedAfterFallback.push(dateStr);
+          continue;
+        }
+
+        callBudget -= 1;
+
+        if (result.ok && Number.isFinite(result.tryToUsd) && result.tryToUsd > 0) {
+          insertRate(result.tryToUsd, dateStr, result.source || secondary);
+        } else {
+          unresolvedAfterFallback.push(dateStr);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 250));
       }
-
-      let result = null;
-      if (secondary === 'oxr') {
-        result = await fetchOXRHistoricalTryToUsdRate(dateStr);
-      } else if (secondary === 'apilayer') {
-        result = await fetchApilayerHistoricalTryToUsdRate(dateStr);
-      } else if (secondary === 'frankfurter') {
-        result = await fetchFrankfurterTryToUsdRate(dateStr);
-      } else if (secondary === 'currencyfreaks') {
-        // Secondary CurrencyFreaks uses per-date historical endpoint for a single day.
-        result = await fetchCurrencyFreaksHistoricalTryToUsdRate(dateStr);
-      } else {
-        console.warn(`[Exchange] Unknown secondary backfill provider "${secondary}"; skipping.`);
-        break;
-      }
-
-      callBudget -= 1;
-
-      if (result.ok && Number.isFinite(result.tryToUsd) && result.tryToUsd > 0) {
-        insertRate(result.tryToUsd, dateStr, result.source || secondary);
-      } else {
-        failed += 1;
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 250));
     }
   }
+
+  failed = unresolvedAfterFallback.length;
 
   console.log(`[Exchange] Backfill complete: fetched=${fetched}, failed=${failed}`);
 }
@@ -519,7 +590,7 @@ async function backfillMissingExchangeRates(daysBack = 60) {
 // Daily exchange rate sync - fetch yesterday's final rate
 async function syncDailyExchangeRate() {
   const db = getDb();
-  const yesterday = formatDateAsGmt3(new Date(Date.now() - 24 * 60 * 60 * 1000));
+  const yesterday = formatDateAsGmt3(new Date(Date.now() - ONE_DAY_MS));
 
   const existing = db.prepare(`
     SELECT rate FROM exchange_rates
@@ -581,7 +652,11 @@ scheduleGmt3DailyJob('Meta day-turn sync', dayTurnMetaSync);
 setTimeout(syncDailyExchangeRate, 10000); // Run shortly after startup
 scheduleGmt3DailyJob('daily exchange rate sync', syncDailyExchangeRate);
 
-setTimeout(() => backfillMissingExchangeRates(60), 20000);
+setTimeout(() => {
+  const bootstrapDays = resolveExchangeBootstrapDays();
+  console.log(`[Exchange] Startup bootstrap window: ${bootstrapDays} day(s)`);
+  backfillMissingExchangeRates(bootstrapDays);
+}, 20000);
 
 try {
   await ensureFaceModelsLoaded();
