@@ -21,4 +21,4 @@ cmds = [
 ]
 
 [start]
-cmd = "PUPPETEER_CACHE_DIR=/app/.cache/puppeteer node server/server.js"
+cmd = "node server/server.js"
