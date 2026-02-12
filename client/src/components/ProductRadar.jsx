@@ -7,10 +7,16 @@ import {
   Loader2,
   AlertCircle,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Sparkles,
+  ListChecks
 } from 'lucide-react';
 
 const API_BASE = '/api';
+const RADAR_SCAN_DEFAULTS = {
+  maxMetaChecks: 6,
+  metaLimit: 25
+};
 
 const postJson = async (url, body) => {
   const res = await fetch(url, {
@@ -151,8 +157,11 @@ export default function ProductRadar() {
   const [includeGeoSpread, setIncludeGeoSpread] = useState(true);
 
   const [loading, setLoading] = useState(false);
+  const [agentLoading, setAgentLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [agentError, setAgentError] = useState(null);
   const [data, setData] = useState(null);
+  const [agentData, setAgentData] = useState(null);
   const [openId, setOpenId] = useState(null);
 
   useEffect(() => {
@@ -199,26 +208,30 @@ export default function ProductRadar() {
     []
   );
 
+  const buildRadarPayload = (q) => ({
+    query: q,
+    timeframeDays,
+    maxCandidates,
+    maxMetaChecks: RADAR_SCAN_DEFAULTS.maxMetaChecks,
+    includeMetaAds,
+    metaCountry,
+    metaLimit: RADAR_SCAN_DEFAULTS.metaLimit,
+    useAiModels,
+    includeGeoSpread
+  });
+
   const handleScan = async () => {
     const q = query.trim();
     if (!q) return;
 
     setLoading(true);
     setError(null);
+    setAgentError(null);
+    setAgentData(null);
     setData(null);
 
     try {
-      const res = await postJson(`${API_BASE}/product-radar/scan`, {
-        query: q,
-        timeframeDays,
-        maxCandidates,
-        maxMetaChecks: 6,
-        includeMetaAds,
-        metaCountry,
-        metaLimit: 25,
-        useAiModels,
-        includeGeoSpread
-      });
+      const res = await postJson(`${API_BASE}/product-radar/scan`, buildRadarPayload(q));
 
       setData(res?.data || null);
       setOpenId(null);
@@ -226,6 +239,27 @@ export default function ProductRadar() {
       setError(e?.message || 'Scan failed');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleAgentScan = async () => {
+    const q = query.trim();
+    if (!q) return;
+
+    setAgentLoading(true);
+    setAgentError(null);
+    setError(null);
+
+    try {
+      const res = await postJson(`${API_BASE}/product-radar/agent`, buildRadarPayload(q));
+      const nextAgentData = res?.data || null;
+      setAgentData(nextAgentData);
+      setData(nextAgentData?.scan || null);
+      setOpenId(null);
+    } catch (e) {
+      setAgentError(e?.message || 'Agent scan failed');
+    } finally {
+      setAgentLoading(false);
     }
   };
 
@@ -415,16 +449,30 @@ export default function ProductRadar() {
             </div>
           </div>
 
-          <button
-            onClick={handleScan}
-            disabled={loading || !query.trim()}
-            className={`inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold text-white shadow-sm transition-colors ${
-              loading || !query.trim() ? 'bg-white/10 text-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 hover:from-cyan-400 hover:via-indigo-400 hover:to-fuchsia-400 shadow-lg shadow-cyan-500/10'
-            }`}
-          >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radar className="w-4 h-4" />}
-            {loading ? 'Scanning…' : 'Run Radar'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleScan}
+              disabled={loading || agentLoading || !query.trim()}
+              className={`inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold text-white shadow-sm transition-colors ${
+                loading || agentLoading || !query.trim() ? 'bg-white/10 text-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 hover:from-cyan-400 hover:via-indigo-400 hover:to-fuchsia-400 shadow-lg shadow-cyan-500/10'
+              }`}
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radar className="w-4 h-4" />}
+              {loading ? 'Scanning…' : 'Run Radar'}
+            </button>
+            <button
+              onClick={handleAgentScan}
+              disabled={loading || agentLoading || !query.trim()}
+              className={`inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold shadow-sm transition-colors ${
+                loading || agentLoading || !query.trim()
+                  ? 'border border-white/10 bg-white/5 text-slate-400 cursor-not-allowed'
+                  : 'border border-indigo-400/40 bg-indigo-500/20 text-indigo-100 hover:bg-indigo-500/30'
+              }`}
+            >
+              {agentLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {agentLoading ? 'Agent running…' : 'Run Agent'}
+            </button>
+          </div>
         </div>
 
         <div className="mt-3 text-xs text-slate-400">
@@ -459,6 +507,112 @@ export default function ProductRadar() {
         <div className="bg-rose-500/10 border border-rose-500/30 text-rose-200 rounded-2xl p-4 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 mt-0.5" />
           <div className="text-sm">{error}</div>
+        </div>
+      )}
+
+      {agentError && (
+        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-200 rounded-2xl p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 mt-0.5" />
+          <div className="text-sm">{agentError}</div>
+        </div>
+      )}
+
+      {agentData && (
+        <div className="bg-indigo-500/10 border border-indigo-400/30 text-indigo-100 rounded-2xl p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold flex items-center gap-2">
+                <ListChecks className="w-4 h-4" />
+                Product Radar Agent
+              </div>
+              <div className="text-xs text-indigo-200/80 mt-1">
+                {agentData.generatedAt ? `Strategy generated ${new Date(agentData.generatedAt).toLocaleString()}` : 'Strategy generation time not available'}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="px-2 py-1 rounded-full bg-white/10 border border-white/15">
+                Top overall: {Math.round(Number(agentData?.insight?.topOverall) || 0)}
+              </span>
+              <span className="px-2 py-1 rounded-full bg-white/10 border border-white/15">
+                Avg demand: {Math.round(Number(agentData?.insight?.averageDemand) || 0)}
+              </span>
+              <span className="px-2 py-1 rounded-full bg-white/10 border border-white/15">
+                Avg momentum: {Math.round(Number(agentData?.insight?.averageMomentum) || 0)}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+              <div className="text-xs uppercase tracking-wide text-indigo-200/80 mb-2">Primary picks</div>
+              <div className="space-y-2">
+                {(agentData?.recommendations?.primary || []).map((item) => (
+                  <div key={`primary-${item.keyword}`} className="rounded-lg border border-white/10 bg-black/20 p-3">
+                    <div className="text-sm font-semibold">{item.keyword}</div>
+                    <div className="text-xs text-indigo-100/80 mt-1">
+                      Overall {Math.round(Number(item?.scores?.overall) || 0)} · Risk {Math.round(Number(item?.scores?.risk) || 0)}
+                    </div>
+                  </div>
+                ))}
+                {(agentData?.recommendations?.primary || []).length === 0 && (
+                  <div className="text-xs text-indigo-100/70">No primary picks yet.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+              <div className="text-xs uppercase tracking-wide text-indigo-200/80 mb-2">Experiment queue</div>
+              <div className="space-y-2">
+                {(agentData?.recommendations?.experiments || []).map((item) => (
+                  <div key={`exp-${item.keyword}`} className="rounded-lg border border-white/10 bg-black/20 p-3">
+                    <div className="text-sm font-semibold">{item.keyword}</div>
+                    <div className="text-xs text-indigo-100/80 mt-1">
+                      Demand {Math.round(Number(item?.scores?.demand) || 0)} · Momentum {Math.round(Number(item?.scores?.momentum) || 0)}
+                    </div>
+                  </div>
+                ))}
+                {(agentData?.recommendations?.experiments || []).length === 0 && (
+                  <div className="text-xs text-indigo-100/70">No experiments queued.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+              <div className="text-xs uppercase tracking-wide text-indigo-200/80 mb-2">Avoid for now</div>
+              <div className="space-y-2">
+                {(agentData?.recommendations?.avoidNow || []).map((item) => (
+                  <div key={`avoid-${item.keyword}`} className="rounded-lg border border-white/10 bg-black/20 p-3">
+                    <div className="text-sm font-semibold">{item.keyword}</div>
+                    <div className="text-xs text-indigo-100/80 mt-1">
+                      Competition {Math.round(Number(item?.scores?.competition) || 0)} · Risk {Math.round(Number(item?.scores?.risk) || 0)}
+                    </div>
+                  </div>
+                ))}
+                {(agentData?.recommendations?.avoidNow || []).length === 0 && (
+                  <div className="text-xs text-indigo-100/70">No immediate avoids detected.</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+              <div className="text-xs uppercase tracking-wide text-indigo-200/80 mb-2">Action plan</div>
+              <ul className="list-decimal pl-5 space-y-1 text-sm text-indigo-100/90">
+                {(agentData?.actionPlan || []).map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+              <div className="text-xs uppercase tracking-wide text-indigo-200/80 mb-2">Sourcing checklist</div>
+              <ul className="list-disc pl-5 space-y-1 text-sm text-indigo-100/90">
+                {(agentData?.sourcingChecklist || []).map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
         </div>
       )}
 

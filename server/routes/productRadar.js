@@ -1,5 +1,6 @@
 import express from 'express';
 import { runProductRadarScan } from '../services/productRadarService.js';
+import { runProductRadarAgent } from '../services/productRadarAgentService.js';
 import {
   getProductRadarAiBaseUrl,
   getProductRadarAiHealth,
@@ -7,6 +8,93 @@ import {
 } from '../services/productRadarAiClient.js';
 
 const router = express.Router();
+const PRODUCT_RADAR_DEFAULTS = {
+  geo: '',
+  timeframeDays: 90,
+  maxCandidates: 12,
+  maxMetaChecks: 6,
+  includeMetaAds: true,
+  metaCountry: 'ALL',
+  metaLimit: 25,
+  useAiModels: true,
+  includeGeoSpread: true
+};
+const PRODUCT_RADAR_LIMITS = {
+  queryMaxLength: 120,
+  geoMaxLength: 12,
+  timeframeDays: { min: 7, max: 3650 },
+  maxCandidates: { min: 4, max: 30 },
+  maxMetaChecks: { min: 0, max: 12 },
+  metaLimit: { min: 5, max: 100 }
+};
+const PRODUCT_RADAR_ALLOWED_META_COUNTRIES = new Set([
+  'ALL', 'US', 'GB', 'DE', 'FR', 'ES', 'IT', 'AE', 'SA'
+]);
+
+function toBoolean(value, fallback) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return fallback;
+}
+
+function clampNumber(value, { min, max, fallback }) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function normalizeProductRadarPayload(body = {}) {
+  const query = String(body.query || '').trim().slice(0, PRODUCT_RADAR_LIMITS.queryMaxLength);
+  if (!query) {
+    const err = new Error('Query is required');
+    err.code = 'INVALID_INPUT';
+    err.status = 400;
+    throw err;
+  }
+
+  const metaCountryRaw = String(body.metaCountry || PRODUCT_RADAR_DEFAULTS.metaCountry).trim().toUpperCase();
+  const metaCountry = PRODUCT_RADAR_ALLOWED_META_COUNTRIES.has(metaCountryRaw)
+    ? metaCountryRaw
+    : PRODUCT_RADAR_DEFAULTS.metaCountry;
+
+  return {
+    query,
+    geo: String(body.geo || PRODUCT_RADAR_DEFAULTS.geo).trim().slice(0, PRODUCT_RADAR_LIMITS.geoMaxLength),
+    timeframeDays: clampNumber(body.timeframeDays, {
+      ...PRODUCT_RADAR_LIMITS.timeframeDays,
+      fallback: PRODUCT_RADAR_DEFAULTS.timeframeDays
+    }),
+    maxCandidates: clampNumber(body.maxCandidates, {
+      ...PRODUCT_RADAR_LIMITS.maxCandidates,
+      fallback: PRODUCT_RADAR_DEFAULTS.maxCandidates
+    }),
+    maxMetaChecks: clampNumber(body.maxMetaChecks, {
+      ...PRODUCT_RADAR_LIMITS.maxMetaChecks,
+      fallback: PRODUCT_RADAR_DEFAULTS.maxMetaChecks
+    }),
+    includeMetaAds: toBoolean(body.includeMetaAds, PRODUCT_RADAR_DEFAULTS.includeMetaAds),
+    metaCountry,
+    metaLimit: clampNumber(body.metaLimit, {
+      ...PRODUCT_RADAR_LIMITS.metaLimit,
+      fallback: PRODUCT_RADAR_DEFAULTS.metaLimit
+    }),
+    useAiModels: toBoolean(body.useAiModels, PRODUCT_RADAR_DEFAULTS.useAiModels),
+    includeGeoSpread: toBoolean(body.includeGeoSpread, PRODUCT_RADAR_DEFAULTS.includeGeoSpread)
+  };
+}
+
+function sendProductRadarError(res, error) {
+  const status = Number.isInteger(error?.status) ? error.status : 500;
+  res.status(status).json({
+    success: false,
+    error: error?.code || 'PRODUCT_RADAR_FAILED',
+    message: error?.message || 'Product Radar request failed'
+  });
+}
 
 router.get('/health', async (req, res) => {
   let aiModels = {
@@ -61,31 +149,8 @@ router.get('/health', async (req, res) => {
 
 router.post('/scan', async (req, res) => {
   try {
-    const {
-      query,
-      geo = '',
-      timeframeDays = 90,
-      maxCandidates = 12,
-      maxMetaChecks = 6,
-      includeMetaAds = true,
-      metaCountry = 'ALL',
-      metaLimit = 25,
-      useAiModels = true,
-      includeGeoSpread = true
-    } = req.body || {};
-
-    const data = await runProductRadarScan({
-      query,
-      geo,
-      timeframeDays: Number(timeframeDays) || 90,
-      maxCandidates: Number(maxCandidates) || 12,
-      maxMetaChecks: Number(maxMetaChecks) || 6,
-      includeMetaAds: !!includeMetaAds,
-      metaCountry: String(metaCountry || 'ALL'),
-      metaLimit: Number(metaLimit) || 25,
-      useAiModels: !!useAiModels,
-      includeGeoSpread: !!includeGeoSpread
-    });
+    const payload = normalizeProductRadarPayload(req.body || {});
+    const data = await runProductRadarScan(payload);
 
     res.json({
       success: true,
@@ -93,11 +158,22 @@ router.post('/scan', async (req, res) => {
     });
   } catch (error) {
     console.error('Product Radar scan error:', error);
-    res.status(500).json({
-      success: false,
-      error: error?.code || 'PRODUCT_RADAR_SCAN_FAILED',
-      message: error?.message || 'Failed to scan Product Radar'
+    sendProductRadarError(res, error);
+  }
+});
+
+router.post('/agent', async (req, res) => {
+  try {
+    const payload = normalizeProductRadarPayload(req.body || {});
+    const data = await runProductRadarAgent(payload);
+
+    res.json({
+      success: true,
+      data
     });
+  } catch (error) {
+    console.error('Product Radar agent error:', error);
+    sendProductRadarError(res, error);
   }
 });
 
