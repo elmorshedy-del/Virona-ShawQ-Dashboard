@@ -5,6 +5,12 @@
 import { getDb } from '../db/database.js';
 
 const DEFAULT_LOOKBACK_DAYS = 30;
+const MIN_DAYS_FOR_STATISTICAL_ANALYSIS = 7;
+const MIN_DAYS_QUERY_LOOKBACK = 7;
+const MAX_DAYS_QUERY_LOOKBACK = 90;
+const TREND_CHANGE_THRESHOLD_PCT = 10;
+const SATURATION_SCORE_THRESHOLD = 0.6;
+const SATURATION_DECLINE_RATIO_THRESHOLD = 0.6;
 const ADSET_STATUS_PRIORITY = {
   saturated: 0,
   fatigued: 1,
@@ -81,6 +87,82 @@ function buildCampaignHierarchy(adSets) {
     });
 }
 
+function buildNoSaturationAnalysis(totalCount = 0) {
+  return {
+    score: 0,
+    isSaturated: false,
+    declineRatio: 0,
+    crossCorrelation: 0,
+    avgNewReachPct: 0,
+    decliningCount: 0,
+    totalCount
+  };
+}
+
+function buildInsufficientDataAnalysis(ad) {
+  const daily = Array.isArray(ad?.daily) ? ad.daily : [];
+  const dataPoints = daily.length;
+  const recentWindow = Math.min(3, dataPoints);
+  const recent = recentWindow > 0 ? daily.slice(-recentWindow) : [];
+
+  const safeAverage = (values) => {
+    if (!Array.isArray(values) || values.length === 0) return 0;
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  };
+
+  const currentCtr = safeAverage(recent.map((d) => d.ctr || 0));
+  const currentFrequency = safeAverage(recent.map((d) => d.frequency || 0));
+  const currentNewReachRatio = safeAverage(recent.map((d) => d.newReachRatio || 0));
+
+  return {
+    ad_id: ad.ad_id,
+    ad_name: ad.ad_name,
+    status: 'warning',
+    confidence: 'low',
+    fatigueScore: 0,
+    hasSufficientData: false,
+    dataPointCount: dataPoints,
+    insufficientDataReason: `This ad has ${dataPoints} data points in the selected range; ${MIN_DAYS_FOR_STATISTICAL_ANALYSIS} are recommended for statistical confidence.`,
+    correlation: {
+      frequencyCtr: { r: null, pValue: 1, significant: false },
+      frequencyCvr: { r: null, pValue: 1, significant: false }
+    },
+    trends: {
+      ctr: { slope: 0, direction: 'stable', change: 0 },
+      cvr: { slope: 0, direction: 'stable', change: 0 },
+      frequency: {
+        slope: 0,
+        direction: 'stable',
+        change: 0,
+        current: Math.round(currentFrequency * 100) / 100
+      },
+      newReach: {
+        slope: 0,
+        direction: 'stable',
+        change: 0,
+        current: Math.round(currentNewReachRatio * 100)
+      }
+    },
+    metrics: {
+      currentCtr: Math.round(currentCtr * 100) / 100,
+      currentFrequency: Math.round(currentFrequency * 100) / 100,
+      currentNewReachPct: Math.round(currentNewReachRatio * 100),
+      dataPoints
+    },
+    daily: daily.map((d) => ({
+      date: d.date,
+      ctr: Math.round((d.ctr || 0) * 100) / 100,
+      cvr: Math.round((d.cvr || 0) * 100) / 100,
+      frequency: Math.round((d.frequency || 0) * 100) / 100,
+      newReachPct: Math.round((d.newReachRatio || 0) * 100),
+      impressions: d.impressions || 0,
+      clicks: d.clicks || 0,
+      conversions: d.conversions || 0
+    })),
+    ctrTimeSeries: daily.map((d) => d.ctr || 0)
+  };
+}
+
 // ============================================================================
 // STATISTICAL FUNCTIONS
 // ============================================================================
@@ -88,24 +170,24 @@ function buildCampaignHierarchy(adSets) {
 /**
  * Calculate Pearson correlation coefficient
  * r = 1: perfect positive correlation
- * r = -1: perfect negative correlation  
+ * r = -1: perfect negative correlation
  * r = 0: no correlation
  */
 function pearsonCorrelation(x, y) {
   const n = x.length;
   if (n < 3) return { r: 0, valid: false };
-  
+
   const sumX = x.reduce((a, b) => a + b, 0);
   const sumY = y.reduce((a, b) => a + b, 0);
   const sumXY = x.reduce((acc, xi, i) => acc + xi * y[i], 0);
   const sumX2 = x.reduce((acc, xi) => acc + xi * xi, 0);
   const sumY2 = y.reduce((acc, yi) => acc + yi * yi, 0);
-  
+
   const numerator = n * sumXY - sumX * sumY;
   const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
-  
+
   if (denominator === 0) return { r: 0, valid: false };
-  
+
   return { r: numerator / denominator, valid: true };
 }
 
@@ -115,15 +197,15 @@ function pearsonCorrelation(x, y) {
  */
 function correlationPValue(r, n) {
   if (n < 3 || Math.abs(r) >= 1) return 1;
-  
+
   const t = r * Math.sqrt((n - 2) / (1 - r * r));
   const df = n - 2;
-  
+
   // Approximation of two-tailed t-test p-value
   // Using the approximation: p ≈ 2 * (1 - Φ(|t| * √(df/(df-2+t²))))
   const x = Math.abs(t);
   const a = df / (df + x * x);
-  
+
   // Beta function approximation for incomplete beta
   let p;
   if (df > 100) {
@@ -133,7 +215,7 @@ function correlationPValue(r, n) {
     // Simpler approximation
     p = Math.pow(a, df / 2);
   }
-  
+
   return Math.min(1, Math.max(0, p));
 }
 
@@ -147,13 +229,13 @@ function normalCDF(x) {
   const a4 = -1.453152027;
   const a5 =  1.061405429;
   const p  =  0.3275911;
-  
+
   const sign = x < 0 ? -1 : 1;
   x = Math.abs(x) / Math.sqrt(2);
-  
+
   const t = 1.0 / (1.0 + p * x);
   const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
-  
+
   return 0.5 * (1.0 + sign * y);
 }
 
@@ -164,16 +246,16 @@ function normalCDF(x) {
 function linearSlope(values) {
   const n = values.length;
   if (n < 2) return 0;
-  
+
   const x = Array.from({ length: n }, (_, i) => i);
   const sumX = x.reduce((a, b) => a + b, 0);
   const sumY = values.reduce((a, b) => a + b, 0);
   const sumXY = x.reduce((acc, xi, i) => acc + xi * values[i], 0);
   const sumX2 = x.reduce((acc, xi) => acc + xi * xi, 0);
-  
+
   const denominator = n * sumX2 - sumX * sumX;
   if (denominator === 0) return 0;
-  
+
   return (n * sumXY - sumX * sumY) / denominator;
 }
 
@@ -191,10 +273,10 @@ function percentChange(oldVal, newVal) {
  */
 function avgPairwiseCorrelation(seriesArray) {
   if (seriesArray.length < 2) return 0;
-  
+
   let totalCorr = 0;
   let count = 0;
-  
+
   for (let i = 0; i < seriesArray.length; i++) {
     for (let j = i + 1; j < seriesArray.length; j++) {
       const { r, valid } = pearsonCorrelation(seriesArray[i], seriesArray[j]);
@@ -204,7 +286,7 @@ function avgPairwiseCorrelation(seriesArray) {
       }
     }
   }
-  
+
   return count > 0 ? totalCorr / count : 0;
 }
 
@@ -217,17 +299,20 @@ function avgPairwiseCorrelation(seriesArray) {
  */
 export function getFatigueAnalysis(store, params = {}) {
   const db = getDb();
-const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS));
+  const days = Math.min(
+    MAX_DAYS_QUERY_LOOKBACK,
+    Math.max(MIN_DAYS_QUERY_LOOKBACK, parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS)
+  );
   const includeInactive = isTruthy(params.includeInactive);
-  
+
   // Calculate date range
   const endDate = params.endDate || new Date().toISOString().split('T')[0];
   const startDate = params.startDate || new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const statusFilter = includeInactive ? '' : ACTIVE_CAMPAIGN_STATUS_SQL_FILTER;
-  
+
   // Get all ad sets with their ads
   const adSetData = db.prepare(`
-    SELECT 
+    SELECT
       campaign_id,
       campaign_name,
       MAX(effective_status) as campaign_effective_status,
@@ -244,7 +329,7 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
       SUM(conversions) as conversions,
       SUM(spend) as spend
     FROM meta_ad_metrics
-    WHERE store = ? 
+    WHERE store = ?
       AND date BETWEEN ? AND ?
       AND adset_id IS NOT NULL
       AND ad_id IS NOT NULL
@@ -252,8 +337,20 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
     GROUP BY campaign_id, campaign_name, adset_id, ad_id, date
     ORDER BY campaign_name, adset_name, ad_id, date
   `).all(store, startDate, endDate);
-  
-  if (!adSetData.length) {
+
+  const activeAds = db.prepare(`
+    SELECT
+      object_id as ad_id,
+      object_name as ad_name,
+      parent_id as adset_id
+    FROM meta_objects
+    WHERE store = ?
+      AND object_type = 'ad'
+      AND effective_status = 'ACTIVE'
+      AND parent_id IS NOT NULL
+  `).all(store);
+
+  if (!adSetData.length && activeAds.length === 0) {
     return {
       success: true,
       summary: { total: 0, healthy: 0, warning: 0, fatigued: 0, saturated: 0 },
@@ -264,10 +361,10 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
       dateRange: { start: startDate, end: endDate }
     };
   }
-  
+
   // Group by ad set
   const adSetMap = new Map();
-  
+
   for (const row of adSetData) {
     if (!adSetMap.has(row.adset_id)) {
       adSetMap.set(row.adset_id, {
@@ -279,9 +376,9 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
         ads: new Map()
       });
     }
-    
+
     const adSet = adSetMap.get(row.adset_id);
-    
+
     if (!adSet.ads.has(row.ad_id)) {
       adSet.ads.set(row.ad_id, {
         ad_id: row.ad_id,
@@ -289,14 +386,14 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
         daily: []
       });
     }
-    
+
     const ad = adSet.ads.get(row.ad_id);
     const linkClicks = getLinkClicks(row.inline_link_clicks, row.outbound_clicks);
     const ctr = getLinkCtr(row.impressions, row.inline_link_clicks, row.outbound_clicks);
     const cvr = linkClicks > 0 ? (row.conversions / linkClicks) * 100 : 0;
     const frequency = row.reach > 0 ? row.impressions / row.reach : 0;
     const newReachRatio = row.impressions > 0 ? row.reach / row.impressions : 0;
-    
+
     ad.daily.push({
       date: row.date,
       impressions: row.impressions,
@@ -313,36 +410,65 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
       newReachRatio
     });
   }
-  
+
+  // Keep active ads visible in ad set panels even when they have sparse/no delivery
+  // in the selected date window.
+  for (const activeAd of activeAds) {
+    const adSet = adSetMap.get(activeAd.adset_id);
+    if (!adSet) continue;
+    if (!adSet.ads.has(activeAd.ad_id)) {
+      adSet.ads.set(activeAd.ad_id, {
+        ad_id: activeAd.ad_id,
+        ad_name: activeAd.ad_name,
+        daily: []
+      });
+    }
+  }
+
   // Analyze each ad set
   const analyzedAdSets = [];
   let summary = { total: 0, healthy: 0, warning: 0, fatigued: 0, saturated: 0 };
-  
+
   for (const [adsetId, adSet] of adSetMap) {
     const adsArray = Array.from(adSet.ads.values());
-    
-    // Need at least 7 days of data for meaningful analysis
-    const validAds = adsArray.filter(ad => ad.daily.length >= 7);
-    
-    if (validAds.length === 0) continue;
-    
-    // Analyze each ad
-    const adAnalyses = validAds.map(ad => analyzeAd(ad));
-    
-    // Detect saturation at ad set level
-    const saturationAnalysis = detectSaturation(validAds, adAnalyses);
-    
-    // Determine final diagnosis for each ad
-    const finalAdAnalyses = adAnalyses.map(analysis => {
+
+    if (adsArray.length === 0) continue;
+
+    const adAnalyses = adsArray.map((ad) => (
+      ad.daily.length >= MIN_DAYS_FOR_STATISTICAL_ANALYSIS
+        ? analyzeAd(ad)
+        : buildInsufficientDataAnalysis(ad)
+    ));
+
+    const analyzableAdAnalyses = adAnalyses.filter((analysis) => analysis.hasSufficientData === true);
+    const saturationAnalysis = analyzableAdAnalyses.length > 0
+      ? detectSaturation(adsArray, analyzableAdAnalyses)
+      : buildNoSaturationAnalysis(adAnalyses.length);
+
+    const finalAdAnalyses = adAnalyses.map((analysis) => {
+      if (!analysis.hasSufficientData) {
+        return {
+          ...analysis,
+          finalStatus: 'warning',
+          finalDiagnosis: 'insufficient_data'
+        };
+      }
       return determineFinalDiagnosis(analysis, saturationAnalysis);
     });
-    
-    // Determine ad set status
-    const adSetStatus = determineAdSetStatus(finalAdAnalyses, saturationAnalysis);
-    
+
+    const adSetStatus = analyzableAdAnalyses.length > 0
+      ? determineAdSetStatus(finalAdAnalyses, saturationAnalysis)
+      : {
+          status: 'warning',
+          label: 'Insufficient Data',
+          diagnosis: 'insufficient_data',
+          confidence: 'low',
+          recommendation: `This ad set has active ads, but none have at least ${MIN_DAYS_FOR_STATISTICAL_ANALYSIS} data points in the selected range. Increase the date range to inspect all active ads.`
+        };
+
     summary.total++;
     summary[adSetStatus.status]++;
-    
+
     analyzedAdSets.push({
       campaign_id: adSet.campaign_id,
       campaign_name: adSet.campaign_name,
@@ -361,6 +487,9 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
         status: a.finalStatus,
         diagnosis: a.finalDiagnosis,
         confidence: a.confidence,
+        hasSufficientData: a.hasSufficientData,
+        dataPointCount: a.dataPointCount || 0,
+        insufficientDataReason: a.insufficientDataReason || null,
         metrics: a.metrics,
         correlation: a.correlation,
         trends: a.trends,
@@ -368,7 +497,7 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
       }))
     });
   }
-  
+
   // Sort by status priority (fatigued/saturated first)
   analyzedAdSets.sort(
     (a, b) =>
@@ -377,7 +506,7 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
   );
 
   const campaigns = buildCampaignHierarchy(analyzedAdSets);
-  
+
   return {
     success: true,
     summary,
@@ -395,56 +524,56 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
 function analyzeAd(ad) {
   const daily = ad.daily;
   const n = daily.length;
-  
+
   // Extract time series
   const frequencies = daily.map(d => d.frequency);
   const ctrs = daily.map(d => d.ctr);
   const cvrs = daily.map(d => d.cvr);
   const newReachRatios = daily.map(d => d.newReachRatio);
-  
+
   // Calculate correlations
   const freqCtrCorr = pearsonCorrelation(frequencies, ctrs);
   const freqCvrCorr = pearsonCorrelation(frequencies, cvrs);
-  
+
   // Calculate p-values
   const pValueCtr = freqCtrCorr.valid ? correlationPValue(freqCtrCorr.r, n) : 1;
   const pValueCvr = freqCvrCorr.valid ? correlationPValue(freqCvrCorr.r, n) : 1;
-  
+
   // Calculate trends (slope per day)
   const ctrSlope = linearSlope(ctrs);
   const cvrSlope = linearSlope(cvrs);
   const freqSlope = linearSlope(frequencies);
   const reachSlope = linearSlope(newReachRatios);
-  
+
   // Calculate period comparisons (first half vs second half)
   const midpoint = Math.floor(n / 2);
   const firstHalf = daily.slice(0, midpoint);
   const secondHalf = daily.slice(midpoint);
-  
+
   const avgCtrFirst = firstHalf.reduce((sum, d) => sum + d.ctr, 0) / firstHalf.length;
   const avgCtrSecond = secondHalf.reduce((sum, d) => sum + d.ctr, 0) / secondHalf.length;
   const avgFreqFirst = firstHalf.reduce((sum, d) => sum + d.frequency, 0) / firstHalf.length;
   const avgFreqSecond = secondHalf.reduce((sum, d) => sum + d.frequency, 0) / secondHalf.length;
   const avgReachFirst = firstHalf.reduce((sum, d) => sum + d.newReachRatio, 0) / firstHalf.length;
   const avgReachSecond = secondHalf.reduce((sum, d) => sum + d.newReachRatio, 0) / secondHalf.length;
-  
+
   // Current values (last 3 days average)
   const recent = daily.slice(-3);
   const currentFreq = recent.reduce((sum, d) => sum + d.frequency, 0) / recent.length;
   const currentCtr = recent.reduce((sum, d) => sum + d.ctr, 0) / recent.length;
   const currentReach = recent.reduce((sum, d) => sum + d.newReachRatio, 0) / recent.length;
-  
+
   // Determine fatigue signals
   const hasFatigueCorrelation = freqCtrCorr.valid && freqCtrCorr.r < -0.5 && pValueCtr < 0.05;
-  const ctrDeclining = ctrSlope < 0 && percentChange(avgCtrFirst, avgCtrSecond) < -10;
-  const freqRising = freqSlope > 0 && percentChange(avgFreqFirst, avgFreqSecond) > 10;
-  
+  const ctrDeclining = ctrSlope < 0 && percentChange(avgCtrFirst, avgCtrSecond) < -TREND_CHANGE_THRESHOLD_PCT;
+  const freqRising = freqSlope > 0 && percentChange(avgFreqFirst, avgFreqSecond) > TREND_CHANGE_THRESHOLD_PCT;
+
   // Calculate fatigue score (0-1)
   let fatigueScore = 0;
   if (hasFatigueCorrelation) fatigueScore += Math.abs(freqCtrCorr.r) * 0.4;
   if (ctrDeclining) fatigueScore += 0.3;
   if (freqRising) fatigueScore += 0.3;
-  
+
   // Determine preliminary status
   let status, confidence;
   if (fatigueScore >= 0.7 && hasFatigueCorrelation) {
@@ -457,13 +586,15 @@ function analyzeAd(ad) {
     status = 'healthy';
     confidence = 'high';
   }
-  
+
   return {
     ad_id: ad.ad_id,
     ad_name: ad.ad_name,
     status,
     confidence,
     fatigueScore,
+    hasSufficientData: true,
+    dataPointCount: n,
     correlation: {
       frequencyCtr: {
         r: freqCtrCorr.valid ? Math.round(freqCtrCorr.r * 1000) / 1000 : null,
@@ -525,22 +656,26 @@ function analyzeAd(ad) {
  * Detect audience saturation at ad set level
  */
 function detectSaturation(ads, adAnalyses) {
-  const decliningAds = adAnalyses.filter(a => 
-    a.trends.ctr.direction === 'falling' && a.trends.ctr.change < -10
+  if (!Array.isArray(adAnalyses) || adAnalyses.length === 0) {
+    return buildNoSaturationAnalysis(0);
+  }
+
+  const decliningAds = adAnalyses.filter(a =>
+    a.trends.ctr.direction === 'falling' && a.trends.ctr.change < -TREND_CHANGE_THRESHOLD_PCT
   );
-  
+
   const declineRatio = decliningAds.length / adAnalyses.length;
-  
+
   // Calculate cross-correlation of CTR time series
   const ctrSeries = adAnalyses
-    .filter(a => a.ctrTimeSeries && a.ctrTimeSeries.length >= 7)
+    .filter(a => a.ctrTimeSeries && a.ctrTimeSeries.length >= MIN_DAYS_FOR_STATISTICAL_ANALYSIS)
     .map(a => a.ctrTimeSeries);
-  
+
   const crossCorrelation = avgPairwiseCorrelation(ctrSeries);
-  
+
   // Calculate average new reach ratio (current)
   const avgNewReach = adAnalyses.reduce((sum, a) => sum + a.trends.newReach.current, 0) / adAnalyses.length;
-  
+
   // Saturation score
   // - High if most ads declining together AND low new reach
   const saturationScore = (
@@ -548,9 +683,9 @@ function detectSaturation(ads, adAnalyses) {
     (Math.max(0, crossCorrelation) * 0.35) +
     (Math.max(0, (100 - avgNewReach) / 100) * 0.30)
   );
-  
-  const isSaturated = saturationScore > 0.6 && declineRatio > 0.6;
-  
+
+  const isSaturated = saturationScore > SATURATION_SCORE_THRESHOLD && declineRatio > SATURATION_DECLINE_RATIO_THRESHOLD;
+
   return {
     score: Math.round(saturationScore * 100) / 100,
     isSaturated,
@@ -567,7 +702,7 @@ function detectSaturation(ads, adAnalyses) {
  */
 function determineFinalDiagnosis(adAnalysis, saturationAnalysis) {
   const analysis = { ...adAnalysis };
-  
+
   // If ad shows fatigue signals BUT ad set is saturated, it's likely saturation
   if (analysis.status === 'fatigued' && saturationAnalysis.isSaturated) {
     analysis.finalStatus = 'saturated';
@@ -594,7 +729,7 @@ function determineFinalDiagnosis(adAnalysis, saturationAnalysis) {
     analysis.finalStatus = 'healthy';
     analysis.finalDiagnosis = 'healthy';
   }
-  
+
   return analysis;
 }
 
@@ -606,7 +741,7 @@ function determineAdSetStatus(adAnalyses, saturationAnalysis) {
   const fatigueCount = statuses.filter(s => s === 'fatigued').length;
   const saturatedCount = statuses.filter(s => s === 'saturated').length;
   const warningCount = statuses.filter(s => s === 'warning').length;
-  
+
   if (saturationAnalysis.isSaturated) {
     return {
       status: 'saturated',
@@ -616,7 +751,7 @@ function determineAdSetStatus(adAnalyses, saturationAnalysis) {
       recommendation: `All ${saturationAnalysis.decliningCount} of ${saturationAnalysis.totalCount} ads are declining together. New reach is at ${saturationAnalysis.avgNewReachPct}%. Expand your audience or reduce budget - refreshing creatives alone won't help.`
     };
   }
-  
+
   if (fatigueCount > 0) {
     const healthyCount = statuses.filter(s => s === 'healthy').length;
     return {
@@ -627,7 +762,7 @@ function determineAdSetStatus(adAnalyses, saturationAnalysis) {
       recommendation: `${fatigueCount} of ${adAnalyses.length} ads showing fatigue signals while others are stable. Refresh the fatigued creatives.`
     };
   }
-  
+
   if (warningCount > 0) {
     return {
       status: 'warning',
@@ -637,7 +772,7 @@ function determineAdSetStatus(adAnalyses, saturationAnalysis) {
       recommendation: `${warningCount} ads showing early warning signs. Monitor closely and prepare replacement creatives.`
     };
   }
-  
+
   return {
     status: 'healthy',
     label: 'Healthy',
@@ -652,13 +787,16 @@ function determineAdSetStatus(adAnalyses, saturationAnalysis) {
  */
 export function getAdFatigueDetail(store, adId, params = {}) {
   const db = getDb();
-const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS));
-  
+  const days = Math.min(
+    MAX_DAYS_QUERY_LOOKBACK,
+    Math.max(MIN_DAYS_QUERY_LOOKBACK, parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS)
+  );
+
   const endDate = params.endDate || new Date().toISOString().split('T')[0];
   const startDate = params.startDate || new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  
+
   const adData = db.prepare(`
-    SELECT 
+    SELECT
       ad_id,
       ad_name,
       adset_id,
@@ -672,17 +810,17 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
       SUM(conversions) as conversions,
       SUM(spend) as spend
     FROM meta_ad_metrics
-    WHERE store = ? 
+    WHERE store = ?
       AND ad_id = ?
       AND date BETWEEN ? AND ?
     GROUP BY date
     ORDER BY date
   `).all(store, adId, startDate, endDate);
-  
+
   if (!adData.length) {
     return { success: false, error: 'Ad not found or no data' };
   }
-  
+
   // Transform to analysis format
   const ad = {
     ad_id: adData[0].ad_id,
@@ -693,7 +831,7 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
       const cvr = linkClicks > 0 ? (row.conversions / linkClicks) * 100 : 0;
       const frequency = row.reach > 0 ? row.impressions / row.reach : 0;
       const newReachRatio = row.impressions > 0 ? row.reach / row.impressions : 0;
-      
+
       return {
         date: row.date,
         impressions: row.impressions,
@@ -711,19 +849,21 @@ const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKB
       };
     })
   };
-  
-  const analysis = analyzeAd(ad);
-  
+
+  const analysis = ad.daily.length >= MIN_DAYS_FOR_STATISTICAL_ANALYSIS
+    ? analyzeAd(ad)
+    : buildInsufficientDataAnalysis(ad);
+
   // Get sibling ads in same ad set for comparison
   const siblings = db.prepare(`
     SELECT DISTINCT ad_id, ad_name
     FROM meta_ad_metrics
-    WHERE store = ? 
+    WHERE store = ?
       AND adset_id = (SELECT adset_id FROM meta_ad_metrics WHERE ad_id = ? LIMIT 1)
       AND ad_id != ?
       AND date BETWEEN ? AND ?
   `).all(store, adId, adId, startDate, endDate);
-  
+
   return {
     success: true,
     analysis,
