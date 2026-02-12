@@ -38,6 +38,11 @@ const FLOW_STEPS = [
   { id: 'decision', title: 'Decision Memo', blurb: 'Backend returns GO/TEST/WATCH/HOLD and pace.' }
 ];
 
+const SCORE_RANGE = { min: 0, max: 100 };
+const RATIONALE_PREVIEW_LIMIT = 2;
+const WARNING_PREVIEW_LIMIT = 6;
+const LIST_KEY_TEXT_LIMIT = 80;
+
 const toNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -45,49 +50,43 @@ const toNumber = (value, fallback = 0) => {
 
 const clamp = (min, value, max) => Math.min(max, Math.max(min, value));
 
-const postJson = async (url, body) => {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-
-  const text = await res.text();
+const parseJsonResponse = (text) => {
   let json = null;
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
     json = null;
   }
+  return json;
+};
 
+const fetchJson = async (url, options = {}) => {
+  const res = await fetch(url, options);
+  const text = await res.text();
+  const json = parseJsonResponse(text);
   if (!res.ok) {
     const message = json?.message || `Request failed (HTTP ${res.status})`;
     throw new Error(message);
   }
-
   return json;
 };
 
-const getJson = async (url) => {
-  const res = await fetch(url);
-  const text = await res.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
-  }
+const getJson = (url) => fetchJson(url);
 
-  if (!res.ok) {
-    throw new Error(json?.message || `Request failed (HTTP ${res.status})`);
-  }
+const postJson = (url, body) => fetchJson(url, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body)
+});
 
-  return json;
+const buildStableListKey = (prefix, value, index) => {
+  const keyText = String(value ?? '').trim().slice(0, LIST_KEY_TEXT_LIMIT);
+  return `${prefix}-${index}-${keyText}`;
 };
 
 function SourceStatus({ label, on, offText, onText }) {
   return (
-    <div className="flex items-center justify-between rounded-xl border border-[#e5def8] bg-white/80 px-3 py-2 text-xs">
+    <div className="flex items-center justify-between rounded-xl border border-pf-borderSoft bg-white/80 px-3 py-2 text-xs">
       <span className="font-semibold text-slate-600">{label}</span>
       <span className={`inline-flex items-center gap-2 font-semibold ${on ? 'text-emerald-700' : 'text-amber-700'}`}>
         <span className={`h-2.5 w-2.5 rounded-full ${on ? 'bg-emerald-500' : 'bg-amber-500'}`} />
@@ -98,7 +97,7 @@ function SourceStatus({ label, on, offText, onText }) {
 }
 
 function MetricBar({ label, value, tone = 'violet' }) {
-  const safe = clamp(0, toNumber(value), 100);
+  const safe = clamp(SCORE_RANGE.min, toNumber(value), SCORE_RANGE.max);
   const toneClass =
     tone === 'mint'
       ? 'from-[#7ad7c5] to-[#42c3ab]'
@@ -150,7 +149,7 @@ function OpportunityCard({ item }) {
   const market = item?.market || {};
 
   return (
-    <div className="rounded-2xl border border-[#e5def8] bg-white p-4 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md">
+    <div className="rounded-2xl border border-pf-borderSoft bg-white p-4 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-sm font-bold text-slate-900">{item?.keyword || 'Untitled concept'}</div>
@@ -170,8 +169,8 @@ function OpportunityCard({ item }) {
 
       {Array.isArray(item?.rationale) && item.rationale.length > 0 && (
         <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-slate-600">
-          {item.rationale.slice(0, 2).map((reason) => (
-            <li key={`${item?.keyword}-${reason}`}>{reason}</li>
+          {item.rationale.slice(0, RATIONALE_PREVIEW_LIMIT).map((reason, index) => (
+            <li key={buildStableListKey(`opportunity-rationale-${item?.keyword || 'unknown'}`, reason, index)}>{reason}</li>
           ))}
         </ul>
       )}
@@ -182,7 +181,7 @@ function OpportunityCard({ item }) {
             href={item.links.trends}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-lg border border-[#d7cdf9] bg-[#f5f1ff] px-2.5 py-1.5 text-xs font-bold text-violet-800 hover:bg-[#eee6ff]"
+            className="inline-flex items-center gap-1 rounded-lg border border-[#d7cdf9] bg-pf-bgPanel px-2.5 py-1.5 text-xs font-bold text-violet-800 hover:bg-[#eee6ff]"
           >
             Trends
             <ExternalLink className="h-3.5 w-3.5" />
@@ -333,7 +332,7 @@ export default function ProductFinderPremium({ store }) {
       <div className="pointer-events-none absolute left-1/3 top-1/2 h-48 w-48 rounded-full bg-[#f4b9df]/25 blur-3xl" />
 
       <div className="relative">
-        <div className="rounded-[30px] border border-[#e6dcff] bg-white/72 p-5 backdrop-blur md:p-7">
+        <div className="rounded-[30px] border border-pf-borderHeader bg-white/72 p-5 backdrop-blur md:p-7">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="inline-flex items-center gap-2 rounded-full border border-[#d8cbff] bg-[#f1ebff] px-3 py-1 text-[11px] font-bold uppercase tracking-[0.14em] text-violet-800">
@@ -361,7 +360,7 @@ export default function ProductFinderPremium({ store }) {
 
           <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {FLOW_STEPS.map((step, idx) => (
-              <div key={step.id} className="rounded-2xl border border-[#e6dcff] bg-white p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-md">
+              <div key={step.id} className="rounded-2xl border border-pf-borderHeader bg-white p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-md">
                 <div className="text-[11px] font-black uppercase tracking-[0.14em] text-violet-700">0{idx + 1}</div>
                 <div className="mt-2 text-sm font-bold text-slate-900">{step.title}</div>
                 <div className="mt-1 text-xs leading-5 text-slate-600">{step.blurb}</div>
@@ -371,7 +370,7 @@ export default function ProductFinderPremium({ store }) {
         </div>
 
         <div className="mt-6 grid gap-5 xl:grid-cols-[1.6fr_1fr]">
-          <div className="rounded-3xl border border-[#e4d8ff] bg-white p-5 shadow-sm md:p-6">
+          <div className="rounded-3xl border border-pf-borderPrimary bg-white p-5 shadow-sm md:p-6">
             <label className="mb-2 block text-sm font-bold text-slate-700">Product concept</label>
             <textarea
               value={query}
@@ -400,7 +399,7 @@ export default function ProductFinderPremium({ store }) {
                 <select
                   value={timeframeDays}
                   onChange={(e) => setTimeframeDays(Number(e.target.value))}
-                  className="mt-1.5 block w-full rounded-xl border border-[#d9d0ff] bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+                  className="mt-1.5 block w-full rounded-xl border border-pf-borderInput bg-white px-3 py-2 text-sm font-semibold text-slate-700"
                 >
                   <option value={30}>30 days</option>
                   <option value={90}>90 days</option>
@@ -414,7 +413,7 @@ export default function ProductFinderPremium({ store }) {
                 <select
                   value={breadthKey}
                   onChange={(e) => setBreadthKey(e.target.value)}
-                  className="mt-1.5 block w-full rounded-xl border border-[#d9d0ff] bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+                  className="mt-1.5 block w-full rounded-xl border border-pf-borderInput bg-white px-3 py-2 text-sm font-semibold text-slate-700"
                 >
                   {Object.entries(BREADTH_OPTIONS).map(([key, option]) => (
                     <option key={key} value={key}>{option.label}</option>
@@ -427,7 +426,7 @@ export default function ProductFinderPremium({ store }) {
                 <select
                   value={metaCountry}
                   onChange={(e) => setMetaCountry(e.target.value)}
-                  className="mt-1.5 block w-full rounded-xl border border-[#d9d0ff] bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+                  className="mt-1.5 block w-full rounded-xl border border-pf-borderInput bg-white px-3 py-2 text-sm font-semibold text-slate-700"
                 >
                   <option value="ALL">ALL</option>
                   <option value="US">US</option>
@@ -441,11 +440,11 @@ export default function ProductFinderPremium({ store }) {
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">
-              <label className="inline-flex items-center gap-2 rounded-xl border border-[#dad0ff] bg-[#f8f5ff] px-3 py-2 text-xs font-bold text-slate-700">
+              <label className="inline-flex items-center gap-2 rounded-xl border border-pf-borderChip bg-pf-bgSoft px-3 py-2 text-xs font-bold text-slate-700">
                 <input type="checkbox" checked={includeMarketplaces} onChange={(e) => setIncludeMarketplaces(e.target.checked)} />
                 Marketplace scans
               </label>
-              <label className="inline-flex items-center gap-2 rounded-xl border border-[#dad0ff] bg-[#f8f5ff] px-3 py-2 text-xs font-bold text-slate-700">
+              <label className="inline-flex items-center gap-2 rounded-xl border border-pf-borderChip bg-pf-bgSoft px-3 py-2 text-xs font-bold text-slate-700">
                 <input type="checkbox" checked={qualityBias} onChange={(e) => setQualityBias(e.target.checked)} />
                 Quality positioning mode
               </label>
@@ -476,7 +475,7 @@ export default function ProductFinderPremium({ store }) {
             </div>
           </div>
 
-          <div className="rounded-3xl border border-[#e4d8ff] bg-white p-5 shadow-sm md:p-6">
+          <div className="rounded-3xl border border-pf-borderPrimary bg-white p-5 shadow-sm md:p-6">
             <div className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-900">
               <ShieldCheck className="h-4 w-4 text-violet-700" />
               Source health
@@ -509,7 +508,7 @@ export default function ProductFinderPremium({ store }) {
               />
             </div>
 
-            <div className="mt-4 rounded-2xl border border-[#e5def8] bg-[#f8f5ff] p-3 text-xs leading-5 text-slate-600">
+            <div className="mt-4 rounded-2xl border border-pf-borderSoft bg-pf-bgSoft p-3 text-xs leading-5 text-slate-600">
               Frontend mirrors backend response only (`/api/product-finder/consult`).
             </div>
           </div>
@@ -522,7 +521,7 @@ export default function ProductFinderPremium({ store }) {
         )}
 
         {!result && !loading && (
-          <div className="mt-6 rounded-3xl border border-dashed border-[#daccff] bg-white/70 p-10 text-center">
+          <div className="mt-6 rounded-3xl border border-dashed border-pf-borderDotted bg-white/70 p-10 text-center">
             <Target className="mx-auto h-8 w-8 text-violet-500" />
             <h3 className="mt-3 text-xl font-bold text-slate-900">Ready for a backend-driven decision memo</h3>
             <p className="mt-2 text-sm text-slate-600">
@@ -534,7 +533,7 @@ export default function ProductFinderPremium({ store }) {
         {result && consultation && (
           <div className="mt-6 space-y-5">
             <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
-              <div className="rounded-3xl border border-[#e3d9ff] bg-white p-5 shadow-sm">
+              <div className="rounded-3xl border border-pf-borderMemo bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <div className="text-xs font-black uppercase tracking-[0.12em] text-violet-700">Decision memo</div>
@@ -555,8 +554,8 @@ export default function ProductFinderPremium({ store }) {
                 </div>
 
                 <div className="mt-4 space-y-2 text-sm text-slate-700">
-                  {(consultation?.rationale || []).map((line) => (
-                    <div key={line} className="flex items-start gap-2">
+                  {(consultation?.rationale || []).map((line, index) => (
+                    <div key={buildStableListKey('consultation-rationale', line, index)} className="flex items-start gap-2">
                       <BadgeCheck className="mt-0.5 h-4 w-4 text-violet-600" />
                       <span>{line}</span>
                     </div>
@@ -564,7 +563,7 @@ export default function ProductFinderPremium({ store }) {
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-[#e3d9ff] bg-white p-5 shadow-sm">
+              <div className="rounded-3xl border border-pf-borderMemo bg-white p-5 shadow-sm">
                 <div className="text-xs font-black uppercase tracking-[0.12em] text-violet-700">Backend metrics</div>
                 <div className="mt-3 space-y-3">
                   <MetricBar label="Avg Total" value={metrics?.avgTotal} tone="violet" />
@@ -583,14 +582,14 @@ export default function ProductFinderPremium({ store }) {
                   Collection warnings
                 </div>
                 <ul className="list-disc space-y-1 pl-5 text-sm text-amber-800">
-                  {result.warnings.slice(0, 6).map((warning) => (
-                    <li key={warning}>{warning}</li>
+                  {result.warnings.slice(0, WARNING_PREVIEW_LIMIT).map((warning, index) => (
+                    <li key={buildStableListKey('collection-warning', warning, index)}>{warning}</li>
                   ))}
                 </ul>
               </div>
             )}
 
-            <div className="rounded-3xl border border-[#e4d8ff] bg-white p-5 shadow-sm">
+            <div className="rounded-3xl border border-pf-borderPrimary bg-white p-5 shadow-sm">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div className="text-sm font-black text-slate-900">Inventory opportunities</div>
                 <div className="flex flex-wrap gap-2">
@@ -617,18 +616,18 @@ export default function ProductFinderPremium({ store }) {
 
               {activeItems.length > 0 ? (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {activeItems.map((item) => (
-                    <OpportunityCard key={`${activeLane}-${item.keyword}`} item={item} />
+                  {activeItems.map((item, index) => (
+                    <OpportunityCard key={buildStableListKey(`lane-${activeLane}`, item?.keyword, index)} item={item} />
                   ))}
                 </div>
               ) : (
-                <div className="rounded-2xl border border-dashed border-[#daccff] bg-[#f8f5ff] p-5 text-sm text-slate-600">
+                <div className="rounded-2xl border border-dashed border-pf-borderDotted bg-pf-bgSoft p-5 text-sm text-slate-600">
                   No opportunities in this lane for the current backend run.
                 </div>
               )}
             </div>
 
-            <div className="rounded-3xl border border-[#e4d8ff] bg-white p-5 shadow-sm">
+            <div className="rounded-3xl border border-pf-borderPrimary bg-white p-5 shadow-sm">
               <div className="mb-3 flex items-center gap-2 text-sm font-black text-slate-900">
                 <Globe2 className="h-4 w-4 text-violet-700" />
                 Pieces worth copying
@@ -636,38 +635,38 @@ export default function ProductFinderPremium({ store }) {
 
               {(result?.copyworthyPieces || []).length > 0 ? (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {result.copyworthyPieces.map((piece) => (
-                    <PieceCard key={`${piece.url}-${piece.title}`} piece={piece} />
+                  {result.copyworthyPieces.map((piece, index) => (
+                    <PieceCard key={buildStableListKey('copyworthy-piece', `${piece?.url || ''} ${piece?.title || ''}`, index)} piece={piece} />
                   ))}
                 </div>
               ) : (
-                <div className="rounded-2xl border border-dashed border-[#daccff] bg-[#f8f5ff] p-4 text-sm text-slate-600">
+                <div className="rounded-2xl border border-dashed border-pf-borderDotted bg-pf-bgSoft p-4 text-sm text-slate-600">
                   No copyworthy pieces returned for this run.
                 </div>
               )}
             </div>
 
             <div className="grid gap-4 xl:grid-cols-2">
-              <div className="rounded-3xl border border-[#e4d8ff] bg-white p-5 shadow-sm">
+              <div className="rounded-3xl border border-pf-borderPrimary bg-white p-5 shadow-sm">
                 <div className="mb-2 flex items-center gap-2 text-sm font-black text-slate-900">
                   <TrendingUp className="h-4 w-4 text-violet-700" />
                   Action plan
                 </div>
                 <ol className="list-decimal space-y-1.5 pl-5 text-sm text-slate-700">
-                  {(result?.actionPlan || []).map((step) => (
-                    <li key={step}>{step}</li>
+                  {(result?.actionPlan || []).map((step, index) => (
+                    <li key={buildStableListKey('action-plan-step', step, index)}>{step}</li>
                   ))}
                 </ol>
               </div>
 
-              <div className="rounded-3xl border border-[#e4d8ff] bg-white p-5 shadow-sm">
+              <div className="rounded-3xl border border-pf-borderPrimary bg-white p-5 shadow-sm">
                 <div className="mb-2 flex items-center gap-2 text-sm font-black text-slate-900">
                   <Lightbulb className="h-4 w-4 text-violet-700" />
                   Sourcing checklist
                 </div>
                 <ul className="list-disc space-y-1.5 pl-5 text-sm text-slate-700">
-                  {(result?.sourcingChecklist || []).map((line) => (
-                    <li key={line}>{line}</li>
+                  {(result?.sourcingChecklist || []).map((line, index) => (
+                    <li key={buildStableListKey('sourcing-checklist-line', line, index)}>{line}</li>
                   ))}
                 </ul>
               </div>

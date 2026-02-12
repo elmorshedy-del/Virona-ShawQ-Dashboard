@@ -2,6 +2,7 @@
 
 ## Startup requirement
 - At the start of every task, read and apply both `note.md` and `skill.md` in the repository root.
+- Enforce the `Critical Thread-Start Guardrail (Mandatory)` section from `skill.md` before making edits.
 
 ## Product context defaults
 - Treat this codebase as a future SaaS, multi-tenant platform.
