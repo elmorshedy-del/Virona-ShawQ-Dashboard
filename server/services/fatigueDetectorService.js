@@ -652,7 +652,7 @@ function determineAdSetStatus(adAnalyses, saturationAnalysis) {
  */
 export function getAdFatigueDetail(store, adId, params = {}) {
   const db = getDb();
-  const days = parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS;
+const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS));
   
   const endDate = params.endDate || new Date().toISOString().split('T')[0];
   const startDate = params.startDate || new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
