@@ -430,7 +430,7 @@ function AdCtrFrequencyOverlayChart({ ad }) {
               <YAxis
                 yAxisId="rate"
                 tick={{ fontSize: 10 }}
-                tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
+                tickFormatter={(value) => `${(Number(value) || 0).toFixed(1)}%`}
                 width={56}
               />
               <YAxis
