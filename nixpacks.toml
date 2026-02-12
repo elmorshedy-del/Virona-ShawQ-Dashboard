@@ -17,7 +17,7 @@ cmds = [
   "npm --prefix client run build",
   "npm --prefix server install",
   "mkdir -p /app/.cache/puppeteer",
-  "PUPPETEER_CACHE_DIR=/app/.cache/puppeteer ./server/node_modules/.bin/puppeteer browsers install chrome"
+  "./server/node_modules/.bin/puppeteer browsers install chrome"
 ]
 
 [start]
