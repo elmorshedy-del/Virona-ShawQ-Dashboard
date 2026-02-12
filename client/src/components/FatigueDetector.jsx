@@ -451,7 +451,7 @@ function AdCtrFrequencyOverlayChart({ ad }) {
                 contentStyle={{ fontSize: 12 }}
                 formatter={(value, key) => {
                   if (key === 'ctr') return [formatPercent(value), 'Link CTR'];
-                  if (key === 'frequency') return [formatFrequency(value), 'Frequency'];
+                  if (key === 'frequency') return [formatFrequency(Number(value)), 'Frequency'];
                   const metric = overlayMetricsByKey.get(key);
                   if (!metric) return [value, key];
                   if (metric.suffix === '%') return [formatPercent(value), metric.label];
