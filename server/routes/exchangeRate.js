@@ -234,13 +234,26 @@ router.post('/backfill-single', async (req, res) => {
   `).get(date);
 
   if (existing) {
+    const applyStats = applyExchangeRatesToMetaMetrics({
+      db,
+      store: 'shawq',
+      startDate: date,
+      endDate: date
+    });
+
     return res.json({
       success: true,
       date,
       rate: existing.rate,
       usdToTry: 1 / existing.rate,
       source: existing.source,
-      cached: true
+      cached: true,
+      applied: {
+        startDate: date,
+        endDate: date,
+        tableStats: applyStats.perTable,
+        totals: applyStats.totals
+      }
     });
   }
 
@@ -299,13 +312,26 @@ router.post('/backfill-single', async (req, res) => {
       VALUES ('TRY', 'USD', ?, ?, ?)
     `).run(tryToUsd, date, result.source || provider);
 
+    const applyStats = applyExchangeRatesToMetaMetrics({
+      db,
+      store: 'shawq',
+      startDate: date,
+      endDate: date
+    });
+
     return res.json({
       success: true,
       date,
       rate: tryToUsd,
       usdToTry: 1 / tryToUsd,
       source: result.source || provider,
-      tier: selectedTier
+      tier: selectedTier,
+      applied: {
+        startDate: date,
+        endDate: date,
+        tableStats: applyStats.perTable,
+        totals: applyStats.totals
+      }
     });
   }
 
@@ -349,18 +375,32 @@ router.post('/backfill-single', async (req, res) => {
     VALUES ('TRY', 'USD', ?, ?, ?)
   `).run(tryToUsd, date, result.source || provider);
 
+  const applyStats = applyExchangeRatesToMetaMetrics({
+    db,
+    store: 'shawq',
+    startDate: date,
+    endDate: date
+  });
+
   return res.json({
     success: true,
     date,
     rate: tryToUsd,
     usdToTry: 1 / tryToUsd,
     source: result.source || provider,
-    tier: selectedTier
+    tier: selectedTier,
+    applied: {
+      startDate: date,
+      endDate: date,
+      tableStats: applyStats.perTable,
+      totals: applyStats.totals
+    }
   });
 });
 
 
 const MAX_MANUAL_DAYS_RANGE = 370;
+const EXCHANGE_APPLY_TABLES = ['meta_daily_metrics', 'meta_adset_metrics', 'meta_ad_metrics'];
 
 function parsePositiveNumber(value) {
   const parsed = typeof value === 'number' ? value : Number(String(value ?? '').trim());
@@ -393,6 +433,192 @@ function buildDateRange(startDate, endDate) {
 
   return { dates };
 }
+
+function applyExchangeRatesToMetaMetrics({ db, store, startDate, endDate }) {
+  const perTable = {};
+  let totalCandidates = 0;
+  let totalConvertible = 0;
+  let totalUpdated = 0;
+
+  const tx = db.transaction(() => {
+    for (const table of EXCHANGE_APPLY_TABLES) {
+      const candidateRows = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM ${table}
+        WHERE store = ?
+          AND date BETWEEN ? AND ?
+          AND COALESCE(original_currency, 'TRY') = 'TRY'
+      `).get(store, startDate, endDate)?.count || 0;
+
+      const convertibleRows = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM ${table}
+        WHERE store = ?
+          AND date BETWEEN ? AND ?
+          AND COALESCE(original_currency, 'TRY') = 'TRY'
+          AND EXISTS (
+            SELECT 1
+            FROM exchange_rates er
+            WHERE er.from_currency = 'TRY'
+              AND er.to_currency = 'USD'
+              AND er.date = ${table}.date
+          )
+      `).get(store, startDate, endDate)?.count || 0;
+
+      const updateResult = db.prepare(`
+        UPDATE ${table}
+        SET
+          spend = CASE
+            WHEN spend_original IS NOT NULL THEN spend_original * (
+              SELECT er.rate
+              FROM exchange_rates er
+              WHERE er.from_currency = 'TRY'
+                AND er.to_currency = 'USD'
+                AND er.date = ${table}.date
+            )
+            ELSE spend
+          END,
+          conversion_value = CASE
+            WHEN conversion_value_original IS NOT NULL THEN conversion_value_original * (
+              SELECT er.rate
+              FROM exchange_rates er
+              WHERE er.from_currency = 'TRY'
+                AND er.to_currency = 'USD'
+                AND er.date = ${table}.date
+            )
+            ELSE conversion_value
+          END,
+          cost_per_inline_link_click = CASE
+            WHEN cost_per_inline_link_click_original IS NOT NULL THEN cost_per_inline_link_click_original * (
+              SELECT er.rate
+              FROM exchange_rates er
+              WHERE er.from_currency = 'TRY'
+                AND er.to_currency = 'USD'
+                AND er.date = ${table}.date
+            )
+            ELSE cost_per_inline_link_click
+          END
+        WHERE store = ?
+          AND date BETWEEN ? AND ?
+          AND COALESCE(original_currency, 'TRY') = 'TRY'
+          AND EXISTS (
+            SELECT 1
+            FROM exchange_rates er
+            WHERE er.from_currency = 'TRY'
+              AND er.to_currency = 'USD'
+              AND er.date = ${table}.date
+          )
+      `).run(store, startDate, endDate);
+
+      totalCandidates += candidateRows;
+      totalConvertible += convertibleRows;
+      totalUpdated += updateResult.changes;
+
+      perTable[table] = {
+        candidates: candidateRows,
+        convertible: convertibleRows,
+        updated: updateResult.changes
+      };
+    }
+  });
+
+  tx();
+
+  return {
+    perTable,
+    totals: {
+      candidates: totalCandidates,
+      convertible: totalConvertible,
+      updated: totalUpdated
+    }
+  };
+}
+
+// POST /api/exchange-rates/apply - Reapply stored TRY->USD rates to historical Meta spend rows
+router.post('/apply', (req, res) => {
+  const { date, startDate, endDate, store } = req.body || {};
+  const dateStr = typeof date === 'string' ? date.trim() : '';
+  const startStr = typeof startDate === 'string' ? startDate.trim() : '';
+  const endStr = typeof endDate === 'string' ? endDate.trim() : '';
+  const targetStore = (typeof store === 'string' && store.trim()) ? store.trim().toLowerCase() : 'shawq';
+
+  const isSingle = Boolean(dateStr);
+  const isRange = Boolean(startStr || endStr);
+
+  if (!isSingle && !isRange) {
+    return res.status(400).json({ success: false, error: 'Please provide either "date" or "startDate/endDate".' });
+  }
+  if (isSingle && isRange) {
+    return res.status(400).json({
+      success: false,
+      error: 'Please provide either a single "date" or a "startDate/endDate" range (not both).'
+    });
+  }
+
+  let dates = [];
+  let effectiveStartDate = '';
+  let effectiveEndDate = '';
+
+  if (isSingle) {
+    if (!validateDateString(dateStr)) {
+      return res.status(400).json({ success: false, error: 'Please select a valid date (YYYY-MM-DD).' });
+    }
+    dates = [dateStr];
+    effectiveStartDate = dateStr;
+    effectiveEndDate = dateStr;
+  } else {
+    if (!startStr || !endStr) {
+      return res.status(400).json({ success: false, error: 'Please provide both "startDate" and "endDate".' });
+    }
+    if (!validateDateString(startStr) || !validateDateString(endStr)) {
+      return res.status(400).json({ success: false, error: 'Please select a valid start/end date (YYYY-MM-DD).' });
+    }
+    const range = buildDateRange(startStr, endStr);
+    if (!range) {
+      return res.status(400).json({ success: false, error: 'Start date must be before or equal to end date.' });
+    }
+    if (range.error) {
+      return res.status(400).json({ success: false, error: range.error });
+    }
+    dates = range.dates;
+    effectiveStartDate = startStr;
+    effectiveEndDate = endStr;
+  }
+
+  const db = getDb();
+
+  const rateRows = db.prepare(`
+    SELECT date
+    FROM exchange_rates
+    WHERE from_currency = 'TRY'
+      AND to_currency = 'USD'
+      AND date BETWEEN ? AND ?
+  `).all(effectiveStartDate, effectiveEndDate);
+  const rateSet = new Set(rateRows.map((row) => row.date));
+  const missingRateDates = dates.filter((d) => !rateSet.has(d));
+
+  const applyStats = applyExchangeRatesToMetaMetrics({
+    db,
+    store: targetStore,
+    startDate: effectiveStartDate,
+    endDate: effectiveEndDate
+  });
+
+  return res.json({
+    success: true,
+    store: targetStore,
+    mode: isSingle ? 'single' : 'range',
+    date: isSingle ? dateStr : undefined,
+    startDate: effectiveStartDate,
+    endDate: effectiveEndDate,
+    totalDates: dates.length,
+    datesWithRates: dates.length - missingRateDates.length,
+    datesMissingRates: missingRateDates.length,
+    missingRateDates,
+    tableStats: applyStats.perTable,
+    totals: applyStats.totals
+  });
+});
 
 // POST /api/exchange-rates/manual - Save a manual rate for a date (or date range)
 router.post('/manual', (req, res) => {
@@ -474,6 +700,12 @@ router.post('/manual', (req, res) => {
     }
 
     upsert.run(rate, dateStr);
+    const applyStats = applyExchangeRatesToMetaMetrics({
+      db,
+      store: 'shawq',
+      startDate: dateStr,
+      endDate: dateStr
+    });
 
     return res.json({
       success: true,
@@ -482,7 +714,13 @@ router.post('/manual', (req, res) => {
       rate,
       usdToTry: 1 / rate,
       source: 'manual',
-      overwritten: Boolean(existing && allowOverwrite)
+      overwritten: Boolean(existing && allowOverwrite),
+      applied: {
+        startDate: dateStr,
+        endDate: dateStr,
+        tableStats: applyStats.perTable,
+        totals: applyStats.totals
+      }
     });
   }
 
@@ -514,6 +752,12 @@ router.post('/manual', (req, res) => {
   });
 
   txn();
+  const applyStats = applyExchangeRatesToMetaMetrics({
+    db,
+    store: 'shawq',
+    startDate: startStr,
+    endDate: endStr
+  });
 
   return res.json({
     success: true,
@@ -526,7 +770,13 @@ router.post('/manual', (req, res) => {
     overwrite: allowOverwrite,
     inserted,
     skippedExisting,
-    overwritten
+    overwritten,
+    applied: {
+      startDate: startStr,
+      endDate: endStr,
+      tableStats: applyStats.perTable,
+      totals: applyStats.totals
+    }
   });
 });
 
