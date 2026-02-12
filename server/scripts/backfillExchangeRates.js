@@ -5,7 +5,12 @@ import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 const APILAYER_EXCHANGE_RATES_KEY = process.env.APILAYER_EXCHANGE_RATES_KEY;
 const OXR_APP_ID = process.env.OXR_APP_ID;
 const MAX_CALLS = parseInt(process.env.EXCHANGE_RATE_BACKFILL_MAX_CALLS || '100', 10);
-const PROVIDER_OVERRIDE = (process.env.EXCHANGE_RATE_BACKFILL_PROVIDER || process.env.EXCHANGE_RATE_HISTORICAL_PROVIDER || '').toLowerCase();
+const PROVIDER_OVERRIDE = (
+  process.env.EXCHANGE_RATE_BACKFILL_PRIMARY_PROVIDER ||
+  process.env.EXCHANGE_RATE_BACKFILL_PROVIDER ||
+  process.env.EXCHANGE_RATE_HISTORICAL_PROVIDER ||
+  ''
+).toLowerCase();
 
 function resolveProvider() {
   if (PROVIDER_OVERRIDE) {
@@ -23,12 +28,12 @@ function resolveProvider() {
 const provider = resolveProvider();
 
 if (!provider) {
-  console.error('ERROR: No exchange rate provider configured. Set APILAYER_EXCHANGE_RATES_KEY, OXR_APP_ID, or EXCHANGE_RATE_BACKFILL_PROVIDER=frankfurter');
+  console.error('ERROR: No exchange rate provider configured. Set APILAYER_EXCHANGE_RATES_KEY, OXR_APP_ID, or EXCHANGE_RATE_BACKFILL_PRIMARY_PROVIDER=frankfurter');
   process.exit(1);
 }
 
 if (!['apilayer', 'oxr', 'frankfurter'].includes(provider)) {
-  console.error(`ERROR: Unknown EXCHANGE_RATE_BACKFILL_PROVIDER value: ${provider}`);
+  console.error(`ERROR: Unknown backfill provider value: ${provider}. Supported: apilayer, oxr, frankfurter`);
   process.exit(1);
 }
 
