@@ -5,7 +5,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ScatterChart, Scatter, ReferenceLine, Legend, ComposedChart, Bar, Area
+  Scatter, ReferenceLine, ComposedChart, Bar, Area
 } from 'recharts';
 import {
   AlertTriangle, CheckCircle, TrendingDown, TrendingUp, Minus,
@@ -75,13 +75,13 @@ const ADSET_STATUS_PRIORITY = {
   warning: 2,
   healthy: 3
 };
-const AD_LAYER_CHART_METRICS = [
-  { key: 'ctr', label: 'Link CTR', color: '#2563eb', axis: 'rate', type: 'line', suffix: '%' },
-  { key: 'cvr', label: 'CVR', color: '#7c3aed', axis: 'rate', type: 'line', suffix: '%' },
-  { key: 'conversions', label: 'Orders', color: '#f97316', axis: 'volume', type: 'line' },
-  { key: 'impressions', label: 'Impressions', color: '#10b981', axis: 'volume', type: 'bar' }
+const AD_OVERLAY_CHART_METRICS = [
+  { key: 'cvr', label: 'CVR', color: '#7c3aed', axis: 'rate', renderAs: 'line', suffix: '%' },
+  { key: 'conversions', label: 'Orders', color: '#f97316', axis: 'volume', renderAs: 'line' },
+  { key: 'impressions', label: 'Impressions', color: '#10b981', axis: 'volume', renderAs: 'area' }
 ];
-const DEFAULT_AD_LAYER_CHART_KEYS = AD_LAYER_CHART_METRICS.map((metric) => metric.key);
+const DEFAULT_AD_OVERLAY_CHART_KEYS = AD_OVERLAY_CHART_METRICS.map((metric) => metric.key);
+const AD_WIDE_CHART_HEIGHT_CLASS = 'h-[30rem]';
 
 function normalizeCampaignStatus(status) {
   if (!status || typeof status !== 'string') return 'UNKNOWN';
@@ -276,75 +276,6 @@ function ConfidenceBadge({ level }) {
 // CHART COMPONENTS
 // ============================================================================
 
-function DualAxisChart({ data, title, leftKey, rightKey, leftLabel, rightLabel, leftColor, rightColor }) {
-  return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <h4 className="text-sm font-medium text-gray-700 mb-3">{title}</h4>
-      <div className="h-48">
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data} syncId="fatigue-sync">
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis
-              dataKey="date"
-              tick={{ fontSize: 10 }}
-              tickFormatter={(val) => val.slice(5)}
-            />
-            <YAxis
-              yAxisId="left"
-              tick={{ fontSize: 10 }}
-              tickFormatter={(val) => `${val.toFixed(1)}%`}
-              domain={['auto', 'auto']}
-            />
-            <YAxis
-              yAxisId="right"
-              orientation="right"
-              tick={{ fontSize: 10 }}
-              domain={['auto', 'auto']}
-            />
-            <Tooltip
-              contentStyle={{ fontSize: 12 }}
-              formatter={(value, name) => [
-                name === leftKey ? `${value.toFixed(2)}%` : value.toFixed(2),
-                name === leftKey ? leftLabel : rightLabel
-              ]}
-              labelFormatter={(label) => `Date: ${label}`}
-            />
-            <Line
-              yAxisId="left"
-              type="monotone"
-              dataKey={leftKey}
-              stroke={leftColor}
-              strokeWidth={2}
-              dot={{ r: 3 }}
-              name={leftKey}
-            />
-            <Line
-              yAxisId="right"
-              type="monotone"
-              dataKey={rightKey}
-              stroke={rightColor}
-              strokeWidth={2}
-              strokeDasharray="5 5"
-              dot={{ r: 3 }}
-              name={rightKey}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
-      <div className="flex justify-center gap-6 mt-2">
-        <div className="flex items-center gap-2 text-xs text-gray-600">
-          <div className="w-4 h-0.5" style={{ backgroundColor: leftColor }}></div>
-          {leftLabel}
-        </div>
-        <div className="flex items-center gap-2 text-xs text-gray-600">
-          <div className="w-4 h-0.5 border-t-2 border-dashed" style={{ borderColor: rightColor }}></div>
-          {rightLabel}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function MultiLineChart({ ads, metric = 'ctr', title }) {
   // Prepare data for all ads on same chart
   const allDates = new Set();
@@ -421,20 +352,20 @@ function MultiLineChart({ ads, metric = 'ctr', title }) {
   );
 }
 
-function AdLayeredPerformanceChart({ ad }) {
-  const [enabledMetricKeys, setEnabledMetricKeys] = useState(() => new Set(DEFAULT_AD_LAYER_CHART_KEYS));
+function AdCtrFrequencyOverlayChart({ ad }) {
+  const [enabledOverlayKeys, setEnabledOverlayKeys] = useState(() => new Set(DEFAULT_AD_OVERLAY_CHART_KEYS));
 
   useEffect(() => {
-    setEnabledMetricKeys(new Set(DEFAULT_AD_LAYER_CHART_KEYS));
+    setEnabledOverlayKeys(new Set(DEFAULT_AD_OVERLAY_CHART_KEYS));
   }, [ad?.ad_id]);
 
-  const metricsByKey = useMemo(
-    () => new Map(AD_LAYER_CHART_METRICS.map((metric) => [metric.key, metric])),
+  const overlayMetricsByKey = useMemo(
+    () => new Map(AD_OVERLAY_CHART_METRICS.map((metric) => [metric.key, metric])),
     []
   );
 
-  const toggleMetric = (metricKey) => {
-    setEnabledMetricKeys((previous) => {
+  const toggleOverlay = (metricKey) => {
+    setEnabledOverlayKeys((previous) => {
       const next = new Set(previous);
       if (next.has(metricKey)) {
         next.delete(metricKey);
@@ -451,6 +382,11 @@ function AdLayeredPerformanceChart({ ad }) {
     if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}K`;
     return `${Math.round(value)}`;
   };
+  const formatPercent = (value) => `${(Number(value) || 0).toFixed(2)}%`;
+  const formatFrequency = (value) => (Number.isFinite(value) ? Number(value).toFixed(2) : '0.00');
+  const hasVolumeOverlay = AD_OVERLAY_CHART_METRICS.some(
+    (metric) => metric.axis === 'volume' && enabledOverlayKeys.has(metric.key)
+  );
 
   const hasData = Array.isArray(ad?.daily) && ad.daily.length > 0;
 
@@ -458,16 +394,16 @@ function AdLayeredPerformanceChart({ ad }) {
     <div className="bg-white rounded-xl border border-gray-200 p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
-          <h4 className="text-sm font-semibold text-gray-800">Layered Ad Performance</h4>
-          <p className="text-xs text-gray-500">Toggle orders, impressions, and CVR overlays on one larger timeline.</p>
+          <h4 className="text-sm font-semibold text-gray-800">Link CTR vs Frequency (Wide View)</h4>
+          <p className="text-xs text-gray-500">Core fatigue trend with optional overlays for CVR, orders, and impressions.</p>
         </div>
         <div className="flex flex-wrap gap-2 justify-end">
-          {AD_LAYER_CHART_METRICS.map((metric) => {
-            const isEnabled = enabledMetricKeys.has(metric.key);
+          {AD_OVERLAY_CHART_METRICS.map((metric) => {
+            const isEnabled = enabledOverlayKeys.has(metric.key);
             return (
               <button
                 key={metric.key}
-                onClick={() => toggleMetric(metric.key)}
+                onClick={() => toggleOverlay(metric.key)}
                 className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
                   isEnabled
                     ? 'bg-blue-50 border-blue-200 text-blue-700'
@@ -481,40 +417,83 @@ function AdLayeredPerformanceChart({ ad }) {
         </div>
       </div>
 
-      <div className="h-96">
+      <div className={AD_WIDE_CHART_HEIGHT_CLASS}>
         {!hasData ? (
           <div className="h-full flex items-center justify-center text-sm text-gray-500 bg-gray-50 rounded-lg border border-dashed border-gray-200">
             No performance rows for this ad in the selected date range.
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={ad.daily} syncId="fatigue-sync">
+            <ComposedChart data={ad.daily} syncId="fatigue-sync" margin={{ top: 8, right: 20, left: 4, bottom: 2 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(value) => value?.slice(5)} />
-              <YAxis yAxisId="rate" tick={{ fontSize: 10 }} tickFormatter={(value) => `${value.toFixed(1)}%`} />
-              <YAxis yAxisId="volume" orientation="right" tick={{ fontSize: 10 }} tickFormatter={formatVolume} />
+              <YAxis
+                yAxisId="rate"
+                tick={{ fontSize: 10 }}
+                tickFormatter={(value) => `${(Number(value) || 0).toFixed(1)}%`}
+                width={56}
+              />
+              <YAxis
+                yAxisId="frequency"
+                orientation="right"
+                tick={{ fontSize: 10 }}
+                tickFormatter={formatFrequency}
+                width={58}
+              />
+              {hasVolumeOverlay && (
+                <YAxis
+                  yAxisId="volume"
+                  hide
+                  domain={['auto', 'auto']}
+                />
+              )}
               <Tooltip
                 contentStyle={{ fontSize: 12 }}
                 formatter={(value, key) => {
-                  const metric = metricsByKey.get(key);
+                  if (key === 'ctr') return [formatPercent(value), 'Link CTR'];
+                  if (key === 'frequency') return [formatFrequency(Number(value)), 'Frequency'];
+                  const metric = overlayMetricsByKey.get(key);
                   if (!metric) return [value, key];
-                  if (metric.suffix === '%') return [`${Number(value).toFixed(2)}%`, metric.label];
+                  if (metric.suffix === '%') return [formatPercent(value), metric.label];
                   return [formatVolume(Number(value)), metric.label];
                 }}
                 labelFormatter={(value) => `Date: ${value}`}
               />
-              {AD_LAYER_CHART_METRICS.map((metric) => {
-                if (!enabledMetricKeys.has(metric.key)) return null;
-                if (metric.type === 'bar') {
+              <Line
+                yAxisId="rate"
+                type="monotone"
+                dataKey="ctr"
+                stroke="#2563eb"
+                strokeWidth={2.5}
+                dot={false}
+                name="Link CTR"
+                connectNulls
+              />
+              <Line
+                yAxisId="frequency"
+                type="monotone"
+                dataKey="frequency"
+                stroke="#f59e0b"
+                strokeWidth={2.2}
+                strokeDasharray="5 4"
+                dot={false}
+                name="Frequency"
+                connectNulls
+              />
+              {AD_OVERLAY_CHART_METRICS.map((metric) => {
+                if (!enabledOverlayKeys.has(metric.key)) return null;
+                if (metric.renderAs === 'area') {
                   return (
-                    <Bar
+                    <Area
                       key={metric.key}
                       yAxisId={metric.axis}
+                      type="monotone"
                       dataKey={metric.key}
+                      stroke={metric.color}
                       fill={metric.color}
-                      fillOpacity={0.25}
-                      barSize={14}
-                      radius={[3, 3, 0, 0]}
+                      fillOpacity={0.16}
+                      strokeWidth={1.6}
+                      connectNulls
                     />
                   );
                 }
@@ -1052,25 +1031,12 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
             <div className="text-xs text-gray-500 -mb-2">
               Chart metric audit: Link CTR = link clicks / impressions (link clicks prefer inline link clicks, then outbound clicks when inline is unavailable).
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <DualAxisChart
-                data={ad.daily}
-                title="Link CTR vs Frequency"
-                leftKey="ctr"
-                rightKey="frequency"
-                leftLabel="Link CTR (%)"
-                rightLabel="Frequency"
-                leftColor="#3b82f6"
-                rightColor="#f59e0b"
-              />
+            <AdCtrFrequencyOverlayChart ad={ad} />
 
-              <CorrelationScatter
-                daily={ad.daily}
-                correlation={ad.correlation}
-              />
-            </div>
-
-            <AdLayeredPerformanceChart ad={ad} />
+            <CorrelationScatter
+              daily={ad.daily}
+              correlation={ad.correlation}
+            />
 
             {/* Statistical Summary */}
             <div className={`rounded-lg p-4 ${STATUS_CONFIG[ad.status].bgColor} border ${STATUS_CONFIG[ad.status].borderColor}`}>
