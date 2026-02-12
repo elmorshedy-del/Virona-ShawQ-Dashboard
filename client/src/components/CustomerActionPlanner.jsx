@@ -426,7 +426,7 @@ function WatchlistColumn({ listKey, items }) {
   );
 }
 
-export default function CustomerActionPlanner({ data, onOpenSection }) {
+export default function CustomerActionPlanner({ data, onOpenSection, embedded = false }) {
   const plan = useMemo(() => {
     const sections = data?.sections || {};
     const insights = data?.insights || [];
@@ -456,7 +456,7 @@ export default function CustomerActionPlanner({ data, onOpenSection }) {
   }, [data]);
 
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+    <section className={embedded ? 'rounded-xl border border-gray-100 bg-gray-50/40 p-4' : 'rounded-2xl border border-gray-200 bg-white p-5 shadow-sm'}>
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">Decision cockpit</div>
