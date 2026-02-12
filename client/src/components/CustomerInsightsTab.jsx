@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import MetaDemographics from './MetaDemographics';
 import BundleInsightsSection from './BundleInsightsSection';
+import CustomerActionPlanner from './CustomerActionPlanner';
 
 const formatPercent = (value) => {
   if (value == null || Number.isNaN(value)) return '—';
@@ -291,6 +292,8 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
           )}
         </div>
       </div>
+
+      <CustomerActionPlanner data={data} onOpenSection={scrollToSection} />
 
       <CollapsibleSectionCard
         id="ci-metaDemographics"
