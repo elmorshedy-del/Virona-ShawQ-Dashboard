@@ -22,6 +22,14 @@ const ACTION_PLANNER_RULES = Object.freeze({
   concentrationRiskShare: 0.45
 });
 
+const RATE_NORMALIZATION_RULES = Object.freeze({
+  ratioMaxAbs: 1,
+  percentMaxAbs: 100,
+  basisPointsMaxAbs: 10000,
+  percentDivisor: 100,
+  basisPointsDivisor: 10000
+});
+
 const TIMELINE_PLAYBOOK = Object.freeze([
   {
     key: 'immediate',
@@ -104,8 +112,9 @@ const WATCHLIST_COPY = {
 };
 
 function formatPercent(value) {
-  if (value == null || Number.isNaN(value)) return '—';
-  return `${(value * 100).toFixed(1)}%`;
+  const normalized = normalizeRate(value);
+  if (normalized == null) return '—';
+  return `${(normalized * 100).toFixed(1)}%`;
 }
 
 function formatNumber(value) {
@@ -116,6 +125,57 @@ function formatNumber(value) {
 function getKpiValue(kpis, id) {
   const row = Array.isArray(kpis) ? kpis.find((item) => item.id === id) : null;
   return row && typeof row.value === 'number' ? row.value : null;
+}
+
+function normalizeRate(rawValue) {
+  if (rawValue == null || rawValue === '') return null;
+
+  let numericValue = null;
+  let isPercentString = false;
+
+  if (typeof rawValue === 'string') {
+    const trimmed = rawValue.trim();
+    if (!trimmed) return null;
+    isPercentString = trimmed.endsWith('%');
+    numericValue = Number(trimmed.replace(/%/g, '').replace(/,/g, ''));
+  } else {
+    numericValue = Number(rawValue);
+  }
+
+  if (!Number.isFinite(numericValue)) return null;
+
+  if (isPercentString) {
+    const absPercentValue = Math.abs(numericValue);
+    if (absPercentValue <= RATE_NORMALIZATION_RULES.percentMaxAbs) {
+      return numericValue / RATE_NORMALIZATION_RULES.percentDivisor;
+    }
+    if (absPercentValue <= RATE_NORMALIZATION_RULES.percentMaxAbs * 10) {
+      // Sign-symmetric scaling step for large percent strings:
+      // +1000% -> +100%, -1000% -> -100%.
+      return numericValue / (RATE_NORMALIZATION_RULES.percentDivisor * 10);
+    }
+    if (absPercentValue <= RATE_NORMALIZATION_RULES.basisPointsMaxAbs) {
+      // Optional basis-points-style fallback with preserved sign.
+      return numericValue / RATE_NORMALIZATION_RULES.basisPointsDivisor;
+    }
+    return null;
+  }
+
+  const absValue = Math.abs(numericValue);
+  if (absValue <= RATE_NORMALIZATION_RULES.ratioMaxAbs) return numericValue;
+  if (absValue <= RATE_NORMALIZATION_RULES.percentMaxAbs) {
+    return numericValue / RATE_NORMALIZATION_RULES.percentDivisor;
+  }
+  if (absValue <= RATE_NORMALIZATION_RULES.basisPointsMaxAbs) {
+    return numericValue / RATE_NORMALIZATION_RULES.basisPointsDivisor;
+  }
+  return null;
+}
+
+function normalizeUnitShare(rawValue) {
+  const normalized = normalizeRate(rawValue);
+  if (normalized == null) return null;
+  return Math.min(1, Math.max(0, normalized));
 }
 
 function cleanMoverProductTitle(rawTitle, suffix) {
@@ -131,7 +191,7 @@ function makeDiscountLookup(discountSkus) {
   const lookup = new Map();
   (discountSkus || []).forEach((row) => {
     if (!row?.title) return;
-    lookup.set(String(row.title).toLowerCase(), row.discountShare);
+    lookup.set(String(row.title).toLowerCase(), normalizeUnitShare(row.discountShare) || 0);
   });
   return lookup;
 }
@@ -211,8 +271,10 @@ function buildWatchlists({ topProducts, discountSkus, upInsight, downInsight }) 
 function buildActions({ data, topProducts, discountMetrics, repeatRate, upInsight, downInsight }) {
   const actions = [];
   const bundleTop = data?.sections?.bundles?.bundles?.[0] || null;
-  const cityCoverage = data?.sections?.segments?.geo?.cityCoverage;
-  const countryCoverage = data?.sections?.segments?.geo?.countryCoverage;
+  const cityCoverage = normalizeUnitShare(data?.sections?.segments?.geo?.cityCoverage);
+  const countryCoverage = normalizeUnitShare(data?.sections?.segments?.geo?.countryCoverage);
+  const discountRevenueShare = normalizeUnitShare(discountMetrics.discountRevenueShare) || 0;
+  const normalizedRepeatRate = normalizeUnitShare(repeatRate);
   const orders = data?.dataQuality?.orders || 0;
 
   if (upInsight) {
@@ -243,27 +305,27 @@ function buildActions({ data, topProducts, discountMetrics, repeatRate, upInsigh
     });
   }
 
-  if ((discountMetrics.discountRevenueShare || 0) >= ACTION_PLANNER_RULES.discountRevenueRiskShare) {
+  if (discountRevenueShare >= ACTION_PLANNER_RULES.discountRevenueRiskShare) {
     actions.push({
       id: 'discount-pressure',
       priority: 'high',
       horizon: '7d',
       owner: 'Pricing',
       title: 'Reduce discount dependence on revenue-driving SKUs',
-      why: `Discounted revenue share is ${formatPercent(discountMetrics.discountRevenueShare)} in this window.`,
+      why: `Discounted revenue share is ${formatPercent(discountRevenueShare)} in this window.`,
       kpi: 'Gross margin + full-price order share',
       target: 'discountRefund'
     });
   }
 
-  if (repeatRate != null && repeatRate < ACTION_PLANNER_RULES.repeatRateOpportunity) {
+  if (normalizedRepeatRate != null && normalizedRepeatRate < ACTION_PLANNER_RULES.repeatRateOpportunity) {
     actions.push({
       id: 'retention-loop',
       priority: 'high',
       horizon: '28d',
       owner: 'CRM',
       title: 'Launch repeat-order recovery loop',
-      why: `Repeat rate is ${formatPercent(repeatRate)}; below the target floor of ${formatPercent(ACTION_PLANNER_RULES.repeatRateOpportunity)}.`,
+      why: `Repeat rate is ${formatPercent(normalizedRepeatRate)}; below the target floor of ${formatPercent(ACTION_PLANNER_RULES.repeatRateOpportunity)}.`,
       kpi: 'Repeat rate + 90-day LTV',
       target: 'cohorts'
     });
@@ -361,8 +423,8 @@ function buildGuardrails(data, actions) {
   const notes = [];
   const orders = data?.dataQuality?.orders || 0;
   const hasItems = Boolean(data?.dataQuality?.hasItems);
-  const cityCoverage = data?.sections?.segments?.geo?.cityCoverage;
-  const countryCoverage = data?.sections?.segments?.geo?.countryCoverage;
+  const cityCoverage = normalizeUnitShare(data?.sections?.segments?.geo?.cityCoverage);
+  const countryCoverage = normalizeUnitShare(data?.sections?.segments?.geo?.countryCoverage);
   const compareDays = data?.window?.days;
 
   if (compareDays) {
