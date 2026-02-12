@@ -37,6 +37,7 @@ const execFileAsync = promisify(execFile);
 
 const router = express.Router();
 const db = getDb();
+const DEFAULT_GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -615,14 +616,38 @@ router.post('/gemini', async (req, res) => {
       return res.status(400).json({ error: 'Payload is required.' });
     }
 
-    const resolvedModel = model || 'gemini-2.5-flash-preview-09-2025';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${resolvedModel}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    const requestedModel = model || DEFAULT_GEMINI_TEXT_MODEL;
+    const requestGemini = async (modelName) => {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+      return axios.post(url, payload, {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
 
-    const response = await axios.post(url, payload, {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    try {
+      const response = await requestGemini(requestedModel);
+      return res.json(response.data);
+    } catch (primaryError) {
+      const upstreamStatus = primaryError?.response?.status;
+      const upstreamMessage = primaryError?.response?.data?.error?.message || primaryError.message;
+      const canFallbackToDefault =
+        requestedModel !== DEFAULT_GEMINI_TEXT_MODEL &&
+        (upstreamStatus === 404 || /not found|unknown model|unsupported|deprecated/i.test(upstreamMessage));
 
-    return res.json(response.data);
+      if (canFallbackToDefault) {
+        const fallbackResponse = await requestGemini(DEFAULT_GEMINI_TEXT_MODEL);
+        return res.json({
+          ...fallbackResponse.data,
+          model: DEFAULT_GEMINI_TEXT_MODEL,
+          fallback_from: requestedModel
+        });
+      }
+
+      console.error('Gemini proxy error:', primaryError?.response?.data || primaryError.message);
+      return res
+        .status(Number.isInteger(upstreamStatus) ? upstreamStatus : 500)
+        .json({ error: upstreamMessage, model: requestedModel });
+    }
   } catch (error) {
     console.error('Gemini proxy error:', error?.response?.data || error.message);
     return res.status(500).json({ error: error?.response?.data?.error?.message || error.message });

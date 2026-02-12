@@ -608,7 +608,7 @@ Return JSON array of { "color": "#hex", "reason": "short rationale" }.`;
     setDownloading(false);
   };
 
-  const callGemini = async (payload, model = "gemini-2.5-flash-preview-09-2025") => {
+  const callGemini = async (payload, model = "gemini-2.5-flash") => {
     const response = await fetch(withStore('/creative-studio/gemini', store), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
