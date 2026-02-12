@@ -559,6 +559,7 @@ export default function App() {
   }, [metaAdManagerData]);
 
   const store = STORES[currentStore];
+  const isProductFinderTab = activeTab === PRODUCT_FINDER_TAB_INDEX;
   const selectedCampaignOption = useMemo(
     () => campaignOptions.find((c) => c.campaignId === selectedCampaignId) || null,
     [campaignOptions, selectedCampaignId]
@@ -1390,15 +1391,17 @@ export default function App() {
               />
 
               <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded">
-                Dashboard
+                {activeTab === PRODUCT_FINDER_TAB_INDEX ? 'Product Finder' : 'Dashboard'}
               </span>
             </div>
             
             <div className="flex items-center gap-4">
-              <span className="text-sm text-gray-500">
-                {dashboard?.dateRange &&
-                  `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
-              </span>
+              {!isProductFinderTab && (
+                <span className="text-sm text-gray-500">
+                  {dashboard?.dateRange &&
+                    `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
+                </span>
+              )}
               <div className="flex flex-col items-end gap-1">
                 <NotificationCenter currentStore={currentStore} />
                 {store?.ecommerce === 'Shopify' && (
@@ -1435,232 +1438,233 @@ export default function App() {
           ))}
         </div>
 
-        {/* Date Range Picker */}
-        <div className="flex items-center gap-3 bg-white p-4 rounded-xl shadow-sm mb-6 flex-wrap">
-          <span className="text-sm font-medium text-gray-700">Period:</span>
-          
-          {/* Today */}
-          <button
-            onClick={() => { setDateRange({ type: 'days', value: 1 }); setShowCustomPicker(false); }}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              dateRange.type === 'days' && dateRange.value === 1
-                ? 'bg-indigo-600 text-white'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-            }`}
-          >
-            Today
-          </button>
-          
-          {/* Yesterday */}
-          <button
-            onClick={() => { setDateRange({ type: 'yesterday', value: 1 }); setShowCustomPicker(false); }}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              dateRange.type === 'yesterday'
-                ? 'bg-indigo-600 text-white'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-            }`}
-          >
-            Yesterday
-          </button>
-
-          {/* Today & Yesterday */}
-          <button
-            onClick={() => { setDateRange({ type: 'days', value: 2 }); setShowCustomPicker(false); }}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              dateRange.type === 'days' && dateRange.value === 2
-                ? 'bg-indigo-600 text-white'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-            }`}
-          >
-            Today & Yesterday
-          </button>
-          
-          {[3, 7, 14, 30].map(d => (
+        {!isProductFinderTab && (
+          <div className="flex items-center gap-3 bg-white p-4 rounded-xl shadow-sm mb-6 flex-wrap">
+            <span className="text-sm font-medium text-gray-700">Period:</span>
+            
+            {/* Today */}
             <button
-              key={d}
-              onClick={() => { setDateRange({ type: 'days', value: d }); setShowCustomPicker(false); }}
+              onClick={() => { setDateRange({ type: 'days', value: 1 }); setShowCustomPicker(false); }}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                dateRange.type === 'days' && dateRange.value === d
+                dateRange.type === 'days' && dateRange.value === 1
                   ? 'bg-indigo-600 text-white'
                   : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
               }`}
             >
-              {d}D
-            </button>
-          ))}
-
-          {/* Month Selector */}
-          <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Month</span>
-            <select
-              value={selectedMonthKey}
-              onChange={(e) => handleMonthChange(e.target.value)}
-              className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              {monthOptions.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <div className="flex rounded-lg bg-gray-100 p-1">
-              <button
-                type="button"
-                onClick={() => handleMonthModeChange('mtd')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                  monthMode === 'mtd'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500'
-                }`}
-              >
-                MTD
-              </button>
-              <button
-                type="button"
-                onClick={() => handleMonthModeChange('projection')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                  monthMode === 'projection'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500'
-                }`}
-                title="Full-month projection"
-              >
-                Full-month
-              </button>
-            </div>
-          </div>
-
-          {/* Custom Range */}
-          <div className="relative">
-            <button
-              onClick={() => setShowCustomPicker(!showCustomPicker)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
-                dateRange.type === 'custom'
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-              }`}
-            >
-              <Calendar className="w-4 h-4" />
-              Custom
+              Today
             </button>
             
-            {showCustomPicker && (
-              <div className="absolute top-full mt-2 left-0 bg-white rounded-xl shadow-lg border border-gray-200 p-4 z-50 min-w-[280px]">
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">
-                      Start Date
-                    </label>
-                    <input
-                      type="date"
-                      value={customRange.start}
-                      onChange={(e) => setCustomRange({ ...customRange, start: e.target.value })}
-                      max={customRange.end || getLocalDateString()}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">
-                      End Date
-                    </label>
-                    <input
-                      type="date"
-                      value={customRange.end}
-                      onChange={(e) => setCustomRange({ ...customRange, end: e.target.value })}
-                      min={customRange.start}
-                      max={getLocalDateString()}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    />
-                  </div>
-                  <div className="flex gap-2 pt-2">
-                    <button
-                      onClick={() => {
-                        if (customRange.start && customRange.end) {
-                          setDateRange({ type: 'custom', start: customRange.start, end: customRange.end });
-                          setShowCustomPicker(false);
-                        }
-                      }}
-                      disabled={!customRange.start || !customRange.end}
-                      className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-                    >
-                      Apply
-                    </button>
-                    <button
-                      onClick={() => setShowCustomPicker(false)}
-                      className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-gray-500">Trend:</span>
-            <div className="flex rounded-lg bg-gray-100 p-1">
-              <button
-                onClick={() => setChartMode('bucket')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                  chartMode === 'bucket'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500'
-                }`}
-              >
-                Buckets
-              </button>
-              <button
-                onClick={() => setChartMode('ma')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                  chartMode === 'ma'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500'
-                }`}
-              >
-                MA
-              </button>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
-            <span className="text-sm font-medium text-gray-700">USA vs Europe Overlay</span>
+            {/* Yesterday */}
             <button
-              type="button"
-              onClick={() => setRegionCompareEnabled((prev) => !prev)}
-              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
-                regionCompareEnabled ? 'bg-blue-600' : 'bg-gray-300'
+              onClick={() => { setDateRange({ type: 'yesterday', value: 1 }); setShowCustomPicker(false); }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                dateRange.type === 'yesterday'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
               }`}
             >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  regionCompareEnabled ? 'translate-x-5' : 'translate-x-1'
-                }`}
-              />
+              Yesterday
             </button>
-          </div>
 
-          <div className="ml-auto flex items-center gap-3 text-sm text-gray-500 flex-wrap">
-            <div>
-              Showing: <strong>{getDateRangeLabel()}</strong>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-gray-700">Campaign:</span>
-              <select
-                value={selectedCampaignId}
-                onChange={(e) => setSelectedCampaignId(e.target.value)}
-                className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[180px]"
+            {/* Today & Yesterday */}
+            <button
+              onClick={() => { setDateRange({ type: 'days', value: 2 }); setShowCustomPicker(false); }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                dateRange.type === 'days' && dateRange.value === 2
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+              }`}
+            >
+              Today & Yesterday
+            </button>
+            
+            {[3, 7, 14, 30].map(d => (
+              <button
+                key={d}
+                onClick={() => { setDateRange({ type: 'days', value: d }); setShowCustomPicker(false); }}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  dateRange.type === 'days' && dateRange.value === d
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                }`}
               >
-                <option value="">All campaigns</option>
-                {campaignOptions.map((option) => (
-                  <option key={option.campaignId} value={option.campaignId}>
-                    {option.campaignName}
+                {d}D
+              </button>
+            ))}
+
+            {/* Month Selector */}
+            <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Month</span>
+              <select
+                value={selectedMonthKey}
+                onChange={(e) => handleMonthChange(e.target.value)}
+                className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {monthOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
                   </option>
                 ))}
               </select>
+              <div className="flex rounded-lg bg-gray-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => handleMonthModeChange('mtd')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    monthMode === 'mtd'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500'
+                  }`}
+                >
+                  MTD
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMonthModeChange('projection')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    monthMode === 'projection'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500'
+                  }`}
+                  title="Full-month projection"
+                >
+                  Full-month
+                </button>
+              </div>
+            </div>
+
+            {/* Custom Range */}
+            <div className="relative">
+              <button
+                onClick={() => setShowCustomPicker(!showCustomPicker)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+                  dateRange.type === 'custom'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                }`}
+              >
+                <Calendar className="w-4 h-4" />
+                Custom
+              </button>
+              
+              {showCustomPicker && (
+                <div className="absolute top-full mt-2 left-0 bg-white rounded-xl shadow-lg border border-gray-200 p-4 z-50 min-w-[280px]">
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Start Date
+                      </label>
+                      <input
+                        type="date"
+                        value={customRange.start}
+                        onChange={(e) => setCustomRange({ ...customRange, start: e.target.value })}
+                        max={customRange.end || getLocalDateString()}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        End Date
+                      </label>
+                      <input
+                        type="date"
+                        value={customRange.end}
+                        onChange={(e) => setCustomRange({ ...customRange, end: e.target.value })}
+                        min={customRange.start}
+                        max={getLocalDateString()}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        onClick={() => {
+                          if (customRange.start && customRange.end) {
+                            setDateRange({ type: 'custom', start: customRange.start, end: customRange.end });
+                            setShowCustomPicker(false);
+                          }
+                        }}
+                        disabled={!customRange.start || !customRange.end}
+                        className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                      >
+                        Apply
+                      </button>
+                      <button
+                        onClick={() => setShowCustomPicker(false)}
+                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-gray-500">Trend:</span>
+              <div className="flex rounded-lg bg-gray-100 p-1">
+                <button
+                  onClick={() => setChartMode('bucket')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    chartMode === 'bucket'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500'
+                  }`}
+                >
+                  Buckets
+                </button>
+                <button
+                  onClick={() => setChartMode('ma')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    chartMode === 'ma'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500'
+                  }`}
+                >
+                  MA
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
+              <span className="text-sm font-medium text-gray-700">USA vs Europe Overlay</span>
+              <button
+                type="button"
+                onClick={() => setRegionCompareEnabled((prev) => !prev)}
+                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
+                  regionCompareEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    regionCompareEnabled ? 'translate-x-5' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="ml-auto flex items-center gap-3 text-sm text-gray-500 flex-wrap">
+              <div>
+                Showing: <strong>{getDateRangeLabel()}</strong>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-gray-700">Campaign:</span>
+                <select
+                  value={selectedCampaignId}
+                  onChange={(e) => setSelectedCampaignId(e.target.value)}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[180px]"
+                >
+                  <option value="">All campaigns</option>
+                  {campaignOptions.map((option) => (
+                    <option key={option.campaignId} value={option.campaignId}>
+                      {option.campaignName}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {activeTab === 0 && dashboard && (
           isMobileViewport ? (
