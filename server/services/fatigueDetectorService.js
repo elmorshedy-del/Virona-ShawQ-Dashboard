@@ -487,7 +487,7 @@ export function getFatigueAnalysis(store, params = {}) {
         status: a.finalStatus,
         diagnosis: a.finalDiagnosis,
         confidence: a.confidence,
-        hasSufficientData: a.hasSufficientData === true,
+        hasSufficientData: a.hasSufficientData,
         dataPointCount: a.dataPointCount || 0,
         insufficientDataReason: a.insufficientDataReason || null,
         metrics: a.metrics,
