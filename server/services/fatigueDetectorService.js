@@ -217,7 +217,7 @@ function avgPairwiseCorrelation(seriesArray) {
  */
 export function getFatigueAnalysis(store, params = {}) {
   const db = getDb();
-  const days = parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS;
+const days = Math.min(90, Math.max(7, parseInt(params.days, 10) || DEFAULT_LOOKBACK_DAYS));
   const includeInactive = isTruthy(params.includeInactive);
   
   // Calculate date range
