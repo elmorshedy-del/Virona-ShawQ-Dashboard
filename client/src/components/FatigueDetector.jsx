@@ -75,6 +75,13 @@ const ADSET_STATUS_PRIORITY = {
   warning: 2,
   healthy: 3
 };
+const AD_LAYER_CHART_METRICS = [
+  { key: 'ctr', label: 'Link CTR', color: '#2563eb', axis: 'rate', type: 'line', suffix: '%' },
+  { key: 'cvr', label: 'CVR', color: '#7c3aed', axis: 'rate', type: 'line', suffix: '%' },
+  { key: 'conversions', label: 'Orders', color: '#f97316', axis: 'volume', type: 'line' },
+  { key: 'impressions', label: 'Impressions', color: '#10b981', axis: 'volume', type: 'bar' }
+];
+const DEFAULT_AD_LAYER_CHART_KEYS = AD_LAYER_CHART_METRICS.map((metric) => metric.key);
 
 function normalizeCampaignStatus(status) {
   if (!status || typeof status !== 'string') return 'UNKNOWN';
@@ -121,7 +128,7 @@ CREATIVE FATIGUE
 • Signal: One ad declines while others in the same ad set stay healthy
 • Solution: Refresh that specific creative
 
-AUDIENCE SATURATION  
+AUDIENCE SATURATION
 • Cause: You've reached everyone likely to buy in this audience
 • Signal: ALL ads decline together, new reach % drops
 • Solution: Expand audience or reduce budget
@@ -149,9 +156,9 @@ When new reach drops while performance drops, it's a strong saturation signal.`
 function InfoTooltip({ contentKey }) {
   const [isOpen, setIsOpen] = useState(false);
   const content = EDUCATIONAL_CONTENT[contentKey];
-  
+
   if (!content) return null;
-  
+
   return (
     <div className="relative inline-block">
       <button
@@ -160,17 +167,17 @@ function InfoTooltip({ contentKey }) {
       >
         <HelpCircle className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
       </button>
-      
+
       {isOpen && (
         <>
-          <div 
-            className="fixed inset-0 z-40" 
+          <div
+            className="fixed inset-0 z-40"
             onClick={() => setIsOpen(false)}
           />
           <div className="absolute z-50 w-80 p-4 bg-white rounded-lg shadow-xl border border-gray-200 left-0 top-6 animate-fadeIn">
             <div className="flex items-start justify-between mb-2">
               <h4 className="font-semibold text-gray-900 text-sm">{content.title}</h4>
-              <button 
+              <button
                 onClick={() => setIsOpen(false)}
                 className="text-gray-400 hover:text-gray-600"
               >
@@ -190,13 +197,13 @@ function InfoTooltip({ contentKey }) {
 function StatusBadge({ status, size = 'md' }) {
   const config = STATUS_CONFIG[status] || STATUS_CONFIG.healthy;
   const Icon = config.icon;
-  
+
   const sizeClasses = {
     sm: 'text-xs px-2 py-0.5',
     md: 'text-sm px-2.5 py-1',
     lg: 'text-base px-3 py-1.5'
   };
-  
+
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full font-medium ${config.bgColor} ${config.textColor} ${sizeClasses[size]}`}>
       <Icon className={`w-3.5 h-3.5 ${config.iconColor}`} />
@@ -221,10 +228,10 @@ function TrendIndicator({ direction, value, suffix = '%' }) {
     falling: { icon: TrendingDown, color: 'text-rose-600', bg: 'bg-rose-50' },
     stable: { icon: Minus, color: 'text-gray-500', bg: 'bg-gray-50' }
   };
-  
+
   const config = configs[direction] || configs.stable;
   const Icon = config.icon;
-  
+
   return (
     <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded ${config.bg} ${config.color} text-xs font-medium`}>
       <Icon className="w-3 h-3" />
@@ -255,9 +262,9 @@ function ConfidenceBadge({ level }) {
     medium: { bg: 'bg-amber-100', text: 'text-amber-700', label: 'Medium Confidence' },
     low: { bg: 'bg-gray-100', text: 'text-gray-600', label: 'Low Confidence' }
   };
-  
+
   const config = configs[level] || configs.medium;
-  
+
   return (
     <span className={`text-xs px-2 py-0.5 rounded ${config.bg} ${config.text}`}>
       {config.label}
@@ -277,24 +284,24 @@ function DualAxisChart({ data, title, leftKey, rightKey, leftLabel, rightLabel, 
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={data} syncId="fatigue-sync">
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis 
-              dataKey="date" 
+            <XAxis
+              dataKey="date"
               tick={{ fontSize: 10 }}
               tickFormatter={(val) => val.slice(5)}
             />
-            <YAxis 
-              yAxisId="left" 
+            <YAxis
+              yAxisId="left"
               tick={{ fontSize: 10 }}
               tickFormatter={(val) => `${val.toFixed(1)}%`}
               domain={['auto', 'auto']}
             />
-            <YAxis 
-              yAxisId="right" 
+            <YAxis
+              yAxisId="right"
               orientation="right"
               tick={{ fontSize: 10 }}
               domain={['auto', 'auto']}
             />
-            <Tooltip 
+            <Tooltip
               contentStyle={{ fontSize: 12 }}
               formatter={(value, name) => [
                 name === leftKey ? `${value.toFixed(2)}%` : value.toFixed(2),
@@ -302,19 +309,19 @@ function DualAxisChart({ data, title, leftKey, rightKey, leftLabel, rightLabel, 
               ]}
               labelFormatter={(label) => `Date: ${label}`}
             />
-            <Line 
+            <Line
               yAxisId="left"
-              type="monotone" 
-              dataKey={leftKey} 
+              type="monotone"
+              dataKey={leftKey}
               stroke={leftColor}
               strokeWidth={2}
               dot={{ r: 3 }}
               name={leftKey}
             />
-            <Line 
+            <Line
               yAxisId="right"
-              type="monotone" 
-              dataKey={rightKey} 
+              type="monotone"
+              dataKey={rightKey}
               stroke={rightColor}
               strokeWidth={2}
               strokeDasharray="5 5"
@@ -343,7 +350,7 @@ function MultiLineChart({ ads, metric = 'ctr', title }) {
   const allDates = new Set();
   ads.forEach(ad => ad.daily.forEach(d => allDates.add(d.date)));
   const sortedDates = Array.from(allDates).sort();
-  
+
   const chartData = sortedDates.map(date => {
     const point = { date };
     ads.forEach((ad, i) => {
@@ -352,9 +359,9 @@ function MultiLineChart({ ads, metric = 'ctr', title }) {
     });
     return point;
   });
-  
+
   const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
-  
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
       <h4 className="text-sm font-medium text-gray-700 mb-3">{title}</h4>
@@ -362,17 +369,17 @@ function MultiLineChart({ ads, metric = 'ctr', title }) {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} syncId="fatigue-sync">
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis 
-              dataKey="date" 
+            <XAxis
+              dataKey="date"
               tick={{ fontSize: 10 }}
               tickFormatter={(val) => val.slice(5)}
             />
-            <YAxis 
+            <YAxis
               tick={{ fontSize: 10 }}
               tickFormatter={(val) => `${val.toFixed(1)}%`}
               domain={['auto', 'auto']}
             />
-            <Tooltip 
+            <Tooltip
               contentStyle={{ fontSize: 11 }}
               formatter={(value, name) => {
                 const adIndex = parseInt(name.replace('ad', ''));
@@ -399,8 +406,8 @@ function MultiLineChart({ ads, metric = 'ctr', title }) {
       <div className="flex flex-wrap justify-center gap-4 mt-3">
         {ads.map((ad, i) => (
           <div key={ad.ad_id} className="flex items-center gap-2 text-xs">
-            <div 
-              className="w-3 h-3 rounded-full" 
+            <div
+              className="w-3 h-3 rounded-full"
               style={{ backgroundColor: colors[i % colors.length] }}
             />
             <span className={ad.status === 'fatigued' ? 'font-semibold text-rose-700' : 'text-gray-600'}>
@@ -414,34 +421,152 @@ function MultiLineChart({ ads, metric = 'ctr', title }) {
   );
 }
 
+function AdLayeredPerformanceChart({ ad }) {
+  const [enabledMetricKeys, setEnabledMetricKeys] = useState(() => new Set(DEFAULT_AD_LAYER_CHART_KEYS));
+
+  useEffect(() => {
+    setEnabledMetricKeys(new Set(DEFAULT_AD_LAYER_CHART_KEYS));
+  }, [ad?.ad_id]);
+
+  const metricsByKey = useMemo(
+    () => new Map(AD_LAYER_CHART_METRICS.map((metric) => [metric.key, metric])),
+    []
+  );
+
+  const toggleMetric = (metricKey) => {
+    setEnabledMetricKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(metricKey)) {
+        next.delete(metricKey);
+      } else {
+        next.add(metricKey);
+      }
+      return next;
+    });
+  };
+
+  const formatVolume = (value) => {
+    if (!Number.isFinite(value)) return '0';
+    if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+    if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}K`;
+    return `${Math.round(value)}`;
+  };
+
+  const hasData = Array.isArray(ad?.daily) && ad.daily.length > 0;
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <h4 className="text-sm font-semibold text-gray-800">Layered Ad Performance</h4>
+          <p className="text-xs text-gray-500">Toggle orders, impressions, and CVR overlays on one larger timeline.</p>
+        </div>
+        <div className="flex flex-wrap gap-2 justify-end">
+          {AD_LAYER_CHART_METRICS.map((metric) => {
+            const isEnabled = enabledMetricKeys.has(metric.key);
+            return (
+              <button
+                key={metric.key}
+                onClick={() => toggleMetric(metric.key)}
+                className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                  isEnabled
+                    ? 'bg-blue-50 border-blue-200 text-blue-700'
+                    : 'bg-white border-gray-200 text-gray-500 hover:border-gray-300'
+                }`}
+              >
+                {metric.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="h-96">
+        {!hasData ? (
+          <div className="h-full flex items-center justify-center text-sm text-gray-500 bg-gray-50 rounded-lg border border-dashed border-gray-200">
+            No performance rows for this ad in the selected date range.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={ad.daily} syncId="fatigue-sync">
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(value) => value?.slice(5)} />
+              <YAxis yAxisId="rate" tick={{ fontSize: 10 }} tickFormatter={(value) => `${value.toFixed(1)}%`} />
+              <YAxis yAxisId="volume" orientation="right" tick={{ fontSize: 10 }} tickFormatter={formatVolume} />
+              <Tooltip
+                contentStyle={{ fontSize: 12 }}
+                formatter={(value, key) => {
+                  const metric = metricsByKey.get(key);
+                  if (!metric) return [value, key];
+                  if (metric.suffix === '%') return [`${Number(value).toFixed(2)}%`, metric.label];
+                  return [formatVolume(Number(value)), metric.label];
+                }}
+                labelFormatter={(value) => `Date: ${value}`}
+              />
+              {AD_LAYER_CHART_METRICS.map((metric) => {
+                if (!enabledMetricKeys.has(metric.key)) return null;
+                if (metric.type === 'bar') {
+                  return (
+                    <Bar
+                      key={metric.key}
+                      yAxisId={metric.axis}
+                      dataKey={metric.key}
+                      fill={metric.color}
+                      fillOpacity={0.25}
+                      barSize={14}
+                      radius={[3, 3, 0, 0]}
+                    />
+                  );
+                }
+                return (
+                  <Line
+                    key={metric.key}
+                    yAxisId={metric.axis}
+                    type="monotone"
+                    dataKey={metric.key}
+                    stroke={metric.color}
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls
+                  />
+                );
+              })}
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CorrelationScatter({ daily, correlation }) {
   const data = daily.map(d => ({
     frequency: d.frequency,
     ctr: d.ctr,
     date: d.date
   }));
-  
+
   // Calculate trend line
   const frequencies = data.map(d => d.frequency);
   const ctrs = data.map(d => d.ctr);
   const minFreq = Math.min(...frequencies);
   const maxFreq = Math.max(...frequencies);
-  
+
   // Simple linear regression for trend line
   const n = frequencies.length;
   const sumX = frequencies.reduce((a, b) => a + b, 0);
   const sumY = ctrs.reduce((a, b) => a + b, 0);
   const sumXY = frequencies.reduce((acc, x, i) => acc + x * ctrs[i], 0);
   const sumX2 = frequencies.reduce((acc, x) => acc + x * x, 0);
-  
+
   const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
   const intercept = (sumY - slope * sumX) / n;
-  
+
   const trendData = [
     { frequency: minFreq, trend: slope * minFreq + intercept },
     { frequency: maxFreq, trend: slope * maxFreq + intercept }
   ];
-  
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
       <div className="flex items-center justify-between mb-3">
@@ -455,30 +580,30 @@ function CorrelationScatter({ daily, correlation }) {
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis 
-              dataKey="frequency" 
+            <XAxis
+              dataKey="frequency"
               type="number"
               tick={{ fontSize: 10 }}
               tickFormatter={(val) => val.toFixed(1)}
               label={{ value: 'Frequency', position: 'bottom', fontSize: 10, offset: -5 }}
               domain={['auto', 'auto']}
             />
-            <YAxis 
+            <YAxis
               tick={{ fontSize: 10 }}
               tickFormatter={(val) => `${val.toFixed(1)}%`}
               label={{ value: 'Link CTR', angle: -90, position: 'insideLeft', fontSize: 10 }}
               domain={['auto', 'auto']}
             />
-            <Tooltip 
+            <Tooltip
               contentStyle={{ fontSize: 11 }}
               formatter={(value, name) => [
                 name === 'ctr' ? `${value.toFixed(2)}%` : value.toFixed(2),
                 name === 'ctr' ? 'Link CTR' : 'Frequency'
               ]}
             />
-            <Scatter 
-              dataKey="ctr" 
-              fill="#3b82f6" 
+            <Scatter
+              dataKey="ctr"
+              fill="#3b82f6"
               fillOpacity={0.7}
             />
             <Line
@@ -494,7 +619,7 @@ function CorrelationScatter({ daily, correlation }) {
         </ResponsiveContainer>
       </div>
       <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-600">
-        <strong>Pattern:</strong> {correlation.frequencyCtr.r < -0.5 
+        <strong>Pattern:</strong> {correlation.frequencyCtr.r < -0.5
           ? 'Strong negative correlation — as frequency rises, Link CTR falls. This is a high-confidence fatigue signal.'
           : correlation.frequencyCtr.r < -0.3
           ? 'Moderate negative correlation — Link CTR may be softening from repeat exposure.'
@@ -510,14 +635,14 @@ function NewReachChart({ ads }) {
   const allDates = new Set();
   ads.forEach(ad => ad.daily.forEach(d => allDates.add(d.date)));
   const sortedDates = Array.from(allDates).sort();
-  
+
   // Group by week
   let weekNum = 1;
   for (let i = 0; i < sortedDates.length; i += 7) {
     const weekDates = sortedDates.slice(i, i + 7);
     let totalReach = 0;
     let count = 0;
-    
+
     ads.forEach(ad => {
       weekDates.forEach(date => {
         const dayData = ad.daily.find(d => d.date === date);
@@ -527,7 +652,7 @@ function NewReachChart({ ads }) {
         }
       });
     });
-    
+
     if (count > 0) {
       weeklyData.push({
         week: `W${weekNum}`,
@@ -536,7 +661,7 @@ function NewReachChart({ ads }) {
       weekNum++;
     }
   }
-  
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
       <div className="flex items-center justify-between mb-3">
@@ -548,12 +673,12 @@ function NewReachChart({ ads }) {
           <ComposedChart data={weeklyData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
             <XAxis dataKey="week" tick={{ fontSize: 10 }} />
-            <YAxis 
+            <YAxis
               tick={{ fontSize: 10 }}
               tickFormatter={(val) => `${val.toFixed(0)}%`}
               domain={[0, 'auto']}
             />
-            <Tooltip 
+            <Tooltip
               formatter={(value) => [`${value.toFixed(1)}%`, 'New Reach']}
             />
             <ReferenceLine y={20} stroke="#ef4444" strokeDasharray="3 3" />
@@ -590,7 +715,7 @@ function HowToUseGuide({ isOpen, onToggle }) {
         </div>
         {isOpen ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
       </button>
-      
+
       {isOpen && (
         <div className="px-6 pb-6 space-y-6 animate-fadeIn">
           <div className="grid md:grid-cols-2 gap-6">
@@ -601,7 +726,7 @@ function HowToUseGuide({ isOpen, onToggle }) {
                 What This Tool Does
               </h4>
               <p className="text-sm text-gray-600 mb-3">
-                When ad performance drops, you need to know <strong>why</strong> before you can fix it. 
+                When ad performance drops, you need to know <strong>why</strong> before you can fix it.
                 This tool uses statistical analysis to distinguish between two different problems:
               </p>
               <div className="space-y-2">
@@ -621,7 +746,7 @@ function HowToUseGuide({ isOpen, onToggle }) {
                 </div>
               </div>
             </div>
-            
+
             {/* How To Read The Results */}
             <div className="bg-white rounded-lg p-4 shadow-sm">
               <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
@@ -648,7 +773,7 @@ function HowToUseGuide({ isOpen, onToggle }) {
               </div>
             </div>
           </div>
-          
+
           {/* Visual Guide */}
           <div className="bg-white rounded-lg p-4 shadow-sm">
             <h4 className="font-semibold text-gray-900 mb-4">Visual Pattern Guide</h4>
@@ -671,7 +796,7 @@ function HowToUseGuide({ isOpen, onToggle }) {
                   <strong>One ad drops</strong> while others stay stable → Refresh that creative
                 </div>
               </div>
-              
+
               <div className="border border-purple-200 rounded-lg p-3 bg-purple-50/50">
                 <div className="text-sm font-medium text-purple-800 mb-2">Audience Saturation Pattern</div>
                 <div className="h-20 flex items-end gap-1 mb-2">
@@ -692,11 +817,11 @@ function HowToUseGuide({ isOpen, onToggle }) {
               </div>
             </div>
           </div>
-          
+
           {/* Statistical Rigor Note */}
           <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-600">
-            <strong className="text-gray-900">Statistical Rigor:</strong> This tool uses Pearson correlation (r) with 
-            p-value significance testing at the 0.05 level. Results marked "High Confidence" have p &lt; 0.01. 
+            <strong className="text-gray-900">Statistical Rigor:</strong> This tool uses Pearson correlation (r) with
+            p-value significance testing at the 0.05 level. Results marked "High Confidence" have p &lt; 0.01.
             Click the <HelpCircle className="w-3 h-3 inline text-gray-400" /> icons throughout for detailed explanations.
           </div>
         </div>
@@ -730,12 +855,12 @@ function SummaryCards({ summary }) {
 
 function AdSetListItem({ adSet, isSelected, onClick }) {
   const config = STATUS_CONFIG[adSet.status];
-  
+
   return (
     <button
       onClick={onClick}
       className={`w-full text-left p-3 rounded-lg border transition-all ${
-        isSelected 
+        isSelected
           ? `${config.bgColor} ${config.borderColor} ring-2 ring-${config.color}-300`
           : 'bg-white border-gray-200 hover:border-gray-300 hover:shadow-sm'
       }`}
@@ -813,10 +938,10 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
       </div>
     );
   }
-  
+
   const config = STATUS_CONFIG[adSet.status];
-  const ad = selectedAd || adSet.ads[0];
-  
+  const ad = selectedAd || adSet.ads.find((item) => Array.isArray(item.daily) && item.daily.length > 0) || adSet.ads[0];
+
   return (
     <div className="flex-1 space-y-4 overflow-y-auto">
       {/* Diagnosis Header */}
@@ -829,7 +954,7 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
           <ConfidenceBadge level={adSet.confidence} />
         </div>
         <p className={`text-sm ${config.textColor}`}>{adSet.recommendation}</p>
-        
+
         {/* Saturation Metrics */}
         {adSet.status === 'saturated' && (
           <div className="mt-4 grid grid-cols-3 gap-3">
@@ -848,28 +973,28 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
           </div>
         )}
       </div>
-      
+
       {/* Charts Row */}
       <div className="grid grid-cols-2 gap-4">
         {/* All Ads Link CTR Chart */}
-        <MultiLineChart 
-          ads={adSet.ads} 
-          metric="ctr" 
+        <MultiLineChart
+          ads={adSet.ads}
+          metric="ctr"
           title="Link CTR Over Time — All Ads in This Ad Set"
         />
-        
+
         {/* Frequency Chart */}
-        <MultiLineChart 
-          ads={adSet.ads} 
-          metric="frequency" 
+        <MultiLineChart
+          ads={adSet.ads}
+          metric="frequency"
           title="Frequency Over Time"
         />
       </div>
-      
+
       {/* Individual Ad Section */}
       <div className="bg-white rounded-xl border border-gray-200 p-4">
         <h4 className="font-semibold text-gray-900 mb-3">Individual Ad Analysis</h4>
-        
+
         {/* Ad Selector */}
         <div className="flex flex-wrap gap-2 mb-4">
           {adSet.ads.map((adItem, i) => {
@@ -880,7 +1005,7 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
                 key={adItem.ad_id}
                 onClick={() => onSelectAd(adItem)}
                 className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                  isActive 
+                  isActive
                     ? `${adConfig.bgColor} ${adConfig.textColor} ring-2 ring-${adConfig.color}-300`
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
@@ -888,11 +1013,12 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
                 <span className={`inline-block w-2 h-2 rounded-full mr-2 ${adConfig.dotColor}`}></span>
                 {adItem.ad_name?.slice(0, 25) || `Ad ${i + 1}`}
                 {adItem.ad_name?.length > 25 && '...'}
+                {(!Array.isArray(adItem.daily) || adItem.daily.length === 0) && ' (no range data)'}
               </button>
             );
           })}
         </div>
-        
+
         {/* Selected Ad Details */}
         {ad && (
           <div className="space-y-4">
@@ -921,7 +1047,7 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
                 info="correlation"
               />
             </div>
-            
+
             {/* Charts Row */}
             <div className="text-xs text-gray-500 -mb-2">
               Chart metric audit: Link CTR = link clicks / impressions (link clicks prefer inline link clicks, then outbound clicks when inline is unavailable).
@@ -937,13 +1063,15 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
                 leftColor="#3b82f6"
                 rightColor="#f59e0b"
               />
-              
+
               <CorrelationScatter
                 daily={ad.daily}
                 correlation={ad.correlation}
               />
             </div>
-            
+
+            <AdLayeredPerformanceChart ad={ad} />
+
             {/* Statistical Summary */}
             <div className={`rounded-lg p-4 ${STATUS_CONFIG[ad.status].bgColor} border ${STATUS_CONFIG[ad.status].borderColor}`}>
               <div className="flex items-center gap-2 mb-2">
@@ -951,6 +1079,11 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
                 <span className={`font-medium ${STATUS_CONFIG[ad.status].textColor}`}>Statistical Summary</span>
                 <InfoTooltip contentKey="pValue" />
               </div>
+              {ad.insufficientDataReason && (
+                <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 mb-3">
+                  {ad.insufficientDataReason}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <span className="text-gray-600">Frequency ↔ Link CTR Correlation:</span>
@@ -984,7 +1117,7 @@ function AdDetailPanel({ adSet, selectedAd, onSelectAd }) {
           </div>
         )}
       </div>
-      
+
       {/* New Reach Chart (for saturation) */}
       {adSet.status === 'saturated' && (
         <NewReachChart ads={adSet.ads} />
@@ -1007,7 +1140,7 @@ export default function FatigueDetector({ store, formatCurrency }) {
   const [days, setDays] = useState(30);
   const [includeInactiveCampaigns, setIncludeInactiveCampaigns] = useState(false);
   const [expandedCampaignIds, setExpandedCampaignIds] = useState(new Set());
-  
+
   // Load fatigue data
   const loadData = async () => {
     setLoading(true);
@@ -1020,7 +1153,7 @@ export default function FatigueDetector({ store, formatCurrency }) {
       });
       const response = await fetch(`${API_BASE}/fatigue?${params}`);
       const result = await response.json();
-      
+
       if (result.success) {
         setData(result);
         // Auto-select first problematic ad set, or first ad set
@@ -1039,11 +1172,11 @@ export default function FatigueDetector({ store, formatCurrency }) {
     }
     setLoading(false);
   };
-  
+
   useEffect(() => {
     loadData();
   }, [store.id, days, includeInactiveCampaigns]);
-  
+
   const selectedAdSet = useMemo(() => {
     return data?.adSets?.find(a => a.adset_id === selectedAdSetId);
   }, [data, selectedAdSetId]);
@@ -1091,7 +1224,7 @@ export default function FatigueDetector({ store, formatCurrency }) {
       return next;
     });
   };
-  
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -1102,7 +1235,7 @@ export default function FatigueDetector({ store, formatCurrency }) {
       </div>
     );
   }
-  
+
   if (error) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -1120,7 +1253,7 @@ export default function FatigueDetector({ store, formatCurrency }) {
       </div>
     );
   }
-  
+
   if (!data?.adSets?.length) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -1134,7 +1267,7 @@ export default function FatigueDetector({ store, formatCurrency }) {
       </div>
     );
   }
-  
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -1173,13 +1306,13 @@ export default function FatigueDetector({ store, formatCurrency }) {
           </button>
         </div>
       </div>
-      
+
       {/* Educational Guide */}
       <HowToUseGuide isOpen={showGuide} onToggle={() => setShowGuide(!showGuide)} />
-      
+
       {/* Summary Cards */}
       <SummaryCards summary={data.summary} />
-      
+
       {/* Main Content */}
       <div className="flex gap-6 min-h-[600px]">
         {/* Left Panel - Campaign -> Ad Set Hierarchy */}
@@ -1216,7 +1349,7 @@ export default function FatigueDetector({ store, formatCurrency }) {
             )}
           </div>
         </div>
-        
+
         {/* Right Panel - Analysis */}
         <AdDetailPanel
           adSet={selectedAdSet}
@@ -1224,10 +1357,10 @@ export default function FatigueDetector({ store, formatCurrency }) {
           onSelectAd={setSelectedAd}
         />
       </div>
-      
+
       {/* Footer */}
       <div className="text-center text-xs text-gray-400 pt-4 border-t border-gray-100">
-        Analysis based on {data.dateRange.start} to {data.dateRange.end} • 
+        Analysis based on {data.dateRange.start} to {data.dateRange.end} •
         Using Pearson correlation on Link CTR (link clicks ÷ impressions) with p &lt; 0.05 significance threshold
       </div>
     </div>
