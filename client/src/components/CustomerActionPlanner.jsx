@@ -149,8 +149,13 @@ function normalizeRate(rawValue) {
     if (absPercentValue <= RATE_NORMALIZATION_RULES.percentMaxAbs) {
       return numericValue / RATE_NORMALIZATION_RULES.percentDivisor;
     }
+    if (absPercentValue <= RATE_NORMALIZATION_RULES.percentMaxAbs * 10) {
+      // Sign-symmetric scaling step for large percent strings:
+      // +1000% -> +100%, -1000% -> -100%.
+      return numericValue / (RATE_NORMALIZATION_RULES.percentDivisor * 10);
+    }
     if (absPercentValue <= RATE_NORMALIZATION_RULES.basisPointsMaxAbs) {
-      // Some feeds emit basis points with a '%' suffix (e.g. -1000% meaning -10%).
+      // Optional basis-points-style fallback with preserved sign.
       return numericValue / RATE_NORMALIZATION_RULES.basisPointsDivisor;
     }
     return null;
