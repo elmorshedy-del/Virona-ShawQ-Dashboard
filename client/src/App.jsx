@@ -32,6 +32,7 @@ import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
 import CustomerInsightsTab from './components/CustomerInsightsTab';
 import WatchtowerTab from './components/WatchtowerTab';
 import CROForensicsTab from './components/CROForensicsTab';
+import ConversionUIFixLabTab from './components/ConversionUIFixLabTab';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -399,7 +400,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics'];
 const TAB_INDEX = Object.freeze(
   TABS.reduce((indexMap, tabLabel, index) => {
     indexMap[tabLabel] = index;
@@ -414,6 +415,7 @@ const SESSION_INTELLIGENCE_TAB_INDEX = TAB_INDEX['Session Intelligence'];
 const NEO_META_TAB_INDEX = TAB_INDEX['NeoMeta'];
 const PRODUCT_FINDER_TAB_INDEX = TAB_INDEX['Product Finder'];
 const CUSTOMER_INSIGHTS_TAB_INDEX = TAB_INDEX['Customer Insights'];
+const CONVERSION_UI_FIX_LAB_TAB_INDEX = TAB_INDEX['Conversion/UI Fix Lab'];
 const BUDGET_EFFICIENCY_TAB_INDEX = TAB_INDEX['Budget Efficiency'];
 const BUDGET_INTELLIGENCE_TAB_INDEX = TAB_INDEX['Budget Intelligence'];
 const MANUAL_DATA_TAB_INDEX = TAB_INDEX['Manual Data'];
@@ -426,7 +428,7 @@ const BUDGET_CALCULATOR_TAB_INDEX = TAB_INDEX['Budget Calculator'];
 const EXCHANGE_RATES_TAB_INDEX = TAB_INDEX['Exchange Rates'];
 const WATCHTOWER_TAB_INDEX = TAB_INDEX['Watchtower'];
 const CRO_FORENSICS_TAB_INDEX = TAB_INDEX['CRO Forensics'];
-const TABS_VERSION = '2026-01-31-customer-insights-after-neometa-v1';
+const TABS_VERSION = '2026-02-12-conversion-ui-fix-lab-after-customer-insights-v2';
 const MOBILE_VIEWPORT_MAX_WIDTH_PX = 768;
 const MOBILE_VIEWPORT_QUERY = `(max-width: ${MOBILE_VIEWPORT_MAX_WIDTH_PX}px)`;
 const MOBILE_DASHBOARD_TREND_POINTS = 14;
@@ -1811,6 +1813,10 @@ export default function App() {
 	            dateRange={dateRange}
 	          />
 	        )}
+
+        {activeTab === CONVERSION_UI_FIX_LAB_TAB_INDEX && (
+          <ConversionUIFixLabTab />
+        )}
 
         {activeTab === BUDGET_EFFICIENCY_TAB_INDEX && efficiency && (
           <EfficiencyTab
