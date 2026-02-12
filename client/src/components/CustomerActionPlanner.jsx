@@ -539,8 +539,8 @@ export default function CustomerActionPlanner({ data, onOpenSection, embedded = 
           </div>
           <div className="mt-3 space-y-2">
             {plan.guardrails.map((note) => (
-              <div key={note} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                {note}
+              <div key={note.id} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                {note.text}
               </div>
             ))}
           </div>
