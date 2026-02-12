@@ -145,7 +145,15 @@ function normalizeRate(rawValue) {
   if (!Number.isFinite(numericValue)) return null;
 
   if (isPercentString) {
-    return numericValue / RATE_NORMALIZATION_RULES.percentDivisor;
+    const absPercentValue = Math.abs(numericValue);
+    if (absPercentValue <= RATE_NORMALIZATION_RULES.percentMaxAbs) {
+      return numericValue / RATE_NORMALIZATION_RULES.percentDivisor;
+    }
+    if (absPercentValue <= RATE_NORMALIZATION_RULES.basisPointsMaxAbs) {
+      // Some feeds emit basis points with a '%' suffix (e.g. -1000% meaning -10%).
+      return numericValue / RATE_NORMALIZATION_RULES.basisPointsDivisor;
+    }
+    return null;
   }
 
   const absValue = Math.abs(numericValue);
@@ -157,6 +165,12 @@ function normalizeRate(rawValue) {
     return numericValue / RATE_NORMALIZATION_RULES.basisPointsDivisor;
   }
   return null;
+}
+
+function normalizeUnitShare(rawValue) {
+  const normalized = normalizeRate(rawValue);
+  if (normalized == null) return null;
+  return Math.min(1, Math.max(0, normalized));
 }
 
 function cleanMoverProductTitle(rawTitle, suffix) {
@@ -172,7 +186,7 @@ function makeDiscountLookup(discountSkus) {
   const lookup = new Map();
   (discountSkus || []).forEach((row) => {
     if (!row?.title) return;
-    lookup.set(String(row.title).toLowerCase(), normalizeRate(row.discountShare) || 0);
+    lookup.set(String(row.title).toLowerCase(), normalizeUnitShare(row.discountShare) || 0);
   });
   return lookup;
 }
@@ -252,10 +266,10 @@ function buildWatchlists({ topProducts, discountSkus, upInsight, downInsight }) 
 function buildActions({ data, topProducts, discountMetrics, repeatRate, upInsight, downInsight }) {
   const actions = [];
   const bundleTop = data?.sections?.bundles?.bundles?.[0] || null;
-  const cityCoverage = normalizeRate(data?.sections?.segments?.geo?.cityCoverage);
-  const countryCoverage = normalizeRate(data?.sections?.segments?.geo?.countryCoverage);
-  const discountRevenueShare = normalizeRate(discountMetrics.discountRevenueShare) || 0;
-  const normalizedRepeatRate = normalizeRate(repeatRate);
+  const cityCoverage = normalizeUnitShare(data?.sections?.segments?.geo?.cityCoverage);
+  const countryCoverage = normalizeUnitShare(data?.sections?.segments?.geo?.countryCoverage);
+  const discountRevenueShare = normalizeUnitShare(discountMetrics.discountRevenueShare) || 0;
+  const normalizedRepeatRate = normalizeUnitShare(repeatRate);
   const orders = data?.dataQuality?.orders || 0;
 
   if (upInsight) {
@@ -404,8 +418,8 @@ function buildGuardrails(data, actions) {
   const notes = [];
   const orders = data?.dataQuality?.orders || 0;
   const hasItems = Boolean(data?.dataQuality?.hasItems);
-  const cityCoverage = normalizeRate(data?.sections?.segments?.geo?.cityCoverage);
-  const countryCoverage = normalizeRate(data?.sections?.segments?.geo?.countryCoverage);
+  const cityCoverage = normalizeUnitShare(data?.sections?.segments?.geo?.cityCoverage);
+  const countryCoverage = normalizeUnitShare(data?.sections?.segments?.geo?.countryCoverage);
   const compareDays = data?.window?.days;
 
   if (compareDays) {
