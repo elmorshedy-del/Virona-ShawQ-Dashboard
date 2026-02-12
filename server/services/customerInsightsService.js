@@ -1363,39 +1363,116 @@ function rankProducts(metricsMap) {
   return { sorted, ranks };
 }
 
-const SALES_LIFT_NORMALIZATION = Object.freeze({
-  maxDirectDecline: -1,
-  percentMultiplier: 100
+const PRODUCT_SHIFT_REPORTING_RULES = Object.freeze({
+  percentMultiplier: 100,
+  minBaselineForPercent: 20,
+  minAbsoluteDeltaForPercent: 3,
+  foldFirstThreshold: 10
 });
 
-function normalizeSalesLiftForNarrative(lift) {
+function normalizeSalesLiftForPercent(lift) {
   if (!Number.isFinite(lift)) return null;
-  if (lift >= SALES_LIFT_NORMALIZATION.maxDirectDecline) return lift;
+  if (lift >= -1) return lift;
 
   const declineMultiple = Math.abs(lift);
-  if (declineMultiple <= 0) return SALES_LIFT_NORMALIZATION.maxDirectDecline;
+  if (declineMultiple <= 0) return -1;
 
-  // If lift is represented as "N times lower" (e.g. -10 for 10x lower),
-  // convert to conventional percent-drop space.
+  // Convert "N times lower" encoded lift (e.g. -10) into percent-drop space.
   return -(1 - (1 / declineMultiple));
 }
 
-function formatSalesLiftPercentForNarrative(lift) {
-  const normalizedLift = normalizeSalesLiftForNarrative(lift);
+function formatSalesLiftPercent(lift) {
+  const normalizedLift = normalizeSalesLiftForPercent(lift);
   if (normalizedLift == null) return null;
-
-  return Math.abs(normalizedLift * SALES_LIFT_NORMALIZATION.percentMultiplier).toFixed(0) + '%';
+  return Math.abs(normalizedLift * PRODUCT_SHIFT_REPORTING_RULES.percentMultiplier).toFixed(0) + '%';
 }
 
-function formatSalesDropDetailForNarrative(lift) {
-  const normalizedPercent = formatSalesLiftPercentForNarrative(lift);
-  if (normalizedPercent == null) return null;
-
-  if (Number.isFinite(lift) && lift < SALES_LIFT_NORMALIZATION.maxDirectDecline) {
-    return `${normalizedPercent} (${Math.abs(lift).toFixed(1)}x lower)`;
+function inferRevenueFold({ direction, prevRevenue, currRevenue, revenueLift }) {
+  if (Number.isFinite(prevRevenue) && prevRevenue > 0 && Number.isFinite(currRevenue) && currRevenue >= 0) {
+    if (direction === 'down' && currRevenue < prevRevenue) {
+      if (currRevenue === 0) return Infinity;
+      return prevRevenue / currRevenue;
+    }
+    if (direction === 'up' && currRevenue > prevRevenue) {
+      return currRevenue / prevRevenue;
+    }
   }
 
-  return normalizedPercent;
+  if (!Number.isFinite(revenueLift)) return null;
+  if (direction === 'down') {
+    if (revenueLift < -1) return Math.abs(revenueLift);
+    if (revenueLift < 0) return 1 / (1 + revenueLift);
+    return null;
+  }
+  if (direction === 'up') {
+    if (revenueLift > -1) return 1 + revenueLift;
+    return null;
+  }
+  return null;
+}
+
+function shouldShowPercentChange({ prevRevenue, revenueDelta, fold }) {
+  if (!Number.isFinite(prevRevenue) || prevRevenue < PRODUCT_SHIFT_REPORTING_RULES.minBaselineForPercent) {
+    return false;
+  }
+  if (!Number.isFinite(revenueDelta) || Math.abs(revenueDelta) < PRODUCT_SHIFT_REPORTING_RULES.minAbsoluteDeltaForPercent) {
+    return false;
+  }
+  if (fold == null) return true;
+  if (!Number.isFinite(fold)) return false;
+  return fold < PRODUCT_SHIFT_REPORTING_RULES.foldFirstThreshold;
+}
+
+function formatFoldValue(fold) {
+  if (!Number.isFinite(fold)) return '∞';
+  const rounded = Math.round(fold);
+  if (Math.abs(fold - rounded) < 0.05) return String(rounded);
+  return fold.toFixed(1);
+}
+
+function buildRevenueChangeNarrative({
+  direction,
+  revenueDelta,
+  revenueLift,
+  prevRevenue,
+  currRevenue
+}) {
+  const deltaMagnitude = Number.isFinite(revenueDelta) ? Math.abs(revenueDelta).toFixed(0) : null;
+  const percentChange = formatSalesLiftPercent(revenueLift);
+  const foldChange = inferRevenueFold({
+    direction,
+    prevRevenue,
+    currRevenue,
+    revenueLift
+  });
+  const usePercent = shouldShowPercentChange({
+    prevRevenue,
+    revenueDelta,
+    fold: foldChange
+  });
+
+  if (direction === 'down') {
+    if (deltaMagnitude != null && usePercent && percentChange != null) {
+      return `Revenue down ${deltaMagnitude} (${percentChange})`;
+    }
+    if (deltaMagnitude != null && foldChange != null) {
+      return `Revenue down ${deltaMagnitude} (${formatFoldValue(foldChange)}x lower)`;
+    }
+    if (percentChange != null) return `Revenue down ${percentChange}`;
+    return `Revenue ${Number.isFinite(revenueDelta) ? revenueDelta.toFixed(0) : '0'}`;
+  }
+
+  if (deltaMagnitude != null && usePercent && percentChange != null) {
+    return `Revenue up ${deltaMagnitude} (${percentChange})`;
+  }
+  if (deltaMagnitude != null && foldChange != null) {
+    return `Revenue up ${deltaMagnitude} (${formatFoldValue(foldChange)}x)`;
+  }
+  if (percentChange != null) return `Revenue up ${percentChange}`;
+
+  if (!Number.isFinite(revenueDelta)) return 'Revenue unchanged';
+  const fallbackMagnitude = Math.abs(revenueDelta).toFixed(0);
+  return `Revenue ${revenueDelta >= 0 ? '+' : '-'}${fallbackMagnitude}`;
 }
 
 function computeProductShiftInsights(currentItems, previousItems, minOrders = 2) {
@@ -1430,6 +1507,8 @@ function computeProductShiftInsights(currentItems, previousItems, minOrders = 2)
       title: current.title,
       currRank,
       prevRank,
+      currRevenue,
+      prevRevenue,
       rankDelta,
       revenueDelta,
       revenueLift,
@@ -1463,10 +1542,14 @@ function computeProductShiftInsights(currentItems, previousItems, minOrders = 2)
     const moveLabel = topGainer.isNew
       ? 'New entrant at #' + topGainer.currRank
       : 'Up ' + topGainer.rankDelta + ' spots to #' + topGainer.currRank;
-    const normalizedGainerPercent = formatSalesLiftPercentForNarrative(topGainer.revenueLift);
-    const liftLabel = normalizedGainerPercent != null
-      ? 'Revenue ' + (topGainer.revenueLift >= 0 ? 'up' : 'down') + ' ' + normalizedGainerPercent
-      : 'Revenue +' + topGainer.revenueDelta.toFixed(0);
+    const gainerDirection = topGainer.revenueDelta < 0 ? 'down' : 'up';
+    const liftLabel = buildRevenueChangeNarrative({
+      direction: gainerDirection,
+      revenueDelta: topGainer.revenueDelta,
+      revenueLift: topGainer.revenueLift,
+      prevRevenue: topGainer.prevRevenue,
+      currRevenue: topGainer.currRevenue
+    });
     insights.push({
       id: 'product-mover-up',
       title: topGainer.title + ' surged',
@@ -1479,10 +1562,14 @@ function computeProductShiftInsights(currentItems, previousItems, minOrders = 2)
 
   if (topDecliner) {
     const moveLabel = 'Down ' + Math.abs(topDecliner.rankDelta || 0) + ' spots to #' + topDecliner.currRank;
-    const normalizedDeclinerPercent = formatSalesDropDetailForNarrative(topDecliner.revenueLift);
-    const liftLabel = normalizedDeclinerPercent != null
-      ? 'Revenue down ' + normalizedDeclinerPercent
-      : 'Revenue ' + topDecliner.revenueDelta.toFixed(0);
+    const declinerDirection = topDecliner.revenueDelta <= 0 ? 'down' : 'up';
+    const liftLabel = buildRevenueChangeNarrative({
+      direction: declinerDirection,
+      revenueDelta: topDecliner.revenueDelta,
+      revenueLift: topDecliner.revenueLift,
+      prevRevenue: topDecliner.prevRevenue,
+      currRevenue: topDecliner.currRevenue
+    });
     insights.push({
       id: 'product-mover-down',
       title: topDecliner.title + ' softened',
