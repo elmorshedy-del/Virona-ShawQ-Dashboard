@@ -38,6 +38,12 @@ export default function ExchangeRateDebug() {
   const [manualRateValue, setManualRateValue] = useState('');
   const [manualOverwrite, setManualOverwrite] = useState(false);
   const [manualResult, setManualResult] = useState(null);
+  const [applyDateMode, setApplyDateMode] = useState('single');
+  const [applyDate, setApplyDate] = useState('');
+  const [applyStartDate, setApplyStartDate] = useState('');
+  const [applyEndDate, setApplyEndDate] = useState('');
+  const [applyResult, setApplyResult] = useState(null);
+  const [applyBusy, setApplyBusy] = useState(false);
 
   const loadDebugData = async () => {
     setLoading(true);
@@ -116,6 +122,37 @@ export default function ExchangeRateDebug() {
     }
   };
 
+  const handleApplyRates = async () => {
+    const payload = {};
+    if (applyDateMode === 'single') {
+      if (!applyDate) return;
+      payload.date = applyDate;
+    } else {
+      if (!applyStartDate || !applyEndDate) return;
+      payload.startDate = applyStartDate;
+      payload.endDate = applyEndDate;
+    }
+
+    setApplyBusy(true);
+    setApplyResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/exchange-rates/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const json = await res.json();
+      setApplyResult(json);
+      if (json.success) {
+        loadDebugData();
+      }
+    } catch (err) {
+      setApplyResult({ success: false, error: err.message || 'Failed to apply exchange rates.' });
+    } finally {
+      setApplyBusy(false);
+    }
+  };
+
 
   useEffect(() => {
     loadDebugData();
@@ -188,6 +225,10 @@ export default function ExchangeRateDebug() {
   const manualFormValid = manualRateValid && (
     (manualDateMode === 'single' && Boolean(manualDate)) ||
     (manualDateMode === 'range' && Boolean(manualStartDate) && Boolean(manualEndDate))
+  );
+  const applyFormValid = (
+    (applyDateMode === 'single' && Boolean(applyDate)) ||
+    (applyDateMode === 'range' && Boolean(applyStartDate) && Boolean(applyEndDate))
   );
 
 
@@ -349,6 +390,13 @@ export default function ExchangeRateDebug() {
                     {backfillResult.source && (
                       <div className="mt-1 text-xs text-green-700">Source: {providerLabel(backfillResult.source)}</div>
                     )}
+                    {backfillResult.applied?.totals && (
+                      <div className="mt-1 text-xs text-green-700">
+                        Applied to spend rows: {backfillResult.applied.totals.updated} updated
+                        {' • '}
+                        {backfillResult.applied.totals.convertible} with available rates
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div>
@@ -509,6 +557,13 @@ export default function ExchangeRateDebug() {
                     ) : manualResult.overwritten ? (
                       <div className="mt-1 text-xs text-green-700">Overwrote existing rate.</div>
                     ) : null}
+                    {manualResult.applied?.totals && (
+                      <div className="mt-1 text-xs text-green-700">
+                        Applied to spend rows: {manualResult.applied.totals.updated} updated
+                        {' • '}
+                        {manualResult.applied.totals.convertible} with available rates
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div>
@@ -524,6 +579,126 @@ export default function ExchangeRateDebug() {
               </div>
             )}
           </>
+        )}
+      </div>
+
+      {/* Apply Rates To Existing Spend Data */}
+      <div className="bg-white rounded-xl shadow-sm border p-4">
+        <h3 className="font-medium">Apply Rates To Existing Spend Data</h3>
+        <p className="text-sm text-gray-500 mt-1">
+          Recompute Shawq TRY-based spend/revenue fields for a date or range using stored TRY→USD rates.
+        </p>
+
+        <div className="mt-3 flex flex-col md:flex-row gap-2 md:items-end">
+          <div className="flex flex-col">
+            <label className="text-xs text-gray-500 mb-1">Dates</label>
+            <div className="inline-flex bg-gray-100 rounded-lg p-1 text-sm">
+              <button
+                type="button"
+                onClick={() => setApplyDateMode('single')}
+                className={`px-3 py-1 rounded-md ${applyDateMode === 'single' ? 'bg-white shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+              >
+                Single
+              </button>
+              <button
+                type="button"
+                onClick={() => setApplyDateMode('range')}
+                className={`px-3 py-1 rounded-md ${applyDateMode === 'range' ? 'bg-white shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+              >
+                Range
+              </button>
+            </div>
+            {missingRange && (
+              <button
+                type="button"
+                onClick={() => {
+                  setApplyDateMode('range');
+                  setApplyStartDate(missingRange.start);
+                  setApplyEndDate(missingRange.end);
+                }}
+                className="mt-1 text-xs text-blue-600 hover:text-blue-800"
+              >
+                Use missing range ({missingRange.start} → {missingRange.end})
+              </button>
+            )}
+          </div>
+
+          {applyDateMode === 'single' ? (
+            <div className="flex flex-col">
+              <label className="text-xs text-gray-500 mb-1">Date</label>
+              <input
+                type="date"
+                value={applyDate}
+                onChange={(e) => setApplyDate(e.target.value)}
+                className="border rounded px-3 py-2 text-sm"
+              />
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-col">
+                <label className="text-xs text-gray-500 mb-1">Start</label>
+                <input
+                  type="date"
+                  value={applyStartDate}
+                  onChange={(e) => setApplyStartDate(e.target.value)}
+                  className="border rounded px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="flex flex-col">
+                <label className="text-xs text-gray-500 mb-1">End</label>
+                <input
+                  type="date"
+                  value={applyEndDate}
+                  onChange={(e) => setApplyEndDate(e.target.value)}
+                  className="border rounded px-3 py-2 text-sm"
+                />
+              </div>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={handleApplyRates}
+            disabled={!applyFormValid || applyBusy}
+            className="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {applyBusy ? 'Applying...' : 'Apply To Metrics'}
+          </button>
+        </div>
+
+        {applyResult && (
+          <div
+            className={`mt-3 p-3 rounded text-sm ${applyResult.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}
+          >
+            {applyResult.success ? (
+              <div>
+                <div className="font-medium">Applied successfully</div>
+                <div className="mt-1">
+                  Date window: {applyResult.startDate} → {applyResult.endDate}
+                </div>
+                <div className="mt-1">
+                  Updated rows: {applyResult.totals?.updated || 0}
+                  {' • '}
+                  Convertible rows: {applyResult.totals?.convertible || 0}
+                  {' • '}
+                  Rows scanned: {applyResult.totals?.candidates || 0}
+                </div>
+                <div className="mt-1">
+                  Dates with rates: {applyResult.datesWithRates || 0}/{applyResult.totalDates || 0}
+                </div>
+                {Array.isArray(applyResult.missingRateDates) && applyResult.missingRateDates.length > 0 && (
+                  <div className="mt-1 text-xs">
+                    Missing rate dates: {applyResult.missingRateDates.join(', ')}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <div className="font-medium">Could not apply rates</div>
+                <div className="mt-1">{applyResult.error || 'Please try again.'}</div>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
