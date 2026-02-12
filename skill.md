@@ -1,5 +1,13 @@
 # Skill: Insight Engineering (Guidelines)
 
+## Critical Thread-Start Guardrail (Mandatory)
+- Before writing or editing code in each thread, run this checklist and keep it active through completion:
+- Deduplicate near-identical logic early (request parsing, fetch wrappers, mapping, formatter helpers).
+- Extract non-obvious numeric literals into named constants/config (especially limits, weights, thresholds, pace factors).
+- Use stable list keys (prefer IDs; otherwise deterministic prefix + index fallback) and avoid brittle concatenations.
+- Avoid raw one-off design tokens in components (colors, spacing, radii); prefer shared theme tokens/config where practical.
+- If any item above is violated in touched code, fix it in the same thread before shipping.
+
 ## Rules
 - After every commit, include the PR link in the status update to the user.
 - No magic numbers for thresholds/heuristics. Use named constants/config objects (e.g., `INSIGHT_THRESHOLDS`) so they’re readable, reviewable, and easy to tune later.
