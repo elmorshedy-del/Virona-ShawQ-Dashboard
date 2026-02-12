@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import MetaDemographics from './MetaDemographics';
 import BundleInsightsSection from './BundleInsightsSection';
+import CustomerActionPlanner from './CustomerActionPlanner';
 
 const formatPercent = (value) => {
   if (value == null || Number.isNaN(value)) return '—';
@@ -313,21 +314,27 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
           icon={sectionIcons.topProducts}
         >
           {(sections.topProducts?.products || []).length ? (
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {(sections.topProducts?.products || []).map((row) => (
-                <div key={row.key} className="flex items-center gap-3 rounded-xl border border-gray-100 bg-white px-3 py-3 shadow-sm">
-                  <ProductThumbnail src={row.image_url} title={row.title} />
-                  <div className="min-w-0 flex-1">
-                    <div className="line-clamp-2 text-sm font-semibold text-gray-900 whitespace-normal break-words">{row.title}</div>
-                    <div className="mt-1 text-xs text-gray-500">{formatNumber(row.orders)} orders · {formatNumber(row.quantity)} units</div>
+            <div className="space-y-5">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {(sections.topProducts?.products || []).map((row) => (
+                  <div key={row.key} className="flex items-center gap-3 rounded-xl border border-gray-100 bg-white px-3 py-3 shadow-sm">
+                    <ProductThumbnail src={row.image_url} title={row.title} />
+                    <div className="min-w-0 flex-1">
+                      <div className="line-clamp-2 text-sm font-semibold text-gray-900 whitespace-normal break-words">{row.title}</div>
+                      <div className="mt-1 text-xs text-gray-500">{formatNumber(row.orders)} orders · {formatNumber(row.quantity)} units</div>
+                    </div>
+                    <div className="text-right text-sm font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</div>
                   </div>
-                  <div className="text-right text-sm font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</div>
-                </div>
-              ))}
+                ))}
+              </div>
+              <CustomerActionPlanner data={data} onOpenSection={scrollToSection} embedded />
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
-              Product ranking will appear once line-item data is synced.
+            <div className="space-y-5">
+              <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
+                Product ranking will appear once line-item data is synced.
+              </div>
+              <CustomerActionPlanner data={data} onOpenSection={scrollToSection} embedded />
             </div>
           )}
         </SectionCard>
