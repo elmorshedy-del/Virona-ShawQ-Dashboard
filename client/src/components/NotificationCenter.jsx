@@ -8,12 +8,32 @@ const DEFAULT_CURRENCY_BY_STORE = {
   vironax: 'SAR'
 };
 
+const DEFAULT_UI_LOCALE = 'en-US';
+const ORDER_AMOUNT_DECIMAL_PLACES = 2;
+const ORDER_AMOUNT_FORMATTER = new Intl.NumberFormat(DEFAULT_UI_LOCALE, {
+  minimumFractionDigits: ORDER_AMOUNT_DECIMAL_PLACES,
+  maximumFractionDigits: ORDER_AMOUNT_DECIMAL_PLACES,
+  useGrouping: true
+});
+const ORDER_AMOUNT_INTEGER_FORMATTER = new Intl.NumberFormat(DEFAULT_UI_LOCALE, {
+  maximumFractionDigits: 0,
+  useGrouping: true
+});
+
 const DEFAULT_UNKNOWN_CAMPAIGN = 'Unattributed';
 const MESSAGE_SEPARATOR = ' • ';
 
 function normalizeWhitespace(value) {
   if (typeof value !== 'string') return '';
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function formatOrderAmount(amount, { source }) {
+  if (!Number.isFinite(amount)) return '';
+  if (source === 'meta') {
+    return ORDER_AMOUNT_INTEGER_FORMATTER.format(Math.round(amount));
+  }
+  return ORDER_AMOUNT_FORMATTER.format(amount);
 }
 
 function getNotificationSource(notification) {
@@ -75,9 +95,10 @@ function formatNotificationTitle(notification) {
 
   let amountLabel = '';
   if (amount !== null) {
+    const formattedAmount = formatOrderAmount(amount, { source });
     amountLabel = source === 'meta'
-      ? `${Math.round(amount).toLocaleString()} ${currency}`
-      : `${currency} ${amount.toFixed(2)}`;
+      ? `${formattedAmount} ${currency}`
+      : `${currency} ${formattedAmount}`;
   }
 
   const structuredParts = [countryLabel, amountLabel, sourceLabel].filter(Boolean);
