@@ -526,7 +526,7 @@ export default function ProductRadar() {
                 Product Radar Agent
               </div>
               <div className="text-xs text-indigo-200/80 mt-1">
-                Strategy generated {new Date(agentData.generatedAt || Date.now()).toLocaleString()}
+                {agentData.generatedAt ? `Strategy generated ${new Date(agentData.generatedAt).toLocaleString()}` : 'Strategy generation time not available'}
               </div>
             </div>
             <div className="flex flex-wrap gap-2 text-xs">
