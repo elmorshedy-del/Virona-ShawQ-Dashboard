@@ -2,6 +2,8 @@ import { getDb } from '../db/database.js';
 import { getCountryInfo } from '../utils/countryData.js';
 
 const DEFAULT_NOTIFICATION_LIMIT = 50;
+const META_NOTIFICATION_VALUE_DECIMALS = 2;
+const META_NOTIFICATION_VALUE_EPSILON = 0.01;
 
 // Check if Salla is active for VironaX
 function isSallaActive() {
@@ -174,10 +176,30 @@ export function createOrderNotifications(store, source, orders, options = {}) {
   const checkEventKeyStmt = db.prepare(
     `SELECT 1 FROM notifications WHERE store = ? AND source = ? AND event_key = ? LIMIT 1`
   );
+  const getNotificationByEventKeyStmt = db.prepare(
+    `SELECT metadata FROM notifications WHERE store = ? AND source = ? AND event_key = ? ORDER BY id DESC LIMIT 1`
+  );
   const hasEventKey = (eventKey) => {
     if (!eventKey) return false;
     const existing = checkEventKeyStmt.get(store, source, eventKey);
     return Boolean(existing);
+  };
+  const hasSameLegacyMetaAggregate = (legacyEventKey, currentCount, currentValue) => {
+    if (!legacyEventKey) return false;
+    const row = getNotificationByEventKeyStmt.get(store, source, legacyEventKey);
+    if (!row?.metadata) return false;
+
+    try {
+      const metadata = JSON.parse(row.metadata);
+      const previousCount = Number(metadata?.order_count || 0);
+      const previousValue = Number(metadata?.value || 0);
+      const countMatches = previousCount === Number(currentCount || 0);
+      const valueMatches = Math.abs(previousValue - Number(currentValue || 0)) < META_NOTIFICATION_VALUE_EPSILON;
+      return countMatches && valueMatches;
+    } catch (error) {
+      console.warn('[Notification] Failed to parse legacy meta notification metadata:', error?.message || error);
+      return false;
+    }
   };
 
   // Group orders by country for cleaner notifications (non-Shopify sources)
@@ -344,11 +366,18 @@ export function createOrderNotifications(store, source, orders, options = {}) {
       const eventDate = data.event_date || (data.latest ? data.latest.toISOString().slice(0, 10) : 'unknown-date');
       const eventCampaign = data.campaign_id || data.campaign_name || 'unknown-campaign';
       const eventCountry = data.code || data.label || displayCountry;
-      eventKey = `meta|${store}|${eventDate}|${eventCountry}|${eventCampaign}`;
-      const exists = db.prepare(`
-        SELECT 1 FROM notifications WHERE store = ? AND source = ? AND event_key = ? LIMIT 1
-      `).get(store, source, eventKey);
-      if (exists) {
+      const legacyEventKey = `meta|${store}|${eventDate}|${eventCountry}|${eventCampaign}`;
+      const valueSignature = Number(totalAmount || 0).toFixed(META_NOTIFICATION_VALUE_DECIMALS);
+      const countSignature = Number(data.count || 0);
+      const valueAwareEventKey = `${legacyEventKey}|${countSignature}|${valueSignature}`;
+
+      eventKey = valueAwareEventKey;
+
+      if (hasEventKey(valueAwareEventKey)) {
+        continue;
+      }
+
+      if (hasEventKey(legacyEventKey) && hasSameLegacyMetaAggregate(legacyEventKey, countSignature, Number(totalAmount || 0))) {
         continue;
       }
     }

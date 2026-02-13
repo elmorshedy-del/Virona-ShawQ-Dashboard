@@ -17,6 +17,8 @@ const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 // Historical backfill configuration
 const BACKFILL_CHUNK_DAYS = 30; // Fetch in 30-day chunks
 const MAX_HISTORICAL_DAYS = 730; // Attempt up to 2 years of history (Meta typically allows 37 months)
+const META_NOTIFICATION_LAG_DAYS = 14;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 // Cache for exchange rate (refresh every hour)
 import metaToAIBridge from './metaToAIBridge.js';
@@ -935,6 +937,7 @@ export async function syncMetaData(store, options = {}) {
     console.log(`[Meta] Successfully synced ${campaignRows} campaigns, ${adsetRows} ad sets, ${adRows} ads (${totalRows} total).`);
 
     if (store === 'vironax') {
+      const notificationWindowStart = formatDate(new Date(new Date(`${endDate}T00:00:00Z`).getTime() - (META_NOTIFICATION_LAG_DAYS * DAY_IN_MS)));
       // Include campaign_name to show which campaign drove the conversion
       const metaOrderRows = db.prepare(`
         SELECT date,
@@ -952,7 +955,7 @@ export async function syncMetaData(store, options = {}) {
 
       const syncTimestamp = new Date().toISOString();
       const metaOrders = metaOrderRows
-        .filter(row => row.date === endDate)
+        .filter(row => row.date >= notificationWindowStart && row.date <= endDate)
         .filter(row => (row.conversions || 0) > 0 && (row.conversion_value || 0) > 0)
         .map(row => ({
           date: row.date,
