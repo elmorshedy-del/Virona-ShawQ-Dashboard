@@ -154,13 +154,32 @@ export function createOrderNotifications(store, source, orders, options = {}) {
       }
 
       // Fallback to notification row timestamp if metadata is missing/invalid
-      if (isNaN(lastTimestamp.getTime())) {
+      if (isNaN(lastTimestamp.getTime()) || lastTimestamp.getTime() === 0) {
         lastTimestamp = new Date(lastNotification.timestamp);
       }
     }
   }
 
-  // Group orders by country for cleaner notifications
+  // Helpers reused below
+  const getOrderEventDate = (order) => {
+    const parsed = new Date(order.order_created_at || order.created_at || order.date || order.timestamp);
+    return isNaN(parsed) ? null : parsed;
+  };
+
+  const toNumber = (value) => {
+    const parsed = typeof value === 'string' ? Number(value.replace(/,/g, '')) : Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const hasEventKey = (eventKey) => {
+    if (!eventKey) return false;
+    const existing = db.prepare(
+      `SELECT 1 FROM notifications WHERE store = ? AND source = ? AND event_key = ? LIMIT 1`
+    ).get(store, source, eventKey);
+    return Boolean(existing);
+  };
+
+  // Group orders by country for cleaner notifications (non-Shopify sources)
   const ordersByCountry = {};
 
   const normalizeCountry = (order, fallback = 'Unknown') => {
@@ -190,11 +209,63 @@ export function createOrderNotifications(store, source, orders, options = {}) {
     lastTimestamp = new Date(0);
   }
 
+  // Shopify: emit one notification per order so values match Shopify admin totals
+  if (isShopify) {
+    const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
+
+    for (const order of orders) {
+      const orderDate = getOrderEventDate(order);
+      if (!orderDate) continue;
+      if (orderDate <= lastTimestamp) continue;
+
+      const country = normalizeCountry(order);
+      const value = toNumber(order.order_total || order.total_price || order.revenue || order.value || 0);
+      const currency = order.currency || fallbackCurrency;
+
+      const displayCountry = country.label || country.code || 'Unknown';
+      const orderId = order.order_id ? String(order.order_id) : null;
+      const eventKey = orderId ? `shopify|${store}|${orderId}` : null;
+      if (hasEventKey(eventKey)) continue;
+
+      const dateKey = orderDate.toISOString().slice(0, 10);
+      const matchedCampaign = findShopifyCampaignName(db, {
+        store,
+        date: dateKey,
+        countryLabel: displayCountry,
+        countryCode: country.code,
+        amount: value
+      });
+
+      createNotification({
+        store,
+        type: 'order',
+        message: `${displayCountry} • ${currency} ${value.toFixed(2)} • ${sourceLabel}`,
+        metadata: {
+          source,
+          country: displayCountry,
+          country_code: country.code,
+          currency,
+          value,
+          order_count: 1,
+          timestamp: orderDate.toISOString(),
+          campaign_name: matchedCampaign || null,
+          order_id: orderId
+        },
+        timestamp: orderDate.toISOString(),
+        eventKey
+      });
+
+      created++;
+    }
+
+    return created;
+  }
+
   for (const order of orders) {
     // Shawq/Shopify uses order_created_at and order_total, others use created_at and total_price
-    const orderDate = new Date(order.order_created_at || order.created_at || order.date || order.timestamp);
+    const orderDate = getOrderEventDate(order);
 
-    if (isNaN(orderDate)) {
+    if (!orderDate) {
       continue;
     }
 
@@ -204,7 +275,7 @@ export function createOrderNotifications(store, source, orders, options = {}) {
     }
 
     const country = normalizeCountry(order);
-    const value = parseFloat(order.order_total || order.total_price || order.revenue || order.value || 0);
+    const value = toNumber(order.order_total || order.total_price || order.revenue || order.value || 0);
     const currency = order.currency || fallbackCurrency;
 
     const countryKey = country.code || country.label || 'Unknown';
