@@ -171,11 +171,12 @@ export function createOrderNotifications(store, source, orders, options = {}) {
     return Number.isFinite(parsed) ? parsed : 0;
   };
 
+  const checkEventKeyStmt = db.prepare(
+    `SELECT 1 FROM notifications WHERE store = ? AND source = ? AND event_key = ? LIMIT 1`
+  );
   const hasEventKey = (eventKey) => {
     if (!eventKey) return false;
-    const existing = db.prepare(
-      `SELECT 1 FROM notifications WHERE store = ? AND source = ? AND event_key = ? LIMIT 1`
-    ).get(store, source, eventKey);
+    const existing = checkEventKeyStmt.get(store, source, eventKey);
     return Boolean(existing);
   };
 
