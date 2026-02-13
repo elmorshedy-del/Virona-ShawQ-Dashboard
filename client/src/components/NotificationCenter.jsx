@@ -84,6 +84,31 @@ function getNotificationCampaignName(notification) {
   return null;
 }
 
+function getAttributionLabel(notification) {
+  const metadata = notification?.metadata || {};
+  const campaign = normalizeWhitespace(
+    metadata.campaign_name ||
+    metadata.campaignName ||
+    metadata.campaign ||
+    metadata.campaign_id ||
+    metadata.campaignId ||
+    ''
+  );
+  const adset = normalizeWhitespace(metadata.adset_name || metadata.adsetName || '');
+  const ad = normalizeWhitespace(metadata.ad_name || metadata.adName || '');
+
+  const parts = [];
+  if (campaign) parts.push(campaign);
+  if (adset) parts.push(adset);
+  if (ad) parts.push(ad);
+
+  if (parts.length === 0) {
+    return DEFAULT_UNKNOWN_CAMPAIGN;
+  }
+
+  return parts.join(' • ');
+}
+
 function formatNotificationTitle(notification) {
   const metadata = notification?.metadata || {};
   const source = getNotificationSource(notification);
@@ -142,8 +167,7 @@ function NotificationRow({
   const storeLogo = notification.store === 'shawq' ? '/shawq-logo.svg' : '/virona-logo.svg';
   const storeLabel = notification.store === 'shawq' ? 'Shawq' : 'Virona';
   const formattedMessage = formatNotificationMessage(notification);
-  const campaignName = getNotificationCampaignName(notification);
-  const campaignLabel = campaignName || DEFAULT_UNKNOWN_CAMPAIGN;
+  const attributionLabel = getAttributionLabel(notification);
   const showCampaignDetails = notification.type === 'order';
 
   return (
@@ -174,8 +198,8 @@ function NotificationRow({
 
           {/* Campaign source - smaller font */}
           {showCampaignDetails && (
-            <p className="text-xs text-gray-500 mt-1 truncate" title={campaignLabel}>
-              Campaign: {campaignLabel}
+            <p className="text-xs text-gray-500 mt-1 truncate" title={attributionLabel}>
+              Attribution: {attributionLabel}
             </p>
           )}
           
