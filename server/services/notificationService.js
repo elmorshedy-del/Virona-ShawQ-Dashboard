@@ -240,7 +240,7 @@ export function createOrderNotifications(store, source, orders, options = {}) {
       createNotification({
         store,
         type: 'order',
-        message: `${displayCountry} • ${currency} ${value.toFixed(2)} • ${sourceLabel}`,
+        message: `${displayCountry} • ${currency} ${new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: true }).format(value)} • ${sourceLabel}`,
         metadata: {
           source,
           country: displayCountry,
