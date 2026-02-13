@@ -20,7 +20,7 @@ const ORDER_AMOUNT_INTEGER_FORMATTER = new Intl.NumberFormat(DEFAULT_UI_LOCALE, 
   useGrouping: true
 });
 
-const DEFAULT_UNKNOWN_CAMPAIGN = 'Unattributed';
+const DEFAULT_UNKNOWN_CAMPAIGN = 'Unattributed (yet)';
 const MESSAGE_SEPARATOR = ' • ';
 
 function normalizeWhitespace(value) {
