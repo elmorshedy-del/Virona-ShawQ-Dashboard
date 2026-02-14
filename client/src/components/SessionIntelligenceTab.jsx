@@ -1373,11 +1373,11 @@ export default function SessionIntelligenceTab({ store }) {
   const realtimeMapTitle = realtimeMapMode === 'focus' && realtimeFocusCountryName
     ? `Focused: ${realtimeFocusCountryName}`
     : 'Active sessions by country';
-  const realtimeMapSubtitle = realtimeMapMode === 'focus' && hasRealtimeFocusGeo
-    ? `Top ${realtimeFocusRowsLabel}`
-    : realtimeMapMode === 'focus'
-      ? 'Cities / regions'
-      : 'Hotspots';
+  const realtimeMapSubtitle = (() => {
+    if (realtimeMapMode !== 'focus') return 'Hotspots';
+    if (hasRealtimeFocusGeo) return `Top ${realtimeFocusRowsLabel}`;
+    return 'Cities / regions';
+  })();
   const realtimeGeoEmptyMessage = realtimeMapMode === 'focus'
     ? realtimeFocusCountryName
       ? `No city/region detail yet for ${realtimeFocusCountryName}.`
