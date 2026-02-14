@@ -8,6 +8,7 @@ const POLL_REALTIME_MS = 5000;
 const POLL_OVERVIEW_MS = 20000;
 const REALTIME_WINDOW_MINUTES = 30;
 const REQUEST_TIMEOUT_MS = 15000;
+const REALTIME_GEO_ROWS_LIMIT = 8;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -1356,9 +1357,32 @@ export default function SessionIntelligenceTab({ store }) {
   const briefReasons = Array.isArray(brief?.top_reasons) ? brief.top_reasons : [];
 
   const realtimeCountries = realtime?.breakdowns?.countries || [];
-  const realtimeFocusCountry = realtimeCountries?.[0]?.value || null;
+  const realtimeFocusCountry = realtime?.breakdowns?.focus?.country || realtimeCountries?.[0]?.value || null;
   const realtimeFocusCountryName = realtimeFocusCountry ? countryNameFromCode(realtimeFocusCountry) : null;
   const realtimeMapRegion = realtimeMapMode === 'focus' && realtimeFocusCountry ? realtimeFocusCountry : 'WORLD';
+  const realtimeFocusRegions = Array.isArray(realtime?.breakdowns?.focus?.regions)
+    ? realtime.breakdowns.focus.regions
+    : [];
+  const realtimeFocusCities = Array.isArray(realtime?.breakdowns?.focus?.cities)
+    ? realtime.breakdowns.focus.cities
+    : [];
+  const hasRealtimeFocusGeo = realtimeFocusRegions.length > 0 || realtimeFocusCities.length > 0;
+  const realtimeFocusRows = realtimeFocusCities.length > 0 ? realtimeFocusCities : realtimeFocusRegions;
+  const realtimeFocusRowsLabel = realtimeFocusCities.length > 0 ? 'cities' : 'regions';
+  const realtimeMiniRows = realtimeMapMode === 'focus' ? realtimeFocusRows : realtimeCountries;
+  const realtimeMapTitle = realtimeMapMode === 'focus' && realtimeFocusCountryName
+    ? `Focused: ${realtimeFocusCountryName}`
+    : 'Active sessions by country';
+  const realtimeMapSubtitle = (() => {
+    if (realtimeMapMode !== 'focus') return 'Hotspots';
+    if (hasRealtimeFocusGeo) return `Top ${realtimeFocusRowsLabel}`;
+    return 'Cities / regions';
+  })();
+  const realtimeGeoEmptyMessage = realtimeMapMode === 'focus'
+    ? realtimeFocusCountryName
+      ? `No city/region detail yet for ${realtimeFocusCountryName}.`
+      : 'No geo data yet.'
+    : 'No geo data yet.';
   const hasDayFilters = Boolean(dropoffStageFilter || dropoffDeviceFilter || dropoffCountryFilter || dropoffCampaignFilter);
 
   const clearDayFilters = useCallback(() => {
@@ -1508,15 +1532,21 @@ export default function SessionIntelligenceTab({ store }) {
         <div className="si-realtime-grid">
           <div className="si-realtime-panel si-realtime-panel-map">
             <div className="si-realtime-panel-title">
-              <span>Active sessions by country</span>
-              <span className="si-muted">Hotspots</span>
+              <span>{realtimeMapTitle}</span>
+              <span className="si-muted">{realtimeMapSubtitle}</span>
             </div>
             <GeoHotspotsMap countries={realtimeCountries} focusRegion={realtimeMapRegion} height={260} />
             <div className="si-realtime-mini-list">
-              {(realtimeCountries || []).slice(0, 8).map((row, idx) => {
-                const label = countryNameFromCode(row.value);
-                const code = (row.value || '').toString().trim().toUpperCase();
-                const title = code && label ? `${label} (${code})` : label || code || '—';
+              {(realtimeMiniRows || []).slice(0, REALTIME_GEO_ROWS_LIMIT).map((row, idx) => {
+                const raw = (row?.value || '').toString().trim();
+                const code = raw.toUpperCase();
+                const isFocusedGeoRow = realtimeMapMode === 'focus' && hasRealtimeFocusGeo;
+                const label = isFocusedGeoRow ? (raw || '—') : countryNameFromCode(raw);
+                const title = isFocusedGeoRow
+                  ? label
+                  : code && label
+                    ? `${label} (${code})`
+                    : label || code || '—';
                 return (
                   <div key={`${code || '—'}-${idx}`} className="si-realtime-mini-row" title={title}>
                     <span>{label}</span>
@@ -1524,8 +1554,8 @@ export default function SessionIntelligenceTab({ store }) {
                   </div>
                 );
               })}
-              {(realtimeCountries || []).length === 0 ? (
-                <div className="si-empty" style={{ padding: 10 }}>No geo data yet.</div>
+              {(realtimeMiniRows || []).length === 0 ? (
+                <div className="si-empty" style={{ padding: 10 }}>{realtimeGeoEmptyMessage}</div>
               ) : null}
             </div>
           </div>

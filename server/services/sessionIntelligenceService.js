@@ -36,7 +36,11 @@ const CLARITY_SIGNAL_EVENT_NAMES = [
 const THEME_SIGNAL_SOURCES = ['theme_pixel', 'virona-pixel-v1'];
 
 const SHOPPER_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
+const REALTIME_FOCUS_GEO_LIMIT = 12;
+const REALTIME_GEO_FALLBACK_SAMPLE_LIMIT = 1500;
+const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
 const lastShopperBackfillByStore = new Map();
+const realtimeFocusGeoFallbackCache = new Map();
 
 function normalizeSqliteDateTime(value) {
   const date = value ? new Date(value) : new Date();
@@ -477,17 +481,24 @@ function inferDeviceInfo(payload) {
 
 function extractCountryCode(payload) {
   const envelope = getEventEnvelope(payload);
+  const eventData = getEventData(payload);
   const candidates = [
     payload?.geoipCountryCode,
     payload?.countryCode,
     payload?.country_code,
     payload?.data?.checkout?.shippingAddress?.countryCode,
     payload?.data?.checkout?.billingAddress?.countryCode,
+    payload?.checkout?.shippingAddress?.countryCode,
+    payload?.checkout?.billingAddress?.countryCode,
     envelope?.geoipCountryCode,
     envelope?.countryCode,
     envelope?.country_code,
     envelope?.data?.checkout?.shippingAddress?.countryCode,
-    envelope?.data?.checkout?.billingAddress?.countryCode
+    envelope?.data?.checkout?.billingAddress?.countryCode,
+    envelope?.checkout?.shippingAddress?.countryCode,
+    envelope?.checkout?.billingAddress?.countryCode,
+    eventData?.checkout?.shippingAddress?.countryCode,
+    eventData?.checkout?.billingAddress?.countryCode
   ];
   for (const value of candidates) {
     if (typeof value === 'string' && /^[A-Za-z]{2}$/.test(value.trim())) {
@@ -517,6 +528,143 @@ function formatDeviceLabel(deviceTypeRaw, deviceOsRaw) {
 
   const fallback = safeString(deviceTypeRaw).trim();
   return fallback || '—';
+}
+
+function normalizeGeoLabel(value, { uppercase = false, maxLength = 64 } = {}) {
+  const raw = safeString(value).replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  const normalized = uppercase ? raw.toUpperCase() : raw;
+  const lowered = normalized.toLowerCase();
+
+  const JUNK_VALUES = new Set([
+    '[redacted]',
+    'redacted',
+    'unknown',
+    'n/a',
+    'na',
+    'null'
+  ]);
+
+  if (JUNK_VALUES.has(lowered)) {
+    return null;
+  }
+
+  return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+}
+
+function extractRegionLabel(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const envelope = getEventEnvelope(payload);
+  const eventData = getEventData(payload);
+
+  const candidates = [
+    payload?.regionCode,
+    payload?.region_code,
+    payload?.region,
+    payload?.stateCode,
+    payload?.state_code,
+    payload?.state,
+    payload?.provinceCode,
+    payload?.province_code,
+    payload?.province,
+    payload?.geoipRegionCode,
+    payload?.geoipRegion,
+    payload?.context?.location?.regionCode,
+    payload?.context?.location?.region,
+    payload?.checkout?.shippingAddress?.provinceCode,
+    payload?.checkout?.shippingAddress?.province,
+    payload?.checkout?.shippingAddress?.state,
+    payload?.checkout?.billingAddress?.provinceCode,
+    payload?.checkout?.billingAddress?.province,
+    payload?.checkout?.billingAddress?.state,
+    payload?.data?.checkout?.shippingAddress?.provinceCode,
+    payload?.data?.checkout?.shippingAddress?.province,
+    payload?.data?.checkout?.shippingAddress?.state,
+    payload?.data?.checkout?.billingAddress?.provinceCode,
+    payload?.data?.checkout?.billingAddress?.province,
+    payload?.data?.checkout?.billingAddress?.state,
+    envelope?.regionCode,
+    envelope?.region_code,
+    envelope?.region,
+    envelope?.stateCode,
+    envelope?.state_code,
+    envelope?.state,
+    envelope?.provinceCode,
+    envelope?.province_code,
+    envelope?.province,
+    envelope?.geoipRegionCode,
+    envelope?.geoipRegion,
+    envelope?.context?.location?.regionCode,
+    envelope?.context?.location?.region,
+    envelope?.checkout?.shippingAddress?.provinceCode,
+    envelope?.checkout?.shippingAddress?.province,
+    envelope?.checkout?.shippingAddress?.state,
+    envelope?.checkout?.billingAddress?.provinceCode,
+    envelope?.checkout?.billingAddress?.province,
+    envelope?.checkout?.billingAddress?.state,
+    envelope?.data?.checkout?.shippingAddress?.provinceCode,
+    envelope?.data?.checkout?.shippingAddress?.province,
+    envelope?.data?.checkout?.shippingAddress?.state,
+    envelope?.data?.checkout?.billingAddress?.provinceCode,
+    envelope?.data?.checkout?.billingAddress?.province,
+    envelope?.data?.checkout?.billingAddress?.state,
+    eventData?.checkout?.shippingAddress?.provinceCode,
+    eventData?.checkout?.shippingAddress?.province,
+    eventData?.checkout?.shippingAddress?.state,
+    eventData?.checkout?.billingAddress?.provinceCode,
+    eventData?.checkout?.billingAddress?.province,
+    eventData?.checkout?.billingAddress?.state
+  ];
+
+  for (const value of candidates) {
+    const label = normalizeGeoLabel(value, { maxLength: 48 });
+    if (!label) continue;
+
+    // Keep short region/state codes normalized to uppercase.
+    if (/^[A-Za-z0-9_-]{2,12}$/.test(label)) {
+      return label.toUpperCase();
+    }
+    return label;
+  }
+
+  return null;
+}
+
+function extractCityLabel(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const envelope = getEventEnvelope(payload);
+  const eventData = getEventData(payload);
+
+  const candidates = [
+    payload?.city,
+    payload?.town,
+    payload?.locality,
+    payload?.geoipCity,
+    payload?.context?.location?.city,
+    payload?.checkout?.shippingAddress?.city,
+    payload?.checkout?.billingAddress?.city,
+    payload?.data?.checkout?.shippingAddress?.city,
+    payload?.data?.checkout?.billingAddress?.city,
+    envelope?.city,
+    envelope?.town,
+    envelope?.locality,
+    envelope?.geoipCity,
+    envelope?.context?.location?.city,
+    envelope?.checkout?.shippingAddress?.city,
+    envelope?.checkout?.billingAddress?.city,
+    envelope?.data?.checkout?.shippingAddress?.city,
+    envelope?.data?.checkout?.billingAddress?.city,
+    eventData?.checkout?.shippingAddress?.city,
+    eventData?.checkout?.billingAddress?.city
+  ];
+
+  for (const value of candidates) {
+    const label = normalizeGeoLabel(value, { maxLength: 80 });
+    if (!label) continue;
+    return label;
+  }
+
+  return null;
 }
 
 const ALLOWED_QUERY_KEYS = new Set([
@@ -1993,6 +2141,87 @@ function resolveRealtimeCampaign(row, sourceLabel, fallbackCampaign = null) {
   return sourceLabel === 'Direct' ? 'Direct' : '(not set)';
 }
 
+function incrementMapCount(map, key, amount = 1) {
+  if (!map || key == null) return;
+  const label = safeString(key).trim();
+  if (!label) return;
+  map.set(label, (map.get(label) || 0) + amount);
+}
+
+function incrementNestedMapCount(outerMap, parentKey, childKey, amount = 1) {
+  if (!outerMap || parentKey == null || childKey == null) return;
+  const parent = safeString(parentKey).trim();
+  const child = safeString(childKey).trim();
+  if (!parent || !child) return;
+
+  let innerMap = outerMap.get(parent);
+  if (!innerMap) {
+    innerMap = new Map();
+    outerMap.set(parent, innerMap);
+  }
+
+  incrementMapCount(innerMap, child, amount);
+}
+
+function getRealtimeFocusGeoFallback(db, normalizedStore, windowExpr, focusCountry) {
+  if (!focusCountry) return { regions: [], cities: [] };
+
+  const cacheKey = `${normalizedStore}|${windowExpr}|${focusCountry}`;
+  const nowMs = Date.now();
+  const cached = realtimeFocusGeoFallbackCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return {
+      regions: Array.isArray(cached.regions) ? cached.regions : [],
+      cities: Array.isArray(cached.cities) ? cached.cities : []
+    };
+  }
+
+  try {
+    const rows = db.prepare(`
+      SELECT payload_json
+      FROM shopify_pixel_events
+      WHERE store = ?
+        AND created_at >= datetime('now', ?)
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(normalizedStore, windowExpr, REALTIME_GEO_FALLBACK_SAMPLE_LIMIT);
+
+    const regionCounts = new Map();
+    const cityCounts = new Map();
+    const countryCode = safeString(focusCountry).trim().toUpperCase();
+
+    for (const row of rows) {
+      const payload = safeJsonParse(row?.payload_json);
+      if (!payload || typeof payload !== 'object') continue;
+
+      const rowCountry = extractCountryCode(payload);
+      if (!rowCountry || rowCountry !== countryCode) continue;
+
+      const region = extractRegionLabel(payload);
+      const city = extractCityLabel(payload);
+
+      if (region) incrementMapCount(regionCounts, region);
+      if (city) incrementMapCount(cityCounts, city);
+    }
+
+    const result = {
+      regions: topCountsFromMap(regionCounts, REALTIME_FOCUS_GEO_LIMIT),
+      cities: topCountsFromMap(cityCounts, REALTIME_FOCUS_GEO_LIMIT)
+    };
+    realtimeFocusGeoFallbackCache.set(cacheKey, {
+      ...result,
+      expiresAtMs: nowMs + REALTIME_GEO_CACHE_TTL_MS
+    });
+    return result;
+  } catch (error) {
+    console.warn(
+      `[SessionIntelligence] realtime focus geo fallback failed for store=${normalizedStore}, country=${focusCountry}:`,
+      error?.message || error
+    );
+    return { regions: [], cities: [] };
+  }
+}
+
 export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 30, limit = 10 } = {}) {
   const db = getDb();
   const normalizedStore = safeString(store).trim() || 'shawq';
@@ -2042,6 +2271,7 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       e.device_type,
       e.device_os,
       e.country_code,
+      e.data_json,
       e.utm_source,
       e.utm_campaign,
       e.fbclid,
@@ -2075,6 +2305,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
   const deviceCounts = new Map();
   const countryCounts = new Map();
   const campaignFallbackMaps = buildRealtimeCampaignFallbackMaps(db, normalizedStore);
+  const regionCountsByCountry = new Map();
+  const cityCountsByCountry = new Map();
 
   for (const row of latest) {
     const shopperNumber = Number(row?.shopper_number);
@@ -2114,6 +2346,14 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
 
     const country = safeString(row?.country_code).trim().toUpperCase();
     if (country) countryCounts.set(country, (countryCounts.get(country) || 0) + 1);
+
+    const eventData = safeJsonParse(row?.data_json);
+    if (country && eventData && typeof eventData === 'object') {
+      const region = extractRegionLabel(eventData);
+      const city = extractCityLabel(eventData);
+      if (region) incrementNestedMapCount(regionCountsByCountry, country, region);
+      if (city) incrementNestedMapCount(cityCountsByCountry, country, city);
+    }
   }
 
   const eventCounts = db.prepare(`
@@ -2144,6 +2384,21 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     purchase: sumWhere(isPurchase)
   };
 
+  const countries = topCountsFromMap(countryCounts, 30);
+  const focusCountry = countries[0]?.value || null;
+  let focusRegions = focusCountry
+    ? topCountsFromMap(regionCountsByCountry.get(focusCountry) || new Map(), REALTIME_FOCUS_GEO_LIMIT)
+    : [];
+  let focusCities = focusCountry
+    ? topCountsFromMap(cityCountsByCountry.get(focusCountry) || new Map(), REALTIME_FOCUS_GEO_LIMIT)
+    : [];
+
+  if (focusCountry && focusRegions.length === 0 && focusCities.length === 0) {
+    const fallback = getRealtimeFocusGeoFallback(db, normalizedStore, windowExpr, focusCountry);
+    focusRegions = fallback.regions;
+    focusCities = fallback.cities;
+  }
+
   return {
     store: normalizedStore,
     windowMinutes: window,
@@ -2158,7 +2413,12 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       sources: topCountsFromMap(sourceCounts, max),
       campaigns: topCountsFromMap(campaignCounts, max),
       devices: topCountsFromMap(deviceCounts, max),
-      countries: topCountsFromMap(countryCounts, 30)
+      countries,
+      focus: {
+        country: focusCountry,
+        regions: focusRegions,
+        cities: focusCities
+      }
     },
     topEvents,
     keyEvents
