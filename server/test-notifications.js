@@ -108,13 +108,37 @@ async function runTests() {
   }]);
   console.log(`✓ Shawq Meta orders created notifications: ${shawqMeta} (should be 0)`);
 
-  const shawqShopify = createOrderNotifications('shawq', 'shopify', [{
-    order_created_at: new Date().toISOString(),
-    country: 'US',
-    order_total: 100,
-    currency: 'USD'
-  }]);
-  console.log(`✓ Shawq Shopify orders created notifications: ${shawqShopify} (should be > 0)\n`);
+  const now = new Date();
+  const shawqShopifyOrders = [
+    { order_id: '2454', order_created_at: new Date(now.getTime() - 60_000).toISOString(), country: 'US', order_total: 178.00, currency: 'USD' },
+    { order_id: '2453', order_created_at: new Date(now.getTime() - 70_000).toISOString(), country: 'BE', order_total: 107.96, currency: 'USD' },
+    { order_id: '2452', order_created_at: new Date(now.getTime() - 80_000).toISOString(), country: 'GB', order_total: 110.34, currency: 'USD' },
+    { order_id: '2451', order_created_at: new Date(now.getTime() - 90_000).toISOString(), country: 'NL', order_total: 192.10, currency: 'USD' }
+  ];
+
+  const shawqShopify = createOrderNotifications('shawq', 'shopify', shawqShopifyOrders);
+  const shawqNotifs = getNotifications('shawq', 20).filter((n) => (n.source || n.metadata?.source) === 'shopify');
+
+  const totalsByOrderId = new Map(shawqShopifyOrders.map((o) => [String(o.order_id), Number(o.order_total)]));
+  let mismatches = 0;
+  for (const notif of shawqNotifs) {
+    const orderId = notif.metadata?.order_id ? String(notif.metadata.order_id) : null;
+    if (!orderId || !totalsByOrderId.has(orderId)) continue;
+    const expected = totalsByOrderId.get(orderId);
+    const actual = typeof notif.metadata?.value === 'number' ? notif.metadata.value : null;
+    if (expected == null || actual == null || Math.abs(expected - actual) > 0.0001) {
+      mismatches++;
+      console.log(`  ✗ Mismatch order_id=${orderId}: expected=${expected} actual=${actual}`);
+    }
+  }
+
+  if (shawqShopify !== shawqShopifyOrders.length) {
+    throw new Error(`Shawq Shopify notification count mismatch: expected=${shawqShopifyOrders.length} actual=${shawqShopify}`);
+  }
+  if (mismatches > 0) {
+    throw new Error(`Shawq Shopify notification value mismatches: ${mismatches}`);
+  }
+  console.log(`✓ Shawq Shopify orders created notifications: ${shawqShopify} (per-order, values match)\n`);
 
   // Test 10: Test source filtering - VironaX
   console.log('Test 10: Testing source filtering for VironaX...');

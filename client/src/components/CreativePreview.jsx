@@ -15,29 +15,41 @@ const EMPTY_VIDEO = {
 const filterStoreAccounts = (accounts, storeId) => {
   if (!Array.isArray(accounts)) return [];
   if (storeId === 'vironax') {
-    const matches = accounts.filter((account) => /virona shop/i.test(account?.name || ''));
-    return matches.length > 0 ? matches : accounts;
+    const matched = accounts.filter(a => /virona shop/i.test(a?.name || ''));
+    return matched.length > 0 ? matched : accounts;
   }
   if (storeId === 'shawq') {
-    const matches = accounts.filter((account) => /shawq\.co/i.test(account?.name || ''));
-    return matches.length > 0 ? matches : accounts;
+    const matched = accounts.filter(a => /shawq\.co/i.test(a?.name || ''));
+    return matched.length > 0 ? matched : accounts;
   }
   return accounts;
 };
 
+const toSafeFilename = (value, fallback = 'creative') => {
+  const base = typeof value === 'string' ? value.trim() : '';
+  const safe = base
+    .replace(/[^\w\s.-]+/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^\./, '')
+    .slice(0, 60);
+  return safe || fallback;
+};
+
 export default function CreativePreview({ store }) {
+  const storeId = typeof store === 'string' ? store : store?.id;
+
   const [adAccounts, setAdAccounts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [ads, setAds] = useState([]);
+
   const [selectedAccount, setSelectedAccount] = useState('');
   const [selectedCampaign, setSelectedCampaign] = useState('');
+
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
   const [loadingAds, setLoadingAds] = useState(false);
   const [error, setError] = useState('');
-  const [showInactiveCampaigns, setShowInactiveCampaigns] = useState(false);
-  const [showInactiveAds, setShowInactiveAds] = useState(false);
-  const [ytdlpStatus, setYtdlpStatus] = useState(null);
 
   const [activeAd, setActiveAd] = useState(null);
   const [videoData, setVideoData] = useState(null);
@@ -48,30 +60,51 @@ export default function CreativePreview({ store }) {
   const videoRef = useRef(null);
   const imageRef = useRef(null);
 
+  const selectedAccountStorageKey = useMemo(
+    () => (storeId ? `creative-preview:${storeId}:adAccount` : null),
+    [storeId]
+  );
+  const selectedCampaignStorageKey = useMemo(
+    () => (storeId && selectedAccount ? `creative-preview:${storeId}:${selectedAccount}:campaign` : null),
+    [storeId, selectedAccount]
+  );
+
   useEffect(() => {
+    if (!storeId) return;
     let isMounted = true;
     setLoadingAccounts(true);
     setError('');
-    fetch(`${API_BASE}/meta/adaccounts?store=${store.id}`)
+
+    fetch(`${API_BASE}/meta/adaccounts?store=${storeId}`)
       .then(async (res) => {
         const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data?.error || `HTTP ${res.status}`);
-        }
+        if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
         return data;
       })
       .then((data) => {
         if (!isMounted) return;
         const list = Array.isArray(data?.data) ? data.data : [];
-        const filtered = filterStoreAccounts(list, store.id);
+        const filtered = filterStoreAccounts(list, storeId);
         setAdAccounts(filtered);
-        if (filtered.length > 0) {
-          setSelectedAccount(filtered[0].id);
+
+        let next = filtered[0]?.id || '';
+        if (selectedAccountStorageKey) {
+          try {
+            const saved = localStorage.getItem(selectedAccountStorageKey);
+            if (saved && filtered.some(acc => acc.id === saved)) {
+              next = saved;
+            }
+          } catch {
+            // ignore
+          }
         }
+        setSelectedAccount(next);
       })
       .catch((err) => {
         if (!isMounted) return;
         setError(err?.message || 'Failed to load ad accounts');
+        setAdAccounts([]);
+        setSelectedAccount('');
       })
       .finally(() => {
         if (isMounted) setLoadingAccounts(false);
@@ -80,41 +113,58 @@ export default function CreativePreview({ store }) {
     return () => {
       isMounted = false;
     };
-  }, [store.id]);
+  }, [storeId, selectedAccountStorageKey]);
 
   useEffect(() => {
-    if (!selectedAccount) {
+    if (!selectedAccountStorageKey) return;
+    if (!selectedAccount) return;
+    try {
+      localStorage.setItem(selectedAccountStorageKey, selectedAccount);
+    } catch {
+      // ignore
+    }
+  }, [selectedAccount, selectedAccountStorageKey]);
+
+  useEffect(() => {
+    if (!storeId || !selectedAccount) {
       setCampaigns([]);
       setSelectedCampaign('');
-      setShowInactiveCampaigns(false);
       return;
     }
 
     let isMounted = true;
-    setShowInactiveCampaigns(false);
     setLoadingCampaigns(true);
     setError('');
-    fetch(`${API_BASE}/meta/campaigns?store=${store.id}&adAccountId=${selectedAccount}`)
+
+    fetch(`${API_BASE}/meta/campaigns?store=${storeId}&adAccountId=${selectedAccount}`)
       .then(async (res) => {
         const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data?.error || `HTTP ${res.status}`);
-        }
+        if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
         return data;
       })
       .then((data) => {
         if (!isMounted) return;
         const list = Array.isArray(data?.data) ? data.data : [];
         setCampaigns(list);
-        const activeCampaign = list.find(
-          (campaign) =>
-            (campaign?.effective_status || campaign?.status || '').toUpperCase() === 'ACTIVE'
-        );
-        setSelectedCampaign(activeCampaign?.id || list[0]?.id || '');
+
+        let next = list[0]?.id || '';
+        if (selectedCampaignStorageKey) {
+          try {
+            const saved = localStorage.getItem(selectedCampaignStorageKey);
+            if (saved && list.some(c => c.id === saved)) {
+              next = saved;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        setSelectedCampaign(next);
       })
       .catch((err) => {
         if (!isMounted) return;
         setError(err?.message || 'Failed to load campaigns');
+        setCampaigns([]);
+        setSelectedCampaign('');
       })
       .finally(() => {
         if (isMounted) setLoadingCampaigns(false);
@@ -123,27 +173,32 @@ export default function CreativePreview({ store }) {
     return () => {
       isMounted = false;
     };
-  }, [selectedAccount, store.id]);
+  }, [selectedAccount, selectedCampaignStorageKey, storeId]);
 
   useEffect(() => {
-    if (!selectedCampaign) {
+    if (!selectedCampaignStorageKey) return;
+    if (!selectedCampaign) return;
+    try {
+      localStorage.setItem(selectedCampaignStorageKey, selectedCampaign);
+    } catch {
+      // ignore
+    }
+  }, [selectedCampaign, selectedCampaignStorageKey]);
+
+  useEffect(() => {
+    if (!storeId || !selectedCampaign) {
       setAds([]);
-      setShowInactiveAds(false);
       return;
     }
 
     let isMounted = true;
-    setShowInactiveAds(false);
     setLoadingAds(true);
     setError('');
-    fetch(
-      `${API_BASE}/meta/campaigns/${selectedCampaign}/ads?store=${store.id}&adAccountId=${selectedAccount}`
-    )
+
+    fetch(`${API_BASE}/meta/campaigns/${selectedCampaign}/ads?store=${storeId}&adAccountId=${selectedAccount}`)
       .then(async (res) => {
         const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data?.error || `HTTP ${res.status}`);
-        }
+        if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
         return data;
       })
       .then((data) => {
@@ -154,6 +209,7 @@ export default function CreativePreview({ store }) {
       .catch((err) => {
         if (!isMounted) return;
         setError(err?.message || 'Failed to load ads');
+        setAds([]);
       })
       .finally(() => {
         if (isMounted) setLoadingAds(false);
@@ -162,7 +218,7 @@ export default function CreativePreview({ store }) {
     return () => {
       isMounted = false;
     };
-  }, [selectedCampaign, selectedAccount, store.id]);
+  }, [selectedCampaign, selectedAccount, storeId]);
 
   useEffect(() => {
     if (modalOpen && videoRef.current) {
@@ -170,37 +226,17 @@ export default function CreativePreview({ store }) {
     }
   }, [modalOpen, videoData]);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    fetch(`${API_BASE}/creative-intelligence/status`)
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(data?.error || `HTTP ${res.status}`);
-        }
-        return data;
-      })
-      .then((data) => {
-        if (!isMounted) return;
-        const ytdlp = data?.ytdlp;
-        if (ytdlp?.installed) {
-          setYtdlpStatus(ytdlp);
-        } else {
-          setYtdlpStatus({ installed: false, error: ytdlp?.error || 'Not installed' });
-        }
-      })
-      .catch((err) => {
-        if (!isMounted) return;
-        setYtdlpStatus({ installed: false, error: err.message });
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const adsForDisplay = useMemo(() => (
+    (ads || []).map(ad => ({
+      id: ad.id,
+      name: ad.name || 'Untitled ad',
+      status: (ad.effective_status || ad.status || 'UNKNOWN').toUpperCase(),
+      thumbnail: ad.thumbnail_url || null
+    }))
+  ), [ads]);
 
   const handleAdClick = async (ad) => {
+    if (!storeId || !selectedAccount || !ad?.id) return;
     setActiveAd(ad);
     setModalOpen(true);
     setVideoLoading(true);
@@ -209,9 +245,7 @@ export default function CreativePreview({ store }) {
     setMediaDimensions({ width: null, height: null });
 
     try {
-      const res = await fetch(
-        `${API_BASE}/meta/ads/${ad.id}/video?store=${store.id}&adAccountId=${selectedAccount}`
-      );
+      const res = await fetch(`${API_BASE}/meta/ads/${ad.id}/video?store=${storeId}&adAccountId=${selectedAccount}`);
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data?.error || 'Failed to load video');
@@ -234,23 +268,18 @@ export default function CreativePreview({ store }) {
 
   const hasVideo = !!videoData?.source_url;
   const hasEmbed = !hasVideo && !!videoData?.embed_html;
-  const displayThumbnail = videoData?.thumbnail_url || activeAd?.thumbnail || null;
-  const hasThumbnail = !hasVideo && !hasEmbed && !!displayThumbnail;
-  const showNoVideo = !videoLoading && !hasVideo && !hasEmbed && !hasThumbnail;
-  const showPermissionFallback = videoData?.playable === false && hasThumbnail;
-  const fallbackMessage =
-    videoData?.message ||
-    (videoData?.reason === 'NO_VIDEO_PERMISSION'
-      ? "Can't access this video's preview."
-      : 'No video found for this ad.');
+  const hasThumbnail = !hasVideo && !hasEmbed && !!(videoData?.thumbnail_url || activeAd?.thumbnail);
+  const displayThumbnail = videoData?.thumbnail_url || activeAd?.thumbnail;
+  const showPermissionFallback = !hasVideo && !hasEmbed && hasThumbnail && videoData?.source_url === null;
+  const showNoVideo = !hasVideo && !hasEmbed && !hasThumbnail;
 
   const modalMaxWidth = useMemo(() => {
     const width = mediaDimensions.width;
     const height = mediaDimensions.height;
     if (!width || !height) {
-      return 'min(420px, 92vw)';
+      return 'min(560px, 92vw)';
     }
-    return width >= height ? 'min(960px, 92vw)' : 'min(420px, 92vw)';
+    return width >= height ? 'min(1040px, 92vw)' : 'min(560px, 92vw)';
   }, [mediaDimensions]);
 
   const handleVideoMetadata = () => {
@@ -269,52 +298,34 @@ export default function CreativePreview({ store }) {
     }
   };
 
-  const campaignRows = useMemo(() => {
-    return campaigns.map((campaign) => {
-      const status = (campaign?.effective_status || campaign?.status || 'UNKNOWN')
-        .toString()
-        .toUpperCase();
-      return {
-        id: campaign.id,
-        name: campaign.name || campaign.id,
-        status,
-        isActive: status === 'ACTIVE'
-      };
-    });
-  }, [campaigns]);
+  const downloadProxyUrl = useMemo(() => {
+    if (!hasVideo || !videoData?.source_url) return null;
+    const filename = `${toSafeFilename(activeAd?.name, activeAd?.id || 'creative')}.mp4`;
+    return `${API_BASE}/creative-studio/video/download?url=${encodeURIComponent(videoData.source_url)}&filename=${encodeURIComponent(filename)}`;
+  }, [activeAd?.id, activeAd?.name, hasVideo, videoData?.source_url]);
 
-  const activeCampaigns = campaignRows.filter((campaign) => campaign.isActive);
-  const inactiveCampaigns = campaignRows.filter((campaign) => !campaign.isActive);
-
-  const adRows = ads.map((ad) => {
-    const status = (ad.effective_status || ad.status || 'UNKNOWN').toString().toUpperCase();
-    return {
-      id: ad.id,
-      name: ad.name || 'Untitled ad',
-      status,
-      isActive: status === 'ACTIVE',
-      thumbnail: ad.thumbnail_url
-    };
-  });
-
-  const activeAds = adRows.filter((ad) => ad.isActive);
-  const inactiveAds = adRows.filter((ad) => !ad.isActive);
+  if (!storeId) {
+    return (
+      <div className="text-sm text-gray-600">
+        No store selected.
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+    <div className="space-y-5">
+      <div className="bg-gray-50 rounded-2xl border border-gray-200 p-4">
         <div className="flex flex-wrap gap-4">
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Ad Account</label>
+            <label className="text-xs font-semibold text-gray-700">Ad Account</label>
             <select
               value={selectedAccount}
               onChange={(e) => setSelectedAccount(e.target.value)}
-              className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[220px]"
+              className="rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[240px]"
+              disabled={loadingAccounts}
             >
               {loadingAccounts && <option>Loading...</option>}
-              {!loadingAccounts && adAccounts.length === 0 && (
-                <option value="">No ad accounts</option>
-              )}
+              {!loadingAccounts && adAccounts.length === 0 && <option value="">No ad accounts</option>}
               {adAccounts.map((account) => (
                 <option key={account.id} value={account.id}>
                   {account.name || account.id}
@@ -323,230 +334,109 @@ export default function CreativePreview({ store }) {
             </select>
           </div>
 
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-semibold text-gray-700">Campaign</label>
+            <select
+              value={selectedCampaign}
+              onChange={(e) => setSelectedCampaign(e.target.value)}
+              className="rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[320px]"
+              disabled={!selectedAccount || loadingCampaigns}
+            >
+              {loadingCampaigns && <option>Loading...</option>}
+              {!loadingCampaigns && campaigns.length === 0 && <option value="">No campaigns</option>}
+              {campaigns.map((campaign) => (
+                <option key={campaign.id} value={campaign.id}>
+                  {campaign.name || campaign.id}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-800">Campaigns</h3>
-            <p className="text-xs text-gray-500">Select a campaign to view ads.</p>
-          </div>
-          <div className="text-xs text-gray-500">
-            {selectedCampaign ? `Selected: ${selectedCampaign}` : 'No campaign selected'}
-          </div>
-        </div>
-
-        {loadingCampaigns && (
-          <div className="mt-3 text-sm text-gray-500">Loading campaigns...</div>
-        )}
-
-        {!loadingCampaigns && campaignRows.length === 0 && (
-          <div className="mt-3 text-sm text-gray-500">No campaigns found.</div>
-        )}
-
-        {!loadingCampaigns && campaignRows.length > 0 && (
-          <div className="mt-4 space-y-3">
-            <div>
-              <div className="flex items-center justify-between text-xs font-semibold uppercase text-gray-500">
-                <span>Active Campaigns</span>
-                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">
-                  {activeCampaigns.length}
-                </span>
-              </div>
-              <div className="mt-2 space-y-2">
-                {activeCampaigns.length === 0 && (
-                  <div className="text-sm text-gray-500">No active campaigns.</div>
-                )}
-                {activeCampaigns.map((campaign) => (
-                  <button
-                    key={campaign.id}
-                    type="button"
-                    onClick={() => setSelectedCampaign(campaign.id)}
-                    className={`w-full text-left px-3 py-2 rounded-lg border text-sm ${
-                      selectedCampaign === campaign.id
-                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                        : 'border-gray-200 text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate">{campaign.name}</span>
-                      <span className="text-xs text-gray-500">{campaign.status}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <button
-                type="button"
-                onClick={() => setShowInactiveCampaigns((prev) => !prev)}
-                className="flex w-full items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold uppercase text-gray-500 hover:bg-gray-50"
-              >
-                <span className="flex items-center gap-2">
-                  <span>Inactive Campaigns</span>
-                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">
-                    {inactiveCampaigns.length}
-                  </span>
-                </span>
-                <span>{showInactiveCampaigns ? 'Hide' : 'Show'}</span>
-              </button>
-
-              {showInactiveCampaigns && (
-                <div className="mt-2 space-y-2">
-                  {inactiveCampaigns.length === 0 && (
-                    <div className="text-sm text-gray-500">No inactive campaigns.</div>
-                  )}
-                  {inactiveCampaigns.map((campaign) => (
-                    <button
-                      key={campaign.id}
-                      type="button"
-                      onClick={() => setSelectedCampaign(campaign.id)}
-                      className={`w-full text-left px-3 py-2 rounded-lg border text-sm ${
-                        selectedCampaign === campaign.id
-                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                          : 'border-gray-200 text-gray-700 hover:bg-gray-50'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate">{campaign.name}</span>
-                        <span className="text-xs text-gray-500">{campaign.status}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {error && (
-        <div className="p-3 rounded-lg border border-red-200 bg-red-50 text-sm text-red-700">
+        <div className="p-3 rounded-xl border border-red-200 bg-red-50 text-sm text-red-700">
           {error}
         </div>
       )}
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-gray-50 text-gray-600">
-              <tr>
-                <th className="px-4 py-3 text-left font-medium">Ad</th>
-                <th className="px-4 py-3 text-left font-medium">Status</th>
-                <th className="px-4 py-3 text-left font-medium">Preview</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loadingAds && (
-                <tr>
-                  <td colSpan="3" className="px-4 py-6 text-center text-gray-500">
-                    Loading ads...
-                  </td>
-                </tr>
-              )}
+      <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold text-gray-800">Ads</div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              {loadingAds ? 'Loading...' : `${adsForDisplay.length} ad${adsForDisplay.length === 1 ? '' : 's'}`}
+            </div>
+          </div>
+        </div>
 
-              {!loadingAds && adRows.length === 0 && (
-                <tr>
-                  <td colSpan="3" className="px-4 py-6 text-center text-gray-500">
-                    No ads found for this campaign.
-                  </td>
-                </tr>
-              )}
+        <div className="p-5">
+          {loadingAds && (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {[...Array(8)].map((_, i) => (
+                <div key={i} className="rounded-2xl border border-gray-200 overflow-hidden animate-pulse">
+                  <div className="aspect-video bg-gray-100" />
+                  <div className="p-3 space-y-2">
+                    <div className="h-4 bg-gray-100 rounded" />
+                    <div className="h-3 bg-gray-100 rounded w-2/3" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
-              {!loadingAds && adRows.length > 0 && activeAds.length === 0 && (
-                <tr>
-                  <td colSpan="3" className="px-4 py-6 text-center text-gray-500">
-                    No active ads. Inactive ads are available below.
-                  </td>
-                </tr>
-              )}
+          {!loadingAds && adsForDisplay.length === 0 && (
+            <div className="text-sm text-gray-500">
+              No ads found for this campaign.
+            </div>
+          )}
 
-              {activeAds.map((ad) => (
-                <tr
+          {!loadingAds && adsForDisplay.length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {adsForDisplay.map((ad) => (
+                <button
                   key={ad.id}
-                  className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                  type="button"
                   onClick={() => handleAdClick(ad)}
+                  className="text-left rounded-2xl border border-gray-200 overflow-hidden hover:shadow-md hover:border-indigo-200 transition-all"
                 >
-                  <td className="px-4 py-3 text-gray-700">{ad.name}</td>
-                  <td className="px-4 py-3 text-gray-700">{ad.status}</td>
-                  <td className="px-4 py-3 text-gray-500">
+                  <div className="aspect-video bg-gray-50">
                     {ad.thumbnail ? (
                       <img
                         src={ad.thumbnail}
-                        alt="Ad thumbnail"
-                        className="w-10 h-10 rounded object-cover"
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover"
                       />
                     ) : (
-                      '—'
+                      <div className="w-full h-full flex items-center justify-center text-xs text-gray-400">
+                        No thumbnail
+                      </div>
                     )}
-                  </td>
-                </tr>
+                  </div>
+                  <div className="p-3">
+                    <div className="text-sm font-medium text-gray-900 truncate">{ad.name}</div>
+                    <div className="text-xs text-gray-500 mt-1">{ad.status}</div>
+                  </div>
+                </button>
               ))}
-
-              {!loadingAds && inactiveAds.length > 0 && (
-                <tr className="border-t border-gray-100 bg-gray-50">
-                  <td colSpan="3" className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => setShowInactiveAds((prev) => !prev)}
-                      className="flex w-full items-center justify-between text-xs font-semibold uppercase text-gray-500"
-                    >
-                      <span className="flex items-center gap-2">
-                        <span>Inactive Ads</span>
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">
-                          {inactiveAds.length}
-                        </span>
-                      </span>
-                      <span>{showInactiveAds ? 'Hide' : 'Show'}</span>
-                    </button>
-                  </td>
-                </tr>
-              )}
-
-              {!loadingAds &&
-                showInactiveAds &&
-                inactiveAds.map((ad) => (
-                  <tr
-                    key={ad.id}
-                    className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
-                    onClick={() => handleAdClick(ad)}
-                  >
-                    <td className="px-4 py-3 text-gray-700">{ad.name}</td>
-                    <td className="px-4 py-3 text-gray-700">{ad.status}</td>
-                    <td className="px-4 py-3 text-gray-500">
-                      {ad.thumbnail ? (
-                        <img
-                          src={ad.thumbnail}
-                          alt="Ad thumbnail"
-                          className="w-10 h-10 rounded object-cover"
-                        />
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
+            </div>
+          )}
         </div>
       </div>
 
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
           <div
-            className="bg-white rounded-xl shadow-xl w-full max-h-[92vh] flex flex-col"
+            className="bg-white rounded-2xl shadow-xl w-full max-h-[92vh] flex flex-col overflow-hidden"
             style={{ maxWidth: modalMaxWidth }}
           >
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
               <div className="text-sm font-semibold text-gray-800 truncate">
                 {activeAd?.name || 'Ad Preview'}
               </div>
-              <button
-                onClick={closeModal}
-                className="text-gray-500 hover:text-gray-700"
-              >
+              <button onClick={closeModal} className="text-gray-500 hover:text-gray-700">
                 ✕
               </button>
             </div>
@@ -568,7 +458,7 @@ export default function CreativePreview({ store }) {
                     autoPlay
                     controls
                     onLoadedMetadata={handleVideoMetadata}
-                    className="w-full h-auto max-h-[85vh] object-contain"
+                    className="w-full h-auto max-h-[80vh] object-contain rounded-xl"
                   />
                 )}
 
@@ -579,14 +469,15 @@ export default function CreativePreview({ store }) {
                   />
                 )}
 
-                {!videoLoading && !hasVideo && hasThumbnail && (
+                {!videoLoading && !hasVideo && !hasEmbed && hasThumbnail && (
                   <div className="text-center">
                     <img
                       ref={imageRef}
                       src={displayThumbnail}
                       alt="Ad thumbnail"
+                      decoding="async"
                       onLoad={handleImageLoad}
-                      className="w-full h-auto max-h-[85vh] object-contain"
+                      className="w-full h-auto max-h-[80vh] object-contain rounded-xl"
                     />
                     <p className="mt-3 text-sm text-gray-600">
                       {showPermissionFallback ? "Can't play this video here." : 'Playable video source unavailable.'}
@@ -604,7 +495,7 @@ export default function CreativePreview({ store }) {
 
                 {!videoLoading && showNoVideo && (
                   <div className="text-sm text-gray-600 text-center">
-                    <p>{fallbackMessage}</p>
+                    <p>{videoData?.message || 'No video found for this ad.'}</p>
                     {videoData?.permalink_url && (
                       <button
                         onClick={() => window.open(videoData.permalink_url, '_blank')}
@@ -617,18 +508,26 @@ export default function CreativePreview({ store }) {
                 )}
               </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      {ytdlpStatus && (
-        <div className="fixed bottom-4 right-4 bg-white p-3 rounded-lg shadow-lg border text-sm z-50">
-          <div className="font-medium">yt-dlp Status</div>
-          {ytdlpStatus.installed ? (
-            <div className="text-green-600">✅ v{ytdlpStatus.version}</div>
-          ) : (
-            <div className="text-red-600">❌ {ytdlpStatus.error}</div>
-          )}
+            <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
+              {downloadProxyUrl && (
+                <a
+                  href={downloadProxyUrl}
+                  className="px-3 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                >
+                  Download MP4
+                </a>
+              )}
+              {videoData?.permalink_url && (
+                <button
+                  onClick={() => window.open(videoData.permalink_url, '_blank')}
+                  className="px-3 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-800"
+                >
+                  Open on Facebook
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

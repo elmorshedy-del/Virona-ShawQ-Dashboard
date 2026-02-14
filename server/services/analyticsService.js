@@ -74,6 +74,16 @@ function buildStatusFilter(params, columnPrefix = '') {
   return featureBuildStatusFilter(params, columnPrefix);
 }
 
+// Build status filter for a specific status column (e.g., ad_effective_status)
+function buildStatusFilterForColumn(params, columnName, columnPrefix = '') {
+  if (shouldIncludeInactive(params)) {
+    return '';
+  }
+
+  const col = columnPrefix ? `${columnPrefix}.${columnName}` : columnName;
+  return ` AND (${col} = 'ACTIVE' OR ${col} = 'UNKNOWN' OR ${col} IS NULL)`;
+}
+
 // Optional campaign filter helper (filters by campaign_id when provided)
 function buildCampaignFilter(params, columnPrefix = '') {
   const campaignId = params?.campaignId;
@@ -111,7 +121,7 @@ export function getCitiesByCountry(store, countryCode, params) {
           COUNT(*) as orders,
           SUM(subtotal) as revenue
         FROM shopify_orders
-        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
         AND city IS NOT NULL AND city != ''
         GROUP BY city, state
         ORDER BY orders DESC
@@ -126,7 +136,7 @@ export function getCitiesByCountry(store, countryCode, params) {
           COUNT(*) as orders,
           SUM(subtotal) as revenue
         FROM salla_orders
-        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ?
+        WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
         AND city IS NOT NULL AND city != ''
         GROUP BY city, state
         ORDER BY orders DESC
@@ -189,7 +199,7 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
   if (store === 'shawq' && !campaignValue) {
     const ecomData = db.prepare(`
       SELECT COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
     `).get(store, startDate, endDate) || {};
     totalOrders = ecomData.orders || 0;
     totalRevenue = ecomData.revenue || 0;
@@ -400,7 +410,7 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
   if (store === 'shawq') {
     ecomData = db.prepare(`
       SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
-      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+      FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL GROUP BY country_code
     `).all(store, startDate, endDate);
     dataSource = 'Shopify';
   } else if (store === 'vironax') {
@@ -408,7 +418,7 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
     if (isSallaActive()) {
       ecomData = db.prepare(`
         SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
-        FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL GROUP BY country_code
+        FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL GROUP BY country_code
       `).all(store, startDate, endDate);
       dataSource = 'Salla';
     } else {
@@ -512,7 +522,7 @@ function getTrends(store, startDate, endDate, params = {}) {
 
   let salesData = [];
   if (store === 'shawq' && !campaignValue) {
-    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? GROUP BY date`).all(store, startDate, endDate);
+    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 GROUP BY date`).all(store, startDate, endDate);
   } else {
     salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs);
   }
@@ -574,6 +584,150 @@ function getMetaTrends(store, startDate, endDate, params = {}) {
 }
 
 // ============================================================================
+// CTR TRENDS (Link CTR)
+// ============================================================================
+export function getCtrTrends(store, params = {}) {
+  const db = getDb();
+  const { startDate, endDate } = getDateRange(params);
+  const campaignId = params.campaignId || null;
+  const adId = params.adId || null;
+  const country = params.country || null;
+
+  try {
+    const table = adId ? 'meta_ad_metrics' : 'meta_daily_metrics';
+    const statusColumn = adId ? 'ad_effective_status' : 'effective_status';
+    const statusFilter = buildStatusFilterForColumn(params, statusColumn);
+
+    let where = 'WHERE store = ? AND date BETWEEN ? AND ?';
+    const args = [store, startDate, endDate];
+
+    if (campaignId) {
+      where += ' AND campaign_id = ?';
+      args.push(campaignId);
+    }
+    if (adId) {
+      where += ' AND ad_id = ?';
+      args.push(adId);
+    }
+    if (country) {
+      where += ' AND country = ?';
+      args.push(country);
+    }
+
+    const query = `
+      SELECT
+        date,
+        SUM(impressions) as impressions,
+        SUM(inline_link_clicks) as inline_link_clicks,
+        SUM(clicks) as clicks
+      FROM ${table}
+      ${where}${statusFilter}
+      GROUP BY date
+      ORDER BY date ASC
+    `;
+
+    const rows = db.prepare(query).all(...args);
+
+    const allDates = [];
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      allDates.push(formatDateAsGmt3(d));
+    }
+
+    const map = new Map();
+    allDates.forEach(date => map.set(date, { date, impressions: 0, inline_link_clicks: 0, clicks: 0 }));
+
+    rows.forEach(row => {
+      if (!map.has(row.date)) {
+        map.set(row.date, { date: row.date, impressions: 0, inline_link_clicks: 0, clicks: 0 });
+      }
+      const entry = map.get(row.date);
+      entry.impressions = parseInt(row.impressions || 0);
+      entry.inline_link_clicks = parseInt(row.inline_link_clicks || 0);
+      entry.clicks = parseInt(row.clicks || 0);
+    });
+
+    const series = Array.from(map.values())
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map(row => {
+        const impressions = row.impressions || 0;
+        const inlineClicks = row.inline_link_clicks || 0;
+        const clicks = row.clicks || 0;
+        const linkClicks = inlineClicks > 0 ? inlineClicks : clicks;
+        return {
+          date: row.date,
+          impressions,
+          link_clicks: linkClicks,
+          ctr: impressions > 0 ? (linkClicks / impressions) * 100 : null
+        };
+      });
+
+    let campaignName = null;
+    if (campaignId) {
+      const row = db.prepare(`
+        SELECT campaign_name FROM meta_daily_metrics WHERE store = ? AND campaign_id = ? LIMIT 1
+      `).get(store, campaignId);
+      campaignName = row?.campaign_name || null;
+    }
+
+    let adName = null;
+    let adCampaignName = null;
+    if (adId) {
+      const row = db.prepare(`
+        SELECT ad_name, campaign_name FROM meta_ad_metrics WHERE store = ? AND ad_id = ? LIMIT 1
+      `).get(store, adId);
+      adName = row?.ad_name || null;
+      adCampaignName = row?.campaign_name || null;
+    }
+
+    const countryInfo = country ? getCountryInfo(country) : null;
+    const countryLabel = country ? (countryInfo?.name || country) : null;
+
+    let label = 'All Campaigns';
+    if (campaignId) {
+      label = campaignName || 'Campaign';
+    }
+    if (adId) {
+      label = adName || 'Ad';
+      const campaignLabel = adCampaignName || campaignName;
+      if (campaignLabel) {
+        label = `${label} • ${campaignLabel}`;
+      }
+    }
+    if (countryLabel) {
+      label = `${label} • ${countryLabel}`;
+    }
+
+    return {
+      label,
+      series,
+      meta: {
+        startDate,
+        endDate,
+        campaignId,
+        adId,
+        country
+      }
+    };
+  } catch (error) {
+    console.error('[Analytics] Error getting CTR trends:', error);
+    return {
+      label: 'CTR',
+      series: [],
+      meta: {
+        startDate,
+        endDate,
+        campaignId,
+        adId,
+        country
+      },
+      error: error?.message || 'CTR trends unavailable'
+    };
+  }
+}
+
+// ============================================================================
 // COUNTRY TRENDS (with nested cities)
 // ============================================================================
 export function getCountryTrends(store, params) {
@@ -595,7 +749,7 @@ export function getCountryTrends(store, params) {
           COUNT(*) as orders,
           SUM(subtotal) as revenue
         FROM shopify_orders
-        WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
+        WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL
         GROUP BY date, country_code
         ORDER BY date ASC, country_code ASC
       `).all(store, startDate, endDate);
@@ -612,7 +766,7 @@ export function getCountryTrends(store, params) {
             COUNT(*) as orders,
             SUM(total_price) as revenue
           FROM salla_orders
-          WHERE store = ? AND date BETWEEN ? AND ? AND country_code IS NOT NULL
+          WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL
           GROUP BY date, country_code
           ORDER BY date ASC, country_code ASC
         `).all(store, startDate, endDate);
@@ -702,6 +856,7 @@ export function getNewYorkTrends(store, params) {
       FROM shopify_orders
       WHERE store = ?
         AND date BETWEEN ? AND ?
+        AND COALESCE(is_excluded, 0) = 0
         AND country_code = 'US'
         AND city IS NOT NULL
         AND (LOWER(city) LIKE '%new york%' OR city = 'NYC' OR city = 'Brooklyn' OR city = 'Queens' OR city = 'Bronx' OR city = 'Manhattan' OR city = 'Staten Island')
@@ -727,6 +882,7 @@ export function getNewYorkTrends(store, params) {
       FROM shopify_orders
       WHERE store = ?
         AND date BETWEEN ? AND ?
+        AND COALESCE(is_excluded, 0) = 0
         AND country_code = 'US'
         AND city IS NOT NULL
         AND (LOWER(city) LIKE '%new york%' OR city = 'NYC' OR city = 'Brooklyn' OR city = 'Queens' OR city = 'Bronx' OR city = 'Manhattan' OR city = 'Staten Island')
@@ -870,6 +1026,7 @@ export function getShopifyTimeOfDay(store, params) {
         subtotal as revenue
       FROM shopify_orders
       WHERE store = ? AND date BETWEEN ? AND ?
+      AND COALESCE(is_excluded, 0) = 0
       AND order_created_at IS NOT NULL
     `;
 
@@ -956,7 +1113,7 @@ export function getSallaTimeOfDay(store, params) {
         country_code,
         subtotal as revenue
       FROM salla_orders
-      WHERE store = ? AND date BETWEEN ? AND ?
+      WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
       AND created_at IS NOT NULL
     `).all(store, startDate, endDate);
 
@@ -1068,12 +1225,12 @@ export function getOrdersByDayOfWeek(store, params) {
     let source = '';
 
     if (store === 'shawq') {
-      orders = db.prepare(`SELECT date FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+      orders = db.prepare(`SELECT date FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0`).all(store, startDate, endDate);
       source = 'Shopify';
     } else if (store === 'vironax') {
       // Check if Salla token exists (not database - avoids demo data issues)
       if (isSallaActive()) {
-        orders = db.prepare(`SELECT date FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ?`).all(store, startDate, endDate);
+        orders = db.prepare(`SELECT date FROM salla_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0`).all(store, startDate, endDate);
         source = 'Salla';
       } else {
         // Salla NOT connected - use Meta conversions
@@ -1264,8 +1421,8 @@ export function getAvailableCountries(store) {
   const db = getDb();
   const rows = db.prepare(`
     SELECT DISTINCT country as code FROM meta_daily_metrics WHERE store = ? AND country != 'ALL' AND (spend > 0 OR conversions > 0)
-    UNION SELECT DISTINCT country_code as code FROM shopify_orders WHERE store = ?
-    UNION SELECT DISTINCT country_code as code FROM salla_orders WHERE store = ?
+    UNION SELECT DISTINCT country_code as code FROM shopify_orders WHERE store = ? AND COALESCE(is_excluded, 0) = 0
+    UNION SELECT DISTINCT country_code as code FROM salla_orders WHERE store = ? AND COALESCE(is_excluded, 0) = 0
   `).all(store, store, store);
   return rows.map(r => getCountryInfo(r.code)).filter(c => c && c.name);
 }

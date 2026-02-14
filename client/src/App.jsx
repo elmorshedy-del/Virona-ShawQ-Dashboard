@@ -3,12 +3,12 @@
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart
 } from 'recharts';
 import {
   RefreshCw, TrendingUp, TrendingDown, Plus, Trash2,
   ChevronDown, ChevronUp, ArrowUpDown, Calendar,
-  Bell, X, AlertCircle, CheckCircle2
+  Bell, X, AlertCircle, CheckCircle2, Sparkles
 } from 'lucide-react';
 import { COUNTRIES as MASTER_COUNTRIES } from './data/countries';
 import NotificationCenter from './components/NotificationCenter';
@@ -17,9 +17,22 @@ import AIBudget from './components/AIBudget';
 import BudgetCalculator from './components/BudgetCalculator';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import CreativeAnalysis from './components/CreativeAnalysis.jsx';
+import FatigueDetector from './components/FatigueDetector';
+import MetricsChartsTab from './components/MetricsChartsTab';
+import AttributionTab from './components/AttributionTab';
+import InsightsTab from './components/InsightsTab';
+import SessionIntelligenceTab from './components/SessionIntelligenceTab';
+import NeoMetaTab from './components/NeoMetaTab';
+import ProductFinderPremium from './components/ProductFinderPremium';
 import CreativeIntelligence from './components/CreativeIntelligence';
+import CreativeStudio from './components/CreativeStudio';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
+import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
+import CustomerInsightsTab from './components/CustomerInsightsTab';
+import WatchtowerTab from './components/WatchtowerTab';
+import CROForensicsTab from './components/CROForensicsTab';
+import ConversionUIFixLabTab from './components/ConversionUIFixLabTab';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -61,9 +74,70 @@ const getLocalDateString = (date = new Date()) => {
   return localDate.toISOString().split('T')[0];
 };
 
+const getIstanbulDateString = (date = new Date()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(date);
+
+const getMonthKey = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+};
+
+const parseMonthKey = (key) => {
+  if (!key || !/^\d{4}-\d{2}$/.test(key)) return null;
+  const [year, month] = key.split('-').map(Number);
+  if (!year || !month) return null;
+  return { year, monthIndex: month - 1 };
+};
+
+const getMonthLabel = (key) => {
+  const parsed = parseMonthKey(key);
+  if (!parsed) return '';
+  return `${MONTH_NAMES[parsed.monthIndex]} ${parsed.year}`;
+};
+
+const getMonthBounds = (key) => {
+  const parsed = parseMonthKey(key);
+  if (!parsed) return null;
+  const { year, monthIndex } = parsed;
+  const start = new Date(year, monthIndex, 1);
+  const end = new Date(year, monthIndex + 1, 0);
+  return {
+    startDate: getLocalDateString(start),
+    endDate: getLocalDateString(end),
+    year,
+    monthIndex,
+    daysInMonth: end.getDate(),
+    label: `${MONTH_NAMES[monthIndex]} ${year}`
+  };
+};
+
+const getPreviousMonthKey = (key) => {
+  const parsed = parseMonthKey(key);
+  if (!parsed) return null;
+  const { year, monthIndex } = parsed;
+  const prev = new Date(year, monthIndex - 1, 1);
+  return getMonthKey(prev);
+};
+
 const EPSILON = 1e-6;
 const K_PRIOR = 50;
 const CREATIVE_SAMPLES = 2000;
+const ALL_CAMPAIGNS_ID = 'all-campaigns';
+const EUROPE_COUNTRY_CODES = new Set([
+  'AL', 'AD', 'AT', 'BY', 'BE', 'BA', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI',
+  'FR', 'DE', 'GR', 'HU', 'IS', 'IE', 'IT', 'XK', 'LV', 'LI', 'LT', 'LU', 'MT',
+  'MD', 'MC', 'ME', 'NL', 'MK', 'NO', 'PL', 'PT', 'RO', 'RU', 'SM', 'RS', 'SK',
+  'SI', 'ES', 'SE', 'CH', 'UA', 'GB', 'VA'
+]);
+const USA_COUNTRY_CODES = new Set(['US']);
+const REGION_COMPARE_COLORS = {
+  europe: '#2563eb',
+  usa: '#ef4444'
+};
+const CTR_TREND_COLORS = ['#2563eb', '#f97316', '#10b981'];
+const CTR_COMPARE_LIMIT = 3;
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -73,6 +147,69 @@ const toNumber = (value) => {
   }
   if (value && typeof value === 'object' && 'value' in value) return Number(value.value);
   return 0;
+};
+
+const getMean = (values = []) => {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0) / values.length;
+};
+
+const getStandardDeviation = (values = [], mean = getMean(values)) => {
+  if (!Array.isArray(values) || values.length < 2) return 0;
+  const variance = values.reduce((sum, value) => {
+    const diff = (Number.isFinite(value) ? value : 0) - mean;
+    return sum + diff * diff;
+  }, 0) / values.length;
+  return Math.sqrt(variance);
+};
+
+const getLinearRegressionStats = (values = []) => {
+  const n = values.length;
+  if (n < 2) {
+    return { slope: 0, intercept: values[0] || 0, r2: 0 };
+  }
+
+  const meanX = (n - 1) / 2;
+  const meanY = getMean(values);
+  let num = 0;
+  let den = 0;
+  let ssTot = 0;
+  let ssRes = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    const x = i;
+    const y = Number.isFinite(values[i]) ? values[i] : 0;
+    num += (x - meanX) * (y - meanY);
+    den += (x - meanX) * (x - meanX);
+  }
+
+  const slope = den === 0 ? 0 : num / den;
+  const intercept = meanY - slope * meanX;
+
+  for (let i = 0; i < n; i += 1) {
+    const y = Number.isFinite(values[i]) ? values[i] : 0;
+    const fitted = intercept + slope * i;
+    ssRes += (y - fitted) * (y - fitted);
+    ssTot += (y - meanY) * (y - meanY);
+  }
+
+  const r2 = ssTot === 0 ? 0 : 1 - (ssRes / ssTot);
+  return { slope, intercept, r2 };
+};
+
+const getMovingAverage = (values = [], windowSize = 7) => {
+  if (!Array.isArray(values) || values.length === 0) return [];
+  const window = Math.max(1, Math.floor(windowSize));
+  const result = [];
+
+  for (let i = 0; i < values.length; i += 1) {
+    const start = Math.max(0, i - window + 1);
+    const slice = values.slice(start, i + 1);
+    const avg = getMean(slice);
+    result.push(avg);
+  }
+
+  return result;
 };
 
 const getFirstPositiveMetric = (...values) => {
@@ -85,6 +222,11 @@ const getFirstPositiveMetric = (...values) => {
 
 const getVisitsProxy = ({ landingPageViews, outboundClicks, inlineLinkClicks }) =>
   getFirstPositiveMetric(landingPageViews, outboundClicks, inlineLinkClicks);
+
+const CREATIVE_FUNNEL_SUMMARY_PROMPTS = {
+  analyze: 'Without ad-hoc reasoning and rigorous thinking analyze these ads numbers and provide rigorous insights. Interpret the funnel numbers → diagnose what changed + why → give prioritized actions/tests. Keep verbosity low.',
+  summarize: 'Show what changed and organize data in a readable meaningful way, to be comprehended at a glance. Keep verbosity low.'
+};
 
 const hashStringToSeed = (value) => {
   const str = String(value ?? '');
@@ -258,13 +400,69 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Creative Analysis 🎨 📊', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates'];
+const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics'];
+const TAB_INDEX = Object.freeze(
+  TABS.reduce((indexMap, tabLabel, index) => {
+    indexMap[tabLabel] = index;
+    return indexMap;
+  }, {})
+);
+const DASHBOARD_TAB_INDEX = TAB_INDEX['Dashboard'];
+const METRICS_CHARTS_TAB_INDEX = TAB_INDEX['Metrics Charts'];
+const ATTRIBUTION_TAB_INDEX = TAB_INDEX['Attribution'];
+const INSIGHTS_TAB_INDEX = TAB_INDEX['Insights'];
+const SESSION_INTELLIGENCE_TAB_INDEX = TAB_INDEX['Session Intelligence'];
+const NEO_META_TAB_INDEX = TAB_INDEX['NeoMeta'];
+const PRODUCT_FINDER_TAB_INDEX = TAB_INDEX['Product Finder'];
+const CUSTOMER_INSIGHTS_TAB_INDEX = TAB_INDEX['Customer Insights'];
+const CONVERSION_UI_FIX_LAB_TAB_INDEX = TAB_INDEX['Conversion/UI Fix Lab'];
+const BUDGET_EFFICIENCY_TAB_INDEX = TAB_INDEX['Budget Efficiency'];
+const BUDGET_INTELLIGENCE_TAB_INDEX = TAB_INDEX['Budget Intelligence'];
+const MANUAL_DATA_TAB_INDEX = TAB_INDEX['Manual Data'];
+const FATIGUE_DETECTOR_TAB_INDEX = TAB_INDEX['Fatigue Detector'];
+const CREATIVE_ANALYSIS_TAB_INDEX = TAB_INDEX['Creative Analysis 🎨 📊'];
+const CREATIVE_STUDIO_TAB_INDEX = TAB_INDEX['Creative Studio ✨'];
+const AI_ANALYTICS_TAB_INDEX = TAB_INDEX['AI Analytics'];
+const AI_BUDGET_TAB_INDEX = TAB_INDEX['AI Budget'];
+const BUDGET_CALCULATOR_TAB_INDEX = TAB_INDEX['Budget Calculator'];
+const EXCHANGE_RATES_TAB_INDEX = TAB_INDEX['Exchange Rates'];
+const WATCHTOWER_TAB_INDEX = TAB_INDEX['Watchtower'];
+const CRO_FORENSICS_TAB_INDEX = TAB_INDEX['CRO Forensics'];
+const TABS_VERSION = '2026-02-12-conversion-ui-fix-lab-after-customer-insights-v2';
+const MOBILE_VIEWPORT_MAX_WIDTH_PX = 768;
+const MOBILE_VIEWPORT_QUERY = `(max-width: ${MOBILE_VIEWPORT_MAX_WIDTH_PX}px)`;
+const MOBILE_DASHBOARD_TREND_POINTS = 14;
+const MOBILE_DASHBOARD_TOP_LIST_LIMIT = 5;
 
 export default function App() {
   const [currentStore, setCurrentStore] = useState('vironax');
   const [storeLoaded, setStoreLoaded] = useState(false);
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const savedLabel = localStorage.getItem('activeTabLabel');
+      if (savedLabel) {
+        const idx = TABS.indexOf(savedLabel);
+        if (idx >= 0) return idx;
+      }
+
+      const saved = localStorage.getItem('activeTab');
+      const parsed = Number(saved);
+      if (Number.isInteger(parsed) && parsed >= 0 && parsed < TABS.length) {
+        // Migration: rely on stored tab label for reordering.
+        return parsed;
+      }
+    } catch (e) {
+      console.error('Error reading localStorage:', e);
+    }
+    return DASHBOARD_TAB_INDEX;
+  });
+  const [isMobileViewport, setIsMobileViewport] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    return window.matchMedia(MOBILE_VIEWPORT_QUERY).matches;
+  });
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -275,12 +473,50 @@ export default function App() {
     end: getLocalDateString()
   });
   const [showCustomPicker, setShowCustomPicker] = useState(false);
+
+  const [selectedMonthKey, setSelectedMonthKey] = useState(() => getMonthKey());
+  const [monthMode, setMonthMode] = useState('projection');
+
+  const monthOptions = useMemo(() => {
+    const options = [];
+    const now = new Date();
+    for (let i = 0; i < 12; i += 1) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = getMonthKey(date);
+      options.push({ key, label: getMonthLabel(key) });
+    }
+    return options;
+  }, []);
+
+  const applyMonthSelection = useCallback((monthKey, mode) => {
+    const bounds = getMonthBounds(monthKey);
+    if (!bounds) return;
+    const todayKey = getLocalDateString();
+    const isCurrentMonth = monthKey === getMonthKey();
+    const start = bounds.startDate;
+    const end = (mode === 'mtd' && isCurrentMonth) ? todayKey : bounds.endDate;
+    setDateRange({ type: 'custom', start, end });
+    setCustomRange({ start, end });
+    setShowCustomPicker(false);
+  }, [setCustomRange, setDateRange, setShowCustomPicker]);
+
+  const handleMonthChange = useCallback((nextKey) => {
+    setSelectedMonthKey(nextKey);
+    applyMonthSelection(nextKey, monthMode);
+  }, [applyMonthSelection, monthMode]);
+
+  const handleMonthModeChange = useCallback((nextMode) => {
+    setMonthMode(nextMode);
+    applyMonthSelection(selectedMonthKey, nextMode);
+  }, [applyMonthSelection, selectedMonthKey]);
   
   const [dashboard, setDashboard] = useState(null);
   const [efficiency, setEfficiency] = useState(null);
   const [efficiencyTrends, setEfficiencyTrends] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [budgetIntelligence, setBudgetIntelligence] = useState(null);
+  const [customerInsights, setCustomerInsights] = useState(null);
+  const [customerInsightsLoading, setCustomerInsightsLoading] = useState(false);
   const [manualOrders, setManualOrders] = useState([]);
   const [manualSpendOverrides, setManualSpendOverrides] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
@@ -306,10 +542,14 @@ export default function App() {
   const [campaignTrends, setCampaignTrends] = useState([]);
   const [campaignTrendsDataSource, setCampaignTrendsDataSource] = useState('');
   const [countriesDataSource, setCountriesDataSource] = useState('');
+  const [regionCompareTrends, setRegionCompareTrends] = useState([]);
+  const [regionCompareEnabled, setRegionCompareEnabled] = useState(false);
+  const [chartMode, setChartMode] = useState('bucket');
 
   // Unified analytics section state (must be before useEffect hooks that use them)
   const [analyticsMode, setAnalyticsMode] = useState('meta-ad-manager'); // 'countries' | 'meta-ad-manager'
   const [metaAdManagerData, setMetaAdManagerData] = useState([]);
+  const [metaAdManagerNotice, setMetaAdManagerNotice] = useState('');
   const [adManagerBreakdown, setAdManagerBreakdown] = useState('none'); // 'none', 'country', 'age', 'gender', 'age_gender', 'placement'
   const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
   const [expandedAdsets, setExpandedAdsets] = useState(new Set());
@@ -344,6 +584,7 @@ export default function App() {
   }, [metaAdManagerData]);
 
   const store = STORES[currentStore];
+  const isProductFinderTab = activeTab === PRODUCT_FINDER_TAB_INDEX;
   const selectedCampaignOption = useMemo(
     () => campaignOptions.find((c) => c.campaignId === selectedCampaignId) || null,
     [campaignOptions, selectedCampaignId]
@@ -433,6 +674,38 @@ export default function App() {
   }, [includeInactive, storeLoaded]);
 
   useEffect(() => {
+    if (!storeLoaded) return;
+    try {
+      localStorage.setItem('activeTab', String(activeTab));
+      localStorage.setItem('activeTabLabel', TABS[activeTab] || '');
+      localStorage.setItem('tabsVersion', TABS_VERSION);
+    } catch (e) {
+      console.error('Error writing localStorage:', e);
+    }
+  }, [activeTab, storeLoaded]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+
+    const mediaQueryList = window.matchMedia(MOBILE_VIEWPORT_QUERY);
+    const handleViewportChange = (event) => {
+      setIsMobileViewport(event.matches);
+    };
+
+    setIsMobileViewport(mediaQueryList.matches);
+
+    if (typeof mediaQueryList.addEventListener === 'function') {
+      mediaQueryList.addEventListener('change', handleViewportChange);
+      return () => mediaQueryList.removeEventListener('change', handleViewportChange);
+    }
+
+    mediaQueryList.addListener(handleViewportChange);
+    return () => mediaQueryList.removeListener(handleViewportChange);
+  }, []);
+
+  useEffect(() => {
     const newStore = STORES[currentStore];
     setOrderForm(prev => ({
       ...prev,
@@ -467,6 +740,7 @@ export default function App() {
         endDate: getLocalDateString()
       });
       const countryTrendParams = new URLSearchParams({ store: currentStore });
+      const regionCompareParams = new URLSearchParams({ store: currentStore });
       const campaignTrendParams = new URLSearchParams({ store: currentStore });
       if (selectedCampaignId) {
         params.set('campaignId', selectedCampaignId);
@@ -537,6 +811,7 @@ export default function App() {
       applyDashboardRange(params);
       applyCountryTrendsRange(countryTrendParams);
       applyCampaignTrendsRange(campaignTrendParams);
+      applyDashboardRange(regionCompareParams);
       
       params.set('showArrows', shouldShowArrows);
 
@@ -546,6 +821,7 @@ export default function App() {
         budgetParams.set('includeInactive', 'true');
         countryTrendParams.set('includeInactive', 'true');
         campaignTrendParams.set('includeInactive', 'true');
+        regionCompareParams.set('includeInactive', 'true');
       }
 
       const shopifyRegion = selectedShopifyRegion ?? 'us';
@@ -561,6 +837,7 @@ export default function App() {
         spendOverrides,
         countries,
         cTrends,
+        regionCompare,
         nyTrend,
         campaignTrendData,
         timeOfDayData,
@@ -575,6 +852,7 @@ export default function App() {
         fetchJson(`${API_BASE}/manual/spend?${params}`, []),
         fetchJson(`${API_BASE}/analytics/countries?store=${currentStore}`, MASTER_COUNTRIES_WITH_FLAGS),
         fetchJson(`${API_BASE}/analytics/countries/trends?${countryTrendParams}`, { data: [], dataSource: '' }),
+        fetchJson(`${API_BASE}/analytics/countries/trends?${regionCompareParams}`, { data: [], dataSource: '' }),
         fetchJson(`${API_BASE}/analytics/newyork/trends?${countryTrendParams}`, { data: null, dataSource: '' }),
         fetchJson(`${API_BASE}/analytics/campaigns/trends?${campaignTrendParams}`, { data: [], dataSource: '' }),
         // Time of day - now fetches for both stores
@@ -643,6 +921,14 @@ export default function App() {
         setCountryTrendsDataSource('');
       }
 
+      if (regionCompare && typeof regionCompare === 'object' && Array.isArray(regionCompare.data)) {
+        setRegionCompareTrends(regionCompare.data);
+      } else if (Array.isArray(regionCompare)) {
+        setRegionCompareTrends(regionCompare);
+      } else {
+        setRegionCompareTrends([]);
+      }
+
       // Handle New York trend - returns { data: {...} or null, dataSource: ... }
       if (nyTrend && typeof nyTrend === 'object' && nyTrend.data) {
         setNyTrendData(nyTrend.data);
@@ -690,6 +976,42 @@ export default function App() {
     }
   }, [loadData, storeLoaded]);
 
+
+  useEffect(() => {
+    if (!storeLoaded) return;
+    let ignore = false;
+
+    const loadCustomerInsights = async () => {
+      try {
+        setCustomerInsightsLoading(true);
+        const params = new URLSearchParams({ store: currentStore });
+        if (dateRange.type === 'custom') {
+          params.set('startDate', dateRange.start);
+          params.set('endDate', dateRange.end);
+        } else if (dateRange.type === 'yesterday') {
+          params.set('yesterday', '1');
+        } else {
+          params.set(dateRange.type, dateRange.value);
+        }
+
+        const response = await fetchJson(`${API_BASE}/customer-insights?${params}`);
+        if (!ignore) {
+          setCustomerInsights(response?.data || null);
+        }
+      } catch (error) {
+        console.error('Error loading customer insights:', error);
+        if (!ignore) setCustomerInsights(null);
+      } finally {
+        if (!ignore) setCustomerInsightsLoading(false);
+      }
+    };
+
+    loadCustomerInsights();
+    return () => {
+      ignore = true;
+    };
+  }, [currentStore, dateRange, storeLoaded]);
+
   // Load breakdown data for Section 2 (pure meta)
   useEffect(() => {
     if (!storeLoaded) return;
@@ -732,39 +1054,85 @@ export default function App() {
 
   // Load Meta Ad Manager hierarchy data
   useEffect(() => {
-    if (!storeLoaded || analyticsMode !== 'meta-ad-manager') return;
+    if (!storeLoaded || analyticsMode !== 'meta-ad-manager') {
+      setMetaAdManagerNotice('');
+      return;
+    }
+
+    const isTodayRange = (range) => {
+      if (range.type === 'days' && range.value === 1) return true;
+      if (range.type === 'custom' && range.start && range.end) {
+        const today = getIstanbulDateString();
+        return range.start === today && range.end === today;
+      }
+      return false;
+    };
+
+    const buildParams = (range) => {
+      const params = new URLSearchParams({ store: currentStore });
+
+      if (range.type === 'custom') {
+        params.set('startDate', range.start);
+        params.set('endDate', range.end);
+      } else if (range.type === 'yesterday') {
+        params.set('yesterday', '1');
+      } else {
+        params.set(range.type, range.value);
+      }
+
+      if (adManagerBreakdown !== 'none') {
+        params.set('breakdown', adManagerBreakdown);
+      }
+
+      // Include inactive if toggle is on
+      if (includeInactive) {
+        params.set('includeInactive', 'true');
+      }
+
+      if (selectedCampaignId) {
+        params.set('campaignId', selectedCampaignId);
+      }
+
+      return params;
+    };
+
+    const fetchMetaAdManager = async (params) => {
+      const response = await fetch(`${API_BASE}/analytics/meta-ad-manager?${params}`);
+      const data = await response.json();
+      return Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+    };
 
     async function loadMetaAdManager() {
+      setMetaAdManagerNotice('');
       try {
-        const params = new URLSearchParams({ store: currentStore });
+        const params = buildParams(dateRange);
+        const data = await fetchMetaAdManager(params);
 
-        if (dateRange.type === 'custom') {
-          params.set('startDate', dateRange.start);
-          params.set('endDate', dateRange.end);
-        } else if (dateRange.type === 'yesterday') {
-          params.set('yesterday', '1');
-        } else {
-          params.set(dateRange.type, dateRange.value);
+        if (!data.length && isTodayRange(dateRange)) {
+          const yesterday = getIstanbulDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
+          const fallbackParams = buildParams({ type: 'custom', start: yesterday, end: yesterday });
+          const fallbackData = await fetchMetaAdManager(fallbackParams);
+
+          if (fallbackData.length > 0) {
+            setMetaAdManagerData(fallbackData);
+            setMetaAdManagerNotice(
+              `Today's data is still syncing with Meta. Showing ${yesterday} results for now; we'll update automatically once today's data is ready.`
+            );
+            return;
+          }
+
+          setMetaAdManagerData([]);
+          setMetaAdManagerNotice(
+            "Today's data is still syncing with Meta, and yesterday's results aren't available yet. We'll update automatically as soon as data arrives."
+          );
+          return;
         }
 
-        if (adManagerBreakdown !== 'none') {
-          params.set('breakdown', adManagerBreakdown);
-        }
-
-        // Include inactive if toggle is on
-        if (includeInactive) {
-          params.set('includeInactive', 'true');
-        }
-
-        if (selectedCampaignId) {
-          params.set('campaignId', selectedCampaignId);
-        }
-
-        const data = await fetch(`${API_BASE}/analytics/meta-ad-manager?${params}`).then(r => r.json());
-        setMetaAdManagerData(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+        setMetaAdManagerData(data);
       } catch (error) {
         console.error('Error loading Meta Ad Manager data:', error);
         setMetaAdManagerData([]);
+        setMetaAdManagerNotice('We had trouble loading Meta data just now. Please retry in a moment.');
       }
     }
 
@@ -1048,16 +1416,23 @@ export default function App() {
               />
 
               <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded">
-                Dashboard
+                {activeTab === PRODUCT_FINDER_TAB_INDEX ? 'Product Finder' : 'Dashboard'}
               </span>
             </div>
             
             <div className="flex items-center gap-4">
-              <span className="text-sm text-gray-500">
-                {dashboard?.dateRange &&
-                  `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
-              </span>
-              <NotificationCenter currentStore={currentStore} />
+              {!isProductFinderTab && (
+                <span className="text-sm text-gray-500">
+                  {dashboard?.dateRange &&
+                    `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
+                </span>
+              )}
+              <div className="flex flex-col items-end gap-1">
+                <NotificationCenter currentStore={currentStore} />
+                {store?.ecommerce === 'Shopify' && (
+                  <LiveCheckoutIndicator store={currentStore} />
+                )}
+              </div>
               <button
                 onClick={handleSync}
                 disabled={syncing}
@@ -1072,12 +1447,12 @@ export default function App() {
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
-        <div className="flex gap-1 bg-white p-1.5 rounded-xl shadow-sm mb-6 w-fit">
+        <div className="flex gap-1 bg-white p-1.5 rounded-xl shadow-sm mb-6 w-fit max-w-full overflow-x-auto">
           {TABS.map((tab, i) => (
             <button
               key={tab}
               onClick={() => setActiveTab(i)}
-              className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
                 activeTab === i 
                   ? 'bg-gray-900 text-white' 
                   : 'text-gray-600 hover:bg-gray-100'
@@ -1088,208 +1463,362 @@ export default function App() {
           ))}
         </div>
 
-        {/* Date Range Picker */}
-        <div className="flex items-center gap-3 bg-white p-4 rounded-xl shadow-sm mb-6 flex-wrap">
-          <span className="text-sm font-medium text-gray-700">Period:</span>
-          
-          {/* Today */}
-          <button
-            onClick={() => { setDateRange({ type: 'days', value: 1 }); setShowCustomPicker(false); }}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              dateRange.type === 'days' && dateRange.value === 1
-                ? 'bg-indigo-600 text-white'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-            }`}
-          >
-            Today
-          </button>
-          
-          {/* Yesterday */}
-          <button
-            onClick={() => { setDateRange({ type: 'yesterday', value: 1 }); setShowCustomPicker(false); }}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              dateRange.type === 'yesterday'
-                ? 'bg-indigo-600 text-white'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-            }`}
-          >
-            Yesterday
-          </button>
-
-          {/* Today & Yesterday */}
-          <button
-            onClick={() => { setDateRange({ type: 'days', value: 2 }); setShowCustomPicker(false); }}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              dateRange.type === 'days' && dateRange.value === 2
-                ? 'bg-indigo-600 text-white'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-            }`}
-          >
-            Today & Yesterday
-          </button>
-          
-          {[3, 7, 14, 30].map(d => (
+        {!isProductFinderTab && (
+          <div className="flex items-center gap-3 bg-white p-4 rounded-xl shadow-sm mb-6 flex-wrap">
+            <span className="text-sm font-medium text-gray-700">Period:</span>
+            
+            {/* Today */}
             <button
-              key={d}
-              onClick={() => { setDateRange({ type: 'days', value: d }); setShowCustomPicker(false); }}
+              onClick={() => { setDateRange({ type: 'days', value: 1 }); setShowCustomPicker(false); }}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                dateRange.type === 'days' && dateRange.value === d
+                dateRange.type === 'days' && dateRange.value === 1
                   ? 'bg-indigo-600 text-white'
                   : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
               }`}
             >
-              {d}D
-            </button>
-          ))}
-
-          {/* Custom Range */}
-          <div className="relative">
-            <button
-              onClick={() => setShowCustomPicker(!showCustomPicker)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
-                dateRange.type === 'custom'
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-              }`}
-            >
-              <Calendar className="w-4 h-4" />
-              Custom
+              Today
             </button>
             
-            {showCustomPicker && (
-              <div className="absolute top-full mt-2 left-0 bg-white rounded-xl shadow-lg border border-gray-200 p-4 z-50 min-w-[280px]">
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">
-                      Start Date
-                    </label>
-                    <input
-                      type="date"
-                      value={customRange.start}
-                      onChange={(e) => setCustomRange({ ...customRange, start: e.target.value })}
-                      max={customRange.end || getLocalDateString()}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">
-                      End Date
-                    </label>
-                    <input
-                      type="date"
-                      value={customRange.end}
-                      onChange={(e) => setCustomRange({ ...customRange, end: e.target.value })}
-                      min={customRange.start}
-                      max={getLocalDateString()}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    />
-                  </div>
-                  <div className="flex gap-2 pt-2">
-                    <button
-                      onClick={() => {
-                        if (customRange.start && customRange.end) {
-                          setDateRange({ type: 'custom', start: customRange.start, end: customRange.end });
-                          setShowCustomPicker(false);
-                        }
-                      }}
-                      disabled={!customRange.start || !customRange.end}
-                      className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-                    >
-                      Apply
-                    </button>
-                    <button
-                      onClick={() => setShowCustomPicker(false)}
-                      className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+            {/* Yesterday */}
+            <button
+              onClick={() => { setDateRange({ type: 'yesterday', value: 1 }); setShowCustomPicker(false); }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                dateRange.type === 'yesterday'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+              }`}
+            >
+              Yesterday
+            </button>
 
-          <div className="ml-auto flex items-center gap-3 text-sm text-gray-500 flex-wrap">
-            <div>
-              Showing: <strong>{getDateRangeLabel()}</strong>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-gray-700">Campaign:</span>
-              <select
-                value={selectedCampaignId}
-                onChange={(e) => setSelectedCampaignId(e.target.value)}
-                className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[180px]"
+            {/* Today & Yesterday */}
+            <button
+              onClick={() => { setDateRange({ type: 'days', value: 2 }); setShowCustomPicker(false); }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                dateRange.type === 'days' && dateRange.value === 2
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+              }`}
+            >
+              Today & Yesterday
+            </button>
+            
+            {[3, 7, 14, 30].map(d => (
+              <button
+                key={d}
+                onClick={() => { setDateRange({ type: 'days', value: d }); setShowCustomPicker(false); }}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  dateRange.type === 'days' && dateRange.value === d
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                }`}
               >
-                <option value="">All campaigns</option>
-                {campaignOptions.map((option) => (
-                  <option key={option.campaignId} value={option.campaignId}>
-                    {option.campaignName}
+                {d}D
+              </button>
+            ))}
+
+            {/* Month Selector */}
+            <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Month</span>
+              <select
+                value={selectedMonthKey}
+                onChange={(e) => handleMonthChange(e.target.value)}
+                className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {monthOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
                   </option>
                 ))}
               </select>
+              <div className="flex rounded-lg bg-gray-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => handleMonthModeChange('mtd')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    monthMode === 'mtd'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500'
+                  }`}
+                >
+                  MTD
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMonthModeChange('projection')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    monthMode === 'projection'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500'
+                  }`}
+                  title="Full-month projection"
+                >
+                  Full-month
+                </button>
+              </div>
+            </div>
+
+            {/* Custom Range */}
+            <div className="relative">
+              <button
+                onClick={() => setShowCustomPicker(!showCustomPicker)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+                  dateRange.type === 'custom'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                }`}
+              >
+                <Calendar className="w-4 h-4" />
+                Custom
+              </button>
+              
+              {showCustomPicker && (
+                <div className="absolute top-full mt-2 left-0 bg-white rounded-xl shadow-lg border border-gray-200 p-4 z-50 min-w-[280px]">
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Start Date
+                      </label>
+                      <input
+                        type="date"
+                        value={customRange.start}
+                        onChange={(e) => setCustomRange({ ...customRange, start: e.target.value })}
+                        max={customRange.end || getLocalDateString()}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        End Date
+                      </label>
+                      <input
+                        type="date"
+                        value={customRange.end}
+                        onChange={(e) => setCustomRange({ ...customRange, end: e.target.value })}
+                        min={customRange.start}
+                        max={getLocalDateString()}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        onClick={() => {
+                          if (customRange.start && customRange.end) {
+                            setDateRange({ type: 'custom', start: customRange.start, end: customRange.end });
+                            setShowCustomPicker(false);
+                          }
+                        }}
+                        disabled={!customRange.start || !customRange.end}
+                        className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                      >
+                        Apply
+                      </button>
+                      <button
+                        onClick={() => setShowCustomPicker(false)}
+                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-gray-500">Trend:</span>
+              <div className="flex rounded-lg bg-gray-100 p-1">
+                <button
+                  onClick={() => setChartMode('bucket')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    chartMode === 'bucket'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500'
+                  }`}
+                >
+                  Buckets
+                </button>
+                <button
+                  onClick={() => setChartMode('ma')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    chartMode === 'ma'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500'
+                  }`}
+                >
+                  MA
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
+              <span className="text-sm font-medium text-gray-700">USA vs Europe Overlay</span>
+              <button
+                type="button"
+                onClick={() => setRegionCompareEnabled((prev) => !prev)}
+                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
+                  regionCompareEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    regionCompareEnabled ? 'translate-x-5' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="ml-auto flex items-center gap-3 text-sm text-gray-500 flex-wrap">
+              <div>
+                Showing: <strong>{getDateRangeLabel()}</strong>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-gray-700">Campaign:</span>
+                <select
+                  value={selectedCampaignId}
+                  onChange={(e) => setSelectedCampaignId(e.target.value)}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white min-w-[180px]"
+                >
+                  <option value="">All campaigns</option>
+                  {campaignOptions.map((option) => (
+                    <option key={option.campaignId} value={option.campaignId}>
+                      {option.campaignName}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
-        {activeTab === 0 && dashboard && (
-          <DashboardTab
+        {activeTab === DASHBOARD_TAB_INDEX && dashboard && (
+          isMobileViewport ? (
+            <MobileDashboardTab
+              dashboard={dashboard}
+              formatCurrency={formatCurrency}
+              formatNumber={formatNumber}
+              campaignScopeLabel={campaignScopeLabel}
+            />
+          ) : (
+            <DashboardTab
+              dashboard={dashboard}
+              expandedKpis={expandedKpis}
+              setExpandedKpis={setExpandedKpis}
+              formatCurrency={formatCurrency}
+              formatNumber={formatNumber}
+              metaBreakdown={metaBreakdown}
+              setMetaBreakdown={setMetaBreakdown}
+              metaBreakdownData={metaBreakdownData}
+              store={store}
+              campaignScopeLabel={campaignScopeLabel}
+              availableCountries={availableCountries}
+              nyTrendData={nyTrendData}
+              diagnosticsCampaignOptions={diagnosticsCampaignOptions}
+              countryTrends={countryTrends}
+              countryTrendsDataSource={countryTrendsDataSource}
+              countryTrendsRangeMode={countryTrendsRangeMode}
+              setCountryTrendsRangeMode={setCountryTrendsRangeMode}
+              countryTrendsQuickRange={countryTrendsQuickRange}
+              setCountryTrendsQuickRange={setCountryTrendsQuickRange}
+              campaignTrendsRangeMode={campaignTrendsRangeMode}
+              setCampaignTrendsRangeMode={setCampaignTrendsRangeMode}
+              campaignTrendsQuickRange={campaignTrendsQuickRange}
+              setCampaignTrendsQuickRange={setCampaignTrendsQuickRange}
+              campaignTrends={campaignTrends}
+              campaignTrendsDataSource={campaignTrendsDataSource}
+              countriesDataSource={countriesDataSource}
+              regionCompareTrends={regionCompareTrends}
+              regionCompareEnabled={regionCompareEnabled}
+              timeOfDay={timeOfDay}
+              selectedShopifyRegion={selectedShopifyRegion}
+              setSelectedShopifyRegion={setSelectedShopifyRegion}
+              daysOfWeek={daysOfWeek}
+              daysOfWeekPeriod={daysOfWeekPeriod}
+              setDaysOfWeekPeriod={setDaysOfWeekPeriod}
+              loading={loading}
+              analyticsMode={analyticsMode}
+              setAnalyticsMode={setAnalyticsMode}
+              metaAdManagerData={metaAdManagerData}
+              metaAdManagerNotice={metaAdManagerNotice}
+              adManagerBreakdown={adManagerBreakdown}
+              setAdManagerBreakdown={setAdManagerBreakdown}
+              expandedCampaigns={expandedCampaigns}
+              setExpandedCampaigns={setExpandedCampaigns}
+              expandedAdsets={expandedAdsets}
+              setExpandedAdsets={setExpandedAdsets}
+              funnelDiagnostics={funnelDiagnostics}
+              diagnosticsExpanded={diagnosticsExpanded}
+              setDiagnosticsExpanded={setDiagnosticsExpanded}
+              selectedDiagnosticsCampaign={selectedDiagnosticsCampaign}
+              setSelectedDiagnosticsCampaign={setSelectedDiagnosticsCampaign}
+              hiddenCampaigns={hiddenCampaigns}
+              setHiddenCampaigns={setHiddenCampaigns}
+              showHiddenDropdown={showHiddenDropdown}
+              setShowHiddenDropdown={setShowHiddenDropdown}
+              includeInactive={includeInactive}
+              selectedCampaignId={selectedCampaignId}
+              setIncludeInactive={setIncludeInactive}
+              selectedMonthKey={selectedMonthKey}
+              monthMode={monthMode}
+              dateRange={dashboard?.dateRange}
+              chartMode={chartMode}
+            />
+          )
+        )}
+
+        {activeTab === METRICS_CHARTS_TAB_INDEX && (
+          <MetricsChartsTab
+            metaAdManagerData={metaAdManagerData}
             dashboard={dashboard}
-            expandedKpis={expandedKpis}
-            setExpandedKpis={setExpandedKpis}
             formatCurrency={formatCurrency}
             formatNumber={formatNumber}
-            metaBreakdown={metaBreakdown}
-            setMetaBreakdown={setMetaBreakdown}
-            metaBreakdownData={metaBreakdownData}
-            store={store}
             campaignScopeLabel={campaignScopeLabel}
-            nyTrendData={nyTrendData}
-            diagnosticsCampaignOptions={diagnosticsCampaignOptions}
-            countryTrends={countryTrends}
-            countryTrendsDataSource={countryTrendsDataSource}
-            countryTrendsRangeMode={countryTrendsRangeMode}
-            setCountryTrendsRangeMode={setCountryTrendsRangeMode}
-            countryTrendsQuickRange={countryTrendsQuickRange}
-            setCountryTrendsQuickRange={setCountryTrendsQuickRange}
-            campaignTrendsRangeMode={campaignTrendsRangeMode}
-            setCampaignTrendsRangeMode={setCampaignTrendsRangeMode}
-            campaignTrendsQuickRange={campaignTrendsQuickRange}
-            setCampaignTrendsQuickRange={setCampaignTrendsQuickRange}
-            campaignTrends={campaignTrends}
-            campaignTrendsDataSource={campaignTrendsDataSource}
-            countriesDataSource={countriesDataSource}
-            timeOfDay={timeOfDay}
-            selectedShopifyRegion={selectedShopifyRegion}
-            setSelectedShopifyRegion={setSelectedShopifyRegion}
-            daysOfWeek={daysOfWeek}
-            daysOfWeekPeriod={daysOfWeekPeriod}
-            setDaysOfWeekPeriod={setDaysOfWeekPeriod}
-            loading={loading}
-            analyticsMode={analyticsMode}
-            setAnalyticsMode={setAnalyticsMode}
-            metaAdManagerData={metaAdManagerData}
-            adManagerBreakdown={adManagerBreakdown}
-            setAdManagerBreakdown={setAdManagerBreakdown}
-            expandedCampaigns={expandedCampaigns}
-            setExpandedCampaigns={setExpandedCampaigns}
-            expandedAdsets={expandedAdsets}
-            setExpandedAdsets={setExpandedAdsets}
-            funnelDiagnostics={funnelDiagnostics}
-            diagnosticsExpanded={diagnosticsExpanded}
-            setDiagnosticsExpanded={setDiagnosticsExpanded}
-            selectedDiagnosticsCampaign={selectedDiagnosticsCampaign}
-            setSelectedDiagnosticsCampaign={setSelectedDiagnosticsCampaign}
-            hiddenCampaigns={hiddenCampaigns}
-            setHiddenCampaigns={setHiddenCampaigns}
-            showHiddenDropdown={showHiddenDropdown}
-            setShowHiddenDropdown={setShowHiddenDropdown}
-            includeInactive={includeInactive}
-            setIncludeInactive={setIncludeInactive}
-            dateRange={dashboard?.dateRange}
           />
-          )}
-        
-        {activeTab === 1 && efficiency && (
+        )}
+
+        {activeTab === ATTRIBUTION_TAB_INDEX && (
+          <AttributionTab
+            store={store}
+            formatCurrency={formatCurrency}
+            formatNumber={formatNumber}
+          />
+        )}
+
+        {activeTab === INSIGHTS_TAB_INDEX && (
+          <InsightsTab
+            store={store}
+            formatCurrency={formatCurrency}
+            formatNumber={formatNumber}
+          />
+        )}
+
+        {activeTab === SESSION_INTELLIGENCE_TAB_INDEX && (
+          <SessionIntelligenceTab store={store} />
+        )}
+
+        {activeTab === NEO_META_TAB_INDEX && (
+          <NeoMetaTab store={store} />
+        )}
+
+        {activeTab === PRODUCT_FINDER_TAB_INDEX && (
+          <ProductFinderPremium store={store} />
+        )}
+
+	        {activeTab === CUSTOMER_INSIGHTS_TAB_INDEX && (
+	          <CustomerInsightsTab
+	            data={customerInsights}
+	            loading={customerInsightsLoading}
+	            formatCurrency={formatCurrency}
+	            store={store}
+	            dateRange={dateRange}
+	          />
+	        )}
+
+        {activeTab === CONVERSION_UI_FIX_LAB_TAB_INDEX && (
+          <ConversionUIFixLabTab />
+        )}
+
+        {activeTab === BUDGET_EFFICIENCY_TAB_INDEX && efficiency && (
           <EfficiencyTab
             efficiency={efficiency}
             trends={efficiencyTrends}
@@ -1298,7 +1827,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 2 && budgetIntelligence && (
+        {activeTab === BUDGET_INTELLIGENCE_TAB_INDEX && budgetIntelligence && (
           <BudgetIntelligenceTab
             data={budgetIntelligence}
             formatCurrency={formatCurrency}
@@ -1306,7 +1835,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 3 && (
+        {activeTab === MANUAL_DATA_TAB_INDEX && (
           <ManualDataTab
             orders={manualOrders}
             form={orderForm}
@@ -1325,24 +1854,35 @@ export default function App() {
           />
         )}
 
-        {activeTab === 4 && (
+        {activeTab === FATIGUE_DETECTOR_TAB_INDEX && (
+          <FatigueDetector
+            store={store}
+            formatCurrency={formatCurrency}
+          />
+        )}
+
+        {activeTab === CREATIVE_ANALYSIS_TAB_INDEX && (
           <>
-            <CreativeAnalysis store={store} />
             <CreativeIntelligence store={currentStore} />
+            <CreativeAnalysis store={store} />
           </>
         )}
 
-        {activeTab === 5 && (
+        {activeTab === CREATIVE_STUDIO_TAB_INDEX && (
+          <CreativeStudio store={currentStore} />
+        )}
+
+        {activeTab === AI_ANALYTICS_TAB_INDEX && (
           <AIAnalytics
             store={store}
           />
         )}
 
-        {activeTab === 6 && (
+        {activeTab === AI_BUDGET_TAB_INDEX && (
           <AIBudget store={currentStore} />
         )}
 
-        {activeTab === 7 && (
+        {activeTab === BUDGET_CALCULATOR_TAB_INDEX && (
           <BudgetCalculator
             campaigns={budgetIntelligence?.campaignCountryGuidance || budgetIntelligence?.liveGuidance || []}
             periodDays={budgetIntelligence?.period?.days || 30}
@@ -1350,8 +1890,19 @@ export default function App() {
           />
         )}
 
-        {activeTab === 8 && (
+        {activeTab === EXCHANGE_RATES_TAB_INDEX && (
           <ExchangeRateDebug />
+        )}
+
+        {activeTab === WATCHTOWER_TAB_INDEX && (
+          <WatchtowerTab
+            store={store}
+            formatCurrency={formatCurrency}
+          />
+        )}
+
+        {activeTab === CRO_FORENSICS_TAB_INDEX && (
+          <CROForensicsTab />
         )}
       </div>
 
@@ -1397,6 +1948,7 @@ function DashboardTab({
   metaBreakdownData = [],
   store = {},
   campaignScopeLabel = 'All Campaigns',
+  availableCountries = [],
   nyTrendData = null,
   countryTrends = [],
   countryTrendsDataSource = '',
@@ -1411,6 +1963,8 @@ function DashboardTab({
   campaignTrends = [],
   campaignTrendsDataSource = '',
   countriesDataSource = '',
+  regionCompareTrends = [],
+  regionCompareEnabled = false,
   timeOfDay = { data: [], timezone: 'America/Chicago', sampleTimestamps: [], source: '' },
   selectedShopifyRegion = 'us',
   setSelectedShopifyRegion = () => {},
@@ -1421,6 +1975,7 @@ function DashboardTab({
   analyticsMode = 'meta-ad-manager',
   setAnalyticsMode = () => {},
   metaAdManagerData = [],
+  metaAdManagerNotice = '',
   adManagerBreakdown = 'none',
   setAdManagerBreakdown = () => {},
   expandedCampaigns = new Set(),
@@ -1438,7 +1993,11 @@ function DashboardTab({
   setShowHiddenDropdown = () => {},
   includeInactive = false,
   setIncludeInactive = () => {},
+  selectedCampaignId = '',
+  selectedMonthKey = '',
+  monthMode = 'projection',
   dateRange = {},
+  chartMode = 'bucket',
   diagnosticsCampaignOptions = [],
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
@@ -1454,8 +2013,74 @@ function DashboardTab({
   const [selectedCreativeCampaignId, setSelectedCreativeCampaignId] = useState(null);
   const [creativeSortConfig, setCreativeSortConfig] = useState({ field: 'purchases', direction: 'desc' });
   const [creativeViewMode, setCreativeViewMode] = useState('aggregate'); // 'aggregate' | 'country'
+  const [creativeSummaryGeneratedAt, setCreativeSummaryGeneratedAt] = useState(null);
+  const [creativeSummaryRange, setCreativeSummaryRange] = useState(() => (
+    dateRange?.startDate && dateRange?.endDate
+      ? { type: 'custom', start: dateRange.startDate, end: dateRange.endDate }
+      : { type: 'days', value: 7 }
+  ));
+  const [creativeSummaryCustomRange, setCreativeSummaryCustomRange] = useState(() => ({
+    start: dateRange?.startDate || '',
+    end: dateRange?.endDate || ''
+  }));
+  const [showCreativeSummaryCustomPicker, setShowCreativeSummaryCustomPicker] = useState(false);
+  const [creativeSummaryData, setCreativeSummaryData] = useState([]);
+  const [creativeSummaryPreviousData, setCreativeSummaryPreviousData] = useState([]);
+  const [creativeSummaryLoading, setCreativeSummaryLoading] = useState(false);
+  const [creativeSummaryRefreshTick, setCreativeSummaryRefreshTick] = useState(0);
+  const [creativeInsightPanelOpen, setCreativeInsightPanelOpen] = useState(true);
+  const [creativeInsightMode, setCreativeInsightMode] = useState('analyze');
+  const [creativeInsightPrompts, setCreativeInsightPrompts] = useState(() => ({
+    analyze: CREATIVE_FUNNEL_SUMMARY_PROMPTS.analyze,
+    summarize: CREATIVE_FUNNEL_SUMMARY_PROMPTS.summarize
+  }));
+  const [creativeInsightVerbosity, setCreativeInsightVerbosity] = useState(() => ({
+    analyze: 'low',
+    summarize: 'low'
+  }));
+  const [creativeInsightAutoEnabled, setCreativeInsightAutoEnabled] = useState(true);
+  const [creativeInsightSummary, setCreativeInsightSummary] = useState(null);
+  const [creativeInsightLoading, setCreativeInsightLoading] = useState(false);
+  const [creativeInsightStreamingText, setCreativeInsightStreamingText] = useState('');
+  const [creativeInsightError, setCreativeInsightError] = useState('');
+  const DEFAULT_CREATIVE_INSIGHT_LLM = { provider: 'openai', model: '', temperature: 1.0 };
+  const [creativeInsightLlm, setCreativeInsightLlm] = useState(() => {
+    try {
+      const raw = localStorage.getItem('creativeInsightLlm');
+      if (!raw) return DEFAULT_CREATIVE_INSIGHT_LLM;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return DEFAULT_CREATIVE_INSIGHT_LLM;
+      return {
+        provider: typeof parsed.provider === 'string' ? parsed.provider : DEFAULT_CREATIVE_INSIGHT_LLM.provider,
+        model: typeof parsed.model === 'string' ? parsed.model : DEFAULT_CREATIVE_INSIGHT_LLM.model,
+        temperature: Number.isFinite(Number(parsed.temperature)) ? Number(parsed.temperature) : DEFAULT_CREATIVE_INSIGHT_LLM.temperature
+      };
+    } catch (e) {
+      return DEFAULT_CREATIVE_INSIGHT_LLM;
+    }
+  });
+  const [showCreativeSummaryTable, setShowCreativeSummaryTable] = useState(true);
+  const [showCreativeFunnelSummary, setShowCreativeFunnelSummary] = useState(true);
+  const [ctrTrendRangeMode, setCtrTrendRangeMode] = useState('dashboard'); // 'dashboard' | 'local'
+  const [ctrTrendRange, setCtrTrendRange] = useState({ type: 'days', value: 7 });
+  const [ctrTrendCustomRange, setCtrTrendCustomRange] = useState(() => ({
+    start: dateRange?.startDate || '',
+    end: dateRange?.endDate || ''
+  }));
+  const [showCtrTrendCustomPicker, setShowCtrTrendCustomPicker] = useState(false);
+  const [ctrTrendIncludeInactive, setCtrTrendIncludeInactive] = useState(false);
+  const [ctrTrendCountry, setCtrTrendCountry] = useState('ALL');
+  const [ctrTrendAdId, setCtrTrendAdId] = useState('ALL');
+  // null = auto (derived from selectors); array = user-selected compare set
+  const [ctrTrendCompareIds, setCtrTrendCompareIds] = useState(null);
+  const [ctrTrendSeries, setCtrTrendSeries] = useState([]);
+  const [ctrTrendLoading, setCtrTrendLoading] = useState(false);
+  const [ctrTrendError, setCtrTrendError] = useState('');
+  const [ctrTrendCompareError, setCtrTrendCompareError] = useState('');
   const [showOrdersTrend, setShowOrdersTrend] = useState(true);
-  const [longRangeBucketMode, setLongRangeBucketMode] = useState('monthly');
+  const [monthHistoryTrends, setMonthHistoryTrends] = useState([]);
+  const [monthHistoryLoading, setMonthHistoryLoading] = useState(false);
+  const [monthHistoryError, setMonthHistoryError] = useState('');
   const countryTrendQuickOptions = [
     { label: '1W', type: 'weeks', value: 1 },
     { label: '2W', type: 'weeks', value: 2 },
@@ -1463,11 +2088,203 @@ function DashboardTab({
     { label: '1M', type: 'months', value: 1 }
   ];
 
+  useEffect(() => {
+    let isActive = true;
+
+    const loadMonthHistory = async () => {
+      if (!store?.id) return;
+      setMonthHistoryLoading(true);
+      setMonthHistoryError('');
+
+      const today = getLocalDateString();
+      const params = new URLSearchParams({
+        store: store.id,
+        startDate: '2000-01-01',
+        endDate: today
+      });
+
+      if (includeInactive) {
+        params.set('includeInactive', 'true');
+      }
+
+      if (selectedCampaignId) {
+        params.set('campaignId', selectedCampaignId);
+      }
+
+      try {
+        const data = await fetchJson(`${API_BASE}/analytics/dashboard?${params}`, {});
+        if (!isActive) return;
+        const trendsData = Array.isArray(data?.trends) ? data.trends : [];
+        setMonthHistoryTrends(trendsData);
+        setMonthHistoryError('');
+      } catch (error) {
+        if (!isActive) return;
+        setMonthHistoryTrends([]);
+        setMonthHistoryError(error?.message || 'Failed to load month history');
+      } finally {
+        if (isActive) setMonthHistoryLoading(false);
+      }
+    };
+
+    loadMonthHistory();
+
+    return () => {
+      isActive = false;
+    };
+  }, [store?.id, includeInactive, selectedCampaignId]);
+
   // Note: toggleHideCampaign, showAllCampaigns, and handleCampaignSelect
   // are now implemented in the UnifiedAnalytics component
 
   const ecomLabel = store.ecommerce;
-  
+
+  const monthHistoryDailyMap = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(monthHistoryTrends) ? monthHistoryTrends : []).forEach((point) => {
+      if (!point?.date) return;
+      map.set(point.date, {
+        orders: toNumber(point.orders),
+        revenue: toNumber(point.revenue),
+        spend: toNumber(point.spend)
+      });
+    });
+    return map;
+  }, [monthHistoryTrends]);
+
+  const monthlyTotals = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(monthHistoryTrends) ? monthHistoryTrends : []).forEach((point) => {
+      if (!point?.date) return;
+      const monthKey = String(point.date).slice(0, 7);
+      if (!map.has(monthKey)) {
+        map.set(monthKey, { monthKey, revenue: 0, spend: 0, orders: 0 });
+      }
+      const entry = map.get(monthKey);
+      entry.revenue += toNumber(point.revenue);
+      entry.spend += toNumber(point.spend);
+      entry.orders += toNumber(point.orders);
+    });
+    return Array.from(map.values()).sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+  }, [monthHistoryTrends]);
+
+  const monthlyTotalsMap = useMemo(() => (
+    new Map(monthlyTotals.map((item) => [item.monthKey, item]))
+  ), [monthlyTotals]);
+
+  const getMetricValue = useCallback((totals = {}, metricKey = '') => {
+    if (!totals) return 0;
+    if (metricKey === 'revenue') return toNumber(totals.revenue);
+    if (metricKey === 'spend') return toNumber(totals.spend);
+    if (metricKey === 'orders') return toNumber(totals.orders);
+    if (metricKey === 'aov') return totals.orders > 0 ? toNumber(totals.revenue) / toNumber(totals.orders) : 0;
+    if (metricKey === 'cac') return totals.orders > 0 ? toNumber(totals.spend) / toNumber(totals.orders) : 0;
+    if (metricKey === 'roas') return totals.spend > 0 ? toNumber(totals.revenue) / toNumber(totals.spend) : 0;
+    return 0;
+  }, []);
+
+  const formatMetricValue = useCallback((metricKey, value) => {
+    if (metricKey === 'roas') return `${(Number(value) || 0).toFixed(2)}x`;
+    if (metricKey === 'orders') {
+      const safe = Number.isFinite(Number(value)) ? Number(value) : 0;
+      return formatNumber ? formatNumber(safe) : Math.round(safe).toString();
+    }
+    if (['revenue', 'spend', 'aov', 'cac'].includes(metricKey)) {
+      return formatCurrency ? formatCurrency(Number(value) || 0) : `${Number(value) || 0}`;
+    }
+    return `${Number(value) || 0}`;
+  }, [formatCurrency, formatNumber]);
+
+  const monthContext = useMemo(() => {
+    const bounds = getMonthBounds(selectedMonthKey);
+    if (!bounds) return null;
+
+    const monthPrefix = `${MONTH_NAMES[bounds.monthIndex]} ${monthMode === 'projection' ? 'Projection' : 'MTD'}`;
+    const prevKey = getPreviousMonthKey(selectedMonthKey);
+    const prevParsed = parseMonthKey(prevKey);
+    const prevLabel = prevParsed
+      ? (prevParsed.year === bounds.year
+        ? MONTH_NAMES[prevParsed.monthIndex]
+        : `${MONTH_NAMES[prevParsed.monthIndex]} ${prevParsed.year}`)
+      : 'last month';
+
+    const emptyTotals = { revenue: 0, spend: 0, orders: 0 };
+
+    if (monthHistoryError || (monthHistoryLoading && !monthHistoryTrends.length) || !monthHistoryTrends.length) {
+      return {
+        prefix: monthPrefix,
+        prevLabel,
+        activeTotals: emptyTotals,
+        prevTotals: monthlyTotalsMap.get(prevKey) || emptyTotals,
+        hasData: false,
+        bounds
+      };
+    }
+
+    const today = new Date();
+    const todayKey = getLocalDateString(today);
+    const isCurrentMonth = selectedMonthKey === getMonthKey(today);
+    const monthEnd = isCurrentMonth ? todayKey : bounds.endDate;
+
+    const monthPoints = monthHistoryTrends.filter((point) => (
+      point?.date && point.date >= bounds.startDate && point.date <= monthEnd
+    ));
+
+    const totals = monthPoints.reduce((acc, point) => ({
+      orders: acc.orders + toNumber(point.orders),
+      revenue: acc.revenue + toNumber(point.revenue),
+      spend: acc.spend + toNumber(point.spend)
+    }), { orders: 0, revenue: 0, spend: 0 });
+
+    let activeTotals = totals;
+
+    if (isCurrentMonth && monthMode === 'projection') {
+      const remainingDays = Math.max(bounds.daysInMonth - today.getDate(), 0);
+
+      if (remainingDays > 0) {
+        let paceOrders = 0;
+        let paceRevenue = 0;
+        let paceSpend = 0;
+        let dayCount = 0;
+
+        for (let offset = 1; offset <= 7; offset += 1) {
+          const day = new Date(today);
+          day.setDate(day.getDate() - offset);
+          const dayKey = getLocalDateString(day);
+          const entry = monthHistoryDailyMap.get(dayKey);
+          if (entry) {
+            paceOrders += toNumber(entry.orders);
+            paceRevenue += toNumber(entry.revenue);
+            paceSpend += toNumber(entry.spend);
+            dayCount += 1;
+          }
+        }
+
+        if (dayCount > 0) {
+          paceOrders /= dayCount;
+          paceRevenue /= dayCount;
+          paceSpend /= dayCount;
+        }
+
+        activeTotals = {
+          orders: totals.orders + paceOrders * remainingDays,
+          revenue: totals.revenue + paceRevenue * remainingDays,
+          spend: totals.spend + paceSpend * remainingDays
+        };
+      }
+    }
+
+    const prevTotals = monthlyTotalsMap.get(prevKey) || emptyTotals;
+
+    return {
+      prefix: monthPrefix,
+      prevLabel,
+      activeTotals,
+      prevTotals,
+      hasData: true,
+      bounds
+    };
+  }, [monthHistoryDailyMap, monthHistoryError, monthHistoryLoading, monthHistoryTrends, monthMode, selectedMonthKey, monthlyTotalsMap]);
+
   const kpis = [
     { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6' },
     { key: 'spend', label: 'Ad Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1' },
@@ -1476,6 +2293,77 @@ function DashboardTab({
     { key: 'cac', label: 'CAC', value: overview.cac, change: overview.cacChange, format: 'currency', color: '#ef4444' },
     { key: 'roas', label: 'ROAS', value: overview.roas, change: overview.roasChange, format: 'roas', color: '#10b981' },
   ];
+
+  const kpiMonthSummaries = useMemo(() => {
+    if (!monthContext) return [];
+
+    if (!monthContext.hasData) {
+      return kpis.map((kpi) => ({
+        key: kpi.key,
+        text: `${monthContext.prefix}: — · — vs ${monthContext.prevLabel}`,
+        tone: 'neutral',
+        isCelebrating: false
+      }));
+    }
+
+    const getDeltaPct = (metricKey) => {
+      const current = getMetricValue(monthContext.activeTotals, metricKey);
+      const previous = getMetricValue(monthContext.prevTotals, metricKey);
+      if (previous <= 0) return null;
+      return ((current - previous) / previous) * 100;
+    };
+
+    const revenueDelta = getDeltaPct('revenue');
+    const roasDelta = getDeltaPct('roas');
+
+    return kpis.map((kpi) => {
+      const value = getMetricValue(monthContext.activeTotals, kpi.key);
+      const deltaPct = getDeltaPct(kpi.key);
+      const formattedDelta = deltaPct == null
+        ? '—'
+        : `${deltaPct > 0 ? '+' : ''}${deltaPct.toFixed(0)}%`;
+      const formattedValue = formatMetricValue(kpi.key, value);
+
+      let text = `${monthContext.prefix}: ${formattedValue} · ${formattedDelta} vs ${monthContext.prevLabel}`;
+
+      const historyValues = monthlyTotals
+        .filter((item) => item.monthKey !== selectedMonthKey)
+        .map((item) => getMetricValue(item, kpi.key))
+        .filter((val) => Number.isFinite(val) && val > 0);
+
+      const maxValue = historyValues.length ? Math.max(...historyValues) : null;
+      const minValue = historyValues.length ? Math.min(...historyValues) : null;
+      const isAllTimeHigh = maxValue != null && value >= maxValue;
+      const isAllTimeLow = minValue != null && value <= minValue;
+
+      if (isAllTimeHigh) {
+        text += ' · All-time high';
+      } else if (isAllTimeLow) {
+        text += ' · All-time low';
+      }
+
+      const isStrongUplift = deltaPct != null && deltaPct >= 15;
+      const isCelebrating = isStrongUplift || isAllTimeHigh;
+
+      let tone = 'neutral';
+      if (deltaPct != null) {
+        if (kpi.key === 'cac') {
+          tone = deltaPct < 0 ? 'positive' : (deltaPct > 0 ? 'negative' : 'neutral');
+        } else if (kpi.key === 'spend') {
+          const revenueSignal = revenueDelta == null ? 0 : Math.sign(revenueDelta);
+          const roasSignal = roasDelta == null ? 0 : Math.sign(roasDelta);
+          const performanceSignal = revenueSignal + roasSignal;
+          if (performanceSignal > 0) tone = 'positive';
+          else if (performanceSignal < 0) tone = 'negative';
+          else tone = 'neutral';
+        } else {
+          tone = deltaPct > 0 ? 'positive' : (deltaPct < 0 ? 'negative' : 'neutral');
+        }
+      }
+
+      return { key: kpi.key, text, tone, isCelebrating };
+    });
+  }, [formatMetricValue, getMetricValue, kpis, monthContext, monthlyTotals, selectedMonthKey]);
 
   const getCampaignEmoji = (name = '') => {
     const n = name.toLowerCase();
@@ -1492,16 +2380,28 @@ function DashboardTab({
     return '📣';
   };
 
+  const isActiveStatus = (status) => {
+    if (!status) return true;
+    const normalized = String(status).toUpperCase();
+    return normalized === 'ACTIVE' || normalized === 'UNKNOWN';
+  };
+
   const creativeCampaignOptions = useMemo(() => {
     if (!Array.isArray(metaAdManagerData)) return [];
-    return metaAdManagerData
+    const options = metaAdManagerData
       .map(campaign => {
         const id = campaign.campaign_id || campaign.campaignId;
-        const name = campaign.campaign_name || campaign.campaignName;
+        const name = campaign.campaign_name || campaign.campaignName || campaign.name;
         const ads = (campaign.adsets || []).flatMap(adset => adset?.ads || []);
         return { id, name, ads };
       })
       .filter(c => c.id && c.name && Array.isArray(c.ads) && c.ads.length > 0);
+
+    if (options.length === 0) return [];
+
+    const allAds = options.flatMap(c => c.ads);
+    const allOption = { id: ALL_CAMPAIGNS_ID, name: 'All Campaigns', ads: allAds, isAggregate: true };
+    return [allOption, ...options];
   }, [metaAdManagerData]);
 
   useEffect(() => {
@@ -1522,6 +2422,524 @@ function DashboardTab({
     return creativeCampaignOptions.find(c => c.id === selectedCreativeCampaignId) || creativeCampaignOptions[0];
   }, [creativeCampaignOptions, selectedCreativeCampaignId]);
 
+  const ctrCampaignId = selectedCreativeCampaignId === ALL_CAMPAIGNS_ID
+    ? null
+    : selectedCreativeCampaignId;
+
+  const ctrCountryOptions = useMemo(() => {
+    const base = Array.isArray(availableCountries) && availableCountries.length > 0
+      ? availableCountries
+      : (Array.isArray(dashboard?.countries)
+        ? dashboard.countries.map(c => ({
+          code: c.code || c.country || c.name || '',
+          name: c.name || c.country || c.code || '',
+          flag: c.flag || ''
+        }))
+        : []);
+
+    const unique = new Map();
+    base.forEach((country) => {
+      const rawCode = (country.code || country.country || '').toUpperCase().trim();
+      if (!rawCode) return;
+      unique.set(rawCode, {
+        code: rawCode,
+        name: country.name || country.country || rawCode,
+        flag: country.flag || ''
+      });
+    });
+
+    return Array.from(unique.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [availableCountries, dashboard?.countries]);
+
+  const ctrAdOptions = useMemo(() => {
+    if (!selectedCreativeCampaign) return [];
+    const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
+    const map = new Map();
+
+    ads.forEach((ad) => {
+      const id = ad.ad_id || ad.id;
+      if (!id) return;
+      const status = ad.ad_effective_status || ad.effective_status || ad.status || ad.ad_status;
+      if (!ctrTrendIncludeInactive && !isActiveStatus(status)) return;
+      const name = ad.ad_name || ad.name || 'Ad';
+      const campaignLabel = selectedCreativeCampaign.isAggregate
+        ? (ad.campaign_name || ad.campaignName || selectedCreativeCampaign.name)
+        : selectedCreativeCampaign.name;
+      const label = selectedCreativeCampaign.isAggregate
+        ? `${name} • ${campaignLabel || 'Campaign'}`
+        : name;
+      map.set(id, {
+        id,
+        name,
+        label,
+        campaignName: campaignLabel || null,
+        status
+      });
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [ctrTrendIncludeInactive, isActiveStatus, selectedCreativeCampaign]);
+
+  useEffect(() => {
+    if (ctrTrendAdId !== 'ALL' && !ctrAdOptions.some(option => option.id === ctrTrendAdId)) {
+      setCtrTrendAdId('ALL');
+    }
+  }, [ctrAdOptions, ctrTrendAdId]);
+
+  useEffect(() => {
+    if (ctrTrendCountry !== 'ALL' && !ctrCountryOptions.some(option => option.code === ctrTrendCountry)) {
+      setCtrTrendCountry('ALL');
+    }
+  }, [ctrCountryOptions, ctrTrendCountry]);
+
+  const ctrTrendMode = useMemo(() => {
+    const hasAd = ctrTrendAdId && ctrTrendAdId !== 'ALL';
+    const hasCountry = ctrTrendCountry && ctrTrendCountry !== 'ALL';
+    if (hasAd) return hasCountry ? 'ad_country' : 'ad';
+    if (hasCountry) return 'country';
+    return 'campaign';
+  }, [ctrTrendAdId, ctrTrendCountry]);
+
+  const ctrCompareOptions = useMemo(() => {
+    if (ctrTrendMode === 'country') {
+      return ctrCountryOptions.map(country => ({
+        id: country.code,
+        label: `${country.flag ? `${country.flag} ` : ''}${country.name} (${country.code})`
+      }));
+    }
+    if (ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') {
+      return ctrAdOptions.map(ad => ({ id: ad.id, label: ad.label }));
+    }
+    return [];
+  }, [ctrAdOptions, ctrCountryOptions, ctrTrendMode]);
+
+  const ctrTrendDefaultCompareIds = useMemo(() => {
+    if (ctrTrendMode === 'country' && ctrTrendCountry !== 'ALL') return [ctrTrendCountry];
+    if ((ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') && ctrTrendAdId !== 'ALL') return [ctrTrendAdId];
+    return [];
+  }, [ctrTrendAdId, ctrTrendCountry, ctrTrendMode]);
+
+  const ctrTrendEffectiveCompareIds = useMemo(() => {
+    const validIds = new Set(ctrCompareOptions.map(option => option.id));
+    const manual = Array.isArray(ctrTrendCompareIds)
+      ? ctrTrendCompareIds.filter(id => validIds.has(id)).slice(0, CTR_COMPARE_LIMIT)
+      : null;
+
+    if (manual && manual.length > 0) return manual;
+    return ctrTrendDefaultCompareIds.filter(id => validIds.has(id)).slice(0, CTR_COMPARE_LIMIT);
+  }, [ctrCompareOptions, ctrTrendCompareIds, ctrTrendDefaultCompareIds]);
+
+  // Used for effects; avoids re-fetching when ids are equal but array refs differ.
+  const ctrTrendEffectiveCompareKey = useMemo(() => (
+    JSON.stringify(ctrTrendEffectiveCompareIds)
+  ), [ctrTrendEffectiveCompareIds]);
+
+  useEffect(() => {
+    if (dateRange?.startDate && dateRange?.endDate) {
+      setCreativeSummaryRange({ type: 'custom', start: dateRange.startDate, end: dateRange.endDate });
+      setCreativeSummaryCustomRange({ start: dateRange.startDate, end: dateRange.endDate });
+    }
+  }, [dateRange?.startDate, dateRange?.endDate]);
+
+  useEffect(() => {
+    if (ctrTrendRangeMode !== 'dashboard') return;
+    if (dateRange?.startDate && dateRange?.endDate) {
+      setCtrTrendCustomRange({ start: dateRange.startDate, end: dateRange.endDate });
+    }
+  }, [ctrTrendRangeMode, dateRange?.startDate, dateRange?.endDate]);
+
+  useEffect(() => {
+    if (creativeSummaryRange?.type === 'days' && creativeSummaryRange?.value === 1) {
+      const interval = setInterval(() => {
+        setCreativeSummaryRefreshTick(prev => prev + 1);
+      }, 60 * 60 * 1000);
+      return () => clearInterval(interval);
+    }
+    return undefined;
+  }, [creativeSummaryRange?.type, creativeSummaryRange?.value]);
+
+  const resolveCreativeSummaryRange = useCallback((range) => {
+    if (!range) return null;
+    if (range.type === 'custom') {
+      if (!range.start || !range.end) return null;
+      return { startDate: range.start, endDate: range.end };
+    }
+    if (range.type === 'yesterday') {
+      const yesterday = getIstanbulDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      return { startDate: yesterday, endDate: yesterday };
+    }
+    const totalDays = Math.max(1, Number(range.value) || 1);
+    const endDate = getIstanbulDateString();
+    const startDate = getIstanbulDateString(new Date(Date.now() - (totalDays - 1) * 24 * 60 * 60 * 1000));
+    return { startDate, endDate };
+  }, []);
+
+  const ctrResolvedRange = useMemo(() => {
+    if (ctrTrendRangeMode === 'dashboard' && dateRange?.startDate && dateRange?.endDate) {
+      return { startDate: dateRange.startDate, endDate: dateRange.endDate };
+    }
+    return resolveCreativeSummaryRange(ctrTrendRange);
+  }, [ctrTrendRangeMode, dateRange?.startDate, dateRange?.endDate, resolveCreativeSummaryRange, ctrTrendRange]);
+
+  const getPreviousCreativeSummaryRange = useCallback((startDate, endDate) => {
+    if (!startDate || !endDate) return null;
+    const start = new Date(`${startDate}T00:00:00`);
+    const end = new Date(`${endDate}T00:00:00`);
+    const diffDays = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const prevEnd = new Date(start.getTime() - 24 * 60 * 60 * 1000);
+    const prevStart = new Date(prevEnd.getTime() - (diffDays - 1) * 24 * 60 * 60 * 1000);
+    return {
+      startDate: getIstanbulDateString(prevStart),
+      endDate: getIstanbulDateString(prevEnd)
+    };
+  }, []);
+
+  const readSsePayload = useCallback(async (response, onDelta) => {
+    if (!response?.body) {
+      throw new Error('No response body');
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let donePayload = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6);
+        try {
+          const data = JSON.parse(raw);
+          if (data.type === 'delta') {
+            onDelta?.(data.text || '');
+          } else if (data.type === 'done') {
+            donePayload = data;
+          } else if (data.type === 'error') {
+            throw new Error(data.error || 'Unknown error');
+          }
+        } catch (error) {
+          if (error?.message) {
+            throw error;
+          }
+        }
+      }
+    }
+
+    return donePayload;
+  }, []);
+
+  useEffect(() => {
+    if (!store?.id) return;
+    const resolvedRange = resolveCreativeSummaryRange(creativeSummaryRange);
+    if (!resolvedRange?.startDate || !resolvedRange?.endDate) return;
+    const previousRange = getPreviousCreativeSummaryRange(resolvedRange.startDate, resolvedRange.endDate);
+    if (!previousRange?.startDate || !previousRange?.endDate) return;
+
+    const params = new URLSearchParams({
+      store: store.id,
+      startDate: resolvedRange.startDate,
+      endDate: resolvedRange.endDate
+    });
+    const previousParams = new URLSearchParams({
+      store: store.id,
+      startDate: previousRange.startDate,
+      endDate: previousRange.endDate
+    });
+
+    if (includeInactive) {
+      params.set('includeInactive', 'true');
+      previousParams.set('includeInactive', 'true');
+    }
+
+    let isActive = true;
+    setCreativeSummaryLoading(true);
+
+    Promise.all([
+      fetchJson(`${API_BASE}/analytics/meta-ad-manager?${params}`, []),
+      fetchJson(`${API_BASE}/analytics/meta-ad-manager?${previousParams}`, [])
+    ])
+      .then(([currentData, previousData]) => {
+        if (!isActive) return;
+        const normalize = (data) => (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+        setCreativeSummaryData(normalize(currentData));
+        setCreativeSummaryPreviousData(normalize(previousData));
+      })
+      .finally(() => {
+        if (isActive) {
+          setCreativeSummaryLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [
+    store?.id,
+    includeInactive,
+    creativeSummaryRange,
+    resolveCreativeSummaryRange,
+    getPreviousCreativeSummaryRange,
+    creativeSummaryRefreshTick
+  ]);
+
+  const fetchCtrSeries = useCallback(async (target, range) => {
+    if (!store?.id || !range?.startDate || !range?.endDate) return null;
+
+    const params = new URLSearchParams({
+      store: store.id,
+      startDate: range.startDate,
+      endDate: range.endDate
+    });
+
+    if (target.campaignId) params.set('campaignId', target.campaignId);
+    if (target.adId) params.set('adId', target.adId);
+    if (target.country) params.set('country', target.country);
+    if (ctrTrendIncludeInactive) params.set('includeInactive', 'true');
+
+    const data = await fetchJson(`${API_BASE}/analytics/ctr-trends?${params}`, { label: '', series: [] });
+    return { ...data, key: target.key };
+  }, [ctrTrendIncludeInactive, store?.id]);
+
+  useEffect(() => {
+    if (!store?.id) return;
+    if (!ctrResolvedRange?.startDate || !ctrResolvedRange?.endDate) return;
+    if (!selectedCreativeCampaignId) return;
+
+    const targets = [];
+    const campaignId = ctrCampaignId && ctrCampaignId !== ALL_CAMPAIGNS_ID
+      ? ctrCampaignId
+      : null;
+
+    if (ctrTrendMode === 'campaign') {
+      targets.push({ key: campaignId || 'all', campaignId });
+    } else if (ctrTrendMode === 'country') {
+      ctrTrendEffectiveCompareIds.forEach((code) => {
+        targets.push({ key: `country:${code}`, campaignId, country: code });
+      });
+    } else if (ctrTrendMode === 'ad' || ctrTrendMode === 'ad_country') {
+      ctrTrendEffectiveCompareIds.forEach((id) => {
+        targets.push({
+          key: `ad:${id}:${ctrTrendMode === 'ad_country' ? ctrTrendCountry : 'all'}`,
+          campaignId,
+          adId: id,
+          country: ctrTrendMode === 'ad_country' ? ctrTrendCountry : null
+        });
+      });
+    }
+
+    if (targets.length === 0) {
+      setCtrTrendSeries([]);
+      return;
+    }
+
+    let isActive = true;
+    setCtrTrendLoading(true);
+    setCtrTrendError('');
+
+    Promise.all(targets.map(target => fetchCtrSeries(target, ctrResolvedRange)))
+      .then((results) => {
+        if (!isActive) return;
+        const cleaned = results.filter(Boolean);
+        setCtrTrendSeries(cleaned);
+      })
+      .catch((error) => {
+        if (!isActive) return;
+        setCtrTrendSeries([]);
+        setCtrTrendError(error?.message || 'Failed to load CTR trends.');
+      })
+      .finally(() => {
+        if (isActive) setCtrTrendLoading(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [
+    ctrCampaignId,
+    ctrResolvedRange,
+    ctrTrendAdId,
+    ctrTrendEffectiveCompareKey,
+    ctrTrendCountry,
+    ctrTrendMode,
+    ctrTrendIncludeInactive,
+    fetchCtrSeries,
+    selectedCreativeCampaignId,
+    store?.id
+  ]);
+
+  const syncCreativeInsightSettings = useCallback(async ({ action: actionOverride = null, updates = null } = {}) => {
+    if (!store?.id) return null;
+    const action = actionOverride || (updates ? 'update-settings' : 'get');
+    const payload = {
+      store: store.id,
+      mode: 'creative-funnel-summary',
+      action,
+      summarySettings: updates || undefined,
+      summaryMode: creativeInsightMode
+    };
+
+    const response = await fetch(`${API_BASE}/ai/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const donePayload = await readSsePayload(response);
+    return donePayload;
+  }, [creativeInsightMode, readSsePayload, store?.id]);
+
+  const loadCreativeInsightSummary = useCallback(async () => {
+    if (!store?.id) return;
+    setCreativeInsightLoading(true);
+    setCreativeInsightError('');
+
+    try {
+      const payload = await syncCreativeInsightSettings();
+      if (payload?.settings) {
+        setCreativeInsightAutoEnabled(payload.settings.autoEnabled);
+        setCreativeInsightPrompts({
+          analyze: payload.settings.analyzePrompt || CREATIVE_FUNNEL_SUMMARY_PROMPTS.analyze,
+          summarize: payload.settings.summarizePrompt || CREATIVE_FUNNEL_SUMMARY_PROMPTS.summarize
+        });
+        setCreativeInsightVerbosity({
+          analyze: payload.settings.analyzeVerbosity || 'low',
+          summarize: payload.settings.summarizeVerbosity || 'low'
+        });
+      }
+      setCreativeInsightSummary(payload?.summary || null);
+    } catch (error) {
+      setCreativeInsightError(error.message || 'Failed to load summary.');
+    } finally {
+      setCreativeInsightLoading(false);
+    }
+  }, [store?.id, syncCreativeInsightSettings]);
+
+  useEffect(() => {
+    loadCreativeInsightSummary();
+  }, [creativeInsightMode, loadCreativeInsightSummary]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('creativeInsightLlm', JSON.stringify(creativeInsightLlm));
+    } catch (e) {
+      // ignore
+    }
+  }, [creativeInsightLlm]);
+
+  const handleCreativeInsightGenerate = useCallback(async () => {
+    if (!store?.id || creativeInsightLoading) return;
+    const prompt = creativeInsightPrompts[creativeInsightMode] || '';
+    if (!prompt.trim()) {
+      setCreativeInsightError('Prompt is required.');
+      return;
+    }
+
+    const resolvedRange = resolveCreativeSummaryRange(creativeSummaryRange);
+    const startDate = resolvedRange?.startDate || null;
+    const endDate = resolvedRange?.endDate || null;
+
+    setCreativeInsightLoading(true);
+    setCreativeInsightError('');
+    setCreativeInsightStreamingText('');
+    setCreativeInsightSummary(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/ai/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          store: store.id,
+          mode: creativeInsightMode,
+          llm: creativeInsightLlm,
+          question: prompt.trim(),
+          summaryType: 'creative-funnel',
+          verbosity: creativeInsightVerbosity[creativeInsightMode] || 'low',
+          startDate,
+          endDate,
+          summarySettings: {
+            autoEnabled: creativeInsightAutoEnabled,
+            analyzePrompt: creativeInsightPrompts.analyze,
+            summarizePrompt: creativeInsightPrompts.summarize,
+            analyzeVerbosity: creativeInsightVerbosity.analyze,
+            summarizeVerbosity: creativeInsightVerbosity.summarize
+          }
+        })
+      });
+
+      let fullText = '';
+      const donePayload = await readSsePayload(response, (delta) => {
+        fullText += delta;
+        setCreativeInsightStreamingText(fullText);
+      });
+
+      setCreativeInsightStreamingText('');
+      setCreativeInsightSummary({
+        content: fullText,
+        model: donePayload?.model || null,
+        generated_at: new Date().toISOString(),
+        prompt,
+        verbosity: creativeInsightVerbosity[creativeInsightMode] || 'low',
+        mode: creativeInsightMode
+      });
+    } catch (error) {
+      setCreativeInsightError(error.message || 'Failed to generate summary.');
+    } finally {
+      setCreativeInsightLoading(false);
+    }
+  }, [
+    creativeInsightAutoEnabled,
+    creativeInsightLoading,
+    creativeInsightLlm,
+    creativeInsightMode,
+    creativeInsightPrompts,
+    creativeInsightVerbosity,
+    creativeSummaryRange,
+    readSsePayload,
+    resolveCreativeSummaryRange,
+    store?.id
+  ]);
+
+  const handleCreativeInsightDismiss = useCallback(async () => {
+    if (!store?.id) return;
+    try {
+      await syncCreativeInsightSettings({ action: 'dismiss' });
+    } catch (error) {
+      setCreativeInsightError(error.message || 'Failed to dismiss summary.');
+    } finally {
+      setCreativeInsightStreamingText('');
+      setCreativeInsightSummary(null);
+    }
+  }, [store?.id, syncCreativeInsightSettings]);
+
+  const handleCreativeInsightSaveSettings = useCallback(async () => {
+    if (!store?.id) return;
+    try {
+      await syncCreativeInsightSettings({
+        updates: {
+          autoEnabled: creativeInsightAutoEnabled,
+          analyzePrompt: creativeInsightPrompts.analyze,
+          summarizePrompt: creativeInsightPrompts.summarize,
+          analyzeVerbosity: creativeInsightVerbosity.analyze,
+          summarizeVerbosity: creativeInsightVerbosity.summarize
+        }
+      });
+    } catch (error) {
+      setCreativeInsightError(error.message || 'Failed to save settings.');
+    }
+  }, [
+    creativeInsightAutoEnabled,
+    creativeInsightPrompts,
+    creativeInsightVerbosity,
+    store?.id,
+    syncCreativeInsightSettings
+  ]);
+
   const creativeAds = useMemo(() => {
     if (!selectedCreativeCampaign) return [];
     const ads = Array.isArray(selectedCreativeCampaign.ads) ? selectedCreativeCampaign.ads : [];
@@ -1529,6 +2947,7 @@ function DashboardTab({
       const purchases = ad.conversions ?? ad.purchases ?? 0;
       const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
       const impressions = ad.impressions || 0;
+      const reach = ad.reach || 0;
       const rawClicks = toNumber(ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0);
       const rawLpv = toNumber(ad.landing_page_views ?? ad.lpv);
       const lpvRatio = toNumber(ad.landing_page_view_per_link_click);
@@ -1537,6 +2956,7 @@ function DashboardTab({
       const clicks = rawClicks;
       const outboundClicks = toNumber(ad.outbound_clicks ?? 0);
       const atc = ad.atc ?? ad.add_to_cart ?? 0;
+      const checkout = ad.checkout ?? ad.checkouts_initiated ?? 0;
       const spend = ad.spend || 0;
       const aov = purchases > 0 ? revenue / purchases : null;
       const roas = spend > 0 ? revenue / spend : null;
@@ -1557,11 +2977,13 @@ function DashboardTab({
         clicks,
         lpv,
         atc,
+        checkout,
         purchases,
         aov,
         roas,
         spend,
         revenue,
+        reach,
         visits: safeVisits,
         effectivePurchases,
         countries,
@@ -1569,6 +2991,115 @@ function DashboardTab({
       };
     });
   }, [selectedCreativeCampaign]);
+
+  const toggleCtrCompareId = useCallback((id) => {
+    setCtrTrendCompareError('');
+    setCtrTrendCompareIds((prev) => {
+      const base = Array.isArray(prev) ? prev : ctrTrendEffectiveCompareIds;
+      if (base.includes(id)) {
+        const next = base.filter(item => item !== id);
+        return next.length > 0 ? next : null;
+      }
+      if (base.length >= CTR_COMPARE_LIMIT) {
+        setCtrTrendCompareError(`Select up to ${CTR_COMPARE_LIMIT}.`);
+        return prev;
+      }
+      return [...base, id];
+    });
+  }, [ctrTrendEffectiveCompareIds]);
+
+  const ctrTrendChartData = useMemo(() => {
+    if (!ctrTrendSeries || ctrTrendSeries.length === 0) return [];
+    const map = new Map();
+
+    ctrTrendSeries.forEach((series, idx) => {
+      const points = Array.isArray(series?.series) ? series.series : [];
+      points.forEach(point => {
+        if (!point?.date) return;
+        const row = map.get(point.date) || { date: point.date };
+        row[`series_${idx}`] = point.ctr;
+        row[`series_${idx}_clicks`] = point.link_clicks || 0;
+        row[`series_${idx}_impressions`] = point.impressions || 0;
+        map.set(point.date, row);
+      });
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [ctrTrendSeries]);
+
+  const ctrSharpNotes = useMemo(() => {
+    if (!ctrTrendSeries || ctrTrendSeries.length === 0) return [];
+    const notes = [];
+
+    ctrTrendSeries.forEach((series) => {
+      const points = Array.isArray(series?.series) ? series.series : [];
+      const valid = points.filter(p => p && Number.isFinite(p.ctr) && (p.impressions || 0) > 0);
+      if (valid.length < 6) return;
+
+      const lastSix = valid.slice(-6);
+      const prevWindow = lastSix.slice(0, 3);
+      const recentWindow = lastSix.slice(3);
+      const prevStats = getLinearRegressionStats(prevWindow.map(p => p.ctr));
+      const recentStats = getLinearRegressionStats(recentWindow.map(p => p.ctr));
+      const slopeChange = recentStats.slope - prevStats.slope;
+      const recentImpressions = recentWindow.reduce((sum, p) => sum + (p.impressions || 0), 0);
+
+      if (
+        Math.abs(recentStats.slope) < 0.3 ||
+        Math.abs(slopeChange) < 0.2 ||
+        recentStats.r2 < 0.6 ||
+        recentImpressions < 500
+      ) {
+        return;
+      }
+
+      notes.push({
+        label: series.label || 'CTR',
+        direction: recentStats.slope >= 0 ? 'up' : 'down',
+        slope: recentStats.slope,
+        startDate: recentWindow[0]?.date,
+        r2: recentStats.r2
+      });
+    });
+
+    return notes;
+  }, [ctrTrendSeries]);
+
+  const creativeTotals = useMemo(() => {
+    if (creativeAds.length === 0) return null;
+    const totals = creativeAds.reduce((acc, row) => ({
+      impressions: acc.impressions + (row.impressions || 0),
+      clicks: acc.clicks + (row.clicks || 0),
+      lpv: acc.lpv + (row.lpv || 0),
+      atc: acc.atc + (row.atc || 0),
+      purchases: acc.purchases + (row.purchases || 0),
+      visits: acc.visits + (row.visits || 0),
+      spend: acc.spend + (row.spend || 0),
+      revenue: acc.revenue + (row.revenue || 0)
+    }), {
+      impressions: 0,
+      clicks: 0,
+      lpv: 0,
+      atc: 0,
+      purchases: 0,
+      visits: 0,
+      spend: 0,
+      revenue: 0
+    });
+
+    const ctr = totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : null;
+    const atcRate = totals.lpv > 0 ? (totals.atc / totals.lpv) * 100 : null;
+    const cvr = totals.visits > 0 ? (totals.purchases / totals.visits) * 100 : null;
+    const roas = totals.spend > 0 ? totals.revenue / totals.spend : null;
+
+    return {
+      ...totals,
+      ctr,
+      atcRate,
+      cvr,
+      roas
+    };
+  }, [creativeAds]);
 
   const creativeBaselineCvr = useMemo(() => {
     if (!selectedCreativeCampaign) return EPSILON;
@@ -1606,23 +3137,27 @@ function DashboardTab({
         groups.set(key, {
           key,
           name: ad.name,
-        impressions: 0,
-        clicks: 0,
-        lpv: 0,
-        atc: 0,
-        purchases: 0,
-        revenue: 0,
-        spend: 0,
-        visits: 0,
-        effectivePurchases: 0
-      });
+          impressions: 0,
+          reach: 0,
+          clicks: 0,
+          lpv: 0,
+          atc: 0,
+          checkout: 0,
+          purchases: 0,
+          revenue: 0,
+          spend: 0,
+          visits: 0,
+          effectivePurchases: 0
+        });
       }
 
       const group = groups.get(key);
       group.impressions += ad.impressions || 0;
+      group.reach += ad.reach || 0;
       group.clicks += ad.clicks || 0;
       group.lpv += ad.lpv || 0;
       group.atc += ad.atc || 0;
+      group.checkout += ad.checkout || 0;
       group.purchases += ad.purchases || 0;
       group.revenue += ad.revenue || 0;
       group.spend += ad.spend || 0;
@@ -1710,9 +3245,11 @@ function DashboardTab({
             country: ad.country || 'ALL',
             spend: ad.spend || 0,
             impressions: ad.impressions || 0,
+            reach: ad.reach || 0,
             clicks: ad.clicks ?? 0,
             lpv: ad.lpv || 0,
             add_to_cart: ad.atc || 0,
+            checkout: ad.checkout || 0,
             conversions: ad.purchases || 0,
             conversion_value: ad.revenue || 0
           }];
@@ -1724,6 +3261,7 @@ function DashboardTab({
         const purchases = countryEntry.conversions ?? countryEntry.purchases ?? 0;
         const revenue = countryEntry.conversion_value ?? countryEntry.purchase_value ?? 0;
         const impressions = countryEntry.impressions || 0;
+        const reach = countryEntry.reach || 0;
         const rawClicks = toNumber(countryEntry.inline_link_clicks ?? countryEntry.link_clicks ?? countryEntry.clicks ?? countryEntry.click ?? 0);
         const rawLpv = toNumber(countryEntry.landing_page_views ?? countryEntry.lpv);
         const lpvRatio = toNumber(countryEntry.landing_page_view_per_link_click);
@@ -1732,6 +3270,7 @@ function DashboardTab({
         const clicks = rawClicks;
         const outboundClicks = toNumber(countryEntry.outbound_clicks ?? 0);
         const atc = countryEntry.add_to_cart ?? countryEntry.atc ?? 0;
+        const checkout = countryEntry.checkout ?? countryEntry.checkouts_initiated ?? 0;
         const spend = countryEntry.spend || 0;
         const aov = purchases > 0 ? revenue / purchases : null;
         const roas = spend > 0 ? revenue / spend : null;
@@ -1766,11 +3305,13 @@ function DashboardTab({
           key: `${ad.key}-${code}-${idx}`,
           name: ad.name,
           impressions,
+          reach,
           clicks,
           ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
           lpv,
           atc,
           atcRate: lpv > 0 ? (atc / lpv) * 100 : null,
+          checkout,
           purchases,
           visits: safeVisits,
           effectivePurchases,
@@ -1796,6 +3337,174 @@ function DashboardTab({
 
     return sections.sort((a, b) => (b.totalPurchases || 0) - (a.totalPurchases || 0));
   }, [creativeAds, creativeSortConfig, creativeBaselineCvr]);
+
+  const buildCreativeSummaryRowsFromAds = (ads = []) => {
+    if (!Array.isArray(ads) || ads.length === 0) return [];
+    const groups = new Map();
+
+    ads.forEach((ad, idx) => {
+      const name = ad.ad_name || ad.name || 'Creative';
+      const key = (name || '').trim().toLowerCase() || ad.ad_id || ad.id || `creative-${idx}`;
+      const purchases = ad.conversions ?? ad.purchases ?? 0;
+      const revenue = ad.conversion_value ?? ad.purchase_value ?? ad.revenue ?? 0;
+      const impressions = ad.impressions || 0;
+      const reach = ad.reach || 0;
+      const rawClicks = toNumber(ad.inline_link_clicks ?? ad.link_clicks ?? ad.clicks ?? 0);
+      const rawLpv = toNumber(ad.landing_page_views ?? ad.lpv);
+      const lpvRatio = toNumber(ad.landing_page_view_per_link_click);
+      const lpvFromRatio = lpvRatio > 0 && rawClicks > 0 ? lpvRatio * rawClicks : 0;
+      const lpv = rawLpv > 0 ? rawLpv : lpvFromRatio;
+      const clicks = rawClicks;
+      const outboundClicks = toNumber(ad.outbound_clicks ?? 0);
+      const atc = ad.atc ?? ad.add_to_cart ?? 0;
+      const checkout = ad.checkout ?? ad.checkouts_initiated ?? 0;
+      const spend = ad.spend || 0;
+      const visits = getVisitsProxy({
+        landingPageViews: lpv,
+        outboundClicks,
+        inlineLinkClicks: clicks
+      });
+      const safeVisits = Number.isFinite(visits) && visits > 0 ? visits : 0;
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          name,
+          impressions: 0,
+          reach: 0,
+          clicks: 0,
+          lpv: 0,
+          atc: 0,
+          checkout: 0,
+          purchases: 0,
+          revenue: 0,
+          spend: 0,
+          visits: 0
+        });
+      }
+
+      const group = groups.get(key);
+      group.impressions += impressions;
+      group.reach += reach;
+      group.clicks += clicks;
+      group.lpv += lpv;
+      group.atc += atc;
+      group.checkout += checkout;
+      group.purchases += purchases;
+      group.revenue += revenue;
+      group.spend += spend;
+      group.visits += safeVisits;
+    });
+
+    return Array.from(groups.values()).map(row => ({
+      ...row,
+      ctr: row.impressions > 0 ? (row.clicks / row.impressions) * 100 : null,
+      frequency: row.reach > 0 ? row.impressions / row.reach : null,
+      atcRate: row.lpv > 0 ? (row.atc / row.lpv) * 100 : null,
+      checkoutRate: row.atc > 0 ? (row.checkout / row.atc) * 100 : null,
+      cvr: row.visits > 0 ? (row.purchases / row.visits) * 100 : null,
+      roas: row.spend > 0 ? row.revenue / row.spend : null
+    }));
+  };
+
+  const creativeSummaryCampaign = useMemo(() => {
+    if (selectedCreativeCampaignId === ALL_CAMPAIGNS_ID) return null;
+    if (!Array.isArray(creativeSummaryData) || creativeSummaryData.length === 0) return null;
+    return creativeSummaryData.find(c => (c.campaign_id || c.campaignId) === selectedCreativeCampaignId)
+      || creativeSummaryData[0];
+  }, [creativeSummaryData, selectedCreativeCampaignId]);
+
+  const creativeSummaryPreviousCampaign = useMemo(() => {
+    if (selectedCreativeCampaignId === ALL_CAMPAIGNS_ID) return null;
+    if (!Array.isArray(creativeSummaryPreviousData) || creativeSummaryPreviousData.length === 0) return null;
+    return creativeSummaryPreviousData.find(c => (c.campaign_id || c.campaignId) === selectedCreativeCampaignId)
+      || creativeSummaryPreviousData[0];
+  }, [creativeSummaryPreviousData, selectedCreativeCampaignId]);
+
+  const collectCreativeSummaryAds = useCallback((summaryData = []) => {
+    if (!Array.isArray(summaryData)) return [];
+    return summaryData.flatMap((campaign) => (
+      Array.isArray(campaign?.adsets) ? campaign.adsets.flatMap(adset => adset?.ads || []) : []
+    ));
+  }, []);
+
+  const creativeSummaryRows = useMemo(() => {
+    const ads = selectedCreativeCampaignId === ALL_CAMPAIGNS_ID
+      ? collectCreativeSummaryAds(creativeSummaryData)
+      : (Array.isArray(creativeSummaryCampaign?.adsets)
+        ? creativeSummaryCampaign.adsets.flatMap(adset => adset?.ads || [])
+        : []);
+    return buildCreativeSummaryRowsFromAds(ads);
+  }, [creativeSummaryCampaign, creativeSummaryData, collectCreativeSummaryAds, selectedCreativeCampaignId]);
+
+  const creativeSummaryPreviousRows = useMemo(() => {
+    const ads = selectedCreativeCampaignId === ALL_CAMPAIGNS_ID
+      ? collectCreativeSummaryAds(creativeSummaryPreviousData)
+      : (Array.isArray(creativeSummaryPreviousCampaign?.adsets)
+        ? creativeSummaryPreviousCampaign.adsets.flatMap(adset => adset?.ads || [])
+        : []);
+    return buildCreativeSummaryRowsFromAds(ads);
+  }, [creativeSummaryPreviousCampaign, creativeSummaryPreviousData, collectCreativeSummaryAds, selectedCreativeCampaignId]);
+
+  const creativeSummaryTopSpenders = useMemo(() => (
+    [...creativeSummaryRows].sort((a, b) => (b.spend || 0) - (a.spend || 0)).slice(0, 5)
+  ), [creativeSummaryRows]);
+
+  const creativeSummaryPreviousMap = useMemo(() => (
+    new Map(creativeSummaryPreviousRows.map(row => [row.key, row]))
+  ), [creativeSummaryPreviousRows]);
+
+  const creativeFunnelSummary = useMemo(() => {
+    if (creativeRows.length === 0) return null;
+
+    const totals = creativeRows.reduce((acc, row) => ({
+      impressions: acc.impressions + (row.impressions || 0),
+      clicks: acc.clicks + (row.clicks || 0),
+      lpv: acc.lpv + (row.lpv || 0),
+      atc: acc.atc + (row.atc || 0),
+      purchases: acc.purchases + (row.purchases || 0),
+      visits: acc.visits + (row.visits || 0),
+      spend: acc.spend + (row.spend || 0),
+      revenue: acc.revenue + (row.revenue || 0)
+    }), {
+      impressions: 0,
+      clicks: 0,
+      lpv: 0,
+      atc: 0,
+      purchases: 0,
+      visits: 0,
+      spend: 0,
+      revenue: 0
+    });
+
+    const baseline = {
+      ctr: totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : null,
+      atcRate: totals.lpv > 0 ? (totals.atc / totals.lpv) * 100 : null,
+      cvr: totals.visits > 0 ? (totals.purchases / totals.visits) * 100 : null,
+      roas: totals.spend > 0 ? totals.revenue / totals.spend : null
+    };
+
+    const byPurchases = [...creativeRows].sort((a, b) => (b.purchases || 0) - (a.purchases || 0));
+    const leader = byPurchases[0];
+    const runnerUp = byPurchases[1] || null;
+    const laggard = byPurchases[byPurchases.length - 1];
+
+    const getRowMetrics = (row) => ({
+      ctr: row?.ctr ?? null,
+      atcRate: row?.atcRate ?? null,
+      cvr: row?.visits > 0 ? (row.purchases / row.visits) * 100 : null,
+      roas: row?.roas ?? null
+    });
+
+    return {
+      baseline,
+      leader,
+      runnerUp,
+      laggard,
+      leaderMetrics: getRowMetrics(leader),
+      laggardMetrics: getRowMetrics(laggard)
+    };
+  }, [creativeRows, creativeSummaryGeneratedAt]);
 
   const sortedCountries = [...countries].sort((a, b) => {
     const aVal = a[countrySortConfig.field] || 0;
@@ -1858,8 +3567,8 @@ function DashboardTab({
 
   const getBucketDays = (totalDays) => {
     if (totalDays <= 7) return 1;
-    if (totalDays <= 14) return 3;
-    if (totalDays <= 60) return 7;
+    if (totalDays <= 21) return 3;
+    if (totalDays < 60) return 7;
     return 30;
   };
 
@@ -1874,6 +3583,11 @@ function DashboardTab({
     if (!point) return '';
     return point.date || point.day || point.label || '';
   }, []);
+
+  const capitalize = (value = '') => value.charAt(0).toUpperCase() + value.slice(1);
+
+
+
 
   const getTotalDays = useCallback(() => {
     if (dateRange?.startDate && dateRange?.endDate) {
@@ -1892,10 +3606,9 @@ function DashboardTab({
   }, [dateRange, parseLocalDate, trends]);
 
   const totalDays = getTotalDays();
-  const baseBucketDays = getBucketDays(totalDays);
-  const bucketDays = totalDays > 60
-    ? (longRangeBucketMode === 'weekly' ? 7 : 30)
-    : baseBucketDays;
+  const bucketDays = getBucketDays(totalDays);
+  const maWindow = totalDays >= 60 ? 30 : 7;
+  const isBucketMode = chartMode === 'bucket';
 
   const aggregateBucket = useCallback((dataPoints = []) => {
     if (!Array.isArray(dataPoints) || dataPoints.length === 0) return null;
@@ -1913,9 +3626,9 @@ function DashboardTab({
     };
   }, []);
 
-  const bucketedTrends = useMemo(() => {
-    if (!Array.isArray(trends) || trends.length === 0) return [];
-    const sorted = [...trends]
+  const buildBucketedTrends = useCallback((series = []) => {
+    if (!Array.isArray(series) || series.length === 0) return [];
+    const sorted = [...series]
       .filter(point => getPointDate(point))
       .sort((a, b) => {
         const aDate = parseLocalDate(getPointDate(a));
@@ -1929,6 +3642,7 @@ function DashboardTab({
         const orders = toNumber(point.orders);
         const revenue = toNumber(point.revenue);
         const spend = toNumber(point.spend);
+        const dateKey = getPointDate(point);
         return {
           ...point,
           orders,
@@ -1937,8 +3651,9 @@ function DashboardTab({
           roas: spend > 0 ? revenue / spend : 0,
           cac: orders > 0 ? spend / orders : 0,
           aov: orders > 0 ? revenue / orders : 0,
-          bucketStartDate: getPointDate(point),
-          bucketEndDate: getPointDate(point),
+          bucketStartDate: dateKey,
+          bucketEndDate: dateKey,
+          bucketExpectedEndDate: dateKey,
           isIncomplete: false
         };
       });
@@ -1951,46 +3666,478 @@ function DashboardTab({
       if (!summary) continue;
       const bucketStartDate = getPointDate(chunk[0]);
       const bucketEndDate = getPointDate(chunk[chunk.length - 1]);
+      const bucketStart = parseLocalDate(bucketStartDate);
+      let bucketExpectedEndDate = bucketEndDate;
+      if (bucketStart) {
+        const expectedEnd = new Date(bucketStart);
+        expectedEnd.setDate(expectedEnd.getDate() + bucketDays - 1);
+        bucketExpectedEndDate = getLocalDateString(expectedEnd);
+      }
       buckets.push({
         ...summary,
-        date: bucketStartDate,
+        date: bucketEndDate,
         bucketStartDate,
-        bucketEndDate
+        bucketEndDate,
+        bucketExpectedEndDate
       });
     }
 
     return buckets;
-  }, [aggregateBucket, bucketDays, getPointDate, parseLocalDate, trends]);
+  }, [aggregateBucket, bucketDays, getLocalDateString, getPointDate, parseLocalDate]);
 
-  const bucketedTrendsWithStatus = useMemo(() => {
-    if (bucketedTrends.length === 0) return [];
+  const bucketedTrends = useMemo(() => (
+    buildBucketedTrends(trends)
+  ), [buildBucketedTrends, trends]);
+
+  const dailyTrendMap = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(trends) ? trends : []).forEach((point) => {
+      const dateKey = getPointDate(point);
+      if (!dateKey) return;
+      map.set(dateKey, {
+        orders: toNumber(point.orders),
+        revenue: toNumber(point.revenue),
+        spend: toNumber(point.spend)
+      });
+    });
+    return map;
+  }, [getPointDate, trends]);
+
+  const buildBucketedTrendsWithStatus = useCallback((series = []) => {
+    if (series.length === 0) return [];
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return bucketedTrends.map((point, index) => {
-      const isLast = index === bucketedTrends.length - 1;
-      const bucketEnd = parseLocalDate(point.bucketEndDate);
+    return series.map((point, index) => {
+      const isLast = index === series.length - 1;
+      const bucketEnd = parseLocalDate(point.bucketExpectedEndDate || point.bucketEndDate);
       const isIncomplete = isLast && bucketEnd && bucketEnd >= today;
-      return { ...point, isIncomplete };
+      const bucketExpectedEndDate = isIncomplete
+        ? (point.bucketExpectedEndDate || point.bucketEndDate)
+        : point.bucketEndDate;
+      return { ...point, isIncomplete, bucketExpectedEndDate };
     });
-  }, [bucketedTrends, parseLocalDate]);
+  }, [parseLocalDate]);
 
-  const lastBucketIncomplete = bucketedTrendsWithStatus.length > 0
-    && bucketedTrendsWithStatus[bucketedTrendsWithStatus.length - 1].isIncomplete;
+  const bucketedTrendsWithStatus = useMemo(() => (
+    buildBucketedTrendsWithStatus(bucketedTrends)
+  ), [buildBucketedTrendsWithStatus, bucketedTrends]);
 
-  const bucketedTrendsForChart = useMemo(() => {
+  const buildBucketedTrendsForChart = useCallback((series = [], dailyMap = new Map()) => {
     const keys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
-    return bucketedTrendsWithStatus.map((point, index, arr) => {
-      const isLast = index === arr.length - 1;
-      const isPrev = index === arr.length - 2;
+    if (series.length === 0) {
+      return { data: [], lastBucketIncomplete: false, hasProjection: false };
+    }
+
+    const todayLocalString = getLocalDateString(new Date());
+    const today = parseLocalDate(todayLocalString);
+    if (!today) {
+      return { data: [], lastBucketIncomplete: false, hasProjection: false };
+    }
+
+    const lastIndex = series.length - 1;
+    const lastPoint = series[lastIndex];
+    const lastBucketIncomplete = lastPoint.isIncomplete;
+    const bucketExpectedEnd = lastPoint.bucketExpectedEndDate || lastPoint.bucketEndDate;
+
+    let hasProjection = false;
+    let projectionSourceIndex = null;
+    let projectedTotals = null;
+
+    const msInDay = 1000 * 60 * 60 * 24;
+
+    const getWeightedPace = () => {
+      // Simple: average of last 7 days (or available days)
+      let totalOrders = 0, totalRevenue = 0, totalSpend = 0;
+      let dayCount = 0;
+
+      for (let offset = 1; offset <= 7; offset += 1) {
+        const day = new Date(today);
+        day.setDate(day.getDate() - offset);
+        const dayKey = getLocalDateString(day);
+        const entry = dailyMap?.get(dayKey);
+        if (entry) {
+          totalOrders += toNumber(entry.orders);
+          totalRevenue += toNumber(entry.revenue);
+          totalSpend += toNumber(entry.spend);
+          dayCount += 1;
+        }
+      }
+
+      if (dayCount === 0) {
+        // Fallback: use bucket data / elapsed days
+        const elapsedDays = Math.floor((today - parseLocalDate(lastPoint.bucketStartDate)) / (1000 * 60 * 60 * 24)) + 1;
+        const safeElapsed = Math.max(elapsedDays, 1);
+        return {
+          orders: toNumber(lastPoint.orders) / safeElapsed,
+          revenue: toNumber(lastPoint.revenue) / safeElapsed,
+          spend: toNumber(lastPoint.spend) / safeElapsed
+        };
+      }
+
+      return {
+        orders: totalOrders / dayCount,
+        revenue: totalRevenue / dayCount,
+        spend: totalSpend / dayCount
+      };
+    };
+    
+    if (lastBucketIncomplete && bucketExpectedEnd && lastIndex > 0) {
+      const bucketStart = parseLocalDate(lastPoint.bucketStartDate);
+      const bucketEnd = parseLocalDate(bucketExpectedEnd);
+      if (bucketStart && bucketEnd) {
+        const elapsedDays = Math.floor((today - bucketStart) / msInDay) + 1;
+        const totalDays = Math.floor((bucketEnd - bucketStart) / msInDay) + 1;
+        const remainingDays = Math.max(totalDays - elapsedDays, 0);
+
+        if (elapsedDays >= 2 && remainingDays > 0) {
+          let pace = getWeightedPace();
+          const safeElapsed = Math.max(elapsedDays, 1);
+          if (!pace.orders) {
+            pace.orders = toNumber(lastPoint.orders) / safeElapsed;
+          }
+          if (!pace.revenue) {
+            pace.revenue = toNumber(lastPoint.revenue) / safeElapsed;
+          }
+          if (!pace.spend) {
+            pace.spend = toNumber(lastPoint.spend) / safeElapsed;
+          }
+
+          const projectedOrders = toNumber(lastPoint.orders) + pace.orders * remainingDays;
+          const projectedRevenue = toNumber(lastPoint.revenue) + pace.revenue * remainingDays;
+          const projectedSpend = toNumber(lastPoint.spend) + pace.spend * remainingDays;
+
+          const projectedAov = projectedOrders > 0 ? projectedRevenue / projectedOrders : 0;
+          const projectedCac = projectedOrders > 0 ? projectedSpend / projectedOrders : 0;
+          const projectedRoas = projectedSpend > 0 ? projectedRevenue / projectedSpend : 0;
+
+          projectedTotals = {
+            ordersProjected: projectedOrders,
+            revenueProjected: projectedRevenue,
+            spendProjected: projectedSpend,
+            aovProjected: projectedAov,
+            cacProjected: projectedCac,
+            roasProjected: projectedRoas
+          };
+
+          projectionSourceIndex = lastIndex - 1;
+          hasProjection = true;
+        }
+      }
+    }
+
+    const showIncompleteLine = lastBucketIncomplete && !hasProjection;
+
+    const data = series.map((point, index) => {
+      const isLast = index === lastIndex;
+      const isPrev = index === lastIndex - 1;
       const next = { ...point };
+      next.date = point.bucketExpectedEndDate || point.bucketEndDate || point.date;
+
       keys.forEach((key) => {
         const value = toNumber(point[key]);
         next[`${key}Complete`] = !lastBucketIncomplete || !isLast ? value : null;
-        next[`${key}Incomplete`] = lastBucketIncomplete && (isPrev || isLast) ? value : null;
+        const showIncomplete = lastBucketIncomplete && (isLast || (showIncompleteLine && isPrev));
+        next[`${key}Incomplete`] = showIncomplete ? value : null;
       });
       return next;
     });
-  }, [bucketedTrendsWithStatus, lastBucketIncomplete]);
+
+    if (hasProjection && projectionSourceIndex != null && projectedTotals) {
+      const sourcePoint = data[projectionSourceIndex];
+      keys.forEach((key) => {
+        sourcePoint[`${key}Projected`] = toNumber(series[projectionSourceIndex]?.[key]);
+      });
+      const targetPoint = data[lastIndex];
+      Object.entries(projectedTotals).forEach(([key, value]) => {
+        targetPoint[key] = value;
+      });
+    }
+
+    return { data, lastBucketIncomplete, hasProjection };
+  }, [getLocalDateString, parseLocalDate]);
+  const {
+    data: bucketedTrendsForChart,
+    lastBucketIncomplete,
+    hasProjection: bucketHasProjection
+  } = useMemo(() => (
+    buildBucketedTrendsForChart(bucketedTrendsWithStatus, dailyTrendMap)
+  ), [buildBucketedTrendsForChart, bucketedTrendsWithStatus, dailyTrendMap]);
+
+  const regionCompareDateOrder = useMemo(() => {
+    if (!Array.isArray(trends) || trends.length === 0) return [];
+    const seen = new Set();
+    return trends
+      .map((point) => getPointDate(point))
+      .filter((date) => {
+        if (!date || seen.has(date)) return false;
+        seen.add(date);
+        return true;
+      });
+  }, [getPointDate, trends]);
+
+  const getCountryCode = useCallback((country = {}) => {
+    const rawCode = country.countryCode || country.code || country.country_code || country.countryIso;
+    return rawCode ? String(rawCode).toUpperCase() : '';
+  }, []);
+
+  const buildRegionTrendSeries = useCallback((countryCodes = new Set()) => {
+    if (!Array.isArray(regionCompareTrends) || regionCompareTrends.length === 0) return [];
+    const byDate = new Map();
+
+    regionCompareTrends.forEach((country) => {
+      const code = getCountryCode(country);
+      if (!code || !countryCodes.has(code)) return;
+      const points = Array.isArray(country?.trends) ? country.trends : [];
+      points.forEach((point) => {
+        const date = getPointDate(point);
+        if (!date) return;
+        const entry = byDate.get(date) || { date, orders: 0, revenue: 0, spend: 0 };
+        entry.orders += toNumber(point.orders);
+        entry.revenue += toNumber(point.revenue);
+        entry.spend += toNumber(point.spend);
+        byDate.set(date, entry);
+      });
+    });
+
+    const orderedDates = regionCompareDateOrder.length > 0
+      ? regionCompareDateOrder
+      : Array.from(byDate.keys()).sort((a, b) => {
+        const aDate = parseLocalDate(a);
+        const bDate = parseLocalDate(b);
+        if (!aDate || !bDate) return 0;
+        return aDate.getTime() - bDate.getTime();
+      });
+
+    return orderedDates.map((date) => (
+      byDate.get(date) || { date, orders: 0, revenue: 0, spend: 0 }
+    ));
+  }, [getCountryCode, getPointDate, parseLocalDate, regionCompareDateOrder, regionCompareTrends]);
+
+  const europeRegionTrends = useMemo(() => (
+    buildRegionTrendSeries(EUROPE_COUNTRY_CODES)
+  ), [buildRegionTrendSeries]);
+
+  const usaRegionTrends = useMemo(() => (
+    buildRegionTrendSeries(USA_COUNTRY_CODES)
+  ), [buildRegionTrendSeries]);
+
+  const europeDailyTrendMap = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(europeRegionTrends) ? europeRegionTrends : []).forEach((point) => {
+      const dateKey = getPointDate(point);
+      if (!dateKey) return;
+      map.set(dateKey, {
+        orders: toNumber(point.orders),
+        revenue: toNumber(point.revenue),
+        spend: toNumber(point.spend)
+      });
+    });
+    return map;
+  }, [europeRegionTrends, getPointDate]);
+
+  const usaDailyTrendMap = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(usaRegionTrends) ? usaRegionTrends : []).forEach((point) => {
+      const dateKey = getPointDate(point);
+      if (!dateKey) return;
+      map.set(dateKey, {
+        orders: toNumber(point.orders),
+        revenue: toNumber(point.revenue),
+        spend: toNumber(point.spend)
+      });
+    });
+    return map;
+  }, [getPointDate, usaRegionTrends]);
+
+  const europeBucketedTrends = useMemo(() => (
+    buildBucketedTrends(europeRegionTrends)
+  ), [buildBucketedTrends, europeRegionTrends]);
+  const usaBucketedTrends = useMemo(() => (
+    buildBucketedTrends(usaRegionTrends)
+  ), [buildBucketedTrends, usaRegionTrends]);
+
+  const europeBucketedWithStatus = useMemo(() => (
+    buildBucketedTrendsWithStatus(europeBucketedTrends)
+  ), [buildBucketedTrendsWithStatus, europeBucketedTrends]);
+  const usaBucketedWithStatus = useMemo(() => (
+    buildBucketedTrendsWithStatus(usaBucketedTrends)
+  ), [buildBucketedTrendsWithStatus, usaBucketedTrends]);
+
+  const {
+    data: europeBucketedForChart,
+    lastBucketIncomplete: europeLastBucketIncomplete,
+    hasProjection: europeHasProjection
+  } = useMemo(() => (
+    buildBucketedTrendsForChart(europeBucketedWithStatus, europeDailyTrendMap)
+  ), [buildBucketedTrendsForChart, europeBucketedWithStatus, europeDailyTrendMap]);
+
+  const {
+    data: usaBucketedForChart,
+    lastBucketIncomplete: usaLastBucketIncomplete,
+    hasProjection: usaHasProjection
+  } = useMemo(() => (
+    buildBucketedTrendsForChart(usaBucketedWithStatus, usaDailyTrendMap)
+  ), [buildBucketedTrendsForChart, usaBucketedWithStatus, usaDailyTrendMap]);
+
+  const prefixBucketedSeries = useCallback((series = [], prefix = '') => {
+    const metricKeys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
+    const normalizePrefix = prefix ? `${prefix}` : '';
+      return series.map((point) => {
+      const next = {
+        date: point.date,
+        bucketStartDate: point.bucketStartDate,
+        bucketEndDate: point.bucketEndDate,
+        bucketExpectedEndDate: point.bucketExpectedEndDate,
+        [`${normalizePrefix}IsIncomplete`]: point.isIncomplete
+      };
+      metricKeys.forEach((metric) => {
+        const capMetric = capitalize(metric);
+        next[`${normalizePrefix}${capMetric}Complete`] = point[`${metric}Complete`];
+        next[`${normalizePrefix}${capMetric}Incomplete`] = point[`${metric}Incomplete`];
+        next[`${normalizePrefix}${capMetric}Projected`] = point[`${metric}Projected`];
+      });
+      return next;
+    });
+  }, []);
+
+  const regionCompareBucketChartData = useMemo(() => {
+    const europeSeries = prefixBucketedSeries(europeBucketedForChart, 'europe');
+    const usaSeries = prefixBucketedSeries(usaBucketedForChart, 'usa');
+    const byDate = new Map();
+    const mergePoint = (point) => {
+      if (!point?.date) return;
+      const existing = byDate.get(point.date) || { date: point.date };
+      if (point.bucketStartDate && !existing.bucketStartDate) {
+        existing.bucketStartDate = point.bucketStartDate;
+      }
+      if (point.bucketEndDate && !existing.bucketEndDate) {
+        existing.bucketEndDate = point.bucketEndDate;
+      }
+      if (point.bucketExpectedEndDate && !existing.bucketExpectedEndDate) {
+        existing.bucketExpectedEndDate = point.bucketExpectedEndDate;
+      }
+      Object.entries(point).forEach(([key, value]) => {
+        if (key === 'date' || key === 'bucketStartDate' || key === 'bucketEndDate' || key === 'bucketExpectedEndDate') return;
+        existing[key] = value;
+      });
+      byDate.set(point.date, existing);
+    };
+    europeSeries.forEach(mergePoint);
+    usaSeries.forEach(mergePoint);
+    return Array.from(byDate.values()).sort((a, b) => {
+      const aDate = parseLocalDate(a.date);
+      const bDate = parseLocalDate(b.date);
+      if (!aDate || !bDate) return 0;
+      return aDate.getTime() - bDate.getTime();
+    });
+  }, [europeBucketedForChart, parseLocalDate, prefixBucketedSeries, usaBucketedForChart]);
+
+  const buildMovingAverageSeries = useCallback((series = [], windowSize = 7) => {
+    const cleaned = (Array.isArray(series) ? series : [])
+      .map((point) => {
+        const date = getPointDate(point);
+        if (!date) return null;
+        const orders = toNumber(point?.orders);
+        const revenue = toNumber(point?.revenue);
+        const spend = toNumber(point?.spend);
+        return { date, orders, revenue, spend };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        const aDate = parseLocalDate(a.date);
+        const bDate = parseLocalDate(b.date);
+        if (!aDate || !bDate) return 0;
+        return aDate.getTime() - bDate.getTime();
+      });
+
+    if (cleaned.length === 0) return [];
+
+    const ordersValues = cleaned.map((point) => point.orders || 0);
+    const revenueValues = cleaned.map((point) => point.revenue || 0);
+    const spendValues = cleaned.map((point) => point.spend || 0);
+
+    const ordersMA = getMovingAverage(ordersValues, windowSize);
+    const revenueMA = getMovingAverage(revenueValues, windowSize);
+    const spendMA = getMovingAverage(spendValues, windowSize);
+
+    return cleaned.map((point, index) => {
+      const ordersMAValue = toNumber(ordersMA[index]);
+      const revenueMAValue = toNumber(revenueMA[index]);
+      const spendMAValue = toNumber(spendMA[index]);
+      const aov = point.orders > 0 ? point.revenue / point.orders : 0;
+      const cac = point.orders > 0 ? point.spend / point.orders : 0;
+      const roas = point.spend > 0 ? point.revenue / point.spend : 0;
+      return {
+        ...point,
+        aov,
+        cac,
+        roas,
+        ordersMA: ordersMAValue,
+        revenueMA: revenueMAValue,
+        spendMA: spendMAValue,
+        aovMA: ordersMAValue > 0 ? revenueMAValue / ordersMAValue : 0,
+        cacMA: ordersMAValue > 0 ? spendMAValue / ordersMAValue : 0,
+        roasMA: spendMAValue > 0 ? revenueMAValue / spendMAValue : 0
+      };
+    });
+  }, [getPointDate, parseLocalDate]);
+
+  const maTrends = useMemo(() => (
+    buildMovingAverageSeries(trends, maWindow)
+  ), [buildMovingAverageSeries, maWindow, trends]);
+
+  const europeMaTrends = useMemo(() => (
+    buildMovingAverageSeries(europeRegionTrends, maWindow)
+  ), [buildMovingAverageSeries, europeRegionTrends, maWindow]);
+
+  const usaMaTrends = useMemo(() => (
+    buildMovingAverageSeries(usaRegionTrends, maWindow)
+  ), [buildMovingAverageSeries, maWindow, usaRegionTrends]);
+
+  const prefixMaSeries = useCallback((series = [], prefix = '') => {
+    const metricKeys = ['orders', 'revenue', 'spend', 'aov', 'cac', 'roas'];
+    const normalizePrefix = prefix ? `${prefix}` : '';
+      return series.map((point) => {
+      const next = { date: point.date };
+      metricKeys.forEach((metric) => {
+        const capMetric = capitalize(metric);
+        next[`${normalizePrefix}${capMetric}`] = point[metric];
+        next[`${normalizePrefix}${capMetric}MA`] = point[`${metric}MA`];
+      });
+      return next;
+    });
+  }, []);
+
+  const regionCompareMaChartData = useMemo(() => {
+    const europeSeries = prefixMaSeries(europeMaTrends, 'europe');
+    const usaSeries = prefixMaSeries(usaMaTrends, 'usa');
+    const byDate = new Map();
+    const mergePoint = (point) => {
+      if (!point?.date) return;
+      const existing = byDate.get(point.date) || { date: point.date };
+      Object.entries(point).forEach(([key, value]) => {
+        if (key === 'date') return;
+        existing[key] = value;
+      });
+      byDate.set(point.date, existing);
+    };
+    europeSeries.forEach(mergePoint);
+    usaSeries.forEach(mergePoint);
+    return Array.from(byDate.values()).sort((a, b) => {
+      const aDate = parseLocalDate(a.date);
+      const bDate = parseLocalDate(b.date);
+      if (!aDate || !bDate) return 0;
+      return aDate.getTime() - bDate.getTime();
+    });
+  }, [europeMaTrends, parseLocalDate, prefixMaSeries, usaMaTrends]);
+
+  const regionCompareActive = regionCompareEnabled && (
+    isBucketMode ? regionCompareBucketChartData.length > 0 : regionCompareMaChartData.length > 0
+  );
+  const regionCompareChartData = isBucketMode ? regionCompareBucketChartData : regionCompareMaChartData;
+  const hasTrendData = isBucketMode
+    ? bucketedTrendsWithStatus.length > 0
+    : maTrends.length > 0;
 
   const formatCountryTick = useCallback((dateString) => {
     const date = parseLocalDate(dateString);
@@ -2006,6 +4153,80 @@ function DashboardTab({
       : dateString;
   }, [parseLocalDate]);
 
+  // Build smoothed series plus trend signal metadata for analytics charts.
+  const buildTrendAnalytics = useCallback((rawSeries = []) => {
+    const cleaned = (Array.isArray(rawSeries) ? rawSeries : [])
+      .map((point) => ({
+        date: getPointDate(point),
+        orders: toNumber(point?.orders),
+        revenue: toNumber(point?.revenue)
+      }))
+      .filter((point) => point.date)
+      .sort((a, b) => {
+        const aDate = parseLocalDate(a.date);
+        const bDate = parseLocalDate(b.date);
+        if (!aDate || !bDate) return 0;
+        return aDate.getTime() - bDate.getTime();
+      });
+
+    if (cleaned.length === 0) {
+      return { series: [], meta: null };
+    }
+
+    const ordersValues = cleaned.map((point) => point.orders || 0);
+    const revenueValues = cleaned.map((point) => point.revenue || 0);
+    const window = Math.min(7, cleaned.length);
+    const ordersMA = getMovingAverage(ordersValues, window);
+    const revenueMA = getMovingAverage(revenueValues, window);
+
+    const recent = ordersValues.slice(-window);
+    const previous = ordersValues.slice(-window * 2, -window);
+    const recentSum = recent.reduce((sum, value) => sum + value, 0);
+    const prevSum = previous.reduce((sum, value) => sum + value, 0);
+    const changePct = prevSum > 0 ? (recentSum - prevSum) / prevSum : null;
+
+    const { slope, r2 } = getLinearRegressionStats(ordersValues);
+    const meanOrders = getMean(ordersValues);
+    const volatility = meanOrders > 0 ? getStandardDeviation(ordersValues, meanOrders) / meanOrders : null;
+
+    return {
+      series: cleaned.map((point, index) => ({
+        ...point,
+        orders: ordersValues[index],
+        revenue: revenueValues[index],
+        ordersMA: ordersMA[index],
+        revenueMA: revenueMA[index]
+      })),
+      meta: {
+        window,
+        changePct,
+        slope,
+        r2,
+        volatility,
+        lastOrders: ordersValues[ordersValues.length - 1],
+        lastRevenue: revenueValues[revenueValues.length - 1]
+      }
+    };
+  }, [getPointDate, parseLocalDate]);
+
+  const annotatedCountryTrends = useMemo(() => (
+    orderedCountryTrends
+      .map((country) => ({
+        ...country,
+        analytics: buildTrendAnalytics(country.trends)
+      }))
+      .filter((country) => country.analytics?.series?.length > 0)
+  ), [buildTrendAnalytics, orderedCountryTrends]);
+
+  const annotatedCampaignTrends = useMemo(() => (
+    orderedCampaignTrends
+      .map((campaign) => ({
+        ...campaign,
+        analytics: buildTrendAnalytics(campaign.trends)
+      }))
+      .filter((campaign) => campaign.analytics?.series?.length > 0)
+  ), [buildTrendAnalytics, orderedCampaignTrends]);
+
   const tooltipLabels = {
     revenue: 'Revenue',
     spend: 'AD Spend',
@@ -2016,10 +4237,11 @@ function DashboardTab({
   };
 
   const getTooltipMetricKey = (dataKey = '') =>
-    dataKey.replace(/(Complete|Incomplete)$/u, '').toLowerCase();
+    dataKey.replace(/(Complete|Incomplete|Projected|MA)$/u, '').toLowerCase();
 
   const getTooltipMetricLabel = (metricKey) =>
     tooltipLabels[metricKey] || metricKey;
+
 
   const formatTooltipMetricValue = useCallback((metricKey, value) => {
     if (metricKey === 'roas') return `${Number(value || 0).toFixed(2)}x`;
@@ -2032,10 +4254,11 @@ function DashboardTab({
 
   const getTrendRangeLabel = useCallback((payload, fallbackLabel) => {
     const point = payload?.find(item => item?.payload)?.payload;
-    if (point?.bucketStartDate && point?.bucketEndDate) {
+    const rangeEnd = point?.bucketExpectedEndDate || point?.bucketEndDate;
+    if (point?.bucketStartDate && rangeEnd) {
       const startLabel = formatCountryTooltip(point.bucketStartDate);
-      const endLabel = formatCountryTooltip(point.bucketEndDate);
-      if (point.bucketStartDate !== point.bucketEndDate) {
+      const endLabel = formatCountryTooltip(rangeEnd);
+      if (point.bucketStartDate !== rangeEnd) {
         return `${startLabel} - ${endLabel}`;
       }
       return startLabel;
@@ -2048,11 +4271,27 @@ function DashboardTab({
     const isInProgress = payload.some(item => item?.payload?.isIncomplete);
     const point = payload.find(item => item?.payload)?.payload;
     let rangeLabel = getTrendRangeLabel(payload, label);
-    const displayItem = payload.find(item => item?.value != null && !String(item?.dataKey).includes('Incomplete'))
+    const displayItem = payload.find(item => (
+      item?.value != null
+      && !String(item?.dataKey).includes('Incomplete')
+      && !String(item?.dataKey).includes('Projected')
+    )) || (isInProgress
+      ? payload.find(item => item?.value != null && String(item?.dataKey).includes('Incomplete'))
+      : null)
       || payload.find(item => item?.value != null);
-    const metricKey = metricKeyOverride || getTooltipMetricKey(displayItem?.dataKey || '');
+    const dataKey = String(displayItem?.dataKey || '');
+    const metricKey = metricKeyOverride || getTooltipMetricKey(dataKey);
     let metricLabel = getTooltipMetricLabel(metricKey);
     const formattedValue = formatTooltipMetricValue(metricKey, displayItem?.value);
+    const hasActualValue = payload.some(item => (
+      item?.value != null && (
+        String(item?.dataKey).includes('Complete') || String(item?.dataKey).includes('Incomplete')
+      )
+    ));
+
+    if (dataKey.includes('Projected') && !hasActualValue) {
+      metricLabel = `Projected ${metricLabel}`;
+    }
 
     if (isInProgress && point?.bucketStartDate) {
       const getTurkeyToday = () => {
@@ -2062,22 +4301,27 @@ function DashboardTab({
         return turkeyDate.getTime();
       };
 
-      const actualEndDate = new Date(point.bucketStartDate);
-      actualEndDate.setDate(actualEndDate.getDate() + bucketDays - 1);
+      const rangeEnd = point.bucketExpectedEndDate || point.bucketEndDate;
+      const startDate = parseLocalDate(point.bucketStartDate);
+      const endDate = rangeEnd ? parseLocalDate(rangeEnd) : null;
 
-      const formatDate = (date) => new Date(date).toLocaleDateString('en-US', {
+      const formatDate = (date) => date.toLocaleDateString('en-US', {
         month: 'short',
         day: 'numeric'
       });
 
-      rangeLabel = `${formatDate(point.bucketStartDate)} - ${formatDate(actualEndDate)} (in progress)`;
+      if (startDate && endDate) {
+        rangeLabel = `${formatDate(startDate)} - ${formatDate(endDate)} (in progress)`;
+      }
 
       const today = getTurkeyToday();
-      const endTime = actualEndDate.setHours(0, 0, 0, 0);
-      const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
+      if (endDate) {
+        const endTime = endDate.setHours(0, 0, 0, 0);
+        const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
 
-      if (daysLeft >= 0) {
-        metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
+        if (daysLeft >= 0) {
+          metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
+        }
       }
     }
 
@@ -2091,7 +4335,310 @@ function DashboardTab({
         </p>
       </div>
     );
-  }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel]);
+  }, [formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate]);
+
+  const renderMaTooltip = useCallback((metricKeyOverride, color) => ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const metricKey = metricKeyOverride || getTooltipMetricKey(payload?.[0]?.dataKey || '');
+    const metricLabel = getTooltipMetricLabel(metricKey);
+    const point = payload?.[0]?.payload || {};
+    const dailyValue = point[metricKey];
+    const maValue = point[`${metricKey}MA`];
+
+    const maColor = color || '#64748b';
+    const dailyColor = color ? `${color}66` : '#94a3b8';
+
+    const dailyFormatted = dailyValue != null
+      ? formatTooltipMetricValue(metricKey, dailyValue)
+      : '—';
+    const maFormatted = maValue != null
+      ? formatTooltipMetricValue(metricKey, maValue)
+      : '—';
+
+    return (
+      <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
+        <p className="text-xs text-gray-500">
+          {formatCountryTooltip(label)}
+        </p>
+        <p className="text-sm font-medium text-gray-900">
+          {metricLabel}
+        </p>
+        <div className="mt-1 space-y-1 text-xs text-gray-600">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: dailyColor }} />
+              <span>Daily</span>
+            </div>
+            <span className="text-gray-900">{dailyFormatted}</span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: maColor }} />
+              <span>{maWindow}d MA</span>
+            </div>
+            <span className="text-gray-900">{maFormatted}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }, [formatCountryTooltip, formatTooltipMetricValue, getTooltipMetricKey, getTooltipMetricLabel, maWindow]);
+
+  const renderRegionBucketTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const metricKey = metricKeyOverride || 'orders';
+    const capMetric = metricKey.charAt(0).toUpperCase() + metricKey.slice(1);
+    const point = payload.find(item => item?.payload)?.payload;
+    const isInProgress = payload.some(
+      item => item?.payload?.europeIsIncomplete || item?.payload?.usaIsIncomplete
+    );
+    let rangeLabel = getTrendRangeLabel(payload, label);
+    let metricLabel = getTooltipMetricLabel(metricKey);
+
+    const hasActualValue = payload.some(item => (
+      item?.value != null && (
+        String(item?.dataKey).includes('Complete') || String(item?.dataKey).includes('Incomplete')
+      )
+    ));
+    const hasProjectedValue = payload.some(
+      item => item?.value != null && String(item?.dataKey).includes('Projected')
+    );
+
+    if (hasProjectedValue && !hasActualValue) {
+      metricLabel = `Projected ${metricLabel}`;
+    }
+
+    if (isInProgress && point?.bucketStartDate) {
+      const getTurkeyToday = () => {
+        const now = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
+        const turkeyDate = new Date(now);
+        turkeyDate.setHours(0, 0, 0, 0);
+        return turkeyDate.getTime();
+      };
+
+      const rangeEnd = point.bucketExpectedEndDate || point.bucketEndDate;
+      const startDate = parseLocalDate(point.bucketStartDate);
+      const endDate = rangeEnd ? parseLocalDate(rangeEnd) : null;
+
+      const formatDate = (date) => date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric'
+      });
+
+      if (startDate && endDate) {
+        rangeLabel = `${formatDate(startDate)} - ${formatDate(endDate)} (in progress)`;
+      }
+
+      const today = getTurkeyToday();
+      if (endDate) {
+        const endTime = endDate.setHours(0, 0, 0, 0);
+        const daysLeft = Math.ceil((endTime - today) / (1000 * 60 * 60 * 24));
+        if (daysLeft >= 0) {
+          metricLabel += ` (${daysLeft} day${daysLeft !== 1 ? 's' : ''} left)`;
+        }
+      }
+    }
+
+    const getRegionValue = (prefix) => {
+      const projectedKey = `${prefix}${capMetric}Projected`;
+      const completeKey = `${prefix}${capMetric}Complete`;
+      const incompleteKey = `${prefix}${capMetric}Incomplete`;
+      const completeItem = payload.find(item => item?.dataKey === completeKey && item?.value != null);
+      if (completeItem) return completeItem.value;
+      const incompleteItem = payload.find(item => item?.dataKey === incompleteKey && item?.value != null);
+      if (incompleteItem) return incompleteItem.value;
+      const projectedItem = payload.find(item => item?.dataKey === projectedKey && item?.value != null);
+      return projectedItem ? projectedItem.value : null;
+    };
+
+    const europeValue = getRegionValue('europe');
+    const usaValue = getRegionValue('usa');
+    const formatRegionValue = (value) =>
+      value == null ? '—' : formatTooltipMetricValue(metricKey, value);
+
+    return (
+      <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
+        <p className="text-xs text-gray-500">
+          {rangeLabel}
+        </p>
+        <p className="text-sm font-medium text-gray-900">
+          {metricLabel}
+        </p>
+        <div className="mt-1 space-y-1 text-sm font-medium text-gray-900">
+          <div className="flex items-center gap-2">
+            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.europe }} />
+            <span>Europe:</span>
+            <span>{formatRegionValue(europeValue)}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.usa }} />
+            <span>USA:</span>
+            <span>{formatRegionValue(usaValue)}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }, [formatTooltipMetricValue, getTooltipMetricLabel, getTrendRangeLabel, parseLocalDate]);
+
+  const renderRegionMaTooltip = useCallback((metricKeyOverride) => ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const metricKey = metricKeyOverride || 'orders';
+    const capMetric = metricKey.charAt(0).toUpperCase() + metricKey.slice(1);
+    const metricLabel = getTooltipMetricLabel(metricKey);
+    const point = payload?.[0]?.payload || {};
+
+    const europeColor = REGION_COMPARE_COLORS.europe;
+    const usaColor = REGION_COMPARE_COLORS.usa;
+    const europeDailyColor = `${europeColor}66`;
+    const usaDailyColor = `${usaColor}66`;
+
+    const europeDaily = point[`europe${capMetric}`];
+    const europeMa = point[`europe${capMetric}MA`];
+    const usaDaily = point[`usa${capMetric}`];
+    const usaMa = point[`usa${capMetric}MA`];
+
+    const formatValue = (value) =>
+      value == null ? '—' : formatTooltipMetricValue(metricKey, value);
+
+    return (
+      <div className="rounded-lg bg-white p-2 shadow-md border border-gray-100">
+        <p className="text-xs text-gray-500">
+          {formatCountryTooltip(label)}
+        </p>
+        <p className="text-sm font-medium text-gray-900">
+          {metricLabel}
+        </p>
+        <div className="mt-2 space-y-2 text-xs text-gray-600">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: europeColor }} />
+              <span>Europe</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: europeDailyColor }} />
+                <span>Daily</span>
+              </div>
+              <span className="text-gray-900">{formatValue(europeDaily)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: europeColor }} />
+                <span>{maWindow}d MA</span>
+              </div>
+              <span className="text-gray-900">{formatValue(europeMa)}</span>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: usaColor }} />
+              <span>USA</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: usaDailyColor }} />
+                <span>Daily</span>
+              </div>
+              <span className="text-gray-900">{formatValue(usaDaily)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: usaColor }} />
+                <span>{maWindow}d MA</span>
+              </div>
+              <span className="text-gray-900">{formatValue(usaMa)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }, [formatCountryTooltip, formatTooltipMetricValue, getTooltipMetricLabel, maWindow]);
+
+  const renderTrendLine = ({ baseKey, stroke, lastBucketIncomplete, isIncompleteKey, showProjection }) => (
+    <>
+      <Line
+        type="monotone"
+        dataKey={`${baseKey}Complete`}
+        stroke={stroke}
+        strokeWidth={2}
+        dot={false}
+        fill="none"
+      />
+      {lastBucketIncomplete && (
+        <Line
+          type="monotone"
+          dataKey={`${baseKey}Incomplete`}
+          stroke={stroke}
+          strokeWidth={2}
+          dot={({ cx, cy, payload }) => {
+            if (!payload?.[isIncompleteKey] || cx == null || cy == null) return null;
+            return (
+              <circle
+                cx={cx}
+                cy={cy}
+                r={4}
+                fill="white"
+                stroke={stroke}
+                strokeWidth={2}
+              />
+            );
+          }}
+          strokeDasharray="5,5"
+          fill="none"
+        />
+      )}
+      {showProjection && (
+        <Line
+          type="monotone"
+          dataKey={`${baseKey}Projected`}
+          stroke={stroke}
+          strokeWidth={2}
+          dot={false}
+          connectNulls
+          strokeDasharray="3,3"
+          fill="none"
+        />
+      )}
+    </>
+  );
+
+  const renderMaLines = ({ baseKey, stroke }) => {
+    const dailyColor = `${stroke}66`;
+    return (
+      <>
+        <Line
+          type="monotone"
+          dataKey={`${baseKey}MA`}
+          stroke={stroke}
+          strokeWidth={2.5}
+          dot={false}
+          activeDot={false}
+        />
+        <Line
+          type="monotone"
+          dataKey={baseKey}
+          stroke={stroke}
+          strokeWidth={2}
+          dot={false}
+          strokeOpacity={0}
+          legendType="none"
+          activeDot={({ cx, cy }) => {
+            if (cx == null || cy == null) return null;
+            return (
+              <circle
+                cx={cx}
+                cy={cy}
+                r={4}
+                fill={dailyColor}
+                stroke={stroke}
+                strokeWidth={1.5}
+              />
+            );
+          }}
+          isAnimationActive={false}
+        />
+      </>
+    );
+  };
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
   const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
@@ -2261,6 +4808,327 @@ function DashboardTab({
     return value;
   };
 
+  const formatDeltaPercent = (value) => {
+    if (!Number.isFinite(value)) return '—';
+    const rounded = Math.abs(value) >= 100 ? 0 : 1;
+    return `${value > 0 ? '+' : ''}${value.toFixed(rounded)}%`;
+  };
+
+  const formatTimeLabel = (value) => {
+    if (!value) return null;
+    return value.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatSummaryTimestamp = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const formatFixed = (value, decimals = 2) => {
+    if (!Number.isFinite(value)) return '—';
+    return value.toFixed(decimals);
+  };
+
+  const calcMetricDelta = (value, base, unit) => {
+    if (!Number.isFinite(value) || !Number.isFinite(base)) return null;
+    const delta = value - base;
+    if (value === 0 || base === 0) {
+      return { value: delta, format: 'absolute', unit };
+    }
+    return { value: (delta / base) * 100, format: 'percent', unit };
+  };
+
+  const alertMetrics = [
+    { key: 'revenue', label: 'Revenue', format: 'currency', goodDirection: 'up' },
+    { key: 'orders', label: 'Orders', format: 'number', goodDirection: 'up' },
+    { key: 'roas', label: 'ROAS', format: 'roas', goodDirection: 'up' },
+    { key: 'cac', label: 'CAC', format: 'currency', goodDirection: 'down' },
+    { key: 'aov', label: 'AOV', format: 'currency', goodDirection: 'up' },
+    { key: 'spend', label: 'Spend', format: 'currency', goodDirection: 'neutral' }
+  ];
+
+  // Alerts fire only on large anomalies or sustained trends with high signal strength.
+  const smartAlerts = useMemo(() => {
+    if (!Array.isArray(trends) || trends.length < 8) return [];
+    const results = [];
+
+    alertMetrics.forEach((metric) => {
+      const values = trends
+        .map((point) => toNumber(point?.[metric.key]))
+        .filter((value) => Number.isFinite(value));
+
+      if (values.length < 8) return;
+
+      const baselineWindow = Math.min(14, values.length - 1);
+      const baselineValues = values.slice(-baselineWindow - 1, -1);
+      const baselineMean = getMean(baselineValues);
+      const baselineStd = getStandardDeviation(baselineValues, baselineMean);
+      const current = values[values.length - 1];
+      const changePct = baselineMean !== 0 ? (current - baselineMean) / Math.abs(baselineMean) : null;
+      const zScore = baselineStd > 0 ? (current - baselineMean) / baselineStd : 0;
+
+      let bestAlert = null;
+
+      if (baselineWindow >= 7 && baselineStd > 0 && changePct != null) {
+        const anomalySignal = Math.abs(zScore) >= 2.5 && Math.abs(changePct) >= 0.35;
+        if (anomalySignal) {
+          bestAlert = {
+            id: `anomaly-${metric.key}`,
+            type: 'anomaly',
+            metricKey: metric.key,
+            metricLabel: metric.label,
+            format: metric.format,
+            goodDirection: metric.goodDirection,
+            direction: changePct >= 0 ? 'up' : 'down',
+            currentValue: current,
+            baselineValue: baselineMean,
+            changePct,
+            zScore,
+            r2: null,
+            window: baselineWindow,
+            severity: Math.abs(zScore) * 10 + Math.abs(changePct) * 100
+          };
+        }
+      }
+
+      const trendWindow = Math.min(14, values.length);
+      const trendValues = values.slice(-trendWindow);
+      if (trendValues.length >= 10) {
+        const { slope, r2 } = getLinearRegressionStats(trendValues);
+        const trendChange = trendValues[0] !== 0
+          ? (trendValues[trendValues.length - 1] - trendValues[0]) / Math.abs(trendValues[0])
+          : null;
+        const trendSignal = trendChange != null && Math.abs(trendChange) >= 0.3 && r2 >= 0.65;
+
+        if (trendSignal) {
+          const trendAlert = {
+            id: `trend-${metric.key}`,
+            type: 'trend',
+            metricKey: metric.key,
+            metricLabel: metric.label,
+            format: metric.format,
+            goodDirection: metric.goodDirection,
+            direction: slope >= 0 ? 'up' : 'down',
+            currentValue: trendValues[trendValues.length - 1],
+            baselineValue: trendValues[0],
+            changePct: trendChange,
+            zScore: null,
+            r2,
+            window: trendWindow,
+            severity: Math.abs(trendChange) * 100 + r2 * 25
+          };
+
+          if (!bestAlert || trendAlert.severity > bestAlert.severity) {
+            bestAlert = trendAlert;
+          }
+        }
+      }
+
+      if (bestAlert) {
+        results.push(bestAlert);
+      }
+    });
+
+    return results.sort((a, b) => b.severity - a.severity).slice(0, 6);
+  }, [trends]);
+
+  const formatAlertMetric = (value, format) => {
+    if (format === 'currency') return renderMetric(value, 'currency', 0);
+    if (format === 'roas') return renderMetric(value, 'roas', 2);
+    if (format === 'number') return renderMetric(value, 'number');
+    return renderMetric(value, 'number');
+  };
+
+  const getCreativeSummaryRangeLabel = () => {
+    if (creativeSummaryRange.type === 'custom') {
+      if (creativeSummaryRange.start && creativeSummaryRange.end) {
+        return `${creativeSummaryRange.start} to ${creativeSummaryRange.end}`;
+      }
+      return 'Custom';
+    }
+    if (creativeSummaryRange.type === 'yesterday') return 'Yesterday';
+    if (creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 1) return 'Today';
+    if (creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 2) return 'Today & Yesterday';
+    if (creativeSummaryRange.type === 'days') return `${creativeSummaryRange.value}D`;
+    return 'Period';
+  };
+
+  const getCtrTrendRangeLabel = () => {
+    if (ctrTrendRangeMode === 'dashboard') {
+      if (dateRange?.startDate && dateRange?.endDate) {
+        return `${dateRange.startDate} to ${dateRange.endDate}`;
+      }
+      return 'Dashboard';
+    }
+    if (ctrTrendRange.type === 'custom') {
+      if (ctrTrendRange.start && ctrTrendRange.end) {
+        return `${ctrTrendRange.start} to ${ctrTrendRange.end}`;
+      }
+      return 'Custom';
+    }
+    if (ctrTrendRange.type === 'yesterday') return 'Yesterday';
+    if (ctrTrendRange.type === 'days' && ctrTrendRange.value === 1) return 'Today';
+    if (ctrTrendRange.type === 'days' && ctrTrendRange.value === 2) return 'Today & Yesterday';
+    if (ctrTrendRange.type === 'days') return `${ctrTrendRange.value}D`;
+    return 'Period';
+  };
+
+  const renderCtrTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const row = payload[0]?.payload || {};
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm">
+        <div className="text-[11px] text-gray-500 mb-2">{label}</div>
+        <div className="space-y-1">
+          {ctrTrendSeries.map((series, idx) => {
+            const value = row[`series_${idx}`];
+            if (!Number.isFinite(value)) return null;
+            const clicks = row[`series_${idx}_clicks`] ?? 0;
+            const impressions = row[`series_${idx}_impressions`] ?? 0;
+            return (
+              <div key={series.key || idx} className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: CTR_TREND_COLORS[idx % CTR_TREND_COLORS.length] }}
+                  />
+                  <span className="font-medium text-gray-700">{series.label || `Series ${idx + 1}`}</span>
+                </div>
+                <div className="text-gray-700">{renderMetric(value, 'percent', 2)}</div>
+                <div className="text-[11px] text-gray-400">
+                  {formatNumber(clicks)} clicks · {formatNumber(impressions)} impr
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderCreativeSummaryValue = (value, format) => {
+    if (!Number.isFinite(value)) return '—';
+    if (format === 'currency') return renderMetric(value, 'currency');
+    if (format === 'percent') return renderPercent(value, 2);
+    if (format === 'frequency') return formatFixed(value, 2);
+    if (format === 'number') return renderNumber(value);
+    return formatFixed(value, 2);
+  };
+
+  const formatDeltaAbsolute = (value, unit) => {
+    if (!Number.isFinite(value)) return '—';
+    const sign = value > 0 ? '+' : value < 0 ? '-' : '';
+    const absValue = Math.abs(value);
+
+    if (unit === 'percent') {
+      return `${sign}${absValue.toFixed(2)}%`;
+    }
+    if (unit === 'frequency') {
+      return `${sign}${absValue.toFixed(2)}`;
+    }
+    if (unit === 'roas') {
+      return `${sign}${absValue.toFixed(2)}`;
+    }
+    if (unit === 'currency') {
+      return `${sign}${formatCurrency(absValue, 0)}`;
+    }
+    return `${sign}${formatNumber(absValue)}`;
+  };
+
+  const renderCreativeSummaryDelta = (delta) => {
+    if (!delta || !Number.isFinite(delta.value)) {
+      return <span className="text-xs text-gray-400">—</span>;
+    }
+    const isZero = delta.value === 0;
+    const isPositive = delta.value > 0;
+    const Icon = isPositive ? TrendingUp : TrendingDown;
+    const classes = isZero
+      ? 'bg-gray-100 text-gray-500'
+      : (isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700');
+    const label = delta.format === 'percent'
+      ? formatDeltaPercent(delta.value)
+      : formatDeltaAbsolute(delta.value, delta.unit);
+    return (
+      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${classes}`}>
+        {!isZero && <Icon className="h-3 w-3" />}
+        {label}
+      </span>
+    );
+  };
+
+  const creativeSummaryCards = useMemo(() => {
+    if (!creativeFunnelSummary) return null;
+
+    const { baseline, leader, runnerUp, laggard, leaderMetrics, laggardMetrics } = creativeFunnelSummary;
+    const delta = (value, base, unit) => calcMetricDelta(value, base, unit);
+
+    const leaderVsSecond = runnerUp && runnerUp.purchases
+      ? leader.purchases / Math.max(runnerUp.purchases, 1)
+      : null;
+
+    return {
+      today: {
+        title: 'Today',
+        subtitle: 'Funnel change',
+        body: `${leader?.name || 'Top creative'} leads the funnel with ${leader?.purchases || 0} purchases` +
+          (leaderVsSecond ? ` (${leaderVsSecond.toFixed(1)}× vs #2).` : '.'),
+        metrics: [
+          {
+            label: 'CTR',
+            value: leaderMetrics.ctr,
+            delta: delta(leaderMetrics.ctr, baseline.ctr, 'percent'),
+            format: 'percent'
+          },
+          {
+            label: 'ATC rate',
+            value: leaderMetrics.atcRate,
+            delta: delta(leaderMetrics.atcRate, baseline.atcRate, 'percent'),
+            format: 'percent'
+          },
+          {
+            label: 'CVR',
+            value: leaderMetrics.cvr,
+            delta: delta(leaderMetrics.cvr, baseline.cvr, 'percent'),
+            format: 'percent'
+          }
+        ]
+      },
+      week: {
+        title: 'This week',
+        subtitle: 'Funnel drag',
+        body: `${laggard?.name || 'Lowest creative'} is lagging the funnel` +
+          (laggard?.purchases ? ` with ${laggard.purchases} purchases.` : '.'),
+        metrics: [
+          {
+            label: 'CTR',
+            value: laggardMetrics.ctr,
+            delta: delta(laggardMetrics.ctr, baseline.ctr, 'percent'),
+            format: 'percent'
+          },
+          {
+            label: 'CVR',
+            value: laggardMetrics.cvr,
+            delta: delta(laggardMetrics.cvr, baseline.cvr, 'percent'),
+            format: 'percent'
+          },
+          {
+            label: 'ROAS',
+            value: laggardMetrics.roas,
+            delta: delta(laggardMetrics.roas, baseline.roas, 'roas'),
+            format: 'roas'
+          }
+        ]
+      }
+    };
+  }, [creativeFunnelSummary]);
+
   const creativeDataStrengthStyles = {
     LOW: 'bg-gray-100 text-gray-600',
     MED: 'bg-amber-100 text-amber-700',
@@ -2345,11 +5213,45 @@ function DashboardTab({
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="px-3 py-1 bg-white rounded-lg shadow-sm text-sm text-gray-700">
           Scope: <span className="font-semibold text-gray-900">{campaignScopeLabel}</span>
         </div>
       </div>
+
+      {kpiMonthSummaries.length > 0 && (
+        <div className="grid grid-cols-6 gap-4">
+          {kpiMonthSummaries.map((summary) => (
+            <div
+              key={summary.key}
+              className={`relative rounded-full border px-3 py-1 text-[11px] font-semibold ${
+                summary.tone === 'positive'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : summary.tone === 'negative'
+                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                    : 'bg-gray-50 text-gray-700 border-gray-200'
+              } ${summary.isCelebrating ? 'summary-pill-celebrate summary-pill-intense pr-8' : ''}`}
+            >
+              <span>{summary.text}</span>
+              {summary.isCelebrating && (
+                <>
+                  <span className="summary-emoji" aria-hidden="true">🎉</span>
+                  <span className="summary-confetti" aria-hidden="true">
+                    <span className="summary-confetti-dot confetti-dot-1" />
+                    <span className="summary-confetti-dot confetti-dot-2" />
+                    <span className="summary-confetti-dot confetti-dot-3" />
+                    <span className="summary-confetti-dot confetti-dot-4" />
+                    <span className="summary-confetti-dot confetti-dot-5" />
+                    <span className="summary-confetti-dot confetti-dot-6" />
+                    <span className="summary-confetti-dot confetti-dot-7" />
+                    <span className="summary-confetti-dot confetti-dot-8" />
+                  </span>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* KPI CARDS */}
       <div className="grid grid-cols-6 gap-4">
@@ -2365,78 +5267,159 @@ function DashboardTab({
         ))}
       </div>
 
+      {/* Smart Alerts */}
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h3 className="text-lg font-semibold">Smart Alerts</h3>
+            <p className="text-sm text-gray-500">
+              Signals trigger only on large anomalies or sustained trends with statistical strength.
+            </p>
+          </div>
+          <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+            Signal window: 10-14 points
+          </div>
+        </div>
+        {smartAlerts.length === 0 ? (
+          <div className="mt-4 text-sm text-gray-500">
+            No statistically significant alerts detected in this period.
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            {smartAlerts.map((alert) => {
+              const tone = alert.goodDirection === 'neutral'
+                ? 'neutral'
+                : (alert.goodDirection === 'up'
+                  ? (alert.direction === 'up' ? 'positive' : 'negative')
+                  : (alert.direction === 'down' ? 'positive' : 'negative'));
+              const toneStyles = tone === 'positive'
+                ? 'bg-emerald-50 border-emerald-100'
+                : tone === 'negative'
+                  ? 'bg-rose-50 border-rose-100'
+                  : 'bg-gray-50 border-gray-100';
+              const ToneIcon = tone === 'positive' ? CheckCircle2 : AlertCircle;
+              const TrendIcon = alert.direction === 'up' ? TrendingUp : TrendingDown;
+              const changeLabel = formatDeltaPercent((alert.changePct || 0) * 100);
+
+              return (
+                <div key={alert.id} className={`rounded-xl border p-4 ${toneStyles}`}>
+                  <div className="flex items-start gap-3">
+                    <div className={`h-10 w-10 rounded-full flex items-center justify-center ${
+                      tone === 'positive'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : tone === 'negative'
+                          ? 'bg-rose-100 text-rose-700'
+                          : 'bg-gray-200 text-gray-600'
+                    }`}>
+                      <ToneIcon className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm font-semibold text-gray-900">{alert.metricLabel}</div>
+                        <span className="text-[11px] text-gray-500 uppercase tracking-wide">
+                          {alert.type === 'anomaly' ? 'Anomaly' : 'Trend'}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-sm text-gray-600">
+                        {alert.type === 'anomaly'
+                          ? `${alert.metricLabel} ${alert.direction === 'up' ? 'spiked' : 'dropped'} ${changeLabel} vs ${alert.window}d baseline.`
+                          : `${alert.metricLabel} ${alert.direction === 'up' ? 'rising' : 'falling'} ${changeLabel} over ${alert.window}d.`}
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-gray-500">
+                        <span className="inline-flex items-center gap-1">
+                          <TrendIcon className="h-3 w-3" />
+                          {formatAlertMetric(alert.currentValue, alert.format)}
+                        </span>
+                        {alert.type === 'anomaly' && alert.zScore != null && (
+                          <span>Z {alert.zScore.toFixed(2)}</span>
+                        )}
+                        {alert.type === 'trend' && alert.r2 != null && (
+                          <span>R2 {alert.r2.toFixed(2)}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Global Orders Trend */}
-      {bucketedTrendsWithStatus.length > 0 && showOrdersTrend && (
+      {hasTrendData && showOrdersTrend && (
         <div className="bg-white rounded-xl p-6 shadow-sm">
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <h3 className="text-lg font-semibold">Orders Trend</h3>
-            {totalDays > 60 && (
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-gray-500">Buckets:</span>
-                <div className="flex rounded-lg bg-gray-100 p-1">
-                  <button
-                    onClick={() => setLongRangeBucketMode('weekly')}
-                    className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                      longRangeBucketMode === 'weekly'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500'
-                    }`}
-                  >
-                    Weekly
-                  </button>
-                  <button
-                    onClick={() => setLongRangeBucketMode('monthly')}
-                    className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                      longRangeBucketMode === 'monthly'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500'
-                    }`}
-                  >
-                    Monthly
-                  </button>
-                </div>
+            {regionCompareActive && (
+              <div className="flex items-center gap-3 text-xs text-gray-500">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.europe }} />
+                  Europe
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.usa }} />
+                  USA
+                </span>
               </div>
             )}
           </div>
           <div className="h-64">
             <ResponsiveContainer>
-              <LineChart data={bucketedTrendsForChart}>
+              <LineChart data={regionCompareActive ? regionCompareChartData : (isBucketMode ? bucketedTrendsForChart : maTrends)}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
                 <Tooltip
-                  content={renderBucketTooltip('orders')}
+                  content={regionCompareActive
+                    ? (isBucketMode ? renderRegionBucketTooltip('orders') : renderRegionMaTooltip('orders'))
+                    : (isBucketMode ? renderBucketTooltip('orders') : renderMaTooltip('orders', '#22c55e'))}
                 />
-                <Line
-                  type="monotone"
-                  dataKey="ordersComplete"
-                  stroke="#22c55e"
-                  strokeWidth={2}
-                  dot={false}
-                  fill="none"
-                />
-                {lastBucketIncomplete && (
-                  <Line
-                    type="monotone"
-                    dataKey="ordersIncomplete"
-                    stroke="#22c55e"
-                    strokeWidth={2}
-                    dot={({ cx, cy, payload }) => {
-                      if (!payload?.isIncomplete || cx == null || cy == null) return null;
-                      return (
-                        <circle
-                          cx={cx}
-                          cy={cy}
-                          r={4}
-                          fill="white"
-                          stroke="#22c55e"
-                          strokeWidth={2}
-                        />
-                      );
-                    }}
-                    strokeDasharray="5,5"
-                    fill="none"
-                  />
+                {regionCompareActive ? (
+                  isBucketMode ? (
+                    <>
+                      {renderTrendLine({
+                        baseKey: 'europeOrders',
+                        stroke: REGION_COMPARE_COLORS.europe,
+                        lastBucketIncomplete: europeLastBucketIncomplete,
+                        isIncompleteKey: 'europeIsIncomplete',
+                        showProjection: europeHasProjection
+                      })}
+                      {renderTrendLine({
+                        baseKey: 'usaOrders',
+                        stroke: REGION_COMPARE_COLORS.usa,
+                        lastBucketIncomplete: usaLastBucketIncomplete,
+                        isIncompleteKey: 'usaIsIncomplete',
+                        showProjection: usaHasProjection
+                      })}
+                    </>
+                  ) : (
+                    <>
+                      {renderMaLines({
+                        baseKey: 'europeOrders',
+                        stroke: REGION_COMPARE_COLORS.europe
+                      })}
+                      {renderMaLines({
+                        baseKey: 'usaOrders',
+                        stroke: REGION_COMPARE_COLORS.usa
+                      })}
+                    </>
+                  )
+                ) : (
+                  isBucketMode ? (
+                    renderTrendLine({
+                      baseKey: 'orders',
+                      stroke: '#22c55e',
+                      lastBucketIncomplete,
+                      isIncompleteKey: 'isIncomplete',
+                      showProjection: bucketHasProjection
+                    })
+                  ) : (
+                    renderMaLines({
+                      baseKey: 'orders',
+                      stroke: '#22c55e'
+                    })
+                  )
                 )}
               </LineChart>
             </ResponsiveContainer>
@@ -2445,82 +5428,87 @@ function DashboardTab({
       )}
 
       {/* Expanded KPI charts */}
-      {expandedKpis.length > 0 && bucketedTrendsWithStatus.length > 0 && (
+      {expandedKpis.length > 0 && hasTrendData && (
         <div className="space-y-6">
           {expandedKpis.filter(key => key !== 'orders').map((key) => {
             const thisKpi = kpis.find(k => k.key === key);
             if (!thisKpi) return null;
+            const capKey = capitalize(key);
+            const europeBaseKey = `europe${capKey}`;
+            const usaBaseKey = `usa${capKey}`;
             return (
               <div key={key} className="bg-white rounded-xl p-6 shadow-sm animate-fade-in">
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
                   <h3 className="text-lg font-semibold">{thisKpi.label} Trend</h3>
-                  {totalDays > 60 && (
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="text-gray-500">Buckets:</span>
-                      <div className="flex rounded-lg bg-gray-100 p-1">
-                        <button
-                          onClick={() => setLongRangeBucketMode('weekly')}
-                          className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                            longRangeBucketMode === 'weekly'
-                              ? 'bg-white text-gray-900 shadow-sm'
-                              : 'text-gray-500'
-                          }`}
-                        >
-                          Weekly
-                        </button>
-                        <button
-                          onClick={() => setLongRangeBucketMode('monthly')}
-                          className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                            longRangeBucketMode === 'monthly'
-                              ? 'bg-white text-gray-900 shadow-sm'
-                              : 'text-gray-500'
-                          }`}
-                        >
-                          Monthly
-                        </button>
-                      </div>
+                  {regionCompareActive && (
+                    <div className="flex items-center gap-3 text-xs text-gray-500">
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.europe }} />
+                        Europe
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: REGION_COMPARE_COLORS.usa }} />
+                        USA
+                      </span>
                     </div>
                   )}
                 </div>
                 <div className="h-64">
                   <ResponsiveContainer>
-                    <LineChart data={bucketedTrendsForChart}>
+                    <LineChart data={regionCompareActive ? regionCompareChartData : (isBucketMode ? bucketedTrendsForChart : maTrends)}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                       <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                       <YAxis tick={{ fontSize: 12 }} />
                       <Tooltip
-                        content={renderBucketTooltip(key)}
+                        content={regionCompareActive
+                          ? (isBucketMode ? renderRegionBucketTooltip(key) : renderRegionMaTooltip(key))
+                          : (isBucketMode ? renderBucketTooltip(key) : renderMaTooltip(key, thisKpi.color))}
                       />
-                      <Line
-                        type="monotone"
-                        dataKey={`${key}Complete`}
-                        stroke={thisKpi.color}
-                        strokeWidth={2}
-                        dot={false}
-                        fill="none"
-                      />
-                      {lastBucketIncomplete && (
-                        <Line
-                          type="monotone"
-                          dataKey={`${key}Incomplete`}
-                          stroke={thisKpi.color}
-                          strokeWidth={2}
-                          dot={({ cx, cy, payload }) => {
-                            if (!payload?.isIncomplete || cx == null || cy == null) return null;
-                            return (
-                              <circle
-                                cx={cx}
-                                cy={cy}
-                                r={4}
-                                fill="white"
-                                stroke={thisKpi.color}
-                                strokeWidth={2}
-                              />
-                            );
-                          }}
-                          strokeDasharray="5,5"
-                          fill="none"
-                        />
+                      {regionCompareActive ? (
+                        isBucketMode ? (
+                          <>
+                            {renderTrendLine({
+                              baseKey: europeBaseKey,
+                              stroke: REGION_COMPARE_COLORS.europe,
+                              lastBucketIncomplete: europeLastBucketIncomplete,
+                              isIncompleteKey: 'europeIsIncomplete',
+                              showProjection: europeHasProjection
+                            })}
+                            {renderTrendLine({
+                              baseKey: usaBaseKey,
+                              stroke: REGION_COMPARE_COLORS.usa,
+                              lastBucketIncomplete: usaLastBucketIncomplete,
+                              isIncompleteKey: 'usaIsIncomplete',
+                              showProjection: usaHasProjection
+                            })}
+                          </>
+                        ) : (
+                          <>
+                            {renderMaLines({
+                              baseKey: europeBaseKey,
+                              stroke: REGION_COMPARE_COLORS.europe
+                            })}
+                            {renderMaLines({
+                              baseKey: usaBaseKey,
+                              stroke: REGION_COMPARE_COLORS.usa
+                            })}
+                          </>
+                        )
+                      ) : (
+                        isBucketMode ? (
+                          renderTrendLine({
+                            baseKey: key,
+                            stroke: thisKpi.color,
+                            lastBucketIncomplete,
+                            isIncompleteKey: 'isIncomplete',
+                            showProjection: bucketHasProjection
+                          })
+                        ) : (
+                          renderMaLines({
+                            baseKey: key,
+                            stroke: thisKpi.color
+                          })
+                        )
                       )}
                     </LineChart>
                   </ResponsiveContainer>
@@ -2538,6 +5526,7 @@ function DashboardTab({
         dashboard={dashboard}
         countriesDataSource={countriesDataSource}
         metaAdManagerData={metaAdManagerData}
+        metaAdManagerNotice={metaAdManagerNotice}
         adManagerBreakdown={adManagerBreakdown}
         setAdManagerBreakdown={setAdManagerBreakdown}
         hiddenCampaigns={hiddenCampaigns}
@@ -2937,48 +5926,403 @@ function DashboardTab({
                 <div className="text-sm text-gray-500 flex items-center gap-2">
                   <span>Campaign:</span>
                   <span className="inline-flex items-center px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 font-semibold">
-                    <span className="mr-1">{getCampaignEmoji(selectedCreativeCampaign.name)}</span>
+                    {selectedCreativeCampaign.isAggregate ? (
+                      <span className="mr-2 text-[10px] font-bold tracking-wide">ALL</span>
+                    ) : (
+                      <span className="mr-1">{getCampaignEmoji(selectedCreativeCampaign.name)}</span>
+                    )}
                     {selectedCreativeCampaign.name}
                   </span>
+                  {selectedCreativeCampaign.isAggregate && (
+                    <span className="text-[10px] text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded-full">Combined</span>
+                  )}
                 </div>
               )}
             </div>
           </div>
 
           {creativeCampaignOptions.length > 0 ? (
-            <div className="flex flex-col lg:flex-row gap-4">
-              <div className="lg:w-64">
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Campaigns</div>
-                <div className="mt-2 flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
-                  {creativeCampaignOptions.map((campaign) => {
-                    const isActive = campaign.id === selectedCreativeCampaignId;
-                    return (
-                      <button
-                        key={campaign.id}
-                        onClick={() => setSelectedCreativeCampaignId(campaign.id)}
-                        className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors flex items-center gap-2 justify-between text-left ${
-                          isActive
-                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                            : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        <span className="flex items-center gap-2 truncate">
-                          <span>{getCampaignEmoji(campaign.name)}</span>
-                          <span className="truncate" title={campaign.name}>{campaign.name}</span>
-                        </span>
-                        {isActive && <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">Active</span>}
-                      </button>
-                    );
-                  })}
+            <>
+              <div className="flex flex-col lg:flex-row gap-4">
+                <div className="lg:w-64">
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Campaigns</div>
+                  <div className="mt-2 flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                    {creativeCampaignOptions.map((campaign) => {
+                      const isActive = campaign.id === selectedCreativeCampaignId;
+                      return (
+                        <button
+                          key={campaign.id}
+                          onClick={() => setSelectedCreativeCampaignId(campaign.id)}
+                          className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors flex items-center gap-2 justify-between text-left ${
+                            isActive
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                              : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2 truncate">
+                            {campaign.isAggregate ? (
+                              <span className="text-[10px] font-bold tracking-wide bg-white/20 px-2 py-0.5 rounded-full">ALL</span>
+                            ) : (
+                              <span>{getCampaignEmoji(campaign.name)}</span>
+                            )}
+                            <span className="truncate" title={campaign.name}>{campaign.name}</span>
+                          </span>
+                          {isActive && <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">Active</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex-1 text-sm text-gray-500">
+                  Select a campaign (or all campaigns) to rank creatives. Switch between aggregated view (combines matching creatives) or country subsections to inspect localized performance.
                 </div>
               </div>
-              <div className="flex-1 text-sm text-gray-500">
-                Select a campaign to rank creatives. Switch between aggregated view (combines matching creatives) or country subsections to inspect localized performance.
-              </div>
-            </div>
+              {creativeTotals && (
+                <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[
+                    { label: 'Total Spend', value: creativeTotals.spend, format: 'currency', decimals: 0 },
+                    { label: 'Total Purchases', value: creativeTotals.purchases, format: 'number', decimals: 0 },
+                    { label: 'ROAS', value: creativeTotals.roas, format: 'roas', decimals: 2 },
+                    { label: 'CTR', value: creativeTotals.ctr, format: 'percent', decimals: 2 }
+                  ].map((item) => (
+                    <div key={item.label} className="bg-gray-50 border border-gray-100 rounded-xl p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-500">{item.label}</div>
+                      <div className="text-base font-semibold text-gray-900 mt-1">
+                        {renderMetric(item.value, item.format, item.decimals)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           ) : (
             <div className="text-sm text-gray-500">
               No creatives available. Switch to Meta Ad Manager view to load campaign data.
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-b border-gray-100 bg-gray-50/40">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h3 className="text-base font-semibold text-gray-900">CTR Trends</h3>
+              <p className="text-xs text-gray-500">
+                Daily link CTR. Compare up to {CTR_COMPARE_LIMIT} ads or countries.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
+              <span>
+                Range: <span className="font-semibold text-gray-700">{getCtrTrendRangeLabel()}</span>
+              </span>
+              {ctrTrendRangeMode === 'local' && (
+                <button
+                  type="button"
+                  onClick={() => setCtrTrendRangeMode('dashboard')}
+                  className="text-indigo-600 hover:text-indigo-700 font-semibold"
+                >
+                  Use dashboard range
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <span className="font-semibold text-gray-700">Campaign</span>
+              <select
+                value={selectedCreativeCampaignId || ''}
+                onChange={(e) => {
+                  setSelectedCreativeCampaignId(e.target.value);
+                  setCtrTrendCompareIds(null);
+                  setCtrTrendCompareError('');
+                }}
+                className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white"
+              >
+                {creativeCampaignOptions.map((campaign) => (
+                  <option key={campaign.id} value={campaign.id}>
+                    {campaign.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <span className="font-semibold text-gray-700">Country</span>
+              <select
+                value={ctrTrendCountry}
+                onChange={(e) => {
+                  setCtrTrendCountry(e.target.value);
+                  setCtrTrendCompareIds(null);
+                  setCtrTrendCompareError('');
+                }}
+                className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white min-w-[160px]"
+              >
+                <option value="ALL">All countries</option>
+                {ctrCountryOptions.map((country) => (
+                  <option key={country.code} value={country.code}>
+                    {`${country.flag ? `${country.flag} ` : ''}${country.name} (${country.code})`}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <span className="font-semibold text-gray-700">Ad</span>
+              <select
+                value={ctrTrendAdId}
+                onChange={(e) => {
+                  setCtrTrendAdId(e.target.value);
+                  setCtrTrendCompareIds(null);
+                  setCtrTrendCompareError('');
+                }}
+                className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs bg-white min-w-[200px]"
+              >
+                <option value="ALL">All ads</option>
+                {ctrAdOptions.map((ad) => (
+                  <option key={ad.id} value={ad.id}>
+                    {ad.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-3 text-xs text-gray-600">
+              <span className="font-semibold text-gray-700">
+                {ctrTrendIncludeInactive ? 'Active + inactive' : 'Active only'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCtrTrendIncludeInactive(prev => !prev)}
+                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
+                  ctrTrendIncludeInactive ? 'bg-indigo-600' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    ctrTrendIncludeInactive ? 'translate-x-5' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+            <span className="text-gray-500">Range:</span>
+            <button
+              onClick={() => {
+                setCtrTrendRangeMode('local');
+                setCtrTrendRange({ type: 'days', value: 1 });
+                setShowCtrTrendCustomPicker(false);
+              }}
+              className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                ctrTrendRangeMode === 'local' && ctrTrendRange.type === 'days' && ctrTrendRange.value === 1
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              Today
+            </button>
+            <button
+              onClick={() => {
+                setCtrTrendRangeMode('local');
+                setCtrTrendRange({ type: 'yesterday', value: 1 });
+                setShowCtrTrendCustomPicker(false);
+              }}
+              className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                ctrTrendRangeMode === 'local' && ctrTrendRange.type === 'yesterday'
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              Yesterday
+            </button>
+            {[7, 14, 30].map(days => (
+              <button
+                key={days}
+                onClick={() => {
+                  setCtrTrendRangeMode('local');
+                  setCtrTrendRange({ type: 'days', value: days });
+                  setShowCtrTrendCustomPicker(false);
+                }}
+                className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                  ctrTrendRangeMode === 'local' && ctrTrendRange.type === 'days' && ctrTrendRange.value === days
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                {days}D
+              </button>
+            ))}
+            <button
+              onClick={() => {
+                setCtrTrendRangeMode('local');
+                setShowCtrTrendCustomPicker((prev) => !prev);
+                setCtrTrendRange({ type: 'custom', start: ctrTrendCustomRange.start, end: ctrTrendCustomRange.end });
+              }}
+              className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                ctrTrendRangeMode === 'local' && ctrTrendRange.type === 'custom'
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              Custom
+            </button>
+          </div>
+
+          {showCtrTrendCustomPicker && (
+            <div className="mt-3 flex flex-wrap items-end gap-2 text-xs text-gray-600">
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-500 mb-1">Start</label>
+                <input
+                  type="date"
+                  value={ctrTrendCustomRange.start}
+                  onChange={(e) => setCtrTrendCustomRange(prev => ({ ...prev, start: e.target.value }))}
+                  max={ctrTrendCustomRange.end || getIstanbulDateString()}
+                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-500 mb-1">End</label>
+                <input
+                  type="date"
+                  value={ctrTrendCustomRange.end}
+                  onChange={(e) => setCtrTrendCustomRange(prev => ({ ...prev, end: e.target.value }))}
+                  min={ctrTrendCustomRange.start}
+                  max={getIstanbulDateString()}
+                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (ctrTrendCustomRange.start && ctrTrendCustomRange.end) {
+                    setCtrTrendRangeMode('local');
+                    setCtrTrendRange({
+                      type: 'custom',
+                      start: ctrTrendCustomRange.start,
+                      end: ctrTrendCustomRange.end
+                    });
+                    setShowCtrTrendCustomPicker(false);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold hover:bg-gray-800"
+              >
+                Apply
+              </button>
+            </div>
+          )}
+
+          <div className="mt-4">
+            {ctrTrendError && (
+              <div className="text-xs text-rose-600 mb-2">{ctrTrendError}</div>
+            )}
+            {ctrTrendLoading ? (
+              <div className="h-64 flex items-center justify-center text-sm text-gray-500">
+                Loading CTR trends...
+              </div>
+            ) : ctrTrendChartData.length > 0 ? (
+              <>
+                <div className="h-64">
+                  <ResponsiveContainer>
+                    <LineChart data={ctrTrendChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis
+                        tick={{ fontSize: 11 }}
+                        tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
+                      />
+                      <Tooltip content={renderCtrTooltip} />
+                      {ctrTrendSeries.map((series, idx) => (
+                        <Line
+                          key={series.key || idx}
+                          type="monotone"
+                          dataKey={`series_${idx}`}
+                          stroke={CTR_TREND_COLORS[idx % CTR_TREND_COLORS.length]}
+                          strokeWidth={2.5}
+                          dot={false}
+                          activeDot={{ r: 4 }}
+                          isAnimationActive={false}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-3 text-xs text-gray-500">
+                  {ctrTrendSeries.map((series, idx) => (
+                    <div key={series.key || idx} className="flex items-center gap-2">
+                      <span
+                        className="inline-block h-2 w-2 rounded-full"
+                        style={{ backgroundColor: CTR_TREND_COLORS[idx % CTR_TREND_COLORS.length] }}
+                      />
+                      <span className="font-semibold text-gray-700">{series.label || `Series ${idx + 1}`}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="h-64 flex items-center justify-center text-sm text-gray-500">
+                Select a campaign and optionally a country or ad to view CTR.
+              </div>
+            )}
+          </div>
+
+          {ctrTrendMode !== 'campaign' && (
+            <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div className="rounded-xl border border-gray-100 bg-white p-4">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Compare (max {CTR_COMPARE_LIMIT})
+                </div>
+                {ctrCompareOptions.length === 0 ? (
+                  <div className="mt-2 text-xs text-gray-500">No options available.</div>
+                ) : (
+                  <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
+                    {ctrCompareOptions.map((option) => (
+                      <label key={option.id} className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={ctrTrendEffectiveCompareIds.includes(option.id)}
+                          onChange={() => toggleCtrCompareId(option.id)}
+                          className="accent-indigo-600"
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {ctrTrendCompareError && (
+                  <div className="mt-2 text-xs text-rose-500">{ctrTrendCompareError}</div>
+                )}
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-white p-4">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Smart notes
+                </div>
+                {ctrSharpNotes.length === 0 ? (
+                  <div className="mt-2 text-xs text-gray-500">
+                    No sharp CTR slope signals in the last 6 days.
+                  </div>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    {ctrSharpNotes.map((note) => {
+                      const Icon = note.direction === 'up' ? TrendingUp : TrendingDown;
+                      const tone = note.direction === 'up' ? 'text-emerald-600' : 'text-rose-600';
+                      const directionLabel = note.direction === 'up' ? 'spike' : 'drop';
+                      return (
+                        <div key={`${note.label}-${note.startDate}`} className="flex items-start gap-2 text-xs">
+                          <Icon className={`h-4 w-4 ${tone}`} />
+                          <div>
+                            <div className="font-semibold text-gray-900">{note.label}</div>
+                            <div className="text-gray-600">
+                              Sharp CTR {directionLabel} starting {note.startDate}: {note.slope >= 0 ? '+' : ''}
+                              {note.slope.toFixed(2)} pp/day (r² {note.r2.toFixed(2)})
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -3294,10 +6638,557 @@ function DashboardTab({
             </div>
           )}
         </div>
+
+        <div className="p-6 pt-0">
+          <div className="rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setShowCreativeSummaryTable(prev => !prev)}
+              className="flex w-full items-center justify-between text-left"
+            >
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Top 5 spenders funnel table
+                </div>
+                <div className="text-xs text-gray-500">
+                  CTR, frequency, LPV, ATC rate, purchases, checkout rate, and CVR vs previous bucket.
+                </div>
+              </div>
+              <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${showCreativeSummaryTable ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showCreativeSummaryTable && (
+              <>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-xs text-gray-500">
+                    Period: <span className="font-semibold text-gray-700">{getCreativeSummaryRangeLabel()}</span>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+                  <span className="text-gray-500">Period:</span>
+                  <button
+                    onClick={() => { setCreativeSummaryRange({ type: 'days', value: 1 }); setShowCreativeSummaryCustomPicker(false); }}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 1
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Today
+                  </button>
+                  <button
+                    onClick={() => { setCreativeSummaryRange({ type: 'yesterday', value: 1 }); setShowCreativeSummaryCustomPicker(false); }}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'yesterday'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Yesterday
+                  </button>
+                  <button
+                    onClick={() => { setCreativeSummaryRange({ type: 'days', value: 2 }); setShowCreativeSummaryCustomPicker(false); }}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'days' && creativeSummaryRange.value === 2
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Today & Yesterday
+                  </button>
+                  {[3, 7, 14, 30].map(days => (
+                    <button
+                      key={days}
+                      onClick={() => { setCreativeSummaryRange({ type: 'days', value: days }); setShowCreativeSummaryCustomPicker(false); }}
+                      className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                        creativeSummaryRange.type === 'days' && creativeSummaryRange.value === days
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      {days}D
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setShowCreativeSummaryCustomPicker((prev) => !prev)}
+                    className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                      creativeSummaryRange.type === 'custom'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    Custom
+                  </button>
+                </div>
+
+                {showCreativeSummaryCustomPicker && (
+                  <div className="mt-3 flex flex-wrap items-end gap-2 text-xs text-gray-600">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-500 mb-1">Start</label>
+                      <input
+                        type="date"
+                        value={creativeSummaryCustomRange.start}
+                        onChange={(e) => setCreativeSummaryCustomRange(prev => ({ ...prev, start: e.target.value }))}
+                        max={creativeSummaryCustomRange.end || getIstanbulDateString()}
+                        className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-500 mb-1">End</label>
+                      <input
+                        type="date"
+                        value={creativeSummaryCustomRange.end}
+                        onChange={(e) => setCreativeSummaryCustomRange(prev => ({ ...prev, end: e.target.value }))}
+                        min={creativeSummaryCustomRange.start}
+                        max={getIstanbulDateString()}
+                        className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (creativeSummaryCustomRange.start && creativeSummaryCustomRange.end) {
+                          setCreativeSummaryRange({
+                            type: 'custom',
+                            start: creativeSummaryCustomRange.start,
+                            end: creativeSummaryCustomRange.end
+                          });
+                          setShowCreativeSummaryCustomPicker(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold hover:bg-gray-800"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                )}
+
+                <div className="mt-4 overflow-x-auto">
+                  {creativeSummaryLoading ? (
+                    <div className="text-sm text-gray-500">Loading creative funnel table...</div>
+                  ) : creativeSummaryTopSpenders.length > 0 ? (
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="text-xs uppercase tracking-wide text-gray-500 bg-gray-50">
+                          <th className="px-3 py-2 text-left">Creative</th>
+                          <th className="px-3 py-2 text-right">Spend</th>
+                          <th className="px-3 py-2 text-right">CTR</th>
+                          <th className="px-3 py-2 text-right">Frequency</th>
+                          <th className="px-3 py-2 text-right">LPV</th>
+                          <th className="px-3 py-2 text-right">ATC Rate</th>
+                          <th className="px-3 py-2 text-right">Purchases</th>
+                          <th className="px-3 py-2 text-right">Checkout Rate</th>
+                          <th className="px-3 py-2 text-right">CVR</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {creativeSummaryTopSpenders.map((row) => {
+                          const previous = creativeSummaryPreviousMap.get(row.key);
+                          const ctrDelta = calcMetricDelta(row.ctr, previous?.ctr, 'percent');
+                          const frequencyDelta = calcMetricDelta(row.frequency, previous?.frequency, 'frequency');
+                          const lpvDelta = calcMetricDelta(row.lpv, previous?.lpv, 'number');
+                          const atcDelta = calcMetricDelta(row.atcRate, previous?.atcRate, 'percent');
+                          const purchasesDelta = calcMetricDelta(row.purchases, previous?.purchases, 'number');
+                          const checkoutDelta = calcMetricDelta(row.checkoutRate, previous?.checkoutRate, 'percent');
+                          const cvrDelta = calcMetricDelta(row.cvr, previous?.cvr, 'percent');
+
+                          return (
+                            <tr key={row.key} className="hover:bg-gray-50">
+                              <td className="px-3 py-2 text-gray-900 font-semibold max-w-xs truncate" title={row.name}>
+                                {row.name}
+                              </td>
+                              <td className="px-3 py-2 text-right text-gray-700">
+                                {renderCreativeSummaryValue(row.spend, 'currency')}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.ctr, 'percent')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(ctrDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.frequency, 'frequency')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(frequencyDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.lpv, 'number')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(lpvDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.atcRate, 'percent')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(atcDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.purchases, 'number')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(purchasesDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.checkoutRate, 'percent')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(checkoutDelta)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className="font-semibold text-gray-900">
+                                    {renderCreativeSummaryValue(row.cvr, 'percent')}
+                                  </span>
+                                  {renderCreativeSummaryDelta(cvrDelta)}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="text-sm text-gray-500">
+                      No creative funnel data available for this period.
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="p-6 pt-0">
+          <div className="rounded-xl border border-gray-100 bg-gradient-to-br from-slate-50 via-white to-white p-4">
+            <button
+              type="button"
+              onClick={() => setShowCreativeFunnelSummary(prev => !prev)}
+              className="flex w-full items-center justify-between text-left"
+            >
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+                Creative funnel summary
+              </div>
+              <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${showCreativeFunnelSummary ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showCreativeFunnelSummary && (
+              <>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600">
+                  <span className="font-semibold text-gray-900">Powered by GPT‑5.1</span>
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Prompt: “Briefly analyze changes and provide insight”</span>
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">Not auto-triggered</span>
+                  <span className="text-xs text-gray-500">Run end of day or tap generate.</span>
+                </div>
+
+                <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
+                  <button
+                    type="button"
+                    onClick={() => setCreativeSummaryGeneratedAt(new Date())}
+                    className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-800"
+                  >
+                    Generate summary
+                  </button>
+                  {creativeSummaryGeneratedAt && (
+                    <span>Updated {formatTimeLabel(creativeSummaryGeneratedAt)}</span>
+                  )}
+                </div>
+
+                {creativeSummaryCards ? (
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    {[creativeSummaryCards.today, creativeSummaryCards.week].map((card) => (
+                      <div
+                        key={card.title}
+                        className="rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{card.title}</div>
+                            <div className="text-sm font-semibold text-gray-900">{card.subtitle}</div>
+                          </div>
+                          <span className="rounded-full border border-gray-200 px-2 py-0.5 text-[11px] font-semibold text-gray-600">
+                            Creative vs avg
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-gray-600">{card.body}</p>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                      {card.metrics.map((metric) => {
+                        const deltaValue = metric.delta?.value;
+                        const isZero = Number.isFinite(deltaValue) && deltaValue === 0;
+                        const isPositive = Number.isFinite(deltaValue) ? deltaValue > 0 : null;
+                        const pillClasses = Number.isFinite(deltaValue)
+                          ? (isZero ? 'bg-gray-100 text-gray-500' : (isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'))
+                          : 'bg-gray-100 text-gray-500';
+                        const deltaLabel = metric.delta?.format === 'percent'
+                          ? formatDeltaPercent(deltaValue)
+                          : formatDeltaAbsolute(deltaValue, metric.delta?.unit);
+                        return (
+                          <div
+                            key={metric.label}
+                            className={`flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${pillClasses}`}
+                          >
+                            <span className="text-gray-700">{metric.label}</span>
+                            <span className="text-gray-900">
+                              {renderMetric(metric.value, metric.format, metric.format === 'percent' ? 2 : 2)}
+                            </span>
+                            <span className="flex items-center gap-1 text-[11px]">
+                              {Number.isFinite(deltaValue)
+                                ? (
+                                  <>
+                                    {!isZero && (
+                                      isPositive ? (
+                                        <TrendingUp className="h-3 w-3" />
+                                      ) : (
+                                        <TrendingDown className="h-3 w-3" />
+                                      )
+                                    )}
+                                    {deltaLabel}
+                                  </>
+                                )
+                                : '—'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-4 text-sm text-gray-500">
+                    No creative funnel summary available yet. Load a campaign to compare ads.
+                  </div>
+                )}
+
+                <div className="mt-4 rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setCreativeInsightPanelOpen(prev => !prev)}
+                    className="flex w-full items-center justify-between text-left"
+                  >
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Creative funnel AI summary
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {creativeInsightLlm.provider === 'deepseek'
+                          ? (creativeInsightLlm.model === 'deepseek-reasoner'
+                            ? 'DeepSeek Reasoner (Thinking)'
+                            : 'DeepSeek Chat (Non-thinking)')
+                          : 'OpenAI (auto)'} • auto end of day/week or manual
+                      </div>
+                    </div>
+                    <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${creativeInsightPanelOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {creativeInsightPanelOpen && (
+                    <div className="mt-4 space-y-4">
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+                        <span className="text-gray-500">Mode:</span>
+                        {['analyze', 'summarize'].map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => setCreativeInsightMode(mode)}
+                            className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                              creativeInsightMode === mode
+                                ? 'bg-indigo-600 text-white border-indigo-600'
+                                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                            }`}
+                          >
+                            {mode === 'analyze' ? 'Analyze' : 'Summarize'}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-gray-600">
+                        <span className="text-gray-500">Model:</span>
+                        <select
+                          value={`${creativeInsightLlm.provider}:${creativeInsightLlm.model || 'auto'}`}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (value === 'openai:auto') {
+                              setCreativeInsightLlm((prev) => ({ ...prev, provider: 'openai', model: '' }));
+                              return;
+                            }
+                            if (value === 'deepseek:deepseek-chat') {
+                              setCreativeInsightLlm((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-chat' }));
+                              return;
+                            }
+                            if (value === 'deepseek:deepseek-reasoner') {
+                              setCreativeInsightLlm((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-reasoner' }));
+                            }
+                          }}
+                          className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+                          title="AI model"
+                        >
+                          <option value="openai:auto">OpenAI (auto)</option>
+                          <option value="deepseek:deepseek-chat">DeepSeek Chat (Non-thinking)</option>
+                          <option value="deepseek:deepseek-reasoner">DeepSeek Reasoner (Thinking)</option>
+                        </select>
+
+                        {creativeInsightLlm.provider === 'deepseek' && (
+                          <select
+                            value={String(creativeInsightLlm.temperature ?? 1.0)}
+                            onChange={(event) => setCreativeInsightLlm((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
+                            className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+                            title="Temperature"
+                          >
+                            <option value="0">0.0</option>
+                            <option value="1">1.0</option>
+                            <option value="1.3">1.3</option>
+                            <option value="1.5">1.5</option>
+                          </select>
+                        )}
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Prompt (editable)
+                        </div>
+                        <textarea
+                          rows={3}
+                          value={creativeInsightPrompts[creativeInsightMode] || ''}
+                          onChange={(e) => setCreativeInsightPrompts(prev => ({
+                            ...prev,
+                            [creativeInsightMode]: e.target.value
+                          }))}
+                          className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                        <span className="font-semibold text-gray-500">Verbosity:</span>
+                        {['low', 'medium'].map((level) => (
+                          <button
+                            key={level}
+                            type="button"
+                            onClick={() => setCreativeInsightVerbosity(prev => ({
+                              ...prev,
+                              [creativeInsightMode]: level
+                            }))}
+                            className={`px-3 py-1.5 rounded-lg border transition-colors ${
+                              creativeInsightVerbosity[creativeInsightMode] === level
+                                ? 'bg-gray-900 text-white border-gray-900'
+                                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                            }`}
+                          >
+                            {level}
+                          </button>
+                        ))}
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-gray-500">Auto-generate</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = !creativeInsightAutoEnabled;
+                              setCreativeInsightAutoEnabled(next);
+                              syncCreativeInsightSettings({
+                                updates: {
+                                  autoEnabled: next,
+                                  analyzePrompt: creativeInsightPrompts.analyze,
+                                  summarizePrompt: creativeInsightPrompts.summarize,
+                                  analyzeVerbosity: creativeInsightVerbosity.analyze,
+                                  summarizeVerbosity: creativeInsightVerbosity.summarize
+                                }
+                              }).catch((error) => {
+                                setCreativeInsightError(error.message || 'Failed to update auto setting.');
+                              });
+                            }}
+                            className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
+                              creativeInsightAutoEnabled ? 'bg-emerald-500' : 'bg-gray-300'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                creativeInsightAutoEnabled ? 'translate-x-5' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                        <button
+                          type="button"
+                          onClick={handleCreativeInsightSaveSettings}
+                          className="inline-flex items-center gap-2 rounded-full border border-gray-200 px-4 py-1.5 font-semibold text-gray-600 hover:bg-gray-50"
+                        >
+                          Save settings
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCreativeInsightGenerate}
+                          disabled={creativeInsightLoading}
+                          className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 font-semibold text-white shadow-sm transition ${
+                            creativeInsightLoading ? 'bg-indigo-300' : 'bg-indigo-600 hover:bg-indigo-500'
+                          }`}
+                        >
+                          {creativeInsightLoading ? 'Generating…' : 'Generate summary'}
+                        </button>
+                        {creativeInsightSummary?.generated_at && (
+                          <span>
+                            Updated {formatSummaryTimestamp(creativeInsightSummary.generated_at)}
+                          </span>
+                        )}
+                        {(creativeInsightSummary || creativeInsightStreamingText) && (
+                          <button
+                            type="button"
+                            onClick={handleCreativeInsightDismiss}
+                            className="ml-auto inline-flex items-center gap-1 rounded-full border border-gray-200 px-3 py-1 text-[11px] font-semibold text-gray-500 hover:bg-gray-50"
+                          >
+                            <X className="h-3 w-3" />
+                            Dismiss
+                          </button>
+                        )}
+                      </div>
+
+                      {creativeInsightError && (
+                        <div className="text-xs text-rose-600">{creativeInsightError}</div>
+                      )}
+
+                      <div className="rounded-lg border border-gray-100 bg-white px-4 py-3 text-sm text-gray-700 shadow-sm">
+                        {creativeInsightLoading && !creativeInsightStreamingText && (
+                          <div className="text-sm text-gray-500">Generating AI summary…</div>
+                        )}
+                        {creativeInsightStreamingText && (
+                          <div className="whitespace-pre-wrap">{creativeInsightStreamingText}</div>
+                        )}
+                        {!creativeInsightStreamingText && creativeInsightSummary?.content && (
+                          <div className="whitespace-pre-wrap">{creativeInsightSummary.content}</div>
+                        )}
+                        {!creativeInsightLoading && !creativeInsightStreamingText && !creativeInsightSummary?.content && (
+                          <div className="text-sm text-gray-500">
+                            No AI summary yet. Generate one manually or wait for end-of-day/week auto runs.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Country order trends (collapsible) */}
-      {orderedCountryTrends && orderedCountryTrends.length > 0 && (
+      {annotatedCountryTrends.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">
           <button
             onClick={() => setShowCountryTrends(!showCountryTrends)}
@@ -3306,8 +7197,7 @@ function DashboardTab({
             <div>
               <h2 className="text-lg font-semibold text-left">Order Trends by Country</h2>
               <p className="text-sm text-gray-500 text-left">
-                Click to {showCountryTrends ? 'collapse' : 'expand'} daily order trends
-                per country
+                Click to {showCountryTrends ? 'collapse' : 'expand'} analytics-ready trend views
               </p>
               {countryTrendsDataSource && (
                 <div className="flex items-center gap-2 mt-2 text-xs text-gray-600">
@@ -3385,58 +7275,123 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCountryTrends.map((country) => (
-                <div
-                  key={country.countryCode}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xl">{country.flag}</span>
-                    <span className="font-semibold">{country.country}</span>
-                    <span className="text-sm text-gray-500">
-                      ({country.totalOrders} orders)
-                    </span>
+              {annotatedCountryTrends.map((country, idx) => {
+                const meta = country.analytics?.meta;
+                const series = country.analytics?.series || [];
+                const changePct = meta?.changePct;
+                const changeLabel = Number.isFinite(changePct) ? formatDeltaPercent(changePct * 100) : '—';
+                const isUp = changePct != null ? changePct >= 0 : null;
+                const changeClass = isUp == null
+                  ? 'bg-gray-100 text-gray-500'
+                  : (isUp ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700');
+                const trendLabel = meta?.slope > 0 ? 'Uptrend' : meta?.slope < 0 ? 'Downtrend' : 'Flat';
+                const signalLabel = meta?.r2 >= 0.7 ? 'Strong' : meta?.r2 >= 0.45 ? 'Moderate' : 'Weak';
+                const volatilityLabel = meta?.volatility == null
+                  ? '—'
+                  : (meta.volatility <= 0.25 ? 'Low' : meta.volatility <= 0.5 ? 'Medium' : 'High');
+                const TrendIcon = meta?.slope >= 0 ? TrendingUp : TrendingDown;
+
+                return (
+                  <div
+                    key={country.countryCode || country.country || country.countryName || idx}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-start justify-between flex-wrap gap-4 mb-3">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xl">{country.flag}</span>
+                        <div>
+                          <div className="font-semibold">{country.country}</div>
+                          <div className="text-xs text-gray-500">{country.totalOrders} orders</div>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                        <span className={`px-2 py-1 rounded-full font-semibold ${changeClass}`}>
+                          {changeLabel} vs prev {meta?.window || 7}d
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          {trendLabel}
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          Signal {signalLabel}
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          Volatility {volatilityLabel}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="h-40">
+                      <ResponsiveContainer>
+                        <ComposedChart data={series}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={formatCountryTick}
+                          />
+                          <YAxis
+                            yAxisId="orders"
+                            tick={{ fontSize: 10 }}
+                            allowDecimals={false}
+                          />
+                          <YAxis
+                            yAxisId="revenue"
+                            orientation="right"
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={(value) => formatCurrency(value || 0, 0)}
+                          />
+                          <Tooltip
+                            labelFormatter={formatCountryTooltip}
+                            formatter={(value, name) => {
+                              const label = String(name);
+                              const isRevenue = label.toLowerCase().includes('revenue');
+                              const formatted = isRevenue
+                                ? formatCurrency(value || 0, 0)
+                                : formatNumber(value || 0);
+                              return [formatted, label];
+                            }}
+                          />
+                          <Bar
+                            yAxisId="orders"
+                            dataKey="orders"
+                            name="Orders"
+                            fill="#c7d2fe"
+                            barSize={8}
+                            radius={[4, 4, 0, 0]}
+                          />
+                          <Line
+                            yAxisId="orders"
+                            dataKey="ordersMA"
+                            name="Orders (7d MA)"
+                            stroke="#4338ca"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                          <Line
+                            yAxisId="revenue"
+                            dataKey="revenueMA"
+                            name="Revenue (7d MA)"
+                            stroke="#16a34a"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                      <TrendIcon className="h-3 w-3" />
+                      <span>Latest {formatNumber(meta?.lastOrders || 0)} orders</span>
+                      <span>• Revenue {formatCurrency(meta?.lastRevenue || 0, 0)}</span>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <LineChart data={country.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => {
-                            const metricKey = name === 'orders' ? 'orders' : 'revenue';
-                            return [
-                              formatTooltipMetricValue(metricKey, value),
-                              getTooltipMetricLabel(metricKey)
-                            ];
-                          }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="orders"
-                          stroke="#6366f1"
-                          strokeWidth={2}
-                          dot={false}
-                          fill="none"
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
       )}
 
       {/* Campaign order trends */}
-      {orderedCampaignTrends && orderedCampaignTrends.length > 0 && (
+      {annotatedCampaignTrends.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden mt-6">
           <button
             onClick={() => setShowCampaignTrends(!showCampaignTrends)}
@@ -3445,8 +7400,7 @@ function DashboardTab({
             <div>
               <h2 className="text-lg font-semibold text-left">Order Trends by Campaign</h2>
               <p className="text-sm text-gray-500 text-left">
-                Click to {showCampaignTrends ? 'collapse' : 'expand'} daily order trends
-                per campaign
+                Click to {showCampaignTrends ? 'collapse' : 'expand'} analytical trend views
               </p>
               {campaignTrendsDataSource && (
                 <div className="flex items-center gap-2 mt-2 text-xs text-gray-600">
@@ -3524,50 +7478,89 @@ function DashboardTab({
                   })}
                 </div>
               )}
-              {orderedCampaignTrends.map((campaign) => (
-                <div
-                  key={campaign.campaignId || campaign.campaignName}
-                  className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="font-semibold">{campaign.campaignName}</span>
-                    <span className="text-sm text-gray-500">
-                      ({campaign.totalOrders} orders)
-                    </span>
+              {annotatedCampaignTrends.map((campaign, idx) => {
+                const meta = campaign.analytics?.meta;
+                const series = campaign.analytics?.series || [];
+                const changePct = meta?.changePct;
+                const changeLabel = Number.isFinite(changePct) ? formatDeltaPercent(changePct * 100) : '—';
+                const isUp = changePct != null ? changePct >= 0 : null;
+                const changeClass = isUp == null
+                  ? 'bg-gray-100 text-gray-500'
+                  : (isUp ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700');
+                const trendLabel = meta?.slope > 0 ? 'Uptrend' : meta?.slope < 0 ? 'Downtrend' : 'Flat';
+                const signalLabel = meta?.r2 >= 0.7 ? 'Strong' : meta?.r2 >= 0.45 ? 'Moderate' : 'Weak';
+                const TrendIcon = meta?.slope >= 0 ? TrendingUp : TrendingDown;
+
+                return (
+                  <div
+                    key={campaign.campaignId || campaign.campaignName || idx}
+                    className="border-t border-gray-100 pt-4 first:border-0 first:pt-0"
+                  >
+                    <div className="flex items-start justify-between flex-wrap gap-4 mb-3">
+                      <div>
+                        <div className="font-semibold">{campaign.campaignName}</div>
+                        <div className="text-xs text-gray-500">{campaign.totalOrders} orders</div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                        <span className={`px-2 py-1 rounded-full font-semibold ${changeClass}`}>
+                          {changeLabel} vs prev {meta?.window || 7}d
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          {trendLabel}
+                        </span>
+                        <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                          Signal {signalLabel}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="h-40">
+                      <ResponsiveContainer>
+                        <ComposedChart data={series}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={formatCountryTick}
+                          />
+                          <YAxis
+                            yAxisId="orders"
+                            tick={{ fontSize: 10 }}
+                            allowDecimals={false}
+                          />
+                          <Tooltip
+                            labelFormatter={formatCountryTooltip}
+                            formatter={(value, name) => {
+                              const label = String(name);
+                              const formatted = formatNumber(value || 0);
+                              return [formatted, label];
+                            }}
+                          />
+                          <Bar
+                            yAxisId="orders"
+                            dataKey="orders"
+                            name="Orders"
+                            fill="#bbf7d0"
+                            barSize={8}
+                            radius={[4, 4, 0, 0]}
+                          />
+                          <Line
+                            yAxisId="orders"
+                            dataKey="ordersMA"
+                            name="Orders (7d MA)"
+                            stroke="#15803d"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                      <TrendIcon className="h-3 w-3" />
+                      <span>Latest {formatNumber(meta?.lastOrders || 0)} orders</span>
+                    </div>
                   </div>
-                  <div className="h-32">
-                    <ResponsiveContainer>
-                      <LineChart data={campaign.trends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10 }}
-                          tickFormatter={formatCountryTick}
-                        />
-                        <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                        <Tooltip
-                          labelFormatter={formatCountryTooltip}
-                          formatter={(value, name) => {
-                            const metricKey = name === 'orders' ? 'orders' : 'revenue';
-                            return [
-                              formatTooltipMetricValue(metricKey, value),
-                              getTooltipMetricLabel(metricKey)
-                            ];
-                          }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="orders"
-                          stroke="#22c55e"
-                          strokeWidth={2}
-                          dot={false}
-                          fill="none"
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -3703,6 +7696,284 @@ function DashboardTab({
           If campaign spend is far below Ads Manager, suspect pagination, date
           filters, or currency conversion.
         </p>
+      </div>
+    </div>
+  );
+}
+
+function MobileDashboardTab({
+  dashboard = {},
+  formatCurrency = () => '$0',
+  formatNumber = () => '0',
+  campaignScopeLabel = 'All Campaigns'
+}) {
+  const { overview = {}, trends = [], campaigns = [], countries = [], dateRange = {} } = dashboard || {};
+
+  const formatTrendDate = useCallback((value) => {
+    if (!value) return 'N/A';
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) {
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${month}/${day}`;
+    }
+    const asText = String(value);
+    return asText.length >= 10 ? asText.slice(5, 10) : asText;
+  }, []);
+
+  const kpis = useMemo(() => ([
+    { key: 'revenue', label: 'Revenue', value: toNumber(overview.revenue), change: toNumber(overview.revenueChange), format: 'currency' },
+    { key: 'spend', label: 'Ad Spend', value: toNumber(overview.spend), change: toNumber(overview.spendChange), format: 'currency' },
+    { key: 'orders', label: 'Orders', value: toNumber(overview.orders), change: toNumber(overview.ordersChange), format: 'number' },
+    { key: 'aov', label: 'AOV', value: toNumber(overview.aov), change: toNumber(overview.aovChange), format: 'currency' },
+    { key: 'cac', label: 'CAC', value: toNumber(overview.cac), change: toNumber(overview.cacChange), format: 'currency' },
+    { key: 'roas', label: 'ROAS', value: toNumber(overview.roas), change: toNumber(overview.roasChange), format: 'roas' }
+  ]), [overview]);
+
+  const trendData = useMemo(() => (
+    (Array.isArray(trends) ? trends : [])
+      .slice(-MOBILE_DASHBOARD_TREND_POINTS)
+      .map((point, index) => ({
+        id: point?.date || point?.bucketExpectedEndDate || point?.bucketEndDate || `pt-${index}`,
+        dateLabel: formatTrendDate(point?.date || point?.bucketExpectedEndDate || point?.bucketEndDate),
+        orders: toNumber(point?.orders)
+      }))
+  ), [formatTrendDate, trends]);
+
+  const topCampaigns = useMemo(() => (
+    (Array.isArray(campaigns) ? campaigns : [])
+      .map((campaign, index) => {
+        const spend = toNumber(campaign?.spend);
+        const revenue = toNumber(campaign?.conversionValue ?? campaign?.revenue);
+        const orders = toNumber(campaign?.conversions ?? campaign?.orders ?? campaign?.metaOrders);
+        const impressions = toNumber(campaign?.impressions);
+        const clicks = toNumber(campaign?.clicks);
+
+        let computedRoas = null;
+        if (spend > EPSILON) {
+          computedRoas = revenue / spend;
+        } else if (Number.isFinite(campaign?.metaRoas)) {
+          computedRoas = Number(campaign.metaRoas);
+        } else if (Number.isFinite(campaign?.roas)) {
+          computedRoas = Number(campaign.roas);
+        }
+
+        let computedAov = null;
+        if (orders > EPSILON) {
+          computedAov = revenue / orders;
+        } else if (Number.isFinite(campaign?.metaAov)) {
+          computedAov = Number(campaign.metaAov);
+        } else if (Number.isFinite(campaign?.aov)) {
+          computedAov = Number(campaign.aov);
+        }
+
+        return {
+          id: campaign?.campaignId || campaign?.campaign_id || campaign?.id || `campaign-${index}`,
+          name: campaign?.campaignName || campaign?.campaign_name || campaign?.name || 'Unnamed campaign',
+          spend,
+          orders,
+          revenue,
+          aov: Number.isFinite(computedAov) ? computedAov : null,
+          roas: Number.isFinite(computedRoas) ? computedRoas : null,
+          hasActivity:
+            spend > EPSILON ||
+            orders > EPSILON ||
+            revenue > EPSILON ||
+            impressions > EPSILON ||
+            clicks > EPSILON
+        };
+      })
+      .filter((campaign) => campaign.hasActivity)
+      .sort((a, b) => {
+        if (b.orders !== a.orders) return b.orders - a.orders;
+        if (b.spend !== a.spend) return b.spend - a.spend;
+        return b.revenue - a.revenue;
+      })
+      .slice(0, MOBILE_DASHBOARD_TOP_LIST_LIMIT)
+  ), [campaigns]);
+
+  const topCountries = useMemo(() => (
+    (Array.isArray(countries) ? countries : [])
+      .map((country, index) => {
+        const spend = toNumber(country?.spend);
+        const revenue = toNumber(country?.revenue ?? country?.conversionValue ?? country?.totalRevenue);
+        const orders = toNumber(country?.totalOrders ?? country?.orders ?? country?.conversions);
+
+        let computedRoas = null;
+        if (spend > EPSILON) {
+          computedRoas = revenue / spend;
+        } else if (Number.isFinite(country?.roas)) {
+          computedRoas = Number(country.roas);
+        }
+
+        let computedAov = null;
+        if (orders > EPSILON) {
+          computedAov = revenue / orders;
+        } else if (Number.isFinite(country?.aov)) {
+          computedAov = Number(country.aov);
+        }
+
+        return {
+          id: country?.code || country?.countryCode || `country-${index}`,
+          flag: country?.flag || '🏳️',
+          name: country?.name || country?.countryName || country?.country || country?.code || 'Unknown',
+          spend,
+          orders,
+          revenue,
+          aov: Number.isFinite(computedAov) ? computedAov : null,
+          roas: Number.isFinite(computedRoas) ? computedRoas : null
+        };
+      })
+      .sort((a, b) => {
+        if (b.orders !== a.orders) return b.orders - a.orders;
+        if (b.revenue !== a.revenue) return b.revenue - a.revenue;
+        return b.spend - a.spend;
+      })
+      .slice(0, MOBILE_DASHBOARD_TOP_LIST_LIMIT)
+  ), [countries]);
+
+  const dateRangeLabel = dateRange?.startDate && dateRange?.endDate
+    ? `${dateRange.startDate} to ${dateRange.endDate}`
+    : 'Current period';
+
+  const formatKpiValue = (kpi) => {
+    if (kpi.format === 'currency') return formatCurrency(kpi.value);
+    if (kpi.format === 'roas') return `${kpi.value.toFixed(2)}x`;
+    return formatNumber(kpi.value);
+  };
+
+  const getChangeTone = (kpiKey, change) => {
+    if (!Number.isFinite(change) || change === 0) return 'neutral';
+    const decreaseIsBetter = kpiKey === 'cac' || kpiKey === 'spend';
+    if (decreaseIsBetter) {
+      return change < 0 ? 'good' : 'bad';
+    }
+    return change > 0 ? 'good' : 'bad';
+  };
+
+  const getChangeLabel = (change) => {
+    if (!Number.isFinite(change) || change === 0) return 'No change';
+    return `${change > 0 ? '+' : ''}${change.toFixed(1)}%`;
+  };
+
+  const formatRoasLabel = (value) => (
+    Number.isFinite(value) ? `${value.toFixed(2)}x` : '—'
+  );
+
+  return (
+    <div className="space-y-4 animate-fade-in">
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <div className="text-xs uppercase tracking-wide text-gray-500">Scope</div>
+        <div className="mt-1 text-sm font-semibold text-gray-900">{campaignScopeLabel}</div>
+        <div className="mt-1 text-xs text-gray-500">{dateRangeLabel}</div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {kpis.map((kpi) => {
+          const tone = getChangeTone(kpi.key, kpi.change);
+          const toneClasses = tone === 'good'
+            ? 'bg-emerald-50 text-emerald-700'
+            : tone === 'bad'
+              ? 'bg-rose-50 text-rose-700'
+              : 'bg-gray-100 text-gray-600';
+          return (
+            <div key={kpi.key} className="bg-white rounded-xl p-4 shadow-sm">
+              <div className="text-[11px] uppercase tracking-wide text-gray-500">{kpi.label}</div>
+              <div className="mt-1 text-xl font-bold text-gray-900">{formatKpiValue(kpi)}</div>
+              <div className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClasses}`}>
+                {getChangeLabel(kpi.change)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-gray-900">Orders Trend</h3>
+          <span className="text-xs text-gray-500">Last {trendData.length} points</span>
+        </div>
+        {trendData.length > 0 ? (
+          <div className="h-52 mt-3">
+            <ResponsiveContainer>
+              <LineChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="dateLabel" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <Tooltip formatter={(value) => [formatNumber(value), 'Orders']} />
+                <Line
+                  type="monotone"
+                  dataKey="orders"
+                  stroke="#22c55e"
+                  strokeWidth={2.5}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="mt-3 text-xs text-gray-500">No trend data available for this range.</div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <h3 className="text-sm font-semibold text-gray-900">Top Campaigns</h3>
+        {topCampaigns.length === 0 ? (
+          <div className="mt-2 text-xs text-gray-500">No campaign activity for this period.</div>
+        ) : (
+          <div className="mt-3 space-y-3">
+            {topCampaigns.map((campaign, index) => (
+              <div key={campaign.id} className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] text-gray-500">#{index + 1}</div>
+                  <div className="text-sm font-semibold text-gray-900 truncate" title={campaign.name}>
+                    {campaign.name}
+                  </div>
+                  <div className="text-xs text-gray-500">{formatNumber(campaign.orders)} attributed orders</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-gray-900">{formatCurrency(campaign.spend)}</div>
+                  <div className="text-xs text-gray-500">AOV {campaign.aov != null ? formatCurrency(campaign.aov) : '—'}</div>
+                  <div className="text-xs text-emerald-600">
+                    ROAS {formatRoasLabel(campaign.roas)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <h3 className="text-sm font-semibold text-gray-900">Top Countries</h3>
+        {topCountries.length === 0 ? (
+          <div className="mt-2 text-xs text-gray-500">No country data available.</div>
+        ) : (
+          <div className="mt-3 space-y-3">
+            {topCountries.map((country, index) => (
+              <div key={country.id} className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex items-center gap-2">
+                  <span className="text-base">{country.flag}</span>
+                  <div className="min-w-0">
+                    <div className="text-[11px] text-gray-500">#{index + 1}</div>
+                    <div className="text-sm font-semibold text-gray-900 truncate" title={country.name}>
+                      {country.name}
+                    </div>
+                    <div className="text-xs text-gray-500">{formatNumber(country.orders)} orders</div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-gray-900">{formatCurrency(country.spend)}</div>
+                  <div className="text-xs text-gray-500">AOV {country.aov != null ? formatCurrency(country.aov) : '—'}</div>
+                  <div className="text-xs text-emerald-600">
+                    ROAS {formatRoasLabel(country.roas)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

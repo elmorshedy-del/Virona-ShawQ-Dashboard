@@ -1,0 +1,2941 @@
+From bed10ee5c7c09fbf2dfa03bbd7db30710f4d2a8a Mon Sep 17 00:00:00 2001
+From: K <k@vironax.com>
+Date: Wed, 14 Jan 2026 05:14:37 +0000
+Subject: [PATCH] feat(competitor-spy): Complete rebuild with Apify API
+
+BREAKING CHANGE: Replaces broken Meta Ad Library API with Apify scraper
+
+## New Files
+- server/db/competitorSpyMigration.js - Database schema (6 tables)
+- server/services/apifyService.js - Apify Facebook Ads Scraper integration
+
+## Modified Files
+- server/server.js - Added migration import
+- server/routes/creativeStudio.js - New competitor routes (~400 lines)
+- client/src/components/CreativeStudio.jsx - Rebuilt CompetitorSpy UI (~800 lines)
+
+## Features
+- Search & Discover: Find competitor ads by brand name
+- 24h Caching: Saves API costs, instant repeat searches
+- Cloudinary Storage: Permanent media URLs (original URLs expire)
+- AI Analysis: Cached per-ad forever (same ad = free re-analysis)
+- Swipe Files: Save ads to color-coded boards
+- Brand Tracking: Auto-check for new competitor ads
+- Brief Integration: One-click brief generation from analysis
+- Modern UI: Skeleton loaders, gradient buttons, backdrop blur modals
+- Onboarding: Welcome modal, empty states, help panel
+
+## Setup Required
+Add APIFY_API_TOKEN to .env (get free at apify.com)
+
+## Database
+Migration runs automatically on server start
+---
+ client/src/components/CreativeStudio.jsx | 1353 +++++++++++++++++-----
+ server/db/competitorSpyMigration.js      |  269 +++++
+ server/routes/creativeStudio.js          |  492 +++++++-
+ server/server.js                         |    2 +
+ server/services/apifyService.js          |  523 +++++++++
+ 5 files changed, 2335 insertions(+), 304 deletions(-)
+ create mode 100644 server/db/competitorSpyMigration.js
+ create mode 100644 server/services/apifyService.js
+
+diff --git a/client/src/components/CreativeStudio.jsx b/client/src/components/CreativeStudio.jsx
+index 8941371..606421f 100644
+--- a/client/src/components/CreativeStudio.jsx
++++ b/client/src/components/CreativeStudio.jsx
+@@ -9,7 +9,8 @@ import {
+   Zap, Target, TrendingUp, AlertTriangle, CheckCircle, X,
+   Play, Pause, SkipForward, Clock, Languages, Globe, Settings,
+   Camera, Film, Layers, Eye, Save, Trash2, Plus, ArrowRight,
+-  Loader2, Mic, MessageSquare, Calendar, Briefcase, Send, Activity, Star
++  Loader2, Mic, MessageSquare, Calendar, Briefcase, Send, Activity, Star,
++  HelpCircle, Bookmark, ChevronLeft
+ } from 'lucide-react';
+ 
+ const API_BASE = '/api';
+@@ -1542,22 +1543,53 @@ function VideoResizer({ store }) {
+ }
+ 
+ // ============================================================================
+-// COMPETITOR SPY
++// COMPETITOR SPY (Apify-powered with modern UI)
+ // ============================================================================
+ function CompetitorSpy({ store, onGenerateBrief }) {
++  // Tab state
++  const [activeTab, setActiveTab] = useState('search');
++  
++  // Search state
+   const [searchQuery, setSearchQuery] = useState('');
+-  const [country, setCountry] = useState('SA');
++  const [country, setCountry] = useState('ALL');
+   const [loading, setLoading] = useState(false);
+   const [results, setResults] = useState([]);
++  const [cacheInfo, setCacheInfo] = useState(null);
++  const [countries, setCountries] = useState({});
++  
++  // Ad detail modal state
+   const [selectedAd, setSelectedAd] = useState(null);
++  const [showAdModal, setShowAdModal] = useState(false);
+   const [analyzing, setAnalyzing] = useState(false);
+   const [analysis, setAnalysis] = useState(null);
+-  const [countries, setCountries] = useState({});
+-  const [metaStatus, setMetaStatus] = useState(null);
+-  const [metaLoading, setMetaLoading] = useState(true);
+-  const [tokenCopied, setTokenCopied] = useState(false);
+-
+-  // Load countries
++  
++  // Swipe files state
++  const [swipeFiles, setSwipeFiles] = useState([]);
++  const [showCreateBoard, setShowCreateBoard] = useState(false);
++  const [newBoardName, setNewBoardName] = useState('');
++  const [newBoardColor, setNewBoardColor] = useState('#6366f1');
++  const [newBoardIcon, setNewBoardIcon] = useState('📁');
++  const [selectedSwipeFile, setSelectedSwipeFile] = useState(null);
++  const [swipeFileAds, setSwipeFileAds] = useState([]);
++  
++  // Tracked brands state
++  const [trackedBrands, setTrackedBrands] = useState([]);
++  const [showAddBrand, setShowAddBrand] = useState(false);
++  const [newBrandName, setNewBrandName] = useState('');
++  
++  // Save to board modal
++  const [showSaveModal, setShowSaveModal] = useState(false);
++  const [adToSave, setAdToSave] = useState(null);
++  
++  // Onboarding state
++  const [showWelcome, setShowWelcome] = useState(false);
++  const [showHelp, setShowHelp] = useState(false);
++
++  // Board colors
++  const BOARD_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#0ea5e9', '#6b7280'];
++  const BOARD_ICONS = ['📁', '💡', '🎯', '🔥', '⭐', '💎', '🚀', '🎨', '📊', '🏆'];
++
++  // Load countries on mount
+   useEffect(() => {
+     fetch(withStore('/creative-studio/competitor/countries', store))
+       .then(res => res.json())
+@@ -1566,70 +1598,63 @@ function CompetitorSpy({ store, onGenerateBrief }) {
+       });
+   }, [store]);
+ 
+-  const fetchMetaStatus = useCallback(async () => {
+-    try {
+-      setMetaLoading(true);
+-      const response = await fetch('/api/auth/meta/status');
+-      const data = await response.json();
+-      setMetaStatus(data);
+-    } catch (error) {
+-      console.error('Meta auth status failed:', error);
+-      setMetaStatus({ connected: false });
+-    } finally {
+-      setMetaLoading(false);
+-    }
+-  }, []);
++  // Load swipe files
++  useEffect(() => {
++    loadSwipeFiles();
++  }, [store]);
+ 
++  // Load tracked brands
+   useEffect(() => {
+-    fetchMetaStatus();
+-  }, [fetchMetaStatus]);
++    loadTrackedBrands();
++  }, [store]);
+ 
+-  const handleConnect = () => {
+-    window.location.assign('/api/auth/meta/start');
+-  };
++  // Check onboarding
++  useEffect(() => {
++    fetch(withStore('/creative-studio/onboarding/competitor_spy/welcome', store))
++      .then(res => res.json())
++      .then(data => {
++        if (data.should_show) setShowWelcome(true);
++      });
++  }, [store]);
+ 
+-  const handleDisconnect = async () => {
++  const loadSwipeFiles = async () => {
+     try {
+-      await fetch('/api/auth/meta/disconnect', { method: 'POST' });
+-      await fetchMetaStatus();
+-    } catch (error) {
+-      console.error('Meta disconnect failed:', error);
++      const res = await fetch(withStore('/creative-studio/competitor/swipe-files', store));
++      const data = await res.json();
++      if (data.success) setSwipeFiles(data.swipe_files);
++    } catch (e) {
++      console.error('Failed to load swipe files:', e);
+     }
+   };
+ 
+-  const handleCopyToken = async () => {
+-    if (!metaStatus?.token) return;
++  const loadTrackedBrands = async () => {
+     try {
+-      await navigator.clipboard.writeText(metaStatus.token);
+-      setTokenCopied(true);
+-      setTimeout(() => setTokenCopied(false), 1500);
+-    } catch (error) {
+-      console.error('Copy token failed:', error);
++      const res = await fetch(withStore('/creative-studio/competitor/tracked-brands', store));
++      const data = await res.json();
++      if (data.success) setTrackedBrands(data.tracked_brands);
++    } catch (e) {
++      console.error('Failed to load tracked brands:', e);
+     }
+   };
+ 
+-  const formatDate = (value) => {
+-    if (!value) return 'Unknown';
+-    const date = new Date(value);
+-    if (Number.isNaN(date.getTime())) return 'Unknown';
+-    return date.toLocaleString();
+-  };
+-
+-  const handleSearch = async () => {
++  const handleSearch = async (forceRefresh = false) => {
+     if (!searchQuery.trim()) return;
+ 
+     setLoading(true);
+     setResults([]);
+-    setSelectedAd(null);
+-    setAnalysis(null);
++    setCacheInfo(null);
+ 
+     try {
+-      const response = await fetch(
+-        withStore(`/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}`, store)
++      const url = withStore(
++        `/creative-studio/competitor/search?brand_name=${encodeURIComponent(searchQuery)}&country=${country}&force_refresh=${forceRefresh}`,
++        store
+       );
++      const response = await fetch(url);
+       const data = await response.json();
++      
+       if (data.success) {
+         setResults(data.ads);
++        setCacheInfo(data.cache_info);
+       }
+     } catch (error) {
+       console.error('Search failed:', error);
+@@ -1637,26 +1662,43 @@ function CompetitorSpy({ store, onGenerateBrief }) {
+     setLoading(false);
+   };
+ 
+-  const handleAnalyze = async (ad) => {
++  const handleViewAd = (ad) => {
+     setSelectedAd(ad);
++    setAnalysis(ad.analysis || null);
++    setShowAdModal(true);
++  };
++
++  const handleAnalyze = async () => {
++    if (!selectedAd) return;
++    
++    // Check if we already have cached analysis
++    if (selectedAd.analysis) {
++      setAnalysis(selectedAd.analysis);
++      return;
++    }
++
+     setAnalyzing(true);
+-    setAnalysis(null);
+ 
+     try {
+       const response = await fetch(withStore('/creative-studio/competitor/analyze', store), {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({
+-          snapshot_url: ad.snapshot_url,
+-          brand_name: ad.page_name,
+-          source_url: ad.snapshot_url,
+-          source_type: 'ad_library'
++          ad_id: selectedAd.ad_id,
++          image_url: selectedAd.cloudinary_image_url || selectedAd.original_image_url,
++          snapshot_url: selectedAd.cloudinary_video_url || selectedAd.original_video_url,
++          brand_name: selectedAd.page_name
+         })
+       });
+ 
+       const data = await response.json();
+       if (data.success) {
+         setAnalysis(data.analysis);
++        // Update the ad in results with the new analysis
++        setResults(prev => prev.map(ad => 
++          ad.ad_id === selectedAd.ad_id ? { ...ad, analysis: data.analysis } : ad
++        ));
++        setSelectedAd(prev => ({ ...prev, analysis: data.analysis }));
+       }
+     } catch (error) {
+       console.error('Analysis failed:', error);
+@@ -1664,292 +1706,1031 @@ function CompetitorSpy({ store, onGenerateBrief }) {
+     setAnalyzing(false);
+   };
+ 
++  const handleSaveToBoard = (ad) => {
++    setAdToSave(ad);
++    setShowSaveModal(true);
++  };
++
++  const confirmSaveToBoard = async (swipeFileId) => {
++    if (!adToSave) return;
++
++    try {
++      await fetch(withStore(`/creative-studio/competitor/swipe-files/${swipeFileId}/ads`, store), {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ ad_id: adToSave.ad_id })
++      });
++      loadSwipeFiles();
++      setShowSaveModal(false);
++      setAdToSave(null);
++    } catch (e) {
++      console.error('Failed to save ad:', e);
++    }
++  };
++
++  const createSwipeFile = async () => {
++    if (!newBoardName.trim()) return;
++
++    try {
++      await fetch(withStore('/creative-studio/competitor/swipe-files', store), {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          name: newBoardName,
++          color: newBoardColor,
++          icon: newBoardIcon
++        })
++      });
++      loadSwipeFiles();
++      setShowCreateBoard(false);
++      setNewBoardName('');
++    } catch (e) {
++      console.error('Failed to create board:', e);
++    }
++  };
++
++  const loadSwipeFileAds = async (swipeFile) => {
++    setSelectedSwipeFile(swipeFile);
++    try {
++      const res = await fetch(withStore(`/creative-studio/competitor/swipe-files/${swipeFile.id}/ads`, store));
++      const data = await res.json();
++      if (data.success) setSwipeFileAds(data.ads);
++    } catch (e) {
++      console.error('Failed to load swipe file ads:', e);
++    }
++  };
++
++  const addTrackedBrand = async () => {
++    if (!newBrandName.trim()) return;
++
++    try {
++      await fetch(withStore('/creative-studio/competitor/tracked-brands', store), {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ brand_name: newBrandName, country })
++      });
++      loadTrackedBrands();
++      setShowAddBrand(false);
++      setNewBrandName('');
++    } catch (e) {
++      console.error('Failed to add tracked brand:', e);
++    }
++  };
++
++  const checkTrackedBrand = async (brandId) => {
++    try {
++      await fetch(withStore(`/creative-studio/competitor/tracked-brands/${brandId}/check`, store), {
++        method: 'POST'
++      });
++      loadTrackedBrands();
++    } catch (e) {
++      console.error('Failed to check brand:', e);
++    }
++  };
++
++  const dismissWelcome = async () => {
++    setShowWelcome(false);
++    try {
++      await fetch(withStore('/creative-studio/onboarding/competitor_spy/welcome/dismiss', store), {
++        method: 'POST'
++      });
++    } catch (e) {
++      console.error('Failed to dismiss welcome:', e);
++    }
++  };
++
++  const handleGenerateBrief = () => {
++    if (!analysis || !selectedAd || !onGenerateBrief) return;
++    onGenerateBrief({
++      product_name: selectedAd.page_name || '',
++      product_description: analysis.creative_brief?.key_message || '',
++      target_audience: analysis.target_audience_signals?.demographics || '',
++      objective: analysis.creative_brief?.objective || '',
++      budget_level: 'medium'
++    });
++    setShowAdModal(false);
++  };
++
++  const formatCacheTime = (info) => {
++    if (!info?.hours_remaining) return '';
++    const hours = Math.floor(info.hours_remaining);
++    const mins = Math.round((info.hours_remaining - hours) * 60);
++    return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
++  };
++
++  const getDaysRunning = (startDate) => {
++    if (!startDate) return null;
++    const start = new Date(startDate);
++    const now = new Date();
++    const days = Math.floor((now - start) / (1000 * 60 * 60 * 24));
++    return days;
++  };
++
++  // ============================================================================
++  // RENDER
++  // ============================================================================
+   return (
+     <div className="p-6 max-w-7xl mx-auto">
+-      <div className="mb-6">
+-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Competitor Spy</h2>
+-        <p className="text-gray-500">Search Facebook Ad Library and get AI-powered breakdowns</p>
++      {/* Header */}
++      <div className="mb-6 flex items-center justify-between">
++        <div>
++          <h2 className="text-2xl font-bold text-gray-900 mb-1">Competitor Spy</h2>
++          <p className="text-gray-500">Stop guessing. Start learning from what's already working.</p>
++        </div>
++        <button
++          onClick={() => setShowHelp(true)}
++          className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all"
++        >
++          <HelpCircle size={20} />
++        </button>
+       </div>
+ 
+-      {/* Meta Connection Panel */}
+-      <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 mb-6">
+-        <div className="flex flex-wrap items-center justify-between gap-4">
+-          <div>
+-            <h3 className="text-lg font-semibold text-gray-900">Meta Connection</h3>
+-            <p className="text-sm text-gray-500">Connect a user token to power Ad Library searches.</p>
+-          </div>
+-          <div className="flex items-center gap-3">
+-            {metaLoading ? (
+-              <span className="text-sm text-gray-400">Checking status...</span>
+-            ) : metaStatus?.connected ? (
+-              <span className="inline-flex items-center gap-2 text-sm font-medium text-green-700 bg-green-50 px-3 py-1 rounded-full">
+-                <CheckCircle size={16} /> Connected
+-              </span>
+-            ) : (
+-              <span className="inline-flex items-center gap-2 text-sm font-medium text-amber-700 bg-amber-50 px-3 py-1 rounded-full">
+-                <AlertTriangle size={16} /> Not connected
++      {/* Sub-tabs */}
++      <div className="flex gap-2 mb-6">
++        {[
++          { id: 'search', label: 'Search & Discover', icon: <Search size={16} /> },
++          { id: 'swipe', label: 'My Swipe Files', icon: <Bookmark size={16} /> },
++          { id: 'tracked', label: 'Tracked Brands', icon: <Eye size={16} /> }
++        ].map(tab => (
++          <button
++            key={tab.id}
++            onClick={() => setActiveTab(tab.id)}
++            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all ${
++              activeTab === tab.id
++                ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg shadow-violet-200'
++                : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
++            }`}
++          >
++            {tab.icon}
++            {tab.label}
++            {tab.id === 'swipe' && swipeFiles.length > 0 && (
++              <span className={`text-xs px-1.5 py-0.5 rounded-full ${
++                activeTab === tab.id ? 'bg-white/20' : 'bg-violet-100 text-violet-700'
++              }`}>
++                {swipeFiles.length}
+               </span>
+             )}
+-
+-            {metaStatus?.connected ? (
+-              <>
+-                <button
+-                  onClick={handleConnect}
+-                  className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 transition-all"
+-                >
+-                  Reconnect
+-                </button>
+-                <button
+-                  onClick={handleDisconnect}
+-                  className="px-4 py-2 rounded-lg border border-gray-200 text-gray-600 text-sm font-medium hover:bg-gray-50 transition-all"
+-                >
+-                  Disconnect
+-                </button>
+-              </>
+-            ) : (
+-              <button
+-                onClick={handleConnect}
+-                className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 transition-all"
+-              >
+-                Connect
+-              </button>
+-            )}
+-          </div>
+-        </div>
+-
+-        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600">
+-          <div className="space-y-2">
+-            <div>
+-              <span className="text-gray-500">Expires at:</span>{' '}
+-              <span className="font-medium text-gray-800">{formatDate(metaStatus?.expires_at)}</span>
+-            </div>
+-            <div>
+-              <span className="text-gray-500">Scopes:</span>{' '}
+-              {metaStatus?.scopes?.length ? (
+-                <span className="font-medium text-gray-800">{metaStatus.scopes.join(', ')}</span>
+-              ) : (
+-                <span className="text-gray-400">Unknown</span>
+-              )}
+-            </div>
+-            <div>
+-              <span className="text-gray-500">Last API call:</span>{' '}
+-              <span className={`font-medium ${metaStatus?.last_api_status === 'failed' ? 'text-red-600' : 'text-green-600'}`}>
+-                {metaStatus?.last_api_status || 'Unknown'}
+-              </span>
+-            </div>
+-            {metaStatus?.last_api_status === 'failed' && metaStatus?.last_fbtrace_id && (
+-              <div>
+-                <span className="text-gray-500">Last fbtrace_id:</span>{' '}
+-                <span className="font-medium text-gray-800">{metaStatus.last_fbtrace_id}</span>
+-              </div>
++            {tab.id === 'tracked' && trackedBrands.some(b => b.new_ads_since_last_check > 0) && (
++              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+             )}
+-          </div>
++          </button>
++        ))}
++      </div>
+ 
+-          <div className="space-y-2">
+-            <div className="flex items-center gap-3">
+-              <div className="flex-1">
+-                <span className="text-gray-500">Token:</span>{' '}
+-                <span className="font-mono text-xs text-gray-800">
+-                  {metaStatus?.token_masked || 'Not available'}
+-                </span>
++      {/* SEARCH TAB */}
++      {activeTab === 'search' && (
++        <>
++          {/* Search Bar */}
++          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-6">
++            <div className="flex gap-3">
++              <div className="flex-1 relative">
++                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
++                <input
++                  type="text"
++                  value={searchQuery}
++                  onChange={(e) => setSearchQuery(e.target.value)}
++                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
++                  placeholder="Enter brand or page name..."
++                  className="w-full pl-12 pr-4 py-3.5 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all"
++                />
+               </div>
++              <select
++                value={country}
++                onChange={(e) => setCountry(e.target.value)}
++                className="px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white min-w-[140px]"
++              >
++                {Object.entries(countries).map(([code, name]) => (
++                  <option key={code} value={code}>{name}</option>
++                ))}
++              </select>
+               <button
+-                onClick={handleCopyToken}
+-                disabled={!metaStatus?.token}
+-                className="inline-flex items-center gap-1 px-3 py-1 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
++                onClick={() => handleSearch(false)}
++                disabled={loading || !searchQuery.trim()}
++                className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all disabled:opacity-50 disabled:shadow-none"
+               >
+-                <Copy size={14} />
+-                {tokenCopied ? 'Copied' : 'Copy'}
++                {loading ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
++                Search
+               </button>
+             </div>
+-            {metaStatus?.last_api_at && (
+-              <div>
+-                <span className="text-gray-500">Last API time:</span>{' '}
+-                <span className="font-medium text-gray-800">{formatDate(metaStatus.last_api_at)}</span>
+-              </div>
+-            )}
+-            {metaStatus?.last_api_error && metaStatus?.last_api_status === 'failed' && (
+-              <div className="text-xs text-red-500">
+-                {metaStatus.last_api_error}
++
++            {/* Cache indicator */}
++            {cacheInfo && (
++              <div className="mt-3 flex items-center gap-2 text-sm">
++                {cacheInfo.is_valid ? (
++                  <>
++                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full">
++                      <Zap size={14} />
++                      Cached • Refreshes in {formatCacheTime(cacheInfo)}
++                    </span>
++                    <button
++                      onClick={() => handleSearch(true)}
++                      className="text-violet-600 hover:text-violet-700 text-xs font-medium"
++                    >
++                      Force refresh
++                    </button>
++                  </>
++                ) : (
++                  <span className="text-gray-400">Fresh results</span>
++                )}
+               </div>
+             )}
+           </div>
+-        </div>
+-      </div>
+-
+-      {/* Search Bar */}
+-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-6">
+-        <div className="flex gap-3">
+-          <div className="flex-1 relative">
+-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+-            <input
+-              type="text"
+-              value={searchQuery}
+-              onChange={(e) => setSearchQuery(e.target.value)}
+-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+-              placeholder="Enter brand or page name..."
+-              className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none"
+-            />
+-          </div>
+-          <select
+-            value={country}
+-            onChange={(e) => setCountry(e.target.value)}
+-            className="px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none bg-white"
+-          >
+-            {Object.entries(countries).map(([code, name]) => (
+-              <option key={code} value={code}>{name}</option>
+-            ))}
+-          </select>
+-          <button
+-            onClick={handleSearch}
+-            disabled={loading || !searchQuery.trim()}
+-            className="px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center gap-2 hover:from-violet-700 hover:to-purple-700 transition-all disabled:opacity-50"
+-          >
+-            {loading ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
+-            Search
+-          </button>
+-        </div>
+-      </div>
+ 
+-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+-        {/* Results Grid */}
+-        <div className="lg:col-span-2">
++          {/* Results Grid */}
+           {results.length > 0 ? (
+-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
++            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+               {results.map((ad, idx) => (
+                 <div
+-                  key={ad.id || idx}
+-                  onClick={() => handleAnalyze(ad)}
+-                  className={`bg-white rounded-xl overflow-hidden border-2 cursor-pointer transition-all hover:shadow-lg ${
+-                    selectedAd?.id === ad.id ? 'border-violet-500' : 'border-gray-100'
+-                  }`}
++                  key={ad.ad_id || idx}
++                  className="group bg-white rounded-2xl overflow-hidden border border-gray-100 hover:border-violet-200 hover:shadow-xl hover:shadow-violet-100/50 transition-all duration-300 cursor-pointer"
++                  onClick={() => handleViewAd(ad)}
+                 >
+-                  <div className="aspect-square bg-gray-100 relative flex items-center justify-center">
+-                    <div className="text-center text-gray-400">
+-                      <Video size={32} className="mx-auto mb-2 opacity-60" />
+-                      <p className="text-xs">Video ad preview</p>
++                  {/* Thumbnail */}
++                  <div className="aspect-square bg-gradient-to-br from-gray-50 to-gray-100 relative overflow-hidden">
++                    {ad.cloudinary_thumbnail_url || ad.cloudinary_image_url ? (
++                      <img
++                        src={ad.cloudinary_thumbnail_url || ad.cloudinary_image_url}
++                        alt={ad.page_name}
++                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
++                      />
++                    ) : ad.cloudinary_video_url ? (
++                      <video
++                        src={ad.cloudinary_video_url}
++                        className="w-full h-full object-cover"
++                        muted
++                      />
++                    ) : (
++                      <div className="w-full h-full flex items-center justify-center text-gray-300">
++                        {ad.media_type === 'video' ? <Video size={40} /> : <ImageIcon size={40} />}
++                      </div>
++                    )}
++
++                    {/* Status badge */}
++                    <div className="absolute top-2 left-2">
++                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
++                        ad.is_active 
++                          ? 'bg-emerald-500 text-white' 
++                          : 'bg-gray-500 text-white'
++                      }`}>
++                        <span className={`w-1.5 h-1.5 rounded-full ${ad.is_active ? 'bg-white' : 'bg-gray-300'}`} />
++                        {ad.is_active ? 'Active' : 'Ended'}
++                      </span>
+                     </div>
+-                    <div className="absolute inset-x-0 bottom-2 px-2">
+-                      <p className="text-gray-700 text-xs font-medium truncate">{ad.page_name}</p>
++
++                    {/* Media type badge */}
++                    {ad.media_type === 'video' && (
++                      <div className="absolute top-2 right-2">
++                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-black/60 text-white rounded-full text-[10px]">
++                          <Video size={10} />
++                          Video
++                        </span>
++                      </div>
++                    )}
++
++                    {/* Quick actions on hover */}
++                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
++                      <button
++                        onClick={(e) => {
++                          e.stopPropagation();
++                          handleSaveToBoard(ad);
++                        }}
++                        className="p-2.5 bg-white rounded-full text-gray-700 hover:bg-violet-100 hover:text-violet-700 transition-all"
++                      >
++                        <Bookmark size={16} />
++                      </button>
++                      <button
++                        onClick={(e) => {
++                          e.stopPropagation();
++                          handleViewAd(ad);
++                        }}
++                        className="p-2.5 bg-white rounded-full text-gray-700 hover:bg-violet-100 hover:text-violet-700 transition-all"
++                      >
++                        <Eye size={16} />
++                      </button>
+                     </div>
+                   </div>
++
++                  {/* Info */}
+                   <div className="p-3">
+-                    <p className="text-xs text-gray-500 line-clamp-2">{ad.copy || 'No copy available'}</p>
+-                    <div className="flex items-center gap-2 mt-2 text-[10px] text-gray-400">
++                    <div className="flex items-center gap-2 mb-2">
++                      {ad.page_profile_picture_url ? (
++                        <img src={ad.page_profile_picture_url} alt="" className="w-5 h-5 rounded-full" />
++                      ) : (
++                        <div className="w-5 h-5 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 text-[10px] font-bold">
++                          {ad.page_name?.charAt(0)}
++                        </div>
++                      )}
++                      <span className="text-sm font-medium text-gray-900 truncate">{ad.page_name}</span>
++                    </div>
++                    <p className="text-xs text-gray-500 line-clamp-2 mb-2">{ad.ad_copy || 'No copy available'}</p>
++                    <div className="flex items-center gap-2 text-[10px] text-gray-400">
++                      {getDaysRunning(ad.start_date) !== null && (
++                        <span className="px-1.5 py-0.5 bg-gray-100 rounded">
++                          {getDaysRunning(ad.start_date)}d
++                        </span>
++                      )}
+                       {ad.platforms?.slice(0, 2).map(p => (
+-                        <span key={p} className="px-1.5 py-0.5 bg-gray-100 rounded">{p}</span>
++                        <span key={p} className="px-1.5 py-0.5 bg-gray-100 rounded capitalize">{p}</span>
+                       ))}
+-                      {ad.snapshot_url && (
+-                        <button
+-                          type="button"
+-                          onClick={(e) => {
+-                            e.stopPropagation();
+-                            window.open(ad.snapshot_url, '_blank', 'noopener,noreferrer');
+-                          }}
+-                          className="ml-auto text-[10px] text-violet-600 hover:text-violet-700"
+-                        >
+-                          Open Ad
+-                        </button>
++                      {ad.analysis && (
++                        <span className="px-1.5 py-0.5 bg-violet-100 text-violet-700 rounded">✓ Analyzed</span>
+                       )}
+                     </div>
+                   </div>
+                 </div>
+               ))}
+             </div>
+-          ) : !loading ? (
+-            <div className="bg-white rounded-2xl p-12 text-center text-gray-400 border border-gray-100">
+-              <Search size={40} className="mx-auto mb-3 opacity-50" />
+-              <p>Search for a brand to see their active ads</p>
++          ) : loading ? (
++            /* Skeleton loader */
++            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
++              {[...Array(8)].map((_, i) => (
++                <div key={i} className="bg-white rounded-2xl overflow-hidden border border-gray-100 animate-pulse">
++                  <div className="aspect-square bg-gray-100" />
++                  <div className="p-3 space-y-2">
++                    <div className="h-4 bg-gray-100 rounded w-3/4" />
++                    <div className="h-3 bg-gray-100 rounded w-full" />
++                    <div className="h-3 bg-gray-100 rounded w-1/2" />
++                  </div>
++                </div>
++              ))}
+             </div>
+           ) : (
+-            <div className="bg-white rounded-2xl p-12 text-center border border-gray-100">
+-              <RefreshCw size={32} className="mx-auto mb-3 animate-spin text-violet-500" />
+-              <p className="text-gray-500">Searching Ad Library...</p>
++            /* Empty state */
++            <div className="bg-gradient-to-br from-white to-violet-50/30 rounded-3xl p-12 text-center border border-violet-100">
++              <div className="w-16 h-16 mx-auto mb-4 bg-violet-100 rounded-2xl flex items-center justify-center">
++                <Search size={28} className="text-violet-600" />
++              </div>
++              <h3 className="text-lg font-semibold text-gray-900 mb-2">Who do you want to learn from?</h3>
++              <p className="text-gray-500 mb-6 max-w-md mx-auto">
++                Enter a competitor's brand name above to discover their active ads and learn what's working for them.
++              </p>
++              <div className="flex flex-wrap justify-center gap-2">
++                {['Nike', 'Shein', 'Noon', 'Namshi'].map(brand => (
++                  <button
++                    key={brand}
++                    onClick={() => {
++                      setSearchQuery(brand);
++                      handleSearch();
++                    }}
++                    className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-600 hover:border-violet-300 hover:bg-violet-50 transition-all"
++                  >
++                    Try "{brand}"
++                  </button>
++                ))}
++              </div>
++            </div>
++          )}
++        </>
++      )}
++
++      {/* SWIPE FILES TAB */}
++      {activeTab === 'swipe' && (
++        <div>
++          {selectedSwipeFile ? (
++            /* Swipe file detail view */
++            <div>
++              <button
++                onClick={() => {
++                  setSelectedSwipeFile(null);
++                  setSwipeFileAds([]);
++                }}
++                className="flex items-center gap-2 text-gray-500 hover:text-gray-700 mb-4"
++              >
++                <ChevronLeft size={18} />
++                Back to boards
++              </button>
++              
++              <div className="flex items-center gap-3 mb-6">
++                <div
++                  className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl"
++                  style={{ backgroundColor: selectedSwipeFile.color + '20' }}
++                >
++                  {selectedSwipeFile.icon}
++                </div>
++                <div>
++                  <h3 className="text-xl font-semibold text-gray-900">{selectedSwipeFile.name}</h3>
++                  <p className="text-sm text-gray-500">{swipeFileAds.length} ads saved</p>
++                </div>
++              </div>
++
++              {swipeFileAds.length > 0 ? (
++                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
++                  {swipeFileAds.map((ad, idx) => (
++                    <div
++                      key={ad.ad_id || idx}
++                      className="group bg-white rounded-2xl overflow-hidden border border-gray-100 hover:shadow-lg transition-all cursor-pointer"
++                      onClick={() => handleViewAd(ad)}
++                    >
++                      <div className="aspect-square bg-gray-100 relative">
++                        {ad.cloudinary_thumbnail_url || ad.cloudinary_image_url ? (
++                          <img
++                            src={ad.cloudinary_thumbnail_url || ad.cloudinary_image_url}
++                            alt={ad.page_name}
++                            className="w-full h-full object-cover"
++                          />
++                        ) : (
++                          <div className="w-full h-full flex items-center justify-center text-gray-300">
++                            <ImageIcon size={40} />
++                          </div>
++                        )}
++                      </div>
++                      <div className="p-3">
++                        <p className="text-sm font-medium text-gray-900 truncate">{ad.page_name}</p>
++                        <p className="text-xs text-gray-500 mt-1">Saved {new Date(ad.saved_at).toLocaleDateString()}</p>
++                      </div>
++                    </div>
++                  ))}
++                </div>
++              ) : (
++                <div className="bg-gray-50 rounded-2xl p-12 text-center">
++                  <Bookmark size={40} className="mx-auto mb-3 text-gray-300" />
++                  <p className="text-gray-500">No ads saved to this board yet</p>
++                </div>
++              )}
++            </div>
++          ) : (
++            /* Boards grid */
++            <div>
++              <div className="flex items-center justify-between mb-6">
++                <h3 className="text-lg font-semibold text-gray-900">Your Boards</h3>
++                <button
++                  onClick={() => setShowCreateBoard(true)}
++                  className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 transition-all"
++                >
++                  <Plus size={16} />
++                  New Board
++                </button>
++              </div>
++
++              {swipeFiles.length > 0 ? (
++                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
++                  {swipeFiles.map(file => (
++                    <div
++                      key={file.id}
++                      onClick={() => loadSwipeFileAds(file)}
++                      className="bg-white rounded-2xl p-5 border border-gray-100 hover:border-violet-200 hover:shadow-lg transition-all cursor-pointer group"
++                    >
++                      <div
++                        className="w-14 h-14 rounded-xl flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform"
++                        style={{ backgroundColor: file.color + '20' }}
++                      >
++                        {file.icon}
++                      </div>
++                      <h4 className="font-semibold text-gray-900 mb-1">{file.name}</h4>
++                      <p className="text-sm text-gray-500">{file.ad_count} ads</p>
++                    </div>
++                  ))}
++                </div>
++              ) : (
++                <div className="bg-gradient-to-br from-white to-violet-50/30 rounded-3xl p-12 text-center border border-violet-100">
++                  <div className="w-16 h-16 mx-auto mb-4 bg-violet-100 rounded-2xl flex items-center justify-center">
++                    <Bookmark size={28} className="text-violet-600" />
++                  </div>
++                  <h3 className="text-lg font-semibold text-gray-900 mb-2">Start Building Your Swipe File</h3>
++                  <p className="text-gray-500 mb-6 max-w-md mx-auto">
++                    Save ads that inspire you to boards. Reference them when creating your own campaigns.
++                  </p>
++                  <button
++                    onClick={() => setShowCreateBoard(true)}
++                    className="px-6 py-3 bg-violet-600 text-white rounded-xl font-medium hover:bg-violet-700 transition-all"
++                  >
++                    Create Your First Board
++                  </button>
++                </div>
++              )}
+             </div>
+           )}
+         </div>
++      )}
+ 
+-        {/* Analysis Panel */}
+-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 h-fit sticky top-20">
+-          <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+-            <Target size={18} />
+-            AI Analysis
+-          </h3>
++      {/* TRACKED BRANDS TAB */}
++      {activeTab === 'tracked' && (
++        <div>
++          <div className="flex items-center justify-between mb-6">
++            <h3 className="text-lg font-semibold text-gray-900">Tracked Brands</h3>
++            <button
++              onClick={() => setShowAddBrand(true)}
++              className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 transition-all"
++            >
++              <Plus size={16} />
++              Track Brand
++            </button>
++          </div>
+ 
+-          {!selectedAd ? (
+-            <div className="text-center text-gray-400 py-8">
+-              <Eye size={32} className="mx-auto mb-2 opacity-50" />
+-              <p className="text-sm">Select an ad to analyze</p>
++          {trackedBrands.length > 0 ? (
++            <div className="space-y-3">
++              {trackedBrands.map(brand => (
++                <div
++                  key={brand.id}
++                  className="bg-white rounded-2xl p-4 border border-gray-100 flex items-center justify-between hover:shadow-md transition-all"
++                >
++                  <div className="flex items-center gap-4">
++                    <div className="w-12 h-12 bg-violet-100 rounded-xl flex items-center justify-center text-violet-600 font-bold text-lg">
++                      {brand.brand_name.charAt(0)}
++                    </div>
++                    <div>
++                      <h4 className="font-semibold text-gray-900">{brand.brand_name}</h4>
++                      <p className="text-sm text-gray-500">
++                        {brand.total_ads_found} ads found • Tracking for {getDaysRunning(brand.tracking_started_at) || 0} days
++                      </p>
++                    </div>
++                    {brand.new_ads_since_last_check > 0 && (
++                      <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs font-medium">
++                        🟢 {brand.new_ads_since_last_check} new
++                      </span>
++                    )}
++                  </div>
++                  <div className="flex items-center gap-2">
++                    <button
++                      onClick={() => checkTrackedBrand(brand.id)}
++                      className="px-4 py-2 text-violet-600 hover:bg-violet-50 rounded-lg text-sm font-medium transition-all"
++                    >
++                      Check Now
++                    </button>
++                    <button
++                      onClick={() => {
++                        setSearchQuery(brand.brand_name);
++                        setActiveTab('search');
++                        handleSearch();
++                      }}
++                      className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 transition-all"
++                    >
++                      View Ads
++                    </button>
++                  </div>
++                </div>
++              ))}
+             </div>
+-          ) : analyzing ? (
+-            <div className="text-center py-8">
+-              <RefreshCw size={32} className="mx-auto mb-3 animate-spin text-violet-500" />
+-              <p className="text-gray-500">Analyzing creative...</p>
++          ) : (
++            <div className="bg-gradient-to-br from-white to-violet-50/30 rounded-3xl p-12 text-center border border-violet-100">
++              <div className="w-16 h-16 mx-auto mb-4 bg-violet-100 rounded-2xl flex items-center justify-center">
++                <Eye size={28} className="text-violet-600" />
++              </div>
++              <h3 className="text-lg font-semibold text-gray-900 mb-2">Never Miss a Competitor's Move</h3>
++              <p className="text-gray-500 mb-6 max-w-md mx-auto">
++                Track brands to automatically check for new ads. Get notified when competitors launch new campaigns.
++              </p>
++              <button
++                onClick={() => setShowAddBrand(true)}
++                className="px-6 py-3 bg-violet-600 text-white rounded-xl font-medium hover:bg-violet-700 transition-all"
++              >
++                Track Your First Brand
++              </button>
+             </div>
+-          ) : analysis ? (
+-            <div className="space-y-4 text-sm">
+-              {/* Visual Style */}
+-              <div>
+-                <h4 className="font-medium text-gray-700 mb-2">Visual Style</h4>
+-                <div className="flex gap-1 flex-wrap">
+-                  {analysis.visual_style?.colors?.map((c, i) => (
+-                    <div key={i} className="w-6 h-6 rounded" style={{ backgroundColor: c }} />
+-                  ))}
++          )}
++        </div>
++      )}
++
++      {/* AD DETAIL MODAL */}
++      {showAdModal && selectedAd && (
++        <div
++          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
++          onClick={() => setShowAdModal(false)}
++        >
++          <div
++            className="bg-white rounded-3xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col md:flex-row"
++            onClick={(e) => e.stopPropagation()}
++          >
++            {/* Media side */}
++            <div className="md:w-1/2 bg-gray-900 flex items-center justify-center p-4 min-h-[300px]">
++              {selectedAd.cloudinary_video_url ? (
++                <video
++                  src={selectedAd.cloudinary_video_url}
++                  controls
++                  autoPlay
++                  className="max-w-full max-h-[60vh] rounded-lg"
++                />
++              ) : selectedAd.cloudinary_image_url ? (
++                <img
++                  src={selectedAd.cloudinary_image_url}
++                  alt={selectedAd.page_name}
++                  className="max-w-full max-h-[60vh] rounded-lg object-contain"
++                />
++              ) : (
++                <div className="text-gray-500 text-center">
++                  <ImageIcon size={48} className="mx-auto mb-2 opacity-50" />
++                  <p>No preview available</p>
+                 </div>
+-                <p className="text-gray-500 mt-1">{analysis.visual_style?.layout_type}</p>
++              )}
++            </div>
++
++            {/* Info side */}
++            <div className="md:w-1/2 p-6 overflow-y-auto max-h-[90vh]">
++              <div className="flex items-center justify-between mb-4">
++                <div className="flex items-center gap-3">
++                  {selectedAd.page_profile_picture_url ? (
++                    <img src={selectedAd.page_profile_picture_url} alt="" className="w-10 h-10 rounded-full" />
++                  ) : (
++                    <div className="w-10 h-10 bg-violet-100 rounded-full flex items-center justify-center text-violet-600 font-bold">
++                      {selectedAd.page_name?.charAt(0)}
++                    </div>
++                  )}
++                  <div>
++                    <h3 className="font-semibold text-gray-900">{selectedAd.page_name}</h3>
++                    <div className="flex items-center gap-2 text-xs text-gray-500">
++                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${
++                        selectedAd.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'
++                      }`}>
++                        {selectedAd.is_active ? '🟢 Active' : '⚫ Ended'}
++                      </span>
++                      {getDaysRunning(selectedAd.start_date) !== null && (
++                        <span>{getDaysRunning(selectedAd.start_date)} days</span>
++                      )}
++                    </div>
++                  </div>
++                </div>
++                <button
++                  onClick={() => setShowAdModal(false)}
++                  className="p-2 hover:bg-gray-100 rounded-full"
++                >
++                  <X size={20} />
++                </button>
+               </div>
+ 
+-              {/* Hook Structure */}
+-              <div>
+-                <h4 className="font-medium text-gray-700 mb-2">Hook Strategy</h4>
+-                <p className="text-gray-600">{analysis.hook_structure?.type}</p>
+-                <p className="text-xs text-gray-400 mt-1">{analysis.hook_structure?.attention_grabber}</p>
++              {/* Ad copy */}
++              <div className="mb-4">
++                <h4 className="text-sm font-medium text-gray-500 mb-1">Ad Copy</h4>
++                <p className="text-gray-800 text-sm whitespace-pre-wrap">{selectedAd.ad_copy || 'No copy'}</p>
+               </div>
+ 
+-              {/* What Works */}
+-              <div>
+-                <h4 className="font-medium text-gray-700 mb-2">Why It Works</h4>
+-                <ul className="space-y-1">
+-                  {analysis.what_makes_it_work?.map((item, i) => (
+-                    <li key={i} className="flex items-start gap-2 text-gray-600">
+-                      <CheckCircle size={14} className="text-green-500 mt-0.5 flex-shrink-0" />
+-                      {item}
+-                    </li>
++              {selectedAd.headline && (
++                <div className="mb-4">
++                  <h4 className="text-sm font-medium text-gray-500 mb-1">Headline</h4>
++                  <p className="text-gray-800 font-medium">{selectedAd.headline}</p>
++                </div>
++              )}
++
++              {selectedAd.cta_text && (
++                <div className="mb-4">
++                  <h4 className="text-sm font-medium text-gray-500 mb-1">CTA</h4>
++                  <span className="inline-block px-3 py-1 bg-blue-600 text-white text-sm rounded-lg">{selectedAd.cta_text}</span>
++                </div>
++              )}
++
++              {/* Platforms */}
++              <div className="mb-4">
++                <h4 className="text-sm font-medium text-gray-500 mb-2">Platforms</h4>
++                <div className="flex flex-wrap gap-2">
++                  {selectedAd.platforms?.map(p => (
++                    <span key={p} className="px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs capitalize">{p}</span>
+                   ))}
+-                </ul>
++                </div>
+               </div>
+ 
+-              {/* Replicable */}
+-              <div>
+-                <h4 className="font-medium text-gray-700 mb-2">Copy These Elements</h4>
+-                <ul className="space-y-1">
+-                  {analysis.replicable_elements?.map((item, i) => (
+-                    <li key={i} className="text-gray-600 text-xs bg-violet-50 px-2 py-1 rounded">
+-                      {item}
+-                    </li>
+-                  ))}
+-                </ul>
++              {/* Spend/Reach estimates */}
++              {(selectedAd.impressions_lower || selectedAd.spend_lower) && (
++                <div className="mb-4 grid grid-cols-2 gap-3">
++                  {selectedAd.impressions_lower && (
++                    <div className="bg-gray-50 rounded-xl p-3">
++                      <p className="text-xs text-gray-500">Impressions</p>
++                      <p className="font-semibold text-gray-900">
++                        {selectedAd.impressions_lower.toLocaleString()} - {selectedAd.impressions_upper?.toLocaleString()}
++                      </p>
++                    </div>
++                  )}
++                  {selectedAd.spend_lower && (
++                    <div className="bg-gray-50 rounded-xl p-3">
++                      <p className="text-xs text-gray-500">Spend ({selectedAd.currency})</p>
++                      <p className="font-semibold text-gray-900">
++                        ${selectedAd.spend_lower.toLocaleString()} - ${selectedAd.spend_upper?.toLocaleString()}
++                      </p>
++                    </div>
++                  )}
++                </div>
++              )}
++
++              {/* Action buttons */}
++              <div className="flex gap-2 mb-6">
++                <button
++                  onClick={() => handleSaveToBoard(selectedAd)}
++                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-all"
++                >
++                  <Bookmark size={16} />
++                  Save
++                </button>
++                <button
++                  onClick={handleAnalyze}
++                  disabled={analyzing}
++                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all disabled:opacity-50"
++                >
++                  {analyzing ? (
++                    <RefreshCw size={16} className="animate-spin" />
++                  ) : (
++                    <Sparkles size={16} />
++                  )}
++                  {analysis ? 'Re-analyze' : 'Analyze with AI'}
++                </button>
++              </div>
++
++              {/* Analysis results */}
++              {analysis && (
++                <div className="border-t border-gray-100 pt-4">
++                  <h4 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
++                    <Sparkles size={16} className="text-violet-600" />
++                    AI Analysis
++                  </h4>
++
++                  <div className="space-y-4 text-sm">
++                    {/* Visual Style */}
++                    <div>
++                      <h5 className="font-medium text-gray-700 mb-2">Visual Style</h5>
++                      <div className="flex gap-1.5 flex-wrap mb-1">
++                        {analysis.visual_style?.colors?.map((c, i) => (
++                          <div key={i} className="w-7 h-7 rounded-lg shadow-sm border border-gray-200" style={{ backgroundColor: c }} title={c} />
++                        ))}
++                      </div>
++                      <p className="text-gray-500 text-xs">{analysis.visual_style?.layout_type} • {analysis.visual_style?.imagery_style}</p>
++                    </div>
++
++                    {/* Hook Strategy */}
++                    <div>
++                      <h5 className="font-medium text-gray-700 mb-1">Hook Strategy</h5>
++                      <span className="inline-block px-2 py-0.5 bg-violet-100 text-violet-700 rounded text-xs mb-1">
++                        {analysis.hook_structure?.type}
++                      </span>
++                      <p className="text-gray-500 text-xs">{analysis.hook_structure?.attention_grabber}</p>
++                    </div>
++
++                    {/* What Works */}
++                    <div>
++                      <h5 className="font-medium text-gray-700 mb-2">Why It Works</h5>
++                      <ul className="space-y-1">
++                        {analysis.what_makes_it_work?.map((item, i) => (
++                          <li key={i} className="flex items-start gap-2 text-gray-600 text-xs">
++                            <CheckCircle size={14} className="text-emerald-500 mt-0.5 flex-shrink-0" />
++                            {item}
++                          </li>
++                        ))}
++                      </ul>
++                    </div>
++
++                    {/* Replicable Elements */}
++                    <div>
++                      <h5 className="font-medium text-gray-700 mb-2">Copy These Elements</h5>
++                      <div className="flex flex-wrap gap-1.5">
++                        {analysis.replicable_elements?.map((item, i) => (
++                          <span key={i} className="px-2 py-1 bg-violet-50 text-violet-700 rounded-lg text-xs">
++                            {item}
++                          </span>
++                        ))}
++                      </div>
++                    </div>
++
++                    {/* Generate Brief button */}
++                    <button
++                      onClick={handleGenerateBrief}
++                      className="w-full mt-4 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-violet-200 transition-all"
++                    >
++                      <FileText size={16} />
++                      Create Brief from This
++                    </button>
++                  </div>
++                </div>
++              )}
++            </div>
++          </div>
++        </div>
++      )}
++
++      {/* CREATE BOARD MODAL */}
++      {showCreateBoard && (
++        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowCreateBoard(false)}>
++          <div className="bg-white rounded-2xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
++            <h3 className="text-lg font-semibold text-gray-900 mb-4">Create New Board</h3>
++            
++            <div className="mb-4">
++              <label className="block text-sm font-medium text-gray-700 mb-1">Board Name</label>
++              <input
++                type="text"
++                value={newBoardName}
++                onChange={(e) => setNewBoardName(e.target.value)}
++                placeholder="e.g., Best Hooks, UGC Inspiration"
++                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none"
++              />
++            </div>
++
++            <div className="mb-4">
++              <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
++              <div className="flex gap-2 flex-wrap">
++                {BOARD_COLORS.map(color => (
++                  <button
++                    key={color}
++                    onClick={() => setNewBoardColor(color)}
++                    className={`w-8 h-8 rounded-lg transition-all ${newBoardColor === color ? 'ring-2 ring-offset-2 ring-violet-500 scale-110' : ''}`}
++                    style={{ backgroundColor: color }}
++                  />
++                ))}
++              </div>
++            </div>
++
++            <div className="mb-6">
++              <label className="block text-sm font-medium text-gray-700 mb-2">Icon</label>
++              <div className="flex gap-2 flex-wrap">
++                {BOARD_ICONS.map(icon => (
++                  <button
++                    key={icon}
++                    onClick={() => setNewBoardIcon(icon)}
++                    className={`w-10 h-10 rounded-lg text-xl flex items-center justify-center transition-all ${
++                      newBoardIcon === icon ? 'bg-violet-100 ring-2 ring-violet-500' : 'bg-gray-100 hover:bg-gray-200'
++                    }`}
++                  >
++                    {icon}
++                  </button>
++                ))}
+               </div>
++            </div>
+ 
++            <div className="flex gap-3">
+               <button
+-                className="w-full mt-4 py-2 bg-violet-100 text-violet-700 rounded-lg font-medium text-sm hover:bg-violet-200 transition-all"
+-                onClick={() => {
+-                  if (!analysis || !selectedAd || !onGenerateBrief) return;
+-                  onGenerateBrief({
+-                    product_name: selectedAd.page_name || '',
+-                    product_description: analysis.creative_brief?.key_message || '',
+-                    target_audience: analysis.target_audience_signals?.demographics || '',
+-                    objective: analysis.creative_brief?.objective || '',
+-                    budget_level: 'medium'
+-                  });
+-                }}
++                onClick={() => setShowCreateBoard(false)}
++                className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-all"
++              >
++                Cancel
++              </button>
++              <button
++                onClick={createSwipeFile}
++                disabled={!newBoardName.trim()}
++                className="flex-1 px-4 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all disabled:opacity-50"
+               >
+-                Generate My Version
++                Create Board
+               </button>
+             </div>
+-          ) : null}
++          </div>
+         </div>
+-      </div>
++      )}
++
++      {/* SAVE TO BOARD MODAL */}
++      {showSaveModal && adToSave && (
++        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowSaveModal(false)}>
++          <div className="bg-white rounded-2xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
++            <h3 className="text-lg font-semibold text-gray-900 mb-4">Save to Board</h3>
++            
++            {swipeFiles.length > 0 ? (
++              <div className="space-y-2 mb-4 max-h-64 overflow-y-auto">
++                {swipeFiles.map(file => (
++                  <button
++                    key={file.id}
++                    onClick={() => confirmSaveToBoard(file.id)}
++                    className="w-full flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:border-violet-200 hover:bg-violet-50 transition-all text-left"
++                  >
++                    <div
++                      className="w-10 h-10 rounded-lg flex items-center justify-center text-lg"
++                      style={{ backgroundColor: file.color + '20' }}
++                    >
++                      {file.icon}
++                    </div>
++                    <div>
++                      <p className="font-medium text-gray-900">{file.name}</p>
++                      <p className="text-xs text-gray-500">{file.ad_count} ads</p>
++                    </div>
++                  </button>
++                ))}
++              </div>
++            ) : (
++              <p className="text-gray-500 text-center py-4 mb-4">No boards yet. Create one first!</p>
++            )}
++
++            <button
++              onClick={() => {
++                setShowSaveModal(false);
++                setShowCreateBoard(true);
++              }}
++              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border-2 border-dashed border-gray-200 rounded-xl text-gray-500 hover:border-violet-300 hover:text-violet-600 transition-all"
++            >
++              <Plus size={16} />
++              Create New Board
++            </button>
++          </div>
++        </div>
++      )}
++
++      {/* ADD TRACKED BRAND MODAL */}
++      {showAddBrand && (
++        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowAddBrand(false)}>
++          <div className="bg-white rounded-2xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
++            <h3 className="text-lg font-semibold text-gray-900 mb-4">Track a Brand</h3>
++            
++            <div className="mb-4">
++              <label className="block text-sm font-medium text-gray-700 mb-1">Brand Name</label>
++              <input
++                type="text"
++                value={newBrandName}
++                onChange={(e) => setNewBrandName(e.target.value)}
++                placeholder="e.g., Nike, Adidas, Shein"
++                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:border-violet-500 outline-none"
++              />
++            </div>
++
++            <p className="text-sm text-gray-500 mb-6">
++              We'll check for new ads daily and notify you when this brand launches new campaigns.
++            </p>
++
++            <div className="flex gap-3">
++              <button
++                onClick={() => setShowAddBrand(false)}
++                className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-all"
++              >
++                Cancel
++              </button>
++              <button
++                onClick={addTrackedBrand}
++                disabled={!newBrandName.trim()}
++                className="flex-1 px-4 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 transition-all disabled:opacity-50"
++              >
++                Start Tracking
++              </button>
++            </div>
++          </div>
++        </div>
++      )}
++
++      {/* WELCOME MODAL */}
++      {showWelcome && (
++        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
++          <div className="bg-white rounded-3xl p-8 max-w-lg w-full text-center">
++            <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-violet-500 to-purple-600 rounded-2xl flex items-center justify-center">
++              <Search size={36} className="text-white" />
++            </div>
++            <h2 className="text-2xl font-bold text-gray-900 mb-3">Stop Guessing. Start Learning.</h2>
++            <p className="text-gray-600 mb-6">
++              Competitor Spy lets you discover what's working for other brands, save ads that inspire you, and turn competitor insights into your own winning creatives.
++            </p>
++            <div className="grid grid-cols-3 gap-4 mb-8 text-sm">
++              <div className="p-4 bg-violet-50 rounded-xl">
++                <Search size={24} className="text-violet-600 mx-auto mb-2" />
++                <p className="font-medium text-gray-800">Search</p>
++                <p className="text-gray-500 text-xs">Find competitor ads</p>
++              </div>
++              <div className="p-4 bg-violet-50 rounded-xl">
++                <Bookmark size={24} className="text-violet-600 mx-auto mb-2" />
++                <p className="font-medium text-gray-800">Save</p>
++                <p className="text-gray-500 text-xs">Build swipe files</p>
++              </div>
++              <div className="p-4 bg-violet-50 rounded-xl">
++                <Sparkles size={24} className="text-violet-600 mx-auto mb-2" />
++                <p className="font-medium text-gray-800">Learn</p>
++                <p className="text-gray-500 text-xs">AI analysis</p>
++              </div>
++            </div>
++            <button
++              onClick={dismissWelcome}
++              className="w-full px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl font-medium hover:shadow-lg hover:shadow-violet-200 transition-all"
++            >
++              Let's Go
++            </button>
++          </div>
++        </div>
++      )}
++
++      {/* HELP PANEL */}
++      {showHelp && (
++        <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setShowHelp(false)}>
++          <div
++            className="absolute right-0 top-0 bottom-0 w-full max-w-md bg-white shadow-2xl p-6 overflow-y-auto"
++            onClick={(e) => e.stopPropagation()}
++          >
++            <div className="flex items-center justify-between mb-6">
++              <h3 className="text-lg font-semibold text-gray-900">How Competitor Spy Works</h3>
++              <button onClick={() => setShowHelp(false)} className="p-2 hover:bg-gray-100 rounded-full">
++                <X size={20} />
++              </button>
++            </div>
++
++            <div className="space-y-6">
++              <div>
++                <h4 className="font-medium text-gray-900 mb-2">🔍 Search & Discover</h4>
++                <p className="text-sm text-gray-600">Enter any brand name to find their active Facebook and Instagram ads. Results are cached for 24 hours to save API costs.</p>
++              </div>
++              <div>
++                <h4 className="font-medium text-gray-900 mb-2">🤖 AI Analysis</h4>
++                <p className="text-sm text-gray-600">Click any ad to get a deep breakdown of what makes it work—hook strategy, visual style, target audience signals, and replicable elements.</p>
++              </div>
++              <div>
++                <h4 className="font-medium text-gray-900 mb-2">📁 Swipe Files</h4>
++                <p className="text-sm text-gray-600">Save ads that inspire you to organized boards. Reference them later when creating your own campaigns.</p>
++              </div>
++              <div>
++                <h4 className="font-medium text-gray-900 mb-2">👁️ Tracked Brands</h4>
++                <p className="text-sm text-gray-600">Track competitors to automatically check for new ads. Get alerted when they launch new campaigns.</p>
++              </div>
++              <div>
++                <h4 className="font-medium text-gray-900 mb-2">📝 Create Brief</h4>
++                <p className="text-sm text-gray-600">Turn any analyzed ad into a creative brief with one click. The AI extracts key elements to help you create your own version.</p>
++              </div>
++
++              <div className="pt-4 border-t border-gray-100">
++                <h4 className="font-medium text-gray-900 mb-2">💡 Pro Tips</h4>
++                <ul className="text-sm text-gray-600 space-y-2">
++                  <li>• Search for exact brand names for best results</li>
++                  <li>• Use "ALL" country for global brands</li>
++                  <li>• Check tracked brands weekly to spot trends</li>
++                  <li>• Save ads that match your brand's aesthetic</li>
++                </ul>
++              </div>
++            </div>
++          </div>
++        </div>
++      )}
+     </div>
+   );
+ }
+diff --git a/server/db/competitorSpyMigration.js b/server/db/competitorSpyMigration.js
+new file mode 100644
+index 0000000..1c20980
+--- /dev/null
++++ b/server/db/competitorSpyMigration.js
+@@ -0,0 +1,269 @@
++// server/db/competitorSpyMigration.js
++// Database tables for Competitor Spy feature (Apify-powered)
++
++import { getDb } from './database.js';
++
++export function runMigration() {
++  const db = getDb();
++  console.log('Running Competitor Spy migration...');
++
++  // ============================================================================
++  // COMPETITOR ADS - Main storage for scraped ads
++  // ============================================================================
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS competitor_ads (
++      id INTEGER PRIMARY KEY AUTOINCREMENT,
++      ad_id TEXT UNIQUE NOT NULL,
++      page_id TEXT,
++      page_name TEXT,
++      page_profile_picture_url TEXT,
++      
++      -- Creative content
++      ad_copy TEXT,
++      headline TEXT,
++      description TEXT,
++      cta_text TEXT,
++      cta_type TEXT,
++      landing_page_url TEXT,
++      
++      -- Media URLs (original from source)
++      original_image_url TEXT,
++      original_video_url TEXT,
++      
++      -- Permanent Cloudinary URLs (we own these)
++      cloudinary_image_url TEXT,
++      cloudinary_video_url TEXT,
++      cloudinary_thumbnail_url TEXT,
++      
++      -- Media metadata
++      media_type TEXT CHECK(media_type IN ('image', 'video', 'carousel', 'unknown')) DEFAULT 'unknown',
++      video_duration INTEGER,
++      
++      -- Ad metadata
++      platforms JSON,
++      start_date TEXT,
++      end_date TEXT,
++      is_active INTEGER DEFAULT 1,
++      
++      -- Reach/spend estimates
++      impressions_lower INTEGER,
++      impressions_upper INTEGER,
++      spend_lower INTEGER,
++      spend_upper INTEGER,
++      currency TEXT,
++      
++      -- Country targeting
++      countries JSON,
++      
++      -- AI analysis (cached forever - same ad = same analysis)
++      analysis JSON,
++      analysis_created_at DATETIME,
++      
++      -- Metadata
++      source TEXT DEFAULT 'apify',
++      fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
++    )
++  `);
++
++  // ============================================================================
++  // BRAND CACHE - Track last fetch per brand for 24h caching
++  // ============================================================================
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS competitor_brand_cache (
++      id INTEGER PRIMARY KEY AUTOINCREMENT,
++      brand_name TEXT NOT NULL,
++      country TEXT NOT NULL,
++      search_query TEXT,
++      
++      -- Cache control
++      last_fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      expires_at DATETIME,
++      
++      -- Results metadata
++      ad_count INTEGER DEFAULT 0,
++      active_ad_ids JSON,
++      
++      -- Track if refresh is in progress
++      refresh_in_progress INTEGER DEFAULT 0,
++      
++      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      
++      UNIQUE(brand_name, country)
++    )
++  `);
++
++  // ============================================================================
++  // SWIPE FILES - User-created boards to organize saved ads
++  // ============================================================================
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS competitor_swipe_files (
++      id INTEGER PRIMARY KEY AUTOINCREMENT,
++      name TEXT NOT NULL,
++      description TEXT,
++      color TEXT DEFAULT '#6366f1',
++      icon TEXT DEFAULT '📁',
++      
++      -- Stats (denormalized for performance)
++      ad_count INTEGER DEFAULT 0,
++      
++      -- Metadata
++      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
++    )
++  `);
++
++  // ============================================================================
++  // SAVED ADS - Junction table linking swipe files to ads
++  // ============================================================================
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS competitor_saved_ads (
++      id INTEGER PRIMARY KEY AUTOINCREMENT,
++      swipe_file_id INTEGER NOT NULL,
++      ad_id TEXT NOT NULL,
++      
++      -- User notes and tags
++      notes TEXT,
++      tags JSON,
++      
++      -- Track when saved
++      saved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      
++      FOREIGN KEY (swipe_file_id) REFERENCES competitor_swipe_files(id) ON DELETE CASCADE,
++      UNIQUE(swipe_file_id, ad_id)
++    )
++  `);
++
++  // ============================================================================
++  // TRACKED BRANDS - Spyder feature for auto-tracking competitors
++  // ============================================================================
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS competitor_tracked_brands (
++      id INTEGER PRIMARY KEY AUTOINCREMENT,
++      brand_name TEXT NOT NULL,
++      page_id TEXT,
++      country TEXT DEFAULT 'ALL',
++      
++      -- Tracking settings
++      check_frequency TEXT CHECK(check_frequency IN ('daily', 'weekly', 'manual')) DEFAULT 'daily',
++      is_active INTEGER DEFAULT 1,
++      
++      -- Stats
++      total_ads_found INTEGER DEFAULT 0,
++      new_ads_since_last_check INTEGER DEFAULT 0,
++      last_known_ad_ids JSON,
++      
++      -- Timestamps
++      last_checked_at DATETIME,
++      next_check_at DATETIME,
++      tracking_started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      
++      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      
++      UNIQUE(brand_name, country)
++    )
++  `);
++
++  // ============================================================================
++  // USER ONBOARDING - Track dismissed tips/modals
++  // ============================================================================
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS user_onboarding (
++      id INTEGER PRIMARY KEY AUTOINCREMENT,
++      feature TEXT NOT NULL,
++      element TEXT NOT NULL,
++      dismissed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++      
++      UNIQUE(feature, element)
++    )
++  `);
++
++  // ============================================================================
++  // INDEXES for performance
++  // ============================================================================
++  db.exec(`
++    CREATE INDEX IF NOT EXISTS idx_competitor_ads_ad_id ON competitor_ads(ad_id);
++    CREATE INDEX IF NOT EXISTS idx_competitor_ads_page_name ON competitor_ads(page_name);
++    CREATE INDEX IF NOT EXISTS idx_competitor_ads_media_type ON competitor_ads(media_type);
++    CREATE INDEX IF NOT EXISTS idx_competitor_ads_is_active ON competitor_ads(is_active);
++    CREATE INDEX IF NOT EXISTS idx_competitor_ads_start_date ON competitor_ads(start_date);
++    
++    CREATE INDEX IF NOT EXISTS idx_competitor_brand_cache_brand ON competitor_brand_cache(brand_name, country);
++    CREATE INDEX IF NOT EXISTS idx_competitor_brand_cache_expires ON competitor_brand_cache(expires_at);
++    
++    CREATE INDEX IF NOT EXISTS idx_competitor_swipe_files_name ON competitor_swipe_files(name);
++    
++    CREATE INDEX IF NOT EXISTS idx_competitor_saved_ads_swipe_file ON competitor_saved_ads(swipe_file_id);
++    CREATE INDEX IF NOT EXISTS idx_competitor_saved_ads_ad ON competitor_saved_ads(ad_id);
++    
++    CREATE INDEX IF NOT EXISTS idx_competitor_tracked_brands_active ON competitor_tracked_brands(is_active);
++    CREATE INDEX IF NOT EXISTS idx_competitor_tracked_brands_next_check ON competitor_tracked_brands(next_check_at);
++    
++    CREATE INDEX IF NOT EXISTS idx_user_onboarding_feature ON user_onboarding(feature, element);
++  `);
++
++  console.log('✅ Competitor Spy tables ready');
++}
++
++// ============================================================================
++// HELPER FUNCTIONS for cache management
++// ============================================================================
++
++export function isBrandCacheValid(db, brandName, country) {
++  const cache = db.prepare(`
++    SELECT * FROM competitor_brand_cache 
++    WHERE brand_name = ? AND country = ? 
++    AND expires_at > datetime('now')
++  `).get(brandName, country);
++  
++  return cache !== undefined;
++}
++
++export function getBrandCacheExpiry(db, brandName, country) {
++  const cache = db.prepare(`
++    SELECT expires_at, last_fetched_at FROM competitor_brand_cache 
++    WHERE brand_name = ? AND country = ?
++  `).get(brandName, country);
++  
++  if (!cache) return null;
++  
++  const expiresAt = new Date(cache.expires_at);
++  const now = new Date();
++  const hoursRemaining = Math.max(0, (expiresAt - now) / (1000 * 60 * 60));
++  
++  return {
++    expires_at: cache.expires_at,
++    last_fetched_at: cache.last_fetched_at,
++    hours_remaining: Math.round(hoursRemaining * 10) / 10,
++    is_valid: expiresAt > now
++  };
++}
++
++export function updateBrandCache(db, brandName, country, adIds) {
++  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
++  
++  db.prepare(`
++    INSERT INTO competitor_brand_cache (brand_name, country, ad_count, active_ad_ids, expires_at, last_fetched_at)
++    VALUES (?, ?, ?, ?, ?, datetime('now'))
++    ON CONFLICT(brand_name, country) DO UPDATE SET
++      ad_count = excluded.ad_count,
++      active_ad_ids = excluded.active_ad_ids,
++      expires_at = excluded.expires_at,
++      last_fetched_at = datetime('now'),
++      updated_at = datetime('now')
++  `).run(brandName, country, adIds.length, JSON.stringify(adIds), expiresAt);
++}
++
++export function getCachedAdIds(db, brandName, country) {
++  const cache = db.prepare(`
++    SELECT active_ad_ids FROM competitor_brand_cache 
++    WHERE brand_name = ? AND country = ? 
++    AND expires_at > datetime('now')
++  `).get(brandName, country);
++  
++  if (!cache?.active_ad_ids) return null;
++  return JSON.parse(cache.active_ad_ids);
++}
+diff --git a/server/routes/creativeStudio.js b/server/routes/creativeStudio.js
+index a33b0af..ee7d432 100644
+--- a/server/routes/creativeStudio.js
++++ b/server/routes/creativeStudio.js
+@@ -5,10 +5,12 @@ import path from 'path';
+ import * as geminiVision from '../services/geminiVisionService.js';
+ import * as cloudinary from '../services/cloudinaryService.js';
+ import * as fbAdLibrary from '../services/fbAdLibraryService.js';
++import * as apifyService from '../services/apifyService.js';
+ import * as fatigueService from '../services/fatigueService.js';
+ import * as auditorService from '../services/auditorService.js';
+ import { extractAndDownloadVideoFromUrl } from '../utils/videoExtractor.js';
+ import { getDb } from '../db/database.js';
++import { getBrandCacheExpiry } from '../db/competitorSpyMigration.js';
+ 
+ const router = express.Router();
+ const db = getDb();
+@@ -176,40 +178,111 @@ router.post('/extract-style', upload.single('image'), async (req, res) => {
+ });
+ 
+ // ============================================================================
+-// COMPETITOR SPY
++// COMPETITOR SPY (Apify-powered with caching)
+ // ============================================================================
+ 
+-// Search Facebook Ad Library
++// Search competitor ads (with 24h caching)
+ router.get('/competitor/search', async (req, res) => {
+   try {
+-    const { brand_name, country = 'SA', limit = 25 } = req.query;
++    const { brand_name, country = 'ALL', limit = 20, force_refresh = 'false' } = req.query;
+ 
+     if (!brand_name) {
+       return res.status(400).json({ success: false, error: 'Brand name required' });
+     }
+ 
+-    const ads = await fbAdLibrary.searchByBrand(brand_name, { country, limit: parseInt(limit) });
++    const result = await apifyService.searchByBrand(brand_name, { 
++      country, 
++      limit: parseInt(limit),
++      forceRefresh: force_refresh === 'true'
++    });
+ 
+-    res.json({ success: true, ads, count: ads.length });
++    res.json({ 
++      success: true, 
++      ads: result.ads, 
++      count: result.ads.length,
++      total_available: result.total_available,
++      cached: result.cached,
++      stale: result.stale || false,
++      cache_info: result.cache_info
++    });
+   } catch (error) {
+     console.error('Competitor search error:', error);
+     res.status(500).json({ success: false, error: error.message });
+   }
+ });
+ 
++// Force refresh a brand's ads
++router.post('/competitor/refresh', async (req, res) => {
++  try {
++    const { brand_name, country = 'ALL' } = req.body;
++
++    if (!brand_name) {
++      return res.status(400).json({ success: false, error: 'Brand name required' });
++    }
++
++    const result = await apifyService.searchByBrand(brand_name, { 
++      country, 
++      forceRefresh: true 
++    });
++
++    res.json({ 
++      success: true, 
++      ads: result.ads, 
++      count: result.ads.length,
++      refreshed: true
++    });
++  } catch (error) {
++    console.error('Competitor refresh error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Get single ad details
++router.get('/competitor/ad/:ad_id', async (req, res) => {
++  try {
++    const { ad_id } = req.params;
++    const ad = apifyService.getAdById(ad_id);
++
++    if (!ad) {
++      return res.status(404).json({ success: false, error: 'Ad not found' });
++    }
++
++    res.json({ success: true, ad });
++  } catch (error) {
++    console.error('Get ad error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
+ // Get supported countries
+ router.get('/competitor/countries', (req, res) => {
+-  res.json({ success: true, countries: fbAdLibrary.getSupportedCountries() });
++  res.json({ success: true, countries: apifyService.getSupportedCountries() });
+ });
+ 
+-// Analyze competitor ad
++// Analyze competitor ad (with caching per ad)
+ router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
+   try {
++    const { ad_id, snapshot_url, image_url, brand_name } = req.body;
++    const db = getDb();
++
++    // Check if we have cached analysis for this ad
++    if (ad_id) {
++      const existingAd = apifyService.getAdById(ad_id);
++      if (existingAd?.analysis) {
++        return res.json({ 
++          success: true, 
++          analysis: existingAd.analysis,
++          cached: true,
++          ad_id
++        });
++      }
++    }
++
+     let analysis;
+     let analysisMediaType = 'image';
+ 
+-    if (req.body.snapshot_url) {
+-      const videoResult = await extractAndDownloadVideoFromUrl(req.body.snapshot_url);
++    if (snapshot_url) {
++      const videoResult = await extractAndDownloadVideoFromUrl(snapshot_url);
+       if (!videoResult.success) {
+         return res.status(400).json({ success: false, error: videoResult.error });
+       }
+@@ -220,26 +293,31 @@ router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
+ 
+       if (req.file) {
+         imageBase64 = req.file.buffer.toString('base64');
+-      } else if (req.body.image_url) {
+-        imageBase64 = await cloudinary.fetchAsBase64(req.body.image_url);
++      } else if (image_url) {
++        imageBase64 = await cloudinary.fetchAsBase64(image_url);
+       } else {
+-        return res.status(400).json({ success: false, error: 'No image provided' });
++        return res.status(400).json({ success: false, error: 'No image or video provided' });
+       }
+ 
+       analysis = await geminiVision.analyzeCompetitorAd(imageBase64);
+     }
+ 
+-    // Save to database
++    // Cache analysis to the ad record if we have an ad_id
++    if (ad_id) {
++      apifyService.saveAnalysisToAd(ad_id, analysis);
++    }
++
++    // Also save to competitor_analyses table for history
+     const stmt = db.prepare(`
+       INSERT INTO competitor_analyses (brand_name, source_url, source_type, creative_url, analysis)
+       VALUES (?, ?, ?, ?, ?)
+     `);
+ 
+     const result = stmt.run(
+-      req.body.brand_name || 'Unknown',
+-      req.body.source_url || req.body.snapshot_url || null,
+-      req.body.source_type || 'screenshot',
+-      req.body.image_url || null,
++      brand_name || 'Unknown',
++      snapshot_url || image_url || null,
++      analysisMediaType === 'video' ? 'ad_library' : 'screenshot',
++      image_url || null,
+       JSON.stringify(analysis)
+     );
+ 
+@@ -247,7 +325,8 @@ router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
+       success: true,
+       analysis,
+       analysis_id: result.lastInsertRowid,
+-      media_type: analysisMediaType
++      media_type: analysisMediaType,
++      cached: false
+     });
+   } catch (error) {
+     console.error('Competitor analysis error:', error);
+@@ -259,6 +338,8 @@ router.post('/competitor/analyze', upload.single('image'), async (req, res) => {
+ router.get('/competitor/analyses', async (req, res) => {
+   try {
+     const { limit = 20 } = req.query;
++    const db = getDb();
++    
+     const analyses = db.prepare(`
+       SELECT * FROM competitor_analyses 
+       ORDER BY created_at DESC 
+@@ -277,6 +358,381 @@ router.get('/competitor/analyses', async (req, res) => {
+   }
+ });
+ 
++// ============================================================================
++// SWIPE FILES CRUD
++// ============================================================================
++
++// Get all swipe files
++router.get('/competitor/swipe-files', async (req, res) => {
++  try {
++    const db = getDb();
++    const files = db.prepare(`
++      SELECT * FROM competitor_swipe_files ORDER BY updated_at DESC
++    `).all();
++
++    res.json({ success: true, swipe_files: files });
++  } catch (error) {
++    console.error('Get swipe files error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Create swipe file
++router.post('/competitor/swipe-files', async (req, res) => {
++  try {
++    const { name, description, color, icon } = req.body;
++    const db = getDb();
++
++    if (!name) {
++      return res.status(400).json({ success: false, error: 'Name required' });
++    }
++
++    const result = db.prepare(`
++      INSERT INTO competitor_swipe_files (name, description, color, icon)
++      VALUES (?, ?, ?, ?)
++    `).run(name, description || '', color || '#6366f1', icon || '📁');
++
++    res.json({ 
++      success: true, 
++      swipe_file: {
++        id: result.lastInsertRowid,
++        name,
++        description,
++        color,
++        icon,
++        ad_count: 0
++      }
++    });
++  } catch (error) {
++    console.error('Create swipe file error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Update swipe file
++router.put('/competitor/swipe-files/:id', async (req, res) => {
++  try {
++    const { id } = req.params;
++    const { name, description, color, icon } = req.body;
++    const db = getDb();
++
++    db.prepare(`
++      UPDATE competitor_swipe_files 
++      SET name = COALESCE(?, name), 
++          description = COALESCE(?, description),
++          color = COALESCE(?, color),
++          icon = COALESCE(?, icon),
++          updated_at = datetime('now')
++      WHERE id = ?
++    `).run(name, description, color, icon, id);
++
++    res.json({ success: true });
++  } catch (error) {
++    console.error('Update swipe file error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Delete swipe file
++router.delete('/competitor/swipe-files/:id', async (req, res) => {
++  try {
++    const { id } = req.params;
++    const db = getDb();
++    db.prepare('DELETE FROM competitor_swipe_files WHERE id = ?').run(id);
++    res.json({ success: true });
++  } catch (error) {
++    console.error('Delete swipe file error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Get ads in a swipe file
++router.get('/competitor/swipe-files/:id/ads', async (req, res) => {
++  try {
++    const { id } = req.params;
++    const db = getDb();
++
++    const savedAds = db.prepare(`
++      SELECT sa.*, ca.* 
++      FROM competitor_saved_ads sa
++      JOIN competitor_ads ca ON sa.ad_id = ca.ad_id
++      WHERE sa.swipe_file_id = ?
++      ORDER BY sa.saved_at DESC
++    `).all(id);
++
++    const parsed = savedAds.map(ad => ({
++      ...ad,
++      platforms: JSON.parse(ad.platforms || '[]'),
++      countries: JSON.parse(ad.countries || '[]'),
++      analysis: ad.analysis ? JSON.parse(ad.analysis) : null,
++      tags: ad.tags ? JSON.parse(ad.tags) : []
++    }));
++
++    res.json({ success: true, ads: parsed });
++  } catch (error) {
++    console.error('Get swipe file ads error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Save ad to swipe file
++router.post('/competitor/swipe-files/:id/ads', async (req, res) => {
++  try {
++    const { id } = req.params;
++    const { ad_id, notes, tags } = req.body;
++    const db = getDb();
++
++    if (!ad_id) {
++      return res.status(400).json({ success: false, error: 'ad_id required' });
++    }
++
++    // Insert or ignore if already exists
++    db.prepare(`
++      INSERT OR IGNORE INTO competitor_saved_ads (swipe_file_id, ad_id, notes, tags)
++      VALUES (?, ?, ?, ?)
++    `).run(id, ad_id, notes || '', tags ? JSON.stringify(tags) : null);
++
++    // Update ad count
++    db.prepare(`
++      UPDATE competitor_swipe_files 
++      SET ad_count = (SELECT COUNT(*) FROM competitor_saved_ads WHERE swipe_file_id = ?),
++          updated_at = datetime('now')
++      WHERE id = ?
++    `).run(id, id);
++
++    res.json({ success: true });
++  } catch (error) {
++    console.error('Save ad to swipe file error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Remove ad from swipe file
++router.delete('/competitor/swipe-files/:id/ads/:ad_id', async (req, res) => {
++  try {
++    const { id, ad_id } = req.params;
++    const db = getDb();
++
++    db.prepare(`
++      DELETE FROM competitor_saved_ads WHERE swipe_file_id = ? AND ad_id = ?
++    `).run(id, ad_id);
++
++    // Update ad count
++    db.prepare(`
++      UPDATE competitor_swipe_files 
++      SET ad_count = (SELECT COUNT(*) FROM competitor_saved_ads WHERE swipe_file_id = ?),
++          updated_at = datetime('now')
++      WHERE id = ?
++    `).run(id, id);
++
++    res.json({ success: true });
++  } catch (error) {
++    console.error('Remove ad from swipe file error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// ============================================================================
++// TRACKED BRANDS
++// ============================================================================
++
++// Get tracked brands
++router.get('/competitor/tracked-brands', async (req, res) => {
++  try {
++    const db = getDb();
++    const brands = db.prepare(`
++      SELECT * FROM competitor_tracked_brands ORDER BY tracking_started_at DESC
++    `).all();
++
++    const parsed = brands.map(b => ({
++      ...b,
++      last_known_ad_ids: b.last_known_ad_ids ? JSON.parse(b.last_known_ad_ids) : []
++    }));
++
++    res.json({ success: true, tracked_brands: parsed });
++  } catch (error) {
++    console.error('Get tracked brands error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Add tracked brand
++router.post('/competitor/tracked-brands', async (req, res) => {
++  try {
++    const { brand_name, page_id, country, check_frequency } = req.body;
++    const db = getDb();
++
++    if (!brand_name) {
++      return res.status(400).json({ success: false, error: 'Brand name required' });
++    }
++
++    const nextCheck = check_frequency === 'weekly' 
++      ? "datetime('now', '+7 days')" 
++      : "datetime('now', '+1 day')";
++
++    const result = db.prepare(`
++      INSERT INTO competitor_tracked_brands (brand_name, page_id, country, check_frequency, next_check_at)
++      VALUES (?, ?, ?, ?, ${nextCheck})
++    `).run(brand_name, page_id || null, country || 'ALL', check_frequency || 'daily');
++
++    res.json({ 
++      success: true, 
++      tracked_brand: {
++        id: result.lastInsertRowid,
++        brand_name,
++        page_id,
++        country,
++        check_frequency
++      }
++    });
++  } catch (error) {
++    console.error('Add tracked brand error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Check tracked brand for new ads
++router.post('/competitor/tracked-brands/:id/check', async (req, res) => {
++  try {
++    const { id } = req.params;
++    const db = getDb();
++
++    const brand = db.prepare('SELECT * FROM competitor_tracked_brands WHERE id = ?').get(id);
++    if (!brand) {
++      return res.status(404).json({ success: false, error: 'Tracked brand not found' });
++    }
++
++    const result = await apifyService.searchByBrand(brand.brand_name, { 
++      country: brand.country,
++      forceRefresh: true 
++    });
++
++    const currentAdIds = result.ads.map(ad => ad.ad_id);
++    const lastKnownAdIds = brand.last_known_ad_ids ? JSON.parse(brand.last_known_ad_ids) : [];
++    const newAdIds = currentAdIds.filter(id => !lastKnownAdIds.includes(id));
++
++    const nextCheck = brand.check_frequency === 'weekly' 
++      ? "datetime('now', '+7 days')" 
++      : "datetime('now', '+1 day')";
++
++    db.prepare(`
++      UPDATE competitor_tracked_brands 
++      SET total_ads_found = ?,
++          new_ads_since_last_check = ?,
++          last_known_ad_ids = ?,
++          last_checked_at = datetime('now'),
++          next_check_at = ${nextCheck},
++          updated_at = datetime('now')
++      WHERE id = ?
++    `).run(currentAdIds.length, newAdIds.length, JSON.stringify(currentAdIds), id);
++
++    res.json({ 
++      success: true, 
++      total_ads: currentAdIds.length,
++      new_ads: newAdIds.length,
++      new_ad_ids: newAdIds
++    });
++  } catch (error) {
++    console.error('Check tracked brand error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Delete tracked brand
++router.delete('/competitor/tracked-brands/:id', async (req, res) => {
++  try {
++    const { id } = req.params;
++    const db = getDb();
++    db.prepare('DELETE FROM competitor_tracked_brands WHERE id = ?').run(id);
++    res.json({ success: true });
++  } catch (error) {
++    console.error('Delete tracked brand error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// ============================================================================
++// ONBOARDING
++// ============================================================================
++
++// Check if onboarding element should show
++router.get('/onboarding/:feature/:element', async (req, res) => {
++  try {
++    const { feature, element } = req.params;
++    const db = getDb();
++
++    const dismissed = db.prepare(`
++      SELECT 1 FROM user_onboarding WHERE feature = ? AND element = ?
++    `).get(feature, element);
++
++    res.json({ success: true, should_show: !dismissed });
++  } catch (error) {
++    console.error('Check onboarding error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Dismiss onboarding element
++router.post('/onboarding/:feature/:element/dismiss', async (req, res) => {
++  try {
++    const { feature, element } = req.params;
++    const db = getDb();
++
++    db.prepare(`
++      INSERT OR IGNORE INTO user_onboarding (feature, element) VALUES (?, ?)
++    `).run(feature, element);
++
++    res.json({ success: true });
++  } catch (error) {
++    console.error('Dismiss onboarding error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
++// Generate creative brief from competitor ad
++router.post('/competitor/to-brief', async (req, res) => {
++  try {
++    const { ad_id, analysis } = req.body;
++    const db = getDb();
++
++    let adAnalysis = analysis;
++    
++    // If no analysis provided, get from ad record
++    if (!adAnalysis && ad_id) {
++      const ad = apifyService.getAdById(ad_id);
++      adAnalysis = ad?.analysis;
++    }
++
++    if (!adAnalysis) {
++      return res.status(400).json({ success: false, error: 'Analysis required' });
++    }
++
++    // Extract brief-relevant data from analysis
++    const brief = {
++      inspiration: {
++        ad_id,
++        source: 'competitor_spy'
++      },
++      hook_strategy: adAnalysis.hook_structure?.type || '',
++      visual_style: adAnalysis.visual_style?.imagery_style || '',
++      layout_type: adAnalysis.visual_style?.layout_type || '',
++      colors: adAnalysis.visual_style?.colors || [],
++      target_audience: adAnalysis.target_audience_signals?.demographics || '',
++      pain_points: adAnalysis.target_audience_signals?.pain_points_addressed || [],
++      tone: adAnalysis.creative_brief?.tone || 'professional',
++      key_message: adAnalysis.creative_brief?.key_message || '',
++      objective: adAnalysis.creative_brief?.objective || '',
++      replicable_elements: adAnalysis.replicable_elements || [],
++      must_have_elements: adAnalysis.creative_brief?.must_have_elements || []
++    };
++
++    res.json({ success: true, brief });
++  } catch (error) {
++    console.error('To brief error:', error);
++    res.status(500).json({ success: false, error: error.message });
++  }
++});
++
+ // ============================================================================
+ // HOOK GENERATOR
+ // ============================================================================
+diff --git a/server/server.js b/server/server.js
+index b86c67e..fb81d8e 100644
+--- a/server/server.js
++++ b/server/server.js
+@@ -20,6 +20,7 @@ import metaAuthRouter from './routes/metaAuth.js';
+ import { runWhatIfMigration } from './db/whatifMigration.js';
+ import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
+ import { runMigration as runCreativeStudioMigration } from './db/creativeStudioMigration.js';
++import { runMigration as runCompetitorSpyMigration } from './db/competitorSpyMigration.js';
+ import { runMigration as runAIBudgetMigration } from './db/aiBudgetMigration.js';
+ import { smartSync as whatifSmartSync } from './services/whatifMetaService.js';
+ import { syncMetaData } from './services/metaService.js';
+@@ -54,6 +55,7 @@ runWhatIfMigration();
+ // Run Creative Intelligence migration
+ runCreativeIntelligenceMigration();
+ runCreativeStudioMigration();
++runCompetitorSpyMigration();
+ 
+ // Schedule creative funnel summaries (daily/weekly + spend reset checks)
+ scheduleCreativeFunnelSummaryJobs();
+diff --git a/server/services/apifyService.js b/server/services/apifyService.js
+new file mode 100644
+index 0000000..347646a
+--- /dev/null
++++ b/server/services/apifyService.js
+@@ -0,0 +1,523 @@
++// server/services/apifyService.js
++// Apify Facebook Ads Scraper integration with caching
++
++import axios from 'axios';
++import { getDb } from '../db/database.js';
++import { 
++  isBrandCacheValid, 
++  getBrandCacheExpiry, 
++  updateBrandCache, 
++  getCachedAdIds 
++} from '../db/competitorSpyMigration.js';
++import * as cloudinary from './cloudinaryService.js';
++
++const APIFY_API_BASE = 'https://api.apify.com/v2';
++const ACTOR_ID = 'apify~facebook-ads-scraper';
++
++// ============================================================================
++// SEARCH BY BRAND NAME
++// ============================================================================
++export async function searchByBrand(brandName, options = {}) {
++  const {
++    country = 'ALL',
++    limit = 20,
++    forceRefresh = false
++  } = options;
++
++  const db = getDb();
++  const apiToken = process.env.APIFY_API_TOKEN;
++
++  if (!apiToken) {
++    throw new Error('APIFY_API_TOKEN is not configured. Get one at https://apify.com');
++  }
++
++  // Check cache first (unless force refresh)
++  if (!forceRefresh && isBrandCacheValid(db, brandName, country)) {
++    const cachedAdIds = getCachedAdIds(db, brandName, country);
++    if (cachedAdIds && cachedAdIds.length > 0) {
++      const cacheInfo = getBrandCacheExpiry(db, brandName, country);
++      const ads = getAdsFromDb(db, cachedAdIds, limit);
++      
++      return {
++        ads,
++        cached: true,
++        cache_info: cacheInfo,
++        total_available: cachedAdIds.length
++      };
++    }
++  }
++
++  // Fetch fresh data from Apify
++  try {
++    console.log(`[Apify] Fetching ads for brand: ${brandName}, country: ${country}`);
++    
++    const input = {
++      searchQueries: [brandName],
++      countryCode: country === 'ALL' ? undefined : country,
++      adActiveStatus: 'ALL', // Get both active and inactive
++      adType: 'ALL',
++      maxAds: Math.min(limit * 2, 50), // Fetch extra to account for filtering
++      proxy: {
++        useApifyProxy: true,
++        apifyProxyGroups: ['RESIDENTIAL']
++      }
++    };
++
++    // Start the actor run
++    const runResponse = await axios.post(
++      `${APIFY_API_BASE}/acts/${ACTOR_ID}/runs?token=${apiToken}`,
++      input,
++      { 
++        headers: { 'Content-Type': 'application/json' },
++        timeout: 120000 // 2 minute timeout
++      }
++    );
++
++    const runId = runResponse.data.data.id;
++    console.log(`[Apify] Started run: ${runId}`);
++
++    // Wait for completion (poll every 3 seconds)
++    let status = 'RUNNING';
++    let attempts = 0;
++    const maxAttempts = 60; // 3 minutes max
++
++    while (status === 'RUNNING' && attempts < maxAttempts) {
++      await sleep(3000);
++      const statusResponse = await axios.get(
++        `${APIFY_API_BASE}/actor-runs/${runId}?token=${apiToken}`
++      );
++      status = statusResponse.data.data.status;
++      attempts++;
++    }
++
++    if (status !== 'SUCCEEDED') {
++      throw new Error(`Apify run failed with status: ${status}`);
++    }
++
++    // Get results from dataset
++    const datasetId = runResponse.data.data.defaultDatasetId;
++    const resultsResponse = await axios.get(
++      `${APIFY_API_BASE}/datasets/${datasetId}/items?token=${apiToken}&format=json`
++    );
++
++    const rawAds = resultsResponse.data || [];
++    console.log(`[Apify] Retrieved ${rawAds.length} ads`);
++
++    // Process and store ads
++    const processedAds = await processAndStoreAds(db, rawAds, brandName);
++    
++    // Update cache
++    const adIds = processedAds.map(ad => ad.ad_id);
++    updateBrandCache(db, brandName, country, adIds);
++
++    const cacheInfo = getBrandCacheExpiry(db, brandName, country);
++
++    return {
++      ads: processedAds.slice(0, limit),
++      cached: false,
++      cache_info: cacheInfo,
++      total_available: processedAds.length
++    };
++
++  } catch (error) {
++    console.error('[Apify] Search failed:', error.message);
++    
++    // If API fails, try to return stale cache data
++    const cachedAdIds = getCachedAdIds(db, brandName, country);
++    if (cachedAdIds && cachedAdIds.length > 0) {
++      const ads = getAdsFromDb(db, cachedAdIds, limit);
++      return {
++        ads,
++        cached: true,
++        stale: true,
++        error: error.message,
++        total_available: cachedAdIds.length
++      };
++    }
++
++    throw new Error(`Failed to fetch competitor ads: ${error.message}`);
++  }
++}
++
++// ============================================================================
++// SEARCH BY PAGE URL
++// ============================================================================
++export async function searchByPageUrl(pageUrl, options = {}) {
++  const {
++    country = 'ALL',
++    limit = 20
++  } = options;
++
++  const apiToken = process.env.APIFY_API_TOKEN;
++  if (!apiToken) {
++    throw new Error('APIFY_API_TOKEN is not configured');
++  }
++
++  const db = getDb();
++
++  try {
++    const input = {
++      startUrls: [{ url: pageUrl }],
++      countryCode: country === 'ALL' ? undefined : country,
++      adActiveStatus: 'ALL',
++      maxAds: Math.min(limit * 2, 50),
++      proxy: {
++        useApifyProxy: true
++      }
++    };
++
++    const runResponse = await axios.post(
++      `${APIFY_API_BASE}/acts/${ACTOR_ID}/runs?token=${apiToken}`,
++      input,
++      { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
++    );
++
++    const runId = runResponse.data.data.id;
++    let status = 'RUNNING';
++    let attempts = 0;
++
++    while (status === 'RUNNING' && attempts < 60) {
++      await sleep(3000);
++      const statusResponse = await axios.get(
++        `${APIFY_API_BASE}/actor-runs/${runId}?token=${apiToken}`
++      );
++      status = statusResponse.data.data.status;
++      attempts++;
++    }
++
++    if (status !== 'SUCCEEDED') {
++      throw new Error(`Run failed: ${status}`);
++    }
++
++    const datasetId = runResponse.data.data.defaultDatasetId;
++    const resultsResponse = await axios.get(
++      `${APIFY_API_BASE}/datasets/${datasetId}/items?token=${apiToken}&format=json`
++    );
++
++    const rawAds = resultsResponse.data || [];
++    const processedAds = await processAndStoreAds(db, rawAds, null);
++
++    return {
++      ads: processedAds.slice(0, limit),
++      total_available: processedAds.length
++    };
++
++  } catch (error) {
++    console.error('[Apify] Page URL search failed:', error.message);
++    throw new Error(`Failed to fetch ads from page: ${error.message}`);
++  }
++}
++
++// ============================================================================
++// GET AD DETAILS (from DB or fetch)
++// ============================================================================
++export function getAdById(adId) {
++  const db = getDb();
++  
++  const ad = db.prepare(`
++    SELECT * FROM competitor_ads WHERE ad_id = ?
++  `).get(adId);
++
++  if (!ad) return null;
++
++  return {
++    ...ad,
++    platforms: JSON.parse(ad.platforms || '[]'),
++    countries: JSON.parse(ad.countries || '[]'),
++    analysis: ad.analysis ? JSON.parse(ad.analysis) : null
++  };
++}
++
++// ============================================================================
++// SAVE ANALYSIS TO AD (cached forever)
++// ============================================================================
++export function saveAnalysisToAd(adId, analysis) {
++  const db = getDb();
++  
++  db.prepare(`
++    UPDATE competitor_ads 
++    SET analysis = ?, analysis_created_at = datetime('now'), updated_at = datetime('now')
++    WHERE ad_id = ?
++  `).run(JSON.stringify(analysis), adId);
++}
++
++// ============================================================================
++// GET ADS WITH CACHED ANALYSIS
++// ============================================================================
++export function getAdsWithAnalysis(limit = 20) {
++  const db = getDb();
++  
++  const ads = db.prepare(`
++    SELECT * FROM competitor_ads 
++    WHERE analysis IS NOT NULL 
++    ORDER BY analysis_created_at DESC 
++    LIMIT ?
++  `).all(limit);
++
++  return ads.map(ad => ({
++    ...ad,
++    platforms: JSON.parse(ad.platforms || '[]'),
++    countries: JSON.parse(ad.countries || '[]'),
++    analysis: JSON.parse(ad.analysis)
++  }));
++}
++
++// ============================================================================
++// HELPER: Process and store ads from Apify response
++// ============================================================================
++async function processAndStoreAds(db, rawAds, brandName) {
++  const processedAds = [];
++
++  for (const raw of rawAds) {
++    try {
++      const adId = raw.id || raw.adArchiveID || `apify_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
++      
++      // Check if ad already exists
++      const existing = db.prepare('SELECT * FROM competitor_ads WHERE ad_id = ?').get(adId);
++      
++      if (existing) {
++        // Return existing ad (with Cloudinary URLs already set)
++        processedAds.push({
++          ...existing,
++          platforms: JSON.parse(existing.platforms || '[]'),
++          countries: JSON.parse(existing.countries || '[]'),
++          analysis: existing.analysis ? JSON.parse(existing.analysis) : null
++        });
++        continue;
++      }
++
++      // Determine media type and URLs
++      const mediaType = determineMediaType(raw);
++      const originalImageUrl = extractImageUrl(raw);
++      const originalVideoUrl = extractVideoUrl(raw);
++
++      // Upload to Cloudinary for permanent storage
++      let cloudinaryImageUrl = null;
++      let cloudinaryVideoUrl = null;
++      let cloudinaryThumbnailUrl = null;
++
++      if (originalImageUrl && cloudinary.isConfigured()) {
++        try {
++          const imageBuffer = await downloadMedia(originalImageUrl);
++          const result = await cloudinary.uploadImage(imageBuffer, {
++            folder: 'competitor-spy/images',
++            public_id: `ad_${adId}`
++          });
++          cloudinaryImageUrl = result.secure_url;
++          cloudinaryThumbnailUrl = result.secure_url.replace('/upload/', '/upload/w_400,h_400,c_fill/');
++        } catch (e) {
++          console.warn(`[Apify] Failed to upload image for ad ${adId}:`, e.message);
++        }
++      }
++
++      if (originalVideoUrl && cloudinary.isConfigured()) {
++        try {
++          const videoBuffer = await downloadMedia(originalVideoUrl);
++          const result = await cloudinary.uploadVideo(videoBuffer, {
++            folder: 'competitor-spy/videos',
++            public_id: `ad_${adId}`
++          });
++          cloudinaryVideoUrl = result.secure_url;
++          cloudinaryThumbnailUrl = result.secure_url.replace('/upload/', '/upload/so_0,w_400,h_400,c_fill/').replace(/\.\w+$/, '.jpg');
++        } catch (e) {
++          console.warn(`[Apify] Failed to upload video for ad ${adId}:`, e.message);
++        }
++      }
++
++      // Parse impressions/spend ranges
++      const impressions = parseRange(raw.impressions);
++      const spend = parseRange(raw.spend);
++
++      // Insert into database
++      const ad = {
++        ad_id: adId,
++        page_id: raw.pageId || raw.page_id || null,
++        page_name: raw.pageName || raw.page_name || brandName || 'Unknown',
++        page_profile_picture_url: raw.pageProfilePictureUrl || raw.pageLogo || null,
++        ad_copy: raw.adCreativeBody || raw.bodyText || raw.text || '',
++        headline: raw.adCreativeLinkTitle || raw.headline || '',
++        description: raw.adCreativeLinkDescription || raw.description || '',
++        cta_text: raw.ctaText || raw.callToAction || '',
++        cta_type: raw.ctaType || '',
++        landing_page_url: raw.landingPageUrl || raw.linkUrl || '',
++        original_image_url: originalImageUrl,
++        original_video_url: originalVideoUrl,
++        cloudinary_image_url: cloudinaryImageUrl,
++        cloudinary_video_url: cloudinaryVideoUrl,
++        cloudinary_thumbnail_url: cloudinaryThumbnailUrl || cloudinaryImageUrl,
++        media_type: mediaType,
++        video_duration: raw.videoDuration || null,
++        platforms: JSON.stringify(raw.platforms || raw.publisherPlatforms || ['facebook']),
++        start_date: raw.adDeliveryStartTime || raw.startDate || null,
++        end_date: raw.adDeliveryStopTime || raw.endDate || null,
++        is_active: raw.isActive !== false && !raw.endDate ? 1 : 0,
++        impressions_lower: impressions?.lower || null,
++        impressions_upper: impressions?.upper || null,
++        spend_lower: spend?.lower || null,
++        spend_upper: spend?.upper || null,
++        currency: raw.currency || 'USD',
++        countries: JSON.stringify(raw.countries || raw.targetedCountries || [])
++      };
++
++      db.prepare(`
++        INSERT INTO competitor_ads (
++          ad_id, page_id, page_name, page_profile_picture_url,
++          ad_copy, headline, description, cta_text, cta_type, landing_page_url,
++          original_image_url, original_video_url,
++          cloudinary_image_url, cloudinary_video_url, cloudinary_thumbnail_url,
++          media_type, video_duration, platforms,
++          start_date, end_date, is_active,
++          impressions_lower, impressions_upper, spend_lower, spend_upper, currency,
++          countries
++        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++      `).run(
++        ad.ad_id, ad.page_id, ad.page_name, ad.page_profile_picture_url,
++        ad.ad_copy, ad.headline, ad.description, ad.cta_text, ad.cta_type, ad.landing_page_url,
++        ad.original_image_url, ad.original_video_url,
++        ad.cloudinary_image_url, ad.cloudinary_video_url, ad.cloudinary_thumbnail_url,
++        ad.media_type, ad.video_duration, ad.platforms,
++        ad.start_date, ad.end_date, ad.is_active,
++        ad.impressions_lower, ad.impressions_upper, ad.spend_lower, ad.spend_upper, ad.currency,
++        ad.countries
++      );
++
++      processedAds.push({
++        ...ad,
++        platforms: JSON.parse(ad.platforms),
++        countries: JSON.parse(ad.countries),
++        analysis: null
++      });
++
++    } catch (e) {
++      console.warn('[Apify] Failed to process ad:', e.message);
++    }
++  }
++
++  return processedAds;
++}
++
++// ============================================================================
++// HELPER: Get ads from database by IDs
++// ============================================================================
++function getAdsFromDb(db, adIds, limit) {
++  if (!adIds || adIds.length === 0) return [];
++
++  const placeholders = adIds.map(() => '?').join(',');
++  const ads = db.prepare(`
++    SELECT * FROM competitor_ads 
++    WHERE ad_id IN (${placeholders})
++    ORDER BY start_date DESC
++    LIMIT ?
++  `).all(...adIds, limit);
++
++  return ads.map(ad => ({
++    ...ad,
++    platforms: JSON.parse(ad.platforms || '[]'),
++    countries: JSON.parse(ad.countries || '[]'),
++    analysis: ad.analysis ? JSON.parse(ad.analysis) : null
++  }));
++}
++
++// ============================================================================
++// HELPER FUNCTIONS
++// ============================================================================
++function sleep(ms) {
++  return new Promise(resolve => setTimeout(resolve, ms));
++}
++
++function determineMediaType(raw) {
++  if (raw.videoUrl || raw.video_url || raw.videos?.length > 0) return 'video';
++  if (raw.images?.length > 1 || raw.carouselMedia?.length > 1) return 'carousel';
++  if (raw.imageUrl || raw.image_url || raw.images?.length > 0) return 'image';
++  return 'unknown';
++}
++
++function extractImageUrl(raw) {
++  return raw.imageUrl || 
++         raw.image_url || 
++         raw.images?.[0]?.url || 
++         raw.images?.[0] ||
++         raw.snapshotUrl ||
++         raw.thumbnail ||
++         null;
++}
++
++function extractVideoUrl(raw) {
++  return raw.videoUrl || 
++         raw.video_url || 
++         raw.videos?.[0]?.url || 
++         raw.videos?.[0] ||
++         null;
++}
++
++function parseRange(value) {
++  if (!value) return null;
++  
++  if (typeof value === 'object' && (value.lower_bound || value.upper_bound)) {
++    return {
++      lower: parseInt(value.lower_bound) || 0,
++      upper: parseInt(value.upper_bound) || 0
++    };
++  }
++  
++  if (typeof value === 'string') {
++    const match = value.match(/(\d+)[^\d]+(\d+)/);
++    if (match) {
++      return { lower: parseInt(match[1]), upper: parseInt(match[2]) };
++    }
++    const single = parseInt(value.replace(/\D/g, ''));
++    if (!isNaN(single)) {
++      return { lower: single, upper: single };
++    }
++  }
++  
++  if (typeof value === 'number') {
++    return { lower: value, upper: value };
++  }
++  
++  return null;
++}
++
++async function downloadMedia(url) {
++  try {
++    const response = await axios.get(url, {
++      responseType: 'arraybuffer',
++      timeout: 30000,
++      headers: {
++        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
++      }
++    });
++    return Buffer.from(response.data);
++  } catch (error) {
++    console.error('[Apify] Failed to download media:', error.message);
++    throw error;
++  }
++}
++
++// ============================================================================
++// SUPPORTED COUNTRIES
++// ============================================================================
++export function getSupportedCountries() {
++  return {
++    'ALL': 'All Countries',
++    'SA': 'Saudi Arabia',
++    'AE': 'United Arab Emirates',
++    'KW': 'Kuwait',
++    'QA': 'Qatar',
++    'BH': 'Bahrain',
++    'OM': 'Oman',
++    'EG': 'Egypt',
++    'JO': 'Jordan',
++    'LB': 'Lebanon',
++    'US': 'United States',
++    'GB': 'United Kingdom',
++    'CA': 'Canada',
++    'AU': 'Australia',
++    'DE': 'Germany',
++    'FR': 'France',
++    'TR': 'Turkey',
++    'IN': 'India',
++    'BR': 'Brazil',
++    'MX': 'Mexico'
++  };
++}
+-- 
+2.43.0
+

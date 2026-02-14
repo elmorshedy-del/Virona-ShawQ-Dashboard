@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/database.js';
+import { askDeepSeekChat, normalizeTemperature, streamDeepSeekChat } from './deepseekService.js';
 
 // Import Meta Awareness feature module for reactivation data
 import {
@@ -11,9 +12,125 @@ import {
 } from '../features/meta-awareness/index.js';
 
 // OpenAI Service - GPT-5 + GPT-4 fallback
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const OPENAI_API_KEY_ENV = 'OPENAI_API_KEY';
+const DEEPSEEK_API_KEY_ENV = 'DEEPSEEK_API_KEY';
+let openAiClient = null;
+
+function hasConfiguredEnvKey(envName) {
+  const value = process.env[envName];
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isOpenAiConfigured() {
+  return hasConfiguredEnvKey(OPENAI_API_KEY_ENV);
+}
+
+function isDeepSeekConfigured() {
+  return hasConfiguredEnvKey(DEEPSEEK_API_KEY_ENV);
+}
+
+function getOpenAiClient() {
+  if (openAiClient) return openAiClient;
+
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    const error = new Error(`${OPENAI_API_KEY_ENV} is not configured.`);
+    error.code = 'OPENAI_API_KEY_MISSING';
+    throw error;
+  }
+
+  openAiClient = new OpenAI({ apiKey });
+  return openAiClient;
+}
+
+if (!isOpenAiConfigured()) {
+  console.warn(
+    `[OpenAI] ${OPENAI_API_KEY_ENV} is not configured. OpenAI calls are disabled; set provider=deepseek with ${DEEPSEEK_API_KEY_ENV} if available.`
+  );
+}
+
+const EFFORT_OPTIONS_BY_MODEL = {
+  'gpt-5.2': ['none', 'medium', 'xhigh'],
+  'gpt-5.2-pro': ['none', 'medium', 'xhigh'],
+  'gpt-5.1-chat-latest': ['medium'],
+  'gpt-4o-mini': ['medium']
+};
+
+function normalizeReasoningEffort(model, reasoningEffort) {
+  if (!reasoningEffort) return reasoningEffort;
+  if (model === 'gpt-4o-mini' && reasoningEffort === 'low') return 'medium';
+  return reasoningEffort;
+}
+
+export async function askOpenAIChat({
+  model,
+  reasoningEffort,
+  systemPrompt,
+  messages,
+  maxOutputTokens = 3600,
+  verbosity = 'medium'
+}) {
+  const normalizedEffort = normalizeReasoningEffort(model, reasoningEffort);
+  const allowed = EFFORT_OPTIONS_BY_MODEL[model] || ['medium'];
+  if (normalizedEffort && !allowed.includes(normalizedEffort)) {
+    throw new Error(
+      `Unsupported reasoningEffort "${normalizedEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
+    );
+  }
+
+  const input = [
+    ...(systemPrompt ? [{ role: 'developer', content: systemPrompt }] : []),
+    ...messages.map((message) => ({ role: message.role, content: message.content }))
+  ];
+
+  const resp = await getOpenAiClient().responses.create({
+    model,
+    reasoning: normalizedEffort ? { effort: normalizedEffort } : undefined,
+    input,
+    max_output_tokens: maxOutputTokens,
+    text: { verbosity }
+  });
+
+  return resp.output_text;
+}
+
+export async function streamOpenAIChat({
+  model,
+  reasoningEffort,
+  systemPrompt,
+  messages,
+  maxOutputTokens = 3600,
+  verbosity = 'medium',
+  onDelta
+}) {
+  const normalizedEffort = normalizeReasoningEffort(model, reasoningEffort);
+  const allowed = EFFORT_OPTIONS_BY_MODEL[model] || ['medium'];
+  if (normalizedEffort && !allowed.includes(normalizedEffort)) {
+    throw new Error(
+      `Unsupported reasoningEffort "${normalizedEffort}" for ${model}. Allowed: ${allowed.join(', ')}`
+    );
+  }
+
+  const input = [
+    ...(systemPrompt ? [{ role: 'developer', content: systemPrompt }] : []),
+    ...messages.map((message) => ({ role: message.role, content: message.content }))
+  ];
+
+  const stream = await getOpenAiClient().responses.create({
+    model,
+    reasoning: normalizedEffort ? { effort: normalizedEffort } : undefined,
+    input,
+    max_output_tokens: maxOutputTokens,
+    text: { verbosity },
+    stream: true
+  });
+
+  for await (const event of stream) {
+    if (event.type === 'response.output_text.delta') {
+      onDelta(event.delta);
+    }
+  }
+}
 
 const MODELS = {
   ASK: 'gpt-4o',           // Fast, direct answers - no fallback needed
@@ -39,10 +156,31 @@ const TOKEN_LIMITS = {
 
 const DEPTH_TO_EFFORT = {
   instant: 'none',
-  fast: 'low',
+  fast: 'medium',
   balanced: 'medium',
   deep: 'high'
 };
+
+const DEEPSEEK_MODELS = new Set(['deepseek-chat', 'deepseek-reasoner']);
+
+function resolveAiProvider(options = {}) {
+  if (typeof options?.provider === 'string' && options.provider.trim()) {
+    return options.provider.trim().toLowerCase();
+  }
+  if (typeof options?.model === 'string' && options.model.startsWith('deepseek-')) return 'deepseek';
+  if (!isOpenAiConfigured() && isDeepSeekConfigured()) return 'deepseek';
+  return 'openai';
+}
+
+function resolveDeepSeekModel({ requestedModel, mode }) {
+  if (requestedModel && DEEPSEEK_MODELS.has(requestedModel)) return requestedModel;
+  // Default: use "thinking" model only for strategic / decide mode.
+  return mode === 'decide' ? 'deepseek-reasoner' : 'deepseek-chat';
+}
+
+function resolveDeepSeekTemperature({ requestedTemperature, fallback = 1.0 }) {
+  return normalizeTemperature(requestedTemperature, fallback);
+}
 
 // ============================================================================
 // OPTIMIZED DATA FETCHING - Full hierarchy with funnel metrics (120k token support)
@@ -347,25 +485,28 @@ function getStoreData(db, storeName, today, yesterday, periodStart, periodEnd) {
 
     // E-commerce orders
     const orderTable = storeName === 'vironax' ? 'salla_orders' : 'shopify_orders';
+    const exclusionClause = ['shopify_orders', 'salla_orders'].includes(orderTable)
+      ? ' AND COALESCE(is_excluded, 0) = 0'
+      : '';
     try {
       storeData.ordersOverview = db.prepare(`
         SELECT COUNT(*) as totalOrders, SUM(order_total) as totalRevenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?${exclusionClause}
       `).get(storeName, periodStart);
 
       storeData.ordersToday = db.prepare(`
         SELECT COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?${exclusionClause}
       `).get(storeName, today);
 
       storeData.ordersYesterday = db.prepare(`
         SELECT COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date = ?${exclusionClause}
       `).get(storeName, yesterday);
 
       storeData.ordersByCountry = db.prepare(`
         SELECT country_code, COUNT(*) as orders, SUM(order_total) as revenue
-        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?
+        FROM ${orderTable} WHERE LOWER(store) = ? AND date >= ?${exclusionClause}
         GROUP BY country_code ORDER BY orders DESC LIMIT 15
       `).all(storeName, periodStart);
     } catch (e) {}
@@ -1138,13 +1279,13 @@ async function callResponsesAPI(model, systemPrompt, userMessage, maxTokens, rea
   }
 
   console.log(`[OpenAI] Calling ${model} (max_tokens: ${maxTokens})`);
-  const response = await client.responses.create(requestBody);
+  const response = await getOpenAiClient().responses.create(requestBody);
   return response.output_text;
 }
 
 async function callChatCompletionsAPI(model, systemPrompt, userMessage, maxTokens, temperature = 0.7) {
   console.log(`[OpenAI] Fallback to ${model} (max_tokens: ${maxTokens}, temp: ${temperature})`);
-  const response = await client.chat.completions.create({
+  const response = await getOpenAiClient().chat.completions.create({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -1188,7 +1329,7 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
     }
 
     console.log(`[OpenAI] Streaming ${primary}`);
-    const stream = await client.responses.create(requestBody);
+    const stream = await getOpenAiClient().responses.create(requestBody);
 
     for await (const event of stream) {
       if (event.type === 'response.output_text.delta') {
@@ -1200,7 +1341,7 @@ async function streamWithFallback(primary, fallback, systemPrompt, userMessage, 
   } catch (error) {
     console.log(`[OpenAI] Stream ${primary} failed: ${error.message}, trying ${fallback}`);
 
-    const response = await client.chat.completions.create({
+    const response = await getOpenAiClient().chat.completions.create({
       model: fallback,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -1234,48 +1375,186 @@ const MODE_TEMPERATURES = {
   decide: 0.7
 };
 
-export async function analyzeQuestion(question, store, history = [], startDate = null, endDate = null) {
+export async function analyzeQuestion(question, store, history = [], startDate = null, endDate = null, options = {}) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
-  
+
+  const provider = resolveAiProvider(options);
+  if (provider === 'deepseek') {
+    const model = resolveDeepSeekModel({ requestedModel: options?.model, mode: 'analyze' });
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    const result = await askDeepSeekChat({
+      model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: TOKEN_LIMITS.nano,
+      temperature
+    });
+    return result;
+  }
+
   // Use GPT-4o directly for Ask mode - faster and more reliable
   const text = await callChatCompletionsAPI(MODELS.ASK, systemPrompt, question, TOKEN_LIMITS.nano, MODE_TEMPERATURES.analyze);
   return { text, model: MODELS.ASK };
 }
 
-export async function summarizeData(question, store, history = [], startDate = null, endDate = null) {
+export async function summarizeData(question, store, history = [], startDate = null, endDate = null, options = {}) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
+
+  const provider = resolveAiProvider(options);
+  if (provider === 'deepseek') {
+    const model = resolveDeepSeekModel({ requestedModel: options?.model, mode: 'summarize' });
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    return await askDeepSeekChat({
+      model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: TOKEN_LIMITS.mini,
+      temperature
+    });
+  }
+
   return await callWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, MODE_TEMPERATURES.summarize);
 }
 
-export async function decideQuestion(question, store, depth = 'balanced', history = [], startDate = null, endDate = null) {
+export async function decideQuestion(question, store, depth = 'balanced', history = [], startDate = null, endDate = null, options = {}) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
+
+  const provider = resolveAiProvider(options);
+  if (provider === 'deepseek') {
+    const model = resolveDeepSeekModel({ requestedModel: options?.model, mode: 'decide' });
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    const result = await askDeepSeekChat({
+      model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: maxTokens,
+      temperature
+    });
+
+    return { ...result, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
+  }
 
   const result = await callWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, MODE_TEMPERATURES.decide);
   return { ...result, reasoning: effort };
 }
 
-export async function decideQuestionStream(question, store, depth = 'balanced', onDelta, history = [], startDate = null, endDate = null) {
+export async function decideQuestionStream(question, store, depth = 'balanced', onDelta, history = [], startDate = null, endDate = null, options = {}) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'decide', data, question);
   const effort = DEPTH_TO_EFFORT[depth] || 'medium';
   const maxTokens = TOKEN_LIMITS[depth] || TOKEN_LIMITS.balanced;
 
+  const provider = resolveAiProvider(options);
+  if (provider === 'deepseek') {
+    const model = resolveDeepSeekModel({ requestedModel: options?.model, mode: 'decide' });
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    await streamDeepSeekChat({
+      model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: maxTokens,
+      temperature,
+      onDelta
+    });
+    return { model, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
+  }
+
   return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta, MODE_TEMPERATURES.decide);
 }
 
+export async function generateCreativeFunnelSummary({
+  store,
+  mode,
+  prompt,
+  verbosity = 'low',
+  startDate = null,
+  endDate = null,
+  onDelta = null,
+  llm = {}
+}) {
+  const data = getRelevantData(store, prompt, startDate, endDate);
+  const systemPrompt = buildSystemPrompt(store, mode, data, prompt);
+  const messages = [{ role: 'user', content: prompt }];
+
+  const provider = resolveAiProvider(llm);
+  if (provider === 'deepseek') {
+    const model = resolveDeepSeekModel({ requestedModel: llm?.model, mode });
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: llm?.temperature, fallback: 1.0 });
+
+    if (onDelta) {
+      await streamDeepSeekChat({
+        model,
+        systemPrompt,
+        messages,
+        maxOutputTokens: TOKEN_LIMITS.fast,
+        temperature,
+        onDelta
+      });
+      return { model, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
+    }
+
+    const result = await askDeepSeekChat({
+      model,
+      systemPrompt,
+      messages,
+      maxOutputTokens: TOKEN_LIMITS.fast,
+      temperature
+    });
+    return { ...result, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
+  }
+
+  if (onDelta) {
+    await streamOpenAIChat({
+      model: MODELS.STRATEGIST,
+      reasoningEffort: 'medium',
+      systemPrompt,
+      messages,
+      maxOutputTokens: TOKEN_LIMITS.fast,
+      verbosity,
+      onDelta
+    });
+    return { model: MODELS.STRATEGIST, reasoning: 'medium' };
+  }
+
+  const text = await askOpenAIChat({
+    model: MODELS.STRATEGIST,
+    reasoningEffort: 'medium',
+    systemPrompt,
+    messages,
+    maxOutputTokens: TOKEN_LIMITS.fast,
+    verbosity
+  });
+  return { text, model: MODELS.STRATEGIST, reasoning: 'medium' };
+}
+
 // Streaming versions for Analyze and Summarize
-export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
+export async function analyzeQuestionStream(question, store, onDelta, history = [], startDate = null, endDate = null, options = {}) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'analyze', data, question);
+
+  const provider = resolveAiProvider(options);
+  if (provider === 'deepseek') {
+    const model = resolveDeepSeekModel({ requestedModel: options?.model, mode: 'analyze' });
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    await streamDeepSeekChat({
+      model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: TOKEN_LIMITS.nano,
+      temperature,
+      onDelta
+    });
+    return { model, reasoning: null };
+  }
   
   // Use GPT-4o directly for Ask mode - faster streaming
   console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
-  const response = await client.chat.completions.create({
+  const response = await getOpenAiClient().chat.completions.create({
     model: MODELS.ASK,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -1294,9 +1573,25 @@ export async function analyzeQuestionStream(question, store, onDelta, history = 
   return { model: MODELS.ASK, reasoning: null };
 }
 
-export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null) {
+export async function summarizeDataStream(question, store, onDelta, history = [], startDate = null, endDate = null, options = {}) {
   const data = getRelevantData(store, question, startDate, endDate);
   const systemPrompt = buildSystemPrompt(store, 'summarize', data, question);
+
+  const provider = resolveAiProvider(options);
+  if (provider === 'deepseek') {
+    const model = resolveDeepSeekModel({ requestedModel: options?.model, mode: 'summarize' });
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    await streamDeepSeekChat({
+      model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: TOKEN_LIMITS.mini,
+      temperature,
+      onDelta
+    });
+    return { model, reasoning: null };
+  }
+
   return await streamWithFallback(MODELS.MINI, FALLBACK_MODELS.MINI, systemPrompt, question, TOKEN_LIMITS.mini, null, onDelta, MODE_TEMPERATURES.summarize);
 }
 
@@ -1337,7 +1632,7 @@ If there are promising reactivation candidates, include a "Reactivation Opportun
   return await callWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, userPrompt, TOKEN_LIMITS.deep, 'high');
 }
 
-export async function dailySummaryStream(reportType = 'am', onDelta) {
+export async function dailySummaryStream(reportType = 'am', onDelta, options = {}) {
   const db = getDb();
   const today = new Date().toISOString().split('T')[0];
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -1366,6 +1661,21 @@ The data includes:
 If there are promising reactivation candidates, include a "Reactivation Opportunities" section.`;
 
   const userPrompt = `${reportType.toUpperCase()} Report for ${today}\n\nDATA:\n${JSON.stringify(data, null, 2)}`;
+
+  const provider = resolveAiProvider(options);
+  if (provider === 'deepseek') {
+    const model = resolveDeepSeekModel({ requestedModel: options?.model, mode: 'decide' });
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    await streamDeepSeekChat({
+      model,
+      systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+      maxOutputTokens: TOKEN_LIMITS.deep,
+      temperature,
+      onDelta
+    });
+    return { model, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
+  }
 
   return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, userPrompt, TOKEN_LIMITS.deep, 'high', onDelta);
 }
