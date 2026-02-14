@@ -8118,6 +8118,21 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
     }
 
     const expectedPurchases = (daily * testDays) / Math.max(baseCac, 1);
+    const expectedRange = (() => {
+      const baseLow = Math.max(0, expectedPurchases * 0.8);
+      const baseHigh = Math.max(0, expectedPurchases * 1.2);
+      const targetLow = targetRange.min * 0.8;
+      const targetHigh = targetRange.max * 1.2;
+      let low = Math.max(baseLow, targetLow);
+      let high = Math.min(baseHigh, targetHigh);
+
+      if (low > high) {
+        low = Math.min(baseLow, baseHigh);
+        high = Math.max(baseLow, baseHigh);
+      }
+
+      return { low, high };
+    })();
 
     return {
       country: countryCode,
@@ -8129,10 +8144,7 @@ function BudgetIntelligenceTab({ data, formatCurrency, store }) {
       posteriorCAC: baseCac,
       posteriorROAS: priors.meanROAS || priors.targetROAS || 0,
       expectedPurchases,
-      expectedRange: {
-        low: Math.max(targetRange.min * 0.8, expectedPurchases * 0.8),
-        high: Math.min(targetRange.max * 1.2, expectedPurchases * 1.2)
-      },
+      expectedRange,
       confidence: 'Low',
       confidenceBand: {
         low: (priors.meanROAS || 0) * 0.8,
