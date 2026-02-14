@@ -536,14 +536,16 @@ function normalizeGeoLabel(value, { uppercase = false, maxLength = 64 } = {}) {
   const normalized = uppercase ? raw.toUpperCase() : raw;
   const lowered = normalized.toLowerCase();
 
-  if (
-    lowered === '[redacted]' ||
-    lowered === 'redacted' ||
-    lowered === 'unknown' ||
-    lowered === 'n/a' ||
-    lowered === 'na' ||
-    lowered === 'null'
-  ) {
+  const JUNK_VALUES = new Set([
+    '[redacted]',
+    'redacted',
+    'unknown',
+    'n/a',
+    'na',
+    'null'
+  ]);
+
+  if (JUNK_VALUES.has(lowered)) {
     return null;
   }
 
