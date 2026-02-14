@@ -78,6 +78,7 @@ export default function GeoHotspotsMap({
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const lastDrawAtRef = useRef(0);
+  const lastRegionCodeRef = useRef(null);
   const redrawTimeoutRef = useRef(null);
   const [error, setError] = useState('');
 
@@ -139,10 +140,12 @@ export default function GeoHotspotsMap({
 
         if (regionCode) {
           options.region = regionCode;
+          options.resolution = 'provinces';
         }
 
         chart.draw(data, options);
         lastDrawAtRef.current = Date.now();
+        lastRegionCodeRef.current = regionCode || null;
         setError('');
       } catch (e) {
         if (cancelled) return;
@@ -158,7 +161,8 @@ export default function GeoHotspotsMap({
 
       const now = Date.now();
       const elapsed = now - (lastDrawAtRef.current || 0);
-      const delay = elapsed >= MIN_REDRAW_MS ? 0 : MIN_REDRAW_MS - elapsed;
+      const regionChanged = lastRegionCodeRef.current !== (regionCode || null);
+      const delay = regionChanged || elapsed >= MIN_REDRAW_MS ? 0 : MIN_REDRAW_MS - elapsed;
 
       redrawTimeoutRef.current = setTimeout(() => {
         redrawTimeoutRef.current = null;
