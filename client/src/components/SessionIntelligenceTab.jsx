@@ -15,6 +15,7 @@ const ACTION_PLAN_ESTABLISHED_MIN_SESSIONS = 80;
 const ACTION_PLAN_SOURCE_MISMATCH_MIN_CAMPAIGN_SESSIONS = 20;
 const ACTION_PLAN_SOURCE_MISMATCH_MIN_COUNTRY_SESSIONS = 20;
 const ACTION_PLAN_SOURCE_MISMATCH_MIN_NO_PROGRESS_RATE = 0.6;
+const DEVICE_ABANDONMENT_FULL_CIRCLE_DEGREES = 360;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -57,6 +58,14 @@ const FLOW_STAGE_LABELS = {
   checkout_payment: 'Checkout (Payment)',
   purchase: 'Purchase'
 };
+
+const DEVICE_ABANDONMENT_SEGMENTS = [
+  { key: 'ios', label: 'iOS', color: '#6366f1' },
+  { key: 'android', label: 'Android', color: '#0ea5e9' },
+  { key: 'desktop', label: 'Desktop', color: '#14b8a6' }
+];
+
+const DEVICE_ABANDON_SECTION_ORDER = ['Payment', 'Checkout', 'Cart', 'Product', 'Landing'];
 
 function parseSqliteTimestamp(ts) {
   if (!ts || typeof ts !== 'string') return null;
@@ -168,8 +177,8 @@ function inferDropoffStageFromSummary(session) {
   if (!session || typeof session !== 'object') return 'landing';
   if (Number(session.purchase_events || 0) > 0) return 'purchase';
 
-  if (Number(session.checkout_started_events || 0) > 0) {
-    const step = normalizeCheckoutStepKey(session.last_checkout_step);
+  const step = normalizeCheckoutStepKey(session.last_checkout_step);
+  if (Number(session.checkout_started_events || 0) > 0 || step) {
     if (step === 'payment') return 'checkout_payment';
     if (step === 'shipping') return 'checkout_shipping';
     return 'checkout_contact';
@@ -589,6 +598,156 @@ function hasCart(session) {
 
 function noPurchase(session) {
   return !hasPurchase(session);
+}
+
+function deviceSegmentKeyFromSession(session) {
+  const rawType = normalizeLooseKey(session?.device_type);
+  const rawOs = normalizeLooseKey(session?.device_os);
+
+  if (rawType === 'desktop' || rawType.includes('desktop')) return 'desktop';
+  if (rawOs === 'ios' || rawType === 'ios' || rawType === 'ipados' || rawType.includes('ios') || rawType.includes('ipad')) return 'ios';
+  if (rawOs === 'android' || rawType === 'android' || rawType === 'android tablet' || rawType.includes('android')) return 'android';
+  return null;
+}
+
+function abandonSectionLabelFromSession(session) {
+  const stage = inferDropoffStageFromSummary(session);
+  if (stage === 'checkout_payment') return 'Payment';
+  if (stage === 'checkout_contact' || stage === 'checkout_shipping') return 'Checkout';
+  if (stage === 'cart' || stage === 'atc') return 'Cart';
+  if (stage === 'product') return 'Product';
+  return 'Landing';
+}
+
+function compareAbandonSectionEntries(a, b) {
+  if (b[1] !== a[1]) return b[1] - a[1];
+  const aOrder = DEVICE_ABANDON_SECTION_ORDER.indexOf(a[0]);
+  const bOrder = DEVICE_ABANDON_SECTION_ORDER.indexOf(b[0]);
+  const safeA = aOrder >= 0 ? aOrder : DEVICE_ABANDON_SECTION_ORDER.length;
+  const safeB = bOrder >= 0 ? bOrder : DEVICE_ABANDON_SECTION_ORDER.length;
+  return safeA - safeB;
+}
+
+function buildTrafficAdjustedPieGradient(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let cursorDegrees = 0;
+  const segments = [];
+
+  list.forEach((row) => {
+    const share = clamp01(row?.adjustedShare || 0);
+    if (share <= 0) return;
+    const start = cursorDegrees;
+    const end = start + (share * DEVICE_ABANDONMENT_FULL_CIRCLE_DEGREES);
+    segments.push(`${row.color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`);
+    cursorDegrees = end;
+  });
+
+  if (!segments.length) {
+    return 'conic-gradient(rgba(148, 163, 184, 0.30) 0deg 360deg)';
+  }
+  return `conic-gradient(${segments.join(', ')})`;
+}
+
+function buildDeviceAbandonmentModel({ librarySessions }) {
+  const sessions = Array.isArray(librarySessions) ? librarySessions : [];
+  const buckets = new Map(
+    DEVICE_ABANDONMENT_SEGMENTS.map((segment) => [
+      segment.key,
+      {
+        ...segment,
+        totalSessions: 0,
+        abandonSessions: 0,
+        sectionCounts: new Map()
+      }
+    ])
+  );
+
+  let unclassifiedSessions = 0;
+
+  sessions.forEach((session) => {
+    const segmentKey = deviceSegmentKeyFromSession(session);
+    const isAbandon = noPurchase(session);
+
+    if (!segmentKey) {
+      unclassifiedSessions += 1;
+      return;
+    }
+
+    const bucket = buckets.get(segmentKey);
+    if (!bucket) return;
+
+    bucket.totalSessions += 1;
+    if (!isAbandon) return;
+
+    bucket.abandonSessions += 1;
+    const section = abandonSectionLabelFromSession(session);
+    bucket.sectionCounts.set(section, (bucket.sectionCounts.get(section) || 0) + 1);
+  });
+
+  const rows = DEVICE_ABANDONMENT_SEGMENTS.map((segment) => {
+    const bucket = buckets.get(segment.key);
+    const totalSessions = Number(bucket?.totalSessions) || 0;
+    const abandonSessions = Number(bucket?.abandonSessions) || 0;
+    const abandonRate = totalSessions > 0 ? (abandonSessions / totalSessions) : 0;
+    const topSectionEntry = Array.from(bucket?.sectionCounts?.entries?.() || [])
+      .sort(compareAbandonSectionEntries)[0] || null;
+    const topSectionLabel = topSectionEntry ? topSectionEntry[0] : '—';
+    const topSectionCount = topSectionEntry ? Number(topSectionEntry[1]) || 0 : 0;
+    const topSectionShare = abandonSessions > 0 ? (topSectionCount / abandonSessions) : 0;
+
+    return {
+      ...segment,
+      totalSessions,
+      abandonSessions,
+      abandonRate,
+      topSectionLabel,
+      topSectionCount,
+      topSectionShare
+    };
+  });
+
+  const totalClassifiedSessions = rows.reduce((sum, row) => sum + row.totalSessions, 0);
+  const totalClassifiedAbandon = rows.reduce((sum, row) => sum + row.abandonSessions, 0);
+  const baselineAbandonRate = totalClassifiedSessions > 0 ? (totalClassifiedAbandon / totalClassifiedSessions) : 0;
+
+  const withNormalization = rows.map((row) => {
+    const trafficShare = totalClassifiedSessions > 0 ? (row.totalSessions / totalClassifiedSessions) : 0;
+    const abandonShare = totalClassifiedAbandon > 0 ? (row.abandonSessions / totalClassifiedAbandon) : 0;
+    const expectedAbandon = row.totalSessions * baselineAbandonRate;
+    const excessAbandon = row.abandonSessions - expectedAbandon;
+    const adjustedIndex = trafficShare > 0 ? (abandonShare / trafficShare) : 0;
+    return {
+      ...row,
+      trafficShare,
+      abandonShare,
+      expectedAbandon,
+      excessAbandon,
+      adjustedIndex
+    };
+  });
+
+  const adjustedIndexTotal = withNormalization.reduce((sum, row) => sum + row.adjustedIndex, 0);
+  const rowsWithAdjustedShare = withNormalization.map((row) => ({
+    ...row,
+    adjustedShare: adjustedIndexTotal > 0 ? (row.adjustedIndex / adjustedIndexTotal) : 0
+  }));
+
+  const topOverIndexed = rowsWithAdjustedShare
+    .filter((row) => row.excessAbandon > 0)
+    .sort((a, b) => {
+      if (b.adjustedIndex !== a.adjustedIndex) return b.adjustedIndex - a.adjustedIndex;
+      return b.excessAbandon - a.excessAbandon;
+    })[0] || null;
+
+  return {
+    rows: rowsWithAdjustedShare,
+    totalSessions: totalClassifiedSessions,
+    totalAbandonSessions: totalClassifiedAbandon,
+    baselineAbandonRate,
+    unclassifiedSessions,
+    pieGradient: buildTrafficAdjustedPieGradient(rowsWithAdjustedShare),
+    topOverIndexed
+  };
 }
 
 function actionPlanStatusForCount(count) {
@@ -1664,6 +1823,9 @@ export default function SessionIntelligenceTab({ store }) {
   const actionPlanRows = useMemo(() => (
     buildBehaviorPatternRows({ librarySessions })
   ), [librarySessions]);
+  const deviceAbandonmentModel = useMemo(() => (
+    buildDeviceAbandonmentModel({ librarySessions })
+  ), [librarySessions]);
 
   useEffect(() => {
     if (hasConfirmedVerifiableIssues) return;
@@ -1926,6 +2088,96 @@ export default function SessionIntelligenceTab({ store }) {
             <div className="si-summary-kpi-value">{formatNumber(summaryTotals.estimatedAtRisk)}</div>
           </div>
         </div>
+      </div>
+
+      <div className="si-card si-device-abandon-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Abandonment by device</h3>
+          <span className="si-muted">Traffic-adjusted view • {libraryDay || 'Today'}</span>
+        </div>
+        {deviceAbandonmentModel.totalSessions === 0 ? (
+          <div className="si-empty">
+            No classified iOS/Android/Desktop sessions yet for this day.
+          </div>
+        ) : (
+          <>
+            <div className="si-device-abandon-layout">
+              <div className="si-device-pie-wrap">
+                <div className="si-device-pie" style={{ background: deviceAbandonmentModel.pieGradient }}>
+                  <div className="si-device-pie-center">
+                    <div className="si-device-pie-value">{formatPercent(deviceAbandonmentModel.baselineAbandonRate, 0)}</div>
+                    <div className="si-device-pie-label">Baseline abandon rate</div>
+                  </div>
+                </div>
+              </div>
+              <div className="si-device-legend">
+                {deviceAbandonmentModel.rows.map((row) => {
+                  const excessRounded = Math.round(row.excessAbandon);
+                  const excessLabel = `${excessRounded > 0 ? '+' : ''}${formatNumber(excessRounded)} vs expected`;
+                  return (
+                    <div key={`device-legend-${row.key}`} className="si-device-legend-row">
+                      <span className="si-device-dot" style={{ background: row.color }} />
+                      <span className="si-device-legend-name">{row.label}</span>
+                      <span className="si-device-legend-share">{formatPercent(row.adjustedShare, 0)}</span>
+                      <span className={`si-device-legend-excess ${row.excessAbandon > 0 ? 'si-device-legend-excess-positive' : 'si-device-legend-excess-neutral'}`}>
+                        {excessLabel}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="si-device-note">
+              This chart adjusts abandonment by each device&apos;s share of total sessions, so high-volume traffic does not dominate by default.
+            </div>
+            <div className="si-device-note si-device-note-fine">
+              Math note: adjusted share is proportional to (device abandon share ÷ device traffic share), then normalized to 100%.
+            </div>
+            {deviceAbandonmentModel.unclassifiedSessions > 0 ? (
+              <div className="si-muted" style={{ marginTop: 6 }}>
+                Excluded {pluralize(deviceAbandonmentModel.unclassifiedSessions, 'session', 'sessions')} without clear iOS/Android/Desktop classification.
+              </div>
+            ) : null}
+            {deviceAbandonmentModel.topOverIndexed ? (
+              <div className="si-device-callout">
+                Strongest over-index today: <strong>{deviceAbandonmentModel.topOverIndexed.label}</strong> ({formatPercent(deviceAbandonmentModel.topOverIndexed.abandonRate, 1)} abandon rate), most commonly at <strong>{deviceAbandonmentModel.topOverIndexed.topSectionLabel}</strong>.
+              </div>
+            ) : null}
+
+            <table className="si-event-table si-device-abandon-table">
+              <thead>
+                <tr>
+                  <th>Device</th>
+                  <th>Sessions</th>
+                  <th>Abandon rate</th>
+                  <th>Traffic-adjusted index</th>
+                  <th>Likely abandon section</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deviceAbandonmentModel.rows.map((row) => (
+                  <tr key={`device-row-${row.key}`}>
+                    <td>
+                      <span className="si-device-table-device">
+                        <span className="si-device-dot" style={{ background: row.color }} />
+                        {row.label}
+                      </span>
+                    </td>
+                    <td>{pluralize(row.totalSessions, 'session', 'sessions')}</td>
+                    <td>{formatPercent(row.abandonRate, 1)}</td>
+                    <td>{row.adjustedIndex.toFixed(2)}x</td>
+                    <td>
+                      {row.topSectionLabel === '—'
+                        ? '—'
+                        : `${row.topSectionLabel} (${formatPercent(row.topSectionShare, 0)} of abandons)`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
       </div>
 
       <div className="si-card si-action-plan-card" style={{ marginBottom: 12 }}>
