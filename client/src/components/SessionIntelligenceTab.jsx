@@ -9,6 +9,13 @@ const POLL_OVERVIEW_MS = 20000;
 const REALTIME_WINDOW_MINUTES = 30;
 const REQUEST_TIMEOUT_MS = 15000;
 const REALTIME_GEO_ROWS_LIMIT = 8;
+const ACTION_PLAN_ROW_LIMIT = 3;
+const ACTION_PLAN_MIN_ABANDONMENT_MATCHES = 2;
+const ACTION_PLAN_REQUIRE_CONFIRMED = true;
+const ACTION_PLAN_ALLOW_NON_VERIFIABLE = true;
+const ACTION_PLAN_NON_VERIFIABLE_CONFIDENCE = 'High';
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -86,6 +93,26 @@ function formatNumber(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   return new Intl.NumberFormat().format(n);
+}
+
+function formatDurationShort(seconds) {
+  const totalSeconds = Number(seconds);
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return null;
+  const rounded = Math.round(totalSeconds);
+  const hours = Math.floor(rounded / SECONDS_PER_HOUR);
+  const minutes = Math.floor((rounded % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
+  const secs = rounded % SECONDS_PER_MINUTE;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function sessionDurationSeconds(session) {
+  const start = parseSqliteTimestamp(session?.first_seen);
+  const end = parseSqliteTimestamp(session?.last_seen);
+  if (!start || !end) return null;
+  const diff = (end.getTime() - start.getTime()) / 1000;
+  return Number.isFinite(diff) && diff > 0 ? diff : null;
 }
 
 function safeJsonParse(value) {
@@ -568,6 +595,97 @@ function buildDeveloperFixSteps(row) {
   return entry.default || [];
 }
 
+const ACTION_PLAN_STAGE_ORDER = {
+  product: 1,
+  cart: 2,
+  checkout: 3,
+  purchase: 4,
+  other: 0
+};
+
+function inferIssueStageFromPagePath(path) {
+  const raw = (path || '').toString().toLowerCase();
+  if (!raw) return 'other';
+  if (raw.includes('checkout')) return 'checkout';
+  if (raw.includes('/cart')) return 'cart';
+  if (raw.includes('/products') || raw.includes('/product')) return 'product';
+  return 'other';
+}
+
+function inferSessionProgressStage(session) {
+  if ((Number(session?.purchase_events) || 0) > 0) return 'purchase';
+  if ((Number(session?.checkout_started_events) || 0) > 0 || session?.last_checkout_step) return 'checkout';
+  if ((Number(session?.atc_events) || 0) > 0) return 'cart';
+  return 'product';
+}
+
+function isAbandonmentLinkedSession(session, issueStage) {
+  if (!session || issueStage === 'other') return false;
+  if ((Number(session?.purchase_events) || 0) > 0) return false;
+  const progressStage = inferSessionProgressStage(session);
+  const progressRank = ACTION_PLAN_STAGE_ORDER[progressStage] || 0;
+  const issueRank = ACTION_PLAN_STAGE_ORDER[issueStage] || 0;
+  return progressRank <= issueRank;
+}
+
+function actionPlanNextStepLabel(issueStage) {
+  if (issueStage === 'checkout') return 'purchasing';
+  if (issueStage === 'cart') return 'starting checkout';
+  return 'adding to cart';
+}
+
+function actionPlanFocusLine(row) {
+  if (!row) return 'this issue';
+  if (row.type === 'dead_clicks' || row.type === 'rage_clicks') {
+    return row.targetLabel ? `clicking "${row.targetLabel}"` : 'clicking a UI element';
+  }
+  if (row.type === 'js_errors') {
+    return row.errorLabel ? `the error "${row.errorLabel}"` : 'a script error';
+  }
+  if (row.type === 'form_invalid') {
+    const detail = row.whereLabel?.split('•')?.[1]?.trim();
+    return detail ? `form errors on "${detail}"` : 'form validation errors';
+  }
+  if (row.type === 'scroll_dropoff') {
+    return 'scrolling only partway down the page';
+  }
+  return row.issueLabel ? `the "${row.issueLabel}" issue` : 'this issue';
+}
+
+function buildActionPlanEvidence(row) {
+  const samples = Array.isArray(row?.sampleSessions) ? row.sampleSessions : [];
+  if (!samples.length) return null;
+  const issueStage = inferIssueStageFromPagePath(row?.pagePath || row?.pageLabel || '');
+  const matches = samples.filter((session) => isAbandonmentLinkedSession(session, issueStage));
+  if (matches.length < ACTION_PLAN_MIN_ABANDONMENT_MATCHES) return null;
+
+  const durations = matches
+    .map(sessionDurationSeconds)
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const medianDuration = durations.length ? quantile(durations, 0.5) : null;
+  const durationLabel = formatDurationShort(medianDuration);
+  const timePhrase = durationLabel ? `spent about ${durationLabel}` : 'spent time';
+  const nextStep = actionPlanNextStepLabel(issueStage);
+  const pageLabel = row?.pageLabel || 'the page';
+  const focusLine = actionPlanFocusLine(row);
+  const evidenceLine = `Shoppers ${timePhrase} on ${pageLabel}; after ${focusLine} they left without ${nextStep}.`;
+
+  return {
+    evidenceLine,
+    sampleSession: matches[0] || samples[0] || null
+  };
+}
+
+function shouldIncludeInActionPlan(row) {
+  if (!row) return false;
+  if (row.isVerifiable) {
+    if (ACTION_PLAN_REQUIRE_CONFIRMED) return row.verificationStatus === 'confirmed';
+    return true;
+  }
+  if (!ACTION_PLAN_ALLOW_NON_VERIFIABLE) return false;
+  return row.confidenceLabel === ACTION_PLAN_NON_VERIFIABLE_CONFIDENCE;
+}
+
 function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay }) {
   const sessions = Array.isArray(librarySessions) ? librarySessions : [];
   const claritySelectedSessions = Math.max(0, Number(claritySignals?.totals?.sessions) || 0);
@@ -625,6 +743,7 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
         id: `${type}-${index}`,
         type,
         issueLabel: meta.label,
+        pagePath: issue?.page || '',
         pageLabel: formatPathLabel(issue?.page || ''),
         targetLabel: type === 'dead_clicks' || type === 'rage_clicks' ? normalizeTargetKey(issue?.target_key) : '',
         errorLabel: type === 'js_errors' ? normalizeErrorSignature(issue?.message) : '',
@@ -1413,6 +1532,22 @@ export default function SessionIntelligenceTab({ store }) {
   const visibleIssueRows = showAllIssues ? filteredIssueRows : filteredIssueRows.slice(0, 8);
   const topIssue = filteredIssueRows[0] || issueRows[0] || null;
   const developerGuideRows = filteredIssueRows.slice(0, 3);
+  const actionPlanRows = useMemo(() => {
+    const planned = issueRows
+      .map((row) => {
+        if (!shouldIncludeInActionPlan(row)) return null;
+        const evidence = buildActionPlanEvidence(row);
+        if (!evidence) return null;
+        return {
+          ...row,
+          actionPlanEvidence: evidence.evidenceLine,
+          actionPlanSample: evidence.sampleSession
+        };
+      })
+      .filter(Boolean)
+      .slice(0, ACTION_PLAN_ROW_LIMIT);
+    return planned;
+  }, [issueRows]);
 
   useEffect(() => {
     if (hasConfirmedVerifiableIssues) return;
@@ -1675,6 +1810,50 @@ export default function SessionIntelligenceTab({ store }) {
             <div className="si-summary-kpi-value">{formatNumber(summaryTotals.estimatedAtRisk)}</div>
           </div>
         </div>
+      </div>
+
+      <div className="si-card si-action-plan-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Action plan</h3>
+          <span className="si-muted">Confirmed issues where shoppers clearly abandoned after the event</span>
+        </div>
+        {actionPlanRows.length === 0 ? (
+          <div className="si-empty">
+            No confirmed abandonment-linked issues yet. As verified issues accumulate, the top fixes will appear here.
+          </div>
+        ) : (
+          <div className="si-action-plan-list">
+            {actionPlanRows.map((row, idx) => {
+              const proofSession = row.actionPlanSample;
+              return (
+                <div key={`action-${row.id}`} className={`si-action-plan-row si-issue-${row.type}`}>
+                  <div className="si-action-plan-rank">{idx + 1}</div>
+                  <div className="si-action-plan-body">
+                    <div className="si-action-plan-title">{row.issueLabel}</div>
+                    <div className="si-action-plan-where">{row.whereLabel}</div>
+                    <div className="si-action-plan-evidence">{row.actionPlanEvidence}</div>
+                  </div>
+                  <div className="si-action-plan-meta">
+                    <div className="si-action-plan-impact">
+                      {pluralize(row.sessionsAffected, 'session', 'sessions')} affected
+                    </div>
+                    {proofSession?.session_id ? (
+                      <button
+                        className="si-button si-button-small"
+                        type="button"
+                        onClick={() => openStory(proofSession.session_id, proofSession)}
+                      >
+                        View evidence
+                      </button>
+                    ) : (
+                      <span className="si-muted">No sample</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="si-card si-issues-card" style={{ marginBottom: 12 }}>

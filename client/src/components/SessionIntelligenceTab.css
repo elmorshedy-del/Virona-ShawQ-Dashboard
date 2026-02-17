@@ -1048,6 +1048,85 @@
   background: rgba(255, 255, 255, 0.88);
 }
 
+.si-action-plan-card {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.si-action-plan-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.si-action-plan-row {
+  display: flex;
+  gap: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(248, 250, 252, 0.7);
+  align-items: flex-start;
+}
+
+.si-action-plan-rank {
+  font-size: 14px;
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.7);
+  width: 22px;
+  text-align: center;
+}
+
+.si-action-plan-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.si-action-plan-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--si-text);
+}
+
+.si-action-plan-where {
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.85);
+}
+
+.si-action-plan-evidence {
+  font-size: 13px;
+  color: var(--si-text);
+  line-height: 1.5;
+}
+
+.si-action-plan-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 140px;
+}
+
+.si-action-plan-impact {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.7);
+}
+
+@media (max-width: 860px) {
+  .si-action-plan-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .si-action-plan-meta {
+    align-items: flex-start;
+    min-width: 0;
+  }
+}
+
 .si-summary-line {
   font-size: 13px;
   color: var(--si-text);
