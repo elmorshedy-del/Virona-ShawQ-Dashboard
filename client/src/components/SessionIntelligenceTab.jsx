@@ -9,13 +9,12 @@ const POLL_OVERVIEW_MS = 20000;
 const REALTIME_WINDOW_MINUTES = 30;
 const REQUEST_TIMEOUT_MS = 15000;
 const REALTIME_GEO_ROWS_LIMIT = 8;
-const ACTION_PLAN_ROW_LIMIT = 3;
-const ACTION_PLAN_MIN_ABANDONMENT_MATCHES = 2;
-const ACTION_PLAN_REQUIRE_CONFIRMED = true;
-const ACTION_PLAN_ALLOW_NON_VERIFIABLE = true;
-const ACTION_PLAN_NON_VERIFIABLE_CONFIDENCE = 'High';
-const SECONDS_PER_MINUTE = 60;
-const SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
+const ACTION_PLAN_ROW_LIMIT = 6;
+const ACTION_PLAN_EMERGING_MIN_SESSIONS = 40;
+const ACTION_PLAN_ESTABLISHED_MIN_SESSIONS = 80;
+const ACTION_PLAN_SOURCE_MISMATCH_MIN_CAMPAIGN_SESSIONS = 20;
+const ACTION_PLAN_SOURCE_MISMATCH_MIN_COUNTRY_SESSIONS = 20;
+const ACTION_PLAN_SOURCE_MISMATCH_MIN_NO_PROGRESS_RATE = 0.6;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -93,26 +92,6 @@ function formatNumber(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   return new Intl.NumberFormat().format(n);
-}
-
-function formatDurationShort(seconds) {
-  const totalSeconds = Number(seconds);
-  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return null;
-  const rounded = Math.round(totalSeconds);
-  const hours = Math.floor(rounded / SECONDS_PER_HOUR);
-  const minutes = Math.floor((rounded % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
-  const secs = rounded % SECONDS_PER_MINUTE;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${secs}s`;
-  return `${secs}s`;
-}
-
-function sessionDurationSeconds(session) {
-  const start = parseSqliteTimestamp(session?.first_seen);
-  const end = parseSqliteTimestamp(session?.last_seen);
-  if (!start || !end) return null;
-  const diff = (end.getTime() - start.getTime()) / 1000;
-  return Number.isFinite(diff) && diff > 0 ? diff : null;
 }
 
 function safeJsonParse(value) {
@@ -595,95 +574,245 @@ function buildDeveloperFixSteps(row) {
   return entry.default || [];
 }
 
-const ACTION_PLAN_STAGE_ORDER = {
-  product: 1,
-  cart: 2,
-  checkout: 3,
-  purchase: 4,
-  other: 0
-};
-
-function inferIssueStageFromPagePath(path) {
-  const raw = (path || '').toString().toLowerCase();
-  if (!raw) return 'other';
-  if (raw.includes('checkout')) return 'checkout';
-  if (raw.includes('/cart')) return 'cart';
-  if (raw.includes('/products') || raw.includes('/product')) return 'product';
-  return 'other';
+function hasPurchase(session) {
+  return (Number(session?.purchase_events) || 0) > 0;
 }
 
-function inferSessionProgressStage(session) {
-  if ((Number(session?.purchase_events) || 0) > 0) return 'purchase';
-  if ((Number(session?.checkout_started_events) || 0) > 0 || session?.last_checkout_step) return 'checkout';
-  if ((Number(session?.atc_events) || 0) > 0) return 'cart';
-  return 'product';
+function hasCheckout(session) {
+  return (Number(session?.checkout_started_events) || 0) > 0
+    || normalizeCheckoutStepKey(session?.last_checkout_step) !== null;
 }
 
-function isAbandonmentLinkedSession(session, issueStage) {
-  if (!session || issueStage === 'other') return false;
-  if ((Number(session?.purchase_events) || 0) > 0) return false;
-  const progressStage = inferSessionProgressStage(session);
-  const progressRank = ACTION_PLAN_STAGE_ORDER[progressStage] || 0;
-  const issueRank = ACTION_PLAN_STAGE_ORDER[issueStage] || 0;
-  return progressRank <= issueRank;
+function hasCart(session) {
+  return (Number(session?.cart_events) || 0) > 0 || (Number(session?.atc_events) || 0) > 0;
 }
 
-function actionPlanNextStepLabel(issueStage) {
-  if (issueStage === 'checkout') return 'purchasing';
-  if (issueStage === 'cart') return 'starting checkout';
-  return 'adding to cart';
+function noPurchase(session) {
+  return !hasPurchase(session);
 }
 
-function actionPlanFocusLine(row) {
-  if (!row) return 'this issue';
-  if (row.type === 'dead_clicks' || row.type === 'rage_clicks') {
-    return row.targetLabel ? `clicking "${row.targetLabel}"` : 'clicking a UI element';
-  }
-  if (row.type === 'js_errors') {
-    return row.errorLabel ? `the error "${row.errorLabel}"` : 'a script error';
-  }
-  if (row.type === 'form_invalid') {
-    const detail = row.whereLabel?.split('•')?.[1]?.trim();
-    return detail ? `form errors on "${detail}"` : 'form validation errors';
-  }
-  if (row.type === 'scroll_dropoff') {
-    return 'scrolling only partway down the page';
-  }
-  return row.issueLabel ? `the "${row.issueLabel}" issue` : 'this issue';
+function actionPlanStatusForCount(count) {
+  const sessions = Math.max(0, Number(count) || 0);
+  if (sessions >= ACTION_PLAN_ESTABLISHED_MIN_SESSIONS) return 'Established';
+  if (sessions >= ACTION_PLAN_EMERGING_MIN_SESSIONS) return 'Emerging';
+  return null;
 }
 
-function buildActionPlanEvidence(row) {
-  const samples = Array.isArray(row?.sampleSessions) ? row.sampleSessions : [];
-  if (!samples.length) return null;
-  const issueStage = inferIssueStageFromPagePath(row?.pagePath || row?.pageLabel || '');
-  const matches = samples.filter((session) => isAbandonmentLinkedSession(session, issueStage));
-  if (matches.length < ACTION_PLAN_MIN_ABANDONMENT_MATCHES) return null;
-
-  const durations = matches
-    .map(sessionDurationSeconds)
-    .filter((value) => Number.isFinite(value) && value > 0);
-  const medianDuration = durations.length ? quantile(durations, 0.5) : null;
-  const durationLabel = formatDurationShort(medianDuration);
-  const timePhrase = durationLabel ? `spent about ${durationLabel}` : 'spent time';
-  const nextStep = actionPlanNextStepLabel(issueStage);
-  const pageLabel = row?.pageLabel || 'the page';
-  const focusLine = actionPlanFocusLine(row);
-  const evidenceLine = `Shoppers ${timePhrase} on ${pageLabel}; after ${focusLine} they left without ${nextStep}.`;
-
+function buildPatternRow({
+  id,
+  patternLabel,
+  whereLabel,
+  sessions,
+  observation,
+  suggests,
+  nextCheck,
+  fixFirst
+}) {
+  const sessionList = Array.isArray(sessions) ? sessions : [];
+  const sessionsCount = sessionList.length;
+  const status = actionPlanStatusForCount(sessionsCount);
+  if (!status) return null;
   return {
-    evidenceLine,
-    sampleSession: matches[0] || samples[0] || null
+    id,
+    patternLabel,
+    whereLabel,
+    status,
+    sessionsCount,
+    statusLine: `${status} · ${pluralize(sessionsCount, 'session', 'sessions')}`,
+    observation,
+    suggests,
+    nextCheck,
+    fixFirst,
+    sampleSession: sessionList[0] || null
   };
 }
 
-function shouldIncludeInActionPlan(row) {
-  if (!row) return false;
-  if (row.isVerifiable) {
-    if (ACTION_PLAN_REQUIRE_CONFIRMED) return row.verificationStatus === 'confirmed';
-    return true;
+function topCountryCodeFromSessions(sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const counts = new Map();
+  list.forEach((session) => {
+    const key = (session?.country_code || '').toString().trim().toUpperCase();
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0] || null;
+  return top ? top[0] : null;
+}
+
+function topCampaignFromSessions(sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const counts = new Map();
+  list.forEach((session) => {
+    const key = (session?.utm_campaign || '').toString().trim();
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0] || null;
+  return top ? top[0] : null;
+}
+
+function selectBestSourceMismatch(entries, minSessionCount) {
+  return entries
+    .map((entry) => {
+      const allCount = entry.all.length;
+      const noProgressCount = entry.noProgress.length;
+      const noProgressRate = allCount > 0 ? noProgressCount / allCount : 0;
+      return {
+        ...entry,
+        allCount,
+        noProgressCount,
+        noProgressRate,
+        sessions: entry.noProgress
+      };
+    })
+    .filter((entry) => (
+      entry.allCount >= minSessionCount
+      && entry.noProgressRate >= ACTION_PLAN_SOURCE_MISMATCH_MIN_NO_PROGRESS_RATE
+    ))
+    .sort((a, b) => {
+      if (b.noProgressCount !== a.noProgressCount) return b.noProgressCount - a.noProgressCount;
+      return b.noProgressRate - a.noProgressRate;
+    })[0] || null;
+}
+
+function buildBehaviorPatternRows({ librarySessions }) {
+  const sessions = Array.isArray(librarySessions) ? librarySessions : [];
+  if (!sessions.length) return [];
+
+  const paymentStepExitSessions = sessions.filter((session) => (
+    noPurchase(session) && normalizeCheckoutStepKey(session?.last_checkout_step) === 'payment'
+  ));
+
+  const cartHesitationSessions = sessions.filter((session) => (
+    noPurchase(session) && hasCart(session) && !hasCheckout(session)
+  ));
+
+  const checkoutExitBeforePaymentSessions = sessions.filter((session) => {
+    if (!noPurchase(session) || !hasCheckout(session)) return false;
+    const step = normalizeCheckoutStepKey(session?.last_checkout_step);
+    return step !== 'payment';
+  });
+
+  const reconsiderWithoutCartSessions = sessions.filter((session) => (
+    noPurchase(session)
+    && (Number(session?.product_views) || 0) >= 2
+    && !hasCart(session)
+    && !hasCheckout(session)
+  ));
+
+  const campaignGroups = new Map();
+  const countryGroups = new Map();
+  sessions.forEach((session) => {
+    const noProgress = noPurchase(session) && !hasCart(session) && !hasCheckout(session);
+
+    const campaign = (session?.utm_campaign || '').toString().trim();
+    if (campaign) {
+      const bucket = campaignGroups.get(campaign) || { campaign, all: [], noProgress: [] };
+      bucket.all.push(session);
+      if (noProgress) bucket.noProgress.push(session);
+      campaignGroups.set(campaign, bucket);
+    }
+
+    const countryCode = (session?.country_code || '').toString().trim().toUpperCase();
+    if (countryCode) {
+      const bucket = countryGroups.get(countryCode) || { countryCode, all: [], noProgress: [] };
+      bucket.all.push(session);
+      if (noProgress) bucket.noProgress.push(session);
+      countryGroups.set(countryCode, bucket);
+    }
+  });
+
+  const bestCampaignMismatch = selectBestSourceMismatch(
+    Array.from(campaignGroups.values()),
+    ACTION_PLAN_SOURCE_MISMATCH_MIN_CAMPAIGN_SESSIONS
+  );
+  const bestCountryMismatch = bestCampaignMismatch
+    ? null
+    : selectBestSourceMismatch(
+      Array.from(countryGroups.values()),
+      ACTION_PLAN_SOURCE_MISMATCH_MIN_COUNTRY_SESSIONS
+    );
+
+  let sourceMismatchPattern = null;
+  if (bestCampaignMismatch) {
+    const topCountry = topCountryCodeFromSessions(bestCampaignMismatch.sessions);
+    const suggests = topCountry
+      ? `Campaign promise and landing-page expectation may be misaligned, especially in ${countryNameFromCode(topCountry)} traffic.`
+      : 'Campaign promise and landing-page expectation may be misaligned.';
+    sourceMismatchPattern = buildPatternRow({
+      id: 'campaign-intent-mismatch',
+      patternLabel: 'Campaign intent mismatch',
+      whereLabel: `Campaign • ${bestCampaignMismatch.campaign}`,
+      sessions: bestCampaignMismatch.sessions,
+      observation: 'Campaign sessions reach product pages but often leave before cart or checkout.',
+      suggests,
+      nextCheck: 'Compare campaign message against first-view product content and offer framing.',
+      fixFirst: 'Align campaign promise with landing-page value proposition and first CTA.'
+    });
+  } else if (bestCountryMismatch) {
+    const topCampaign = topCampaignFromSessions(bestCountryMismatch.sessions);
+    const suggests = topCampaign
+      ? `Regional expectation may be misaligned; most exits are from campaign "${topCampaign}".`
+      : 'Regional expectation or localized merchandising may be misaligned with the landing experience.';
+    sourceMismatchPattern = buildPatternRow({
+      id: 'country-intent-mismatch',
+      patternLabel: 'Country traffic mismatch',
+      whereLabel: `Country • ${countryNameFromCode(bestCountryMismatch.countryCode)}`,
+      sessions: bestCountryMismatch.sessions,
+      observation: 'Sessions from this country frequently leave before cart or checkout.',
+      suggests,
+      nextCheck: 'Review localized pricing, shipping expectations, and landing-page language for this country.',
+      fixFirst: 'Adjust localized landing content and checkout expectations for this traffic segment.'
+    });
   }
-  if (!ACTION_PLAN_ALLOW_NON_VERIFIABLE) return false;
-  return row.confidenceLabel === ACTION_PLAN_NON_VERIFIABLE_CONFIDENCE;
+
+  const rows = [
+    buildPatternRow({
+      id: 'payment-step-exit',
+      patternLabel: 'Payment-step exit before purchase',
+      whereLabel: 'Checkout • Payment',
+      sessions: paymentStepExitSessions,
+      observation: 'Shoppers reached payment and then exited without completing purchase.',
+      suggests: 'Final-step confidence, payment method clarity, or gateway flow may be blocking completion.',
+      nextCheck: 'Validate payment method availability and final-step messaging on desktop and mobile.',
+      fixFirst: 'Audit payment-step UX first and keep fallback payment options clearly visible.'
+    }),
+    buildPatternRow({
+      id: 'cart-hesitation',
+      patternLabel: 'Cart hesitation before checkout',
+      whereLabel: 'Cart',
+      sessions: cartHesitationSessions,
+      observation: 'Shoppers reached cart and exited before starting checkout.',
+      suggests: 'Cost expectations, shipping clarity, or weak next-step guidance may be causing hesitation.',
+      nextCheck: 'Review cart totals, shipping estimate visibility, and checkout CTA prominence.',
+      fixFirst: 'Make total cost expectations explicit in cart and highlight the checkout path.'
+    }),
+    buildPatternRow({
+      id: 'checkout-exit-before-payment',
+      patternLabel: 'Checkout exit before payment',
+      whereLabel: 'Checkout • Contact/Shipping',
+      sessions: checkoutExitBeforePaymentSessions,
+      observation: 'Shoppers started checkout but left before reaching payment.',
+      suggests: 'Early checkout friction in contact/shipping steps may be slowing progression.',
+      nextCheck: 'Trace contact and shipping step completion flows across device types.',
+      fixFirst: 'Reduce form friction and clarify shipping expectations before payment.'
+    }),
+    buildPatternRow({
+      id: 'reconsider-without-cart',
+      patternLabel: 'Repeat product consideration without cart',
+      whereLabel: 'Product',
+      sessions: reconsiderWithoutCartSessions,
+      observation: 'Shoppers viewed products repeatedly in-session and still left before cart.',
+      suggests: 'Decision clarity may be missing around fit, value, or selection confidence.',
+      nextCheck: 'Review product detail hierarchy and variant guidance on the first view.',
+      fixFirst: 'Strengthen product-page decision support near the variant and add-to-cart zone.'
+    }),
+    sourceMismatchPattern
+  ].filter(Boolean);
+
+  return rows
+    .sort((a, b) => b.sessionsCount - a.sessionsCount)
+    .slice(0, ACTION_PLAN_ROW_LIMIT);
 }
 
 function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay }) {
@@ -1532,22 +1661,9 @@ export default function SessionIntelligenceTab({ store }) {
   const visibleIssueRows = showAllIssues ? filteredIssueRows : filteredIssueRows.slice(0, 8);
   const topIssue = filteredIssueRows[0] || issueRows[0] || null;
   const developerGuideRows = filteredIssueRows.slice(0, 3);
-  const actionPlanRows = useMemo(() => {
-    const planned = issueRows
-      .map((row) => {
-        if (!shouldIncludeInActionPlan(row)) return null;
-        const evidence = buildActionPlanEvidence(row);
-        if (!evidence) return null;
-        return {
-          ...row,
-          actionPlanEvidence: evidence.evidenceLine,
-          actionPlanSample: evidence.sampleSession
-        };
-      })
-      .filter(Boolean)
-      .slice(0, ACTION_PLAN_ROW_LIMIT);
-    return planned;
-  }, [issueRows]);
+  const actionPlanRows = useMemo(() => (
+    buildBehaviorPatternRows({ librarySessions })
+  ), [librarySessions]);
 
   useEffect(() => {
     if (hasConfirmedVerifiableIssues) return;
@@ -1814,29 +1930,31 @@ export default function SessionIntelligenceTab({ store }) {
 
       <div className="si-card si-action-plan-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
-          <h3>Action plan</h3>
-          <span className="si-muted">Confirmed issues where shoppers clearly abandoned after the event</span>
+          <h3>Behavior patterns</h3>
+          <span className="si-muted">Session-based patterns with established/emerging status</span>
         </div>
         {actionPlanRows.length === 0 ? (
           <div className="si-empty">
-            No confirmed abandonment-linked issues yet. As verified issues accumulate, the top fixes will appear here.
+            No patterns reached the emerging threshold yet.
           </div>
         ) : (
           <div className="si-action-plan-list">
             {actionPlanRows.map((row, idx) => {
-              const proofSession = row.actionPlanSample;
+              const proofSession = row.sampleSession;
               return (
-                <div key={`action-${row.id}`} className={`si-action-plan-row si-issue-${row.type}`}>
+                <div key={`pattern-${row.id}`} className="si-action-plan-row">
                   <div className="si-action-plan-rank">{idx + 1}</div>
                   <div className="si-action-plan-body">
-                    <div className="si-action-plan-title">{row.issueLabel}</div>
+                    <div className="si-action-plan-title">{row.patternLabel}</div>
                     <div className="si-action-plan-where">{row.whereLabel}</div>
-                    <div className="si-action-plan-evidence">{row.actionPlanEvidence}</div>
+                    <div className="si-action-plan-evidence"><strong>Observation:</strong> {row.observation}</div>
+                    <div className="si-action-plan-evidence"><strong>What it suggests:</strong> {row.suggests}</div>
+                    <div className="si-action-plan-evidence"><strong>Next check:</strong> {row.nextCheck}</div>
+                    <div className="si-action-plan-evidence"><strong>Fix first:</strong> {row.fixFirst}</div>
                   </div>
                   <div className="si-action-plan-meta">
-                    <div className="si-action-plan-impact">
-                      {pluralize(row.sessionsAffected, 'session', 'sessions')} affected
-                    </div>
+                    <span className={`si-chip ${row.status === 'Established' ? 'si-pattern-established' : 'si-pattern-emerging'}`}>{row.status}</span>
+                    <div className="si-action-plan-impact">{row.statusLine}</div>
                     {proofSession?.session_id ? (
                       <button
                         className="si-button si-button-small"

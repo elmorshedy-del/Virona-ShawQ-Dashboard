@@ -1115,6 +1115,18 @@
   color: rgba(15, 23, 42, 0.7);
 }
 
+.si-pattern-established {
+  border-color: rgba(22, 163, 74, 0.35);
+  background: rgba(22, 163, 74, 0.14);
+  color: #14532d;
+}
+
+.si-pattern-emerging {
+  border-color: rgba(217, 119, 6, 0.35);
+  background: rgba(217, 119, 6, 0.14);
+  color: #92400e;
+}
+
 @media (max-width: 860px) {
   .si-action-plan-row {
     flex-direction: column;
