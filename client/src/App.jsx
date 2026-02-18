@@ -45,6 +45,11 @@ const ConnectedBadge = () => (
 );
 
 const API_BASE = '/api';
+const DEFAULT_GOOGLE_ADS_AUTO_REFRESH_MS = 60 * 1000;
+const parsedGoogleAdsRefreshMs = Number(import.meta.env.VITE_GOOGLE_ADS_AUTO_REFRESH_MS);
+const GOOGLE_ADS_AUTO_REFRESH_MS = Number.isFinite(parsedGoogleAdsRefreshMs) && parsedGoogleAdsRefreshMs >= 15000
+  ? parsedGoogleAdsRefreshMs
+  : DEFAULT_GOOGLE_ADS_AUTO_REFRESH_MS;
 
 const fetchJson = async (url, fallback = null, options = {}) => {
   try {
@@ -550,6 +555,8 @@ export default function App() {
   const [analyticsMode, setAnalyticsMode] = useState('meta-ad-manager'); // 'countries' | 'meta-ad-manager'
   const [metaAdManagerData, setMetaAdManagerData] = useState([]);
   const [metaAdManagerNotice, setMetaAdManagerNotice] = useState('');
+  const [googleAdManagerData, setGoogleAdManagerData] = useState([]);
+  const [googleAdManagerNotice, setGoogleAdManagerNotice] = useState('');
   const [adManagerBreakdown, setAdManagerBreakdown] = useState('none'); // 'none', 'country', 'age', 'gender', 'age_gender', 'placement'
   const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
   const [expandedAdsets, setExpandedAdsets] = useState(new Set());
@@ -1138,6 +1145,64 @@ export default function App() {
 
     loadMetaAdManager();
   }, [analyticsMode, adManagerBreakdown, currentStore, dateRange, storeLoaded, includeInactive, selectedCampaignId]);
+
+  // Load Google Ads hierarchy data
+  useEffect(() => {
+    if (!storeLoaded || analyticsMode !== 'google-ad-manager') {
+      setGoogleAdManagerNotice('');
+      return;
+    }
+
+    const params = new URLSearchParams({ store: currentStore });
+    if (dateRange.type === 'custom') {
+      params.set('startDate', dateRange.start);
+      params.set('endDate', dateRange.end);
+    } else if (dateRange.type === 'yesterday') {
+      params.set('yesterday', '1');
+    } else {
+      params.set(dateRange.type, dateRange.value);
+    }
+
+    if (includeInactive) {
+      params.set('includeInactive', 'true');
+    }
+
+    if (selectedCampaignId) {
+      params.set('campaignId', selectedCampaignId);
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    async function loadGoogleAdManager() {
+      if (inFlight) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      inFlight = true;
+      try {
+        const payload = await fetchJson(`${API_BASE}/analytics/google-ad-manager?${params}`, { data: [], notice: '' });
+        if (cancelled) return;
+        const nextData = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+        setGoogleAdManagerData(nextData);
+        setGoogleAdManagerNotice(typeof payload?.notice === 'string' ? payload.notice : '');
+      } catch (error) {
+        if (cancelled) return;
+        console.error('Error loading Google Ads hierarchy:', error);
+        setGoogleAdManagerData([]);
+        setGoogleAdManagerNotice('We had trouble loading Google Ads data. Please retry in a moment.');
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    setGoogleAdManagerNotice('');
+    loadGoogleAdManager();
+    const refreshTimer = setInterval(loadGoogleAdManager, GOOGLE_ADS_AUTO_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(refreshTimer);
+    };
+  }, [analyticsMode, currentStore, dateRange, storeLoaded, includeInactive, selectedCampaignId]);
 
   // Load funnel diagnostics data
   useEffect(() => {
@@ -5527,6 +5592,8 @@ function DashboardTab({
         countriesDataSource={countriesDataSource}
         metaAdManagerData={metaAdManagerData}
         metaAdManagerNotice={metaAdManagerNotice}
+        googleAdManagerData={googleAdManagerData}
+        googleAdManagerNotice={googleAdManagerNotice}
         adManagerBreakdown={adManagerBreakdown}
         setAdManagerBreakdown={setAdManagerBreakdown}
         hiddenCampaigns={hiddenCampaigns}

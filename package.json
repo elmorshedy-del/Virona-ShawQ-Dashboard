@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "google-ads:refresh-token": "node server/scripts/generateGoogleAdsRefreshToken.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

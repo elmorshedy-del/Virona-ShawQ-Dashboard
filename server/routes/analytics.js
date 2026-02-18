@@ -24,6 +24,7 @@ import {
   getReactivationCandidates,
   getAllMetaObjects
 } from '../services/analyticsService.js';
+import { getGoogleAdManagerHierarchy } from '../services/googleAdsService.js';
 import { importMetaDailyRows } from '../services/metaImportService.js';
 import { syncMetaData, getBackfillStatus, triggerBackfill } from '../services/metaService.js';
 import { getShopifyConnectionStatus } from '../services/shopifyService.js';
@@ -204,6 +205,15 @@ router.get('/meta-ad-manager', (req, res) => {
   try {
     const store = req.query.store || 'vironax';
     res.json(getMetaAdManagerHierarchy(store, req.query));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Google Ads hierarchy endpoint
+router.get('/google-ad-manager', async (req, res) => {
+  try {
+    res.json(await getGoogleAdManagerHierarchy(req.query));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

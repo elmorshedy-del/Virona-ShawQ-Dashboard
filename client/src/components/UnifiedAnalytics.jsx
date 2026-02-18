@@ -72,6 +72,8 @@ export default function UnifiedAnalytics({
   countriesDataSource = '',
   metaAdManagerData = [],
   metaAdManagerNotice = '',
+  googleAdManagerData = [],
+  googleAdManagerNotice = '',
   adManagerBreakdown = 'none',
   setAdManagerBreakdown = () => {},
   hiddenCampaigns = new Set(),
@@ -100,6 +102,9 @@ export default function UnifiedAnalytics({
   // Local state for sorting
   const [sortConfig, setSortConfig] = useState({ field: 'spend', direction: 'desc' });
   const [searchQuery, setSearchQuery] = useState('');
+  const isGoogleMode = analyticsMode === 'google-ad-manager';
+  const activeAdManagerData = isGoogleMode ? googleAdManagerData : metaAdManagerData;
+  const activeNotice = isGoogleMode ? googleAdManagerNotice : metaAdManagerNotice;
 
   // Sorting handler
   const handleSort = useCallback((field) => {
@@ -134,7 +139,7 @@ export default function UnifiedAnalytics({
 
   // Filter and sort campaigns
   const processedCampaigns = useMemo(() => {
-    let filtered = metaAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id));
+    let filtered = activeAdManagerData.filter(c => !hiddenCampaigns.has(c.campaign_id));
 
     // Apply search filter
     if (searchQuery.trim()) {
@@ -152,11 +157,11 @@ export default function UnifiedAnalytics({
     }));
 
     return sortData(withCVR, sortConfig);
-  }, [metaAdManagerData, hiddenCampaigns, searchQuery, sortData, sortConfig]);
+  }, [activeAdManagerData, hiddenCampaigns, searchQuery, sortData, sortConfig]);
 
   // Total visible campaigns
   const visibleCount = processedCampaigns.length;
-  const totalCount = metaAdManagerData.length;
+  const totalCount = activeAdManagerData.length;
 
   // Hide/show campaign functions
   const toggleHideCampaign = useCallback((campaignId, e) => {
@@ -196,7 +201,7 @@ export default function UnifiedAnalytics({
         // Also collapse all adsets under this campaign
         setExpandedAdsets(adsetPrev => {
           const newAdsets = new Set(adsetPrev);
-          const campaign = metaAdManagerData.find(c => c.campaign_id === campaignId);
+          const campaign = activeAdManagerData.find(c => c.campaign_id === campaignId);
           if (campaign?.adsets) {
             campaign.adsets.forEach(a => newAdsets.delete(a.adset_id));
           }
@@ -207,7 +212,7 @@ export default function UnifiedAnalytics({
       }
       return next;
     });
-  }, [setExpandedCampaigns, setExpandedAdsets, metaAdManagerData]);
+  }, [setExpandedCampaigns, setExpandedAdsets, activeAdManagerData]);
 
   // Toggle adset expansion
   const toggleAdsetExpand = useCallback((adsetId, e) => {
@@ -287,7 +292,7 @@ export default function UnifiedAnalytics({
         ? expandedAdsets.has(row.adset_id)
         : false;
 
-    const isSelected = level === 'campaign' && selectedDiagnosticsCampaign === row.campaign_id;
+    const isSelected = !isGoogleMode && level === 'campaign' && selectedDiagnosticsCampaign === row.campaign_id;
     const hasChildren = level === 'campaign'
       ? (row.adsets?.length > 0 || (adManagerBreakdown === 'country' && row.country_breakdowns?.length > 0))
       : level === 'adset'
@@ -331,7 +336,7 @@ export default function UnifiedAnalytics({
       <tr
         key={rowKey}
         className={`border-b border-gray-100 text-sm transition-colors cursor-pointer ${rowBgClass}`}
-        onClick={() => level === 'campaign' && handleCampaignSelect(row.campaign_id)}
+        onClick={() => !isGoogleMode && level === 'campaign' && handleCampaignSelect(row.campaign_id)}
       >
         {/* Expand/Collapse & Hide */}
         <td className="px-2 py-3 w-12">
@@ -483,14 +488,16 @@ export default function UnifiedAnalytics({
         <div className="flex items-center justify-between mb-3">
           <div>
             <h2 className="text-base font-semibold text-gray-900">
-              Unified Campaign
+              {isGoogleMode ? 'Google Campaign' : 'Unified Campaign'}
             </h2>
             <p className="text-sm text-gray-500 mt-0.5">
-              Meta Ad Manager hierarchy with breakdowns. All data from Meta pixel.
+              {isGoogleMode
+                ? 'Google Ads hierarchy. Data is fetched directly from Google Ads API.'
+                : 'Meta Ad Manager hierarchy with breakdowns. All data from Meta pixel.'}
             </p>
-            {metaAdManagerNotice ? (
+            {activeNotice ? (
               <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                {metaAdManagerNotice}
+                {activeNotice}
               </div>
             ) : null}
           </div>
@@ -507,23 +514,42 @@ export default function UnifiedAnalytics({
         <div className="flex items-center justify-between gap-4 flex-wrap">
           {/* Left side: Hierarchy label and breakdown selector */}
           <div className="flex items-center gap-4">
+            <div className="flex items-center rounded-md border border-gray-200 p-0.5">
+              <button
+                onClick={() => setAnalyticsMode('meta-ad-manager')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded ${!isGoogleMode ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+              >
+                Meta
+              </button>
+              <button
+                onClick={() => setAnalyticsMode('google-ad-manager')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded ${isGoogleMode ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+              >
+                Google
+              </button>
+            </div>
+
             <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-              Campaign → Ad Set → Ad Hierarchy
+              {isGoogleMode ? 'Campaign → Ad Group → Ad Hierarchy' : 'Campaign → Ad Set → Ad Hierarchy'}
             </span>
 
             {/* Breakdown dropdown */}
-            <select
-              value={adManagerBreakdown}
-              onChange={(e) => setAdManagerBreakdown(e.target.value)}
-              className="px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="none">No Breakdown</option>
-              <option value="country">By Country</option>
-              <option value="age">By Age</option>
-              <option value="gender">By Gender</option>
-              <option value="age_gender">By Age + Gender</option>
-              <option value="placement">By Placement</option>
-            </select>
+            {!isGoogleMode ? (
+              <select
+                value={adManagerBreakdown}
+                onChange={(e) => setAdManagerBreakdown(e.target.value)}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="none">No Breakdown</option>
+                <option value="country">By Country</option>
+                <option value="age">By Age</option>
+                <option value="gender">By Gender</option>
+                <option value="age_gender">By Age + Gender</option>
+                <option value="placement">By Placement</option>
+              </select>
+            ) : (
+              <span className="text-xs text-gray-500">Breakdowns are not enabled for Google mode yet.</span>
+            )}
           </div>
 
           {/* Right side: Search, count, toggle */}
@@ -551,7 +577,7 @@ export default function UnifiedAnalytics({
             {/* Campaign count */}
             <span className="text-sm text-gray-600">
               Showing {visibleCount} of {totalCount} campaigns
-              {selectedDiagnosticsCampaign && (
+              {!isGoogleMode && selectedDiagnosticsCampaign && (
                 <span className="ml-1 text-blue-600 font-medium">
                   (1 selected)
                 </span>
@@ -571,7 +597,7 @@ export default function UnifiedAnalytics({
                 {showHiddenDropdown && (
                   <div className="absolute right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20 min-w-[220px] py-1">
                     {Array.from(hiddenCampaigns).map(id => {
-                      const campaign = metaAdManagerData.find(c => c.campaign_id === id);
+                      const campaign = activeAdManagerData.find(c => c.campaign_id === id);
                       return (
                         <button
                           key={id}
@@ -681,7 +707,7 @@ export default function UnifiedAnalytics({
                   {renderDataRow(campaign, 'campaign', true, `campaign-${campaign.campaign_id}`)}
 
                   {/* Country Breakdowns (if expanded and breakdown is country) */}
-                  {campaignExpanded && adManagerBreakdown === 'country' && campaign.country_breakdowns?.map((breakdown, idx) => (
+                  {campaignExpanded && !isGoogleMode && adManagerBreakdown === 'country' && campaign.country_breakdowns?.map((breakdown, idx) => (
                     renderDataRow(
                       { ...breakdown, isCountryBreakdown: true },
                       'breakdown',
@@ -728,7 +754,7 @@ export default function UnifiedAnalytics({
                         Clear search
                       </button>
                     </div>
-                  ) : metaAdManagerData.length > 0 ? (
+                  ) : activeAdManagerData.length > 0 ? (
                     <div>
                       <p className="font-medium">All campaigns are hidden</p>
                       <button
@@ -739,7 +765,7 @@ export default function UnifiedAnalytics({
                       </button>
                     </div>
                   ) : (
-                    <p>No campaign data available. Try syncing Meta data first.</p>
+                    <p>No campaign data available. {isGoogleMode ? 'Check Google Ads credentials and customer access.' : 'Try syncing Meta data first.'}</p>
                   )}
                 </td>
               </tr>
