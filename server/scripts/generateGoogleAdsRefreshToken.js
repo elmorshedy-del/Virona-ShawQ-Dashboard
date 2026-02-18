@@ -69,7 +69,18 @@ function makeState() {
 function tryOpenBrowser(url) {
   try {
     const escaped = url.replace(/"/g, '\\"');
-    exec(`open "${escaped}"`, () => {});
+    let command = `xdg-open "${escaped}"`;
+    if (process.platform === 'darwin') {
+      command = `open "${escaped}"`;
+    } else if (process.platform === 'win32') {
+      command = `start "" "${escaped}"`;
+    }
+
+    exec(command, (error) => {
+      if (error) {
+        console.warn(`Could not open browser automatically (${process.platform}): ${error.message}`);
+      }
+    });
   } catch (_) {}
 }
 
