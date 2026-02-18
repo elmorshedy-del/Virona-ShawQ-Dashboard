@@ -3535,6 +3535,7 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       session_id: s.session_id,
       codename: s.codename,
       shopper_number: s.shopper_number || null,
+      first_seen: s.first_seen || null,
       last_seen: s.last_seen || null,
       device_type: s.device_type || null,
       country_code: s.country_code || null,

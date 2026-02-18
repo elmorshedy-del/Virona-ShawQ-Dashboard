@@ -9,6 +9,13 @@ const POLL_OVERVIEW_MS = 20000;
 const REALTIME_WINDOW_MINUTES = 30;
 const REQUEST_TIMEOUT_MS = 15000;
 const REALTIME_GEO_ROWS_LIMIT = 8;
+const ACTION_PLAN_ROW_LIMIT = 6;
+const ACTION_PLAN_EMERGING_MIN_SESSIONS = 40;
+const ACTION_PLAN_ESTABLISHED_MIN_SESSIONS = 80;
+const ACTION_PLAN_SOURCE_MISMATCH_MIN_CAMPAIGN_SESSIONS = 20;
+const ACTION_PLAN_SOURCE_MISMATCH_MIN_COUNTRY_SESSIONS = 20;
+const ACTION_PLAN_SOURCE_MISMATCH_MIN_NO_PROGRESS_RATE = 0.6;
+const DEVICE_ABANDONMENT_FULL_CIRCLE_DEGREES = 360;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -51,6 +58,14 @@ const FLOW_STAGE_LABELS = {
   checkout_payment: 'Checkout (Payment)',
   purchase: 'Purchase'
 };
+
+const DEVICE_ABANDONMENT_SEGMENTS = [
+  { key: 'ios', label: 'iOS', color: '#6366f1' },
+  { key: 'android', label: 'Android', color: '#0ea5e9' },
+  { key: 'desktop', label: 'Desktop', color: '#14b8a6' }
+];
+
+const DEVICE_ABANDON_SECTION_ORDER = ['Payment', 'Checkout', 'Cart', 'Product', 'Landing'];
 
 function parseSqliteTimestamp(ts) {
   if (!ts || typeof ts !== 'string') return null;
@@ -162,8 +177,8 @@ function inferDropoffStageFromSummary(session) {
   if (!session || typeof session !== 'object') return 'landing';
   if (Number(session.purchase_events || 0) > 0) return 'purchase';
 
-  if (Number(session.checkout_started_events || 0) > 0) {
-    const step = normalizeCheckoutStepKey(session.last_checkout_step);
+  const step = normalizeCheckoutStepKey(session.last_checkout_step);
+  if (Number(session.checkout_started_events || 0) > 0 || step) {
     if (step === 'payment') return 'checkout_payment';
     if (step === 'shipping') return 'checkout_shipping';
     return 'checkout_contact';
@@ -568,6 +583,397 @@ function buildDeveloperFixSteps(row) {
   return entry.default || [];
 }
 
+function hasPurchase(session) {
+  return (Number(session?.purchase_events) || 0) > 0;
+}
+
+function hasCheckout(session) {
+  return (Number(session?.checkout_started_events) || 0) > 0
+    || normalizeCheckoutStepKey(session?.last_checkout_step) !== null;
+}
+
+function hasCart(session) {
+  return (Number(session?.cart_events) || 0) > 0 || (Number(session?.atc_events) || 0) > 0;
+}
+
+function noPurchase(session) {
+  return !hasPurchase(session);
+}
+
+function deviceSegmentKeyFromSession(session) {
+  const rawType = normalizeLooseKey(session?.device_type);
+  const rawOs = normalizeLooseKey(session?.device_os);
+
+  if (rawType === 'desktop' || rawType.includes('desktop')) return 'desktop';
+  if (rawOs === 'ios' || rawType === 'ios' || rawType === 'ipados' || rawType.includes('ios') || rawType.includes('ipad')) return 'ios';
+  if (rawOs === 'android' || rawType === 'android' || rawType === 'android tablet' || rawType.includes('android')) return 'android';
+  return null;
+}
+
+function abandonSectionLabelFromSession(session) {
+  const stage = inferDropoffStageFromSummary(session);
+  if (stage === 'checkout_payment') return 'Payment';
+  if (stage === 'checkout_contact' || stage === 'checkout_shipping') return 'Checkout';
+  if (stage === 'cart' || stage === 'atc') return 'Cart';
+  if (stage === 'product') return 'Product';
+  return 'Landing';
+}
+
+function compareAbandonSectionEntries(a, b) {
+  if (b[1] !== a[1]) return b[1] - a[1];
+  const aOrder = DEVICE_ABANDON_SECTION_ORDER.indexOf(a[0]);
+  const bOrder = DEVICE_ABANDON_SECTION_ORDER.indexOf(b[0]);
+  const safeA = aOrder >= 0 ? aOrder : DEVICE_ABANDON_SECTION_ORDER.length;
+  const safeB = bOrder >= 0 ? bOrder : DEVICE_ABANDON_SECTION_ORDER.length;
+  return safeA - safeB;
+}
+
+function buildTrafficAdjustedPieGradient(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let cursorDegrees = 0;
+  const segments = [];
+
+  list.forEach((row) => {
+    const share = clamp01(row?.adjustedShare || 0);
+    if (share <= 0) return;
+    const start = cursorDegrees;
+    const end = start + (share * DEVICE_ABANDONMENT_FULL_CIRCLE_DEGREES);
+    segments.push(`${row.color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`);
+    cursorDegrees = end;
+  });
+
+  if (!segments.length) {
+    return 'conic-gradient(rgba(148, 163, 184, 0.30) 0deg 360deg)';
+  }
+  return `conic-gradient(${segments.join(', ')})`;
+}
+
+function buildDeviceAbandonmentModel({ librarySessions }) {
+  const sessions = Array.isArray(librarySessions) ? librarySessions : [];
+  const buckets = new Map(
+    DEVICE_ABANDONMENT_SEGMENTS.map((segment) => [
+      segment.key,
+      {
+        ...segment,
+        totalSessions: 0,
+        abandonSessions: 0,
+        sectionCounts: new Map()
+      }
+    ])
+  );
+
+  let unclassifiedSessions = 0;
+
+  sessions.forEach((session) => {
+    const segmentKey = deviceSegmentKeyFromSession(session);
+    const isAbandon = noPurchase(session);
+
+    if (!segmentKey) {
+      unclassifiedSessions += 1;
+      return;
+    }
+
+    const bucket = buckets.get(segmentKey);
+    if (!bucket) return;
+
+    bucket.totalSessions += 1;
+    if (!isAbandon) return;
+
+    bucket.abandonSessions += 1;
+    const section = abandonSectionLabelFromSession(session);
+    bucket.sectionCounts.set(section, (bucket.sectionCounts.get(section) || 0) + 1);
+  });
+
+  const rows = DEVICE_ABANDONMENT_SEGMENTS.map((segment) => {
+    const bucket = buckets.get(segment.key);
+    const totalSessions = Number(bucket?.totalSessions) || 0;
+    const abandonSessions = Number(bucket?.abandonSessions) || 0;
+    const abandonRate = totalSessions > 0 ? (abandonSessions / totalSessions) : 0;
+    const topSectionEntry = Array.from(bucket?.sectionCounts?.entries?.() || [])
+      .sort(compareAbandonSectionEntries)[0] || null;
+    const topSectionLabel = topSectionEntry ? topSectionEntry[0] : '—';
+    const topSectionCount = topSectionEntry ? Number(topSectionEntry[1]) || 0 : 0;
+    const topSectionShare = abandonSessions > 0 ? (topSectionCount / abandonSessions) : 0;
+
+    return {
+      ...segment,
+      totalSessions,
+      abandonSessions,
+      abandonRate,
+      topSectionLabel,
+      topSectionCount,
+      topSectionShare
+    };
+  });
+
+  const totalClassifiedSessions = rows.reduce((sum, row) => sum + row.totalSessions, 0);
+  const totalClassifiedAbandon = rows.reduce((sum, row) => sum + row.abandonSessions, 0);
+  const baselineAbandonRate = totalClassifiedSessions > 0 ? (totalClassifiedAbandon / totalClassifiedSessions) : 0;
+
+  const withNormalization = rows.map((row) => {
+    const trafficShare = totalClassifiedSessions > 0 ? (row.totalSessions / totalClassifiedSessions) : 0;
+    const abandonShare = totalClassifiedAbandon > 0 ? (row.abandonSessions / totalClassifiedAbandon) : 0;
+    const expectedAbandon = row.totalSessions * baselineAbandonRate;
+    const excessAbandon = row.abandonSessions - expectedAbandon;
+    const adjustedIndex = trafficShare > 0 ? (abandonShare / trafficShare) : 0;
+    return {
+      ...row,
+      trafficShare,
+      abandonShare,
+      expectedAbandon,
+      excessAbandon,
+      adjustedIndex
+    };
+  });
+
+  const adjustedIndexTotal = withNormalization.reduce((sum, row) => sum + row.adjustedIndex, 0);
+  const rowsWithAdjustedShare = withNormalization.map((row) => ({
+    ...row,
+    adjustedShare: adjustedIndexTotal > 0 ? (row.adjustedIndex / adjustedIndexTotal) : 0
+  }));
+
+  const topOverIndexed = rowsWithAdjustedShare
+    .filter((row) => row.excessAbandon > 0)
+    .sort((a, b) => {
+      if (b.adjustedIndex !== a.adjustedIndex) return b.adjustedIndex - a.adjustedIndex;
+      return b.excessAbandon - a.excessAbandon;
+    })[0] || null;
+
+  return {
+    rows: rowsWithAdjustedShare,
+    totalSessions: totalClassifiedSessions,
+    totalAbandonSessions: totalClassifiedAbandon,
+    baselineAbandonRate,
+    unclassifiedSessions,
+    pieGradient: buildTrafficAdjustedPieGradient(rowsWithAdjustedShare),
+    topOverIndexed
+  };
+}
+
+function actionPlanStatusForCount(count) {
+  const sessions = Math.max(0, Number(count) || 0);
+  if (sessions >= ACTION_PLAN_ESTABLISHED_MIN_SESSIONS) return 'Established';
+  if (sessions >= ACTION_PLAN_EMERGING_MIN_SESSIONS) return 'Emerging';
+  return null;
+}
+
+function buildPatternRow({
+  id,
+  patternLabel,
+  whereLabel,
+  sessions,
+  observation,
+  suggests,
+  nextCheck,
+  fixFirst
+}) {
+  const sessionList = Array.isArray(sessions) ? sessions : [];
+  const sessionsCount = sessionList.length;
+  const status = actionPlanStatusForCount(sessionsCount);
+  if (!status) return null;
+  return {
+    id,
+    patternLabel,
+    whereLabel,
+    status,
+    sessionsCount,
+    statusLine: `${status} · ${pluralize(sessionsCount, 'session', 'sessions')}`,
+    observation,
+    suggests,
+    nextCheck,
+    fixFirst,
+    sampleSession: sessionList[0] || null
+  };
+}
+
+function topCountryCodeFromSessions(sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const counts = new Map();
+  list.forEach((session) => {
+    const key = (session?.country_code || '').toString().trim().toUpperCase();
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0] || null;
+  return top ? top[0] : null;
+}
+
+function topCampaignFromSessions(sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const counts = new Map();
+  list.forEach((session) => {
+    const key = (session?.utm_campaign || '').toString().trim();
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0] || null;
+  return top ? top[0] : null;
+}
+
+function selectBestSourceMismatch(entries, minSessionCount) {
+  return entries
+    .map((entry) => {
+      const allCount = entry.all.length;
+      const noProgressCount = entry.noProgress.length;
+      const noProgressRate = allCount > 0 ? noProgressCount / allCount : 0;
+      return {
+        ...entry,
+        allCount,
+        noProgressCount,
+        noProgressRate,
+        sessions: entry.noProgress
+      };
+    })
+    .filter((entry) => (
+      entry.allCount >= minSessionCount
+      && entry.noProgressRate >= ACTION_PLAN_SOURCE_MISMATCH_MIN_NO_PROGRESS_RATE
+    ))
+    .sort((a, b) => {
+      if (b.noProgressCount !== a.noProgressCount) return b.noProgressCount - a.noProgressCount;
+      return b.noProgressRate - a.noProgressRate;
+    })[0] || null;
+}
+
+function buildBehaviorPatternRows({ librarySessions }) {
+  const sessions = Array.isArray(librarySessions) ? librarySessions : [];
+  if (!sessions.length) return [];
+
+  const paymentStepExitSessions = sessions.filter((session) => (
+    noPurchase(session) && normalizeCheckoutStepKey(session?.last_checkout_step) === 'payment'
+  ));
+
+  const cartHesitationSessions = sessions.filter((session) => (
+    noPurchase(session) && hasCart(session) && !hasCheckout(session)
+  ));
+
+  const checkoutExitBeforePaymentSessions = sessions.filter((session) => {
+    if (!noPurchase(session) || !hasCheckout(session)) return false;
+    const step = normalizeCheckoutStepKey(session?.last_checkout_step);
+    return step !== 'payment';
+  });
+
+  const reconsiderWithoutCartSessions = sessions.filter((session) => (
+    noPurchase(session)
+    && (Number(session?.product_views) || 0) >= 2
+    && !hasCart(session)
+    && !hasCheckout(session)
+  ));
+
+  const campaignGroups = new Map();
+  const countryGroups = new Map();
+  sessions.forEach((session) => {
+    const noProgress = noPurchase(session) && !hasCart(session) && !hasCheckout(session);
+
+    const campaign = (session?.utm_campaign || '').toString().trim();
+    if (campaign) {
+      const bucket = campaignGroups.get(campaign) || { campaign, all: [], noProgress: [] };
+      bucket.all.push(session);
+      if (noProgress) bucket.noProgress.push(session);
+      campaignGroups.set(campaign, bucket);
+    }
+
+    const countryCode = (session?.country_code || '').toString().trim().toUpperCase();
+    if (countryCode) {
+      const bucket = countryGroups.get(countryCode) || { countryCode, all: [], noProgress: [] };
+      bucket.all.push(session);
+      if (noProgress) bucket.noProgress.push(session);
+      countryGroups.set(countryCode, bucket);
+    }
+  });
+
+  const bestCampaignMismatch = selectBestSourceMismatch(
+    Array.from(campaignGroups.values()),
+    ACTION_PLAN_SOURCE_MISMATCH_MIN_CAMPAIGN_SESSIONS
+  );
+  const bestCountryMismatch = bestCampaignMismatch
+    ? null
+    : selectBestSourceMismatch(
+      Array.from(countryGroups.values()),
+      ACTION_PLAN_SOURCE_MISMATCH_MIN_COUNTRY_SESSIONS
+    );
+
+  let sourceMismatchPattern = null;
+  if (bestCampaignMismatch) {
+    const topCountry = topCountryCodeFromSessions(bestCampaignMismatch.sessions);
+    const suggests = topCountry
+      ? `Campaign promise and landing-page expectation may be misaligned, especially in ${countryNameFromCode(topCountry)} traffic.`
+      : 'Campaign promise and landing-page expectation may be misaligned.';
+    sourceMismatchPattern = buildPatternRow({
+      id: 'campaign-intent-mismatch',
+      patternLabel: 'Campaign intent mismatch',
+      whereLabel: `Campaign • ${bestCampaignMismatch.campaign}`,
+      sessions: bestCampaignMismatch.sessions,
+      observation: 'Campaign sessions reach product pages but often leave before cart or checkout.',
+      suggests,
+      nextCheck: 'Compare campaign message against first-view product content and offer framing.',
+      fixFirst: 'Align campaign promise with landing-page value proposition and first CTA.'
+    });
+  } else if (bestCountryMismatch) {
+    const topCampaign = topCampaignFromSessions(bestCountryMismatch.sessions);
+    const suggests = topCampaign
+      ? `Regional expectation may be misaligned; most exits are from campaign "${topCampaign}".`
+      : 'Regional expectation or localized merchandising may be misaligned with the landing experience.';
+    sourceMismatchPattern = buildPatternRow({
+      id: 'country-intent-mismatch',
+      patternLabel: 'Country traffic mismatch',
+      whereLabel: `Country • ${countryNameFromCode(bestCountryMismatch.countryCode)}`,
+      sessions: bestCountryMismatch.sessions,
+      observation: 'Sessions from this country frequently leave before cart or checkout.',
+      suggests,
+      nextCheck: 'Review localized pricing, shipping expectations, and landing-page language for this country.',
+      fixFirst: 'Adjust localized landing content and checkout expectations for this traffic segment.'
+    });
+  }
+
+  const rows = [
+    buildPatternRow({
+      id: 'payment-step-exit',
+      patternLabel: 'Payment-step exit before purchase',
+      whereLabel: 'Checkout • Payment',
+      sessions: paymentStepExitSessions,
+      observation: 'Shoppers reached payment and then exited without completing purchase.',
+      suggests: 'Final-step confidence, payment method clarity, or gateway flow may be blocking completion.',
+      nextCheck: 'Validate payment method availability and final-step messaging on desktop and mobile.',
+      fixFirst: 'Audit payment-step UX first and keep fallback payment options clearly visible.'
+    }),
+    buildPatternRow({
+      id: 'cart-hesitation',
+      patternLabel: 'Cart hesitation before checkout',
+      whereLabel: 'Cart',
+      sessions: cartHesitationSessions,
+      observation: 'Shoppers reached cart and exited before starting checkout.',
+      suggests: 'Cost expectations, shipping clarity, or weak next-step guidance may be causing hesitation.',
+      nextCheck: 'Review cart totals, shipping estimate visibility, and checkout CTA prominence.',
+      fixFirst: 'Make total cost expectations explicit in cart and highlight the checkout path.'
+    }),
+    buildPatternRow({
+      id: 'checkout-exit-before-payment',
+      patternLabel: 'Checkout exit before payment',
+      whereLabel: 'Checkout • Contact/Shipping',
+      sessions: checkoutExitBeforePaymentSessions,
+      observation: 'Shoppers started checkout but left before reaching payment.',
+      suggests: 'Early checkout friction in contact/shipping steps may be slowing progression.',
+      nextCheck: 'Trace contact and shipping step completion flows across device types.',
+      fixFirst: 'Reduce form friction and clarify shipping expectations before payment.'
+    }),
+    buildPatternRow({
+      id: 'reconsider-without-cart',
+      patternLabel: 'Repeat product consideration without cart',
+      whereLabel: 'Product',
+      sessions: reconsiderWithoutCartSessions,
+      observation: 'Shoppers viewed products repeatedly in-session and still left before cart.',
+      suggests: 'Decision clarity may be missing around fit, value, or selection confidence.',
+      nextCheck: 'Review product detail hierarchy and variant guidance on the first view.',
+      fixFirst: 'Strengthen product-page decision support near the variant and add-to-cart zone.'
+    }),
+    sourceMismatchPattern
+  ].filter(Boolean);
+
+  return rows
+    .sort((a, b) => b.sessionsCount - a.sessionsCount)
+    .slice(0, ACTION_PLAN_ROW_LIMIT);
+}
+
 function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay }) {
   const sessions = Array.isArray(librarySessions) ? librarySessions : [];
   const claritySelectedSessions = Math.max(0, Number(claritySignals?.totals?.sessions) || 0);
@@ -625,6 +1031,7 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
         id: `${type}-${index}`,
         type,
         issueLabel: meta.label,
+        pagePath: issue?.page || '',
         pageLabel: formatPathLabel(issue?.page || ''),
         targetLabel: type === 'dead_clicks' || type === 'rage_clicks' ? normalizeTargetKey(issue?.target_key) : '',
         errorLabel: type === 'js_errors' ? normalizeErrorSignature(issue?.message) : '',
@@ -1413,6 +1820,12 @@ export default function SessionIntelligenceTab({ store }) {
   const visibleIssueRows = showAllIssues ? filteredIssueRows : filteredIssueRows.slice(0, 8);
   const topIssue = filteredIssueRows[0] || issueRows[0] || null;
   const developerGuideRows = filteredIssueRows.slice(0, 3);
+  const actionPlanRows = useMemo(() => (
+    buildBehaviorPatternRows({ librarySessions })
+  ), [librarySessions]);
+  const deviceAbandonmentModel = useMemo(() => (
+    buildDeviceAbandonmentModel({ librarySessions })
+  ), [librarySessions]);
 
   useEffect(() => {
     if (hasConfirmedVerifiableIssues) return;
@@ -1675,6 +2088,142 @@ export default function SessionIntelligenceTab({ store }) {
             <div className="si-summary-kpi-value">{formatNumber(summaryTotals.estimatedAtRisk)}</div>
           </div>
         </div>
+      </div>
+
+      <div className="si-card si-device-abandon-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Abandonment by device</h3>
+          <span className="si-muted">Traffic-adjusted view • {libraryDay || 'Today'}</span>
+        </div>
+        {deviceAbandonmentModel.totalSessions === 0 ? (
+          <div className="si-empty">
+            No classified iOS/Android/Desktop sessions yet for this day.
+          </div>
+        ) : (
+          <>
+            <div className="si-device-abandon-layout">
+              <div className="si-device-pie-wrap">
+                <div className="si-device-pie" style={{ background: deviceAbandonmentModel.pieGradient }}>
+                  <div className="si-device-pie-center">
+                    <div className="si-device-pie-value">{formatPercent(deviceAbandonmentModel.baselineAbandonRate, 0)}</div>
+                    <div className="si-device-pie-label">Baseline abandon rate</div>
+                  </div>
+                </div>
+              </div>
+              <div className="si-device-legend">
+                {deviceAbandonmentModel.rows.map((row) => {
+                  const excessRounded = Math.round(row.excessAbandon);
+                  const excessLabel = `${excessRounded > 0 ? '+' : ''}${formatNumber(excessRounded)} vs expected`;
+                  return (
+                    <div key={`device-legend-${row.key}`} className="si-device-legend-row">
+                      <span className="si-device-dot" style={{ background: row.color }} />
+                      <span className="si-device-legend-name">{row.label}</span>
+                      <span className="si-device-legend-share">{formatPercent(row.adjustedShare, 0)}</span>
+                      <span className={`si-device-legend-excess ${row.excessAbandon > 0 ? 'si-device-legend-excess-positive' : 'si-device-legend-excess-neutral'}`}>
+                        {excessLabel}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="si-device-note">
+              This chart adjusts abandonment by each device&apos;s share of total sessions, so high-volume traffic does not dominate by default.
+            </div>
+            <div className="si-device-note si-device-note-fine">
+              Math note: adjusted share is proportional to (device abandon share ÷ device traffic share), then normalized to 100%.
+            </div>
+            {deviceAbandonmentModel.unclassifiedSessions > 0 ? (
+              <div className="si-muted" style={{ marginTop: 6 }}>
+                Excluded {pluralize(deviceAbandonmentModel.unclassifiedSessions, 'session', 'sessions')} without clear iOS/Android/Desktop classification.
+              </div>
+            ) : null}
+            {deviceAbandonmentModel.topOverIndexed ? (
+              <div className="si-device-callout">
+                Strongest over-index today: <strong>{deviceAbandonmentModel.topOverIndexed.label}</strong> ({formatPercent(deviceAbandonmentModel.topOverIndexed.abandonRate, 1)} abandon rate), most commonly at <strong>{deviceAbandonmentModel.topOverIndexed.topSectionLabel}</strong>.
+              </div>
+            ) : null}
+
+            <table className="si-event-table si-device-abandon-table">
+              <thead>
+                <tr>
+                  <th>Device</th>
+                  <th>Sessions</th>
+                  <th>Abandon rate</th>
+                  <th>Traffic-adjusted index</th>
+                  <th>Likely abandon section</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deviceAbandonmentModel.rows.map((row) => (
+                  <tr key={`device-row-${row.key}`}>
+                    <td>
+                      <span className="si-device-table-device">
+                        <span className="si-device-dot" style={{ background: row.color }} />
+                        {row.label}
+                      </span>
+                    </td>
+                    <td>{pluralize(row.totalSessions, 'session', 'sessions')}</td>
+                    <td>{formatPercent(row.abandonRate, 1)}</td>
+                    <td>{row.adjustedIndex.toFixed(2)}x</td>
+                    <td>
+                      {row.topSectionLabel === '—'
+                        ? '—'
+                        : `${row.topSectionLabel} (${formatPercent(row.topSectionShare, 0)} of abandons)`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
+
+      <div className="si-card si-action-plan-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Behavior patterns</h3>
+          <span className="si-muted">Session-based patterns with established/emerging status</span>
+        </div>
+        {actionPlanRows.length === 0 ? (
+          <div className="si-empty">
+            No patterns reached the emerging threshold yet.
+          </div>
+        ) : (
+          <div className="si-action-plan-list">
+            {actionPlanRows.map((row, idx) => {
+              const proofSession = row.sampleSession;
+              return (
+                <div key={`pattern-${row.id}`} className="si-action-plan-row">
+                  <div className="si-action-plan-rank">{idx + 1}</div>
+                  <div className="si-action-plan-body">
+                    <div className="si-action-plan-title">{row.patternLabel}</div>
+                    <div className="si-action-plan-where">{row.whereLabel}</div>
+                    <div className="si-action-plan-evidence"><strong>Observation:</strong> {row.observation}</div>
+                    <div className="si-action-plan-evidence"><strong>What it suggests:</strong> {row.suggests}</div>
+                    <div className="si-action-plan-evidence"><strong>Next check:</strong> {row.nextCheck}</div>
+                    <div className="si-action-plan-evidence"><strong>Fix first:</strong> {row.fixFirst}</div>
+                  </div>
+                  <div className="si-action-plan-meta">
+                    <span className={`si-chip ${row.status === 'Established' ? 'si-pattern-established' : 'si-pattern-emerging'}`}>{row.status}</span>
+                    <div className="si-action-plan-impact">{row.statusLine}</div>
+                    {proofSession?.session_id ? (
+                      <button
+                        className="si-button si-button-small"
+                        type="button"
+                        onClick={() => openStory(proofSession.session_id, proofSession)}
+                      >
+                        View evidence
+                      </button>
+                    ) : (
+                      <span className="si-muted">No sample</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="si-card si-issues-card" style={{ marginBottom: 12 }}>
