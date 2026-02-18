@@ -2017,16 +2017,59 @@ function toTitleCaseWords(value) {
   return words.map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(' ');
 }
 
+const PAID_MEDIUM_TOKENS = new Set([
+  'cpc',
+  'ppc',
+  'paid',
+  'paidsearch',
+  'paid_search',
+  'sem',
+  'display'
+]);
+
+function sourceKey(rawSource) {
+  const lower = safeString(rawSource).toLowerCase().trim();
+  if (!lower) return '';
+  const host = lower
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0];
+  return host || lower;
+}
+
+function isGoogleSourceKey(key) {
+  const normalized = safeString(key).toLowerCase().trim();
+  if (!normalized) return false;
+  return normalized.includes('google') || normalized.includes('adwords') || normalized.includes('gads');
+}
+
+function isPaidMedium(rawMedium) {
+  const key = safeString(rawMedium).toLowerCase().trim();
+  if (!key) return false;
+  if (PAID_MEDIUM_TOKENS.has(key)) return true;
+  return key.includes('paid') || key.includes('cpc') || key.includes('ppc');
+}
+
+function hasGoogleAdsClickId(attribution) {
+  return Boolean(
+    safeString(attribution?.gclid).trim() ||
+    safeString(attribution?.wbraid).trim() ||
+    safeString(attribution?.gbraid).trim()
+  );
+}
+
+function inferGoogleAdsFromAttribution(attribution) {
+  if (hasGoogleAdsClickId(attribution)) return true;
+  const key = sourceKey(attribution?.utm_source);
+  return isGoogleSourceKey(key) && isPaidMedium(attribution?.utm_medium);
+}
+
 function normalizeTrafficSourceLabel(rawSource) {
   const raw = safeString(rawSource).trim();
   if (!raw) return 'Direct';
 
   const lower = raw.toLowerCase().trim();
-  const host = lower
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .split('/')[0];
-  const key = host || lower;
+  const key = sourceKey(raw);
 
   if (key === 'direct' || key === '(direct)' || key === '(none)' || key === 'none') return 'Direct';
   if (key === '(not set)' || key === 'not set' || key === '(not_set)' || key === 'not_set') return 'Not set';
@@ -2035,7 +2078,8 @@ function normalizeTrafficSourceLabel(rawSource) {
   if (key === 'fb' || key.includes('facebook') || key.includes('meta')) return 'Facebook';
   if (key === 'tt' || key.includes('tiktok')) return 'TikTok';
   if (key.includes('snapchat') || key === 'snap') return 'Snapchat';
-  if (key.includes('google') || key.includes('adwords') || key.includes('gads')) return 'Google';
+  if (key === 'google_ads' || key === 'googleads' || key.includes('google ads') || key.includes('adwords') || key.includes('gads')) return 'Google Ads';
+  if (key.includes('google')) return 'Google';
   if (key.includes('bing') || key.includes('microsoft') || key.includes('msn')) return 'Microsoft Ads';
 
   const cleaned = lower
@@ -2050,12 +2094,14 @@ function normalizeTrafficSourceLabel(rawSource) {
 
 function inferSourceFromCampaign(campaign) {
   if (!campaign || typeof campaign !== 'object') return '';
+  if (inferGoogleAdsFromAttribution(campaign)) return 'google_ads';
+
   const explicit = safeString(campaign.utm_source).trim();
   if (explicit) return explicit;
 
   if (campaign.fbclid) return 'facebook';
   if (campaign.ttclid) return 'tiktok';
-  if (campaign.gclid || campaign.wbraid || campaign.gbraid) return 'google';
+  if (campaign.gclid || campaign.wbraid || campaign.gbraid) return 'google_ads';
   if (campaign.msclkid) return 'microsoft';
   if (campaign.irclickid) return 'affiliate';
 
@@ -2063,11 +2109,13 @@ function inferSourceFromCampaign(campaign) {
 }
 
 function inferSourceFromRowAttribution(row) {
+  if (inferGoogleAdsFromAttribution(row)) return 'google_ads';
+
   const directSource = safeString(row?.utm_source).trim();
   if (directSource) return directSource;
   if (safeString(row?.fbclid).trim()) return 'facebook';
   if (safeString(row?.ttclid).trim()) return 'tiktok';
-  if (safeString(row?.gclid).trim() || safeString(row?.wbraid).trim() || safeString(row?.gbraid).trim()) return 'google';
+  if (safeString(row?.gclid).trim() || safeString(row?.wbraid).trim() || safeString(row?.gbraid).trim()) return 'google_ads';
   if (safeString(row?.msclkid).trim()) return 'microsoft';
   if (safeString(row?.irclickid).trim()) return 'affiliate';
   return '';
@@ -2273,6 +2321,7 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       e.country_code,
       e.data_json,
       e.utm_source,
+      e.utm_medium,
       e.utm_campaign,
       e.fbclid,
       e.gclid,

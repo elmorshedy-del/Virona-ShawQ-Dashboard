@@ -280,7 +280,8 @@ function normalizeTrafficSourceLabel(value) {
   if (key === 'fb' || key.includes('facebook') || key.includes('meta')) return 'Facebook';
   if (key === 'tt' || key.includes('tiktok')) return 'TikTok';
   if (key === 'snap' || key.includes('snapchat')) return 'Snapchat';
-  if (key.includes('google') || key.includes('adwords') || key.includes('gads')) return 'Google';
+  if (key === 'google_ads' || key === 'googleads' || key.includes('google ads') || key.includes('adwords') || key.includes('gads')) return 'Google Ads';
+  if (key.includes('google')) return 'Google';
 
   const cleaned = lower
     .replace(/^https?:\/\//, '')
