@@ -9,6 +9,15 @@ const POLL_OVERVIEW_MS = 20000;
 const REALTIME_WINDOW_MINUTES = 30;
 const REQUEST_TIMEOUT_MS = 15000;
 const REALTIME_GEO_ROWS_LIMIT = 8;
+const CLARITY_SIGNAL_EVENT_NAMES = new Set([
+  'rage_click',
+  'dead_click',
+  'js_error',
+  'unhandled_rejection',
+  'form_invalid',
+  'scroll_depth',
+  'scroll_max'
+]);
 const ACTION_PLAN_ROW_LIMIT = 6;
 const ACTION_PLAN_EMERGING_MIN_SESSIONS = 40;
 const ACTION_PLAN_ESTABLISHED_MIN_SESSIONS = 80;
@@ -1792,6 +1801,44 @@ export default function SessionIntelligenceTab({ store }) {
       : 'No geo data yet.'
     : 'No geo data yet.';
   const hasDayFilters = Boolean(dropoffStageFilter || dropoffDeviceFilter || dropoffCountryFilter || dropoffCampaignFilter);
+  const storefrontPixelInstallUrl = useMemo(() => {
+    const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '';
+    const encodedStore = encodeURIComponent(storeId);
+    return origin ? `${origin}/pixel.js?store=${encodedStore}` : `/pixel.js?store=${encodedStore}`;
+  }, [storeId]);
+  const hasRecentStorefrontSignals = useMemo(() => {
+    return events.some((event) => {
+      const eventName = normalizeLooseKey(event?.event_name);
+      const eventSource = normalizeLooseKey(event?.source);
+      return eventSource === 'theme_pixel' || CLARITY_SIGNAL_EVENT_NAMES.has(eventName);
+    });
+  }, [events]);
+  const clarityEmptyMessage = useMemo(() => {
+    if (clarityLoading || clarityError || claritySignals) return '';
+    if (!libraryDay && libraryDays.length > 0) {
+      return 'Select a day to load clarity signals for that day.';
+    }
+    if (hasRecentStorefrontSignals) {
+      const modeLabel = flowMode === 'high_intent_no_purchase' ? 'High intent (no purchase)' : 'All sessions';
+      return `No clarity signals found for ${libraryDay || 'the selected day'} in ${modeLabel}. Try another day or switch the mode.`;
+    }
+    return 'No clarity signals yet. Install the storefront script:';
+  }, [
+    clarityError,
+    clarityLoading,
+    claritySignals,
+    flowMode,
+    hasRecentStorefrontSignals,
+    libraryDay,
+    libraryDays.length
+  ]);
+  const shouldShowClarityInstallHint = useMemo(() => (
+    !clarityLoading
+    && !clarityError
+    && !claritySignals
+    && !hasRecentStorefrontSignals
+    && !(libraryDays.length > 0 && !libraryDay)
+  ), [clarityError, clarityLoading, claritySignals, hasRecentStorefrontSignals, libraryDay, libraryDays.length]);
 
   const clearDayFilters = useCallback(() => {
     setDropoffStageFilter('');
@@ -2873,9 +2920,12 @@ export default function SessionIntelligenceTab({ store }) {
           </div>
         ) : null}
 
-        {!clarityLoading && !clarityError && !claritySignals ? (
+        {!clarityLoading && !clarityError && !claritySignals && clarityEmptyMessage ? (
           <div className="si-empty" style={{ marginTop: 10 }}>
-            No clarity signals yet. Install the storefront script: <span className="si-code">/pixel.js?store={storeId}</span>
+            {clarityEmptyMessage}{' '}
+            {shouldShowClarityInstallHint ? (
+              <span className="si-code">{storefrontPixelInstallUrl}</span>
+            ) : null}
           </div>
         ) : null}
 
