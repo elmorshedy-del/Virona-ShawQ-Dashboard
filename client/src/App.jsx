@@ -1167,9 +1167,8 @@ export default function App() {
       params.set('includeInactive', 'true');
     }
 
-    if (selectedCampaignId) {
-      params.set('campaignId', selectedCampaignId);
-    }
+    // Do not reuse the shared Meta campaign filter for Google mode.
+    // Meta IDs can hide all Google campaigns when passed to the Google endpoint.
 
     let cancelled = false;
     let inFlight = false;

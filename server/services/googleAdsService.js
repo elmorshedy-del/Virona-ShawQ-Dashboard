@@ -497,59 +497,76 @@ export async function getGoogleAdManagerHierarchy(params = {}) {
 
   try {
     const accessToken = await getAccessToken();
-    const adGroupQuery = buildAdGroupQuery({
-      startDate,
-      endDate,
-      includeInactive,
-      campaignId: params.campaignId
-    });
-    const campaignQuery = buildCampaignQuery({
-      startDate,
-      endDate,
-      includeInactive,
-      campaignId: params.campaignId
-    });
-    const conversionCategoryQuery = buildConversionCategoryQuery({
-      startDate,
-      endDate,
-      includeInactive,
-      campaignId: params.campaignId
-    });
+    const fetchHierarchy = async (campaignId) => {
+      const adGroupQuery = buildAdGroupQuery({
+        startDate,
+        endDate,
+        includeInactive,
+        campaignId
+      });
+      const campaignQuery = buildCampaignQuery({
+        startDate,
+        endDate,
+        includeInactive,
+        campaignId
+      });
+      const conversionCategoryQuery = buildConversionCategoryQuery({
+        startDate,
+        endDate,
+        includeInactive,
+        campaignId
+      });
 
-    const [adGroupRows, campaignRows, conversionCategoryRows] = await Promise.all([
-      searchGoogleAds({
-        customerId,
-        loginCustomerId,
-        developerToken,
-        accessToken,
-        query: adGroupQuery
-      }),
-      searchGoogleAds({
-        customerId,
-        loginCustomerId,
-        developerToken,
-        accessToken,
-        query: campaignQuery
-      }),
-      searchGoogleAds({
-        customerId,
-        loginCustomerId,
-        developerToken,
-        accessToken,
-        query: conversionCategoryQuery
-      })
-    ]);
+      const [adGroupRows, campaignRows, conversionCategoryRows] = await Promise.all([
+        searchGoogleAds({
+          customerId,
+          loginCustomerId,
+          developerToken,
+          accessToken,
+          query: adGroupQuery
+        }),
+        searchGoogleAds({
+          customerId,
+          loginCustomerId,
+          developerToken,
+          accessToken,
+          query: campaignQuery
+        }),
+        searchGoogleAds({
+          customerId,
+          loginCustomerId,
+          developerToken,
+          accessToken,
+          query: conversionCategoryQuery
+        })
+      ]);
 
-    const hierarchyRows = mapRowsToHierarchy(adGroupRows);
-    const campaignTotals = mapCampaignTotals(campaignRows);
-    const conversionTotals = mapConversionCategoryTotals(conversionCategoryRows);
-    const merged = mergeCampaignTotalsIntoHierarchy(hierarchyRows, campaignTotals);
-    const data = mergeConversionCategoryIntoHierarchy(merged, conversionTotals);
+      const hierarchyRows = mapRowsToHierarchy(adGroupRows);
+      const campaignTotals = mapCampaignTotals(campaignRows);
+      const conversionTotals = mapConversionCategoryTotals(conversionCategoryRows);
+      const merged = mergeCampaignTotalsIntoHierarchy(hierarchyRows, campaignTotals);
+      return mergeConversionCategoryIntoHierarchy(merged, conversionTotals);
+    };
+
+    const requestedCampaignId = params.campaignId;
+    let data = await fetchHierarchy(requestedCampaignId);
+    let notice = data.length
+      ? ''
+      : `No Google Ads data for ${startDate} to ${endDate}.`;
+
+    // Defensive fallback: if a non-Google campaign id is passed from shared filters,
+    // rerun without campaign filter so campaigns are still visible.
+    if (!data.length && requestedCampaignId) {
+      const fallbackData = await fetchHierarchy(null);
+      if (fallbackData.length) {
+        data = fallbackData;
+        notice = 'Selected campaign filter did not match Google campaigns. Showing all Google campaigns.';
+      }
+    }
+
     return {
       data,
-      notice: data.length
-        ? ''
-        : `No Google Ads data for ${startDate} to ${endDate}.`,
+      notice,
       source: 'google-ads-api',
       dateRange: { startDate, endDate }
     };
