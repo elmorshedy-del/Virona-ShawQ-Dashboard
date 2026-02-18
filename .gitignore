@@ -8,3 +8,6 @@ __pycache__/
 .DS_Store
 npm-debug.log*
 full_code.txt
+.env
+.env.*
+!.env.example
