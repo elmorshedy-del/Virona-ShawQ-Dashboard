@@ -1052,7 +1052,7 @@ function getHourInTimezone(orderDate, timezone) {
     const parsedHour = Number.parseInt(hourPart, 10);
     if (Number.isFinite(parsedHour)) return parsedHour % 24;
   } catch (error) {
-    // Fallback to UTC below.
+    console.error('[Analytics] Failed to get hour in timezone "' + timezone + '". Falling back to UTC.', error);
   }
 
   const utcHour = orderDate.getUTCHours();
