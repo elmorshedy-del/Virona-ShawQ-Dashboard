@@ -4819,7 +4819,7 @@ function DashboardTab({
       const hourPart = parts.find((part) => part.type === 'hour')?.value;
       const parsedHour = Number.parseInt(hourPart, 10);
       if (!Number.isFinite(parsedHour)) return null;
-      return Math.max(0, Math.min(23, parsedHour));
+      return parsedHour % 24;
     } catch (error) {
       return null;
     }
