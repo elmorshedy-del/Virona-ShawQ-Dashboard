@@ -33,6 +33,7 @@ import CustomerInsightsTab from './components/CustomerInsightsTab';
 import WatchtowerTab from './components/WatchtowerTab';
 import CROForensicsTab from './components/CROForensicsTab';
 import ConversionUIFixLabTab from './components/ConversionUIFixLabTab';
+import CampaignIntelligenceTab from './components/CampaignIntelligenceTab';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -425,7 +426,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics'];
+const TABS = ['Dashboard', 'Campaign Intelligence', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics'];
 const TAB_INDEX = Object.freeze(
   TABS.reduce((indexMap, tabLabel, index) => {
     indexMap[tabLabel] = index;
@@ -433,6 +434,7 @@ const TAB_INDEX = Object.freeze(
   }, {})
 );
 const DASHBOARD_TAB_INDEX = TAB_INDEX['Dashboard'];
+const CAMPAIGN_INTELLIGENCE_TAB_INDEX = TAB_INDEX['Campaign Intelligence'];
 const METRICS_CHARTS_TAB_INDEX = TAB_INDEX['Metrics Charts'];
 const ATTRIBUTION_TAB_INDEX = TAB_INDEX['Attribution'];
 const INSIGHTS_TAB_INDEX = TAB_INDEX['Insights'];
@@ -453,7 +455,7 @@ const BUDGET_CALCULATOR_TAB_INDEX = TAB_INDEX['Budget Calculator'];
 const EXCHANGE_RATES_TAB_INDEX = TAB_INDEX['Exchange Rates'];
 const WATCHTOWER_TAB_INDEX = TAB_INDEX['Watchtower'];
 const CRO_FORENSICS_TAB_INDEX = TAB_INDEX['CRO Forensics'];
-const TABS_VERSION = '2026-02-12-conversion-ui-fix-lab-after-customer-insights-v2';
+const TABS_VERSION = '2026-02-19-campaign-intelligence-after-dashboard-v1';
 const MOBILE_VIEWPORT_MAX_WIDTH_PX = 768;
 const MOBILE_VIEWPORT_QUERY = `(max-width: ${MOBILE_VIEWPORT_MAX_WIDTH_PX}px)`;
 const MOBILE_DASHBOARD_TREND_POINTS = 14;
@@ -620,6 +622,7 @@ export default function App() {
 
   const store = STORES[currentStore];
   const isProductFinderTab = activeTab === PRODUCT_FINDER_TAB_INDEX;
+  const hidesGlobalDateControls = isProductFinderTab || activeTab === CAMPAIGN_INTELLIGENCE_TAB_INDEX;
   const selectedCampaignOption = useMemo(
     () => campaignOptions.find((c) => c.campaignId === selectedCampaignId) || null,
     [campaignOptions, selectedCampaignId]
@@ -1537,12 +1540,12 @@ export default function App() {
               />
 
               <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded">
-                {activeTab === PRODUCT_FINDER_TAB_INDEX ? 'Product Finder' : 'Dashboard'}
+                {TABS[activeTab] || 'Dashboard'}
               </span>
             </div>
             
             <div className="flex items-center gap-4">
-              {!isProductFinderTab && (
+              {!hidesGlobalDateControls && (
                 <span className="text-sm text-gray-500">
                   {dashboard?.dateRange &&
                     `${dashboard.dateRange.startDate} to ${dashboard.dateRange.endDate}`}
@@ -1584,7 +1587,7 @@ export default function App() {
           ))}
         </div>
 
-        {!isProductFinderTab && (
+        {!hidesGlobalDateControls && (
           <div className="flex items-center gap-3 bg-white p-4 rounded-xl shadow-sm mb-6 flex-wrap">
             <span className="text-sm font-medium text-gray-700">Period:</span>
             
@@ -1887,6 +1890,10 @@ export default function App() {
               chartMode={chartMode}
             />
           )
+        )}
+
+        {activeTab === CAMPAIGN_INTELLIGENCE_TAB_INDEX && (
+          <CampaignIntelligenceTab store={store} />
         )}
 
         {activeTab === METRICS_CHARTS_TAB_INDEX && (
