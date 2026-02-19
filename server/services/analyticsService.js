@@ -1050,7 +1050,7 @@ function getHourInTimezone(orderDate, timezone) {
     const parts = getTimeOfDayHourFormatter(timezone).formatToParts(orderDate);
     const hourPart = parts.find((part) => part.type === 'hour')?.value;
     const parsedHour = Number.parseInt(hourPart, 10);
-    if (Number.isFinite(parsedHour)) return Math.max(0, Math.min(23, parsedHour));
+    if (Number.isFinite(parsedHour)) return parsedHour % 24;
   } catch (error) {
     // Fallback to UTC below.
   }
