@@ -31,6 +31,7 @@ import metaDemographicsRoutes from './routes/metaDemographics.js';
 import watchtowerRouter from './routes/watchtower.js';
 import croForensicsRouter from './routes/croForensics.js';
 import conversionUiFixLabRouter from './routes/conversionUiFixLab.js';
+import campaignIntelligenceRouter from './routes/campaignIntelligence.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
@@ -250,6 +251,7 @@ app.use('/api/fatigue', fatigueRouter);
 app.use('/api/testimonials', testimonialExtractorRouter);
 app.use('/api/cro-forensics', croForensicsRouter);
 app.use('/api/conversion-ui-fix-lab', conversionUiFixLabRouter);
+app.use('/api/campaign-intelligence', campaignIntelligenceRouter);
 
 // Serve static files in production
 const clientDist = path.join(__dirname, '../client/dist');
