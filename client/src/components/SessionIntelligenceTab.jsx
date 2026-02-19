@@ -21,9 +21,6 @@ const CLARITY_SIGNAL_EVENT_NAMES = new Set([
 const ACTION_PLAN_ROW_LIMIT = 6;
 const ACTION_PLAN_EMERGING_MIN_SESSIONS = 40;
 const ACTION_PLAN_ESTABLISHED_MIN_SESSIONS = 80;
-const ACTION_PLAN_SOURCE_MISMATCH_MIN_CAMPAIGN_SESSIONS = 20;
-const ACTION_PLAN_SOURCE_MISMATCH_MIN_COUNTRY_SESSIONS = 20;
-const ACTION_PLAN_SOURCE_MISMATCH_MIN_NO_PROGRESS_RATE = 0.6;
 const DEVICE_ABANDONMENT_FULL_CIRCLE_DEGREES = 360;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
@@ -71,7 +68,8 @@ const FLOW_STAGE_LABELS = {
 const DEVICE_ABANDONMENT_SEGMENTS = [
   { key: 'ios', label: 'iOS', color: '#6366f1' },
   { key: 'android', label: 'Android', color: '#0ea5e9' },
-  { key: 'desktop', label: 'Desktop', color: '#14b8a6' }
+  { key: 'desktop', label: 'Desktop', color: '#14b8a6' },
+  { key: 'unknown', label: 'Unknown', color: '#94a3b8' }
 ];
 
 const DEVICE_ABANDON_SECTION_ORDER = ['Payment', 'Checkout', 'Cart', 'Product', 'Landing'];
@@ -184,10 +182,11 @@ function normalizeCheckoutStepKey(step) {
 
 function inferDropoffStageFromSummary(session) {
   if (!session || typeof session !== 'object') return 'landing';
-  if (Number(session.purchase_events || 0) > 0) return 'purchase';
+  if (hasPurchase(session)) return 'purchase';
 
   const step = normalizeCheckoutStepKey(session.last_checkout_step);
   if (Number(session.checkout_started_events || 0) > 0 || step) {
+    if (step === 'thank_you') return 'purchase';
     if (step === 'payment') return 'checkout_payment';
     if (step === 'shipping') return 'checkout_shipping';
     return 'checkout_contact';
@@ -594,7 +593,16 @@ function buildDeveloperFixSteps(row) {
 }
 
 function hasPurchase(session) {
-  return (Number(session?.purchase_events) || 0) > 0;
+  if (!session || typeof session !== 'object') return false;
+  if ((Number(session?.purchase_events) || 0) > 0) return true;
+
+  const step = normalizeCheckoutStepKey(session?.last_checkout_step);
+  if (step === 'thank_you') return true;
+
+  const status = normalizeLooseKey(session?.status);
+  if (status === 'purchased') return true;
+
+  return false;
 }
 
 function hasCheckout(session) {
@@ -617,7 +625,7 @@ function deviceSegmentKeyFromSession(session) {
   if (rawType === 'desktop' || rawType.includes('desktop')) return 'desktop';
   if (rawOs === 'ios' || rawType === 'ios' || rawType === 'ipados' || rawType.includes('ios') || rawType.includes('ipad')) return 'ios';
   if (rawOs === 'android' || rawType === 'android' || rawType === 'android tablet' || rawType.includes('android')) return 'android';
-  return null;
+  return 'unknown';
 }
 
 function abandonSectionLabelFromSession(session) {
@@ -672,16 +680,9 @@ function buildDeviceAbandonmentModel({ librarySessions }) {
     ])
   );
 
-  let unclassifiedSessions = 0;
-
   sessions.forEach((session) => {
     const segmentKey = deviceSegmentKeyFromSession(session);
     const isAbandon = noPurchase(session);
-
-    if (!segmentKey) {
-      unclassifiedSessions += 1;
-      return;
-    }
 
     const bucket = buckets.get(segmentKey);
     if (!bucket) return;
@@ -749,12 +750,14 @@ function buildDeviceAbandonmentModel({ librarySessions }) {
       return b.excessAbandon - a.excessAbandon;
     })[0] || null;
 
+  const unknownRow = rowsWithAdjustedShare.find((row) => row.key === 'unknown') || null;
+
   return {
     rows: rowsWithAdjustedShare,
     totalSessions: totalClassifiedSessions,
     totalAbandonSessions: totalClassifiedAbandon,
     baselineAbandonRate,
-    unclassifiedSessions,
+    unknownSessions: unknownRow?.totalSessions || 0,
     pieGradient: buildTrafficAdjustedPieGradient(rowsWithAdjustedShare),
     topOverIndexed
   };
@@ -771,216 +774,255 @@ function buildPatternRow({
   id,
   patternLabel,
   whereLabel,
-  sessions,
+  eligibleCount,
+  affectedSessions,
+  affectedCount,
+  baselineRate,
+  segmentRate,
+  overIndex,
+  excessSessions,
+  score,
   observation,
   suggests,
   nextCheck,
   fixFirst
 }) {
-  const sessionList = Array.isArray(sessions) ? sessions : [];
-  const sessionsCount = sessionList.length;
-  const status = actionPlanStatusForCount(sessionsCount);
+  const eligibleSessions = Math.max(0, Number(eligibleCount) || 0);
+  const affectedList = Array.isArray(affectedSessions) ? affectedSessions : [];
+  const affectedSessionsCount = Math.max(
+    0,
+    Number.isFinite(Number(affectedCount))
+      ? Number(affectedCount)
+      : affectedList.length
+  );
+
+  const status = actionPlanStatusForCount(eligibleSessions);
   if (!status) return null;
+
+  const safeRate = eligibleSessions > 0 ? affectedSessionsCount / eligibleSessions : 0;
+  const baseline = Number.isFinite(Number(baselineRate)) ? Number(baselineRate) : null;
+  const statusLineParts = [
+    `${status} · ${formatNumber(affectedSessionsCount)}/${formatNumber(eligibleSessions)} sessions (${formatPercent(safeRate, 0)})`
+  ];
+  if (baseline != null) {
+    statusLineParts.push(`baseline ${formatPercent(baseline, 0)}`);
+  }
+
   return {
     id,
     patternLabel,
     whereLabel,
     status,
-    sessionsCount,
-    statusLine: `${status} · ${pluralize(sessionsCount, 'session', 'sessions')}`,
+    eligibleCount: eligibleSessions,
+    sessionsCount: affectedSessionsCount,
+    segmentRate: Number.isFinite(Number(segmentRate)) ? Number(segmentRate) : safeRate,
+    baselineRate: baseline,
+    overIndex: Number.isFinite(Number(overIndex)) ? Number(overIndex) : null,
+    excessSessions: Number.isFinite(Number(excessSessions)) ? Number(excessSessions) : null,
+    score: Number.isFinite(Number(score)) ? Number(score) : null,
+    statusLine: statusLineParts.join(' · '),
     observation,
     suggests,
     nextCheck,
     fixFirst,
-    sampleSession: sessionList[0] || null
+    sampleSession: affectedList[0] || null
   };
-}
-
-function topCountryCodeFromSessions(sessions) {
-  const list = Array.isArray(sessions) ? sessions : [];
-  const counts = new Map();
-  list.forEach((session) => {
-    const key = (session?.country_code || '').toString().trim().toUpperCase();
-    if (!key) return;
-    counts.set(key, (counts.get(key) || 0) + 1);
-  });
-  const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0] || null;
-  return top ? top[0] : null;
-}
-
-function topCampaignFromSessions(sessions) {
-  const list = Array.isArray(sessions) ? sessions : [];
-  const counts = new Map();
-  list.forEach((session) => {
-    const key = (session?.utm_campaign || '').toString().trim();
-    if (!key) return;
-    counts.set(key, (counts.get(key) || 0) + 1);
-  });
-  const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0] || null;
-  return top ? top[0] : null;
-}
-
-function selectBestSourceMismatch(entries, minSessionCount) {
-  return entries
-    .map((entry) => {
-      const allCount = entry.all.length;
-      const noProgressCount = entry.noProgress.length;
-      const noProgressRate = allCount > 0 ? noProgressCount / allCount : 0;
-      return {
-        ...entry,
-        allCount,
-        noProgressCount,
-        noProgressRate,
-        sessions: entry.noProgress
-      };
-    })
-    .filter((entry) => (
-      entry.allCount >= minSessionCount
-      && entry.noProgressRate >= ACTION_PLAN_SOURCE_MISMATCH_MIN_NO_PROGRESS_RATE
-    ))
-    .sort((a, b) => {
-      if (b.noProgressCount !== a.noProgressCount) return b.noProgressCount - a.noProgressCount;
-      return b.noProgressRate - a.noProgressRate;
-    })[0] || null;
 }
 
 function buildBehaviorPatternRows({ librarySessions }) {
   const sessions = Array.isArray(librarySessions) ? librarySessions : [];
   if (!sessions.length) return [];
 
-  const paymentStepExitSessions = sessions.filter((session) => (
-    noPurchase(session) && normalizeCheckoutStepKey(session?.last_checkout_step) === 'payment'
-  ));
+  const sentenceCase = (value) => {
+    const raw = (value || '').toString();
+    if (!raw) return '';
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  };
 
-  const cartHesitationSessions = sessions.filter((session) => (
-    noPurchase(session) && hasCart(session) && !hasCheckout(session)
-  ));
+  const SEGMENT_DIMENSIONS = [
+    {
+      key: 'campaign',
+      label: 'Campaign',
+      getKey: (session) => (session?.utm_campaign || '').toString().trim() || '(not set)',
+      format: (value) => (value || '').toString().trim() || '(not set)'
+    },
+    {
+      key: 'country',
+      label: 'Country',
+      getKey: (session) => (session?.country_code || '').toString().trim().toUpperCase(),
+      format: (value) => countryNameFromCode(value)
+    }
+  ];
 
-  const checkoutExitBeforePaymentSessions = sessions.filter((session) => {
-    if (!noPurchase(session) || !hasCheckout(session)) return false;
+  const reachedPayment = (session) => {
     const step = normalizeCheckoutStepKey(session?.last_checkout_step);
-    return step !== 'payment';
-  });
+    return step === 'payment' || step === 'thank_you' || hasPurchase(session);
+  };
 
-  const reconsiderWithoutCartSessions = sessions.filter((session) => (
-    noPurchase(session)
-    && (Number(session?.product_views) || 0) >= 2
-    && !hasCart(session)
-    && !hasCheckout(session)
-  ));
-
-  const campaignGroups = new Map();
-  const countryGroups = new Map();
-  sessions.forEach((session) => {
-    const noProgress = noPurchase(session) && !hasCart(session) && !hasCheckout(session);
-
-    const campaign = (session?.utm_campaign || '').toString().trim();
-    if (campaign) {
-      const bucket = campaignGroups.get(campaign) || { campaign, all: [], noProgress: [] };
-      bucket.all.push(session);
-      if (noProgress) bucket.noProgress.push(session);
-      campaignGroups.set(campaign, bucket);
-    }
-
-    const countryCode = (session?.country_code || '').toString().trim().toUpperCase();
-    if (countryCode) {
-      const bucket = countryGroups.get(countryCode) || { countryCode, all: [], noProgress: [] };
-      bucket.all.push(session);
-      if (noProgress) bucket.noProgress.push(session);
-      countryGroups.set(countryCode, bucket);
-    }
-  });
-
-  const bestCampaignMismatch = selectBestSourceMismatch(
-    Array.from(campaignGroups.values()),
-    ACTION_PLAN_SOURCE_MISMATCH_MIN_CAMPAIGN_SESSIONS
-  );
-  const bestCountryMismatch = bestCampaignMismatch
-    ? null
-    : selectBestSourceMismatch(
-      Array.from(countryGroups.values()),
-      ACTION_PLAN_SOURCE_MISMATCH_MIN_COUNTRY_SESSIONS
-    );
-
-  let sourceMismatchPattern = null;
-  if (bestCampaignMismatch) {
-    const topCountry = topCountryCodeFromSessions(bestCampaignMismatch.sessions);
-    const suggests = topCountry
-      ? `Campaign promise and landing-page expectation may be misaligned, especially in ${countryNameFromCode(topCountry)} traffic.`
-      : 'Campaign promise and landing-page expectation may be misaligned.';
-    sourceMismatchPattern = buildPatternRow({
-      id: 'campaign-intent-mismatch',
-      patternLabel: 'Campaign intent mismatch',
-      whereLabel: `Campaign • ${bestCampaignMismatch.campaign}`,
-      sessions: bestCampaignMismatch.sessions,
-      observation: 'Campaign sessions reach product pages but often leave before cart or checkout.',
-      suggests,
-      nextCheck: 'Compare campaign message against first-view product content and offer framing.',
-      fixFirst: 'Align campaign promise with landing-page value proposition and first CTA.'
-    });
-  } else if (bestCountryMismatch) {
-    const topCampaign = topCampaignFromSessions(bestCountryMismatch.sessions);
-    const suggests = topCampaign
-      ? `Regional expectation may be misaligned; most exits are from campaign "${topCampaign}".`
-      : 'Regional expectation or localized merchandising may be misaligned with the landing experience.';
-    sourceMismatchPattern = buildPatternRow({
-      id: 'country-intent-mismatch',
-      patternLabel: 'Country traffic mismatch',
-      whereLabel: `Country • ${countryNameFromCode(bestCountryMismatch.countryCode)}`,
-      sessions: bestCountryMismatch.sessions,
-      observation: 'Sessions from this country frequently leave before cart or checkout.',
-      suggests,
-      nextCheck: 'Review localized pricing, shipping expectations, and landing-page language for this country.',
-      fixFirst: 'Adjust localized landing content and checkout expectations for this traffic segment.'
-    });
-  }
-
-  const rows = [
-    buildPatternRow({
+  const PATTERNS = [
+    {
       id: 'payment-step-exit',
-      patternLabel: 'Payment-step exit before purchase',
-      whereLabel: 'Checkout • Payment',
-      sessions: paymentStepExitSessions,
-      observation: 'Shoppers reached payment and then exited without completing purchase.',
+      label: 'Payment-step exit before purchase',
+      eligibilityLabel: 'payment-step sessions',
+      badLabel: 'payment-step exits',
+      eligible: reachedPayment,
+      bad: (session) => noPurchase(session) && normalizeCheckoutStepKey(session?.last_checkout_step) === 'payment',
       suggests: 'Final-step confidence, payment method clarity, or gateway flow may be blocking completion.',
       nextCheck: 'Validate payment method availability and final-step messaging on desktop and mobile.',
       fixFirst: 'Audit payment-step UX first and keep fallback payment options clearly visible.'
-    }),
-    buildPatternRow({
-      id: 'cart-hesitation',
-      patternLabel: 'Cart hesitation before checkout',
-      whereLabel: 'Cart',
-      sessions: cartHesitationSessions,
-      observation: 'Shoppers reached cart and exited before starting checkout.',
-      suggests: 'Cost expectations, shipping clarity, or weak next-step guidance may be causing hesitation.',
-      nextCheck: 'Review cart totals, shipping estimate visibility, and checkout CTA prominence.',
-      fixFirst: 'Make total cost expectations explicit in cart and highlight the checkout path.'
-    }),
-    buildPatternRow({
+    },
+    {
       id: 'checkout-exit-before-payment',
-      patternLabel: 'Checkout exit before payment',
-      whereLabel: 'Checkout • Contact/Shipping',
-      sessions: checkoutExitBeforePaymentSessions,
-      observation: 'Shoppers started checkout but left before reaching payment.',
+      label: 'Checkout exit before payment',
+      eligibilityLabel: 'checkout sessions',
+      badLabel: 'checkout exits before payment',
+      eligible: (session) => hasCheckout(session),
+      bad: (session) => {
+        if (hasPurchase(session)) return false;
+        if (!hasCheckout(session)) return false;
+        const step = normalizeCheckoutStepKey(session?.last_checkout_step);
+        return step !== 'payment' && step !== 'thank_you';
+      },
       suggests: 'Early checkout friction in contact/shipping steps may be slowing progression.',
       nextCheck: 'Trace contact and shipping step completion flows across device types.',
       fixFirst: 'Reduce form friction and clarify shipping expectations before payment.'
-    }),
-    buildPatternRow({
+    },
+    {
+      id: 'cart-hesitation',
+      label: 'Cart hesitation before checkout',
+      eligibilityLabel: 'cart sessions',
+      badLabel: 'cart exits before checkout',
+      eligible: (session) => hasCart(session),
+      bad: (session) => noPurchase(session) && hasCart(session) && !hasCheckout(session),
+      suggests: 'Cost expectations, shipping clarity, or weak next-step guidance may be causing hesitation.',
+      nextCheck: 'Review cart totals, shipping estimate visibility, and checkout CTA prominence.',
+      fixFirst: 'Make total cost expectations explicit in cart and highlight the checkout path.'
+    },
+    {
       id: 'reconsider-without-cart',
-      patternLabel: 'Repeat product consideration without cart',
-      whereLabel: 'Product',
-      sessions: reconsiderWithoutCartSessions,
-      observation: 'Shoppers viewed products repeatedly in-session and still left before cart.',
+      label: 'Repeat product consideration without cart',
+      eligibilityLabel: 'sessions with 2+ product views',
+      badLabel: 'exits without cart/checkout',
+      eligible: (session) => (Number(session?.product_views) || 0) >= 2,
+      bad: (session) => (
+        noPurchase(session)
+        && (Number(session?.product_views) || 0) >= 2
+        && !hasCart(session)
+        && !hasCheckout(session)
+      ),
       suggests: 'Decision clarity may be missing around fit, value, or selection confidence.',
       nextCheck: 'Review product detail hierarchy and variant guidance on the first view.',
       fixFirst: 'Strengthen product-page decision support near the variant and add-to-cart zone.'
-    }),
-    sourceMismatchPattern
-  ].filter(Boolean);
+    },
+    {
+      id: 'product-view-no-progress',
+      label: 'Exit after product view (no cart/checkout)',
+      eligibilityLabel: 'sessions that reached a product page',
+      badLabel: 'exits before cart/checkout',
+      eligible: (session) => (Number(session?.product_views) || 0) > 0,
+      bad: (session) => noPurchase(session) && !hasCart(session) && !hasCheckout(session),
+      suggests: 'Traffic expectation may be misaligned with the first product/offer experience.',
+      nextCheck: 'Compare traffic promise against the first product view and offer framing.',
+      fixFirst: 'Align the first product view with the traffic promise and make the primary CTA unmissable.'
+    }
+  ];
 
-  return rows
-    .sort((a, b) => b.sessionsCount - a.sessionsCount)
+  const candidates = [];
+
+  PATTERNS.forEach((pattern) => {
+    const eligibleSessions = sessions.filter(pattern.eligible);
+    const totalEligible = eligibleSessions.length;
+    if (totalEligible <= 0) return;
+
+    const affectedAll = eligibleSessions.filter(pattern.bad);
+    const totalAffected = affectedAll.length;
+    if (totalAffected <= 0) return;
+
+    const baselineRate = totalAffected / totalEligible;
+
+    SEGMENT_DIMENSIONS.forEach((dimension) => {
+      const buckets = new Map();
+
+      eligibleSessions.forEach((session) => {
+        const key = dimension.getKey(session);
+        if (!key) return;
+        const bucket = buckets.get(key) || {
+          key,
+          eligibleCount: 0,
+          affectedCount: 0,
+          otherCounts: new Map(),
+          sampleAffected: []
+        };
+        bucket.eligibleCount += 1;
+        if (pattern.bad(session)) {
+          bucket.affectedCount += 1;
+          const otherKey = dimension.key === 'campaign'
+            ? (session?.country_code || '').toString().trim().toUpperCase()
+            : (session?.utm_campaign || '').toString().trim();
+          if (otherKey) bucket.otherCounts.set(otherKey, (bucket.otherCounts.get(otherKey) || 0) + 1);
+          if (bucket.sampleAffected.length < 6) bucket.sampleAffected.push(session);
+        }
+        buckets.set(key, bucket);
+      });
+
+      Array.from(buckets.values()).forEach((bucket) => {
+        const eligibleCount = bucket.eligibleCount;
+        const affectedCount = bucket.affectedCount;
+        if (eligibleCount <= 0 || affectedCount <= 0) return;
+
+        const segmentRate = affectedCount / eligibleCount;
+        const expected = eligibleCount * baselineRate;
+        const excess = affectedCount - expected;
+        if (!(excess >= 1)) return;
+
+        const trafficShare = eligibleCount / totalEligible;
+        const affectedShare = totalAffected > 0 ? affectedCount / totalAffected : 0;
+        const overIndex = baselineRate > 0 ? (segmentRate / baselineRate) : 0;
+        if (!(overIndex > 1)) return;
+
+        const score = excess * Math.max(0, overIndex - 1);
+        const excessRounded = Math.max(1, Math.round(excess));
+
+        const crossContext = (() => {
+          const topOther = Array.from(bucket.otherCounts.entries()).sort((a, b) => b[1] - a[1])[0] || null;
+          if (!topOther) return '';
+
+          if (dimension.key === 'campaign') {
+            return `Top country: ${countryNameFromCode(topOther[0])}.`;
+          }
+          return `Top campaign: ${topOther[0]}.`;
+        })();
+
+        const observationParts = [
+          `This ${dimension.label.toLowerCase()} is ${formatPercent(trafficShare, 0)} of ${pattern.eligibilityLabel} but ${formatPercent(affectedShare, 0)} of ${pattern.badLabel} (${overIndex.toFixed(2)}x baseline).`,
+          `${sentenceCase(pattern.badLabel)} rate: ${formatPercent(segmentRate, 0)} vs baseline ${formatPercent(baselineRate, 0)} (+${formatNumber(excessRounded)} sessions vs expected).`
+        ];
+        if (crossContext) observationParts.push(crossContext);
+
+        candidates.push(buildPatternRow({
+          id: `${pattern.id}-${dimension.key}-${bucket.key}`,
+          patternLabel: pattern.label,
+          whereLabel: `${dimension.label} • ${dimension.format(bucket.key)}`,
+          eligibleCount,
+          affectedSessions: bucket.sampleAffected,
+          affectedCount,
+          baselineRate,
+          segmentRate,
+          overIndex,
+          excessSessions: excess,
+          score,
+          observation: observationParts.join(' '),
+          suggests: pattern.suggests,
+          nextCheck: pattern.nextCheck,
+          fixFirst: pattern.fixFirst
+        }));
+      });
+    });
+  });
+
+  return candidates
+    .filter(Boolean)
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
     .slice(0, ACTION_PLAN_ROW_LIMIT);
 }
 
@@ -989,12 +1031,9 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
   const claritySelectedSessions = Math.max(0, Number(claritySignals?.totals?.sessions) || 0);
   const claritySourceSessions = Math.max(0, Number(claritySignals?.totals?.source_sessions) || 0);
   const totalSessionUniverse = Math.max(sessions.length, claritySourceSessions, claritySelectedSessions);
-  const highIntentNoPurchaseSessions = sessions.filter((s) => {
-    const atc = Number(s?.atc_events) || 0;
-    const checkout = Number(s?.checkout_started_events) || 0;
-    const purchase = Number(s?.purchase_events) || 0;
-    return (atc > 0 || checkout > 0) && purchase === 0;
-  });
+  const highIntentNoPurchaseSessions = sessions.filter((s) => (
+    noPurchase(s) && ((Number(s?.atc_events) || 0) > 0 || hasCheckout(s))
+  ));
 
   const highIntentFromLibrary = highIntentNoPurchaseSessions.length;
   const highIntentFromClarity = claritySignals?.mode === 'high_intent_no_purchase'
@@ -1070,7 +1109,7 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
       eligibleHighIntent,
       highIntentSessions: eligibleHighIntent,
       totalSessions: totalSessionUniverse,
-      purchases: sessions.filter((s) => (Number(s?.purchase_events) || 0) > 0).length
+      purchases: sessions.filter((s) => hasPurchase(s)).length
     };
   }
 
@@ -1098,7 +1137,7 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
           : 'Low'
     }));
 
-  const purchases = sessions.filter((s) => (Number(s?.purchase_events) || 0) > 0).length;
+  const purchases = sessions.filter((s) => hasPurchase(s)).length;
   return {
     rows,
     eligibleHighIntent,
@@ -1466,11 +1505,11 @@ export default function SessionIntelligenceTab({ store }) {
     let list = librarySessions;
 
     if (highIntentOnly) {
-      list = list.filter((s) =>
+      list = list.filter((s) => (
         Number(s.atc_events) > 0 ||
-        Number(s.checkout_started_events) > 0 ||
-        Number(s.purchase_events) > 0
-      );
+        hasCheckout(s) ||
+        hasPurchase(s)
+      ));
     }
 
     if (dropoffStageFilter) {
@@ -2182,9 +2221,9 @@ export default function SessionIntelligenceTab({ store }) {
             <div className="si-device-note si-device-note-fine">
               Math note: adjusted share is proportional to (device abandon share ÷ device traffic share), then normalized to 100%.
             </div>
-            {deviceAbandonmentModel.unclassifiedSessions > 0 ? (
+            {deviceAbandonmentModel.unknownSessions > 0 ? (
               <div className="si-muted" style={{ marginTop: 6 }}>
-                Excluded {pluralize(deviceAbandonmentModel.unclassifiedSessions, 'session', 'sessions')} without clear iOS/Android/Desktop classification.
+                {pluralize(deviceAbandonmentModel.unknownSessions, 'session', 'sessions')} could not be classified as iOS/Android/Desktop and are shown as <strong>Unknown</strong>.
               </div>
             ) : null}
             {deviceAbandonmentModel.topOverIndexed ? (
@@ -2231,11 +2270,11 @@ export default function SessionIntelligenceTab({ store }) {
       <div className="si-card si-action-plan-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
           <h3>Behavior patterns</h3>
-          <span className="si-muted">Session-based patterns with established/emerging status</span>
+          <span className="si-muted">Campaign/country segments that over-index vs the day baseline</span>
         </div>
         {actionPlanRows.length === 0 ? (
           <div className="si-empty">
-            No patterns reached the emerging threshold yet.
+            No campaign/country segments reached the emerging threshold yet.
           </div>
         ) : (
           <div className="si-action-plan-list">
