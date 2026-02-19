@@ -986,37 +986,99 @@ export function getCampaignTrends(store, params = {}) {
 // ===========================================================================
 // TIME OF DAY (with timezone logic)
 // ============================================================================
+const TIME_OF_DAY_DEFAULT_DAYS = 14;
+const TIME_OF_DAY_MIN_DAYS = 1;
+const TIME_OF_DAY_MAX_DAYS = 90;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+
+const TIME_OF_DAY_REGION_CONFIG = {
+  us: {
+    timezone: 'America/Chicago',
+    countryCodes: ['US', 'CA']
+  },
+  europe: {
+    timezone: 'Europe/London',
+    countryCodes: ['GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL', 'FI', 'CZ', 'HU', 'RO']
+  },
+  australia: {
+    timezone: 'Australia/Sydney',
+    countryCodes: ['AU']
+  },
+  all: {
+    timezone: 'UTC',
+    countryCodes: null
+  }
+};
+
+const TIME_OF_DAY_HOUR_LABELS = {
+  0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
+  6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
+  12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
+  18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
+};
+
+const timeOfDayHourFormatterCache = new Map();
+
+function parseTimeOfDayDays(params = {}) {
+  const parsedDays = Number.parseInt(params?.days, 10);
+  if (!Number.isFinite(parsedDays)) return TIME_OF_DAY_DEFAULT_DAYS;
+  return Math.max(TIME_OF_DAY_MIN_DAYS, Math.min(TIME_OF_DAY_MAX_DAYS, parsedDays));
+}
+
+function resolveTimeOfDayRegion(region) {
+  const normalized = String(region || 'all').trim().toLowerCase();
+  return TIME_OF_DAY_REGION_CONFIG[normalized] ? normalized : 'all';
+}
+
+function getTimeOfDayHourFormatter(timezone) {
+  if (!timeOfDayHourFormatterCache.has(timezone)) {
+    timeOfDayHourFormatterCache.set(
+      timezone,
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hour: '2-digit',
+        hour12: false
+      })
+    );
+  }
+
+  return timeOfDayHourFormatterCache.get(timezone);
+}
+
+function getHourInTimezone(orderDate, timezone) {
+  try {
+    const parts = getTimeOfDayHourFormatter(timezone).formatToParts(orderDate);
+    const hourPart = parts.find((part) => part.type === 'hour')?.value;
+    const parsedHour = Number.parseInt(hourPart, 10);
+    if (Number.isFinite(parsedHour)) return Math.max(0, Math.min(23, parsedHour));
+  } catch (error) {
+    // Fallback to UTC below.
+  }
+
+  const utcHour = orderDate.getUTCHours();
+  return Number.isFinite(utcHour) ? Math.max(0, Math.min(23, utcHour)) : null;
+}
+
 export function getShopifyTimeOfDay(store, params) {
+  const lookbackDays = parseTimeOfDayDays(params);
+
   if (store !== 'shawq') {
-    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [], message: 'Time of day requires Shopify data' };
+    return {
+      data: [],
+      timezone: 'UTC',
+      region: 'all',
+      windowDays: lookbackDays,
+      sampleTimestamps: [],
+      message: 'Time of day requires Shopify data'
+    };
   }
 
   const db = getDb();
-  // Use 14 days for better distribution
   const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
-  const region = params.region || 'all';
-
-  const timezoneOffsets = {
-    'us': -6,      // Chicago (CST)
-    'europe': 0,   // London (GMT)
-    'all': 0       // UTC
-  };
-  const offset = timezoneOffsets[region] || 0;
-
-  const timezoneMap = {
-    'us': 'America/Chicago',
-    'europe': 'Europe/London',
-    'all': 'UTC'
-  };
-  const timezone = timezoneMap[region] || 'UTC';
-
-  const hourLabels = {
-    0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
-    6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
-    12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
-    18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
-  };
+  const startDate = formatDateAsGmt3(new Date(Date.now() - (lookbackDays - 1) * MILLISECONDS_PER_DAY));
+  const region = resolveTimeOfDayRegion(params?.region);
+  const regionConfig = TIME_OF_DAY_REGION_CONFIG[region];
+  const timezone = regionConfig.timezone;
 
   try {
     let query = `
@@ -1032,10 +1094,10 @@ export function getShopifyTimeOfDay(store, params) {
 
     const queryParams = [store, startDate, endDate];
 
-    if (region === 'us') {
-      query += ` AND country_code IN ('US', 'CA')`;
-    } else if (region === 'europe') {
-      query += ` AND country_code IN ('GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL', 'FI', 'CZ', 'HU', 'RO')`;
+    if (Array.isArray(regionConfig.countryCodes) && regionConfig.countryCodes.length > 0) {
+      const placeholders = regionConfig.countryCodes.map(() => '?').join(', ');
+      query += ` AND UPPER(country_code) IN (${placeholders})`;
+      queryParams.push(...regionConfig.countryCodes);
     }
 
     const rawData = db.prepare(query).all(...queryParams);
@@ -1051,9 +1113,8 @@ export function getShopifyTimeOfDay(store, params) {
       const orderDate = new Date(order.order_created_at);
       if (isNaN(orderDate.getTime())) continue;
 
-      let hour = orderDate.getUTCHours() + offset;
-      if (hour < 0) hour += 24;
-      if (hour >= 24) hour -= 24;
+      const hour = getHourInTimezone(orderDate, timezone);
+      if (hour == null) continue;
 
       hourBuckets[hour].orders += 1;
       hourBuckets[hour].revenue += order.revenue || 0;
@@ -1064,7 +1125,7 @@ export function getShopifyTimeOfDay(store, params) {
       const stats = hourBuckets[hour];
       formattedData.push({
         hour,
-        label: hourLabels[hour],
+        label: TIME_OF_DAY_HOUR_LABELS[hour],
         orders: stats.orders,
         revenue: stats.revenue,
         aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
@@ -1075,13 +1136,21 @@ export function getShopifyTimeOfDay(store, params) {
       data: formattedData,
       timezone,
       region,
+      windowDays: lookbackDays,
       totalOrders: rawData.length,
       sampleTimestamps: [],
       source: 'Shopify'
     };
   } catch (error) {
     console.error('[Analytics] Error getting time of day:', error);
-    return { data: [], timezone: 'UTC', region: 'all', sampleTimestamps: [], source: 'error' };
+    return {
+      data: [],
+      timezone: 'UTC',
+      region: 'all',
+      windowDays: lookbackDays,
+      sampleTimestamps: [],
+      source: 'error'
+    };
   }
 }
 
@@ -1090,20 +1159,11 @@ export function getShopifyTimeOfDay(store, params) {
 // ============================================================================
 export function getSallaTimeOfDay(store, params) {
   const db = getDb();
-  // Use 14 days for better distribution
+  const lookbackDays = parseTimeOfDayDays(params);
   const endDate = formatDateAsGmt3(new Date());
-  const startDate = formatDateAsGmt3(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  const startDate = formatDateAsGmt3(new Date(Date.now() - (lookbackDays - 1) * MILLISECONDS_PER_DAY));
 
-  // Riyadh timezone is GMT+3
   const timezone = 'Asia/Riyadh';
-  const offset = 3;
-
-  const hourLabels = {
-    0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
-    6: '6 AM', 7: '7 AM', 8: '8 AM', 9: '9 AM', 10: '10 AM', 11: '11 AM',
-    12: '12 PM', 13: '1 PM', 14: '2 PM', 15: '3 PM', 16: '4 PM', 17: '5 PM',
-    18: '6 PM', 19: '7 PM', 20: '8 PM', 21: '9 PM', 22: '10 PM', 23: '11 PM'
-  };
 
   try {
     // Check if salla_orders table has created_at with time info
@@ -1118,7 +1178,15 @@ export function getSallaTimeOfDay(store, params) {
     `).all(store, startDate, endDate);
 
     if (!rawData || rawData.length === 0) {
-      return { data: [], timezone, totalOrders: 0, sampleTimestamps: [], source: 'Salla', message: 'No Salla order data with timestamps' };
+      return {
+        data: [],
+        timezone,
+        windowDays: lookbackDays,
+        totalOrders: 0,
+        sampleTimestamps: [],
+        source: 'Salla',
+        message: 'No Salla order data with timestamps'
+      };
     }
 
     const hourBuckets = {};
@@ -1132,10 +1200,8 @@ export function getSallaTimeOfDay(store, params) {
       const orderDate = new Date(order.created_at);
       if (isNaN(orderDate.getTime())) continue;
 
-      // Convert UTC to Riyadh time (GMT+3)
-      let hour = orderDate.getUTCHours() + offset;
-      if (hour >= 24) hour -= 24;
-      if (hour < 0) hour += 24;
+      const hour = getHourInTimezone(orderDate, timezone);
+      if (hour == null) continue;
 
       hourBuckets[hour].orders += 1;
       hourBuckets[hour].revenue += order.revenue || 0;
@@ -1146,7 +1212,7 @@ export function getSallaTimeOfDay(store, params) {
       const stats = hourBuckets[hour];
       formattedData.push({
         hour,
-        label: hourLabels[hour],
+        label: TIME_OF_DAY_HOUR_LABELS[hour],
         orders: stats.orders,
         revenue: stats.revenue,
         aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
@@ -1156,13 +1222,20 @@ export function getSallaTimeOfDay(store, params) {
     return {
       data: formattedData,
       timezone,
+      windowDays: lookbackDays,
       totalOrders: rawData.length,
       sampleTimestamps: [],
       source: 'Salla'
     };
   } catch (error) {
     console.error('[Analytics] Error getting Salla time of day:', error);
-    return { data: [], timezone: 'Asia/Riyadh', sampleTimestamps: [], source: 'error' };
+    return {
+      data: [],
+      timezone: 'Asia/Riyadh',
+      windowDays: lookbackDays,
+      sampleTimestamps: [],
+      source: 'error'
+    };
   }
 }
 
@@ -1170,6 +1243,8 @@ export function getSallaTimeOfDay(store, params) {
 // COMBINED TIME OF DAY (supports both stores)
 // ============================================================================
 export function getTimeOfDay(store, params) {
+  const lookbackDays = parseTimeOfDayDays(params);
+
   if (store === 'shawq') {
     return getShopifyTimeOfDay(store, params);
   }
@@ -1188,6 +1263,7 @@ export function getTimeOfDay(store, params) {
     return {
       data: [],
       timezone: 'Asia/Riyadh',
+      windowDays: lookbackDays,
       totalOrders: 0,
       sampleTimestamps: [],
       source: 'none',
@@ -1196,7 +1272,15 @@ export function getTimeOfDay(store, params) {
     };
   }
 
-  return { data: [], timezone: 'UTC', totalOrders: 0, sampleTimestamps: [], source: 'none', message: 'Unknown store' };
+  return {
+    data: [],
+    timezone: 'UTC',
+    windowDays: lookbackDays,
+    totalOrders: 0,
+    sampleTimestamps: [],
+    source: 'none',
+    message: 'Unknown store'
+  };
 }
 
 // ============================================================================

@@ -143,6 +143,26 @@ const REGION_COMPARE_COLORS = {
 const CTR_TREND_COLORS = ['#2563eb', '#f97316', '#10b981'];
 const CTR_COMPARE_LIMIT = 3;
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const TIME_OF_DAY_DEFAULT_DAYS = 14;
+const TIME_OF_DAY_EXTENDED_DAYS = 30;
+const TIME_OF_DAY_WINDOW_OPTIONS = [
+  { value: TIME_OF_DAY_DEFAULT_DAYS, label: `${TIME_OF_DAY_DEFAULT_DAYS} Days` },
+  { value: TIME_OF_DAY_EXTENDED_DAYS, label: `${TIME_OF_DAY_EXTENDED_DAYS} Days` }
+];
+const TIME_OF_DAY_REGION_OPTIONS = [
+  { value: 'all', label: 'All Orders' },
+  { value: 'us', label: 'US Orders' },
+  { value: 'europe', label: 'Europe Orders' },
+  { value: 'australia', label: 'Australia Orders' }
+];
+const TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION = {
+  all: 'UTC',
+  us: 'America/Chicago',
+  europe: 'Europe/London',
+  australia: 'Australia/Sydney'
+};
+const TIME_OF_DAY_ORDERS_LINE_COLOR = '#6366f1';
+const TIME_OF_DAY_PACING_LINE_COLOR = '#0f766e';
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -526,8 +546,16 @@ export default function App() {
   const [manualSpendOverrides, setManualSpendOverrides] = useState([]);
   const [availableCountries, setAvailableCountries] = useState([]);
   const [metaBreakdownData, setMetaBreakdownData] = useState([]);
-  const [timeOfDay, setTimeOfDay] = useState({ data: [], timezone: 'America/Chicago', sampleTimestamps: [], source: '' });
+  const [timeOfDay, setTimeOfDay] = useState({
+    data: [],
+    timezone: 'America/Chicago',
+    sampleTimestamps: [],
+    source: '',
+    message: '',
+    windowDays: TIME_OF_DAY_DEFAULT_DAYS
+  });
   const [selectedShopifyRegion, setSelectedShopifyRegion] = useState('us');
+  const [selectedTimeOfDayWindowDays, setSelectedTimeOfDayWindowDays] = useState(TIME_OF_DAY_DEFAULT_DAYS);
   // Days of week
   const [daysOfWeek, setDaysOfWeek] = useState({ data: [], source: '', totalOrders: 0, period: '14d' });
   const [daysOfWeekPeriod, setDaysOfWeekPeriod] = useState('14d');
@@ -832,7 +860,14 @@ export default function App() {
       }
 
       const shopifyRegion = selectedShopifyRegion ?? 'us';
-      const timeOfDayParams = new URLSearchParams({ store: currentStore, days: 7, region: shopifyRegion });
+      const requestedTimeOfDayDays = Number.isFinite(Number(selectedTimeOfDayWindowDays))
+        ? Number(selectedTimeOfDayWindowDays)
+        : TIME_OF_DAY_DEFAULT_DAYS;
+      const timeOfDayParams = new URLSearchParams({
+        store: currentStore,
+        days: String(requestedTimeOfDayDays),
+        region: shopifyRegion
+      });
 
       const [
         dashData,
@@ -863,7 +898,14 @@ export default function App() {
         fetchJson(`${API_BASE}/analytics/newyork/trends?${countryTrendParams}`, { data: null, dataSource: '' }),
         fetchJson(`${API_BASE}/analytics/campaigns/trends?${campaignTrendParams}`, { data: [], dataSource: '' }),
         // Time of day - now fetches for both stores
-        fetchJson(`${API_BASE}/analytics/time-of-day?${timeOfDayParams}`, { data: [], timezone: null, sampleTimestamps: [], source: '', message: '' }),
+        fetchJson(`${API_BASE}/analytics/time-of-day?${timeOfDayParams}`, {
+          data: [],
+          timezone: null,
+          sampleTimestamps: [],
+          source: '',
+          message: '',
+          windowDays: requestedTimeOfDayDays
+        }),
         // Days of week
         fetchJson(`${API_BASE}/analytics/days-of-week?store=${currentStore}&period=${daysOfWeekPeriod}`, { data: [], source: '', totalOrders: 0, period: daysOfWeekPeriod })
       ]);
@@ -965,9 +1007,21 @@ export default function App() {
       const todSamples = Array.isArray(timeOfDayData?.sampleTimestamps) ? timeOfDayData.sampleTimestamps.slice(0, 5) : [];
       const todSource = timeOfDayData?.source || '';
       const todMessage = timeOfDayData?.message || '';
-      const fallbackTimezone = shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago';
+      const rawWindowDays = Number(timeOfDayData?.windowDays);
+      const safeWindowDays = Number.isFinite(rawWindowDays) && rawWindowDays > 0
+        ? Math.round(rawWindowDays)
+        : requestedTimeOfDayDays;
+      const fallbackTimezone = TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION[shopifyRegion]
+        || TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION.all;
       const safeTimezone = todZone || fallbackTimezone;
-      setTimeOfDay({ data: todData, timezone: safeTimezone, sampleTimestamps: todSamples, source: todSource, message: todMessage });
+      setTimeOfDay({
+        data: todData,
+        timezone: safeTimezone,
+        sampleTimestamps: todSamples,
+        source: todSource,
+        message: todMessage,
+        windowDays: safeWindowDays
+      });
 
       // Set days of week data
       setDaysOfWeek(dowData || { data: [], source: '', totalOrders: 0, period: '14d' });
@@ -975,7 +1029,7 @@ export default function App() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  }, [currentStore, dateRange, selectedShopifyRegion, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange, selectedCampaignId]);
+  }, [currentStore, dateRange, selectedShopifyRegion, selectedTimeOfDayWindowDays, daysOfWeekPeriod, includeInactive, countryTrendsRangeMode, countryTrendsQuickRange, campaignTrendsRangeMode, campaignTrendsQuickRange, selectedCampaignId]);
 
   useEffect(() => {
     if (storeLoaded) {
@@ -1796,6 +1850,8 @@ export default function App() {
               timeOfDay={timeOfDay}
               selectedShopifyRegion={selectedShopifyRegion}
               setSelectedShopifyRegion={setSelectedShopifyRegion}
+              selectedTimeOfDayWindowDays={selectedTimeOfDayWindowDays}
+              setSelectedTimeOfDayWindowDays={setSelectedTimeOfDayWindowDays}
               daysOfWeek={daysOfWeek}
               daysOfWeekPeriod={daysOfWeekPeriod}
               setDaysOfWeekPeriod={setDaysOfWeekPeriod}
@@ -2029,9 +2085,18 @@ function DashboardTab({
   countriesDataSource = '',
   regionCompareTrends = [],
   regionCompareEnabled = false,
-  timeOfDay = { data: [], timezone: 'America/Chicago', sampleTimestamps: [], source: '' },
+  timeOfDay = {
+    data: [],
+    timezone: 'America/Chicago',
+    sampleTimestamps: [],
+    source: '',
+    message: '',
+    windowDays: TIME_OF_DAY_DEFAULT_DAYS
+  },
   selectedShopifyRegion = 'us',
   setSelectedShopifyRegion = () => {},
+  selectedTimeOfDayWindowDays = TIME_OF_DAY_DEFAULT_DAYS,
+  setSelectedTimeOfDayWindowDays = () => {},
   daysOfWeek = { data: [], source: '', totalOrders: 0, period: '14d' },
   daysOfWeekPeriod = '14d',
   setDaysOfWeekPeriod = () => {},
@@ -4707,16 +4772,94 @@ function DashboardTab({
   };
 
   const shopifyRegion = selectedShopifyRegion ?? 'us';
-  const timeOfDayTimezone = timeOfDay?.timezone ?? (shopifyRegion === 'europe' ? 'Europe/London' : shopifyRegion === 'all' ? 'UTC' : 'America/Chicago');
+  const fallbackTimeOfDayTimezone = TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION[shopifyRegion]
+    || TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION.all;
+  const timeOfDayTimezone = timeOfDay?.timezone ?? fallbackTimeOfDayTimezone;
   const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
   const timeOfDaySource = timeOfDay?.source || '';
   const timeOfDayMessage = timeOfDay?.message || '';
-  const hourlyChartData = timeOfDayData.map((point) => ({
-    ...point,
-    hourLabel: `${point.hour}:00`
-  }));
+  const resolvedTimeOfDayWindowDays = Number.isFinite(Number(timeOfDay?.windowDays))
+    ? Number(timeOfDay.windowDays)
+    : (Number.isFinite(Number(selectedTimeOfDayWindowDays))
+      ? Number(selectedTimeOfDayWindowDays)
+      : TIME_OF_DAY_DEFAULT_DAYS);
 
-  const totalHourlyOrders = timeOfDayData.reduce((sum, point) => sum + (point.orders || 0), 0);
+  const hourlyChartData = useMemo(() => {
+    const sortedTimeOfDay = [...timeOfDayData]
+      .sort((a, b) => (Number(a?.hour) || 0) - (Number(b?.hour) || 0));
+    const totalOrders = sortedTimeOfDay.reduce((sum, point) => sum + toNumber(point?.orders), 0);
+
+    let cumulativeOrders = 0;
+    return sortedTimeOfDay.map((point) => {
+      const pointOrders = toNumber(point?.orders);
+      const hour = Number.isFinite(Number(point?.hour)) ? Number(point.hour) : 0;
+      cumulativeOrders += pointOrders;
+
+      return {
+        ...point,
+        hour,
+        hourLabel: `${hour}:00`,
+        budgetPacingPercent: totalOrders > 0 ? (cumulativeOrders / totalOrders) * 100 : 0
+      };
+    });
+  }, [timeOfDayData]);
+
+  const totalHourlyOrders = useMemo(
+    () => hourlyChartData.reduce((sum, point) => sum + toNumber(point?.orders), 0),
+    [hourlyChartData]
+  );
+
+  const currentHourInTimeOfDayTimezone = useMemo(() => {
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: timeOfDayTimezone,
+        hour: '2-digit',
+        hour12: false
+      }).formatToParts(new Date());
+      const hourPart = parts.find((part) => part.type === 'hour')?.value;
+      const parsedHour = Number.parseInt(hourPart, 10);
+      if (!Number.isFinite(parsedHour)) return null;
+      return Math.max(0, Math.min(23, parsedHour));
+    } catch (error) {
+      return null;
+    }
+  }, [timeOfDayTimezone]);
+
+  const currentTimeOfDayPoint = useMemo(() => {
+    if (!Number.isFinite(currentHourInTimeOfDayTimezone)) return null;
+    return hourlyChartData.find((point) => point.hour === currentHourInTimeOfDayTimezone) || null;
+  }, [currentHourInTimeOfDayTimezone, hourlyChartData]);
+
+  const renderTimeOfDayTooltip = useCallback(({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const point = payload[0]?.payload || {};
+    const ordersValue = toNumber(point?.orders);
+    const pacingValue = Number.isFinite(point?.budgetPacingPercent)
+      ? Number(point.budgetPacingPercent)
+      : 0;
+
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm">
+        <div className="text-[11px] text-gray-500 mb-2">{label}</div>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-3 text-gray-700">
+            <span className="inline-flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_ORDERS_LINE_COLOR }} />
+              Orders
+            </span>
+            <span className="font-semibold text-gray-900">{formatNumber(ordersValue)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-gray-700">
+            <span className="inline-flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_PACING_LINE_COLOR }} />
+              Budget pacing
+            </span>
+            <span className="font-semibold text-gray-900">{pacingValue.toFixed(1)}%</span>
+          </div>
+        </div>
+      </div>
+    );
+  }, [formatNumber]);
 
   const handleCountrySort = (field) => {
     setCountrySortConfig(prev => ({
@@ -5692,9 +5835,9 @@ function DashboardTab({
       <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <h2 className="text-lg font-semibold">Orders by Time of Day (Last 14 Days)</h2>
+            <h2 className="text-lg font-semibold">Orders by Time of Day (Last {resolvedTimeOfDayWindowDays} Days)</h2>
             <p className="text-sm text-gray-500">
-              Orders grouped by hour. Use this to spot when customers are most active.
+              Orders grouped by hour with a budget pacing overlay to spot weak pacing windows.
             </p>
             {timeOfDaySource && (
               <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
@@ -5710,28 +5853,41 @@ function DashboardTab({
                 {timeOfDayTimezone}
               </span>
             </div>
+            <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
+              <span>Window:</span>
+              <div className="flex items-center gap-1">
+                {TIME_OF_DAY_WINDOW_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    className={`px-2 py-1 rounded ${
+                      selectedTimeOfDayWindowDays === option.value
+                        ? 'bg-gray-200 text-gray-900'
+                        : 'bg-white text-gray-600 border'
+                    }`}
+                    onClick={() => setSelectedTimeOfDayWindowDays(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             {store.id === 'shawq' && (
               <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
                 <span>Region:</span>
                 <div className="flex items-center gap-1">
-                  <button
-                    className={`px-2 py-1 rounded ${shopifyRegion === 'all' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
-                    onClick={() => setSelectedShopifyRegion('all')}
-                  >
-                    All Orders
-                  </button>
-                  <button
-                    className={`px-2 py-1 rounded ${shopifyRegion === 'us' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
-                    onClick={() => setSelectedShopifyRegion('us')}
-                  >
-                    US Orders
-                  </button>
-                  <button
-                    className={`px-2 py-1 rounded ${shopifyRegion === 'europe' ? 'bg-gray-200 text-gray-900' : 'bg-white text-gray-600 border'}`}
-                    onClick={() => setSelectedShopifyRegion('europe')}
-                  >
-                    Europe Orders
-                  </button>
+                  {TIME_OF_DAY_REGION_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      className={`px-2 py-1 rounded ${
+                        shopifyRegion === option.value
+                          ? 'bg-gray-200 text-gray-900'
+                          : 'bg-white text-gray-600 border'
+                      }`}
+                      onClick={() => setSelectedShopifyRegion(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
@@ -5744,6 +5900,14 @@ function DashboardTab({
           <div className="text-right">
             <div className="text-xs uppercase text-gray-400">Total orders</div>
             <div className="text-2xl font-bold text-gray-900">{totalHourlyOrders}</div>
+            {currentTimeOfDayPoint && (
+              <>
+                <div className="text-xs uppercase text-gray-400 mt-2">Budget pacing now</div>
+                <div className="text-sm font-semibold" style={{ color: TIME_OF_DAY_PACING_LINE_COLOR }}>
+                  {Number(currentTimeOfDayPoint.budgetPacingPercent || 0).toFixed(1)}%
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -5753,24 +5917,33 @@ function DashboardTab({
               <LineChart data={hourlyChartData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="hourLabel" tick={{ fontSize: 10 }} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
-                <Tooltip
-                  formatter={(value, name) => {
-                    const metricKey = name === 'orders' ? 'orders' : 'revenue';
-                    return [
-                      formatTooltipMetricValue(metricKey, value),
-                      getTooltipMetricLabel(metricKey)
-                    ];
-                  }}
-                  labelFormatter={(label) => `${label}`}
+                <YAxis yAxisId="orders" allowDecimals={false} tick={{ fontSize: 10 }} />
+                <YAxis
+                  yAxisId="pacing"
+                  orientation="right"
+                  domain={[0, 100]}
+                  tickFormatter={(value) => `${value}%`}
+                  tick={{ fontSize: 10 }}
                 />
+                <Tooltip content={renderTimeOfDayTooltip} />
                 <Line
                   type="monotone"
                   dataKey="orders"
-                  stroke="#6366f1"
-                  strokeWidth={3}
-                  dot={{ r: 2 }}
+                  yAxisId="orders"
+                  stroke={TIME_OF_DAY_ORDERS_LINE_COLOR}
+                  strokeWidth={2.5}
+                  dot={false}
                   activeDot={{ r: 4 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="budgetPacingPercent"
+                  yAxisId="pacing"
+                  stroke={TIME_OF_DAY_PACING_LINE_COLOR}
+                  strokeWidth={2}
+                  strokeDasharray="4 3"
+                  dot={false}
+                  activeDot={false}
                 />
               </LineChart>
             </ResponsiveContainer>
