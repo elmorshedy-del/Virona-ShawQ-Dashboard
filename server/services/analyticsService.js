@@ -994,21 +994,44 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const TIME_OF_DAY_REGION_CONFIG = {
   us: {
     timezone: 'America/Chicago',
-    countryCodes: ['US', 'CA']
+    countryCodes: ['US', 'CA'],
+    offsetHours: -6,
+    usesTimezoneConversion: false
   },
   europe: {
     timezone: 'Europe/London',
-    countryCodes: ['GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL', 'FI', 'CZ', 'HU', 'RO']
+    countryCodes: ['GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'IE', 'PT', 'GR', 'PL', 'FI', 'CZ', 'HU', 'RO'],
+    offsetHours: 0,
+    usesTimezoneConversion: false
   },
   australia: {
     timezone: 'Australia/Sydney',
-    countryCodes: ['AU']
+    countryCodes: ['AU'],
+    offsetHours: 0,
+    usesTimezoneConversion: true
   },
   all: {
     timezone: 'UTC',
-    countryCodes: null
+    countryCodes: null,
+    offsetHours: 0,
+    usesTimezoneConversion: false
   }
 };
+
+const TIME_OF_DAY_COUNTRY_ALIASES = {
+  USA: 'US',
+  'UNITED STATES': 'US',
+  'UNITED STATES OF AMERICA': 'US',
+  CANADA: 'CA',
+  UK: 'GB',
+  'UNITED KINGDOM': 'GB',
+  'GREAT BRITAIN': 'GB',
+  ENGLAND: 'GB',
+  AUSTRALIA: 'AU'
+};
+const TIME_OF_DAY_COUNTRY_NAME_TO_CODE = new Map(
+  getAllCountries().map((country) => [String(country?.name || '').trim().toUpperCase(), country.code])
+);
 
 const TIME_OF_DAY_HOUR_LABELS = {
   0: '12 AM', 1: '1 AM', 2: '2 AM', 3: '3 AM', 4: '4 AM', 5: '5 AM',
@@ -1059,6 +1082,29 @@ function getHourInTimezone(orderDate, timezone) {
   return Number.isFinite(utcHour) ? Math.max(0, Math.min(23, utcHour)) : null;
 }
 
+function getHourByRegion(orderDate, regionConfig) {
+  if (regionConfig?.usesTimezoneConversion) {
+    return getHourInTimezone(orderDate, regionConfig.timezone);
+  }
+
+  const offsetHours = Number(regionConfig?.offsetHours || 0);
+  let hour = orderDate.getUTCHours() + offsetHours;
+  if (hour < 0) hour += 24;
+  if (hour >= 24) hour -= 24;
+  return hour;
+}
+
+function normalizeCountryCode(rawCountry) {
+  const normalized = String(rawCountry || '').trim().toUpperCase();
+  if (!normalized || normalized === 'ALL') return null;
+  if (/^[A-Z]{2}$/u.test(normalized)) return normalized;
+  if (TIME_OF_DAY_COUNTRY_ALIASES[normalized]) return TIME_OF_DAY_COUNTRY_ALIASES[normalized];
+  if (TIME_OF_DAY_COUNTRY_NAME_TO_CODE.has(normalized)) {
+    return TIME_OF_DAY_COUNTRY_NAME_TO_CODE.get(normalized);
+  }
+  return null;
+}
+
 export function getShopifyTimeOfDay(store, params) {
   const lookbackDays = parseTimeOfDayDays(params);
 
@@ -1101,8 +1147,19 @@ export function getShopifyTimeOfDay(store, params) {
     }
 
     const rawData = db.prepare(query).all(...queryParams);
+    const statusFilter = buildStatusFilter(params);
+    const spendRows = db.prepare(`
+      SELECT
+        country,
+        SUM(spend) as spend
+      FROM meta_daily_metrics
+      WHERE store = ? AND date BETWEEN ? AND ? AND country != 'ALL'${statusFilter}
+      GROUP BY country
+    `).all(store, startDate, endDate);
 
     const hourBuckets = {};
+    const countryHourBuckets = new Map();
+    const countryOrderTotals = new Map();
     for (let h = 0; h < 24; h++) {
       hourBuckets[h] = { orders: 0, revenue: 0 };
     }
@@ -1113,22 +1170,74 @@ export function getShopifyTimeOfDay(store, params) {
       const orderDate = new Date(order.order_created_at);
       if (isNaN(orderDate.getTime())) continue;
 
-      const hour = getHourInTimezone(orderDate, timezone);
+      const hour = getHourByRegion(orderDate, regionConfig);
       if (hour == null) continue;
 
       hourBuckets[hour].orders += 1;
       hourBuckets[hour].revenue += order.revenue || 0;
+
+      const countryCode = normalizeCountryCode(order.country_code);
+      if (countryCode) {
+        if (!countryHourBuckets.has(countryCode)) {
+          countryHourBuckets.set(countryCode, new Array(24).fill(0));
+        }
+        countryHourBuckets.get(countryCode)[hour] += 1;
+        countryOrderTotals.set(countryCode, (countryOrderTotals.get(countryCode) || 0) + 1);
+      }
+    }
+
+    const zoneSpendByCountry = new Map();
+    for (const row of spendRows) {
+      const countryCode = normalizeCountryCode(row.country);
+      if (!countryCode) continue;
+      if (Array.isArray(regionConfig.countryCodes) && !regionConfig.countryCodes.includes(countryCode)) continue;
+      zoneSpendByCountry.set(countryCode, (zoneSpendByCountry.get(countryCode) || 0) + (row.spend || 0));
+    }
+
+    const totalZoneSpend = Array.from(zoneSpendByCountry.values()).reduce((sum, value) => sum + (value || 0), 0);
+    const totalZoneOrders = Object.values(hourBuckets).reduce((sum, bucket) => sum + (bucket.orders || 0), 0);
+    const zoneFallbackProfile = totalZoneOrders > 0
+      ? new Array(24).fill(0).map((_, hour) => (hourBuckets[hour].orders || 0) / totalZoneOrders)
+      : new Array(24).fill(1 / 24);
+    const budgetSpendByHour = new Array(24).fill(0);
+
+    if (totalZoneSpend > 0) {
+      for (const [countryCode, countrySpend] of zoneSpendByCountry.entries()) {
+        const countryTotalOrders = countryOrderTotals.get(countryCode) || 0;
+        const countryProfile = countryTotalOrders > 0
+          ? countryHourBuckets.get(countryCode).map((count) => count / countryTotalOrders)
+          : zoneFallbackProfile;
+
+        for (let hour = 0; hour < 24; hour += 1) {
+          budgetSpendByHour[hour] += countrySpend * (countryProfile[hour] || 0);
+        }
+      }
     }
 
     const formattedData = [];
+    let cumulativeBudgetSpend = 0;
+    let cumulativeOrderCount = 0;
     for (let hour = 0; hour < 24; hour++) {
       const stats = hourBuckets[hour];
+      cumulativeOrderCount += stats.orders || 0;
+
+      let budgetSpend = 0;
+      let budgetPacingPercent = totalZoneOrders > 0 ? (cumulativeOrderCount / totalZoneOrders) * 100 : 0;
+
+      if (totalZoneSpend > 0) {
+        budgetSpend = budgetSpendByHour[hour] || 0;
+        cumulativeBudgetSpend += budgetSpend;
+        budgetPacingPercent = (cumulativeBudgetSpend / totalZoneSpend) * 100;
+      }
+
       formattedData.push({
         hour,
         label: TIME_OF_DAY_HOUR_LABELS[hour],
         orders: stats.orders,
         revenue: stats.revenue,
-        aov: stats.orders > 0 ? stats.revenue / stats.orders : 0
+        aov: stats.orders > 0 ? stats.revenue / stats.orders : 0,
+        budgetSpend,
+        budgetPacingPercent
       });
     }
 
@@ -1138,6 +1247,10 @@ export function getShopifyTimeOfDay(store, params) {
       region,
       windowDays: lookbackDays,
       totalOrders: rawData.length,
+      totalBudgetSpend: totalZoneSpend,
+      budgetPacingSource: totalZoneSpend > 0
+        ? 'meta_country_spend_weighted_by_shopify_order_timing'
+        : 'shopify_order_distribution_fallback',
       sampleTimestamps: [],
       source: 'Shopify'
     };

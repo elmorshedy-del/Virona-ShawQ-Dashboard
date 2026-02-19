@@ -868,6 +868,9 @@ export default function App() {
         days: String(requestedTimeOfDayDays),
         region: shopifyRegion
       });
+      if (includeInactive) {
+        timeOfDayParams.set('includeInactive', 'true');
+      }
 
       const [
         dashData,
@@ -4789,17 +4792,22 @@ function DashboardTab({
       .sort((a, b) => (Number(a?.hour) || 0) - (Number(b?.hour) || 0));
     const totalOrders = sortedTimeOfDay.reduce((sum, point) => sum + toNumber(point?.orders), 0);
 
-    let cumulativeOrders = 0;
+    let fallbackCumulativeOrders = 0;
     return sortedTimeOfDay.map((point) => {
       const pointOrders = toNumber(point?.orders);
       const hour = Number.isFinite(Number(point?.hour)) ? Number(point.hour) : 0;
-      cumulativeOrders += pointOrders;
+      fallbackCumulativeOrders += pointOrders;
+      const fallbackPacingPercent = totalOrders > 0 ? (fallbackCumulativeOrders / totalOrders) * 100 : 0;
+      const serverBudgetPacingPercent = Number(point?.budgetPacingPercent);
+      const budgetPacingPercent = Number.isFinite(serverBudgetPacingPercent)
+        ? serverBudgetPacingPercent
+        : fallbackPacingPercent;
 
       return {
         ...point,
         hour,
         hourLabel: `${hour}:00`,
-        budgetPacingPercent: totalOrders > 0 ? (cumulativeOrders / totalOrders) * 100 : 0
+        budgetPacingPercent
       };
     });
   }, [timeOfDayData]);
