@@ -296,21 +296,14 @@ function getOrdersTable(store) {
   return ORDERS_TABLE_BY_STORE[store] || ORDERS_TABLE_BY_STORE.vironax;
 }
 
-function getOrdersRevenueExpression(tableName) {
-  if (tableName === 'shopify_orders') {
-    return 'COALESCE(NULLIF(subtotal, 0), order_total)';
-  }
-  return 'COALESCE(NULLIF(subtotal, 0), order_total)';
-}
-
 export function fetchDailyOrdersRows({ db, store, startDate, endDate, country }) {
   const tableName = getOrdersTable(store);
-  const revenueExpression = getOrdersRevenueExpression(tableName);
+  const revenueExpression = 'COALESCE(NULLIF(subtotal, 0), order_total)';
   const whereParts = ['store = ?', 'date BETWEEN ? AND ?', 'COALESCE(is_excluded, 0) = 0'];
   const args = [store, startDate, endDate];
 
   if (country && country !== 'ALL') {
-    whereParts.push('UPPER(COALESCE(country_code, country, \"\")) = ?');
+    whereParts.push("UPPER(COALESCE(country_code, country, '')) = ?");
     args.push(country);
   }
 

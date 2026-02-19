@@ -267,26 +267,54 @@ export default function CampaignIntelligenceTab({ store }) {
   const today = useMemo(() => getLocalDateString(), []);
   const defaultStartDate = useMemo(() => addDays(today, -(DEFAULT_ANALYSIS_WINDOW_DAYS - 1)), [today]);
 
-  const [level, setLevel] = useState('campaign');
-  const [entityId, setEntityId] = useState('');
-  const [country, setCountry] = useState('ALL');
+  const [analysisParams, setAnalysisParams] = useState(() => ({
+    level: 'campaign',
+    entityId: '',
+    country: 'ALL',
+    startDate: defaultStartDate,
+    endDate: today,
+    anchorDays: DEFAULT_ANCHOR_DAYS,
+    anchorStartDate: '',
+    anchorEndDate: '',
+    sentinelPreset: 'balanced',
+    headroomPreset: 'balanced',
+    launchPreset: 'balanced',
+    launchMinDays: '',
+    launchMaxDays: '',
+    targetRoas: DEFAULT_TARGET_ROAS,
+    targetCpa: '',
+    targetHorizonDays: DEFAULT_TARGET_HORIZON_DAYS
+  }));
 
-  const [startDate, setStartDate] = useState(defaultStartDate);
-  const [endDate, setEndDate] = useState(today);
+  const updateAnalysisParam = useCallback((key, valueOrUpdater) => {
+    setAnalysisParams((prev) => {
+      const currentValue = prev[key];
+      const nextValue = typeof valueOrUpdater === 'function'
+        ? valueOrUpdater(currentValue, prev)
+        : valueOrUpdater;
+      if (Object.is(currentValue, nextValue)) return prev;
+      return { ...prev, [key]: nextValue };
+    });
+  }, []);
 
-  const [anchorDays, setAnchorDays] = useState(DEFAULT_ANCHOR_DAYS);
-  const [anchorStartDate, setAnchorStartDate] = useState('');
-  const [anchorEndDate, setAnchorEndDate] = useState('');
-
-  const [sentinelPreset, setSentinelPreset] = useState('balanced');
-  const [headroomPreset, setHeadroomPreset] = useState('balanced');
-  const [launchPreset, setLaunchPreset] = useState('balanced');
-
-  const [launchMinDays, setLaunchMinDays] = useState('');
-  const [launchMaxDays, setLaunchMaxDays] = useState('');
-  const [targetRoas, setTargetRoas] = useState(DEFAULT_TARGET_ROAS);
-  const [targetCpa, setTargetCpa] = useState('');
-  const [targetHorizonDays, setTargetHorizonDays] = useState(DEFAULT_TARGET_HORIZON_DAYS);
+  const {
+    level,
+    entityId,
+    country,
+    startDate,
+    endDate,
+    anchorDays,
+    anchorStartDate,
+    anchorEndDate,
+    sentinelPreset,
+    headroomPreset,
+    launchPreset,
+    launchMinDays,
+    launchMaxDays,
+    targetRoas,
+    targetCpa,
+    targetHorizonDays
+  } = analysisParams;
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -313,22 +341,7 @@ export default function CampaignIntelligenceTab({ store }) {
     try {
       const params = buildQueryParams({
         store: store.id,
-        level,
-        entityId,
-        country,
-        startDate,
-        endDate,
-        anchorDays,
-        anchorStartDate,
-        anchorEndDate,
-        sentinelPreset,
-        headroomPreset,
-        launchPreset,
-        launchMinDays,
-        launchMaxDays,
-        targetRoas,
-        targetCpa,
-        targetHorizonDays
+        ...analysisParams
       });
 
       const response = await fetch(`${API_ENDPOINT}?${params.toString()}`);
@@ -345,25 +358,7 @@ export default function CampaignIntelligenceTab({ store }) {
     } finally {
       setLoading(false);
     }
-  }, [
-    store?.id,
-    level,
-    entityId,
-    country,
-    startDate,
-    endDate,
-    anchorDays,
-    anchorStartDate,
-    anchorEndDate,
-    sentinelPreset,
-    headroomPreset,
-    launchPreset,
-    launchMinDays,
-    launchMaxDays,
-    targetRoas,
-    targetCpa,
-    targetHorizonDays
-  ]);
+  }, [store?.id, analysisParams]);
 
   useEffect(() => {
     runAnalysis();
@@ -373,9 +368,9 @@ export default function CampaignIntelligenceTab({ store }) {
     if (!entityId || !snapshot?.selectors?.entities) return;
     const exists = snapshot.selectors.entities.some((option) => option.id === entityId);
     if (!exists) {
-      setEntityId('');
+      updateAnalysisParam('entityId', '');
     }
-  }, [snapshot, entityId]);
+  }, [snapshot, entityId, updateAnalysisParam]);
 
   const timelineDaily = snapshot?.timeline?.daily || [];
   const selectors = snapshot?.selectors || {};
@@ -447,8 +442,12 @@ export default function CampaignIntelligenceTab({ store }) {
                 <select
                   value={level}
                   onChange={(event) => {
-                    setLevel(event.target.value);
-                    setEntityId('');
+                    const nextLevel = event.target.value;
+                    setAnalysisParams((prev) => ({
+                      ...prev,
+                      level: nextLevel,
+                      entityId: ''
+                    }));
                   }}
                   className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                 >
@@ -462,7 +461,7 @@ export default function CampaignIntelligenceTab({ store }) {
                 <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Campaign / Ad Set / Ad</label>
                 <select
                   value={entityId}
-                  onChange={(event) => setEntityId(event.target.value)}
+                  onChange={(event) => updateAnalysisParam('entityId', event.target.value)}
                   className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                 >
                   <option value="">All {level === 'adset' ? 'Ad Sets' : level === 'ad' ? 'Ads' : 'Campaigns'}</option>
@@ -476,7 +475,7 @@ export default function CampaignIntelligenceTab({ store }) {
                 <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Country</label>
                 <select
                   value={country}
-                  onChange={(event) => setCountry(event.target.value)}
+                  onChange={(event) => updateAnalysisParam('country', event.target.value)}
                   className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                 >
                   {(selectors.countries || []).map((option) => (
@@ -491,7 +490,7 @@ export default function CampaignIntelligenceTab({ store }) {
                   <input
                     type="date"
                     value={startDate}
-                    onChange={(event) => setStartDate(event.target.value)}
+                    onChange={(event) => updateAnalysisParam('startDate', event.target.value)}
                     className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                   />
                 </div>
@@ -500,7 +499,7 @@ export default function CampaignIntelligenceTab({ store }) {
                   <input
                     type="date"
                     value={endDate}
-                    onChange={(event) => setEndDate(event.target.value)}
+                    onChange={(event) => updateAnalysisParam('endDate', event.target.value)}
                     className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                   />
                 </div>
@@ -528,7 +527,7 @@ export default function CampaignIntelligenceTab({ store }) {
                         min="7"
                         max="120"
                         value={anchorDays}
-                        onChange={(event) => setAnchorDays(Number(event.target.value) || DEFAULT_ANCHOR_DAYS)}
+                        onChange={(event) => updateAnalysisParam('anchorDays', Number(event.target.value) || DEFAULT_ANCHOR_DAYS)}
                         className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       />
                     </div>
@@ -538,7 +537,7 @@ export default function CampaignIntelligenceTab({ store }) {
                       <input
                         type="date"
                         value={anchorStartDate}
-                        onChange={(event) => setAnchorStartDate(event.target.value)}
+                        onChange={(event) => updateAnalysisParam('anchorStartDate', event.target.value)}
                         className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       />
                     </div>
@@ -548,7 +547,7 @@ export default function CampaignIntelligenceTab({ store }) {
                       <input
                         type="date"
                         value={anchorEndDate}
-                        onChange={(event) => setAnchorEndDate(event.target.value)}
+                        onChange={(event) => updateAnalysisParam('anchorEndDate', event.target.value)}
                         className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       />
                     </div>
@@ -560,7 +559,7 @@ export default function CampaignIntelligenceTab({ store }) {
                         min="4"
                         max="14"
                         value={targetHorizonDays}
-                        onChange={(event) => setTargetHorizonDays(Number(event.target.value) || DEFAULT_TARGET_HORIZON_DAYS)}
+                        onChange={(event) => updateAnalysisParam('targetHorizonDays', Number(event.target.value) || DEFAULT_TARGET_HORIZON_DAYS)}
                         className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       />
                     </div>
@@ -571,7 +570,7 @@ export default function CampaignIntelligenceTab({ store }) {
                       <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Sentinel Preset</label>
                       <select
                         value={sentinelPreset}
-                        onChange={(event) => setSentinelPreset(event.target.value)}
+                        onChange={(event) => updateAnalysisParam('sentinelPreset', event.target.value)}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                       >
                         {PRESET_OPTIONS.map((option) => (
@@ -584,7 +583,7 @@ export default function CampaignIntelligenceTab({ store }) {
                       <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Headroom Preset</label>
                       <select
                         value={headroomPreset}
-                        onChange={(event) => setHeadroomPreset(event.target.value)}
+                        onChange={(event) => updateAnalysisParam('headroomPreset', event.target.value)}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                       >
                         {PRESET_OPTIONS.map((option) => (
@@ -597,7 +596,7 @@ export default function CampaignIntelligenceTab({ store }) {
                       <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Launch Preset</label>
                       <select
                         value={launchPreset}
-                        onChange={(event) => setLaunchPreset(event.target.value)}
+                        onChange={(event) => updateAnalysisParam('launchPreset', event.target.value)}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                       >
                         {PRESET_OPTIONS.map((option) => (
@@ -615,7 +614,7 @@ export default function CampaignIntelligenceTab({ store }) {
                         min="2"
                         max="14"
                         value={launchMinDays}
-                        onChange={(event) => setLaunchMinDays(event.target.value)}
+                        onChange={(event) => updateAnalysisParam('launchMinDays', event.target.value)}
                         className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       />
                     </div>
@@ -627,7 +626,7 @@ export default function CampaignIntelligenceTab({ store }) {
                         min="2"
                         max="14"
                         value={launchMaxDays}
-                        onChange={(event) => setLaunchMaxDays(event.target.value)}
+                        onChange={(event) => updateAnalysisParam('launchMaxDays', event.target.value)}
                         className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       />
                     </div>
@@ -640,7 +639,7 @@ export default function CampaignIntelligenceTab({ store }) {
                         max="20"
                         step="0.1"
                         value={targetRoas}
-                        onChange={(event) => setTargetRoas(Number(event.target.value) || DEFAULT_TARGET_ROAS)}
+                        onChange={(event) => updateAnalysisParam('targetRoas', Number(event.target.value) || DEFAULT_TARGET_ROAS)}
                         className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       />
                     </div>
@@ -652,7 +651,7 @@ export default function CampaignIntelligenceTab({ store }) {
                         min="1"
                         step="0.1"
                         value={targetCpa}
-                        onChange={(event) => setTargetCpa(event.target.value)}
+                        onChange={(event) => updateAnalysisParam('targetCpa', event.target.value)}
                         className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       />
                     </div>
