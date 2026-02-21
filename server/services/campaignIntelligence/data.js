@@ -303,7 +303,7 @@ export function fetchDailyOrdersRows({ db, store, startDate, endDate, country })
   const args = [store, startDate, endDate];
 
   if (country && country !== 'ALL') {
-    whereParts.push("UPPER(COALESCE(country_code, country, '')) = ?");
+    whereParts.push("UPPER(TRIM(COALESCE(NULLIF(country_code, ''), NULLIF(country, ''), ''))) = ?");
     args.push(country);
   }
 
