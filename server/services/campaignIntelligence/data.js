@@ -43,6 +43,8 @@ const COUNTRY_ALIAS_OVERRIDES = Object.freeze({
   UK: 'GB',
   UAE: 'AE',
   KSA: 'SA',
+  TURKEY: 'TR',
+  TURKIYE: 'TR',
   'VATICAN CITY': 'VA',
   'SOUTH KOREA': 'KR',
   'NORTH KOREA': 'KP'
