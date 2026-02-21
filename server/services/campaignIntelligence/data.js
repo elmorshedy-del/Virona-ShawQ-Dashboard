@@ -19,6 +19,7 @@ import {
 
 const ENTITY_ID_PATTERN = /^[A-Za-z0-9_.:-]{2,120}$/;
 const COUNTRY_CODE_PATTERN = /^[A-Z]{2}$/;
+const NORMALIZED_COUNTRY_SQL = "UPPER(TRIM(COALESCE(country, '')))";
 
 function ensureStore(rawStore) {
   const normalized = String(rawStore || DEFAULT_SETTINGS.defaultStore).trim().toLowerCase();
@@ -86,7 +87,7 @@ function getScopeFirstSeenDate({
   const args = [store, entityId];
 
   if (country && country !== 'ALL') {
-    whereParts.push('country = ?');
+    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
     args.push(country);
   }
 
@@ -197,7 +198,7 @@ function buildScopeWhere(levelConfig, { store, startDate, endDate, entityId, cou
   }
 
   if (country && country !== 'ALL') {
-    whereParts.push('country = ?');
+    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
     args.push(country);
   }
 
@@ -273,7 +274,7 @@ export function fetchEntityOptions(scope) {
   const args = [store, analysisRange.startDate, analysisRange.endDate];
 
   if (country !== 'ALL') {
-    whereParts.push('country = ?');
+    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
     args.push(country);
   }
 
@@ -317,12 +318,11 @@ export function fetchCountryOptions(scope) {
 
   const rows = db
     .prepare(`
-      SELECT country as code, SUM(spend) as spend, SUM(conversions) as conversions
+      SELECT ${NORMALIZED_COUNTRY_SQL} as code, SUM(spend) as spend, SUM(conversions) as conversions
       FROM ${levelConfig.table}
       WHERE ${whereSql}
-      AND country IS NOT NULL
-      AND country != ''
-      GROUP BY country
+      AND ${NORMALIZED_COUNTRY_SQL} != ''
+      GROUP BY ${NORMALIZED_COUNTRY_SQL}
       HAVING SUM(spend) > 0
       ORDER BY spend DESC
       LIMIT ?
@@ -349,9 +349,14 @@ export function fetchDailyOrdersRows({ db, store, startDate, endDate, country })
   const args = [store, startDate, endDate];
 
   if (country && country !== 'ALL') {
-whereParts.push("(country_code = ? OR ( (country_code IS NULL OR country_code = '') AND country = ? ))");
-args.push(country, country);
-    args.push(country);
+    whereParts.push(`(
+      UPPER(TRIM(COALESCE(country_code, ''))) = ?
+      OR (
+        (country_code IS NULL OR TRIM(country_code) = '')
+        AND UPPER(TRIM(COALESCE(country, ''))) = ?
+      )
+    )`);
+    args.push(country, country);
   }
 
   return db
@@ -499,7 +504,7 @@ export function fetchScopeLifecycleSummary(scope) {
   const args = [store, lookbackStart, analysisRange.endDate];
 
   if (country !== 'ALL') {
-    whereParts.push('country = ?');
+    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
     args.push(country);
   }
 
@@ -556,7 +561,7 @@ export function fetchEntitySnapshot(scope) {
   const args = [store, entityId];
 
   if (country !== 'ALL') {
-    whereParts.push('country = ?');
+    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
     args.push(country);
   }
 

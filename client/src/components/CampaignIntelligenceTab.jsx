@@ -30,8 +30,7 @@ const DEFAULT_ANCHOR_DAYS = 21;
 const DEFAULT_TARGET_ROAS = 4;
 const DEFAULT_TARGET_HORIZON_DAYS = 7;
 const ALL_COUNTRIES_CODE = 'ALL';
-const FLAG_UNICODE_OFFSET = 127397;
-const ASCII_UPPER_A_CODE = 65;
+const REGIONAL_INDICATOR_OFFSET = 127397;
 const SIGNAL_NEAR_THRESHOLD_RATIO = 0.6;
 const SIGNAL_ZERO_BASELINE_EPSILON = 1e-9;
 const SIGNAL_CONTRIBUTION_DECIMALS = 2;
@@ -155,8 +154,8 @@ function formatUsdMoney(value) {
 function countryCodeToFlag(countryCode) {
   const normalized = String(countryCode || '').trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(normalized)) return '';
-  const first = normalized.charCodeAt(0) - ASCII_UPPER_A_CODE + FLAG_UNICODE_OFFSET;
-  const second = normalized.charCodeAt(1) - ASCII_UPPER_A_CODE + FLAG_UNICODE_OFFSET;
+  const first = normalized.charCodeAt(0) + REGIONAL_INDICATOR_OFFSET;
+  const second = normalized.charCodeAt(1) + REGIONAL_INDICATOR_OFFSET;
   return String.fromCodePoint(first, second);
 }
 
