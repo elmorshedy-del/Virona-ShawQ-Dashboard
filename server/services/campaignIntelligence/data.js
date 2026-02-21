@@ -1,5 +1,9 @@
 import { getDb } from '../../db/database.js';
 import {
+  fetchShopifyOrders,
+  getShopifyCredentialsForStore
+} from '../shopifyService.js';
+import {
   DEFAULT_SETTINGS,
   LEVEL_CONFIG,
   ORDERS_TABLE_BY_STORE,
@@ -20,6 +24,47 @@ import {
 const ENTITY_ID_PATTERN = /^[A-Za-z0-9_.:-]{2,120}$/;
 const COUNTRY_CODE_PATTERN = /^[A-Z]{2}$/;
 const NORMALIZED_COUNTRY_SQL = "UPPER(TRIM(COALESCE(country, '')))";
+const SHOPIFY_DIRECT_FALLBACK_ENV = 'CI_SHOPIFY_DIRECT_ORDER_FALLBACK';
+const SHOPIFY_DIRECT_FALLBACK_ENABLED = String(process.env[SHOPIFY_DIRECT_FALLBACK_ENV] || 'true')
+  .trim()
+  .toLowerCase() !== 'false';
+const MILLISECONDS_PER_MINUTE = 60 * 1000;
+const SHOPIFY_RANGE_CACHE_TTL_MINUTES = 10;
+const SHOPIFY_RANGE_CACHE_TTL_MS = SHOPIFY_RANGE_CACHE_TTL_MINUTES * MILLISECONDS_PER_MINUTE;
+const SHOPIFY_RANGE_CACHE_MAX_ENTRIES = 20;
+const SHOPIFY_ORDER_RANGE_CACHE = new Map();
+
+function getShopifyRangeCacheKey({ store, startDate, endDate }) {
+  return `${store}:${startDate}:${endDate}`;
+}
+
+function pruneShopifyRangeCache() {
+  while (SHOPIFY_ORDER_RANGE_CACHE.size > SHOPIFY_RANGE_CACHE_MAX_ENTRIES) {
+    const oldestKey = SHOPIFY_ORDER_RANGE_CACHE.keys().next().value;
+    if (!oldestKey) break;
+    SHOPIFY_ORDER_RANGE_CACHE.delete(oldestKey);
+  }
+}
+
+function getCachedShopifyOrders(cacheKey) {
+  const cached = SHOPIFY_ORDER_RANGE_CACHE.get(cacheKey);
+  if (!cached) return null;
+
+  if (cached.expiresAt <= Date.now()) {
+    SHOPIFY_ORDER_RANGE_CACHE.delete(cacheKey);
+    return null;
+  }
+
+  return Array.isArray(cached.orders) ? cached.orders : null;
+}
+
+function setCachedShopifyOrders(cacheKey, orders) {
+  SHOPIFY_ORDER_RANGE_CACHE.set(cacheKey, {
+    expiresAt: Date.now() + SHOPIFY_RANGE_CACHE_TTL_MS,
+    orders: Array.isArray(orders) ? orders : []
+  });
+  pruneShopifyRangeCache();
+}
 
 function ensureStore(rawStore) {
   const normalized = String(rawStore || DEFAULT_SETTINGS.defaultStore).trim().toLowerCase();
@@ -342,7 +387,7 @@ function getOrdersTable(store) {
   return ORDERS_TABLE_BY_STORE[store] || ORDERS_TABLE_BY_STORE.vironax;
 }
 
-export function fetchDailyOrdersRows({ db, store, startDate, endDate, country }) {
+function fetchDailyOrdersRowsFromDb({ db, store, startDate, endDate, country }) {
   const tableName = getOrdersTable(store);
   const revenueExpression = 'COALESCE(NULLIF(subtotal, 0), order_total)';
   const whereParts = ['store = ?', 'date BETWEEN ? AND ?', 'COALESCE(is_excluded, 0) = 0'];
@@ -377,6 +422,96 @@ export function fetchDailyOrdersRows({ db, store, startDate, endDate, country })
       revenue: round(toNumber(row.revenue), 2)
     }))
     .filter((row) => row.date);
+}
+
+function hasOrderVolume(rows = []) {
+  return rows.some((row) => toNumber(row?.orders) > 0);
+}
+
+function shouldAttemptShopifyDirectFallback({ store, dbRows }) {
+  if (!SHOPIFY_DIRECT_FALLBACK_ENABLED) return false;
+  if (getOrdersTable(store) !== 'shopify_orders') return false;
+  return !hasOrderVolume(dbRows);
+}
+
+function normalizeOrderCountryCode(order) {
+  const countryCode = String(order?.country_code || '').trim().toUpperCase();
+  if (COUNTRY_CODE_PATTERN.test(countryCode)) return countryCode;
+  return null;
+}
+
+function resolveOrderRevenue(order) {
+  const subtotal = toNumber(order?.subtotal);
+  if (subtotal !== 0) return subtotal;
+  return toNumber(order?.order_total);
+}
+
+function isOrderExcluded(order) {
+  return Number(order?.is_excluded) === 1;
+}
+
+function aggregateShopifyOrdersByDate(orders = [], country = 'ALL') {
+  const dailyMap = new Map();
+  const normalizedCountry = country && country !== 'ALL' ? country : 'ALL';
+
+  for (const order of orders) {
+    if (isOrderExcluded(order)) continue;
+    const parsedDate = parseIsoDate(String(order?.date || ''));
+    if (!parsedDate) continue;
+
+    if (normalizedCountry !== 'ALL') {
+      const orderCountryCode = normalizeOrderCountryCode(order);
+      if (orderCountryCode !== normalizedCountry) continue;
+    }
+
+    const current = dailyMap.get(parsedDate) || { orders: 0, revenue: 0 };
+    current.orders += 1;
+    current.revenue += resolveOrderRevenue(order);
+    dailyMap.set(parsedDate, current);
+  }
+
+  return Array.from(dailyMap.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([date, totals]) => ({
+      date,
+      orders: Math.round(toNumber(totals.orders)),
+      revenue: round(toNumber(totals.revenue), 2)
+    }));
+}
+
+async function fetchShopifyDirectDailyOrders({ store, startDate, endDate, country }) {
+  const credentials = getShopifyCredentialsForStore(store);
+  if (!credentials?.shopifyStore || !credentials?.accessToken) {
+    return [];
+  }
+
+  const cacheKey = getShopifyRangeCacheKey({ store, startDate, endDate });
+  const cachedOrders = getCachedShopifyOrders(cacheKey);
+  if (cachedOrders) {
+    return aggregateShopifyOrdersByDate(cachedOrders, country);
+  }
+
+  const orders = await fetchShopifyOrders(startDate, endDate, { credentials });
+  setCachedShopifyOrders(cacheKey, orders);
+  return aggregateShopifyOrdersByDate(orders, country);
+}
+
+export async function fetchDailyOrdersRows({ db, store, startDate, endDate, country }) {
+  const dbRows = fetchDailyOrdersRowsFromDb({ db, store, startDate, endDate, country });
+  if (!shouldAttemptShopifyDirectFallback({ store, dbRows })) {
+    return dbRows;
+  }
+
+  try {
+    const directRows = await fetchShopifyDirectDailyOrders({ store, startDate, endDate, country });
+    if (hasOrderVolume(directRows)) {
+      return directRows;
+    }
+  } catch (error) {
+    console.warn(`[CampaignIntelligence] Shopify direct fallback failed for ${store}: ${error.message}`);
+  }
+
+  return dbRows;
 }
 
 export function fetchDailyMetaRows({

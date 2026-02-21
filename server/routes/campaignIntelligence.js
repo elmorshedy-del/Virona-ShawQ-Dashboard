@@ -3,9 +3,9 @@ import { getCampaignIntelligenceSnapshot } from '../services/campaignIntelligenc
 
 const router = express.Router();
 
-router.get('/snapshot', (req, res) => {
+router.get('/snapshot', async (req, res) => {
   try {
-    const data = getCampaignIntelligenceSnapshot(req.query || {});
+    const data = await getCampaignIntelligenceSnapshot(req.query || {});
     res.json(data);
   } catch (error) {
     const statusCode = Number.isInteger(error?.status) ? error.status : 500;
