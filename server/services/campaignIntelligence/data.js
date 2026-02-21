@@ -73,10 +73,40 @@ function getLatestMetricDate(db, store, levelConfig) {
   return parseIsoDate(row?.maxDate);
 }
 
+function getScopeFirstSeenDate({
+  db,
+  store,
+  levelConfig,
+  entityId,
+  country
+}) {
+  if (!entityId) return null;
+
+  const whereParts = ['store = ?', `${levelConfig.idColumn} = ?`];
+  const args = [store, entityId];
+
+  if (country && country !== 'ALL') {
+    whereParts.push('country = ?');
+    args.push(country);
+  }
+
+  const row = db
+    .prepare(`
+      SELECT MIN(date) as minDate
+      FROM ${levelConfig.table}
+      WHERE ${whereParts.join(' AND ')}
+    `)
+    .get(...args);
+
+  return parseIsoDate(row?.minDate);
+}
+
 function resolveRangeWindow({
   db,
   store,
   levelConfig,
+  entityId,
+  country,
   startDate,
   endDate,
   analysisWindowDays
@@ -93,6 +123,20 @@ function resolveRangeWindow({
     }
     return {
       startDate: requestedStartDate,
+      endDate: resolvedEndDate
+    };
+  }
+
+  const lifecycleStartDate = getScopeFirstSeenDate({
+    db,
+    store,
+    levelConfig,
+    entityId,
+    country
+  });
+  if (lifecycleStartDate && lifecycleStartDate <= resolvedEndDate) {
+    return {
+      startDate: lifecycleStartDate,
       endDate: resolvedEndDate
     };
   }
@@ -181,6 +225,8 @@ export function normalizeCampaignIntelligenceRequest(query = {}) {
     db,
     store,
     levelConfig,
+    entityId,
+    country,
     startDate: query.startDate,
     endDate: query.endDate,
     analysisWindowDays: query.analysisWindowDays

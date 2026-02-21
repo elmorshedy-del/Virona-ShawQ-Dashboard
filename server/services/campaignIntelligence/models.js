@@ -986,6 +986,29 @@ export function buildTopDrivers(models) {
     }));
 }
 
+function countActiveSpendDays(series) {
+  return series.filter((row) => (Number(row?.spend) || 0) > 0).length;
+}
+
+function evaluateLaunchJudgeEligibility({ analysisSeries, launchJudge }) {
+  const activeSpendDays = countActiveSpendDays(analysisSeries);
+  const maxTrialDays = Math.max(
+    Number(launchJudge?.trialWindow?.maxDays) || 0,
+    Number(launchJudge?.trialWindow?.minDays) || 0
+  );
+
+  const eligible = maxTrialDays > 0 && activeSpendDays <= maxTrialDays;
+
+  return {
+    eligible,
+    activeSpendDays,
+    maxTrialDays,
+    reason: eligible
+      ? 'fresh_campaign_window'
+      : 'outside_launch_window'
+  };
+}
+
 export function buildModelBundle({
   analysisSeries,
   anchorSeries,
@@ -1026,7 +1049,12 @@ export function buildModelBundle({
     seedKey
   });
 
-  const modelList = [sentinel, headroom, launchJudge];
+  const launchJudgeEligibility = evaluateLaunchJudgeEligibility({
+    analysisSeries,
+    launchJudge
+  });
+  const scopedLaunchJudge = launchJudgeEligibility.eligible ? launchJudge : null;
+  const modelList = [sentinel, headroom, scopedLaunchJudge].filter(Boolean);
   const calibration = buildCalibrationLayer({
     models: modelList,
     series: analysisSeries
@@ -1035,7 +1063,8 @@ export function buildModelBundle({
   return {
     sentinel,
     headroom,
-    launchJudge,
+    launchJudge: scopedLaunchJudge,
+    launchJudgeEligibility,
     calibration,
     topDrivers: buildTopDrivers(modelList)
   };
