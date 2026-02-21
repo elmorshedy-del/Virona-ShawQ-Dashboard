@@ -525,11 +525,8 @@ function fetchDailyOrdersRowsFromDb({ db, store, startDate, endDate, country }) 
     const countryAliases = getCountryAliases(country);
     const countryPlaceholders = countryAliases.map(() => '?').join(', ');
     whereParts.push(`(
-      UPPER(TRIM(COALESCE(country_code, ''))) IN (${countryPlaceholders})
-      OR (
-        (country_code IS NULL OR TRIM(country_code) = '')
-        AND UPPER(TRIM(COALESCE(country, ''))) IN (${countryPlaceholders})
-      )
+      UPPER(TRIM(COALESCE(country, ''))) IN (${countryPlaceholders})
+      OR UPPER(TRIM(COALESCE(country_code, ''))) IN (${countryPlaceholders})
     )`);
     args.push(...countryAliases, ...countryAliases);
   }
@@ -565,7 +562,7 @@ function shouldAttemptShopifyDirectFallback({ store, dbRows }) {
 }
 
 function normalizeOrderCountryCode(order) {
-  return normalizeCountryCode(order?.country_code) || normalizeCountryCode(order?.country) || null;
+  return normalizeCountryCode(order?.country) || normalizeCountryCode(order?.country_code) || null;
 }
 
 function resolveOrderRevenue(order) {
