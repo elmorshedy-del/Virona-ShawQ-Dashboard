@@ -536,9 +536,9 @@ export default function CampaignIntelligenceTab({ store }) {
   const lifecycle = selectors?.lifecycle || {};
 
   const chartData = useMemo(() => {
-    const filteredRows = timelineDaily.length > 1
-      ? timelineDaily.filter((row) => row.date !== today)
-      : timelineDaily;
+const filteredRows = timelineDaily.length > 1
+  ? timelineDaily.filter((row) => row.date !== getLocalDateString())
+  : timelineDaily;
 
     return filteredRows.map((row) => ({
       ...row,
