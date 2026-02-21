@@ -177,6 +177,23 @@ function formatSignalMetricValue(signal, value) {
   return formatPercent(value, 2);
 }
 
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function getListKey(prefix, value, index) {
+  if (typeof value === 'string' && value.trim()) {
+    return `${prefix}-${value.trim()}-${index}`;
+  }
+  if (value && typeof value === 'object') {
+    if (value.id) return `${prefix}-${value.id}-${index}`;
+    if (value.key) return `${prefix}-${value.key}-${index}`;
+    if (value.code) return `${prefix}-${value.code}-${index}`;
+    if (value.date) return `${prefix}-${value.date}-${index}`;
+  }
+  return `${prefix}-${index}`;
+}
+
 function getSignalDirection(signal) {
   return SIGNAL_DIRECTION_BY_KEY[signal?.key] || 'higher_better';
 }
@@ -299,9 +316,9 @@ function MetricChartCard({
               dot={false}
               name="smoothed"
             />
-            {markers.map((marker) => (
+            {markers.map((marker, index) => (
               <ReferenceDot
-                key={`${marker.date}-${marker.deltaPercent}`}
+                key={getListKey('budget-marker', marker, index)}
                 x={marker.date}
                 y={marker.value}
                 r={4.5}
@@ -318,8 +335,8 @@ function MetricChartCard({
       </div>
       {markers.length > 0 && (
         <div className="mt-3 space-y-1.5">
-          {markers.map((marker) => (
-            <div key={`legend-${marker.date}-${marker.deltaPercent}`} className="text-xs text-slate-600">
+          {markers.map((marker, index) => (
+            <div key={getListKey('budget-marker-legend', marker, index)} className="text-xs text-slate-600">
               <span className="font-semibold">{marker.date}</span>
               {' • '}
               <span className="text-red-700 font-semibold">{marker.deltaLabel}</span>
@@ -543,14 +560,14 @@ export default function CampaignIntelligenceTab({ store }) {
     return () => clearInterval(timerId);
   }, []);
 
-  const timelineDaily = snapshot?.timeline?.daily || [];
+  const timelineDaily = toArray(snapshot?.timeline?.daily);
   const selectors = snapshot?.selectors || {};
   const lifecycle = selectors?.lifecycle || {};
 
   const chartData = useMemo(() => {
-const filteredRows = timelineDaily.length > 1
-  ? timelineDaily.filter((row) => row.date !== getLocalDateString())
-  : timelineDaily;
+    const filteredRows = timelineDaily.length > 1
+      ? timelineDaily.filter((row) => row?.date !== today)
+      : timelineDaily;
 
     return filteredRows.map((row) => ({
       ...row,
@@ -648,8 +665,8 @@ const filteredRows = timelineDaily.length > 1
                   }}
                   className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                 >
-                  {(selectors.levels || []).map((option) => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
+                  {toArray(selectors.levels).map((option, index) => (
+                    <option key={getListKey('level', option, index)} value={option.id}>{option.label}</option>
                   ))}
                 </select>
               </div>
@@ -662,8 +679,8 @@ const filteredRows = timelineDaily.length > 1
                   className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                 >
                   <option value="">All {level === 'adset' ? 'Ad Sets' : level === 'ad' ? 'Ads' : 'Campaigns'}</option>
-                  {(selectors.entities || []).map((entity) => (
-                    <option key={entity.id} value={entity.id}>{entity.name}</option>
+                  {toArray(selectors.entities).map((entity, index) => (
+                    <option key={getListKey('entity', entity, index)} value={entity.id}>{entity.name}</option>
                   ))}
                 </select>
               </div>
@@ -675,8 +692,8 @@ const filteredRows = timelineDaily.length > 1
                   onChange={(event) => updateAnalysisParam('country', event.target.value)}
                   className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                 >
-                  {(selectors.countries || []).map((option) => (
-                    <option key={option.code} value={option.code}>{formatCountryLabel(option.code)}</option>
+                  {toArray(selectors.countries).map((option, index) => (
+                    <option key={getListKey('country', option, index)} value={option.code}>{formatCountryLabel(option.code)}</option>
                   ))}
                 </select>
               </div>
@@ -998,10 +1015,10 @@ const filteredRows = timelineDaily.length > 1
                 <>
                   <div className="text-xs uppercase tracking-wide text-slate-500">Top signals</div>
                   <div className="space-y-2">
-                    {(selectedModel.signals || []).slice(0, 4).map((signal) => {
+                    {toArray(selectedModel.signals).slice(0, 4).map((signal, index) => {
                       const signalState = getSignalState(signal);
                       return (
-                        <div key={signal.key} className="rounded-xl border border-slate-200 p-3">
+                        <div key={getListKey('signal', signal, index)} className="rounded-xl border border-slate-200 p-3">
                           <div className="flex items-center justify-between gap-2">
                             <div className="font-medium text-slate-900">{signal.label}</div>
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${SIGNAL_STATUS_STYLES[signalState.code] || SIGNAL_STATUS_STYLES.not_triggered}`}>
@@ -1152,8 +1169,8 @@ const filteredRows = timelineDaily.length > 1
                 </tr>
               </thead>
               <tbody>
-                {(snapshot.budgetMonitor.metrics || []).map((metric) => (
-                  <tr key={metric.key} className="border-b last:border-b-0">
+                {toArray(snapshot.budgetMonitor.metrics).map((metric, index) => (
+                  <tr key={getListKey('budget-metric', metric, index)} className="border-b last:border-b-0">
                     <td className="py-2.5 pr-3 text-sm font-medium text-slate-800">{metric.label}</td>
                     <td className="py-2.5 pr-3 text-sm text-slate-700">{parseMonitorValue(metric.key, metric.preValue, store)}</td>
                     <td className="py-2.5 pr-3 text-sm text-slate-700">{parseMonitorValue(metric.key, metric.postValue, store)}</td>
@@ -1175,12 +1192,12 @@ const filteredRows = timelineDaily.length > 1
         <div className="text-xs text-slate-500 mt-1">What each model does, what is policy-defined, and what adapts over time.</div>
 
         <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {(snapshot?.education || []).map((section) => (
-            <div key={section.modelId} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          {toArray(snapshot?.education).map((section, sectionIndex) => (
+            <div key={getListKey('education-section', section, sectionIndex)} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div className="font-semibold text-slate-900 text-sm">{section.title}</div>
               <div className="mt-2 space-y-2">
-                {(section.basics || []).map((line) => (
-                  <div key={line} className="text-xs text-slate-700 flex items-start gap-2">
+                {toArray(section.basics).map((line, lineIndex) => (
+                  <div key={getListKey('education-basics', line, lineIndex)} className="text-xs text-slate-700 flex items-start gap-2">
                     <BarChart3 className="w-3.5 h-3.5 mt-0.5 text-indigo-500" />
                     <span>{line}</span>
                   </div>
@@ -1189,8 +1206,8 @@ const filteredRows = timelineDaily.length > 1
               <div className="mt-3 border-t border-slate-200 pt-3">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Policy vs anchored vs learned</div>
                 <div className="mt-2 space-y-2">
-                  {(section.policyVsLearning || []).map((line) => (
-                    <div key={line} className="text-xs text-slate-700 flex items-start gap-2">
+                  {toArray(section.policyVsLearning).map((line, lineIndex) => (
+                    <div key={getListKey('education-policy', line, lineIndex)} className="text-xs text-slate-700 flex items-start gap-2">
                       <TrendingUp className="w-3.5 h-3.5 mt-0.5 text-indigo-500" />
                       <span>{line}</span>
                     </div>
