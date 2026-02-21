@@ -28,12 +28,19 @@ const DEFAULT_ANALYSIS_WINDOW_DAYS = 35;
 const DEFAULT_ANCHOR_DAYS = 21;
 const DEFAULT_TARGET_ROAS = 4;
 const DEFAULT_TARGET_HORIZON_DAYS = 7;
+const ALL_COUNTRIES_CODE = 'ALL';
+const FLAG_UNICODE_OFFSET = 127397;
+const ASCII_UPPER_A_CODE = 65;
 
 const PRESET_OPTIONS = [
   { id: 'conservative', label: 'Conservative (Recommended)' },
   { id: 'balanced', label: 'Balanced' },
   { id: 'aggressive', label: 'Aggressive' }
 ];
+
+const REGION_DISPLAY_NAMES = typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function'
+  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  : null;
 
 const SHIFT_INTENT_STYLES = {
   strong_improvement: 'bg-emerald-700 text-white',
@@ -113,6 +120,24 @@ function formatMoney(value, store) {
   } catch (_error) {
     return formatNumber(num, 2);
   }
+}
+
+function countryCodeToFlag(countryCode) {
+  const normalized = String(countryCode || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalized)) return '';
+  const first = normalized.charCodeAt(0) - ASCII_UPPER_A_CODE + FLAG_UNICODE_OFFSET;
+  const second = normalized.charCodeAt(1) - ASCII_UPPER_A_CODE + FLAG_UNICODE_OFFSET;
+  return String.fromCodePoint(first, second);
+}
+
+function formatCountryLabel(countryCode) {
+  const normalized = String(countryCode || '').trim().toUpperCase();
+  if (!normalized) return 'Unknown';
+  if (normalized === ALL_COUNTRIES_CODE) return '🌐 All Countries';
+
+  const fullName = REGION_DISPLAY_NAMES?.of(normalized) || normalized;
+  const flag = countryCodeToFlag(normalized);
+  return flag ? `${flag} ${fullName} (${normalized})` : `${fullName} (${normalized})`;
 }
 
 async function readJsonResponse(response) {
@@ -479,7 +504,7 @@ export default function CampaignIntelligenceTab({ store }) {
                   className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                 >
                   {(selectors.countries || []).map((option) => (
-                    <option key={option.code} value={option.code}>{option.code}</option>
+                    <option key={option.code} value={option.code}>{formatCountryLabel(option.code)}</option>
                   ))}
                 </select>
               </div>
