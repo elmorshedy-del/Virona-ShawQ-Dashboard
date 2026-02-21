@@ -33,6 +33,20 @@ const SHOPIFY_RANGE_CACHE_TTL_MINUTES = 10;
 const SHOPIFY_RANGE_CACHE_TTL_MS = SHOPIFY_RANGE_CACHE_TTL_MINUTES * MILLISECONDS_PER_MINUTE;
 const SHOPIFY_RANGE_CACHE_MAX_ENTRIES = 20;
 const SHOPIFY_ORDER_RANGE_CACHE = new Map();
+const COUNTRY_NAME_CACHE_LOCALE = 'en';
+const COUNTRY_NAME_TYPE = 'region';
+const ASCII_A_CODE = 65;
+const ASCII_Z_CODE = 90;
+const COUNTRY_OPTIONS_RAW_LIMIT_MULTIPLIER = 4;
+const COUNTRY_OPTIONS_MAX_RAW_ROWS = 400;
+const COUNTRY_ALIAS_OVERRIDES = Object.freeze({
+  UK: 'GB',
+  UAE: 'AE',
+  KSA: 'SA',
+  'VATICAN CITY': 'VA',
+  'SOUTH KOREA': 'KR',
+  'NORTH KOREA': 'KP'
+});
 
 function getShopifyRangeCacheKey({ store, startDate, endDate }) {
   return `${store}:${startDate}:${endDate}`;
@@ -64,6 +78,100 @@ function setCachedShopifyOrders(cacheKey, orders) {
     orders: Array.isArray(orders) ? orders : []
   });
   pruneShopifyRangeCache();
+}
+
+function normalizeCountryToken(rawCountry) {
+  if (rawCountry == null) return null;
+
+  const normalized = String(rawCountry)
+    .trim()
+    .toUpperCase()
+    .replace(/[_.,-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return normalized || null;
+}
+
+function buildCountryNormalizationLookup() {
+  const aliasToCode = new Map();
+  const codeToAliases = new Map();
+  const displayNames = new Intl.DisplayNames([COUNTRY_NAME_CACHE_LOCALE], { type: COUNTRY_NAME_TYPE });
+
+  const registerAlias = (rawAlias, rawCode) => {
+    const alias = normalizeCountryToken(rawAlias);
+    const code = normalizeCountryToken(rawCode);
+    if (!alias || !code || !COUNTRY_CODE_PATTERN.test(code)) return;
+
+    aliasToCode.set(alias, code);
+    if (!codeToAliases.has(code)) {
+      codeToAliases.set(code, new Set([code]));
+    }
+    codeToAliases.get(code).add(alias);
+  };
+
+  for (let first = ASCII_A_CODE; first <= ASCII_Z_CODE; first += 1) {
+    for (let second = ASCII_A_CODE; second <= ASCII_Z_CODE; second += 1) {
+      const code = `${String.fromCharCode(first)}${String.fromCharCode(second)}`;
+      const displayName = displayNames.of(code);
+      const normalizedDisplayName = normalizeCountryToken(displayName);
+
+      if (!normalizedDisplayName || normalizedDisplayName === code) continue;
+
+      registerAlias(code, code);
+      registerAlias(displayName, code);
+    }
+  }
+
+  for (const [alias, code] of Object.entries(COUNTRY_ALIAS_OVERRIDES)) {
+    registerAlias(alias, code);
+  }
+
+  return {
+    aliasToCode,
+    codeToAliases
+  };
+}
+
+const COUNTRY_LOOKUP = buildCountryNormalizationLookup();
+
+function normalizeCountryCode(rawCountry) {
+  const token = normalizeCountryToken(rawCountry);
+  if (!token) return null;
+
+  const mapped = COUNTRY_LOOKUP.aliasToCode.get(token);
+  if (mapped) return mapped;
+
+  if (COUNTRY_CODE_PATTERN.test(token)) return token;
+  return null;
+}
+
+function getCountryAliases(countryCode) {
+  const normalizedCode = normalizeCountryCode(countryCode);
+  if (!normalizedCode) return [];
+
+  const aliasesSet = COUNTRY_LOOKUP.codeToAliases.get(normalizedCode);
+  if (!aliasesSet || aliasesSet.size === 0) {
+    return [normalizedCode];
+  }
+
+  return Array.from(aliasesSet);
+}
+
+function buildCountryWhereClause(countryCode, columnSql = NORMALIZED_COUNTRY_SQL) {
+  const aliases = getCountryAliases(countryCode);
+  if (!aliases.length) {
+    return {
+      clause: `${columnSql} = ?`,
+      args: [String(countryCode || '').toUpperCase()]
+    };
+  }
+
+  const placeholders = aliases.map(() => '?').join(', ');
+  return {
+    clause: `${columnSql} IN (${placeholders})`,
+    args: aliases
+  };
 }
 
 function ensureStore(rawStore) {
@@ -103,9 +211,9 @@ function normalizeCountry(rawCountry) {
   if (rawCountry == null || rawCountry === '' || String(rawCountry).toUpperCase() === 'ALL') {
     return 'ALL';
   }
-  const normalized = String(rawCountry).trim().toUpperCase();
-  if (!COUNTRY_CODE_PATTERN.test(normalized)) {
-    const error = new Error('country must be ALL or a 2-letter ISO code');
+  const normalized = normalizeCountryCode(rawCountry);
+  if (!normalized) {
+    const error = new Error('country must be ALL or a supported 2-letter country code');
     error.status = 400;
     throw error;
   }
@@ -132,8 +240,9 @@ function getScopeFirstSeenDate({
   const args = [store, entityId];
 
   if (country && country !== 'ALL') {
-    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
-    args.push(country);
+    const countryFilter = buildCountryWhereClause(country);
+    whereParts.push(countryFilter.clause);
+    args.push(...countryFilter.args);
   }
 
   const row = db
@@ -243,8 +352,9 @@ function buildScopeWhere(levelConfig, { store, startDate, endDate, entityId, cou
   }
 
   if (country && country !== 'ALL') {
-    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
-    args.push(country);
+    const countryFilter = buildCountryWhereClause(country);
+    whereParts.push(countryFilter.clause);
+    args.push(...countryFilter.args);
   }
 
   return {
@@ -319,8 +429,9 @@ export function fetchEntityOptions(scope) {
   const args = [store, analysisRange.startDate, analysisRange.endDate];
 
   if (country !== 'ALL') {
-    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
-    args.push(country);
+    const countryFilter = buildCountryWhereClause(country);
+    whereParts.push(countryFilter.clause);
+    args.push(...countryFilter.args);
   }
 
   const rows = db
@@ -361,9 +472,14 @@ export function fetchCountryOptions(scope) {
     country: 'ALL'
   });
 
+  const rawCountryRowLimit = Math.min(
+    COUNTRY_OPTIONS_MAX_RAW_ROWS,
+    Math.max(selectorLimit, selectorLimit * COUNTRY_OPTIONS_RAW_LIMIT_MULTIPLIER)
+  );
+
   const rows = db
     .prepare(`
-      SELECT ${NORMALIZED_COUNTRY_SQL} as code, SUM(spend) as spend, SUM(conversions) as conversions
+      SELECT ${NORMALIZED_COUNTRY_SQL} as rawCountry, SUM(spend) as spend, SUM(conversions) as conversions
       FROM ${levelConfig.table}
       WHERE ${whereSql}
       AND ${NORMALIZED_COUNTRY_SQL} != ''
@@ -372,15 +488,27 @@ export function fetchCountryOptions(scope) {
       ORDER BY spend DESC
       LIMIT ?
     `)
-    .all(...args, selectorLimit);
+    .all(...args, rawCountryRowLimit);
 
-  return rows
+  const byCode = new Map();
+  for (const row of rows) {
+    const code = normalizeCountryCode(row?.rawCountry);
+    if (!code) continue;
+
+    const current = byCode.get(code) || { code, spend: 0, conversions: 0 };
+    current.spend += toNumber(row?.spend);
+    current.conversions += toNumber(row?.conversions);
+    byCode.set(code, current);
+  }
+
+  return Array.from(byCode.values())
     .map((row) => ({
-      code: String(row.code || '').toUpperCase(),
-      spend: round(toNumber(row.spend), 2),
-      conversions: Math.round(toNumber(row.conversions))
+      code: row.code,
+      spend: round(row.spend, 2),
+      conversions: Math.round(row.conversions)
     }))
-    .filter((row) => COUNTRY_CODE_PATTERN.test(row.code));
+    .sort((left, right) => right.spend - left.spend)
+    .slice(0, selectorLimit);
 }
 
 function getOrdersTable(store) {
@@ -394,14 +522,16 @@ function fetchDailyOrdersRowsFromDb({ db, store, startDate, endDate, country }) 
   const args = [store, startDate, endDate];
 
   if (country && country !== 'ALL') {
+    const countryAliases = getCountryAliases(country);
+    const countryPlaceholders = countryAliases.map(() => '?').join(', ');
     whereParts.push(`(
-      UPPER(TRIM(COALESCE(country_code, ''))) = ?
+      UPPER(TRIM(COALESCE(country_code, ''))) IN (${countryPlaceholders})
       OR (
         (country_code IS NULL OR TRIM(country_code) = '')
-        AND UPPER(TRIM(COALESCE(country, ''))) = ?
+        AND UPPER(TRIM(COALESCE(country, ''))) IN (${countryPlaceholders})
       )
     )`);
-    args.push(country, country);
+    args.push(...countryAliases, ...countryAliases);
   }
 
   return db
@@ -435,9 +565,7 @@ function shouldAttemptShopifyDirectFallback({ store, dbRows }) {
 }
 
 function normalizeOrderCountryCode(order) {
-  const countryCode = String(order?.country_code || '').trim().toUpperCase();
-  if (COUNTRY_CODE_PATTERN.test(countryCode)) return countryCode;
-  return null;
+  return normalizeCountryCode(order?.country_code) || normalizeCountryCode(order?.country) || null;
 }
 
 function resolveOrderRevenue(order) {
@@ -639,8 +767,9 @@ export function fetchScopeLifecycleSummary(scope) {
   const args = [store, lookbackStart, analysisRange.endDate];
 
   if (country !== 'ALL') {
-    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
-    args.push(country);
+    const countryFilter = buildCountryWhereClause(country);
+    whereParts.push(countryFilter.clause);
+    args.push(...countryFilter.args);
   }
 
   const rows = db
@@ -696,8 +825,9 @@ export function fetchEntitySnapshot(scope) {
   const args = [store, entityId];
 
   if (country !== 'ALL') {
-    whereParts.push(`${NORMALIZED_COUNTRY_SQL} = ?`);
-    args.push(country);
+    const countryFilter = buildCountryWhereClause(country);
+    whereParts.push(countryFilter.clause);
+    args.push(...countryFilter.args);
   }
 
   const row = db
