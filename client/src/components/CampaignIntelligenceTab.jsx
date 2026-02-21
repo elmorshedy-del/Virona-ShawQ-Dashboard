@@ -15,8 +15,10 @@ import {
 } from 'lucide-react';
 import {
   CartesianGrid,
+  Label,
   Line,
   LineChart,
+  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -24,13 +26,15 @@ import {
 } from 'recharts';
 
 const API_ENDPOINT = '/api/campaign-intelligence/snapshot';
-const DEFAULT_ANALYSIS_WINDOW_DAYS = 35;
 const DEFAULT_ANCHOR_DAYS = 21;
 const DEFAULT_TARGET_ROAS = 4;
 const DEFAULT_TARGET_HORIZON_DAYS = 7;
 const ALL_COUNTRIES_CODE = 'ALL';
 const FLAG_UNICODE_OFFSET = 127397;
 const ASCII_UPPER_A_CODE = 65;
+const SIGNAL_NEAR_THRESHOLD_RATIO = 0.6;
+const SIGNAL_ZERO_BASELINE_EPSILON = 1e-9;
+const SIGNAL_CONTRIBUTION_DECIMALS = 2;
 
 const PRESET_OPTIONS = [
   { id: 'conservative', label: 'Conservative (Recommended)' },
@@ -53,6 +57,27 @@ const SHIFT_INTENT_STYLES = {
   info: 'bg-indigo-100 text-indigo-700'
 };
 
+const SIGNAL_DIRECTION_BY_KEY = Object.freeze({
+  cpm: 'lower_better',
+  cvr: 'higher_better',
+  lpvRate: 'higher_better',
+  ordersPerSpend: 'higher_better'
+});
+
+const SIGNAL_METRIC_LABELS = Object.freeze({
+  cpm: 'CPM (USD)',
+  cvr: 'CVR',
+  lpvRate: 'LPV rate',
+  ordersPerSpend: 'Orders per spend'
+});
+
+const SIGNAL_STATUS_STYLES = Object.freeze({
+  triggered: 'bg-red-100 text-red-700 border-red-200',
+  near_threshold: 'bg-amber-100 text-amber-700 border-amber-200',
+  not_triggered: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  insufficient_baseline: 'bg-slate-100 text-slate-700 border-slate-200'
+});
+
 const MODEL_CARD_META = {
   mature_sentinel: {
     icon: ShieldCheck,
@@ -72,12 +97,6 @@ function getLocalDateString(date = new Date()) {
   const offsetMs = date.getTimezoneOffset() * 60 * 1000;
   const localDate = new Date(date.getTime() - offsetMs);
   return localDate.toISOString().split('T')[0];
-}
-
-function addDays(dateStr, days) {
-  const date = new Date(`${dateStr}T00:00:00`);
-  date.setDate(date.getDate() + days);
-  return getLocalDateString(date);
 }
 
 function formatPercent(value, digits = 2) {
@@ -122,6 +141,16 @@ function formatMoney(value, store) {
   }
 }
 
+function formatUsdMoney(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '$0.00';
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 2
+  }).format(num);
+}
+
 function countryCodeToFlag(countryCode) {
   const normalized = String(countryCode || '').trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(normalized)) return '';
@@ -138,6 +167,81 @@ function formatCountryLabel(countryCode) {
   const fullName = REGION_DISPLAY_NAMES?.of(normalized) || normalized;
   const flag = countryCodeToFlag(normalized);
   return flag ? `${flag} ${fullName} (${normalized})` : `${fullName} (${normalized})`;
+}
+
+function formatSignalMetricValue(signal, value) {
+  if (signal?.key === 'cpm') {
+    return formatUsdMoney(value);
+  }
+  return formatPercent(value, 2);
+}
+
+function getSignalDirection(signal) {
+  return SIGNAL_DIRECTION_BY_KEY[signal?.key] || 'higher_better';
+}
+
+function getSignalState(signal) {
+  const baseline = Number(signal?.baselineValue) || 0;
+  const deltaPercent = Number(signal?.deltaPercent) || 0;
+  const thresholdPercent = Math.abs(Number(signal?.thresholdPercent) || 0);
+  const direction = getSignalDirection(signal);
+
+  if (Math.abs(baseline) <= SIGNAL_ZERO_BASELINE_EPSILON) {
+    return {
+      code: 'insufficient_baseline',
+      label: 'Insufficient baseline',
+      detail: 'Anchor baseline unavailable in selected scope/window.'
+    };
+  }
+
+  const adversePercent = direction === 'lower_better'
+    ? Math.max(deltaPercent, 0)
+    : Math.max(-deltaPercent, 0);
+  const thresholdHit = thresholdPercent > 0 && adversePercent >= thresholdPercent;
+  const nearThreshold = thresholdPercent > 0
+    && adversePercent > 0
+    && adversePercent >= (thresholdPercent * SIGNAL_NEAR_THRESHOLD_RATIO);
+
+  if (thresholdHit) {
+    return {
+      code: 'triggered',
+      label: 'Triggered',
+      detail: 'Alert condition met for this fixed signal.'
+    };
+  }
+
+  if (nearThreshold) {
+    return {
+      code: 'near_threshold',
+      label: 'Near threshold',
+      detail: 'Moving toward alert threshold; monitor closely.'
+    };
+  }
+
+  return {
+    code: 'not_triggered',
+    label: 'Not triggered',
+    detail: 'Signal is within acceptable threshold range.'
+  };
+}
+
+function getSignalTriggerText(signal) {
+  const baseline = Number(signal?.baselineValue) || 0;
+  const thresholdPercent = Math.abs(Number(signal?.thresholdPercent) || 0);
+  const thresholdRatio = thresholdPercent / 100;
+  const direction = getSignalDirection(signal);
+  const metricLabel = SIGNAL_METRIC_LABELS[signal?.key] || signal?.label || 'Signal';
+
+  if (Math.abs(baseline) <= SIGNAL_ZERO_BASELINE_EPSILON) {
+    return 'Trigger rule unavailable because anchor baseline is zero in this scope/window.';
+  }
+
+  const boundaryValue = direction === 'lower_better'
+    ? baseline * (1 + thresholdRatio)
+    : baseline * (1 - thresholdRatio);
+  const comparator = direction === 'lower_better' ? '>=' : '<=';
+
+  return `Triggers when ${metricLabel} ${comparator} ${formatSignalMetricValue(signal, boundaryValue)}.`;
 }
 
 async function readJsonResponse(response) {
@@ -158,7 +262,8 @@ function MetricChartCard({
   smoothedKey,
   lineColor,
   formatter,
-  yAxisFormatter
+  yAxisFormatter,
+  markers = []
 }) {
   return (
     <div className="rounded-2xl border border-indigo-100 bg-white shadow-sm p-5">
@@ -193,9 +298,36 @@ function MetricChartCard({
               dot={false}
               name="smoothed"
             />
+            {markers.map((marker) => (
+              <ReferenceDot
+                key={`${marker.date}-${marker.deltaPercent}`}
+                x={marker.date}
+                y={marker.value}
+                r={4.5}
+                fill="#ef4444"
+                stroke="#ffffff"
+                strokeWidth={1.5}
+                ifOverflow="extendDomain"
+              >
+                <Label value={marker.deltaLabel} position="top" fontSize={10} fill="#b91c1c" />
+              </ReferenceDot>
+            ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
+      {markers.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          {markers.map((marker) => (
+            <div key={`legend-${marker.date}-${marker.deltaPercent}`} className="text-xs text-slate-600">
+              <span className="font-semibold">{marker.date}</span>
+              {' • '}
+              <span className="text-red-700 font-semibold">{marker.deltaLabel}</span>
+              {' • '}
+              {marker.fromValue} {' -> '} {marker.toValue}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -252,8 +384,8 @@ function buildQueryParams({
   params.set('store', store || 'vironax');
   params.set('level', level);
   params.set('country', country);
-  params.set('startDate', startDate);
-  params.set('endDate', endDate);
+  if (startDate) params.set('startDate', startDate);
+  if (endDate) params.set('endDate', endDate);
 
   if (entityId) params.set('entityId', entityId);
 
@@ -279,8 +411,11 @@ function buildQueryParams({
 }
 
 function parseMonitorValue(metricKey, value, store) {
-  if (metricKey === 'spend' || metricKey === 'cpm') {
+  if (metricKey === 'spend') {
     return formatMoney(value, store);
+  }
+  if (metricKey === 'cpm') {
+    return formatUsdMoney(value);
   }
   if (metricKey === 'ctr' || metricKey === 'cvr' || metricKey === 'lpvRate') {
     return formatPercent(value, 2);
@@ -290,14 +425,13 @@ function parseMonitorValue(metricKey, value, store) {
 
 export default function CampaignIntelligenceTab({ store }) {
   const today = useMemo(() => getLocalDateString(), []);
-  const defaultStartDate = useMemo(() => addDays(today, -(DEFAULT_ANALYSIS_WINDOW_DAYS - 1)), [today]);
 
   const [analysisParams, setAnalysisParams] = useState(() => ({
     level: 'campaign',
     entityId: '',
     country: 'ALL',
-    startDate: defaultStartDate,
-    endDate: today,
+    startDate: '',
+    endDate: '',
     anchorDays: DEFAULT_ANCHOR_DAYS,
     anchorStartDate: '',
     anchorEndDate: '',
@@ -402,14 +536,40 @@ export default function CampaignIntelligenceTab({ store }) {
   const lifecycle = selectors?.lifecycle || {};
 
   const chartData = useMemo(() => {
-    return timelineDaily.map((row) => ({
+    const filteredRows = timelineDaily.length > 1
+      ? timelineDaily.filter((row) => row.date !== today)
+      : timelineDaily;
+
+    return filteredRows.map((row) => ({
       ...row,
       ctrPercent: row.ctrPercent ?? ((row.ctr || 0) * 100),
       smoothedCtrPercent: row.smoothedCtrPercent ?? (((row?.smoothed?.ctr || 0) * 100)),
       smoothedReach: row?.smoothed?.reach ?? row.reach,
       smoothedSpend: row?.smoothed?.spend ?? row.spend
     }));
-  }, [timelineDaily]);
+  }, [timelineDaily, today]);
+
+  const budgetChartMarkers = useMemo(() => {
+    const chartByDate = new Map(chartData.map((row) => [row.date, row]));
+    const events = snapshot?.budgetMonitor?.events || [];
+
+    return events
+      .slice(0, 5)
+      .map((event) => {
+        const row = chartByDate.get(event.pivotDate);
+        if (!row) return null;
+
+        return {
+          date: event.pivotDate,
+          value: row.spend,
+          deltaPercent: event.shiftPercent || 0,
+          deltaLabel: formatDeltaPercent(event.shiftPercent || 0, 1),
+          fromValue: formatMoney(event.preSpendAvg || 0, store),
+          toValue: formatMoney(event.postSpendAvg || 0, store)
+        };
+      })
+      .filter(Boolean);
+  }, [chartData, snapshot, store]);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -461,7 +621,7 @@ export default function CampaignIntelligenceTab({ store }) {
           </div>
 
           <div className="rounded-2xl border border-indigo-100 bg-white p-4">
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <div>
                 <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Hierarchy</label>
                 <select
@@ -508,27 +668,6 @@ export default function CampaignIntelligenceTab({ store }) {
                   ))}
                 </select>
               </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Start</label>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(event) => updateAnalysisParam('startDate', event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">End</label>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(event) => updateAnalysisParam('endDate', event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                  />
-                </div>
-              </div>
             </div>
 
             <div className="mt-4">
@@ -544,6 +683,37 @@ export default function CampaignIntelligenceTab({ store }) {
 
               {advancedOpen && (
                 <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Analysis Start (Optional Override)</label>
+                      <input
+                        type="date"
+                        value={startDate}
+                        onChange={(event) => updateAnalysisParam('startDate', event.target.value)}
+                        className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                      />
+                      <div className="text-[11px] text-slate-500 mt-1">Default: entity lifecycle start</div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Analysis End (Optional Override)</label>
+                      <input
+                        type="date"
+                        value={endDate}
+                        onChange={(event) => updateAnalysisParam('endDate', event.target.value)}
+                        className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                      />
+                      <div className="text-[11px] text-slate-500 mt-1">Default: latest fully available day</div>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Effective Analysis Window</label>
+                      <div className="mt-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                        {snapshot?.scope?.analysisStartDate || '-'} {' -> '} {snapshot?.scope?.analysisEndDate || '-'}
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                     <div>
                       <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Anchor Days (Recommended 21)</label>
@@ -788,6 +958,11 @@ export default function CampaignIntelligenceTab({ store }) {
               </button>
             );
           })}
+          {snapshot?.models?.launchJudgeEligibility && !snapshot.models.launchJudgeEligibility.eligible && (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+              Launch Judge appears only for fresh campaigns. Current scope has {snapshot.models.launchJudgeEligibility.activeSpendDays} active spend day(s), above the trial window max of {snapshot.models.launchJudgeEligibility.maxTrialDays} day(s).
+            </div>
+          )}
         </div>
 
         <div className="rounded-2xl border border-indigo-100 bg-white p-4">
@@ -809,19 +984,34 @@ export default function CampaignIntelligenceTab({ store }) {
 
               {selectedModel.id === 'mature_sentinel' && (
                 <>
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Top risk signals</div>
+                  <div className="text-xs uppercase tracking-wide text-slate-500">Top signals</div>
                   <div className="space-y-2">
-                    {(selectedModel.signals || []).slice(0, 4).map((signal) => (
-                      <div key={signal.key} className="rounded-xl border border-slate-200 p-3">
-                        <div className="font-medium text-slate-900">{signal.label}</div>
-                        <div className="text-xs text-slate-500 mt-1">
-                          Baseline {formatPercent(signal.baselineValue, 2)} {' -> '} Current {formatPercent(signal.currentValue, 2)}
+                    {(selectedModel.signals || []).slice(0, 4).map((signal) => {
+                      const signalState = getSignalState(signal);
+                      return (
+                        <div key={signal.key} className="rounded-xl border border-slate-200 p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-medium text-slate-900">{signal.label}</div>
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${SIGNAL_STATUS_STYLES[signalState.code] || SIGNAL_STATUS_STYLES.not_triggered}`}>
+                              {signalState.label}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-600 mt-1">{signalState.detail}</div>
+                          <div className="text-xs text-slate-500 mt-1">
+                            Baseline {formatSignalMetricValue(signal, signal.baselineValue)} {' -> '} Current {formatSignalMetricValue(signal, signal.currentValue)}
+                          </div>
+                          <div className="text-xs text-slate-600 mt-1">
+                            Delta {formatDeltaPercent(signal.deltaPercent, 2)} | Threshold {formatNumber(signal.thresholdPercent, 1)}% | Source {signal.source}
+                          </div>
+                          <div className="text-xs text-slate-600 mt-1">
+                            {getSignalTriggerText(signal)}
+                          </div>
+                          <div className="text-xs text-slate-600 mt-1">
+                            Risk contribution: {formatNumber(signal.weightedImpact || 0, SIGNAL_CONTRIBUTION_DECIMALS)} pts
+                          </div>
                         </div>
-                        <div className="text-xs text-slate-600 mt-1">
-                          Delta {formatDeltaPercent(signal.deltaPercent, 2)} | Threshold {formatNumber(signal.thresholdPercent, 1)}% | Source {signal.source}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   <div className="text-xs text-slate-500">
                     Re-check window is {selectedModel.decisionWindowDays} days ({selectedModel.decisionWindowSource});
@@ -871,7 +1061,11 @@ export default function CampaignIntelligenceTab({ store }) {
           {snapshot?.models?.calibration && (
             <div className="mt-5 rounded-xl border border-indigo-100 bg-indigo-50 p-3">
               <div className="text-xs uppercase tracking-wide text-indigo-700 font-semibold">Calibration Layer</div>
-              <div className="text-sm text-indigo-900 mt-1">{snapshot.models.calibration.summary}</div>
+              <div className="text-sm text-indigo-900 mt-1">
+                Confidence reliability: {formatPercent(snapshot.models.calibration.reliability || 0, 1)}
+                {' • '}
+                Expected error: {formatPercent(snapshot.models.calibration.calibrationError || 0, 1)}
+              </div>
               <div className="text-xs text-indigo-700 mt-2">
                 Reliability band: {formatPercent(snapshot.models.calibration.reliabilityBand?.[0] || 0, 1)} to {formatPercent(snapshot.models.calibration.reliabilityBand?.[1] || 0, 1)}
               </div>
@@ -912,6 +1106,7 @@ export default function CampaignIntelligenceTab({ store }) {
           lineColor="#0ea5e9"
           formatter={(value) => formatMoney(value, store)}
           yAxisFormatter={(value) => formatNumber(value, 0)}
+          markers={budgetChartMarkers}
         />
       </div>
 
