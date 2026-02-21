@@ -136,6 +136,16 @@ export function isShopifyConfigured() {
   return getAllShopifyCredentials().length > 0;
 }
 
+export function getShopifyCredentialsForStore(storeKey) {
+  const normalizedStore = sanitizeStoreKey(storeKey, '');
+  if (!normalizedStore) return null;
+
+  const credentials = getAllShopifyCredentials();
+  return credentials.find(
+    (credential) => sanitizeStoreKey(credential?.analyticsStore, '') === normalizedStore
+  ) || null;
+}
+
 function getShopifyHeaders(accessToken) {
   return {
     'X-Shopify-Access-Token': accessToken,

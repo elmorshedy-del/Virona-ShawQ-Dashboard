@@ -119,7 +119,7 @@ function attachSmoothedSeries(series) {
   }));
 }
 
-function getScopedBaselineRows({ scope }) {
+async function getScopedBaselineRows({ scope }) {
   const baselineMetaRows = fetchDailyMetaRows({
     db: scope.db,
     store: scope.store,
@@ -130,7 +130,7 @@ function getScopedBaselineRows({ scope }) {
     country: scope.country
   });
 
-  const baselineOrderRows = fetchDailyOrdersRows({
+  const baselineOrderRows = await fetchDailyOrdersRows({
     db: scope.db,
     store: scope.store,
     startDate: scope.anchorRange.startDate,
@@ -166,7 +166,7 @@ function getScopedBaselineRows({ scope }) {
   };
 }
 
-export function getCampaignIntelligenceSnapshot(query = {}) {
+export async function getCampaignIntelligenceSnapshot(query = {}) {
   const scope = normalizeCampaignIntelligenceRequest(query);
   const modelSettings = resolveModelSettings(query);
 
@@ -183,7 +183,7 @@ export function getCampaignIntelligenceSnapshot(query = {}) {
     country: scope.country
   });
 
-  const analysisOrderRows = fetchDailyOrdersRows({
+  const analysisOrderRows = await fetchDailyOrdersRows({
     db: scope.db,
     store: scope.store,
     startDate: scope.analysisRange.startDate,
@@ -197,7 +197,7 @@ export function getCampaignIntelligenceSnapshot(query = {}) {
     orderRows: analysisOrderRows
   });
 
-  const baselineData = getScopedBaselineRows({ scope: { ...scope, entityId: selectedEntityId } });
+  const baselineData = await getScopedBaselineRows({ scope: { ...scope, entityId: selectedEntityId } });
 
   const shockAwareSeries = buildShockAwareSeries(analysisSeries);
   const shockAwareBaselineSeries = buildShockAwareSeries(baselineData.baselineSeries);
