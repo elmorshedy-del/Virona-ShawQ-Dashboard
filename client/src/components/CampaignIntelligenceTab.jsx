@@ -35,6 +35,7 @@ const ASCII_UPPER_A_CODE = 65;
 const SIGNAL_NEAR_THRESHOLD_RATIO = 0.6;
 const SIGNAL_ZERO_BASELINE_EPSILON = 1e-9;
 const SIGNAL_CONTRIBUTION_DECIMALS = 2;
+const TODAY_REFRESH_INTERVAL_MS = 60 * 1000;
 
 const PRESET_OPTIONS = [
   { id: 'conservative', label: 'Conservative (Recommended)' },
@@ -424,7 +425,7 @@ function parseMonitorValue(metricKey, value, store) {
 }
 
 export default function CampaignIntelligenceTab({ store }) {
-  const today = useMemo(() => getLocalDateString(), []);
+  const [today, setToday] = useState(() => getLocalDateString());
 
   const [analysisParams, setAnalysisParams] = useState(() => ({
     level: 'campaign',
@@ -530,6 +531,17 @@ export default function CampaignIntelligenceTab({ store }) {
       updateAnalysisParam('entityId', '');
     }
   }, [snapshot, entityId, updateAnalysisParam]);
+
+  useEffect(() => {
+    const timerId = setInterval(() => {
+      setToday((currentValue) => {
+        const latestDate = getLocalDateString();
+        return currentValue === latestDate ? currentValue : latestDate;
+      });
+    }, TODAY_REFRESH_INTERVAL_MS);
+
+    return () => clearInterval(timerId);
+  }, []);
 
   const timelineDaily = snapshot?.timeline?.daily || [];
   const selectors = snapshot?.selectors || {};
