@@ -201,10 +201,11 @@ router.get('/cities/:countryCode', (req, res) => {
 
 // Meta Ad Manager hierarchy endpoint
 // Supports ?includeInactive=true to show inactive campaigns/adsets/ads
-router.get('/meta-ad-manager', (req, res) => {
+router.get('/meta-ad-manager', async (req, res) => {
   try {
     const store = req.query.store || 'vironax';
-    res.json(getMetaAdManagerHierarchy(store, req.query));
+    const data = await getMetaAdManagerHierarchy(store, req.query);
+    res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

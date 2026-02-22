@@ -1170,41 +1170,65 @@ export default function App() {
 
     const fetchMetaAdManager = async (params) => {
       const response = await fetch(`${API_BASE}/analytics/meta-ad-manager?${params}`);
-      const data = await response.json();
-      return Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      const payload = await response.json();
+      return {
+        rows: Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [],
+        notice: typeof payload?.notice === 'string' ? payload.notice.trim() : ''
+      };
     };
+
+    const combineNotices = (...parts) => (
+      Array.from(
+        new Set(
+          parts
+            .map((part) => String(part || '').trim())
+            .filter(Boolean)
+        )
+      ).join(' ')
+    );
 
     async function loadMetaAdManager() {
       setMetaAdManagerNotice('');
       try {
         const params = buildParams(dateRange);
-        const data = await fetchMetaAdManager(params);
+        const primaryResult = await fetchMetaAdManager(params);
+        const data = primaryResult.rows;
 
         if (!data.length && isTodayRange(dateRange)) {
           const yesterday = getIstanbulDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
           const fallbackParams = buildParams({ type: 'custom', start: yesterday, end: yesterday });
-          const fallbackData = await fetchMetaAdManager(fallbackParams);
+          const fallbackResult = await fetchMetaAdManager(fallbackParams);
+          const fallbackData = fallbackResult.rows;
 
           if (fallbackData.length > 0) {
             setMetaAdManagerData(fallbackData);
             setMetaAdManagerNotice(
-              `Today's data is still syncing with Meta. Showing ${yesterday} results for now; we'll update automatically once today's data is ready.`
+              combineNotices(
+                primaryResult.notice,
+                fallbackResult.notice,
+                `Today's data is still syncing with Meta. Showing ${yesterday} results for now; we'll update automatically once today's data is ready.`
+              )
             );
             return;
           }
 
           setMetaAdManagerData([]);
           setMetaAdManagerNotice(
-            "Today's data is still syncing with Meta, and yesterday's results aren't available yet. We'll update automatically as soon as data arrives."
+            combineNotices(
+              primaryResult.notice,
+              fallbackResult.notice,
+              "Today's data is still syncing with Meta, and yesterday's results aren't available yet. We'll update automatically as soon as data arrives."
+            )
           );
           return;
         }
 
         setMetaAdManagerData(data);
+        setMetaAdManagerNotice(primaryResult.notice || '');
       } catch (error) {
         console.error('Error loading Meta Ad Manager data:', error);
         setMetaAdManagerData([]);
-        setMetaAdManagerNotice('We had trouble loading Meta data just now. Please retry in a moment.');
+        setMetaAdManagerNotice('We had trouble loading campaign data just now. Please retry in a moment.');
       }
     }
 
