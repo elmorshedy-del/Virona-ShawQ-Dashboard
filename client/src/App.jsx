@@ -1923,7 +1923,7 @@ export default function App() {
         )}
 
         {activeTab === SESSION_INTELLIGENCE_TAB_INDEX && (
-          <SessionIntelligenceTab store={store} />
+          <SessionIntelligenceTab store={store} dashboardDateRange={dashboard?.dateRange} />
         )}
 
         {activeTab === NEO_META_TAB_INDEX && (
