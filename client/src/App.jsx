@@ -2454,10 +2454,15 @@ function DashboardTab({
       return ((current - previous) / previous) * 100;
     };
 
-    // CAC is inverse (lower is better), while ROAS and most KPIs are direct.
+    // Display uses the raw delta (true percent change in the metric's value).
+    // Logic (tone/celebration) uses a direction-aware delta where "good" is positive.
     const getDirectionalDeltaPct = (metricKey, rawDeltaPct) => {
       if (rawDeltaPct == null) return null;
       return metricKey === 'cac' ? -rawDeltaPct : rawDeltaPct;
+    };
+
+    const KPI_MONTH_SUMMARY_THRESHOLDS = {
+      strongDirectionalDeltaPct: 15
     };
 
     const revenueDelta = getDeltaPct('revenue');
@@ -2467,9 +2472,9 @@ function DashboardTab({
       const value = getMetricValue(monthContext.activeTotals, kpi.key);
       const rawDeltaPct = getDeltaPct(kpi.key);
       const directionalDeltaPct = getDirectionalDeltaPct(kpi.key, rawDeltaPct);
-      const formattedDelta = directionalDeltaPct == null
+      const formattedDelta = rawDeltaPct == null
         ? '—'
-        : `${directionalDeltaPct > 0 ? '+' : ''}${directionalDeltaPct.toFixed(0)}%`;
+        : `${rawDeltaPct > 0 ? '+' : ''}${rawDeltaPct.toFixed(0)}%`;
       const formattedValue = formatMetricValue(kpi.key, value);
 
       let text = `${monthContext.prefix}: ${formattedValue} · ${formattedDelta} vs ${monthContext.prevLabel}`;
@@ -2493,9 +2498,6 @@ function DashboardTab({
         text += lowerIsBetter ? ' · All-time high' : ' · All-time low';
       }
 
-      const isStrongUplift = directionalDeltaPct != null && directionalDeltaPct >= 15;
-      const isCelebrating = isStrongUplift || isBestEver;
-
       let tone = 'neutral';
       if (directionalDeltaPct != null) {
         if (kpi.key === 'spend') {
@@ -2513,6 +2515,12 @@ function DashboardTab({
       } else if (isWorstEver) {
         tone = 'negative';
       }
+
+      const isStrongUplift =
+        directionalDeltaPct != null &&
+        directionalDeltaPct >= KPI_MONTH_SUMMARY_THRESHOLDS.strongDirectionalDeltaPct;
+      // Celebrate only when the computed tone says "good", so we never show confetti on a negative pill.
+      const isCelebrating = tone === 'positive' && (isStrongUplift || isBestEver);
 
       return { key: kpi.key, text, tone, isCelebrating };
     });
