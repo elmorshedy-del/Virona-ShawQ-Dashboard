@@ -48,7 +48,7 @@ class CreativeStudioErrorBoundary extends Component {
         <p className="mt-2 text-sm">{this.state.message}</p>
         <button
           type="button"
-          onClick={() => this.setState({ hasError: false, message: '' })}
+          onClick={() => window.location.reload()}
           className="mt-4 rounded-lg border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
         >
           Reload Panel
