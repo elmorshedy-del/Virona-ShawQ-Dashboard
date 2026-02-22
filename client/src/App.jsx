@@ -164,6 +164,9 @@ const TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION = {
 };
 const TIME_OF_DAY_ORDERS_LINE_COLOR = '#6366f1';
 const TIME_OF_DAY_PACING_LINE_COLOR = '#0f766e';
+const KPI_MONTH_SUMMARY_THRESHOLDS = {
+  strongDirectionalDeltaPct: 15
+};
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -2427,12 +2430,12 @@ function DashboardTab({
   }, [monthHistoryDailyMap, monthHistoryError, monthHistoryLoading, monthHistoryTrends, monthMode, selectedMonthKey, monthlyTotalsMap]);
 
   const kpis = [
-    { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6' },
-    { key: 'spend', label: 'Ad Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1' },
-    { key: 'orders', label: 'Orders', value: overview.orders, change: overview.ordersChange, format: 'number', color: '#22c55e' },
-    { key: 'aov', label: 'AOV', value: overview.aov, change: overview.aovChange, format: 'currency', color: '#f59e0b' },
-    { key: 'cac', label: 'CAC', value: overview.cac, change: overview.cacChange, format: 'currency', color: '#ef4444' },
-    { key: 'roas', label: 'ROAS', value: overview.roas, change: overview.roasChange, format: 'roas', color: '#10b981' },
+    { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6', direction: 'up' },
+    { key: 'spend', label: 'Ad Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1', direction: 'up' },
+    { key: 'orders', label: 'Orders', value: overview.orders, change: overview.ordersChange, format: 'number', color: '#22c55e', direction: 'up' },
+    { key: 'aov', label: 'AOV', value: overview.aov, change: overview.aovChange, format: 'currency', color: '#f59e0b', direction: 'up' },
+    { key: 'cac', label: 'CAC', value: overview.cac, change: overview.cacChange, format: 'currency', color: '#ef4444', direction: 'down' },
+    { key: 'roas', label: 'ROAS', value: overview.roas, change: overview.roasChange, format: 'roas', color: '#10b981', direction: 'up' },
   ];
 
   const kpiMonthSummaries = useMemo(() => {
@@ -2455,14 +2458,9 @@ function DashboardTab({
     };
 
     // Direction-aware delta means "positive = better outcome".
-    // For CAC specifically, lower raw values are better, so sign is inverted for UI logic and display.
-    const getDirectionalDeltaPct = (metricKey, rawDeltaPct) => {
+    const getDirectionalDeltaPct = (rawDeltaPct, direction = 'up') => {
       if (rawDeltaPct == null) return null;
-      return metricKey === 'cac' ? -rawDeltaPct : rawDeltaPct;
-    };
-
-    const KPI_MONTH_SUMMARY_THRESHOLDS = {
-      strongDirectionalDeltaPct: 15
+      return direction === 'down' ? -rawDeltaPct : rawDeltaPct;
     };
 
     const revenueDelta = getDeltaPct('revenue');
@@ -2471,7 +2469,7 @@ function DashboardTab({
     return kpis.map((kpi) => {
       const value = getMetricValue(monthContext.activeTotals, kpi.key);
       const rawDeltaPct = getDeltaPct(kpi.key);
-      const directionalDeltaPct = getDirectionalDeltaPct(kpi.key, rawDeltaPct);
+      const directionalDeltaPct = getDirectionalDeltaPct(rawDeltaPct, kpi.direction);
       const formattedDelta = directionalDeltaPct == null
         ? '—'
         : `${directionalDeltaPct > 0 ? '+' : ''}${directionalDeltaPct.toFixed(0)}%`;
@@ -2488,7 +2486,7 @@ function DashboardTab({
       const minValue = historyValues.length ? Math.min(...historyValues) : null;
       const isAllTimeHigh = maxValue != null && value >= maxValue;
       const isAllTimeLow = minValue != null && value <= minValue;
-      const lowerIsBetter = kpi.key === 'cac';
+      const lowerIsBetter = kpi.direction === 'down';
       const isBestEver = lowerIsBetter ? isAllTimeLow : isAllTimeHigh;
       const isWorstEver = lowerIsBetter ? isAllTimeHigh : isAllTimeLow;
 
