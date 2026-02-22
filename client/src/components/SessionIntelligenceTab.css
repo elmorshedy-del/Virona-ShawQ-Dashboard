@@ -1544,7 +1544,9 @@
 .si-issues-compact-table td {
   white-space: normal;
   vertical-align: top;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: auto;
   line-height: 1.35;
 }
 
@@ -1557,26 +1559,40 @@
 }
 
 .si-issues-compact-table td:nth-child(4) {
-  width: 104px;
+  width: 88px;
 }
 
 .si-issues-compact-table td:nth-child(5) {
-  width: 90px;
+  width: 82px;
 }
 
 .si-issues-compact-table td:nth-child(6) {
-  width: 124px;
+  width: 114px;
 }
 
 .si-issues-compact-table td:nth-child(7) {
-  width: 90px;
+  width: 82px;
 }
 
 .si-issue-cell {
-  display: inline-flex;
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+}
+
+.si-issue-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.si-issue-where-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .si-issue-type-badge {
