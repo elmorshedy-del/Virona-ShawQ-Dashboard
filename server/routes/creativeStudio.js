@@ -586,11 +586,11 @@ function extractMetaValue(html, keys = []) {
   for (const key of keys) {
     const escapedKey = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(
-      `<meta[^>]+(?:name|property)=["']${escapedKey}["'][^>]+content=["']([^"']+)["'][^>]*>`,
+      `<meta[^>]+(?:(?:name|property)=["']${escapedKey}["'][^>]+content=["']([^"']+)["'])|(?:content=["']([^"']+)["'][^>]+(?:name|property)=["']${escapedKey}["'])`,
       'i'
     );
     const match = haystack.match(regex);
-    if (match?.[1]) return match[1].trim();
+    if (match) return (match[1] || match[2]).trim();
   }
   return null;
 }
