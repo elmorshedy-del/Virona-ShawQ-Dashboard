@@ -5,6 +5,8 @@ import fs from 'fs';
 import multer from 'multer';
 import os from 'os';
 import path from 'path';
+import net from 'net';
+import dns from 'dns/promises';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -37,7 +39,8 @@ const execFileAsync = promisify(execFile);
 
 const router = express.Router();
 const db = getDb();
-const DEFAULT_GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
+const DEFAULT_GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash-preview-09-2025';
+const GEMINI_MODEL_FALLBACK_MESSAGE_PATTERN = /not found|unknown model|unsupported|deprecated/i;
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -255,6 +258,1259 @@ function parseHexColor(hex) {
   const g = parseInt(normalized.slice(2, 4), 16);
   const b = parseInt(normalized.slice(4, 6), 16);
   return { r, g, b, hex: `#${normalized.toLowerCase()}` };
+}
+
+const CREATIVE_OS_DEFAULT_STORE = 'vironax';
+const CREATIVE_OS_IMPORT_TIMEOUT_MS = 8000;
+const CREATIVE_OS_IMPORT_MAX_REDIRECTS = 3;
+const CREATIVE_OS_IMPORT_MAX_HTML_BYTES = 2 * 1024 * 1024;
+const CREATIVE_OS_IMPORT_ALLOWED_PROTOCOLS = new Set(['https:', 'http:']);
+const CREATIVE_OS_EXPORT_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'creative-os', 'exports');
+const CREATIVE_OS_EXPORT_ID_PATTERN = /^[a-f0-9-]{20,}$/i;
+const CREATIVE_OS_MAX_EXPORT_TARGETS = 8;
+const CREATIVE_OS_MAX_PALETTE_COLORS = 6;
+const CREATIVE_OS_QUANTIZATION_STEP = 16;
+const CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH = 120;
+const CREATIVE_OS_MAX_DESCRIPTION_LENGTH = 240;
+const CREATIVE_OS_MAX_CAPTION_LENGTH = 280;
+const CREATIVE_OS_MAX_TEMPLATE_LENGTH = 64;
+const CREATIVE_OS_RECENT_PRODUCT_WINDOW_DAYS = 45;
+const CREATIVE_OS_BEST_SELLER_UNITS_THRESHOLD = 8;
+const CREATIVE_OS_DEFAULT_CURRENCY = 'USD';
+const CREATIVE_OS_IMAGE_PIPELINE_MAX_SIDE = 2048;
+const CREATIVE_OS_DEFAULT_SCENE_PRESET = 'studio_soft';
+const CREATIVE_OS_MAX_CAPTION_PLAN_SCRIPT_LENGTH = 2400;
+const CREATIVE_OS_MIN_CAPTION_WORDS_PER_SEGMENT = 2;
+const CREATIVE_OS_MAX_CAPTION_WORDS_PER_SEGMENT = 10;
+const CREATIVE_OS_MIN_CAPTION_SEGMENT_SECONDS = 0.35;
+const CREATIVE_OS_CAPTION_SNAP_TOLERANCE_SECONDS = 0.45;
+const CREATIVE_OS_MAX_BEAT_MARKERS = 320;
+const CREATIVE_OS_ENHANCE_MODES = new Set(['upscale', 'denoise', 'deblur', 'sharpen', 'low_light']);
+const CREATIVE_OS_VIDEO_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'creative-os', 'video');
+const CREATIVE_OS_VIDEO_UPLOADS_DIR = path.join(CREATIVE_OS_VIDEO_TMP_DIR, 'uploads');
+const CREATIVE_OS_AUDIO_UPLOADS_DIR = path.join(CREATIVE_OS_VIDEO_TMP_DIR, 'audio');
+const CREATIVE_OS_VIDEO_OUTPUTS_DIR = path.join(CREATIVE_OS_VIDEO_TMP_DIR, 'outputs');
+const CREATIVE_OS_TIMELINE_FONT_PATH = path.join(__dirname, '..', 'assets', 'fonts', 'Inter-Regular.ttf');
+const CREATIVE_OS_TIMELINE_MAX_CAPTIONS = 120;
+const CREATIVE_OS_TIMELINE_MAX_TEXT_CHARS = 180;
+const CREATIVE_OS_TIMELINE_MAX_TTS_CHARS = 400;
+const CREATIVE_OS_TTS_PROVIDER_MAX_CHARS = 200;
+const CREATIVE_OS_MEDIA_ID_PATTERN = /^[a-zA-Z0-9_-]{8,120}$/;
+const CREATIVE_OS_TIMELINE_MAX_SEGMENTS = 24;
+const CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS = 0.6;
+const CREATIVE_OS_TRANSITION_DEFAULT_DURATION = 0.28;
+const CREATIVE_OS_TRANSITION_MIN_DURATION = 0.06;
+const CREATIVE_OS_TRANSITION_MAX_DURATION = 1.2;
+const CREATIVE_OS_TRANSITION_ALLOWLIST = new Set([
+  'fade',
+  'wipeleft',
+  'wiperight',
+  'slideleft',
+  'slideright',
+  'smoothleft',
+  'smoothright',
+  'circleopen',
+  'circleclose'
+]);
+const CREATIVE_OS_TIMELINE_MIN_FONT_SIZE = 16;
+const CREATIVE_OS_TIMELINE_MAX_FONT_SIZE = 120;
+const CREATIVE_OS_TTS_TIMEOUT_MS = 20000;
+const CREATIVE_OS_TTS_LANG_ALLOWLIST = new Set([
+  'en', 'en-US', 'en-GB',
+  'ar', 'ar-SA', 'ar-AE', 'ar-EG',
+  'es', 'es-ES', 'es-419',
+  'fr', 'de', 'it', 'pt', 'tr'
+]);
+const CREATIVE_OS_TTS_SOURCE_BASE_URL = 'https://translate.googleapis.com/translate_tts';
+const CREATIVE_OS_MUSIC_TRACK_DURATION_SECONDS = 30;
+const CREATIVE_OS_MUSIC_LIBRARY_WARMUP_RETRY_DELAY_MS = 60000;
+const CREATIVE_OS_PREWARM_MUSIC_LIBRARY = parseBool(process.env.CREATIVE_OS_PREWARM_MUSIC_LIBRARY ?? 'true', true);
+const CREATIVE_OS_MUSIC_LIBRARY_TRACKS = [
+  {
+    id: 'uplift_glow',
+    title: 'Uplift Glow',
+    mood: 'uplift',
+    bpm: 124,
+    base_frequency_hz: 228,
+    lead_frequency_hz: 684,
+    noise_color: 'pink',
+    base_volume: 0.22,
+    lead_volume: 0.08,
+    noise_volume: 0.02,
+    license: 'Royalty-free (generated in-app)'
+  },
+  {
+    id: 'editorial_luxe',
+    title: 'Editorial Luxe',
+    mood: 'editorial',
+    bpm: 98,
+    base_frequency_hz: 196,
+    lead_frequency_hz: 588,
+    noise_color: 'brown',
+    base_volume: 0.2,
+    lead_volume: 0.06,
+    noise_volume: 0.015,
+    license: 'Royalty-free (generated in-app)'
+  },
+  {
+    id: 'confident_pulse',
+    title: 'Confident Pulse',
+    mood: 'confident',
+    bpm: 132,
+    base_frequency_hz: 246,
+    lead_frequency_hz: 740,
+    noise_color: 'violet',
+    base_volume: 0.24,
+    lead_volume: 0.085,
+    noise_volume: 0.018,
+    license: 'Royalty-free (generated in-app)'
+  }
+];
+
+const creativeOsMusicLibraryWarmupState = {
+  status: 'idle',
+  startedAt: null,
+  completedAt: null,
+  error: null,
+  promise: null
+};
+
+const CREATIVE_OS_FORMAT_CONFIG = {
+  meta_feed_4_5: {
+    id: 'meta_feed_4_5',
+    platformKey: 'meta',
+    ratio: '4:5',
+    width: 1080,
+    height: 1350,
+    safeZone: { top: 0.14, bottom: 0.2, left: 0.06, right: 0.06 }
+  },
+  instagram_story_9_16: {
+    id: 'instagram_story_9_16',
+    platformKey: 'instagram',
+    ratio: '9:16',
+    width: 1080,
+    height: 1920,
+    safeZone: { top: 0.18, bottom: 0.24, left: 0.06, right: 0.06 }
+  },
+  tiktok_9_16: {
+    id: 'tiktok_9_16',
+    platformKey: 'tiktok',
+    ratio: '9:16',
+    width: 1080,
+    height: 1920,
+    safeZone: { top: 0.12, bottom: 0.26, left: 0.06, right: 0.11 }
+  },
+  square_1_1: {
+    id: 'square_1_1',
+    platformKey: 'square',
+    ratio: '1:1',
+    width: 1080,
+    height: 1080,
+    safeZone: { top: 0.1, bottom: 0.1, left: 0.08, right: 0.08 }
+  },
+  youtube_16_9: {
+    id: 'youtube_16_9',
+    platformKey: 'youtube',
+    ratio: '16:9',
+    width: 1920,
+    height: 1080,
+    safeZone: { top: 0.1, bottom: 0.12, left: 0.08, right: 0.08 }
+  }
+};
+
+const CREATIVE_OS_SCENE_PRESETS = {
+  studio_soft: {
+    id: 'studio_soft',
+    name: 'Studio Soft',
+    bgStart: '#f0fdfa',
+    bgEnd: '#dbeafe',
+    panelTint: 'rgba(255,255,255,0.66)',
+    orbA: '#99f6e4',
+    orbB: '#bfdbfe',
+    floor: 'rgba(15, 23, 42, 0.18)'
+  },
+  lifestyle_warm: {
+    id: 'lifestyle_warm',
+    name: 'Lifestyle Warm',
+    bgStart: '#fffbeb',
+    bgEnd: '#fee2e2',
+    panelTint: 'rgba(255,255,255,0.62)',
+    orbA: '#fcd34d',
+    orbB: '#fca5a5',
+    floor: 'rgba(120, 53, 15, 0.2)'
+  },
+  editorial_luxe: {
+    id: 'editorial_luxe',
+    name: 'Editorial Luxe',
+    bgStart: '#0f172a',
+    bgEnd: '#1e293b',
+    panelTint: 'rgba(255,255,255,0.08)',
+    orbA: '#22d3ee',
+    orbB: '#a78bfa',
+    floor: 'rgba(255, 255, 255, 0.16)'
+  }
+};
+
+const CREATIVE_OS_BLOCKED_HOSTNAMES = new Set([
+  'localhost',
+  '0.0.0.0',
+  '127.0.0.1',
+  '::1'
+]);
+
+const CREATIVE_OS_BLOCKED_HOST_SUFFIXES = [
+  '.local',
+  '.internal',
+  '.localhost'
+];
+
+function isCreativeOsBlockedHostname(hostname) {
+  const normalized = String(hostname || '').trim().toLowerCase();
+  if (!normalized) return true;
+  if (CREATIVE_OS_BLOCKED_HOSTNAMES.has(normalized)) return true;
+  return CREATIVE_OS_BLOCKED_HOST_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+function ipv4ToLong(ip) {
+  const parts = String(ip || '')
+    .split('.')
+    .map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return null;
+  }
+  return ((parts[0] << 24) >>> 0) + ((parts[1] << 16) >>> 0) + ((parts[2] << 8) >>> 0) + (parts[3] >>> 0);
+}
+
+function isPrivateIpv4(ip) {
+  const long = ipv4ToLong(ip);
+  if (long === null) return true;
+
+  const inRange = (start, end) => long >= start && long <= end;
+  return (
+    inRange(ipv4ToLong('10.0.0.0'), ipv4ToLong('10.255.255.255'))
+    || inRange(ipv4ToLong('127.0.0.0'), ipv4ToLong('127.255.255.255'))
+    || inRange(ipv4ToLong('169.254.0.0'), ipv4ToLong('169.254.255.255'))
+    || inRange(ipv4ToLong('172.16.0.0'), ipv4ToLong('172.31.255.255'))
+    || inRange(ipv4ToLong('192.168.0.0'), ipv4ToLong('192.168.255.255'))
+    || inRange(ipv4ToLong('0.0.0.0'), ipv4ToLong('0.255.255.255'))
+  );
+}
+
+function isPrivateIpv6(ip) {
+  const normalized = String(ip || '').trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized === '::1') return true;
+  if (normalized.startsWith('fe80:')) return true;
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+  if (normalized.startsWith('::ffff:')) {
+    const maybeV4 = normalized.replace('::ffff:', '');
+    if (net.isIP(maybeV4) === 4) {
+      return isPrivateIpv4(maybeV4);
+    }
+  }
+  return false;
+}
+
+function isPrivateIpAddress(ip) {
+  const version = net.isIP(String(ip || '').trim());
+  if (version === 4) return isPrivateIpv4(ip);
+  if (version === 6) return isPrivateIpv6(ip);
+  return true;
+}
+
+async function assertCreativeOsPublicHost(hostname) {
+  if (isCreativeOsBlockedHostname(hostname)) {
+    throw new Error('Blocked hostname for security reasons.');
+  }
+
+  const lookupResults = await dns.lookup(hostname, { all: true, verbatim: true });
+  if (!Array.isArray(lookupResults) || lookupResults.length === 0) {
+    throw new Error('Could not resolve hostname.');
+  }
+
+  for (const result of lookupResults) {
+    if (isPrivateIpAddress(result.address)) {
+      throw new Error('Target host resolves to a private address.');
+    }
+  }
+}
+
+async function validateCreativeOsImportUrl(rawUrl) {
+  const candidate = String(rawUrl || '').trim();
+  if (!candidate) {
+    const err = new Error('Product URL is required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const prefixed = candidate.includes('://') ? candidate : `https://${candidate}`;
+  let parsed;
+  try {
+    parsed = new URL(prefixed);
+  } catch (error) {
+    const err = new Error('Invalid product URL.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!CREATIVE_OS_IMPORT_ALLOWED_PROTOCOLS.has(parsed.protocol)) {
+    const err = new Error('Only HTTP/HTTPS URLs are allowed.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (parsed.username || parsed.password) {
+    const err = new Error('Credentials in URL are not allowed.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  await assertCreativeOsPublicHost(parsed.hostname);
+  return parsed.toString();
+}
+
+function sanitizeCreativeOsText(value, maxLength, fallback = '') {
+  const normalized = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return fallback;
+  return normalized.slice(0, maxLength);
+}
+
+function toCreativeOsSlug(value, fallback = 'asset') {
+  const slug = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || fallback;
+}
+
+function escapeXml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function extractMetaValue(html, keys = []) {
+  const haystack = String(html || '');
+  for (const key of keys) {
+    const escapedKey = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(
+      `<meta[^>]+(?:(?:name|property)=["']${escapedKey}["'][^>]+content=["']([^"']+)["'])|(?:content=["']([^"']+)["'][^>]+(?:name|property)=["']${escapedKey}["'])`,
+      'i'
+    );
+    const match = haystack.match(regex);
+    if (match) return (match[1] || match[2]).trim();
+  }
+  return null;
+}
+
+function extractHtmlTitle(html) {
+  const match = String(html || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!match?.[1]) return null;
+  return match[1].replace(/\s+/g, ' ').trim();
+}
+
+function parseJsonLdBlocks(html) {
+  const blocks = [];
+  const regex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = regex.exec(String(html || ''))) !== null) {
+    const raw = String(match[1] || '').trim();
+    if (!raw) continue;
+    try {
+      blocks.push(JSON.parse(raw));
+    } catch (error) {
+      // Ignore malformed JSON-LD blocks.
+    }
+  }
+  return blocks;
+}
+
+function flattenJsonLdNodes(node, out = []) {
+  if (!node) return out;
+  if (Array.isArray(node)) {
+    node.forEach((item) => flattenJsonLdNodes(item, out));
+    return out;
+  }
+  if (typeof node === 'object') {
+    out.push(node);
+    if (Array.isArray(node['@graph'])) {
+      flattenJsonLdNodes(node['@graph'], out);
+    }
+  }
+  return out;
+}
+
+function readProductFromJsonLd(html) {
+  const blocks = parseJsonLdBlocks(html);
+  const nodes = flattenJsonLdNodes(blocks, []);
+  const productNode = nodes.find((item) => {
+    const type = item?.['@type'];
+    if (Array.isArray(type)) {
+      return type.some((entry) => String(entry).toLowerCase() === 'product');
+    }
+    return String(type || '').toLowerCase() === 'product';
+  });
+
+  if (!productNode) return null;
+
+  const rawImage = productNode.image;
+  const image = Array.isArray(rawImage) ? rawImage[0] : rawImage;
+  const rawOffers = Array.isArray(productNode.offers) ? productNode.offers[0] : productNode.offers;
+
+  return {
+    title: sanitizeCreativeOsText(productNode.name, CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH),
+    description: sanitizeCreativeOsText(productNode.description, CREATIVE_OS_MAX_DESCRIPTION_LENGTH),
+    image_url: typeof image === 'string' ? image : null,
+    price: rawOffers?.price ?? null,
+    currency: rawOffers?.priceCurrency || null,
+    url: productNode.url || rawOffers?.url || null
+  };
+}
+
+function parsePriceCandidate(rawValue) {
+  if (rawValue === null || rawValue === undefined) return null;
+  const cleaned = String(rawValue).replace(/[^0-9.,]/g, '').replace(/,/g, '');
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Number(parsed.toFixed(2));
+}
+
+function parseCurrencyCandidate(rawValue) {
+  const cleaned = String(rawValue || '').trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(cleaned)) return cleaned;
+  return null;
+}
+
+function extractPriceFromHtml(html, jsonLdProduct) {
+  const candidates = [
+    jsonLdProduct?.price,
+    extractMetaValue(html, ['product:price:amount', 'og:price:amount']),
+    String(html || '').match(/"price"\s*:\s*"([^"]+)"/i)?.[1],
+    String(html || '').match(/"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i)?.[1]
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = parsePriceCandidate(candidate);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function extractCurrencyFromHtml(html, jsonLdProduct) {
+  const candidates = [
+    jsonLdProduct?.currency,
+    extractMetaValue(html, ['product:price:currency', 'og:price:currency']),
+    String(html || '').match(/"priceCurrency"\s*:\s*"([^"]+)"/i)?.[1]
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = parseCurrencyCandidate(candidate);
+    if (parsed) return parsed;
+  }
+  return CREATIVE_OS_DEFAULT_CURRENCY;
+}
+
+function splitTextLines(text, maxCharsPerLine, maxLines) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > maxCharsPerLine && line) {
+      lines.push(line);
+      line = word;
+      if (lines.length >= maxLines) break;
+    } else {
+      line = next;
+    }
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  return lines.slice(0, maxLines);
+}
+
+function parseColorWithFallback(rawColor, fallback) {
+  const parsed = parseHexColor(rawColor || fallback);
+  return parsed?.hex || fallback;
+}
+
+function srgbToLinear(value) {
+  const normalized = value / 255;
+  if (normalized <= 0.04045) return normalized / 12.92;
+  return ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance(hexColor) {
+  const parsed = parseHexColor(hexColor);
+  if (!parsed) return 0;
+  const r = srgbToLinear(parsed.r);
+  const g = srgbToLinear(parsed.g);
+  const b = srgbToLinear(parsed.b);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(hexA, hexB) {
+  const lumA = relativeLuminance(hexA);
+  const lumB = relativeLuminance(hexB);
+  const light = Math.max(lumA, lumB);
+  const dark = Math.min(lumA, lumB);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+function bestTextColorForBackground(backgroundHex) {
+  const whiteRatio = contrastRatio(backgroundHex, '#ffffff');
+  const darkRatio = contrastRatio(backgroundHex, '#0f172a');
+  return whiteRatio >= darkRatio ? '#ffffff' : '#0f172a';
+}
+
+function inferCollectionFromSignals({ unitsSold, lastSeenIso }) {
+  const nowMs = Date.now();
+  const lastSeenMs = lastSeenIso ? new Date(lastSeenIso).getTime() : 0;
+  const recentWindowMs = CREATIVE_OS_RECENT_PRODUCT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  if (lastSeenMs && Number.isFinite(lastSeenMs) && nowMs - lastSeenMs <= recentWindowMs) {
+    return 'new_arrivals';
+  }
+  if (Number(unitsSold || 0) >= CREATIVE_OS_BEST_SELLER_UNITS_THRESHOLD) {
+    return 'best_sellers';
+  }
+  return 'evergreen';
+}
+
+async function ensureCreativeOsExportDir() {
+  await fs.promises.mkdir(CREATIVE_OS_EXPORT_TMP_DIR, { recursive: true });
+}
+
+function getCreativeOsExportPath(assetId) {
+  return path.join(CREATIVE_OS_EXPORT_TMP_DIR, `${assetId}.png`);
+}
+
+async function ensureCreativeOsVideoDirs() {
+  await fs.promises.mkdir(CREATIVE_OS_VIDEO_UPLOADS_DIR, { recursive: true });
+  await fs.promises.mkdir(CREATIVE_OS_AUDIO_UPLOADS_DIR, { recursive: true });
+  await fs.promises.mkdir(CREATIVE_OS_VIDEO_OUTPUTS_DIR, { recursive: true });
+}
+
+function isCreativeOsMediaId(value) {
+  return CREATIVE_OS_MEDIA_ID_PATTERN.test(String(value || '').trim());
+}
+
+function sanitizeCreativeOsMediaFilename(filename, fallback = 'media.bin') {
+  return sanitizeDownloadFilename(filename, fallback);
+}
+
+function getCreativeOsVideoUploadPath(mediaId, ext = 'mp4') {
+  return path.join(CREATIVE_OS_VIDEO_UPLOADS_DIR, `${mediaId}.${ext}`);
+}
+
+function getCreativeOsAudioUploadPath(audioId, ext = 'mp3') {
+  return path.join(CREATIVE_OS_AUDIO_UPLOADS_DIR, `${audioId}.${ext}`);
+}
+
+function getCreativeOsVideoOutputPath(outputId, ext = 'mp4') {
+  return path.join(CREATIVE_OS_VIDEO_OUTPUTS_DIR, `${outputId}.${ext}`);
+}
+
+function resolveCreativeOsAudioMime(ext) {
+  const normalized = String(ext || '').trim().toLowerCase();
+  if (normalized === 'wav') return 'audio/wav';
+  if (normalized === 'aac') return 'audio/aac';
+  if (normalized === 'ogg') return 'audio/ogg';
+  if (normalized === 'webm') return 'audio/webm';
+  return 'audio/mpeg';
+}
+
+async function ffprobeHasAudioStream(videoPath) {
+  const { stdout } = await execFileAsync('ffprobe', [
+    '-v', 'error',
+    '-select_streams', 'a:0',
+    '-show_entries', 'stream=index',
+    '-of', 'default=noprint_wrappers=1:nokey=1',
+    videoPath
+  ]);
+  const marker = String(stdout || '').trim();
+  return marker !== '';
+}
+
+function parseCreativeOsAudioExtension(mimeType, originalName, fallback = 'mp3') {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('wav')) return 'wav';
+  if (mime.includes('aac')) return 'aac';
+  if (mime.includes('ogg')) return 'ogg';
+  if (mime.includes('webm')) return 'webm';
+  if (mime.includes('mpeg') || mime.includes('mp3')) return 'mp3';
+  const ext = String(path.extname(originalName || '') || '').replace('.', '').toLowerCase();
+  if (/^[a-z0-9]{2,5}$/.test(ext)) return ext;
+  return fallback;
+}
+
+function parseCreativeOsVideoExtension(mimeType, originalName, fallback = 'mp4') {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('quicktime')) return 'mov';
+  if (mime.includes('webm')) return 'webm';
+  if (mime.includes('mp4')) return 'mp4';
+  const ext = String(path.extname(originalName || '') || '').replace('.', '').toLowerCase();
+  if (/^[a-z0-9]{2,5}$/.test(ext)) return ext;
+  return fallback;
+}
+
+function parseCreativeOsTtsLanguage(rawValue) {
+  const candidate = sanitizeCreativeOsText(rawValue, 16, 'en').trim();
+  if (CREATIVE_OS_TTS_LANG_ALLOWLIST.has(candidate)) return candidate;
+  const shortLang = candidate.split('-')[0];
+  if (CREATIVE_OS_TTS_LANG_ALLOWLIST.has(shortLang)) return shortLang;
+  return 'en';
+}
+
+function splitCreativeOsTtsChunks(text, maxChunkChars = CREATIVE_OS_TTS_PROVIDER_MAX_CHARS) {
+  const normalized = sanitizeCreativeOsText(text, CREATIVE_OS_TIMELINE_MAX_TTS_CHARS, '');
+  if (!normalized) return [];
+
+  const words = normalized.split(' ').filter(Boolean);
+  const chunks = [];
+  let current = '';
+
+  for (const word of words) {
+    if (word.length > maxChunkChars) {
+      if (current) {
+        chunks.push(current);
+        current = '';
+      }
+      for (let cursor = 0; cursor < word.length; cursor += maxChunkChars) {
+        chunks.push(word.slice(cursor, cursor + maxChunkChars));
+      }
+      continue;
+    }
+
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxChunkChars) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) chunks.push(current);
+    current = word;
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+async function synthesizeCreativeOsTtsChunks({ language, textChunks }) {
+  const chunks = Array.isArray(textChunks) ? textChunks.filter(Boolean) : [];
+  if (!chunks.length) {
+    const err = new Error('TTS text is empty after chunking.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const audioParts = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+    const response = await axios.get(CREATIVE_OS_TTS_SOURCE_BASE_URL, {
+      responseType: 'arraybuffer',
+      timeout: CREATIVE_OS_TTS_TIMEOUT_MS,
+      params: {
+        ie: 'UTF-8',
+        client: 'tw-ob',
+        tl: language,
+        q: chunk,
+        idx: index,
+        total: chunks.length,
+        textlen: chunk.length
+      },
+      headers: {
+        'User-Agent': 'VironaCreativeOS/1.0'
+      }
+    });
+
+    const audioBuffer = Buffer.from(response.data || []);
+    if (!audioBuffer.length) {
+      const err = new Error(`TTS provider returned empty audio for chunk ${index + 1}/${chunks.length}.`);
+      err.statusCode = 502;
+      throw err;
+    }
+    audioParts.push(audioBuffer);
+  }
+
+  return audioParts.length === 1 ? audioParts[0] : Buffer.concat(audioParts);
+}
+
+function resolveCreativeOsTransitionType(rawValue) {
+  const normalized = sanitizeCreativeOsText(rawValue, 32, 'fade').toLowerCase();
+  return CREATIVE_OS_TRANSITION_ALLOWLIST.has(normalized) ? normalized : 'fade';
+}
+
+async function ensureCreativeOsMusicLibraryTracks() {
+  await ensureCreativeOsVideoDirs();
+  const fadeOutStart = Math.max(0.1, CREATIVE_OS_MUSIC_TRACK_DURATION_SECONDS - 0.8);
+
+  for (const track of CREATIVE_OS_MUSIC_LIBRARY_TRACKS) {
+    const audioId = `lib_${track.id}`;
+    const outputPath = getCreativeOsAudioUploadPath(audioId, 'mp3');
+    if (fs.existsSync(outputPath)) continue;
+
+    const baseFrequency = clampNumber(track.base_frequency_hz, 120, 420);
+    const leadFrequency = clampNumber(track.lead_frequency_hz, 360, 1200);
+    const baseVolume = clampNumber(track.base_volume, 0.08, 0.4);
+    const leadVolume = clampNumber(track.lead_volume, 0.02, 0.2);
+    const noiseVolume = clampNumber(track.noise_volume, 0.005, 0.05);
+    const noiseColor = sanitizeCreativeOsText(track.noise_color, 16, 'pink').toLowerCase();
+
+    const filterComplex = [
+      `[0:a]volume=${baseVolume.toFixed(3)},lowpass=f=1500[base]`,
+      `[1:a]volume=${leadVolume.toFixed(3)},highpass=f=520,aecho=0.8:0.6:85:0.22[lead]`,
+      `[2:a]volume=${noiseVolume.toFixed(3)},highpass=f=2200[texture]`,
+      `[base][lead][texture]amix=inputs=3:normalize=0,` +
+        `afade=t=in:st=0:d=0.4,` +
+        `afade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.8[out]`
+    ].join(';');
+
+    const ffmpegArgs = [
+      '-f', 'lavfi',
+      '-i', `sine=frequency=${baseFrequency.toFixed(2)}:sample_rate=44100:duration=${CREATIVE_OS_MUSIC_TRACK_DURATION_SECONDS}`,
+      '-f', 'lavfi',
+      '-i', `sine=frequency=${leadFrequency.toFixed(2)}:sample_rate=44100:duration=${CREATIVE_OS_MUSIC_TRACK_DURATION_SECONDS}`,
+      '-f', 'lavfi',
+      '-i', `anoisesrc=color=${noiseColor}:sample_rate=44100:duration=${CREATIVE_OS_MUSIC_TRACK_DURATION_SECONDS}`,
+      '-filter_complex', filterComplex,
+      '-map', '[out]',
+      '-c:a', 'libmp3lame',
+      '-b:a', '192k',
+      '-y',
+      outputPath
+    ];
+
+    try {
+      await execFileAsync('ffmpeg', ffmpegArgs);
+    } catch (error) {
+      console.warn('[creative-os/music/library] ffmpeg generation warning:', error?.message || error);
+      break;
+    }
+  }
+}
+
+function getCreativeOsMusicLibraryWarmupStatus() {
+  return {
+    status: creativeOsMusicLibraryWarmupState.status,
+    started_at: creativeOsMusicLibraryWarmupState.startedAt,
+    completed_at: creativeOsMusicLibraryWarmupState.completedAt,
+    error: creativeOsMusicLibraryWarmupState.error
+  };
+}
+
+function shouldRetryCreativeOsMusicWarmup() {
+  if (creativeOsMusicLibraryWarmupState.status !== 'error') return false;
+  const completedAtMs = creativeOsMusicLibraryWarmupState.completedAt
+    ? new Date(creativeOsMusicLibraryWarmupState.completedAt).getTime()
+    : 0;
+  if (!Number.isFinite(completedAtMs) || completedAtMs <= 0) return true;
+  return (Date.now() - completedAtMs) >= CREATIVE_OS_MUSIC_LIBRARY_WARMUP_RETRY_DELAY_MS;
+}
+
+function queueCreativeOsMusicLibraryWarmup({ force = false } = {}) {
+  if (creativeOsMusicLibraryWarmupState.promise) {
+    return creativeOsMusicLibraryWarmupState.promise;
+  }
+
+  if (!force) {
+    if (creativeOsMusicLibraryWarmupState.status === 'ready') {
+      return Promise.resolve(true);
+    }
+    if (creativeOsMusicLibraryWarmupState.status === 'error' && !shouldRetryCreativeOsMusicWarmup()) {
+      return Promise.resolve(false);
+    }
+  }
+
+  creativeOsMusicLibraryWarmupState.status = 'warming';
+  creativeOsMusicLibraryWarmupState.startedAt = new Date().toISOString();
+  creativeOsMusicLibraryWarmupState.error = null;
+
+  const warmupPromise = ensureCreativeOsMusicLibraryTracks()
+    .then(() => {
+      creativeOsMusicLibraryWarmupState.status = 'ready';
+      creativeOsMusicLibraryWarmupState.completedAt = new Date().toISOString();
+      creativeOsMusicLibraryWarmupState.error = null;
+      return true;
+    })
+    .catch((error) => {
+      creativeOsMusicLibraryWarmupState.status = 'error';
+      creativeOsMusicLibraryWarmupState.completedAt = new Date().toISOString();
+      creativeOsMusicLibraryWarmupState.error = error?.code === 'ENOENT'
+        ? 'ffmpeg/ffprobe not found on server. Install ffmpeg to build music library.'
+        : (error?.message || 'Music library warmup failed.');
+      console.warn('[creative-os/music/library] background warmup failed:', error?.message || error);
+      return false;
+    })
+    .finally(() => {
+      creativeOsMusicLibraryWarmupState.promise = null;
+    });
+
+  creativeOsMusicLibraryWarmupState.promise = warmupPromise;
+  return warmupPromise;
+}
+
+function primeCreativeOsBackgroundWarmups() {
+  if (!CREATIVE_OS_PREWARM_MUSIC_LIBRARY) return;
+  setTimeout(() => {
+    queueCreativeOsMusicLibraryWarmup().catch((error) => {
+      console.warn('[creative-os/music/library] warmup bootstrap error:', error?.message || error);
+    });
+  }, 0);
+}
+
+primeCreativeOsBackgroundWarmups();
+
+function buildCreativeOsTimelineTextExpression(text) {
+  return String(text || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\'")
+    .replace(/%/g, '\\%');
+}
+
+function buildCreativeOsTimelineFilter({
+  captions,
+  durationSeconds,
+  width,
+  height,
+  fontPath,
+  inputLabel = '[0:v]'
+}) {
+  const safeWidth = Math.max(1, Math.round(safeParseNumber(width, 1080)));
+  const safeHeight = Math.max(1, Math.round(safeParseNumber(height, 1920)));
+  const safeDuration = Math.max(0.1, safeParseNumber(durationSeconds, 30));
+  const filters = [];
+  let label = inputLabel;
+  let step = 0;
+
+  const defaultFontPath = fs.existsSync(fontPath || '')
+    ? fontPath
+    : (fs.existsSync(CREATIVE_OS_TIMELINE_FONT_PATH) ? CREATIVE_OS_TIMELINE_FONT_PATH : path.join(__dirname, '..', '..', 'Inter-Regular.ttf'));
+  const escapedFontPath = escapeDrawtextPath(defaultFontPath);
+
+  for (const caption of captions) {
+    const start = clampNumber(caption.start, 0, safeDuration);
+    const end = clampNumber(caption.end, start + 0.05, safeDuration);
+    const text = sanitizeCreativeOsText(caption.text, CREATIVE_OS_TIMELINE_MAX_TEXT_CHARS, '');
+    if (!text) continue;
+
+    const marginX = clampNumber(caption.margin_x ?? caption.marginX ?? 68, 8, Math.floor(safeWidth * 0.3));
+    const boxWidth = clampNumber(caption.width ?? Math.round(safeWidth - marginX * 2), 140, safeWidth - marginX);
+    const boxHeight = clampNumber(caption.height ?? Math.round(Math.max(74, safeHeight * 0.11)), 44, Math.max(52, safeHeight * 0.4));
+    const x = clampNumber(caption.x ?? Math.round((safeWidth - boxWidth) / 2), 0, Math.max(0, safeWidth - boxWidth));
+    const y = clampNumber(caption.y ?? Math.round(safeHeight - boxHeight - safeHeight * 0.13), 0, Math.max(0, safeHeight - boxHeight));
+    const fontSize = clampNumber(caption.font_size ?? caption.fontSize ?? Math.round(boxHeight * 0.32), CREATIVE_OS_TIMELINE_MIN_FONT_SIZE, CREATIVE_OS_TIMELINE_MAX_FONT_SIZE);
+
+    const textColor = parseHexColor(caption.text_color || caption.textColor)?.hex || '#ffffff';
+    const bgColor = parseHexColor(caption.bg_color || caption.bgColor)?.hex || '#111827';
+    const opacity = clampNumber(caption.opacity ?? 0.82, 0.25, 1);
+    const animation = sanitizeCreativeOsText(caption.animation, 32, 'fade_up').toLowerCase();
+    const fadeInSec = clampNumber(caption.fade_in ?? caption.fadeIn ?? 0.16, 0.05, 0.8);
+    const fadeOutSec = clampNumber(caption.fade_out ?? caption.fadeOut ?? 0.13, 0.05, 0.8);
+
+    const boxColorWithAlpha = `${bgColor}@${opacity.toFixed(2)}`;
+    const textExpr = buildCreativeOsTimelineTextExpression(text);
+
+    let alphaExpr = `if(lt(t\\,${(start + fadeInSec).toFixed(3)})\\,(t-${start.toFixed(3)})/${fadeInSec.toFixed(3)}\\,if(lt(t\\,${(end - fadeOutSec).toFixed(3)})\\,1\\,((${end.toFixed(3)}-t)/${fadeOutSec.toFixed(3)})))`;
+    if (animation === 'hard_cut') {
+      alphaExpr = '1';
+    }
+
+    let yExpr = `${y}+((${boxHeight}-text_h)/2)`;
+    if (animation === 'fade_up') {
+      yExpr = `${y}+((${boxHeight}-text_h)/2)+if(lt(t\\,${(start + fadeInSec).toFixed(3)})\\,${Math.round(boxHeight * 0.14)}*(1-((t-${start.toFixed(3)})/${fadeInSec.toFixed(3)}))\\,0)`;
+    }
+    if (animation === 'pop') {
+      const popWindow = clampNumber(caption.pop_window ?? 0.14, 0.05, 0.4);
+      alphaExpr = `if(lt(t\\,${(start + popWindow).toFixed(3)})\\,min(1\\,(t-${start.toFixed(3)})/${popWindow.toFixed(3)}*1.25)\\,if(lt(t\\,${(end - fadeOutSec).toFixed(3)})\\,1\\,((${end.toFixed(3)}-t)/${fadeOutSec.toFixed(3)})))`;
+    }
+
+    const enableExpr = `between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})`;
+
+    const drawboxOut = `[cosvb${step}]`;
+    filters.push(`${label}drawbox=x=${Math.round(x)}:y=${Math.round(y)}:w=${Math.round(boxWidth)}:h=${Math.round(boxHeight)}:color=${boxColorWithAlpha}:t=fill:enable='${enableExpr}'${drawboxOut}`);
+    label = drawboxOut;
+    step += 1;
+
+    const drawtextOut = `[cosvt${step}]`;
+    const drawtext = `drawtext=fontfile='${escapedFontPath}':text='${textExpr}':` +
+      `x=${Math.round(x)}+((${Math.round(boxWidth)}-text_w)/2):` +
+      `y=${yExpr}:fontsize=${Math.round(fontSize)}:fontcolor=${textColor}:alpha='${alphaExpr}':expansion=none:enable='${enableExpr}'`;
+    filters.push(`${label}${drawtext}${drawtextOut}`);
+    label = drawtextOut;
+    step += 1;
+  }
+
+  return {
+    filterComplex: filters.join(';'),
+    finalVideoLabel: label
+  };
+}
+
+function resolveCreativeOsFormatConfig(formatId) {
+  const normalized = String(formatId || '').trim();
+  return CREATIVE_OS_FORMAT_CONFIG[normalized] || CREATIVE_OS_FORMAT_CONFIG.meta_feed_4_5;
+}
+
+function resolveCreativeOsScenePreset(scenePresetId) {
+  const normalized = String(scenePresetId || '').trim().toLowerCase();
+  return CREATIVE_OS_SCENE_PRESETS[normalized] || CREATIVE_OS_SCENE_PRESETS[CREATIVE_OS_DEFAULT_SCENE_PRESET];
+}
+
+function buildCreativeOsAssetDownloadUrl({ assetId, fileName, store }) {
+  return withStoreParam(
+    `/api/creative-studio/creative-os/export/download?asset_id=${encodeURIComponent(assetId)}&filename=${encodeURIComponent(fileName)}`,
+    store
+  );
+}
+
+function buildCreativeOsSceneBackdropSvg({ formatConfig, preset, brandPrimary, brandAccent }) {
+  const width = formatConfig.width;
+  const height = formatConfig.height;
+  const safe = formatConfig.safeZone;
+  const safeTop = Math.round(height * safe.top);
+  const safeBottom = Math.round(height * safe.bottom);
+  const safeLeft = Math.round(width * safe.left);
+  const safeRight = Math.round(width * safe.right);
+  const orbSize = Math.round(Math.min(width, height) * 0.46);
+  const panelHeight = Math.round(height * 0.36);
+  const panelY = height - safeBottom - panelHeight;
+  const panelWidth = width - safeLeft - safeRight;
+  const panelX = safeLeft;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <defs>
+    <radialGradient id="orbA" cx="0" cy="0" r="1">
+      <stop offset="0%" stop-color="${preset.orbA}" stop-opacity="0.44"/>
+      <stop offset="100%" stop-color="${preset.orbA}" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orbB" cx="0" cy="0" r="1">
+      <stop offset="0%" stop-color="${preset.orbB}" stop-opacity="0.36"/>
+      <stop offset="100%" stop-color="${preset.orbB}" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="${preset.bgStart}" />
+      <stop offset="55%" stop-color="${brandPrimary}" />
+      <stop offset="100%" stop-color="${brandAccent}" />
+    </linearGradient>
+    <linearGradient id="panel" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="${preset.panelTint}" />
+      <stop offset="100%" stop-color="rgba(255,255,255,0.1)" />
+    </linearGradient>
+  </defs>
+  <rect width="${width}" height="${height}" fill="url(#bg)" />
+  <circle cx="${Math.round(width * 0.18)}" cy="${Math.round(height * 0.17)}" r="${orbSize}" fill="url(#orbA)" />
+  <circle cx="${Math.round(width * 0.87)}" cy="${Math.round(height * 0.12)}" r="${Math.round(orbSize * 0.74)}" fill="url(#orbB)" />
+  <rect x="${panelX}" y="${panelY}" width="${panelWidth}" height="${panelHeight}" rx="${Math.round(panelHeight * 0.14)}" fill="url(#panel)" />
+  <ellipse cx="${Math.round(width / 2)}" cy="${Math.round(height - safeBottom - (height * 0.02))}" rx="${Math.round(width * 0.34)}" ry="${Math.round(height * 0.03)}" fill="${preset.floor}" />
+  <rect x="${safeLeft}" y="${safeTop}" width="${panelWidth}" height="${Math.max(120, panelY - safeTop - 16)}" rx="${Math.round(Math.min(width, height) * 0.03)}" fill="rgba(255,255,255,0.05)" />
+</svg>`;
+}
+
+async function renderCreativeOsScenePlacement({
+  sourceBuffer,
+  formatConfig,
+  scenePresetId,
+  brandPrimary,
+  brandAccent
+}) {
+  const preset = resolveCreativeOsScenePreset(scenePresetId);
+  const width = formatConfig.width;
+  const height = formatConfig.height;
+  const safeBottom = Math.round(height * (formatConfig.safeZone?.bottom || 0.18));
+  const maxProductWidth = Math.round(width * 0.78);
+  const maxProductHeight = Math.round(height * 0.66);
+
+  const productBuffer = await sharp(sourceBuffer)
+    .rotate()
+    .png()
+    .resize(maxProductWidth, maxProductHeight, { fit: 'contain', withoutEnlargement: true })
+    .toBuffer();
+
+  const productMeta = await sharp(productBuffer).metadata();
+  const productWidth = productMeta.width || maxProductWidth;
+  const productHeight = productMeta.height || maxProductHeight;
+  const productX = Math.round((width - productWidth) / 2);
+  const productY = Math.max(
+    Math.round(height * 0.14),
+    Math.round(height - safeBottom - productHeight - (height * 0.04))
+  );
+
+  const shadowWidth = Math.max(140, Math.round(productWidth * 0.72));
+  const shadowHeight = Math.max(32, Math.round(productHeight * 0.1));
+  const shadowX = Math.round((width - shadowWidth) / 2);
+  const shadowY = Math.min(
+    height - safeBottom - Math.round(shadowHeight * 0.18),
+    productY + productHeight - Math.round(shadowHeight * 0.4)
+  );
+
+  const shadowSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  <defs>
+    <filter id="shadow-blur" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="${Math.max(6, Math.round(shadowHeight * 0.16))}" />
+    </filter>
+  </defs>
+  <ellipse cx="${shadowX + Math.round(shadowWidth / 2)}" cy="${shadowY}" rx="${Math.round(shadowWidth / 2)}" ry="${Math.round(shadowHeight / 2)}" fill="rgba(15,23,42,0.34)" filter="url(#shadow-blur)" />
+</svg>`;
+
+  const backdrop = Buffer.from(buildCreativeOsSceneBackdropSvg({ formatConfig, preset, brandPrimary, brandAccent }));
+  const composedBuffer = await sharp(backdrop)
+    .composite([
+      { input: Buffer.from(shadowSvg), top: 0, left: 0 },
+      { input: productBuffer, top: productY, left: productX }
+    ])
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+
+  return {
+    scene: preset,
+    buffer: composedBuffer,
+    placement: {
+      x: productX,
+      y: productY,
+      width: productWidth,
+      height: productHeight
+    }
+  };
+}
+
+function parseCreativeOsBeatMarkers(rawValue, maxDuration) {
+  const beatInput = Array.isArray(rawValue) ? rawValue : [];
+  const beats = beatInput
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= maxDuration)
+    .map((value) => Number(value.toFixed(3)));
+
+  const unique = [];
+  const seen = new Set();
+  for (const beat of beats) {
+    const key = beat.toFixed(3);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(beat);
+    if (unique.length >= CREATIVE_OS_MAX_BEAT_MARKERS) break;
+  }
+  return unique.sort((a, b) => a - b);
+}
+
+function snapCaptionBoundaryToBeat(boundary, beatMarkers, minValue, maxValue) {
+  if (!beatMarkers.length) return boundary;
+
+  let best = boundary;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  for (const beat of beatMarkers) {
+    if (beat < minValue || beat > maxValue) continue;
+    const delta = Math.abs(beat - boundary);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = beat;
+    }
+  }
+
+  if (!Number.isFinite(bestDelta) || bestDelta > CREATIVE_OS_CAPTION_SNAP_TOLERANCE_SECONDS) {
+    return boundary;
+  }
+  return best;
+}
+
+function buildCreativeOsCaptionPlan({
+  scriptText,
+  durationSeconds,
+  maxWordsPerSegment,
+  beatMarkers
+}) {
+  const normalizedScript = String(scriptText || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, CREATIVE_OS_MAX_CAPTION_PLAN_SCRIPT_LENGTH);
+
+  if (!normalizedScript) return [];
+
+  const words = normalizedScript.split(' ').filter(Boolean);
+  const segmentWordLimit = clampNumber(
+    maxWordsPerSegment ?? 5,
+    CREATIVE_OS_MIN_CAPTION_WORDS_PER_SEGMENT,
+    CREATIVE_OS_MAX_CAPTION_WORDS_PER_SEGMENT
+  );
+
+  const chunks = [];
+  for (let idx = 0; idx < words.length; idx += segmentWordLimit) {
+    chunks.push(words.slice(idx, idx + segmentWordLimit).join(' '));
+  }
+
+  const safeDuration = clampNumber(durationSeconds, 3, 180);
+  const boundaries = [0];
+  for (let idx = 1; idx < chunks.length; idx += 1) {
+    const nominalBoundary = (idx / chunks.length) * safeDuration;
+    const minBoundary = boundaries[idx - 1] + CREATIVE_OS_MIN_CAPTION_SEGMENT_SECONDS;
+    const maxBoundary = Math.max(minBoundary, safeDuration - CREATIVE_OS_MIN_CAPTION_SEGMENT_SECONDS);
+    const snapped = snapCaptionBoundaryToBeat(nominalBoundary, beatMarkers, minBoundary, maxBoundary);
+    boundaries.push(Math.min(maxBoundary, Math.max(minBoundary, snapped)));
+  }
+  boundaries.push(safeDuration);
+
+  for (let idx = 1; idx < boundaries.length; idx += 1) {
+    if (boundaries[idx] <= boundaries[idx - 1]) {
+      boundaries[idx] = Math.min(
+        safeDuration,
+        boundaries[idx - 1] + CREATIVE_OS_MIN_CAPTION_SEGMENT_SECONDS
+      );
+    }
+  }
+  boundaries[boundaries.length - 1] = safeDuration;
+
+  return chunks.map((text, idx) => {
+    const start = Number(boundaries[idx].toFixed(3));
+    const end = Number(Math.max(start + CREATIVE_OS_MIN_CAPTION_SEGMENT_SECONDS, boundaries[idx + 1]).toFixed(3));
+    return {
+      id: idx + 1,
+      start,
+      end: Number(Math.min(safeDuration, end).toFixed(3)),
+      text,
+      words: text.split(' ').length
+    };
+  });
+}
+
+function buildCreativeOsSvgAsset({
+  formatConfig,
+  productName,
+  productDescription,
+  caption,
+  priceLabel,
+  templateName,
+  brandPrimary,
+  brandAccent
+}) {
+  const width = formatConfig.width;
+  const height = formatConfig.height;
+  const safe = formatConfig.safeZone;
+
+  const safeTop = Math.round(height * safe.top);
+  const safeBottom = Math.round(height * safe.bottom);
+  const safeLeft = Math.round(width * safe.left);
+  const safeRight = Math.round(width * safe.right);
+
+  const contentWidth = width - safeLeft - safeRight;
+  const panelHeight = Math.round(height * 0.28);
+  const panelY = Math.round(height - safeBottom - panelHeight);
+  const headerY = safeTop + Math.round(height * 0.05);
+  const headlineFontSize = Math.max(40, Math.round(Math.min(width, height) * 0.06));
+  const captionFontSize = Math.max(24, Math.round(Math.min(width, height) * 0.028));
+
+  const headlineLines = splitTextLines(productName, 26, 2);
+  const captionLines = splitTextLines(caption || productDescription, 50, 3);
+  const accentTextColor = bestTextColorForBackground(brandAccent);
+
+  const headlineSvg = headlineLines.map((line, index) => (
+    `<tspan x="${safeLeft}" y="${headerY + (index * (headlineFontSize + 10))}">${escapeXml(line)}</tspan>`
+  )).join('');
+
+  const captionStartY = panelY + Math.round(panelHeight * 0.35);
+  const captionSvg = captionLines.map((line, index) => (
+    `<tspan x="${safeLeft + 24}" y="${captionStartY + (index * (captionFontSize + 10))}">${escapeXml(line)}</tspan>`
+  )).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="${brandPrimary}" />
+      <stop offset="100%" stop-color="${brandAccent}" />
+    </linearGradient>
+    <linearGradient id="panel" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="rgba(15, 23, 42, 0.62)" />
+      <stop offset="100%" stop-color="rgba(15, 23, 42, 0.34)" />
+    </linearGradient>
+  </defs>
+  <rect width="${width}" height="${height}" fill="url(#bg)" />
+  <rect x="${safeLeft}" y="${safeTop}" width="${contentWidth}" height="${Math.max(100, panelY - safeTop - 24)}" fill="rgba(255,255,255,0.08)" rx="28" />
+  <rect x="${safeLeft}" y="${panelY}" width="${contentWidth}" height="${panelHeight}" fill="url(#panel)" rx="24" />
+  <text fill="#ffffff" font-size="${headlineFontSize}" font-family="Inter, Arial, sans-serif" font-weight="700">
+    ${headlineSvg}
+  </text>
+  <rect x="${safeLeft + 24}" y="${panelY + 24}" width="${Math.max(220, Math.round(contentWidth * 0.36))}" height="${Math.max(54, Math.round(panelHeight * 0.26))}" rx="16" fill="${brandAccent}" />
+  <text x="${safeLeft + 40}" y="${panelY + 60}" fill="${accentTextColor}" font-size="${Math.max(30, Math.round(captionFontSize * 1.2))}" font-family="Inter, Arial, sans-serif" font-weight="700">${escapeXml(priceLabel)}</text>
+  <text fill="#ffffff" font-size="${captionFontSize}" font-family="Inter, Arial, sans-serif" font-weight="500">
+    ${captionSvg}
+  </text>
+  <text x="${safeLeft + 24}" y="${panelY + panelHeight - 20}" fill="rgba(255,255,255,0.86)" font-size="${Math.max(18, Math.round(captionFontSize * 0.76))}" font-family="Inter, Arial, sans-serif" font-weight="600">${escapeXml(templateName)}</text>
+</svg>`;
+}
+
+function buildCreativeOsProductRecord({
+  key,
+  productId,
+  title,
+  imageUrl,
+  avgPrice,
+  unitsSold,
+  lastSeen,
+  currency
+}) {
+  const normalizedName = sanitizeCreativeOsText(title, CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH, 'Product');
+  const resolvedCollection = inferCollectionFromSignals({ unitsSold, lastSeenIso: lastSeen });
+  const resolvedPrice = Number.isFinite(Number(avgPrice)) && Number(avgPrice) > 0
+    ? Number(Number(avgPrice).toFixed(2))
+    : null;
+
+  return {
+    id: productId || key || toCreativeOsSlug(normalizedName, 'product'),
+    product_id: productId || null,
+    name: normalizedName,
+    price: resolvedPrice,
+    currency: parseCurrencyCandidate(currency) || CREATIVE_OS_DEFAULT_CURRENCY,
+    collection: resolvedCollection,
+    angles: 4,
+    variants: 3,
+    units_sold: Number(unitsSold || 0),
+    image_url: imageUrl || null,
+    blurb: 'Synced from connected catalog data.',
+    source: 'catalog',
+    last_seen: lastSeen || null
+  };
+}
+
+function buildCreativeOsPaletteFromRawImage(rawBuffer, channels) {
+  const bucketCounts = new Map();
+  const stride = Math.max(3, channels || 3);
+
+  for (let i = 0; i < rawBuffer.length; i += stride) {
+    const r = rawBuffer[i];
+    const g = rawBuffer[i + 1];
+    const b = rawBuffer[i + 2];
+    if (![r, g, b].every((value) => Number.isFinite(value))) continue;
+
+    const rb = Math.floor(r / CREATIVE_OS_QUANTIZATION_STEP);
+    const gb = Math.floor(g / CREATIVE_OS_QUANTIZATION_STEP);
+    const bb = Math.floor(b / CREATIVE_OS_QUANTIZATION_STEP);
+    const key = `${rb},${gb},${bb}`;
+    bucketCounts.set(key, (bucketCounts.get(key) || 0) + 1);
+  }
+
+  const sortedBuckets = Array.from(bucketCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, CREATIVE_OS_MAX_PALETTE_COLORS);
+
+  return sortedBuckets.map(([key, hits]) => {
+    const [rb, gb, bb] = key.split(',').map((part) => Number(part));
+    const r = Math.min(255, rb * CREATIVE_OS_QUANTIZATION_STEP + Math.floor(CREATIVE_OS_QUANTIZATION_STEP / 2));
+    const g = Math.min(255, gb * CREATIVE_OS_QUANTIZATION_STEP + Math.floor(CREATIVE_OS_QUANTIZATION_STEP / 2));
+    const b = Math.min(255, bb * CREATIVE_OS_QUANTIZATION_STEP + Math.floor(CREATIVE_OS_QUANTIZATION_STEP / 2));
+    const hex = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+    return {
+      hex,
+      hits,
+      recommendedTextColor: bestTextColorForBackground(hex)
+    };
+  });
 }
 
 async function ffprobeVideoInfo(videoPath) {
@@ -616,8 +1872,9 @@ router.post('/gemini', async (req, res) => {
       return res.status(400).json({ error: 'Payload is required.' });
     }
 
-    const requestedModel = model || DEFAULT_GEMINI_TEXT_MODEL;
-    const requestGemini = async (modelName) => {
+    const requestedModel = sanitizeCreativeOsText(model, 128, DEFAULT_GEMINI_TEXT_MODEL);
+    const requestGemini = async (targetModel) => {
+      const modelName = sanitizeCreativeOsText(targetModel, 128, DEFAULT_GEMINI_TEXT_MODEL);
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`;
       return axios.post(url, payload, {
         headers: { 'Content-Type': 'application/json' }
@@ -626,31 +1883,50 @@ router.post('/gemini', async (req, res) => {
 
     try {
       const response = await requestGemini(requestedModel);
-      return res.json(response.data);
+      return res.json({
+        ...response.data,
+        model: requestedModel
+      });
     } catch (primaryError) {
-      const upstreamStatus = primaryError?.response?.status;
-      const upstreamMessage = primaryError?.response?.data?.error?.message || primaryError.message;
-      const canFallbackToDefault =
+      const upstreamStatus = Number.isInteger(primaryError?.response?.status)
+        ? primaryError.response.status
+        : null;
+      const upstreamMessage = primaryError?.response?.data?.error?.message || primaryError.message || 'Gemini request failed.';
+      const shouldFallbackToDefault =
         requestedModel !== DEFAULT_GEMINI_TEXT_MODEL &&
-        (upstreamStatus === 404 || /not found|unknown model|unsupported|deprecated/i.test(upstreamMessage));
+        (upstreamStatus === 404 || upstreamStatus === 400) &&
+        GEMINI_MODEL_FALLBACK_MESSAGE_PATTERN.test(String(upstreamMessage || ''));
 
-      if (canFallbackToDefault) {
-        const fallbackResponse = await requestGemini(DEFAULT_GEMINI_TEXT_MODEL);
-        return res.json({
-          ...fallbackResponse.data,
-          model: DEFAULT_GEMINI_TEXT_MODEL,
-          fallback_from: requestedModel
-        });
+      if (shouldFallbackToDefault) {
+        try {
+          const fallbackResponse = await requestGemini(DEFAULT_GEMINI_TEXT_MODEL);
+          return res.json({
+            ...fallbackResponse.data,
+            model: DEFAULT_GEMINI_TEXT_MODEL,
+            fallback_from: requestedModel
+          });
+        } catch (fallbackError) {
+          const fallbackStatus = Number.isInteger(fallbackError?.response?.status)
+            ? fallbackError.response.status
+            : null;
+          const fallbackMessage = fallbackError?.response?.data?.error?.message || fallbackError.message || 'Gemini fallback failed.';
+          console.error('Gemini fallback error:', fallbackError?.response?.data || fallbackError.message);
+          return res.status(fallbackStatus || upstreamStatus || 500).json({
+            error: fallbackMessage,
+            model: DEFAULT_GEMINI_TEXT_MODEL,
+            fallback_from: requestedModel,
+            primary_error: upstreamMessage
+          });
+        }
       }
 
       console.error('Gemini proxy error:', primaryError?.response?.data || primaryError.message);
-      return res
-        .status(Number.isInteger(upstreamStatus) ? upstreamStatus : 500)
-        .json({ error: upstreamMessage, model: requestedModel });
+      return res.status(upstreamStatus || 500).json({ error: upstreamMessage, model: requestedModel });
     }
   } catch (error) {
     console.error('Gemini proxy error:', error?.response?.data || error.message);
-    return res.status(500).json({ error: error?.response?.data?.error?.message || error.message });
+    const upstreamStatus = Number.isInteger(error?.response?.status) ? error.response.status : 500;
+    return res.status(upstreamStatus).json({ error: error?.response?.data?.error?.message || error.message });
   }
 });
 
@@ -3295,6 +4571,1317 @@ router.get('/audit/:id/report', async (req, res) => {
     res.json({ success: true, report });
   } catch (error) {
     console.error('Generate report error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// CREATIVE OS API (world-class production workflow)
+// ============================================================================
+
+router.get('/creative-os/catalog', async (req, res) => {
+  try {
+    const store = sanitizeCreativeOsText(req.query.store, 64, CREATIVE_OS_DEFAULT_STORE).toLowerCase();
+    const requestedLimit = clampNumber(req.query.limit ?? 120, 20, 400);
+
+    const orderRows = db.prepare(`
+      SELECT
+        COALESCE(NULLIF(oi.product_id, ''), LOWER(TRIM(oi.title))) AS product_key,
+        NULLIF(oi.product_id, '') AS product_id,
+        MAX(NULLIF(oi.title, '')) AS title,
+        MAX(NULLIF(oi.image_url, '')) AS image_url,
+        AVG(NULLIF(oi.net_price, 0)) AS avg_price,
+        SUM(COALESCE(oi.quantity, 0)) AS units_sold,
+        MAX(oi.created_at) AS last_seen,
+        MAX(so.currency) AS currency
+      FROM shopify_order_items oi
+      LEFT JOIN shopify_orders so
+        ON so.store = oi.store AND so.order_id = oi.order_id
+      WHERE oi.store = ?
+        AND COALESCE(oi.is_excluded, 0) = 0
+      GROUP BY COALESCE(NULLIF(oi.product_id, ''), LOWER(TRIM(oi.title)))
+      ORDER BY last_seen DESC
+      LIMIT ?
+    `).all(store, requestedLimit * 3);
+
+    const cachedRows = db.prepare(`
+      SELECT
+        product_id,
+        title,
+        image_url,
+        updated_at
+      FROM shopify_products_cache
+      WHERE store = ?
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(store, requestedLimit * 3);
+
+    let profileRow = null;
+    try {
+      profileRow = db.prepare(`
+        SELECT summary_json
+        FROM store_profiles
+        WHERE store = ?
+        LIMIT 1
+      `).get(store);
+    } catch (error) {
+      console.warn('[creative-os/catalog] store_profiles lookup skipped:', error.message);
+    }
+
+    const profileProducts = [];
+    try {
+      const parsedSummary = JSON.parse(profileRow?.summary_json || '{}');
+      const keyProducts = Array.isArray(parsedSummary?.keyProducts) ? parsedSummary.keyProducts : [];
+      keyProducts.forEach((entry, index) => {
+        const title = sanitizeCreativeOsText(entry?.name || entry?.title, CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH);
+        if (!title) return;
+        profileProducts.push({
+          key: `profile-${toCreativeOsSlug(title)}-${index}`,
+          productId: null,
+          title,
+          imageUrl: null,
+          avgPrice: null,
+          unitsSold: 0,
+          lastSeen: null,
+          currency: CREATIVE_OS_DEFAULT_CURRENCY,
+          source: 'store_profile'
+        });
+      });
+    } catch (error) {
+      console.warn('[creative-os/catalog] Failed to parse store profile summary:', error.message);
+    }
+
+    const productMap = new Map();
+
+    const upsertProduct = (candidate) => {
+      const key = String(candidate?.key || '').trim();
+      if (!key) return;
+
+      const current = productMap.get(key);
+      const next = buildCreativeOsProductRecord({
+        key,
+        productId: candidate?.productId || null,
+        title: candidate?.title || current?.name || 'Product',
+        imageUrl: candidate?.imageUrl || current?.image_url || null,
+        avgPrice: candidate?.avgPrice ?? current?.price ?? null,
+        unitsSold: candidate?.unitsSold ?? current?.units_sold ?? 0,
+        lastSeen: candidate?.lastSeen || current?.last_seen || null,
+        currency: candidate?.currency || current?.currency || CREATIVE_OS_DEFAULT_CURRENCY
+      });
+
+      if (current) {
+        next.variants = Math.max(current.variants || 3, next.variants || 3);
+        next.angles = Math.max(current.angles || 4, next.angles || 4);
+        next.source = current.source === 'catalog' || candidate?.source === 'catalog' ? 'catalog' : (candidate?.source || current.source);
+      } else {
+        next.source = candidate?.source || 'catalog';
+      }
+
+      productMap.set(key, next);
+    };
+
+    orderRows.forEach((row) => {
+      upsertProduct({
+        key: row.product_key || row.product_id || row.title,
+        productId: row.product_id,
+        title: row.title,
+        imageUrl: row.image_url,
+        avgPrice: row.avg_price,
+        unitsSold: row.units_sold,
+        lastSeen: row.last_seen,
+        currency: row.currency,
+        source: 'catalog'
+      });
+    });
+
+    cachedRows.forEach((row) => {
+      const fallbackKey = row.product_id || row.title;
+      if (!fallbackKey) return;
+      upsertProduct({
+        key: fallbackKey,
+        productId: row.product_id,
+        title: row.title,
+        imageUrl: row.image_url,
+        avgPrice: null,
+        unitsSold: 0,
+        lastSeen: row.updated_at,
+        currency: CREATIVE_OS_DEFAULT_CURRENCY,
+        source: 'catalog'
+      });
+    });
+
+    profileProducts.forEach(upsertProduct);
+
+    const products = Array.from(productMap.values())
+      .sort((a, b) => {
+        const soldDelta = Number(b.units_sold || 0) - Number(a.units_sold || 0);
+        if (soldDelta !== 0) return soldDelta;
+        const bLastSeen = b.last_seen ? new Date(b.last_seen).getTime() : 0;
+        const aLastSeen = a.last_seen ? new Date(a.last_seen).getTime() : 0;
+        return bLastSeen - aLastSeen;
+      })
+      .slice(0, requestedLimit);
+
+    const hasShopifyData = Boolean(
+      db.prepare('SELECT 1 FROM shopify_order_items WHERE store = ? LIMIT 1').get(store)
+      || db.prepare('SELECT 1 FROM shopify_products_cache WHERE store = ? LIMIT 1').get(store)
+    );
+    const hasSallaData = Boolean(db.prepare('SELECT 1 FROM salla_orders WHERE store = ? LIMIT 1').get(store));
+    const wooConfigured = parseBool(process.env.WOOCOMMERCE_ENABLED || process.env.WOO_ENABLED, false);
+
+    res.json({
+      success: true,
+      products,
+      integrations: {
+        shopify: hasShopifyData,
+        salla: hasSallaData,
+        woocommerce: wooConfigured
+      },
+      source_stats: {
+        order_rows: orderRows.length,
+        cache_rows: cachedRows.length,
+        profile_rows: profileProducts.length
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/catalog] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/product/import-url', async (req, res) => {
+  try {
+    const store = sanitizeCreativeOsText(req.body?.store || req.query?.store, 64, CREATIVE_OS_DEFAULT_STORE).toLowerCase();
+    const rawUrl = req.body?.url || req.body?.product_url || req.query?.url;
+    const validatedUrl = await validateCreativeOsImportUrl(rawUrl);
+
+    const response = await axios.get(validatedUrl, {
+      timeout: CREATIVE_OS_IMPORT_TIMEOUT_MS,
+      maxRedirects: CREATIVE_OS_IMPORT_MAX_REDIRECTS,
+      maxBodyLength: CREATIVE_OS_IMPORT_MAX_HTML_BYTES,
+      maxContentLength: CREATIVE_OS_IMPORT_MAX_HTML_BYTES,
+      responseType: 'text',
+      headers: {
+        'User-Agent': 'VironaCreativeOS/1.0 (+https://virona.app)'
+      }
+    });
+
+    const finalUrlRaw = response?.request?.res?.responseUrl || validatedUrl;
+    const finalParsed = new URL(finalUrlRaw);
+    await assertCreativeOsPublicHost(finalParsed.hostname);
+
+    const html = String(response.data || '').slice(0, CREATIVE_OS_IMPORT_MAX_HTML_BYTES);
+    const jsonLdProduct = readProductFromJsonLd(html);
+
+    const title = sanitizeCreativeOsText(
+      jsonLdProduct?.title
+      || extractMetaValue(html, ['og:title', 'twitter:title'])
+      || extractHtmlTitle(html),
+      CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH,
+      sanitizeCreativeOsText(finalParsed.hostname.replace(/^www\./i, '').split('.')[0], CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH, 'Imported Product')
+    );
+
+    const description = sanitizeCreativeOsText(
+      jsonLdProduct?.description
+      || extractMetaValue(html, ['description', 'og:description', 'twitter:description'])
+      || 'Imported from product URL',
+      CREATIVE_OS_MAX_DESCRIPTION_LENGTH,
+      'Imported from product URL'
+    );
+
+    const imageUrl = sanitizeCreativeOsText(
+      jsonLdProduct?.image_url
+      || extractMetaValue(html, ['og:image', 'twitter:image']),
+      1024,
+      ''
+    ) || null;
+
+    const price = extractPriceFromHtml(html, jsonLdProduct);
+    const currency = extractCurrencyFromHtml(html, jsonLdProduct);
+
+    const product = {
+      id: `imported-${toCreativeOsSlug(title, 'product')}`,
+      name: title,
+      price,
+      currency,
+      collection: 'new_arrivals',
+      angles: 6,
+      variants: 4,
+      blurb: description,
+      image_url: imageUrl,
+      source: 'url_import',
+      source_url: finalParsed.toString(),
+      store
+    };
+
+    res.json({
+      success: true,
+      product,
+      extracted: {
+        title,
+        description,
+        image_url: imageUrl,
+        price,
+        currency
+      }
+    });
+  } catch (error) {
+    const statusCode = Number(error?.statusCode || error?.status || 500);
+    console.error('[creative-os/product/import-url] error:', error.message);
+    res.status(statusCode).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/style/extract', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Image file is required.' });
+    }
+
+    const mime = String(req.file.mimetype || '').toLowerCase();
+    if (mime && !mime.startsWith('image/')) {
+      return res.status(415).json({ success: false, error: 'Unsupported file type (expected image/*).' });
+    }
+
+    const { data, info } = await sharp(req.file.buffer)
+      .rotate()
+      .removeAlpha()
+      .resize(144, 144, { fit: 'inside' })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const palette = buildCreativeOsPaletteFromRawImage(data, info?.channels || 3);
+    const primary = palette[0]?.hex || '#0f766e';
+    const accent = palette[1]?.hex || '#d97706';
+    const textColor = bestTextColorForBackground(primary);
+
+    res.json({
+      success: true,
+      palette,
+      recommendations: {
+        primary,
+        accent,
+        textColor,
+        contrast: Number(contrastRatio(primary, textColor).toFixed(2))
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/style/extract] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/creative-os/models/health', async (req, res) => {
+  try {
+    const photoMagicConfigured = isPhotoMagicAiConfigured();
+    const photoMagicHealth = photoMagicConfigured
+      ? await getPhotoMagicAiHealth().catch((error) => ({
+        ok: false,
+        status: 0,
+        payload: { error: error?.message || 'photo_magic_health_failed' }
+      }))
+      : null;
+
+    const photoMagicHqConfigured = isPhotoMagicHqConfigured();
+    const photoMagicHqHealth = photoMagicHqConfigured
+      ? await getPhotoMagicHqHealth().catch((error) => ({
+        ok: false,
+        status: 0,
+        payload: { error: error?.message || 'photo_magic_hq_health_failed' }
+      }))
+      : null;
+
+    const models = photoMagicHealth?.payload?.models || {};
+
+    return res.json({
+      success: true,
+      models: {
+        photo_magic_ai: {
+          configured: photoMagicConfigured,
+          healthy: Boolean(photoMagicHealth?.ok),
+          models
+        },
+        photo_magic_hq: {
+          configured: photoMagicHqConfigured,
+          healthy: Boolean(photoMagicHqHealth?.ok),
+          status: photoMagicHqHealth?.status || null
+        }
+      },
+      capabilities: {
+        background_removal_rmbg2: Boolean(models.rmbg2),
+        scene_refine_sam2: Boolean(models.sam2),
+        inpaint_lama: Boolean(models.lama),
+        upscale_realesrgan: Boolean(models.realesrgan),
+        hq_inpaint_sdxl: Boolean(photoMagicHqHealth?.ok)
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/models/health] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/video/upload', upload.single('video'), async (req, res) => {
+  try {
+    await ensureCreativeOsVideoDirs();
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Video file is required.' });
+    }
+
+    const mime = String(req.file.mimetype || '').toLowerCase();
+    if (mime && !mime.startsWith('video/')) {
+      return res.status(415).json({ success: false, error: 'Unsupported file type (expected video/*).' });
+    }
+
+    const mediaId = crypto.randomUUID();
+    const ext = parseCreativeOsVideoExtension(req.file.mimetype, req.file.originalname, 'mp4');
+    const outputPath = getCreativeOsVideoUploadPath(mediaId, ext);
+    await fs.promises.writeFile(outputPath, req.file.buffer);
+
+    let mediaInfo = { duration: null, width: null, height: null };
+    try {
+      mediaInfo = await ffprobeVideoInfo(outputPath);
+    } catch (error) {
+      console.warn('[creative-os/video/upload] ffprobe warning:', error?.message || error);
+    }
+
+    return res.json({
+      success: true,
+      video: {
+        video_id: mediaId,
+        ext,
+        filename: sanitizeCreativeOsMediaFilename(req.file.originalname, `video.${ext}`),
+        size: req.file.size,
+        mime: req.file.mimetype,
+        ...mediaInfo
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/video/upload] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/video/audio/upload', upload.single('audio'), async (req, res) => {
+  try {
+    await ensureCreativeOsVideoDirs();
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Audio file is required.' });
+    }
+
+    const mime = String(req.file.mimetype || '').toLowerCase();
+    if (mime && !mime.startsWith('audio/')) {
+      return res.status(415).json({ success: false, error: 'Unsupported file type (expected audio/*).' });
+    }
+
+    const audioId = crypto.randomUUID();
+    const ext = parseCreativeOsAudioExtension(req.file.mimetype, req.file.originalname, 'mp3');
+    const outputPath = getCreativeOsAudioUploadPath(audioId, ext);
+    await fs.promises.writeFile(outputPath, req.file.buffer);
+
+    let duration = null;
+    try {
+      const { stdout } = await execFileAsync('ffprobe', [
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        outputPath
+      ]);
+      const parsedDuration = safeParseNumber(String(stdout || '').trim(), null);
+      if (parsedDuration !== null) {
+        duration = Number(parsedDuration.toFixed(3));
+      }
+    } catch (error) {
+      console.warn('[creative-os/video/audio/upload] ffprobe warning:', error?.message || error);
+    }
+
+    return res.json({
+      success: true,
+      audio: {
+        audio_id: audioId,
+        ext,
+        filename: sanitizeCreativeOsMediaFilename(req.file.originalname, `audio.${ext}`),
+        size: req.file.size,
+        mime: req.file.mimetype,
+        duration
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/video/audio/upload] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/creative-os/video/music/library', async (req, res) => {
+  try {
+    const store = sanitizeCreativeOsText(req.query.store, 64, CREATIVE_OS_DEFAULT_STORE).toLowerCase();
+    const warmupBeforeRead = getCreativeOsMusicLibraryWarmupStatus();
+    if (warmupBeforeRead.status === 'idle' || warmupBeforeRead.status === 'error') {
+      void queueCreativeOsMusicLibraryWarmup({ force: warmupBeforeRead.status === 'error' });
+    }
+
+    const tracks = [];
+    for (const track of CREATIVE_OS_MUSIC_LIBRARY_TRACKS) {
+      const audioId = `lib_${track.id}`;
+      const audioPath = getCreativeOsAudioUploadPath(audioId, 'mp3');
+      if (!fs.existsSync(audioPath)) continue;
+
+      let duration = CREATIVE_OS_MUSIC_TRACK_DURATION_SECONDS;
+      try {
+        const { stdout } = await execFileAsync('ffprobe', [
+          '-v', 'error',
+          '-show_entries', 'format=duration',
+          '-of', 'default=noprint_wrappers=1:nokey=1',
+          audioPath
+        ]);
+        const parsedDuration = safeParseNumber(String(stdout || '').trim(), null);
+        if (parsedDuration !== null) {
+          duration = Number(parsedDuration.toFixed(3));
+        }
+      } catch (error) {
+        console.warn('[creative-os/video/music/library] ffprobe warning:', error?.message || error);
+      }
+
+      const filename = sanitizeCreativeOsMediaFilename(`${track.id}.mp3`, 'track.mp3');
+      tracks.push({
+        id: track.id,
+        title: track.title,
+        mood: track.mood,
+        bpm: track.bpm,
+        duration,
+        license: track.license,
+        audio_id: audioId,
+        audio_ext: 'mp3',
+        preview_url: withStoreParam(
+          `/api/creative-studio/creative-os/video/audio/download?audio_id=${encodeURIComponent(audioId)}&ext=mp3&filename=${encodeURIComponent(filename)}&inline=1`,
+          store
+        ),
+        download_url: withStoreParam(
+          `/api/creative-studio/creative-os/video/audio/download?audio_id=${encodeURIComponent(audioId)}&ext=mp3&filename=${encodeURIComponent(filename)}`,
+          store
+        )
+      });
+    }
+
+    const warmup = getCreativeOsMusicLibraryWarmupStatus();
+    if (!tracks.length && warmup.status === 'error') {
+      return res.status(503).json({
+        success: false,
+        error: warmup.error || 'Music library warmup failed.',
+        generated: false,
+        initializing: false,
+        warmup,
+        tracks: []
+      });
+    }
+
+    return res.json({
+      success: true,
+      generated: tracks.length === CREATIVE_OS_MUSIC_LIBRARY_TRACKS.length,
+      initializing: warmup.status === 'warming',
+      warmup,
+      tracks
+    });
+  } catch (error) {
+    console.error('[creative-os/video/music/library] error:', error);
+    const message = error?.code === 'ENOENT'
+      ? 'ffmpeg/ffprobe not found on server. Install ffmpeg to build music library.'
+      : error.message;
+    return res.status(500).json({ success: false, error: message });
+  }
+});
+
+router.get('/creative-os/video/audio/download', async (req, res) => {
+  try {
+    const audioId = String(req.query.audio_id || req.query.audioId || '').trim();
+    if (!audioId || !isCreativeOsMediaId(audioId)) {
+      return res.status(400).json({ success: false, error: 'Invalid audio_id.' });
+    }
+
+    const ext = parseCreativeOsAudioExtension(req.query.ext || req.query.audio_ext || req.query.audioExt, '', 'mp3');
+    const filename = sanitizeCreativeOsMediaFilename(req.query.filename, `${audioId}.${ext}`);
+    const renderInline = parseBool(req.query.inline, false);
+    const audioPath = getCreativeOsAudioUploadPath(audioId, ext);
+    if (!fs.existsSync(audioPath)) {
+      return res.status(404).json({ success: false, error: 'Audio track not found.' });
+    }
+
+    res.setHeader('Content-Type', resolveCreativeOsAudioMime(ext));
+    res.setHeader('Content-Disposition', `${renderInline ? 'inline' : 'attachment'}; filename="${filename}"`);
+    fs.createReadStream(audioPath).pipe(res);
+  } catch (error) {
+    console.error('[creative-os/video/audio/download] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/video/tts', async (req, res) => {
+  try {
+    await ensureCreativeOsVideoDirs();
+
+    const text = sanitizeCreativeOsText(req.body?.text, CREATIVE_OS_TIMELINE_MAX_TTS_CHARS, '');
+    if (!text) {
+      return res.status(400).json({ success: false, error: 'text is required.' });
+    }
+
+    const language = parseCreativeOsTtsLanguage(req.body?.language || req.body?.lang || 'en');
+    const textChunks = splitCreativeOsTtsChunks(text, CREATIVE_OS_TTS_PROVIDER_MAX_CHARS);
+    const audioBuffer = await synthesizeCreativeOsTtsChunks({ language, textChunks });
+    if (!audioBuffer.length) {
+      return res.status(502).json({ success: false, error: 'TTS provider returned empty audio.' });
+    }
+
+    const audioId = crypto.randomUUID();
+    const outputPath = getCreativeOsAudioUploadPath(audioId, 'mp3');
+    await fs.promises.writeFile(outputPath, audioBuffer);
+
+    return res.json({
+      success: true,
+      audio: {
+        audio_id: audioId,
+        ext: 'mp3',
+        filename: `tts-${language}.mp3`,
+        language,
+        source: textChunks.length > 1 ? 'google-tts-fallback-chunked' : 'google-tts-fallback',
+        chunk_count: textChunks.length
+      }
+    });
+  } catch (error) {
+    const upstreamStatus = Number.isInteger(error?.response?.status) ? error.response.status : null;
+    console.error('[creative-os/video/tts] error:', upstreamStatus || error?.message || error);
+    return res.status(upstreamStatus || 500).json({
+      success: false,
+      error: upstreamStatus === 400
+        ? `TTS provider rejected the script. Try shorter phrases (${CREATIVE_OS_TTS_PROVIDER_MAX_CHARS} chars max per chunk).`
+        : 'TTS generation failed. Try a shorter script or upload your own voiceover.'
+    });
+  }
+});
+
+router.post('/creative-os/video/render', async (req, res) => {
+  try {
+    await ensureCreativeOsVideoDirs();
+
+    const videoId = sanitizeCreativeOsText(req.body?.video_id || req.body?.videoId, 120, '');
+    if (!videoId || !isCreativeOsMediaId(videoId)) {
+      return res.status(400).json({ success: false, error: 'Valid video_id is required.' });
+    }
+
+    const videoExt = parseCreativeOsVideoExtension(req.body?.video_ext || req.body?.videoExt, '', 'mp4');
+
+    const videoPath = getCreativeOsVideoUploadPath(videoId, videoExt);
+    if (!fs.existsSync(videoPath)) {
+      return res.status(404).json({ success: false, error: 'Uploaded video not found.' });
+    }
+
+    const voiceAudioId = sanitizeCreativeOsText(req.body?.voiceover_audio_id || req.body?.voiceoverAudioId, 120, '');
+    if (voiceAudioId && !isCreativeOsMediaId(voiceAudioId)) {
+      return res.status(400).json({ success: false, error: 'Invalid voiceover_audio_id.' });
+    }
+    const voiceAudioExt = parseCreativeOsAudioExtension(req.body?.voiceover_audio_ext || req.body?.voiceoverAudioExt, '', 'mp3');
+    const musicAudioId = sanitizeCreativeOsText(req.body?.music_audio_id || req.body?.musicAudioId, 120, '');
+    if (musicAudioId && !isCreativeOsMediaId(musicAudioId)) {
+      return res.status(400).json({ success: false, error: 'Invalid music_audio_id.' });
+    }
+    const musicAudioExt = parseCreativeOsAudioExtension(req.body?.music_audio_ext || req.body?.musicAudioExt, '', 'mp3');
+
+    const voiceAudioPath = voiceAudioId ? getCreativeOsAudioUploadPath(voiceAudioId, voiceAudioExt) : null;
+    const musicAudioPath = musicAudioId ? getCreativeOsAudioUploadPath(musicAudioId, musicAudioExt) : null;
+    const hasVoiceTrack = Boolean(voiceAudioPath && fs.existsSync(voiceAudioPath));
+    const hasMusicTrack = Boolean(musicAudioPath && fs.existsSync(musicAudioPath));
+
+    if (voiceAudioId && !hasVoiceTrack) {
+      return res.status(404).json({ success: false, error: 'Voiceover track not found for provided voiceover_audio_id.' });
+    }
+    if (musicAudioId && !hasMusicTrack) {
+      return res.status(404).json({ success: false, error: 'Music track not found for provided music_audio_id.' });
+    }
+
+    const info = await ffprobeVideoInfo(videoPath);
+    const videoDurationSeconds = Math.max(0.1, safeParseNumber(info?.duration, 30));
+
+    const beatSyncEnabled = parseBool(req.body?.beat_sync_enabled ?? req.body?.beatSyncEnabled, false);
+    const beatMarkers = parseCreativeOsBeatMarkers(req.body?.beat_markers ?? req.body?.beatMarkers, videoDurationSeconds);
+
+    const rawSegments = Array.isArray(req.body?.timeline_segments) ? req.body.timeline_segments : [];
+    const parsedSegments = rawSegments.slice(0, CREATIVE_OS_TIMELINE_MAX_SEGMENTS).map((segment) => ({
+      start: clampNumber(segment?.start ?? 0, 0, videoDurationSeconds),
+      end: clampNumber(segment?.end ?? videoDurationSeconds, 0, videoDurationSeconds),
+      transition: resolveCreativeOsTransitionType(segment?.transition),
+      transition_duration: clampNumber(
+        segment?.transition_duration ?? segment?.transitionDuration ?? CREATIVE_OS_TRANSITION_DEFAULT_DURATION,
+        CREATIVE_OS_TRANSITION_MIN_DURATION,
+        CREATIVE_OS_TRANSITION_MAX_DURATION
+      )
+    })).filter((segment) => segment.end > segment.start);
+
+    const sortedSegments = parsedSegments.sort((a, b) => a.start - b.start);
+    const timelineSegments = [];
+    let cursor = 0;
+    for (const segment of sortedSegments) {
+      const start = Math.max(cursor, clampNumber(segment.start, 0, Math.max(0, videoDurationSeconds - CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS)));
+      const end = clampNumber(segment.end, start + CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS, videoDurationSeconds);
+      if (end - start < CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS) continue;
+      timelineSegments.push({
+        start: Number(start.toFixed(3)),
+        end: Number(end.toFixed(3)),
+        duration: Number((end - start).toFixed(3)),
+        transition: segment.transition,
+        transition_duration: segment.transition_duration
+      });
+      cursor = end;
+      if (timelineSegments.length >= CREATIVE_OS_TIMELINE_MAX_SEGMENTS) break;
+      if (cursor >= videoDurationSeconds - CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS) break;
+    }
+
+    if (timelineSegments.length === 0) {
+      timelineSegments.push({
+        start: 0,
+        end: Number(videoDurationSeconds.toFixed(3)),
+        duration: Number(videoDurationSeconds.toFixed(3)),
+        transition: 'fade',
+        transition_duration: CREATIVE_OS_TRANSITION_DEFAULT_DURATION
+      });
+    }
+
+    if (beatSyncEnabled && beatMarkers.length > 0 && timelineSegments.length > 1) {
+      for (let index = 0; index < timelineSegments.length - 1; index += 1) {
+        const current = timelineSegments[index];
+        const next = timelineSegments[index + 1];
+        const minBoundary = current.start + CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS;
+        const maxBoundary = next.end - CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS;
+        if (maxBoundary <= minBoundary) continue;
+        const snappedBoundary = snapCaptionBoundaryToBeat(current.end, beatMarkers, minBoundary, maxBoundary);
+        current.end = Number(snappedBoundary.toFixed(3));
+        next.start = Number(snappedBoundary.toFixed(3));
+      }
+      timelineSegments.forEach((segment) => {
+        segment.duration = Number(Math.max(CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS, segment.end - segment.start).toFixed(3));
+      });
+    }
+
+    const captionsInput = Array.isArray(req.body?.captions) ? req.body.captions : [];
+    const captions = captionsInput.slice(0, CREATIVE_OS_TIMELINE_MAX_CAPTIONS).map((entry, index) => ({
+      id: index + 1,
+      start: clampNumber(entry?.start ?? 0, 0, 7200),
+      end: clampNumber(entry?.end ?? 0, 0, 7200),
+      text: sanitizeCreativeOsText(entry?.text, CREATIVE_OS_TIMELINE_MAX_TEXT_CHARS, ''),
+      x: safeParseNumber(entry?.x, null),
+      y: safeParseNumber(entry?.y, null),
+      width: safeParseNumber(entry?.width, null),
+      height: safeParseNumber(entry?.height, null),
+      margin_x: safeParseNumber(entry?.margin_x ?? entry?.marginX, null),
+      font_size: safeParseNumber(entry?.font_size ?? entry?.fontSize, null),
+      bg_color: entry?.bg_color || entry?.bgColor,
+      text_color: entry?.text_color || entry?.textColor,
+      opacity: safeParseNumber(entry?.opacity, null),
+      animation: sanitizeCreativeOsText(entry?.animation, 32, 'fade_up'),
+      fade_in: safeParseNumber(entry?.fade_in ?? entry?.fadeIn, null),
+      fade_out: safeParseNumber(entry?.fade_out ?? entry?.fadeOut, null),
+      pop_window: safeParseNumber(entry?.pop_window ?? entry?.popWindow, null)
+    })).filter((entry) => entry.text && entry.end > entry.start);
+
+    const voiceoverVolume = clampNumber(req.body?.voiceover_volume ?? req.body?.voiceoverVolume ?? 1, 0, 2);
+    const musicVolume = clampNumber(req.body?.music_volume ?? req.body?.musicVolume ?? 0.24, 0, 2);
+    const baseAudioVolume = clampNumber(req.body?.base_audio_volume ?? req.body?.baseAudioVolume ?? 1, 0, 2);
+
+    const ffmpegInputs = ['-i', videoPath];
+    const trackIndexes = {
+      video: 0,
+      voice: null,
+      music: null
+    };
+
+    if (hasVoiceTrack) {
+      trackIndexes.voice = ffmpegInputs.length / 2;
+      ffmpegInputs.push('-i', voiceAudioPath);
+    }
+    if (hasMusicTrack) {
+      trackIndexes.music = ffmpegInputs.length / 2;
+      ffmpegInputs.push('-i', musicAudioPath);
+    }
+
+    const hasBaseAudio = await ffprobeHasAudioStream(videoPath).catch(() => false);
+
+    const filterParts = [];
+    let finalVideoLabel = '[0:v]';
+    let baseAudioInputLabel = null;
+    let renderedDurationSeconds = videoDurationSeconds;
+
+    if (timelineSegments.length === 1 && (timelineSegments[0].start > 0 || timelineSegments[0].end < videoDurationSeconds)) {
+      const segment = timelineSegments[0];
+      filterParts.push(
+        `[0:v]trim=start=${segment.start.toFixed(3)}:end=${segment.end.toFixed(3)},setpts=PTS-STARTPTS[cosvseg0]`
+      );
+      finalVideoLabel = '[cosvseg0]';
+      renderedDurationSeconds = segment.duration;
+
+      if (hasBaseAudio) {
+        filterParts.push(
+          `[0:a]atrim=start=${segment.start.toFixed(3)}:end=${segment.end.toFixed(3)},asetpts=PTS-STARTPTS[cosaseg0]`
+        );
+        baseAudioInputLabel = '[cosaseg0]';
+      }
+    } else if (timelineSegments.length > 1) {
+      timelineSegments.forEach((segment, index) => {
+        filterParts.push(
+          `[0:v]trim=start=${segment.start.toFixed(3)}:end=${segment.end.toFixed(3)},setpts=PTS-STARTPTS[cosvseg${index}]`
+        );
+        if (hasBaseAudio) {
+          filterParts.push(
+            `[0:a]atrim=start=${segment.start.toFixed(3)}:end=${segment.end.toFixed(3)},asetpts=PTS-STARTPTS[cosaseg${index}]`
+          );
+        }
+      });
+
+      let videoChain = '[cosvseg0]';
+      let audioChain = hasBaseAudio ? '[cosaseg0]' : null;
+      let consumed = timelineSegments[0].duration;
+
+      for (let index = 1; index < timelineSegments.length; index += 1) {
+        const segment = timelineSegments[index];
+        const nextDuration = Math.max(CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS, segment.duration);
+        const maxTransition = Math.min(
+          CREATIVE_OS_TRANSITION_MAX_DURATION,
+          Math.max(CREATIVE_OS_TRANSITION_MIN_DURATION, consumed - (CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS * 0.35)),
+          Math.max(CREATIVE_OS_TRANSITION_MIN_DURATION, nextDuration - (CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS * 0.35))
+        );
+        const transitionDuration = clampNumber(
+          segment.transition_duration ?? CREATIVE_OS_TRANSITION_DEFAULT_DURATION,
+          CREATIVE_OS_TRANSITION_MIN_DURATION,
+          maxTransition
+        );
+        segment.transition_duration = Number(transitionDuration.toFixed(3));
+
+        const videoOut = `[cosvxf${index}]`;
+        const xfadeOffset = Math.max(0, consumed - transitionDuration);
+        filterParts.push(
+          `${videoChain}[cosvseg${index}]xfade=transition=${segment.transition}:duration=${transitionDuration.toFixed(3)}:offset=${xfadeOffset.toFixed(3)}${videoOut}`
+        );
+        videoChain = videoOut;
+
+        if (hasBaseAudio && audioChain) {
+          const audioOut = `[cosaxf${index}]`;
+          filterParts.push(
+            `${audioChain}[cosaseg${index}]acrossfade=d=${transitionDuration.toFixed(3)}:c1=tri:c2=tri${audioOut}`
+          );
+          audioChain = audioOut;
+        }
+
+        consumed += nextDuration - transitionDuration;
+      }
+
+      finalVideoLabel = videoChain;
+      renderedDurationSeconds = Math.max(0.1, consumed);
+      baseAudioInputLabel = audioChain;
+    }
+
+    const timelineGraph = buildCreativeOsTimelineFilter({
+      captions: captions.map((entry) => ({
+        ...entry,
+        start: clampNumber(entry.start, 0, renderedDurationSeconds),
+        end: clampNumber(entry.end, 0, renderedDurationSeconds)
+      })).filter((entry) => entry.end > entry.start),
+      durationSeconds: renderedDurationSeconds,
+      width: info?.width || 1080,
+      height: info?.height || 1920,
+      fontPath: CREATIVE_OS_TIMELINE_FONT_PATH,
+      inputLabel: finalVideoLabel
+    });
+    if (timelineGraph.filterComplex) {
+      filterParts.push(timelineGraph.filterComplex);
+      finalVideoLabel = timelineGraph.finalVideoLabel;
+    }
+
+    const audioInputs = [];
+
+    if (hasBaseAudio) {
+      const baseLabel = '[cosab]';
+      if (baseAudioInputLabel) {
+        filterParts.push(`${baseAudioInputLabel}volume=${baseAudioVolume.toFixed(3)},atrim=0:${renderedDurationSeconds.toFixed(3)}${baseLabel}`);
+      } else {
+        filterParts.push(`[0:a]volume=${baseAudioVolume.toFixed(3)},atrim=0:${renderedDurationSeconds.toFixed(3)}${baseLabel}`);
+      }
+      audioInputs.push(baseLabel);
+    }
+
+    if (hasVoiceTrack && trackIndexes.voice !== null) {
+      const voiceLabel = '[cosav]';
+      filterParts.push(`[${trackIndexes.voice}:a]volume=${voiceoverVolume.toFixed(3)},atrim=0:${renderedDurationSeconds.toFixed(3)}${voiceLabel}`);
+      audioInputs.push(voiceLabel);
+    }
+
+    if (hasMusicTrack && trackIndexes.music !== null) {
+      const fadeStart = Math.max(0, renderedDurationSeconds - 0.75);
+      const musicLabel = '[cosam]';
+      filterParts.push(
+        `[${trackIndexes.music}:a]volume=${musicVolume.toFixed(3)},atrim=0:${renderedDurationSeconds.toFixed(3)},` +
+        `afade=t=out:st=${fadeStart.toFixed(3)}:d=0.75${musicLabel}`
+      );
+      audioInputs.push(musicLabel);
+    }
+
+    let finalAudioLabel = null;
+    if (audioInputs.length === 1) {
+      finalAudioLabel = audioInputs[0];
+    } else if (audioInputs.length > 1) {
+      finalAudioLabel = '[cosaout]';
+      filterParts.push(`${audioInputs.join('')}amix=inputs=${audioInputs.length}:duration=first:dropout_transition=2${finalAudioLabel}`);
+    }
+
+    const outputId = crypto.randomUUID();
+    const outputPath = getCreativeOsVideoOutputPath(outputId, 'mp4');
+
+    const ffmpegArgs = [
+      ...ffmpegInputs,
+      ...(filterParts.length > 0 ? ['-filter_complex', filterParts.join(';')] : []),
+      ...(filterParts.length > 0 ? ['-map', finalVideoLabel] : ['-map', '0:v']),
+      ...(finalAudioLabel ? ['-map', finalAudioLabel] : ['-map', '0:a?']),
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '18',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-shortest',
+      '-movflags', '+faststart',
+      '-y',
+      outputPath
+    ];
+
+    await execFileAsync('ffmpeg', ffmpegArgs);
+
+    const filename = sanitizeCreativeOsMediaFilename(
+      req.body?.filename || `${toCreativeOsSlug(req.body?.product_name || 'creative')}-creative.mp4`,
+      'creative-os.mp4'
+    );
+    const downloadUrl = withStoreParam(
+      `/api/creative-studio/creative-os/video/download?output_id=${encodeURIComponent(outputId)}&filename=${encodeURIComponent(filename)}`,
+      sanitizeCreativeOsText(req.body?.store, 64, CREATIVE_OS_DEFAULT_STORE).toLowerCase()
+    );
+
+    return res.json({
+      success: true,
+      render: {
+        output_id: outputId,
+        filename,
+        download_url: downloadUrl,
+        captions_count: captions.length,
+        beat_sync_enabled: beatSyncEnabled,
+        beat_markers_count: beatMarkers.length,
+        timeline_duration_seconds: Number(renderedDurationSeconds.toFixed(3)),
+        timeline_segments: timelineSegments.map((segment) => ({
+          start: segment.start,
+          end: segment.end,
+          transition: segment.transition,
+          transition_duration: Number(segment.transition_duration || 0)
+        })),
+        tracks: {
+          has_base_audio: hasBaseAudio,
+          has_voiceover: hasVoiceTrack,
+          has_music: hasMusicTrack
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/video/render] error:', error);
+    const message = error?.code === 'ENOENT'
+      ? 'ffmpeg/ffprobe not found on server. Install ffmpeg to render videos.'
+      : error.message;
+    return res.status(500).json({ success: false, error: message });
+  }
+});
+
+router.get('/creative-os/video/download', async (req, res) => {
+  try {
+    const outputId = String(req.query.output_id || '').trim();
+    const filename = sanitizeCreativeOsMediaFilename(req.query.filename, 'creative-os.mp4');
+    const renderInline = parseBool(req.query.inline, false);
+
+    if (!outputId || !CREATIVE_OS_EXPORT_ID_PATTERN.test(outputId)) {
+      return res.status(400).json({ success: false, error: 'Invalid output_id.' });
+    }
+
+    const outputPath = getCreativeOsVideoOutputPath(outputId, 'mp4');
+    if (!fs.existsSync(outputPath)) {
+      return res.status(404).json({ success: false, error: 'Rendered video not found.' });
+    }
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `${renderInline ? 'inline' : 'attachment'}; filename="${filename}"`);
+    fs.createReadStream(outputPath).pipe(res);
+  } catch (error) {
+    console.error('[creative-os/video/download] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/design/process', photoMagicSingle('image'), async (req, res) => {
+  try {
+    const store = sanitizeCreativeOsText(req.body?.store || req.query?.store, 64, CREATIVE_OS_DEFAULT_STORE).toLowerCase();
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Image file is required.' });
+    }
+
+    const mime = String(req.file.mimetype || '').toLowerCase();
+    if (mime && !mime.startsWith('image/')) {
+      return res.status(415).json({ success: false, error: 'Unsupported file type (expected image/*).' });
+    }
+
+    const formatId = sanitizeCreativeOsText(req.body?.format_id || req.body?.formatId, 64, 'meta_feed_4_5');
+    const formatConfig = resolveCreativeOsFormatConfig(formatId);
+    const applyBackgroundRemoval = parseBool(
+      req.body?.apply_background_removal ?? req.body?.applyBackgroundRemoval,
+      true
+    );
+    const applyScenePlacement = parseBool(
+      req.body?.apply_scene_placement ?? req.body?.applyScenePlacement,
+      true
+    );
+    const applyEnhance = parseBool(
+      req.body?.apply_enhance ?? req.body?.applyEnhance,
+      false
+    );
+    const rawEnhanceMode = sanitizeCreativeOsText(
+      req.body?.enhance_mode || req.body?.enhanceMode,
+      32,
+      'upscale'
+    ).toLowerCase();
+    const enhanceMode = CREATIVE_OS_ENHANCE_MODES.has(rawEnhanceMode) ? rawEnhanceMode : 'upscale';
+    const enhanceStrength = clampNumber(req.body?.enhance_strength ?? req.body?.enhanceStrength ?? 0.55, 0, 1);
+    const enhanceUpscaleFactor = clampNumber(req.body?.enhance_upscale_factor ?? req.body?.enhanceUpscaleFactor ?? 2, 1, 4);
+    const scenePresetId = sanitizeCreativeOsText(
+      req.body?.scene_preset || req.body?.scenePreset,
+      64,
+      CREATIVE_OS_DEFAULT_SCENE_PRESET
+    );
+    const brandPrimary = parseColorWithFallback(req.body?.brand_primary || req.body?.brandPrimary, '#0f766e');
+    const brandAccent = parseColorWithFallback(req.body?.brand_accent || req.body?.brandAccent, '#d97706');
+    const sourceMaxSide = clampNumber(req.body?.source_max_side ?? req.body?.sourceMaxSide ?? CREATIVE_OS_IMAGE_PIPELINE_MAX_SIDE, 512, 4096);
+    const productName = sanitizeCreativeOsText(req.body?.product_name || req.body?.productName, CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH, 'product');
+    const variantSuffix = toCreativeOsSlug(req.body?.variant_suffix || req.body?.variantSuffix || 'scene-a', 'scene-a');
+    const productSlug = toCreativeOsSlug(productName, 'product');
+
+    await ensureCreativeOsExportDir();
+
+    let workingBuffer = await sharp(req.file.buffer)
+      .rotate()
+      .png()
+      .resize(sourceMaxSide, sourceMaxSide, { fit: 'inside', withoutEnlargement: true })
+      .toBuffer();
+
+    const warnings = [];
+    let cutoutAsset = null;
+    let scenePlacement = null;
+
+    if (applyBackgroundRemoval) {
+      if (!isPhotoMagicAiConfigured()) {
+        warnings.push('Background removal model is not configured. Original image was used.');
+      } else {
+        try {
+          const cutoutResult = await removeBgRmbg2({
+            imageBase64: workingBuffer.toString('base64'),
+            maxSide: sourceMaxSide
+          });
+
+          if (cutoutResult?.cutout_png) {
+            workingBuffer = Buffer.from(String(cutoutResult.cutout_png), 'base64');
+            const cutoutAssetId = crypto.randomUUID();
+            const cutoutPath = getCreativeOsExportPath(cutoutAssetId);
+            await fs.promises.writeFile(cutoutPath, workingBuffer);
+            const cutoutFileName = `${productSlug}_cutout_${variantSuffix}.png`;
+            cutoutAsset = {
+              asset_id: cutoutAssetId,
+              file_name: cutoutFileName,
+              download_url: buildCreativeOsAssetDownloadUrl({
+                assetId: cutoutAssetId,
+                fileName: cutoutFileName,
+                store
+              })
+            };
+          } else {
+            warnings.push('Background removal returned no cutout. Original image was used.');
+          }
+        } catch (error) {
+          warnings.push(`Background removal failed (${sanitizeCreativeOsText(error.message, 120, 'model error')}). Original image was used.`);
+        }
+      }
+    }
+
+    let outputBuffer = workingBuffer;
+    let resolvedScenePreset = null;
+    let enhanceApplied = false;
+    let enhanceEngine = null;
+
+    if (applyScenePlacement) {
+      const sceneResult = await renderCreativeOsScenePlacement({
+        sourceBuffer: workingBuffer,
+        formatConfig,
+        scenePresetId,
+        brandPrimary,
+        brandAccent
+      });
+      outputBuffer = sceneResult.buffer;
+      scenePlacement = sceneResult.placement;
+      resolvedScenePreset = sceneResult.scene?.id || resolveCreativeOsScenePreset(scenePresetId).id;
+    }
+
+    if (applyEnhance) {
+      if (!isPhotoMagicAiConfigured()) {
+        warnings.push('Enhancement model is not configured. Scene output was not enhanced.');
+      } else {
+        try {
+          const enhanced = await enhancePhoto({
+            imageBase64: outputBuffer.toString('base64'),
+            mode: enhanceMode,
+            sourceMaxSide: Math.max(formatConfig.width, formatConfig.height),
+            strength: enhanceStrength,
+            upscaleFactor: enhanceUpscaleFactor
+          });
+
+          if (enhanced?.result_png) {
+            outputBuffer = Buffer.from(String(enhanced.result_png), 'base64');
+            enhanceApplied = true;
+            enhanceEngine = sanitizeCreativeOsText(enhanced.engine, 32, null);
+          } else {
+            warnings.push('Enhancement returned no output. Base render was used.');
+          }
+        } catch (error) {
+          warnings.push(`Enhancement failed (${sanitizeCreativeOsText(error.message, 120, 'model error')}). Base render was used.`);
+        }
+      }
+    }
+
+    const outputAssetId = crypto.randomUUID();
+    const outputPath = getCreativeOsExportPath(outputAssetId);
+    await fs.promises.writeFile(outputPath, outputBuffer);
+
+    const outputFileName = `${productSlug}_${formatConfig.platformKey}_${variantSuffix}.png`;
+    const outputAsset = {
+      asset_id: outputAssetId,
+      file_name: outputFileName,
+      format_id: formatConfig.id,
+      ratio: formatConfig.ratio,
+      width: formatConfig.width,
+      height: formatConfig.height,
+      download_url: buildCreativeOsAssetDownloadUrl({
+        assetId: outputAssetId,
+        fileName: outputFileName,
+        store
+      })
+    };
+
+    return res.json({
+      success: true,
+      pipeline: {
+        format_id: formatConfig.id,
+        background_removed: Boolean(cutoutAsset),
+        scene_composed: applyScenePlacement,
+        scene_preset: resolvedScenePreset,
+        enhanced: enhanceApplied,
+        enhance_mode: enhanceMode,
+        enhance_engine: enhanceEngine,
+        placement: scenePlacement,
+        cutout_asset: cutoutAsset,
+        output_asset: outputAsset,
+        warnings
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/design/process] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/video/caption-plan', async (req, res) => {
+  try {
+    const scriptText = sanitizeCreativeOsText(
+      req.body?.script_text || req.body?.scriptText || '',
+      CREATIVE_OS_MAX_CAPTION_PLAN_SCRIPT_LENGTH,
+      ''
+    );
+    if (!scriptText) {
+      return res.status(400).json({ success: false, error: 'script_text is required.' });
+    }
+
+    const durationSeconds = clampNumber(req.body?.duration_seconds ?? req.body?.durationSeconds ?? 30, 3, 180);
+    const maxWordsPerCaption = clampNumber(
+      req.body?.max_words_per_caption ?? req.body?.maxWordsPerCaption ?? 5,
+      CREATIVE_OS_MIN_CAPTION_WORDS_PER_SEGMENT,
+      CREATIVE_OS_MAX_CAPTION_WORDS_PER_SEGMENT
+    );
+    const beatMarkers = parseCreativeOsBeatMarkers(req.body?.beat_markers ?? req.body?.beatMarkers, durationSeconds);
+    const captions = buildCreativeOsCaptionPlan({
+      scriptText,
+      durationSeconds,
+      maxWordsPerSegment: maxWordsPerCaption,
+      beatMarkers
+    });
+
+    const styleId = sanitizeCreativeOsText(req.body?.style_id || req.body?.styleId, 64, 'branded');
+    const brandKit = req.body?.brand_kit || req.body?.brandKit || {};
+    const style = {
+      id: styleId,
+      font: sanitizeCreativeOsText(brandKit?.font, 64, 'sora'),
+      primary_color: parseColorWithFallback(brandKit?.primaryColor, '#0f766e'),
+      accent_color: parseColorWithFallback(brandKit?.accentColor, '#d97706')
+    };
+
+    return res.json({
+      success: true,
+      duration_seconds: durationSeconds,
+      max_words_per_caption: maxWordsPerCaption,
+      beat_markers: beatMarkers,
+      captions,
+      style
+    });
+  } catch (error) {
+    console.error('[creative-os/video/caption-plan] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/video/beat-grid', async (req, res) => {
+  try {
+    const durationSeconds = clampNumber(req.body?.duration_seconds ?? req.body?.durationSeconds ?? 30, 1, 600);
+    const bpm = clampNumber(req.body?.bpm ?? 120, 60, 220);
+    const offsetSeconds = clampNumber(req.body?.offset_seconds ?? req.body?.offsetSeconds ?? 0, 0, durationSeconds);
+    const interval = 60 / bpm;
+
+    const beats = [];
+    for (let marker = offsetSeconds; marker <= durationSeconds; marker += interval) {
+      beats.push(Number(marker.toFixed(3)));
+    }
+
+    res.json({
+      success: true,
+      bpm,
+      interval_seconds: Number(interval.toFixed(4)),
+      beats
+    });
+  } catch (error) {
+    console.error('[creative-os/video/beat-grid] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/creative-os/export/batch', async (req, res) => {
+  try {
+    const store = sanitizeCreativeOsText(req.body?.store, 64, CREATIVE_OS_DEFAULT_STORE).toLowerCase();
+    const formatIdsRaw = Array.isArray(req.body?.format_ids) ? req.body.format_ids : [];
+    const requestedFormatIds = Array.from(new Set(
+      formatIdsRaw
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean)
+    )).slice(0, CREATIVE_OS_MAX_EXPORT_TARGETS);
+
+    if (requestedFormatIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'At least one export format is required.' });
+    }
+
+    const invalidFormat = requestedFormatIds.find((id) => !CREATIVE_OS_FORMAT_CONFIG[id]);
+    if (invalidFormat) {
+      return res.status(400).json({ success: false, error: `Unsupported format id: ${invalidFormat}` });
+    }
+
+    const rawProduct = req.body?.product || {};
+    const productName = sanitizeCreativeOsText(rawProduct?.name, CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH, 'Product');
+    const productDescription = sanitizeCreativeOsText(rawProduct?.blurb, CREATIVE_OS_MAX_DESCRIPTION_LENGTH, 'Premium product creative');
+    const templateName = sanitizeCreativeOsText(
+      req.body?.template_name || req.body?.templateName || 'Product Showcase',
+      CREATIVE_OS_MAX_TEMPLATE_LENGTH,
+      'Product Showcase'
+    );
+    const caption = sanitizeCreativeOsText(req.body?.caption, CREATIVE_OS_MAX_CAPTION_LENGTH, productDescription);
+    const variantSuffix = toCreativeOsSlug(req.body?.variant_suffix || req.body?.variantSuffix || 'variant-a', 'variant-a');
+
+    const brandKit = req.body?.brand_kit || req.body?.brandKit || {};
+    const brandPrimary = parseColorWithFallback(brandKit?.primaryColor, '#0f766e');
+    const brandAccent = parseColorWithFallback(brandKit?.accentColor, '#d97706');
+
+    const rawPrice = parsePriceCandidate(rawProduct?.price);
+    const currency = parseCurrencyCandidate(rawProduct?.currency) || CREATIVE_OS_DEFAULT_CURRENCY;
+    const priceLabel = rawPrice !== null
+      ? new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(rawPrice)
+      : 'Shop Now';
+
+    await ensureCreativeOsExportDir();
+
+    const productSlug = toCreativeOsSlug(productName, 'product');
+    const assets = [];
+
+    for (const formatId of requestedFormatIds) {
+      const formatConfig = CREATIVE_OS_FORMAT_CONFIG[formatId];
+      const svg = buildCreativeOsSvgAsset({
+        formatConfig,
+        productName,
+        productDescription,
+        caption,
+        priceLabel,
+        templateName,
+        brandPrimary,
+        brandAccent
+      });
+      const pngBuffer = await sharp(Buffer.from(svg)).png({ compressionLevel: 9 }).toBuffer();
+      const assetId = crypto.randomUUID();
+      const outputPath = getCreativeOsExportPath(assetId);
+      await fs.promises.writeFile(outputPath, pngBuffer);
+
+      const fileName = `${productSlug}_${formatConfig.platformKey}_${variantSuffix}.png`;
+      const downloadUrl = buildCreativeOsAssetDownloadUrl({
+        assetId,
+        fileName,
+        store
+      });
+
+      assets.push({
+        asset_id: assetId,
+        file_name: fileName,
+        format_id: formatId,
+        ratio: formatConfig.ratio,
+        width: formatConfig.width,
+        height: formatConfig.height,
+        download_url: downloadUrl
+      });
+    }
+
+    return res.json({
+      success: true,
+      assets,
+      meta: {
+        store,
+        generated_at: new Date().toISOString(),
+        count: assets.length
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/export/batch] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/creative-os/export/download', async (req, res) => {
+  try {
+    const assetId = String(req.query.asset_id || '').trim();
+    const filename = sanitizeDownloadFilename(req.query.filename, 'creative-os-asset.png');
+    const renderInline = parseBool(req.query.inline, false);
+
+    if (!assetId || !CREATIVE_OS_EXPORT_ID_PATTERN.test(assetId)) {
+      return res.status(400).json({ success: false, error: 'Invalid asset_id' });
+    }
+
+    const filePath = getCreativeOsExportPath(assetId);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, error: 'Asset not found' });
+    }
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Disposition', `${renderInline ? 'inline' : 'attachment'}; filename="${filename}"`);
+    fs.createReadStream(filePath).pipe(res);
+  } catch (error) {
+    console.error('[creative-os/export/download] error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
