@@ -269,6 +269,16 @@ function formatJourneyBreakdownSummary(breakdown) {
     .join(' • ');
 }
 
+function errorMessageFromSettledResult(result, fallbackMessage) {
+  if (!result || result.status !== 'rejected') return '';
+  const reason = result.reason;
+  if (reason && typeof reason === 'object' && typeof reason.message === 'string' && reason.message.trim()) {
+    return reason.message.trim();
+  }
+  const raw = (reason || '').toString().trim();
+  return raw || fallbackMessage;
+}
+
 function formatJourneyPurchaseRecord(list) {
   if (!Array.isArray(list) || list.length === 0) return 'Unknown product';
   const normalized = list
@@ -1552,6 +1562,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
+  const journeyRequestIdRef = useRef(0);
 
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
@@ -1665,6 +1676,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   }, [storeId]);
 
   const loadJourneyReports = useCallback(async () => {
+    const requestId = journeyRequestIdRef.current + 1;
+    journeyRequestIdRef.current = requestId;
+
     const currentParams = new URLSearchParams({
       store: storeId,
       limit: String(JOURNEY_TABLE_LIMIT),
@@ -1683,28 +1697,55 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     setAbandonmentLoading(true);
     setAbandonmentError('');
 
-    try {
-      const [landingPayload, abandonmentPayload, landingPreviousPayload, abandonmentPreviousPayload] = await Promise.all([
+    const [
+      landingCurrentResult,
+      abandonmentCurrentResult,
+      landingPreviousResult,
+      abandonmentPreviousResult
+    ] = await Promise.allSettled([
         fetchJson(`/api/session-intelligence/journey/landing-purchases?${currentParams.toString()}`),
         fetchJson(`/api/session-intelligence/journey/abandonment?${currentParams.toString()}`),
         fetchJson(`/api/session-intelligence/journey/landing-purchases?${previousParams.toString()}`),
         fetchJson(`/api/session-intelligence/journey/abandonment?${previousParams.toString()}`)
       ]);
 
-      setLandingPurchaseReport(landingPayload || null);
-      setAbandonmentReport(abandonmentPayload || null);
-      setLandingPurchasePreviousReport(landingPreviousPayload || null);
-      setAbandonmentPreviousReport(abandonmentPreviousPayload || null);
-    } catch (error) {
-      const message = error?.message || 'Failed to load journey reports';
-      console.error('[SessionIntelligenceTab] journey report load failed:', error);
-      setLandingPurchaseError(message);
-      setAbandonmentError(message);
+    if (requestId !== journeyRequestIdRef.current) return;
+
+    if (landingCurrentResult.status === 'fulfilled') {
+      setLandingPurchaseReport(landingCurrentResult.value || null);
+      setLandingPurchaseError('');
+    } else {
+      const message = errorMessageFromSettledResult(landingCurrentResult, 'Failed to load landing-to-purchase report');
+      console.error('[SessionIntelligenceTab] landing journey load failed:', landingCurrentResult.reason || message);
       setLandingPurchaseReport(null);
+      setLandingPurchaseError(message);
+    }
+
+    if (abandonmentCurrentResult.status === 'fulfilled') {
+      setAbandonmentReport(abandonmentCurrentResult.value || null);
+      setAbandonmentError('');
+    } else {
+      const message = errorMessageFromSettledResult(abandonmentCurrentResult, 'Failed to load abandonment report');
+      console.error('[SessionIntelligenceTab] abandonment journey load failed:', abandonmentCurrentResult.reason || message);
       setAbandonmentReport(null);
+      setAbandonmentError(message);
+    }
+
+    if (landingPreviousResult.status === 'fulfilled') {
+      setLandingPurchasePreviousReport(landingPreviousResult.value || null);
+    } else {
+      console.warn('[SessionIntelligenceTab] previous landing journey load failed:', landingPreviousResult.reason || 'unknown error');
       setLandingPurchasePreviousReport(null);
+    }
+
+    if (abandonmentPreviousResult.status === 'fulfilled') {
+      setAbandonmentPreviousReport(abandonmentPreviousResult.value || null);
+    } else {
+      console.warn('[SessionIntelligenceTab] previous abandonment journey load failed:', abandonmentPreviousResult.reason || 'unknown error');
       setAbandonmentPreviousReport(null);
-    } finally {
+    }
+
+    if (requestId === journeyRequestIdRef.current) {
       setLandingPurchaseLoading(false);
       setAbandonmentLoading(false);
     }
