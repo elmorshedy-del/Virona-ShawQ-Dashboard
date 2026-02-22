@@ -279,7 +279,10 @@ function buildHistoryShiftEvents(series, historyEvents = []) {
 
       const fromBudget = Number(event?.fromBudget);
       const toBudget = Number(event?.toBudget);
-      const hasBudgetValues = Number.isFinite(fromBudget) && Number.isFinite(toBudget);
+      const hasBudgetValues = event?.fromBudget != null
+        && event?.toBudget != null
+        && Number.isFinite(fromBudget)
+        && Number.isFinite(toBudget);
       const budgetShiftRatio = hasBudgetValues ? safeDeltaRatio(toBudget, fromBudget) : null;
       const eventShiftRatio = Number(event?.shiftRatio);
       const shiftRatio = Number.isFinite(eventShiftRatio)

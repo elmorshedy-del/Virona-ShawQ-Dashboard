@@ -39,26 +39,42 @@ const META_BUDGET_EVENT_FIELDS = 'event_time,event_type,event_type_display_name,
 const META_BUDGET_FIELD_HINT_KEYS = new Set(['field', 'field_name', 'changed_field', 'attribute', 'target']);
 const META_BUDGET_FROM_KEYS = new Set([
   'old_value',
+  'old_value_in_minor_units',
   'old_budget',
+  'old_budget_in_minor_units',
   'old_daily_budget',
+  'old_daily_budget_in_minor_units',
   'old_lifetime_budget',
+  'old_lifetime_budget_in_minor_units',
   'before_value',
+  'before_value_in_minor_units',
   'before_budget',
+  'before_budget_in_minor_units',
   'previous_value',
-  'from_value'
+  'previous_value_in_minor_units',
+  'from_value',
+  'from_value_in_minor_units'
 ]);
 const META_BUDGET_TO_KEYS = new Set([
   'new_value',
+  'new_value_in_minor_units',
   'new_budget',
+  'new_budget_in_minor_units',
   'new_daily_budget',
+  'new_daily_budget_in_minor_units',
   'new_lifetime_budget',
+  'new_lifetime_budget_in_minor_units',
   'after_value',
+  'after_value_in_minor_units',
   'after_budget',
+  'after_budget_in_minor_units',
   'updated_value',
-  'to_value'
+  'updated_value_in_minor_units',
+  'to_value',
+  'to_value_in_minor_units'
 ]);
 const META_BUDGET_MINOR_UNIT_DIVISOR = 100;
-const META_BUDGET_MINOR_UNIT_THRESHOLD = 1000;
+const META_BUDGET_MINOR_UNIT_KEY_HINTS = Object.freeze(['minor', 'cent', 'subunit']);
 const META_BUDGET_HISTORY_LOOKBACK_DAYS = BUDGET_MONITOR_CONFIG.monitorLookbackDays;
 const META_BUDGET_HISTORY_CACHE_TTL_MS = BUDGET_MONITOR_CONFIG.historyCacheTtlMinutes * MILLISECONDS_PER_MINUTE;
 const META_BUDGET_HISTORY_CACHE_MAX_ENTRIES = BUDGET_MONITOR_CONFIG.historyCacheMaxEntries;
@@ -178,7 +194,13 @@ function getIsoDateForDashboardOffset(value, utcOffsetMinutes = BUDGET_MONITOR_C
   return new Date(dashboardMs).toISOString().slice(0, 10);
 }
 
-function parseBudgetAmount(value) {
+function isMinorUnitBudgetKey(rawKey) {
+  const key = String(rawKey || '').trim().toLowerCase();
+  if (!key) return false;
+  return META_BUDGET_MINOR_UNIT_KEY_HINTS.some((hint) => key.includes(hint));
+}
+
+function parseBudgetAmount(value, { isMinorUnits = false } = {}) {
   if (value == null || value === '') return null;
 
   let parsedValue = value;
@@ -190,7 +212,7 @@ function parseBudgetAmount(value) {
 
   const numeric = Number(parsedValue);
   if (!Number.isFinite(numeric)) return null;
-  if (Number.isInteger(numeric) && Math.abs(numeric) >= META_BUDGET_MINOR_UNIT_THRESHOLD) {
+  if (isMinorUnits) {
     return numeric / META_BUDGET_MINOR_UNIT_DIVISOR;
   }
   return numeric;
@@ -243,7 +265,9 @@ function collectNestedEntries(payload) {
 function findNumericValueByKeys(entries, keySet) {
   for (const entry of entries) {
     if (!keySet.has(entry.key)) continue;
-    const parsed = parseBudgetAmount(entry.value);
+    const parsed = parseBudgetAmount(entry.value, {
+      isMinorUnits: isMinorUnitBudgetKey(entry.key)
+    });
     if (parsed != null) return parsed;
   }
   return null;
@@ -260,7 +284,9 @@ function inferBudgetValuesFromEntries(entries) {
   let fallbackBudget = null;
   entries.forEach((entry) => {
     if (!entry.key.includes('budget')) return;
-    const parsed = parseBudgetAmount(entry.value);
+    const parsed = parseBudgetAmount(entry.value, {
+      isMinorUnits: isMinorUnitBudgetKey(entry.key)
+    });
     if (parsed == null) return;
     fallbackBudget = parsed;
   });

@@ -590,7 +590,10 @@ export default function CampaignIntelligenceTab({ store }) {
         const row = chartByDate.get(event.pivotDate);
         if (!row) return null;
 
-        const hasBudgetValues = Number.isFinite(Number(event.fromBudget)) && Number.isFinite(Number(event.toBudget));
+        const hasBudgetValues = event.fromBudget != null
+          && event.toBudget != null
+          && Number.isFinite(Number(event.fromBudget))
+          && Number.isFinite(Number(event.toBudget));
         const deltaPercent = hasBudgetValues
           ? Number(event.budgetShiftPercent || 0)
           : Number(event.shiftPercent || 0);
