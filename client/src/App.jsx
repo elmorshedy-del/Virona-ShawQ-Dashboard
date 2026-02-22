@@ -2454,8 +2454,8 @@ function DashboardTab({
       return ((current - previous) / previous) * 100;
     };
 
-    // Display uses the raw delta (true percent change in the metric's value).
-    // Logic (tone/celebration) uses a direction-aware delta where "good" is positive.
+    // Direction-aware delta means "positive = better outcome".
+    // For CAC specifically, lower raw values are better, so sign is inverted for UI logic and display.
     const getDirectionalDeltaPct = (metricKey, rawDeltaPct) => {
       if (rawDeltaPct == null) return null;
       return metricKey === 'cac' ? -rawDeltaPct : rawDeltaPct;
@@ -2472,9 +2472,9 @@ function DashboardTab({
       const value = getMetricValue(monthContext.activeTotals, kpi.key);
       const rawDeltaPct = getDeltaPct(kpi.key);
       const directionalDeltaPct = getDirectionalDeltaPct(kpi.key, rawDeltaPct);
-      const formattedDelta = rawDeltaPct == null
+      const formattedDelta = directionalDeltaPct == null
         ? '—'
-        : `${rawDeltaPct > 0 ? '+' : ''}${rawDeltaPct.toFixed(0)}%`;
+        : `${directionalDeltaPct > 0 ? '+' : ''}${directionalDeltaPct.toFixed(0)}%`;
       const formattedValue = formatMetricValue(kpi.key, value);
 
       let text = `${monthContext.prefix}: ${formattedValue} · ${formattedDelta} vs ${monthContext.prevLabel}`;
