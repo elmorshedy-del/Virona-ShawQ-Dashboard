@@ -2454,15 +2454,22 @@ function DashboardTab({
       return ((current - previous) / previous) * 100;
     };
 
+    // CAC is inverse (lower is better), while ROAS and most KPIs are direct.
+    const getDirectionalDeltaPct = (metricKey, rawDeltaPct) => {
+      if (rawDeltaPct == null) return null;
+      return metricKey === 'cac' ? -rawDeltaPct : rawDeltaPct;
+    };
+
     const revenueDelta = getDeltaPct('revenue');
     const roasDelta = getDeltaPct('roas');
 
     return kpis.map((kpi) => {
       const value = getMetricValue(monthContext.activeTotals, kpi.key);
-      const deltaPct = getDeltaPct(kpi.key);
-      const formattedDelta = deltaPct == null
+      const rawDeltaPct = getDeltaPct(kpi.key);
+      const directionalDeltaPct = getDirectionalDeltaPct(kpi.key, rawDeltaPct);
+      const formattedDelta = directionalDeltaPct == null
         ? '—'
-        : `${deltaPct > 0 ? '+' : ''}${deltaPct.toFixed(0)}%`;
+        : `${directionalDeltaPct > 0 ? '+' : ''}${directionalDeltaPct.toFixed(0)}%`;
       const formattedValue = formatMetricValue(kpi.key, value);
 
       let text = `${monthContext.prefix}: ${formattedValue} · ${formattedDelta} vs ${monthContext.prevLabel}`;
@@ -2476,21 +2483,22 @@ function DashboardTab({
       const minValue = historyValues.length ? Math.min(...historyValues) : null;
       const isAllTimeHigh = maxValue != null && value >= maxValue;
       const isAllTimeLow = minValue != null && value <= minValue;
+      const lowerIsBetter = kpi.key === 'cac';
+      const isBestEver = lowerIsBetter ? isAllTimeLow : isAllTimeHigh;
+      const isWorstEver = lowerIsBetter ? isAllTimeHigh : isAllTimeLow;
 
-      if (isAllTimeHigh) {
-        text += ' · All-time high';
-      } else if (isAllTimeLow) {
-        text += ' · All-time low';
+      if (isBestEver) {
+        text += lowerIsBetter ? ' · All-time low' : ' · All-time high';
+      } else if (isWorstEver) {
+        text += lowerIsBetter ? ' · All-time high' : ' · All-time low';
       }
 
-      const isStrongUplift = deltaPct != null && deltaPct >= 15;
-      const isCelebrating = isStrongUplift || isAllTimeHigh;
+      const isStrongUplift = directionalDeltaPct != null && directionalDeltaPct >= 15;
+      const isCelebrating = isStrongUplift || isBestEver;
 
       let tone = 'neutral';
-      if (deltaPct != null) {
-        if (kpi.key === 'cac') {
-          tone = deltaPct < 0 ? 'positive' : (deltaPct > 0 ? 'negative' : 'neutral');
-        } else if (kpi.key === 'spend') {
+      if (directionalDeltaPct != null) {
+        if (kpi.key === 'spend') {
           const revenueSignal = revenueDelta == null ? 0 : Math.sign(revenueDelta);
           const roasSignal = roasDelta == null ? 0 : Math.sign(roasDelta);
           const performanceSignal = revenueSignal + roasSignal;
@@ -2498,8 +2506,12 @@ function DashboardTab({
           else if (performanceSignal < 0) tone = 'negative';
           else tone = 'neutral';
         } else {
-          tone = deltaPct > 0 ? 'positive' : (deltaPct < 0 ? 'negative' : 'neutral');
+          tone = directionalDeltaPct > 0 ? 'positive' : (directionalDeltaPct < 0 ? 'negative' : 'neutral');
         }
+      } else if (isBestEver) {
+        tone = 'positive';
+      } else if (isWorstEver) {
+        tone = 'negative';
       }
 
       return { key: kpi.key, text, tone, isCelebrating };
