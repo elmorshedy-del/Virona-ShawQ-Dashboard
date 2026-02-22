@@ -1,7 +1,7 @@
 // client/src/components/CreativeStudio.jsx
 // Main Creative Studio Component - Google-style Ad Editor
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Component, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Type, Image as ImageIcon, Download, Layout, Palette, Move,
   Maximize, Smartphone, Monitor, Check, Undo, Upload, Wand2,
@@ -19,6 +19,44 @@ import CreativeProductionOS from './CreativeProductionOS';
 
 const API_BASE = '/api';
 const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
+
+class CreativeStudioErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: error?.message || 'Unexpected rendering error.'
+    };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('[creative-studio] tab render crash:', error, info);
+  }
+
+  render() {
+    if (!this.state.hasError) {
+      return this.props.children;
+    }
+
+    return (
+      <div className="mx-4 mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-6 text-rose-900">
+        <h2 className="text-lg font-semibold">This studio panel crashed.</h2>
+        <p className="mt-2 text-sm">{this.state.message}</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="mt-4 rounded-lg border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+        >
+          Reload Panel
+        </button>
+      </div>
+    );
+  }
+}
 
 // ============================================================================
 // DESIGN TOKENS
@@ -265,29 +303,31 @@ export default function CreativeStudio({ store }) {
 
       {/* Content */}
       <div className="max-w-[1800px] mx-auto">
-        {activeTab === 'overlay' && <VideoOverlayEditor store={store} />}
-        {activeTab === 'photo_magic' && <PhotoMagicEditor store={store} />}
-        {activeTab === 'editor' && <AdEditor store={store} />}
-        {activeTab === 'creative_os' && <CreativeProductionOS store={store} />}
-        {activeTab === 'video' && <VideoResizer store={store} />}
-        {activeTab === 'spy' && (
-          <CompetitorSpy
-            store={store}
-            onGenerateBrief={(brief) => {
-              setPendingBrief(brief);
-              setActiveTab('generate');
-            }}
-          />
-        )}
-        {activeTab === 'generate' && (
-          <AIGenerate
-            store={store}
-            prefillBrief={pendingBrief}
-            onPrefillApplied={() => setPendingBrief(null)}
-          />
-        )}
-        {activeTab === 'analyze' && <AnalyzeTools store={store} />}
-        {activeTab === 'testimonial' && <TestimonialExtractor />}
+        <CreativeStudioErrorBoundary key={activeTab}>
+          {activeTab === 'overlay' && <VideoOverlayEditor store={store} />}
+          {activeTab === 'photo_magic' && <PhotoMagicEditor store={store} />}
+          {activeTab === 'editor' && <AdEditor store={store} />}
+          {activeTab === 'creative_os' && <CreativeProductionOS store={store} />}
+          {activeTab === 'video' && <VideoResizer store={store} />}
+          {activeTab === 'spy' && (
+            <CompetitorSpy
+              store={store}
+              onGenerateBrief={(brief) => {
+                setPendingBrief(brief);
+                setActiveTab('generate');
+              }}
+            />
+          )}
+          {activeTab === 'generate' && (
+            <AIGenerate
+              store={store}
+              prefillBrief={pendingBrief}
+              onPrefillApplied={() => setPendingBrief(null)}
+            />
+          )}
+          {activeTab === 'analyze' && <AnalyzeTools store={store} />}
+          {activeTab === 'testimonial' && <TestimonialExtractor />}
+        </CreativeStudioErrorBoundary>
       </div>
     </div>
   );

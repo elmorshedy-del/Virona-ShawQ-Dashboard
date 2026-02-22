@@ -80,6 +80,31 @@ function photoMagicSingle(fieldName) {
   };
 }
 
+function createBoundedUploadSingle({ fieldName, maxBytes, typeLabel }) {
+  const boundedUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: maxBytes }
+  });
+  const middleware = boundedUpload.single(fieldName);
+
+  return (req, res, next) => {
+    middleware(req, res, (err) => {
+      if (!err) return next();
+      const isTooLarge = err?.code === 'LIMIT_FILE_SIZE';
+      const status = isTooLarge ? 413 : 400;
+      return res.status(status).json({
+        success: false,
+        error: isTooLarge
+          ? `${typeLabel} file too large (max ${Math.round(maxBytes / (1024 * 1024))}MB).`
+          : (err?.message || `${typeLabel} upload failed.`),
+        code: err?.code || 'UPLOAD_ERROR',
+        limit_bytes: maxBytes
+      });
+    });
+  };
+}
+
+
 // ============================================================================
 // VIDEO OVERLAY EDITOR (VideoOverlayAI) - temp storage + helpers
 // ============================================================================
@@ -295,6 +320,26 @@ const CREATIVE_OS_TIMELINE_MAX_CAPTIONS = 120;
 const CREATIVE_OS_TIMELINE_MAX_TEXT_CHARS = 180;
 const CREATIVE_OS_TIMELINE_MAX_TTS_CHARS = 400;
 const CREATIVE_OS_TTS_PROVIDER_MAX_CHARS = 200;
+const CREATIVE_OS_VIDEO_UPLOAD_MAX_BYTES = (() => {
+  const mb = Number(process.env.CREATIVE_OS_VIDEO_MAX_UPLOAD_MB || 180);
+  const resolved = Number.isFinite(mb) && mb > 0 ? Math.round(mb * 1024 * 1024) : 180 * 1024 * 1024;
+  return Math.min(Math.max(8 * 1024 * 1024, resolved), 512 * 1024 * 1024);
+})();
+const CREATIVE_OS_AUDIO_UPLOAD_MAX_BYTES = (() => {
+  const mb = Number(process.env.CREATIVE_OS_AUDIO_MAX_UPLOAD_MB || 40);
+  const resolved = Number.isFinite(mb) && mb > 0 ? Math.round(mb * 1024 * 1024) : 40 * 1024 * 1024;
+  return Math.min(Math.max(2 * 1024 * 1024, resolved), 128 * 1024 * 1024);
+})();
+const creativeOsVideoSingle = createBoundedUploadSingle({
+  fieldName: 'video',
+  maxBytes: CREATIVE_OS_VIDEO_UPLOAD_MAX_BYTES,
+  typeLabel: 'Video'
+});
+const creativeOsAudioSingle = createBoundedUploadSingle({
+  fieldName: 'audio',
+  maxBytes: CREATIVE_OS_AUDIO_UPLOAD_MAX_BYTES,
+  typeLabel: 'Audio'
+});
 const CREATIVE_OS_MEDIA_ID_PATTERN = /^[a-zA-Z0-9_-]{8,120}$/;
 const CREATIVE_OS_TIMELINE_MAX_SEGMENTS = 24;
 const CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS = 0.6;
@@ -4871,6 +4916,75 @@ router.post('/creative-os/style/extract', upload.single('image'), async (req, re
   }
 });
 
+router.get('/creative-os/brand-kit/bootstrap', async (req, res) => {
+  try {
+    const store = sanitizeCreativeOsText(req.query.store, 64, CREATIVE_OS_DEFAULT_STORE).toLowerCase();
+    const storeUrl = sanitizeCreativeOsText(req.query.store_url || req.query.storeUrl, 1024, '') || null;
+    const forceRefresh = parseBool(req.query.refresh, false);
+
+    const profile = await getOrCreateStoreProfile(store, { storeUrl, forceRefresh });
+    const logoUrl = sanitizeCreativeOsText(profile?.logoUrl, 1024, '') || null;
+
+    let primaryColor = '#0f766e';
+    let accentColor = '#d97706';
+    let textColor = '#ffffff';
+    let palette = [];
+
+    if (logoUrl) {
+      try {
+        const parsedLogo = new URL(logoUrl);
+        if (!CREATIVE_OS_IMPORT_ALLOWED_PROTOCOLS.has(parsedLogo.protocol)) {
+          throw new Error('Unsupported logo URL protocol.');
+        }
+        await assertCreativeOsPublicHost(parsedLogo.hostname);
+
+        const logoResponse = await axios.get(parsedLogo.toString(), {
+          responseType: 'arraybuffer',
+          timeout: CREATIVE_OS_IMPORT_TIMEOUT_MS,
+          maxBodyLength: 2 * 1024 * 1024,
+          maxContentLength: 2 * 1024 * 1024
+        });
+        const logoBuffer = Buffer.from(logoResponse.data || []);
+        if (logoBuffer.length > 0) {
+          const { data, info } = await sharp(logoBuffer)
+            .rotate()
+            .removeAlpha()
+            .resize(144, 144, { fit: 'inside' })
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          palette = buildCreativeOsPaletteFromRawImage(data, info?.channels || 3);
+          primaryColor = palette[0]?.hex || primaryColor;
+          accentColor = palette[1]?.hex || accentColor;
+          textColor = bestTextColorForBackground(primaryColor);
+        }
+      } catch (error) {
+        console.warn('[creative-os/brand-kit/bootstrap] logo color extraction warning:', error?.message || error);
+      }
+    }
+
+    return res.json({
+      success: true,
+      brand_kit: {
+        logo_url: logoUrl,
+        primary_color: primaryColor,
+        accent_color: accentColor,
+        text_color: textColor,
+        font: 'sora',
+        enforce_across_assets: true,
+        palette
+      },
+      profile: {
+        store,
+        store_url: profile?.storeUrl || storeUrl || null,
+        summary: profile?.summary || null
+      }
+    });
+  } catch (error) {
+    console.error('[creative-os/brand-kit/bootstrap] error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.get('/creative-os/models/health', async (req, res) => {
   try {
     const photoMagicConfigured = isPhotoMagicAiConfigured();
@@ -4921,7 +5035,7 @@ router.get('/creative-os/models/health', async (req, res) => {
   }
 });
 
-router.post('/creative-os/video/upload', upload.single('video'), async (req, res) => {
+router.post('/creative-os/video/upload', creativeOsVideoSingle, async (req, res) => {
   try {
     await ensureCreativeOsVideoDirs();
 
@@ -4963,7 +5077,7 @@ router.post('/creative-os/video/upload', upload.single('video'), async (req, res
   }
 });
 
-router.post('/creative-os/video/audio/upload', upload.single('audio'), async (req, res) => {
+router.post('/creative-os/video/audio/upload', creativeOsAudioSingle, async (req, res) => {
   try {
     await ensureCreativeOsVideoDirs();
 
