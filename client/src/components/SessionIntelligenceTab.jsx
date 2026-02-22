@@ -31,6 +31,8 @@ const JOURNEY_SIGNIFICANT_DELTA_RATE = 0.25;
 const JOURNEY_SIGNIFICANT_DELTA_COUNT = 3;
 const ISSUE_TABLE_ROW_LIMIT = 8;
 const ISSUE_PROOF_SESSION_LIMIT = 5;
+const ISSUE_AUTO_INVESTIGATE_MIN_AFFECTED_SESSIONS = 3;
+const ISSUE_OBSERVED_STATUS_HINT = 'Spotted and monitored closely. Automatic investigation starts when the pattern consistently affects more sessions.';
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
@@ -574,11 +576,15 @@ function normalizeVerificationStatus(status, issueType) {
   return 'unverified';
 }
 
-function verificationUi(status) {
+function verificationUi(status, issue = null) {
+  const sessionsAffected = Number(issue?.sessionsAffected) || 0;
   if (status === 'confirmed') return { label: 'Confirmed', className: 'si-verify-confirmed' };
   if (status === 'false_positive') return { label: 'False alert', className: 'si-verify-false-positive' };
-  if (status === 'not_applicable') return { label: 'N/A', className: 'si-verify-na' };
-  return { label: 'Investigating', className: 'si-verify-pending' };
+  if (status === 'not_applicable') return { label: 'Observed', className: 'si-verify-observed', hint: ISSUE_OBSERVED_STATUS_HINT };
+  if (sessionsAffected < ISSUE_AUTO_INVESTIGATE_MIN_AFFECTED_SESSIONS) {
+    return { label: 'Observed', className: 'si-verify-observed', hint: ISSUE_OBSERVED_STATUS_HINT };
+  }
+  return { label: 'Investigating', className: 'si-verify-pending', hint: 'Actively verifying this issue cluster now.' };
 }
 
 function pluralize(value, singular, plural) {
@@ -644,12 +650,23 @@ const ISSUE_META = {
 const VERIFIABLE_ISSUE_TYPES = new Set(['js_errors', 'dead_clicks', 'rage_clicks']);
 
 const ISSUE_VERIFICATION_VIEW = {
-  CONFIRMED_FIRST: 'confirmed_first',
-  ALL: 'all'
+  INVESTIGATING: 'investigating',
+  CONFIRMED: 'confirmed'
 };
 
 const TECHNICAL_ISSUE_TYPES = new Set(['js_errors', 'form_invalid', 'scroll_dropoff']);
 const INTERACTION_FRICTION_ISSUE_TYPES = new Set(['dead_clicks', 'rage_clicks']);
+const ISSUE_TYPE_BADGE_META = {
+  js_errors: { label: 'Runtime', tone: 'runtime' },
+  form_invalid: { label: 'Form', tone: 'form' },
+  scroll_dropoff: { label: 'Scroll', tone: 'scroll' },
+  dead_clicks: { label: 'Dead click', tone: 'dead' },
+  rage_clicks: { label: 'Rage click', tone: 'rage' }
+};
+
+function issueTypeBadgeMeta(type) {
+  return ISSUE_TYPE_BADGE_META[type] || { label: 'Signal', tone: 'neutral' };
+}
 
 const TARGET_KEY_RULES = [
   { key: 'summary.accordion__summary', label: 'Accordion toggle' },
@@ -1538,7 +1555,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const [eventsStatus, setEventsStatus] = useState('idle');
   const [sanityOpen, setSanityOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [issueVerificationView, setIssueVerificationView] = useState(ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST);
+  const [issueVerificationView, setIssueVerificationView] = useState(ISSUE_VERIFICATION_VIEW.INVESTIGATING);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
   const [libraryDays, setLibraryDays] = useState([]);
@@ -2244,14 +2261,17 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 
   const issueRows = issueModel.rows || [];
   const verificationSummary = claritySignals?.verification || null;
-  const hasConfirmedVerifiableIssues = issueRows.some((row) => (
-    row.isVerifiable && row.verificationStatus === 'confirmed'
-  ));
+  const hasConfirmedIssues = issueRows.some((row) => row.verificationStatus === 'confirmed');
+  const investigatingIssueRows = useMemo(() => (
+    issueRows.filter((row) => row.verificationStatus !== 'confirmed' && row.verificationStatus !== 'false_positive')
+  ), [issueRows]);
+  const confirmedIssueRows = useMemo(() => (
+    issueRows.filter((row) => row.verificationStatus === 'confirmed')
+  ), [issueRows]);
   const filteredIssueRows = useMemo(() => {
-    if (issueVerificationView !== ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST) return issueRows;
-    if (!hasConfirmedVerifiableIssues) return issueRows;
-    return issueRows.filter((row) => !row.isVerifiable || row.verificationStatus === 'confirmed');
-  }, [hasConfirmedVerifiableIssues, issueRows, issueVerificationView]);
+    if (issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED) return confirmedIssueRows;
+    return investigatingIssueRows;
+  }, [confirmedIssueRows, investigatingIssueRows, issueVerificationView]);
   const technicalIssueRows = useMemo(() => (
     filteredIssueRows.filter((row) => TECHNICAL_ISSUE_TYPES.has(row.type))
   ), [filteredIssueRows]);
@@ -2265,17 +2285,21 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       key: 'technical',
       title: 'Technical issues',
       subtitle: 'JS/runtime/form/scroll clusters',
-      emptyMessage: 'No technical issues surfaced in this range.',
+      emptyMessage: issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED
+        ? 'No confirmed technical issues in this range yet.'
+        : 'No technical issues under review in this range.',
       rows: visibleTechnicalIssueRows
     },
     {
       key: 'interaction',
       title: 'Interaction friction',
       subtitle: 'Dead and rage clicks only',
-      emptyMessage: 'No interaction friction clusters in this range.',
+      emptyMessage: issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED
+        ? 'No confirmed interaction friction in this range yet.'
+        : 'No interaction friction under review in this range.',
       rows: visibleInteractionFrictionRows
     }
-  ]), [visibleInteractionFrictionRows, visibleTechnicalIssueRows]);
+  ]), [issueVerificationView, visibleInteractionFrictionRows, visibleTechnicalIssueRows]);
   const topIssue = filteredIssueRows[0] || issueRows[0] || null;
   const developerGuideRows = technicalIssueRows.slice(0, 3);
   const actionPlanRows = useMemo(() => (
@@ -2286,10 +2310,10 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   ), [librarySessions]);
 
   useEffect(() => {
-    if (hasConfirmedVerifiableIssues) return;
-    if (issueVerificationView !== ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST) return;
-    setIssueVerificationView(ISSUE_VERIFICATION_VIEW.ALL);
-  }, [hasConfirmedVerifiableIssues, issueVerificationView]);
+    if (hasConfirmedIssues) return;
+    if (issueVerificationView !== ISSUE_VERIFICATION_VIEW.CONFIRMED) return;
+    setIssueVerificationView(ISSUE_VERIFICATION_VIEW.INVESTIGATING);
+  }, [hasConfirmedIssues, issueVerificationView]);
 
   const summaryTotals = useMemo(() => {
     const sessionsCandidate = Number(issueModel.totalSessions) || 0;
@@ -2745,30 +2769,30 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         <div className="si-card-title">
           <h3>Top issues</h3>
           <span className="si-muted">
-            Ranked by high-intent impact • {issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST ? 'Confirmed first' : 'All issues'}
+            Ranked by high-intent impact • {issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED ? 'Confirmed' : 'Investigating'}
           </span>
         </div>
 
         <div className="si-row si-issues-toolbar" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
           <button
-            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST ? 'si-chip-active' : ''}`}
+            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.INVESTIGATING ? 'si-chip-active' : ''}`}
             type="button"
-            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST)}
-            disabled={!hasConfirmedVerifiableIssues}
-            title={hasConfirmedVerifiableIssues ? 'Show only confirmed verifier issues (+ non-verifiable issues).' : 'No confirmed verifier issues yet.'}
+            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.INVESTIGATING)}
           >
-            Confirmed first
+            Investigating
           </button>
           <button
-            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.ALL ? 'si-chip-active' : ''}`}
+            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED ? 'si-chip-active' : ''}`}
             type="button"
-            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.ALL)}
+            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.CONFIRMED)}
+            disabled={!hasConfirmedIssues}
+            title={hasConfirmedIssues ? 'Show confirmed issues only.' : 'No confirmed issues yet.'}
           >
-            All issues
+            Confirmed
           </button>
           {verificationSummary?.total > 0 ? (
             <span className="si-muted">
-              Verifier: {formatNumber(verificationSummary.confirmed)} confirmed, {formatNumber(verificationSummary.false_positive)} false alerts, {formatNumber(verificationSummary.unverified)} investigating
+              Verifier: {formatNumber(verificationSummary.confirmed)} confirmed, {formatNumber(verificationSummary.false_positive)} false alerts, {formatNumber(verificationSummary.unverified)} under review
             </span>
           ) : null}
         </div>
@@ -2789,7 +2813,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 
         {!clarityLoading && !clarityError && issueRows.length > 0 && filteredIssueRows.length === 0 ? (
           <div className="si-empty">
-            No rows match the current verification filter. Switch to <strong>All issues</strong> to inspect unresolved alerts.
+            No rows match this status filter yet.
           </div>
         ) : null}
 
@@ -2797,14 +2821,14 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           <div className="si-journey-grid si-issues-split-grid">
             {issueTableSections.map((section) => (
               <div key={section.key} className="si-card si-journey-card si-issues-panel-card">
-                <div className="si-card-title">
+                <div className="si-card-title si-table-panel-header">
                   <h3>{section.title}</h3>
                   <span className="si-muted">{section.subtitle}</span>
                 </div>
                 {section.rows.length === 0 ? (
                   <div className="si-empty">{section.emptyMessage}</div>
                 ) : (
-                  <div className="si-journey-table-wrap">
+                  <div className="si-journey-table-wrap si-issues-table-wrap">
                     <table className="si-event-table si-issues-compact-table">
                       <thead>
                         <tr>
@@ -2819,18 +2843,24 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
                       </thead>
                       <tbody>
                         {section.rows.map((row, rowIndex) => {
-                          const verificationState = verificationUi(row.verificationStatus);
+                          const verificationState = verificationUi(row.verificationStatus, row);
                           const sampleList = Array.isArray(row.sampleSessions) ? row.sampleSessions : [];
                           const proofSession = sampleList[0];
                           const proofCount = Math.min(sampleList.length, ISSUE_PROOF_SESSION_LIMIT);
+                          const issueBadge = issueTypeBadgeMeta(row.type);
                           return (
                             <tr key={row.id} className={`si-issue-row si-issue-${row.type}`}>
                               <td><strong>{rowIndex + 1}</strong></td>
-                              <td>{row.issueLabel}</td>
+                              <td>
+                                <div className="si-issue-cell">
+                                  <span>{row.issueLabel}</span>
+                                  <span className={`si-issue-type-badge si-issue-type-${issueBadge.tone}`}>{issueBadge.label}</span>
+                                </div>
+                              </td>
                               <td title={row.whereLabel}>{row.whereLabel}</td>
                               <td>{pluralize(row.sessionsAffected, 'session', 'sessions')}</td>
                               <td>{formatPercent(row.highIntentRate, 0)}</td>
-                              <td title={row.verificationReason || ''}>
+                              <td title={verificationState.hint || row.verificationReason || ''}>
                                 <span className={`si-chip ${verificationState.className}`}>{verificationState.label}</span>
                               </td>
                               <td>

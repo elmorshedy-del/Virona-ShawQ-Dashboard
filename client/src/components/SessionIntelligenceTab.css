@@ -1216,6 +1216,18 @@
   padding: 12px;
 }
 
+.si-table-panel-header {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(79, 70, 229, 0.16);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(238, 242, 255, 0.58), rgba(255, 255, 255, 0.92));
+}
+
+.si-table-panel-header h3 {
+  font-size: 14px;
+}
+
 .si-action-plan-card {
   background: rgba(255, 255, 255, 0.9);
 }
@@ -1519,59 +1531,109 @@
   color: var(--si-text);
 }
 
+.si-issues-table-wrap {
+  overflow-x: visible;
+}
+
+.si-issues-compact-table {
+  width: 100%;
+  table-layout: auto;
+}
+
 .si-issues-compact-table th,
 .si-issues-compact-table td {
   white-space: normal;
   vertical-align: top;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .si-issues-compact-table td:nth-child(1) {
-  width: 58px;
+  width: 50px;
 }
 
 .si-issues-compact-table td:nth-child(2) {
-  min-width: 160px;
   font-weight: 800;
 }
 
-.si-issues-compact-table td:nth-child(3) {
-  min-width: 180px;
+.si-issues-compact-table td:nth-child(4) {
+  width: 104px;
 }
 
-.si-issues-compact-table td:nth-child(4) {
-  min-width: 120px;
+.si-issues-compact-table td:nth-child(5) {
+  width: 90px;
 }
 
 .si-issues-compact-table td:nth-child(6) {
-  min-width: 120px;
+  width: 124px;
 }
 
 .si-issues-compact-table td:nth-child(7) {
-  min-width: 88px;
+  width: 90px;
 }
 
-.si-issue-row {
-  border-left: 3px solid transparent;
+.si-issue-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
-.si-issue-js_errors {
-  border-left-color: #dc2626;
+.si-issue-type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
 }
 
-.si-issue-dead_clicks {
-  border-left-color: #ea580c;
+.si-issue-type-badge::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.7;
 }
 
-.si-issue-rage_clicks {
-  border-left-color: #b45309;
+.si-issue-type-runtime {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: rgba(254, 226, 226, 0.78);
+  color: #b42318;
 }
 
-.si-issue-form_invalid {
-  border-left-color: #0f766e;
+.si-issue-type-form {
+  border-color: rgba(14, 116, 144, 0.26);
+  background: rgba(224, 242, 254, 0.72);
+  color: #0f6b86;
 }
 
-.si-issue-scroll_dropoff {
-  border-left-color: #2563eb;
+.si-issue-type-scroll {
+  border-color: rgba(37, 99, 235, 0.26);
+  background: rgba(219, 234, 254, 0.75);
+  color: #1d4ed8;
+}
+
+.si-issue-type-dead {
+  border-color: rgba(217, 119, 6, 0.26);
+  background: rgba(254, 243, 199, 0.8);
+  color: #b45309;
+}
+
+.si-issue-type-rage {
+  border-color: rgba(147, 51, 234, 0.26);
+  background: rgba(243, 232, 255, 0.8);
+  color: #7e22ce;
+}
+
+.si-issue-type-neutral {
+  border-color: rgba(100, 116, 139, 0.28);
+  background: rgba(241, 245, 249, 0.85);
+  color: #475569;
 }
 
 .si-confidence-high {
@@ -1610,9 +1672,9 @@
   color: #92400e;
 }
 
-.si-verify-na {
-  border-color: rgba(71, 85, 105, 0.3);
-  background: rgba(226, 232, 240, 0.72);
+.si-verify-observed {
+  border-color: rgba(71, 85, 105, 0.24);
+  background: rgba(241, 245, 249, 0.88);
   color: #334155;
 }
 
