@@ -7,6 +7,16 @@ const RAW_RETENTION_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_RAW_RETENT
 const ABANDON_AFTER_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_ABANDON_AFTER_HOURS || '24', 10);
 const SESSION_IDLE_MINUTES = parseInt(process.env.SESSION_INTELLIGENCE_SESSION_IDLE_MINUTES || '30', 10);
 const CHECKOUT_DROP_MINUTES = parseInt(process.env.SESSION_INTELLIGENCE_CHECKOUT_DROP_MINUTES || '30', 10);
+const JOURNEY_LINK_LOOKBACK_DAYS = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_JOURNEY_LINK_LOOKBACK_DAYS || '14', 10) || 14, 1),
+  90
+);
+const JOURNEY_TABLE_MAX_LIMIT = 200;
+const JOURNEY_TABLE_DEFAULT_LIMIT = 25;
+const JOURNEY_ENTRY_FALLBACK_MAX_SESSIONS = 5000;
+const JOURNEY_ENTRY_FALLBACK_SESSION_CHUNK = 250;
+const JOURNEY_ENTRY_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
+const UNKNOWN_EVENT_NAME = 'unknown';
 const MIN_SESSIONS_FOR_SCROLL_DROPOFF = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_SCROLL_DROPOFF_MIN_SESSIONS || '8', 10) || 8, 1),
   500
@@ -41,6 +51,62 @@ const REALTIME_GEO_FALLBACK_SAMPLE_LIMIT = 1500;
 const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
 const lastShopperBackfillByStore = new Map();
 const realtimeFocusGeoFallbackCache = new Map();
+const lastJourneyEntryBackfillByStore = new Map();
+const SESSION_JOURNEY_SUPPORTED_LOCALE_CODES = new Set([
+  'ar',
+  'bg',
+  'ca',
+  'cs',
+  'da',
+  'de',
+  'el',
+  'en',
+  'es',
+  'et',
+  'fa',
+  'fi',
+  'fr',
+  'he',
+  'hi',
+  'hr',
+  'hu',
+  'id',
+  'it',
+  'ja',
+  'ko',
+  'lt',
+  'lv',
+  'ms',
+  'nb',
+  'nl',
+  'pl',
+  'pt',
+  'ro',
+  'ru',
+  'sk',
+  'sl',
+  'sr',
+  'sv',
+  'th',
+  'tr',
+  'uk',
+  'vi',
+  'zh'
+]);
+const SESSION_JOURNEY_LOCALE_WITH_REGION_RE = /^([a-z]{2})[-_]([a-z]{2})$/i;
+const SESSION_JOURNEY_EXCLUDED_PATH_SEGMENTS = new Set([
+  'policies',
+  'policy',
+  'privacy',
+  'terms'
+]);
+const SESSION_JOURNEY_EXCLUDED_PATH_SUBSTRINGS = [
+  'care-guide',
+  'guide-care',
+  '/pages/care',
+  '/pages/privacy',
+  '/pages/terms'
+];
 
 function normalizeSqliteDateTime(value) {
   const date = value ? new Date(value) : new Date();
@@ -64,6 +130,459 @@ function safeTruncate(value, max = 240) {
   const str = safeString(value);
   if (!str) return null;
   return str.length > max ? str.slice(0, max) : str;
+}
+
+function safeDecodeUriComponent(value) {
+  const raw = safeString(value);
+  if (!raw) return raw;
+  try {
+    return decodeURIComponent(raw);
+  } catch (_error) {
+    return raw;
+  }
+}
+
+function normalizePathFromAny(value) {
+  const raw = safeString(value).trim();
+  if (!raw) return null;
+
+  if (raw.startsWith('/')) {
+    const pathOnly = raw.split('?')[0].split('#')[0];
+    return pathOnly || '/';
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const pathOnly = safeString(parsed.pathname).split('?')[0].split('#')[0];
+    return pathOnly || '/';
+  } catch (_error) {
+    return null;
+  }
+}
+
+function isLocalePathSegment(segment) {
+  const raw = safeString(segment).trim().toLowerCase();
+  if (!raw) return false;
+  if (SESSION_JOURNEY_SUPPORTED_LOCALE_CODES.has(raw)) return true;
+
+  const regionMatch = raw.match(SESSION_JOURNEY_LOCALE_WITH_REGION_RE);
+  if (!regionMatch) return false;
+  return SESSION_JOURNEY_SUPPORTED_LOCALE_CODES.has(regionMatch[1]);
+}
+
+function stripLocalePrefixFromPath(pathname) {
+  const rawPath = normalizePathFromAny(pathname);
+  if (!rawPath || !rawPath.startsWith('/')) return rawPath;
+
+  const parts = rawPath.split('/').filter(Boolean);
+  if (!parts.length) return '/';
+
+  if (isLocalePathSegment(parts[0])) {
+    const rest = parts.slice(1).join('/');
+    return rest ? `/${rest}` : '/';
+  }
+
+  return `/${parts.join('/')}`;
+}
+
+function normalizeJourneyPath(pathname) {
+  const normalized = stripLocalePrefixFromPath(pathname);
+  if (!normalized) return null;
+  if (normalized === '/') return '/';
+  return normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+}
+
+function isCheckoutPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  return Boolean(normalized && normalized.startsWith('/checkouts/'));
+}
+
+function isJourneyExcludedPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  if (!normalized) return false;
+
+  const lowered = normalized.toLowerCase();
+  const parts = lowered.split('/').filter(Boolean);
+  if (parts.some((part) => SESSION_JOURNEY_EXCLUDED_PATH_SEGMENTS.has(part))) return true;
+  return SESSION_JOURNEY_EXCLUDED_PATH_SUBSTRINGS.some((needle) => lowered.includes(needle));
+}
+
+function isJourneyLandingPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  if (!normalized) return false;
+  if (isCheckoutPath(normalized)) return false;
+  if (isJourneyExcludedPath(normalized)) return false;
+  return true;
+}
+
+function titleCaseFromHandle(handle) {
+  const decoded = safeDecodeUriComponent(handle).replace(/[-_]+/g, ' ').trim();
+  if (!decoded) return null;
+  return decoded
+    .split(/\s+/)
+    .slice(0, 12)
+    .map((word) => (/^[a-z]/.test(word) ? `${word[0].toUpperCase()}${word.slice(1)}` : word))
+    .join(' ');
+}
+
+function classifyLandingLabelFromPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  if (!normalized) return null;
+
+  if (normalized === '/') return 'Home';
+  if (normalized === '/cart') return 'Cart';
+  if (normalized.startsWith('/search')) return 'Search';
+
+  const segments = normalized.split('/').filter(Boolean);
+  if (!segments.length) return 'Home';
+
+  if (segments[0] === 'products' && segments[1]) {
+    const title = titleCaseFromHandle(segments[1]);
+    return title ? `Product: ${title}` : 'Product';
+  }
+  if (segments[0] === 'collections' && segments[1]) {
+    const title = titleCaseFromHandle(segments[1]);
+    return title ? `Collection: ${title}` : 'Collection';
+  }
+  if (segments[0] === 'pages' && segments[1]) {
+    const title = titleCaseFromHandle(segments[1]);
+    return title ? `Page: ${title}` : 'Page';
+  }
+
+  const title = titleCaseFromHandle(segments[0]);
+  return title || normalized;
+}
+
+function extractProductLabelFromPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  if (!normalized) return null;
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments[0] !== 'products' || !segments[1]) return null;
+  return titleCaseFromHandle(segments[1]);
+}
+
+function buildSessionEntryCandidate({ location, eventName, eventTs, attribution }) {
+  const path = normalizeJourneyPath(location?.pagePath);
+  if (!path || !isJourneyLandingPath(path)) return null;
+
+  return {
+    entry_event_ts: eventTs,
+    entry_event_name: safeTruncate(eventName, 120),
+    entry_page_url: safeTruncate(location?.pageUrl, 1000),
+    entry_page_path: safeTruncate(path, 500),
+    entry_utm_source: attribution?.utm_source || null,
+    entry_utm_medium: attribution?.utm_medium || null,
+    entry_utm_campaign: attribution?.utm_campaign || null
+  };
+}
+
+function normalizeEntryContext(rawContext) {
+  if (!rawContext || typeof rawContext !== 'object') return null;
+  const normalizedPath = normalizeJourneyPath(rawContext.entry_page_path);
+  const rawPageUrl = safeString(rawContext.entry_page_url).trim();
+  const fallbackPageUrl = normalizedPath || normalizePathFromAny(rawPageUrl) || null;
+
+  return {
+    entry_event_ts: safeString(rawContext.entry_event_ts).trim() || null,
+    entry_event_name: safeTruncate(rawContext.entry_event_name || UNKNOWN_EVENT_NAME, 120),
+    entry_page_url: safeTruncate(rawPageUrl || fallbackPageUrl, 1000),
+    entry_page_path: normalizedPath ? safeTruncate(normalizedPath, 500) : null,
+    entry_utm_source: safeTruncate(rawContext.entry_utm_source, 240),
+    entry_utm_medium: safeTruncate(rawContext.entry_utm_medium, 240),
+    entry_utm_campaign: safeTruncate(rawContext.entry_utm_campaign, 240)
+  };
+}
+
+function entryContextFromSessionRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  return normalizeEntryContext({
+    entry_event_ts: row.entry_event_ts,
+    entry_event_name: row.entry_event_name,
+    entry_page_url: row.entry_page_url,
+    entry_page_path: row.entry_page_path,
+    entry_utm_source: row.entry_utm_source,
+    entry_utm_medium: row.entry_utm_medium,
+    entry_utm_campaign: row.entry_utm_campaign
+  });
+}
+
+function entryContextFromEventRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const fallbackPath = normalizePathFromAny(row.page_url);
+  return normalizeEntryContext({
+    entry_event_ts: row.event_ts || row.created_at || null,
+    entry_event_name: row.event_name || UNKNOWN_EVENT_NAME,
+    entry_page_url: row.page_url || fallbackPath || null,
+    entry_page_path: row.page_path || fallbackPath || null,
+    entry_utm_source: row.utm_source,
+    entry_utm_medium: row.utm_medium,
+    entry_utm_campaign: row.utm_campaign
+  });
+}
+
+function hasValidJourneyEntryContext(entryContext) {
+  const path = safeString(entryContext?.entry_page_path).trim();
+  if (!path) return false;
+  return isJourneyLandingPath(path);
+}
+
+function sessionNeedsJourneyEntryBackfill(row) {
+  const context = entryContextFromSessionRow(row);
+  return !hasValidJourneyEntryContext(context);
+}
+
+function uniqueSessionIds(rows, max = JOURNEY_ENTRY_FALLBACK_MAX_SESSIONS) {
+  const out = [];
+  const seen = new Set();
+  const limit = Math.max(1, parseInt(max, 10) || JOURNEY_ENTRY_FALLBACK_MAX_SESSIONS);
+
+  for (const row of rows || []) {
+    if (out.length >= limit) break;
+    const sessionId = safeString(row?.session_id).trim();
+    if (!sessionId || seen.has(sessionId)) continue;
+    seen.add(sessionId);
+    out.push(sessionId);
+  }
+
+  return out;
+}
+
+function chunkValues(values, size = JOURNEY_ENTRY_FALLBACK_SESSION_CHUNK) {
+  const list = Array.isArray(values) ? values : [];
+  const chunkSize = Math.max(1, parseInt(size, 10) || JOURNEY_ENTRY_FALLBACK_SESSION_CHUNK);
+  const chunks = [];
+  for (let i = 0; i < list.length; i += chunkSize) {
+    chunks.push(list.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+function collectJourneyEntryFallbackFromEvents(db, store, sessionIds) {
+  const bySession = new Map();
+  const ids = uniqueSessionIds((sessionIds || []).map((sessionId) => ({ session_id: sessionId })));
+  if (!ids.length) return bySession;
+
+  const lookbackWindow = `-${JOURNEY_LINK_LOOKBACK_DAYS} days`;
+  const fallbackBySession = new Map();
+
+  for (const chunk of chunkValues(ids)) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT
+        id,
+        session_id,
+        event_name,
+        event_ts,
+        created_at,
+        page_url,
+        page_path,
+        utm_source,
+        utm_medium,
+        utm_campaign
+      FROM si_events
+      WHERE store = ?
+        AND session_id IN (${placeholders})
+        AND created_at >= datetime('now', ?)
+        AND (
+          (page_path IS NOT NULL AND page_path != '')
+          OR (page_url IS NOT NULL AND page_url != '')
+        )
+      ORDER BY session_id ASC, COALESCE(event_ts, created_at) ASC, id ASC
+    `).all(store, ...chunk, lookbackWindow);
+
+    for (const row of rows) {
+      const sessionId = safeString(row?.session_id).trim();
+      if (!sessionId) continue;
+
+      const context = entryContextFromEventRow(row);
+      if (!context) continue;
+
+      if (!fallbackBySession.has(sessionId)) {
+        fallbackBySession.set(sessionId, context);
+      }
+      if (hasValidJourneyEntryContext(context) && !bySession.has(sessionId)) {
+        bySession.set(sessionId, context);
+      }
+    }
+  }
+
+  for (const sessionId of ids) {
+    if (bySession.has(sessionId)) continue;
+    const fallback = fallbackBySession.get(sessionId);
+    if (fallback) bySession.set(sessionId, fallback);
+  }
+
+  return bySession;
+}
+
+function collectJourneyEntryFallbackFromCheckoutToken(db, store, checkoutTokens) {
+  const byToken = new Map();
+  const tokens = Array.from(new Set((checkoutTokens || [])
+    .map((token) => safeString(token).trim())
+    .filter(Boolean)));
+  if (!tokens.length) return byToken;
+
+  for (const chunk of chunkValues(tokens)) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT
+        last_checkout_token,
+        entry_event_ts,
+        entry_event_name,
+        entry_page_url,
+        entry_page_path,
+        entry_utm_source,
+        entry_utm_medium,
+        entry_utm_campaign,
+        started_at,
+        last_event_at,
+        updated_at,
+        created_at
+      FROM si_sessions
+      WHERE store = ?
+        AND last_checkout_token IN (${placeholders})
+        AND COALESCE(entry_page_path, '') <> ''
+      ORDER BY COALESCE(started_at, last_event_at, updated_at, created_at) ASC
+    `).all(store, ...chunk);
+
+    for (const row of rows) {
+      const token = safeString(row?.last_checkout_token).trim();
+      if (!token || byToken.has(token)) continue;
+
+      const context = entryContextFromSessionRow(row);
+      if (!hasValidJourneyEntryContext(context)) continue;
+      byToken.set(token, context);
+    }
+  }
+
+  return byToken;
+}
+
+function shouldRunJourneyEntryBackfill(store) {
+  const normalizedStore = safeString(store).trim();
+  if (!normalizedStore) return false;
+  const now = Date.now();
+  const lastRun = Number(lastJourneyEntryBackfillByStore.get(normalizedStore) || 0);
+  if (now - lastRun < JOURNEY_ENTRY_BACKFILL_COOLDOWN_MS) return false;
+  lastJourneyEntryBackfillByStore.set(normalizedStore, now);
+  return true;
+}
+
+function persistJourneyEntryBackfill(db, store, updates) {
+  if (!Array.isArray(updates) || !updates.length) return;
+  try {
+    const updateStmt = db.prepare(`
+      UPDATE si_sessions
+      SET
+        entry_event_ts = COALESCE(entry_event_ts, ?),
+        entry_event_name = COALESCE(entry_event_name, ?),
+        entry_page_url = COALESCE(NULLIF(entry_page_url, ''), ?),
+        entry_page_path = ?,
+        entry_utm_source = COALESCE(NULLIF(entry_utm_source, ''), ?),
+        entry_utm_medium = COALESCE(NULLIF(entry_utm_medium, ''), ?),
+        entry_utm_campaign = COALESCE(NULLIF(entry_utm_campaign, ''), ?),
+        updated_at = datetime('now')
+      WHERE store = ?
+        AND session_id = ?
+    `);
+
+    const tx = db.transaction((rowsToUpdate) => {
+      for (const row of rowsToUpdate) {
+        const sessionId = safeString(row?.sessionId).trim();
+        const context = row?.entryContext || null;
+        if (!sessionId || !hasValidJourneyEntryContext(context)) continue;
+
+        updateStmt.run(
+          context.entry_event_ts || null,
+          context.entry_event_name || UNKNOWN_EVENT_NAME,
+          context.entry_page_url || null,
+          context.entry_page_path,
+          context.entry_utm_source || null,
+          context.entry_utm_medium || null,
+          context.entry_utm_campaign || null,
+          store,
+          sessionId
+        );
+      }
+    });
+
+    tx.immediate(updates);
+  } catch (error) {
+    console.warn('[SessionIntelligence] journey entry backfill skipped:', error?.message || error);
+  }
+}
+
+function resolveJourneyEntryContextsForRows(db, store, rows, { persistBackfill = true } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const resolvedBySession = new Map();
+  if (!list.length) return resolvedBySession;
+
+  const scopedRows = list.slice(0, JOURNEY_ENTRY_FALLBACK_MAX_SESSIONS);
+  const needsBackfill = [];
+  const checkoutTokens = new Set();
+
+  for (const row of scopedRows) {
+    const sessionId = safeString(row?.session_id).trim();
+    if (!sessionId) continue;
+
+    const existingContext = entryContextFromSessionRow(row);
+    if (existingContext) {
+      resolvedBySession.set(sessionId, existingContext);
+    }
+
+    if (!sessionNeedsJourneyEntryBackfill(row)) continue;
+    needsBackfill.push(row);
+
+    const token = safeString(row?.last_checkout_token).trim();
+    if (token) checkoutTokens.add(token);
+  }
+
+  if (!needsBackfill.length) return resolvedBySession;
+
+  const missingSessionIds = uniqueSessionIds(needsBackfill);
+  const eventFallbackBySession = collectJourneyEntryFallbackFromEvents(db, store, missingSessionIds);
+  const tokenFallbackByCheckout = collectJourneyEntryFallbackFromCheckoutToken(db, store, Array.from(checkoutTokens));
+
+  const updates = [];
+
+  for (const row of needsBackfill) {
+    const sessionId = safeString(row?.session_id).trim();
+    if (!sessionId) continue;
+
+    const eventFallback = eventFallbackBySession.get(sessionId) || null;
+    const checkoutToken = safeString(row?.last_checkout_token).trim();
+    const checkoutFallback = checkoutToken ? (tokenFallbackByCheckout.get(checkoutToken) || null) : null;
+
+    const chosen = hasValidJourneyEntryContext(eventFallback)
+      ? eventFallback
+      : hasValidJourneyEntryContext(checkoutFallback)
+        ? checkoutFallback
+        : eventFallback || checkoutFallback || null;
+
+    if (!chosen) continue;
+
+    resolvedBySession.set(sessionId, chosen);
+    if (persistBackfill && hasValidJourneyEntryContext(chosen)) {
+      updates.push({ sessionId, entryContext: chosen });
+    }
+  }
+
+  if (persistBackfill && updates.length && shouldRunJourneyEntryBackfill(store)) {
+    persistJourneyEntryBackfill(db, store, updates);
+  }
+
+  return resolvedBySession;
+}
+
+function shouldSkipLowSignalEvent({ eventName, location, checkoutToken, identifiers, eventDataRaw }) {
+  const key = normalizeEventNameKey(eventName).key;
+  if (!key || key !== UNKNOWN_EVENT_NAME) return false;
+
+  const hasPath = Boolean(safeString(location?.pagePath).trim());
+  const hasCheckoutToken = Boolean(safeString(checkoutToken).trim());
+  const hasSessionIdentifier = Boolean(safeString(identifiers?.sessionId).trim() || safeString(identifiers?.clientId).trim());
+  const hasEventData = Boolean(eventDataRaw && typeof eventDataRaw === 'object' && Object.keys(eventDataRaw).length > 0);
+  return !hasPath && !hasCheckoutToken && !hasSessionIdentifier && !hasEventData;
 }
 
 function getOrCreateShopperNumber(store, clientId, eventTs) {
@@ -878,7 +1397,6 @@ function extractSessionIdentifiers(payload) {
     payload?.event?.context?.session_id,
     payload?.event?.sessionId,
     payload?.event?.session_id,
-    payload?.event?.id,
     payload?.context?.sessionId,
     payload?.context?.session_id,
     payload?.sessionId,
@@ -1011,7 +1529,7 @@ const CHECKOUT_COMPLETE_GUARD_TOKENS = new Set(['complete', 'completed', 'comple
 const ORDER_TERMINAL_TOKENS = new Set(['placed', 'complete', 'completed', 'paid', 'success']);
 
 function isProductViewedEvent(eventName, pagePath) {
-  const path = safeString(pagePath).toLowerCase().trim();
+  const path = safeString(normalizeJourneyPath(pagePath)).toLowerCase().trim();
   if (path.startsWith('/products/')) return true;
 
   const { tokens, compact } = normalizeEventNameKey(eventName);
@@ -1031,7 +1549,7 @@ function isProductViewedEvent(eventName, pagePath) {
 function isCartViewedEvent(eventName, pagePath) {
   if (isAddToCart(eventName)) return false;
 
-  const path = safeString(pagePath).toLowerCase().trim();
+  const path = safeString(normalizeJourneyPath(pagePath)).toLowerCase().trim();
   if (path === '/cart' || path === '/cart/') return true;
 
   const { tokens, compact } = normalizeEventNameKey(eventName);
@@ -1147,6 +1665,81 @@ function getOrCreateSessionId(store, clientId, eventTs) {
   return sessionId;
 }
 
+function findSessionIdByCheckoutToken(db, store, checkoutToken) {
+  const token = safeString(checkoutToken).trim();
+  if (!token) return null;
+
+  try {
+    const linked = db.prepare(`
+      SELECT session_id
+      FROM si_checkout_session_links
+      WHERE store = ?
+        AND checkout_token = ?
+      LIMIT 1
+    `).get(store, token);
+    if (linked?.session_id) return linked.session_id;
+  } catch (_error) {
+    // Optional table on older databases.
+  }
+
+  try {
+    const fromSessions = db.prepare(`
+      SELECT session_id
+      FROM si_sessions
+      WHERE store = ?
+        AND last_checkout_token = ?
+      ORDER BY COALESCE(last_event_at, updated_at, created_at) DESC
+      LIMIT 1
+    `).get(store, token);
+    if (fromSessions?.session_id) return fromSessions.session_id;
+  } catch (_error) {
+    // Continue with fallback path.
+  }
+
+  return null;
+}
+
+function upsertCheckoutSessionLink(db, { store, checkoutToken, sessionId, clientId, eventTs }) {
+  const token = safeString(checkoutToken).trim();
+  const sid = safeString(sessionId).trim();
+  if (!token || !sid) return;
+
+  const seenAt = eventTs || normalizeSqliteDateTime();
+
+  try {
+    db.prepare(`
+      INSERT INTO si_checkout_session_links (
+        store,
+        checkout_token,
+        session_id,
+        client_id,
+        first_seen_at,
+        last_seen_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(store, checkout_token) DO UPDATE SET
+        session_id = COALESCE(si_checkout_session_links.session_id, excluded.session_id),
+        client_id = COALESCE(excluded.client_id, si_checkout_session_links.client_id),
+        first_seen_at = CASE
+          WHEN si_checkout_session_links.first_seen_at IS NULL THEN excluded.first_seen_at
+          WHEN excluded.first_seen_at IS NULL THEN si_checkout_session_links.first_seen_at
+          WHEN excluded.first_seen_at < si_checkout_session_links.first_seen_at THEN excluded.first_seen_at
+          ELSE si_checkout_session_links.first_seen_at
+        END,
+        last_seen_at = CASE
+          WHEN si_checkout_session_links.last_seen_at IS NULL THEN excluded.last_seen_at
+          WHEN excluded.last_seen_at IS NULL THEN si_checkout_session_links.last_seen_at
+          WHEN excluded.last_seen_at > si_checkout_session_links.last_seen_at THEN excluded.last_seen_at
+          ELSE si_checkout_session_links.last_seen_at
+        END,
+        updated_at = datetime('now')
+    `).run(store, token, sid, clientId || null, seenAt, seenAt);
+  } catch (_error) {
+    // Keep ingestion non-blocking on partial schemas.
+  }
+}
+
 const SENSITIVE_KEY_RE =
   /(email|phone|first[_-]?name|last[_-]?name|address|zip|postal|postcode|city|province|state|company|card|payment|authorization|token)/i;
 
@@ -1243,6 +1836,7 @@ function tryRecordSessionIntelligenceEventFallback({
   product,
   attribution,
   dataToStore,
+  entryCandidate,
   cartJson,
   lastCampaignJson,
   atcAt,
@@ -1296,6 +1890,13 @@ function tryRecordSessionIntelligenceEventFallback({
     client_id: clientId,
     started_at: eventTs,
     last_event_at: eventTs,
+    entry_event_ts: entryCandidate?.entry_event_ts || null,
+    entry_event_name: entryCandidate?.entry_event_name || null,
+    entry_page_url: entryCandidate?.entry_page_url || null,
+    entry_page_path: entryCandidate?.entry_page_path || null,
+    entry_utm_source: entryCandidate?.entry_utm_source || null,
+    entry_utm_medium: entryCandidate?.entry_utm_medium || null,
+    entry_utm_campaign: entryCandidate?.entry_utm_campaign || null,
     atc_at: atcAt,
     checkout_started_at: checkoutStartedAt,
     purchase_at: purchaseAt,
@@ -1319,16 +1920,27 @@ function tryRecordSessionIntelligenceEventFallback({
 
     const where = { store: normalizedStore, session_id: sessionId };
     const existing = db.prepare(`
-      SELECT 1
+      SELECT entry_page_path
       FROM si_sessions
       WHERE store = ? AND session_id = ?
       LIMIT 1
     `).get(normalizedStore, sessionId);
 
     if (existing) {
+      const shouldSetEntry =
+        Boolean(entryCandidate?.entry_page_path) &&
+        !safeString(existing?.entry_page_path).trim();
+
       const updatePayload = {
         client_id: clientId || undefined,
         last_event_at: eventTs,
+        entry_event_ts: shouldSetEntry ? (entryCandidate?.entry_event_ts || undefined) : undefined,
+        entry_event_name: shouldSetEntry ? (entryCandidate?.entry_event_name || undefined) : undefined,
+        entry_page_url: shouldSetEntry ? (entryCandidate?.entry_page_url || undefined) : undefined,
+        entry_page_path: shouldSetEntry ? (entryCandidate?.entry_page_path || undefined) : undefined,
+        entry_utm_source: shouldSetEntry ? (entryCandidate?.entry_utm_source || undefined) : undefined,
+        entry_utm_medium: shouldSetEntry ? (entryCandidate?.entry_utm_medium || undefined) : undefined,
+        entry_utm_campaign: shouldSetEntry ? (entryCandidate?.entry_utm_campaign || undefined) : undefined,
         atc_at: atcAt || undefined,
         checkout_started_at: checkoutStartedAt || undefined,
         purchase_at: purchaseAt || undefined,
@@ -1350,6 +1962,16 @@ function tryRecordSessionIntelligenceEventFallback({
     } else {
       const insertSql = buildDynamicInsertSql('si_sessions', baseSessionRow, sessionColumns);
       if (insertSql) db.prepare(insertSql.sql).run(...insertSql.values);
+    }
+
+    if (checkoutToken) {
+      upsertCheckoutSessionLink(db, {
+        store: normalizedStore,
+        checkoutToken,
+        sessionId,
+        clientId,
+        eventTs
+      });
     }
   });
 
@@ -1382,6 +2004,31 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     null;
 
   const clientId = identifiers.clientId || null;
+  const linkedSessionId = checkoutToken
+    ? findSessionIdByCheckoutToken(db, normalizedStore, checkoutToken)
+    : null;
+
+  if (shouldSkipLowSignalEvent({
+    eventName,
+    location,
+    checkoutToken,
+    identifiers,
+    eventDataRaw
+  })) {
+    return {
+      ok: true,
+      store: normalizedStore,
+      sessionId: null,
+      sessionNumber: null,
+      eventName,
+      eventTs,
+      checkoutToken,
+      checkoutStep,
+      skipped: true,
+      skipReason: 'low_signal_noise'
+    };
+  }
+
   let shopperNumber = null;
   if (clientId) {
     try {
@@ -1392,7 +2039,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     }
   }
 
-  let resolvedSessionId = identifiers.sessionId || null;
+  let resolvedSessionId = linkedSessionId || identifiers.sessionId || null;
   if (!resolvedSessionId && clientId) {
     try {
       resolvedSessionId = getOrCreateSessionId(normalizedStore, clientId, eventTs);
@@ -1414,6 +2061,12 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     mergeCampaignData(sessionCampaign, clientCampaign)
   );
   const attribution = extractAttributionFields(resolvedCampaign);
+  const entryCandidate = buildSessionEntryCandidate({
+    location,
+    eventName,
+    eventTs,
+    attribution
+  });
 
   const cartSnapshot = extractCartSnapshot(eventDataRaw);
   const cartJson = cartSnapshot ? JSON.stringify(scrubSensitive(cartSnapshot)) : null;
@@ -1480,6 +2133,13 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       client_id,
       started_at,
       last_event_at,
+      entry_event_ts,
+      entry_event_name,
+      entry_page_url,
+      entry_page_path,
+      entry_utm_source,
+      entry_utm_medium,
+      entry_utm_campaign,
       atc_at,
       checkout_started_at,
       purchase_at,
@@ -1517,6 +2177,13 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       ?,
       ?,
       ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
       ?
     )
     ON CONFLICT(store, session_id) DO UPDATE SET
@@ -1533,6 +2200,41 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
         WHEN excluded.last_event_at IS NULL THEN si_sessions.last_event_at
         WHEN excluded.last_event_at > si_sessions.last_event_at THEN excluded.last_event_at
         ELSE si_sessions.last_event_at
+      END,
+      entry_event_ts = CASE
+        WHEN COALESCE(si_sessions.entry_page_path, '') <> '' THEN si_sessions.entry_event_ts
+        WHEN COALESCE(excluded.entry_page_path, '') = '' THEN si_sessions.entry_event_ts
+        ELSE excluded.entry_event_ts
+      END,
+      entry_event_name = CASE
+        WHEN COALESCE(si_sessions.entry_page_path, '') <> '' THEN si_sessions.entry_event_name
+        WHEN COALESCE(excluded.entry_page_path, '') = '' THEN si_sessions.entry_event_name
+        ELSE excluded.entry_event_name
+      END,
+      entry_page_url = CASE
+        WHEN COALESCE(si_sessions.entry_page_path, '') <> '' THEN si_sessions.entry_page_url
+        WHEN COALESCE(excluded.entry_page_path, '') = '' THEN si_sessions.entry_page_url
+        ELSE excluded.entry_page_url
+      END,
+      entry_page_path = CASE
+        WHEN COALESCE(si_sessions.entry_page_path, '') <> '' THEN si_sessions.entry_page_path
+        WHEN COALESCE(excluded.entry_page_path, '') = '' THEN si_sessions.entry_page_path
+        ELSE excluded.entry_page_path
+      END,
+      entry_utm_source = CASE
+        WHEN COALESCE(si_sessions.entry_page_path, '') <> '' THEN si_sessions.entry_utm_source
+        WHEN COALESCE(excluded.entry_page_path, '') = '' THEN si_sessions.entry_utm_source
+        ELSE excluded.entry_utm_source
+      END,
+      entry_utm_medium = CASE
+        WHEN COALESCE(si_sessions.entry_page_path, '') <> '' THEN si_sessions.entry_utm_medium
+        WHEN COALESCE(excluded.entry_page_path, '') = '' THEN si_sessions.entry_utm_medium
+        ELSE excluded.entry_utm_medium
+      END,
+      entry_utm_campaign = CASE
+        WHEN COALESCE(si_sessions.entry_page_path, '') <> '' THEN si_sessions.entry_utm_campaign
+        WHEN COALESCE(excluded.entry_page_path, '') = '' THEN si_sessions.entry_utm_campaign
+        ELSE excluded.entry_utm_campaign
       END,
       atc_at = CASE
         WHEN excluded.atc_at IS NULL THEN si_sessions.atc_at
@@ -1677,6 +2379,13 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       clientId,
       eventTs,
       eventTs,
+      entryCandidate?.entry_event_ts || null,
+      entryCandidate?.entry_event_name || null,
+      entryCandidate?.entry_page_url || null,
+      entryCandidate?.entry_page_path || null,
+      entryCandidate?.entry_utm_source || null,
+      entryCandidate?.entry_utm_medium || null,
+      entryCandidate?.entry_utm_campaign || null,
       atcAt,
       checkoutStartedAt,
       purchaseAt,
@@ -1693,6 +2402,16 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       status,
       now
     );
+
+    if (checkoutToken) {
+      upsertCheckoutSessionLink(db, {
+        store: normalizedStore,
+        checkoutToken,
+        sessionId,
+        clientId,
+        eventTs
+      });
+    }
   });
 
   try {
@@ -1718,6 +2437,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       product,
       attribution,
       dataToStore,
+      entryCandidate,
       cartJson,
       lastCampaignJson,
       atcAt,
@@ -2538,6 +3258,13 @@ export function getSessionIntelligenceSessions(store, limit = 60) {
       shopper_number,
       started_at,
       last_event_at,
+      entry_event_ts,
+      entry_event_name,
+      entry_page_url,
+      entry_page_path,
+      entry_utm_source,
+      entry_utm_medium,
+      entry_utm_campaign,
       atc_at,
       checkout_started_at,
       purchase_at,
@@ -2971,6 +3698,360 @@ export function getSessionIntelligencePurchasesByCampaign(store, { startDate, en
   };
 }
 
+function normalizeJourneyLimit(limit, fallback = JOURNEY_TABLE_DEFAULT_LIMIT) {
+  const base = Number.isFinite(Number(limit)) ? Number(limit) : fallback;
+  return Math.min(Math.max(parseInt(base, 10) || fallback, 1), JOURNEY_TABLE_MAX_LIMIT);
+}
+
+function defaultUtcRange(days = 7) {
+  const normalizedDays = Math.max(1, parseInt(days, 10) || 7);
+  const end = new Date();
+  const endIso = end.toISOString().slice(0, 10);
+  const startMs = Date.parse(`${endIso}T00:00:00Z`) - ((normalizedDays - 1) * 24 * 60 * 60 * 1000);
+  const startIso = new Date(startMs).toISOString().slice(0, 10);
+  return rangeUtcFromStartEnd(startIso, endIso);
+}
+
+function resolveJourneyRange(startDate, endDate) {
+  const explicit = startDate && endDate ? rangeUtcFromStartEnd(startDate, endDate) : null;
+  if (explicit) return explicit;
+  return defaultUtcRange(7);
+}
+
+function summarizeUnattributedReason(row) {
+  const entryPath = safeString(row?.entry_page_path).trim();
+  if (!entryPath && safeString(row?.last_checkout_token).trim()) return 'checkout_only_capture';
+  if (!entryPath) return 'missing_entry_context';
+  if (isCheckoutPath(entryPath)) return 'checkout_only_capture';
+  if (isJourneyExcludedPath(entryPath)) return 'excluded_content_page';
+  return 'unclassified_path';
+}
+
+function classifyAbandonAreaFromSession(row, productLabelFallback = null) {
+  const step = normalizeCheckoutStep(row?.last_checkout_step);
+  if (step === 'payment') return { area: 'Checkout Payment', product: productLabelFallback || '—' };
+  if (step === 'shipping' || step === 'contact') return { area: 'Checkout', product: productLabelFallback || '—' };
+
+  if (safeString(row?.checkout_started_at).trim()) return { area: 'Checkout', product: productLabelFallback || '—' };
+  if (safeString(row?.atc_at).trim()) return { area: 'Cart', product: productLabelFallback || '—' };
+
+  const entryPath = safeString(row?.entry_page_path).trim();
+  if (entryPath && isJourneyLandingPath(entryPath)) {
+    const normalized = normalizeJourneyPath(entryPath);
+    const label = classifyLandingLabelFromPath(normalized) || 'Other';
+    const product = extractProductLabelFromPath(normalized) || productLabelFallback || '—';
+
+    if (label.startsWith('Product:')) return { area: 'Product Page', product };
+    if (label.startsWith('Collection:')) return { area: 'Collection', product: '—' };
+    if (label === 'Search') return { area: 'Search', product: '—' };
+    if (label === 'Cart') return { area: 'Cart', product };
+    if (label === 'Home') return { area: 'Home', product: '—' };
+    if (label.startsWith('Page:')) return { area: 'Content Page', product: '—' };
+    return { area: 'Other', product: '—' };
+  }
+
+  return null;
+}
+
+function sessionHasMeaningfulAbandonSignal(row) {
+  if (!row || typeof row !== 'object') return false;
+  if (safeString(row.checkout_started_at).trim()) return true;
+  if (safeString(row.atc_at).trim()) return true;
+  if (safeString(row.entry_page_path).trim()) return true;
+  if (safeString(row.last_checkout_token).trim()) return true;
+  if (safeString(row.last_product_id).trim()) return true;
+  return false;
+}
+
+function collectLatestProductLabelBySession(db, store, sessions, range) {
+  const labelsBySession = new Map();
+  const sessionIds = uniqueSessionIds(sessions, JOURNEY_ENTRY_FALLBACK_MAX_SESSIONS);
+  if (!sessionIds.length) return labelsBySession;
+
+  const rangeStart = safeString(range?.start).trim();
+  const rangeEnd = safeString(range?.end).trim();
+  if (!rangeStart || !rangeEnd) return labelsBySession;
+
+  for (const chunk of chunkValues(sessionIds, JOURNEY_ENTRY_FALLBACK_SESSION_CHUNK)) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT
+        session_id,
+        page_path,
+        event_ts,
+        created_at
+      FROM si_events
+      WHERE store = ?
+        AND session_id IN (${placeholders})
+        AND created_at >= ?
+        AND created_at < ?
+        AND page_path IS NOT NULL
+        AND page_path != ''
+        AND (
+          page_path LIKE '/products/%'
+          OR page_path GLOB '/??/products/*'
+        )
+      ORDER BY COALESCE(event_ts, created_at) DESC
+    `).all(store, ...chunk, rangeStart, rangeEnd);
+
+    for (const row of rows) {
+      const sessionId = safeString(row?.session_id).trim();
+      if (!sessionId || labelsBySession.has(sessionId)) continue;
+      const label = extractProductLabelFromPath(row?.page_path);
+      if (!label) continue;
+      labelsBySession.set(sessionId, label);
+    }
+
+    if (labelsBySession.size >= sessionIds.length) break;
+  }
+
+  return labelsBySession;
+}
+
+export function getSessionIntelligenceLandingToPurchase(store, {
+  startDate,
+  endDate,
+  limit = JOURNEY_TABLE_DEFAULT_LIMIT
+} = {}) {
+  const db = getDb();
+  const normalizedStore = safeString(store).trim() || 'shawq';
+  const range = resolveJourneyRange(startDate, endDate);
+  if (!range) return {
+    store: normalizedStore,
+    period: null,
+    totalPurchases: 0,
+    attributedPurchases: 0,
+    unattributedPurchases: 0,
+    unattributedBreakdown: {},
+    rows: []
+  };
+
+  const max = normalizeJourneyLimit(limit);
+  const rows = db.prepare(`
+    SELECT
+      session_id,
+      session_number,
+      purchase_at,
+      last_country_code,
+      last_checkout_token,
+      entry_page_path,
+      entry_utm_source,
+      entry_utm_campaign
+    FROM si_sessions
+    WHERE store = ?
+      AND purchase_at IS NOT NULL
+      AND purchase_at >= ?
+      AND purchase_at < ?
+    ORDER BY purchase_at DESC
+  `).all(normalizedStore, range.start, range.end);
+  const resolvedEntryBySession = resolveJourneyEntryContextsForRows(db, normalizedStore, rows, { persistBackfill: true });
+
+  const landingMap = new Map();
+  const unattributedBreakdown = new Map();
+  let attributedPurchases = 0;
+
+  for (const row of rows) {
+    const resolvedEntry = resolvedEntryBySession.get(row?.session_id) || entryContextFromSessionRow(row);
+    const entryPath = safeString(resolvedEntry?.entry_page_path).trim();
+    const landingPathValid = Boolean(entryPath && isJourneyLandingPath(entryPath));
+    if (!landingPathValid) {
+      const reason = summarizeUnattributedReason({
+        entry_page_path: entryPath || null,
+        last_checkout_token: row?.last_checkout_token
+      });
+      unattributedBreakdown.set(reason, (unattributedBreakdown.get(reason) || 0) + 1);
+      continue;
+    }
+
+    const landingLabel = classifyLandingLabelFromPath(entryPath) || 'Other';
+    const key = landingLabel;
+    const entry = landingMap.get(key) || {
+      landing: landingLabel,
+      purchases: 0,
+      sessions: new Set(),
+      countries: new Map(),
+      sources: new Map(),
+      campaigns: new Map(),
+      sample_sessions: []
+    };
+
+    entry.purchases += 1;
+    entry.sessions.add(row.session_id);
+    if (entry.sample_sessions.length < 5) {
+      entry.sample_sessions.push({
+        session_id: row.session_id,
+        session_number: row.session_number || null,
+        purchase_at: row.purchase_at || null
+      });
+    }
+    const country = safeString(row?.last_country_code).trim().toUpperCase();
+    if (country) entry.countries.set(country, (entry.countries.get(country) || 0) + 1);
+    const source = safeString(resolvedEntry?.entry_utm_source).trim();
+    if (source) entry.sources.set(source, (entry.sources.get(source) || 0) + 1);
+    const campaign = safeString(resolvedEntry?.entry_utm_campaign).trim();
+    if (campaign) entry.campaigns.set(campaign, (entry.campaigns.get(campaign) || 0) + 1);
+    landingMap.set(key, entry);
+    attributedPurchases += 1;
+  }
+
+  const topRows = Array.from(landingMap.values())
+    .sort((a, b) => (b.purchases || 0) - (a.purchases || 0))
+    .slice(0, max)
+    .map((entry, index) => ({
+      rank: index + 1,
+      landing: entry.landing,
+      purchases: entry.purchases,
+      sessions: entry.sessions.size,
+      share: rows.length > 0 ? entry.purchases / rows.length : 0,
+      top_countries: Array.from(entry.countries.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([code, count]) => ({ code, count })),
+      top_sources: Array.from(entry.sources.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([value, count]) => ({ value, count })),
+      top_campaigns: Array.from(entry.campaigns.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([value, count]) => ({ value, count })),
+      sample_sessions: entry.sample_sessions
+    }));
+
+  return {
+    store: normalizedStore,
+    period: { start: range.startIso, end: range.endIso },
+    totalPurchases: rows.length,
+    attributedPurchases,
+    unattributedPurchases: Math.max(0, rows.length - attributedPurchases),
+    unattributedBreakdown: Object.fromEntries(unattributedBreakdown.entries()),
+    rows: topRows
+  };
+}
+
+export function getSessionIntelligenceAbandonmentByLocation(store, {
+  startDate,
+  endDate,
+  limit = JOURNEY_TABLE_DEFAULT_LIMIT
+} = {}) {
+  const db = getDb();
+  const normalizedStore = safeString(store).trim() || 'shawq';
+  const range = resolveJourneyRange(startDate, endDate);
+  if (!range) return {
+    store: normalizedStore,
+    period: null,
+    totalAbandonSessions: 0,
+    unclassifiedSessions: 0,
+    unclassifiedBreakdown: {},
+    rows: []
+  };
+
+  const max = normalizeJourneyLimit(limit);
+  const sessions = db.prepare(`
+    SELECT
+      session_id,
+      session_number,
+      started_at,
+      last_event_at,
+      atc_at,
+      checkout_started_at,
+      purchase_at,
+      last_checkout_token,
+      last_checkout_step,
+      last_country_code,
+      last_product_id,
+      entry_page_path
+    FROM si_sessions
+    WHERE store = ?
+      AND started_at IS NOT NULL
+      AND started_at >= ?
+      AND started_at < ?
+      AND purchase_at IS NULL
+    ORDER BY started_at DESC
+  `).all(normalizedStore, range.start, range.end);
+  const resolvedEntryBySession = resolveJourneyEntryContextsForRows(db, normalizedStore, sessions, { persistBackfill: true });
+  const latestProductLabelBySession = collectLatestProductLabelBySession(
+    db,
+    normalizedStore,
+    sessions,
+    range
+  );
+
+  const grouped = new Map();
+  const unclassifiedBreakdown = new Map();
+  let totalAbandonSessions = 0;
+
+  for (const row of sessions) {
+    if (!sessionHasMeaningfulAbandonSignal(row)) {
+      unclassifiedBreakdown.set('low_signal_missing_context', (unclassifiedBreakdown.get('low_signal_missing_context') || 0) + 1);
+      continue;
+    }
+
+    const resolvedEntry = resolvedEntryBySession.get(row?.session_id) || entryContextFromSessionRow(row);
+    const rowWithResolvedEntry = {
+      ...row,
+      entry_page_path: resolvedEntry?.entry_page_path || row?.entry_page_path || null
+    };
+
+    const productFallback = latestProductLabelBySession.get(row.session_id) || null;
+    const classification = classifyAbandonAreaFromSession(rowWithResolvedEntry, productFallback);
+    if (!classification) {
+      const reason = summarizeUnattributedReason({
+        entry_page_path: rowWithResolvedEntry?.entry_page_path,
+        last_checkout_token: row?.last_checkout_token
+      });
+      unclassifiedBreakdown.set(reason, (unclassifiedBreakdown.get(reason) || 0) + 1);
+      continue;
+    }
+
+    totalAbandonSessions += 1;
+    const areaKey = `${classification.area}||${classification.product || '—'}`;
+    const entry = grouped.get(areaKey) || {
+      abandoned_part: classification.area,
+      product: classification.product || '—',
+      sessions: 0,
+      countries: new Map(),
+      sample_sessions: []
+    };
+    entry.sessions += 1;
+    if (entry.sample_sessions.length < 5) {
+      entry.sample_sessions.push({
+        session_id: row.session_id,
+        session_number: row.session_number || null,
+        last_event_at: row.last_event_at || null
+      });
+    }
+    const country = safeString(row?.last_country_code).trim().toUpperCase();
+    if (country) entry.countries.set(country, (entry.countries.get(country) || 0) + 1);
+    grouped.set(areaKey, entry);
+  }
+
+  const ranked = Array.from(grouped.values())
+    .sort((a, b) => (b.sessions || 0) - (a.sessions || 0))
+    .slice(0, max)
+    .map((entry, index) => ({
+      rank: index + 1,
+      abandoned_part: entry.abandoned_part,
+      product: entry.product,
+      sessions: entry.sessions,
+      share: totalAbandonSessions > 0 ? entry.sessions / totalAbandonSessions : 0,
+      top_countries: Array.from(entry.countries.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([code, count]) => ({ code, count })),
+      sample_sessions: entry.sample_sessions
+    }));
+
+  return {
+    store: normalizedStore,
+    period: { start: range.startIso, end: range.endIso },
+    totalAbandonSessions,
+    unclassifiedSessions: Array.from(unclassifiedBreakdown.values()).reduce((sum, count) => sum + (Number(count) || 0), 0),
+    unclassifiedBreakdown: Object.fromEntries(unclassifiedBreakdown.entries()),
+    rows: ranked
+  };
+}
+
 export function listSessionIntelligenceDays(store, limit = 10) {
   const db = getDb();
   ensureRecentShopperNumbers(store);
@@ -3031,9 +4112,23 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
         MAX(shopper_number) AS shopper_number,
         MIN(created_at) AS first_seen,
         MAX(created_at) AS last_seen,
-        SUM(CASE WHEN lower(event_name) IN (${productViewIn.clause}) OR (page_path LIKE '/products/%') THEN 1 ELSE 0 END) AS product_views,
+        SUM(CASE
+          WHEN lower(event_name) IN (${productViewIn.clause})
+            OR page_path LIKE '/products/%'
+            OR page_path GLOB '/??/products/*'
+          THEN 1
+          ELSE 0
+        END) AS product_views,
         SUM(CASE WHEN lower(event_name) IN (${atcIn.clause}) THEN 1 ELSE 0 END) AS atc_events,
-        SUM(CASE WHEN lower(event_name) IN (${cartIn.clause}) OR (page_path = '/cart' OR page_path = '/cart/') THEN 1 ELSE 0 END) AS cart_events,
+        SUM(CASE
+          WHEN lower(event_name) IN (${cartIn.clause})
+            OR page_path = '/cart'
+            OR page_path = '/cart/'
+            OR page_path GLOB '/??/cart'
+            OR page_path GLOB '/??/cart/'
+          THEN 1
+          ELSE 0
+        END) AS cart_events,
         SUM(CASE WHEN lower(event_name) IN (${checkoutIn.clause}) THEN 1 ELSE 0 END) AS checkout_started_events,
         SUM(CASE WHEN lower(event_name) IN (${purchaseIn.clause}) THEN 1 ELSE 0 END) AS purchase_events,
         MAX(COALESCE(checkout_step, '')) AS last_checkout_step,
@@ -3069,6 +4164,13 @@ export function getSessionIntelligenceSessionsForDay(store, dateStr, limit = 200
       NULLIF(d.utm_campaign, '') AS utm_campaign,
       NULLIF(d.utm_source, '') AS utm_source,
       s.session_number,
+      s.entry_event_ts,
+      s.entry_event_name,
+      s.entry_page_url,
+      s.entry_page_path,
+      s.entry_utm_source,
+      s.entry_utm_medium,
+      s.entry_utm_campaign,
       s.status,
       s.analyzed_at,
       s.primary_reason,

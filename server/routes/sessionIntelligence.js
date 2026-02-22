@@ -7,6 +7,8 @@ import {
   getSessionIntelligenceSessionsForDay,
   getSessionIntelligenceBriefForDay,
   getSessionIntelligenceClaritySignalsForDay,
+  getSessionIntelligenceLandingToPurchase,
+  getSessionIntelligenceAbandonmentByLocation,
   getSessionIntelligenceFlowForDay,
   getSessionIntelligenceLatestBrief,
   getSessionIntelligenceOverview,
@@ -226,6 +228,36 @@ router.get('/purchases-by-campaign', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] purchases-by-campaign error:', error);
     res.status(500).json({ success: false, error: 'Failed to load purchases by campaign' });
+  }
+});
+
+router.get('/journey/landing-purchases', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
+
+    const report = getSessionIntelligenceLandingToPurchase(store, { startDate, endDate, limit });
+    res.json({ success: true, ...report });
+  } catch (error) {
+    console.error('[SessionIntelligence] journey landing-purchases error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load landing to purchase report' });
+  }
+});
+
+router.get('/journey/abandonment', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
+
+    const report = getSessionIntelligenceAbandonmentByLocation(store, { startDate, endDate, limit });
+    res.json({ success: true, ...report });
+  } catch (error) {
+    console.error('[SessionIntelligence] journey abandonment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load abandonment report' });
   }
 });
 

@@ -130,6 +130,13 @@ export function runSessionIntelligenceMigration() {
       client_id TEXT,
       started_at TEXT,
       last_event_at TEXT,
+      entry_event_ts TEXT,
+      entry_event_name TEXT,
+      entry_page_url TEXT,
+      entry_page_path TEXT,
+      entry_utm_source TEXT,
+      entry_utm_medium TEXT,
+      entry_utm_campaign TEXT,
       atc_at TEXT,
       checkout_started_at TEXT,
       purchase_at TEXT,
@@ -158,6 +165,13 @@ export function runSessionIntelligenceMigration() {
   `);
 
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN session_number INTEGER`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_event_ts TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_event_name TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_page_url TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_page_path TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_utm_source TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_utm_medium TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_utm_campaign TEXT`); } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE si_sessions ADD COLUMN last_checkout_token TEXT`);
   } catch (e) { /* column exists */ }
@@ -196,6 +210,16 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_entry_path
+    ON si_sessions(store, entry_page_path)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_checkout_token
+    ON si_sessions(store, last_checkout_token)
+  `);
+
+  db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_si_sessions_store_session_number
     ON si_sessions(store, session_number)
     WHERE session_number IS NOT NULL
@@ -227,6 +251,26 @@ export function runSessionIntelligenceMigration() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_daily_briefs_store_date
     ON si_daily_briefs(store, date)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_checkout_session_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      checkout_token TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      client_id TEXT,
+      first_seen_at TEXT,
+      last_seen_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, checkout_token)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_checkout_links_store_session
+    ON si_checkout_session_links(store, session_id, last_seen_at)
   `);
 
   db.exec(`
