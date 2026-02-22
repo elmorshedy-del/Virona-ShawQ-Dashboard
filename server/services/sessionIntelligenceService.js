@@ -16,6 +16,7 @@ const JOURNEY_TABLE_DEFAULT_LIMIT = 25;
 const JOURNEY_ENTRY_FALLBACK_MAX_SESSIONS = 5000;
 const JOURNEY_ENTRY_FALLBACK_SESSION_CHUNK = 250;
 const JOURNEY_ENTRY_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
+const JOURNEY_PRODUCT_ID_PREVIEW_CHARS = 14;
 const UNKNOWN_EVENT_NAME = 'unknown';
 const MIN_SESSIONS_FOR_SCROLL_DROPOFF = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_SCROLL_DROPOFF_MIN_SESSIONS || '8', 10) || 8, 1),
@@ -259,6 +260,19 @@ function extractProductLabelFromPath(pathname) {
   const segments = normalized.split('/').filter(Boolean);
   if (segments[0] !== 'products' || !segments[1]) return null;
   return titleCaseFromHandle(segments[1]);
+}
+
+function formatJourneyProductLabel({ title, productId }) {
+  const titleLabel = safeString(title).trim();
+  if (titleLabel) return safeTruncate(titleLabel, 180);
+
+  const rawId = safeString(productId).trim();
+  if (!rawId) return 'Unknown product';
+
+  const preview = rawId.length > JOURNEY_PRODUCT_ID_PREVIEW_CHARS
+    ? rawId.slice(-JOURNEY_PRODUCT_ID_PREVIEW_CHARS)
+    : rawId;
+  return `Product ${preview}`;
 }
 
 function buildSessionEntryCandidate({ location, eventName, eventTs, attribution }) {
@@ -3833,6 +3847,7 @@ export function getSessionIntelligenceLandingToPurchase(store, {
       session_number,
       purchase_at,
       last_country_code,
+      last_product_id,
       last_checkout_token,
       entry_page_path,
       entry_utm_source,
@@ -3845,6 +3860,12 @@ export function getSessionIntelligenceLandingToPurchase(store, {
     ORDER BY purchase_at DESC
   `).all(normalizedStore, range.start, range.end);
   const resolvedEntryBySession = resolveJourneyEntryContextsForRows(db, normalizedStore, rows, { persistBackfill: true });
+  const latestProductLabelBySession = collectLatestProductLabelBySession(
+    db,
+    normalizedStore,
+    rows,
+    range
+  );
 
   const landingMap = new Map();
   const unattributedBreakdown = new Map();
@@ -3872,6 +3893,7 @@ export function getSessionIntelligenceLandingToPurchase(store, {
       countries: new Map(),
       sources: new Map(),
       campaigns: new Map(),
+      products: new Map(),
       sample_sessions: []
     };
 
@@ -3890,6 +3912,11 @@ export function getSessionIntelligenceLandingToPurchase(store, {
     if (source) entry.sources.set(source, (entry.sources.get(source) || 0) + 1);
     const campaign = safeString(resolvedEntry?.entry_utm_campaign).trim();
     if (campaign) entry.campaigns.set(campaign, (entry.campaigns.get(campaign) || 0) + 1);
+    const productLabel = formatJourneyProductLabel({
+      title: latestProductLabelBySession.get(row.session_id) || null,
+      productId: row?.last_product_id
+    });
+    entry.products.set(productLabel, (entry.products.get(productLabel) || 0) + 1);
     landingMap.set(key, entry);
     attributedPurchases += 1;
   }
@@ -3912,6 +3939,10 @@ export function getSessionIntelligenceLandingToPurchase(store, {
         .slice(0, 3)
         .map(([value, count]) => ({ value, count })),
       top_campaigns: Array.from(entry.campaigns.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([value, count]) => ({ value, count })),
+      top_products: Array.from(entry.products.entries())
         .sort((a, b) => (b[1] || 0) - (a[1] || 0))
         .slice(0, 3)
         .map(([value, count]) => ({ value, count })),
