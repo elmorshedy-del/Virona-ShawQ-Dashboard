@@ -35,6 +35,10 @@ const SIGNAL_NEAR_THRESHOLD_RATIO = 0.6;
 const SIGNAL_ZERO_BASELINE_EPSILON = 1e-9;
 const SIGNAL_CONTRIBUTION_DECIMALS = 2;
 const TODAY_REFRESH_INTERVAL_MS = 60 * 1000;
+const MINUTES_PER_HOUR = 60;
+const MS_PER_MINUTE = 60 * 1000;
+const DASHBOARD_DAY_UTC_OFFSET_HOURS = 5;
+const DASHBOARD_DAY_UTC_OFFSET_MINUTES = DASHBOARD_DAY_UTC_OFFSET_HOURS * MINUTES_PER_HOUR;
 
 const PRESET_OPTIONS = [
   { id: 'conservative', label: 'Conservative (Recommended)' },
@@ -93,10 +97,10 @@ const MODEL_CARD_META = {
   }
 };
 
-function getLocalDateString(date = new Date()) {
-  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
-  const localDate = new Date(date.getTime() - offsetMs);
-  return localDate.toISOString().split('T')[0];
+function getDashboardDateString(date = new Date()) {
+  const utcMs = date.getTime() + (date.getTimezoneOffset() * MS_PER_MINUTE);
+  const dashboardMs = utcMs + (DASHBOARD_DAY_UTC_OFFSET_MINUTES * MS_PER_MINUTE);
+  return new Date(dashboardMs).toISOString().split('T')[0];
 }
 
 function formatPercent(value, digits = 2) {
@@ -441,7 +445,7 @@ function parseMonitorValue(metricKey, value, store) {
 }
 
 export default function CampaignIntelligenceTab({ store }) {
-  const [today, setToday] = useState(() => getLocalDateString());
+  const [dashboardToday, setDashboardToday] = useState(() => getDashboardDateString());
 
   const [analysisParams, setAnalysisParams] = useState(() => ({
     level: 'campaign',
@@ -550,8 +554,8 @@ export default function CampaignIntelligenceTab({ store }) {
 
   useEffect(() => {
     const timerId = setInterval(() => {
-      setToday((currentValue) => {
-        const latestDate = getLocalDateString();
+      setDashboardToday((currentValue) => {
+        const latestDate = getDashboardDateString();
         return currentValue === latestDate ? currentValue : latestDate;
       });
     }, TODAY_REFRESH_INTERVAL_MS);
@@ -565,7 +569,7 @@ export default function CampaignIntelligenceTab({ store }) {
 
   const chartData = useMemo(() => {
     const filteredRows = timelineDaily.length > 1
-      ? timelineDaily.filter((row) => row?.date !== today)
+      ? timelineDaily.filter((row) => row?.date !== dashboardToday)
       : timelineDaily;
 
     return filteredRows.map((row) => ({
@@ -575,7 +579,7 @@ export default function CampaignIntelligenceTab({ store }) {
       smoothedReach: row?.smoothed?.reach ?? row.reach,
       smoothedSpend: row?.smoothed?.spend ?? row.spend
     }));
-  }, [timelineDaily, today]);
+  }, [timelineDaily, dashboardToday]);
 
   const budgetChartMarkers = useMemo(() => {
     const chartByDate = new Map(chartData.map((row) => [row.date, row]));
@@ -587,13 +591,24 @@ export default function CampaignIntelligenceTab({ store }) {
         const row = chartByDate.get(event.pivotDate);
         if (!row) return null;
 
+        const hasBudgetValues = Number.isFinite(Number(event.fromBudget)) && Number.isFinite(Number(event.toBudget));
+        const deltaPercent = hasBudgetValues
+          ? Number(event.budgetShiftPercent || 0)
+          : Number(event.shiftPercent || 0);
+        const fromValue = hasBudgetValues
+          ? formatMoney(event.fromBudget || 0, store)
+          : formatMoney(event.preSpendAvg || 0, store);
+        const toValue = hasBudgetValues
+          ? formatMoney(event.toBudget || 0, store)
+          : formatMoney(event.postSpendAvg || 0, store);
+
         return {
           date: event.pivotDate,
           value: row.spend,
-          deltaPercent: event.shiftPercent || 0,
-          deltaLabel: formatDeltaPercent(event.shiftPercent || 0, 1),
-          fromValue: formatMoney(event.preSpendAvg || 0, store),
-          toValue: formatMoney(event.postSpendAvg || 0, store)
+          deltaPercent,
+          deltaLabel: formatDeltaPercent(deltaPercent, 1),
+          fromValue,
+          toValue
         };
       })
       .filter(Boolean);
@@ -1147,7 +1162,7 @@ export default function CampaignIntelligenceTab({ store }) {
           {snapshot?.budgetMonitor?.latest && (
             <div className="text-xs text-slate-600">
               Pivot day: <span className="font-semibold">{snapshot.budgetMonitor.latest.pivotDate}</span>
-              {' • '}Spend shift: <span className="font-semibold">{formatDeltaPercent(snapshot.budgetMonitor.latest.shiftPercent || 0, 1)}</span>
+              {' • '}Budget shift: <span className="font-semibold">{formatDeltaPercent((snapshot.budgetMonitor.latest.budgetShiftPercent ?? snapshot.budgetMonitor.latest.shiftPercent ?? 0), 1)}</span>
             </div>
           )}
         </div>

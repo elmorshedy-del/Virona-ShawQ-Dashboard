@@ -1,4 +1,5 @@
 import {
+  BUDGET_MONITOR_CONFIG,
   DEFAULT_SETTINGS,
   EDUCATION_SECTIONS,
   MODEL_PRESET_OPTIONS,
@@ -12,6 +13,8 @@ import {
   fetchDailyOrdersRows,
   fetchEntityOptions,
   fetchEntitySnapshot,
+  fetchMetaBudgetHistoryEvents,
+  fetchScopedCampaignIds,
   fetchScopeLifecycleSummary,
   mergeDailySeries,
   normalizeCampaignIntelligenceRequest
@@ -22,6 +25,7 @@ import {
   buildShockAwareSeries
 } from './models.js';
 import {
+  addDaysIso,
   clampInt,
   clampNumber,
   listDateRange,
@@ -219,7 +223,29 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     seedKey: `${scope.store}:${scope.level}:${selectedEntityId || 'all'}:${scope.country}:${scope.analysisRange.endDate}`
   });
 
-  const budgetMonitor = buildBudgetChangeMonitor(shockAwareSeries);
+  const budgetHistoryStartDate = addDaysIso(
+    scope.analysisRange.endDate,
+    -(BUDGET_MONITOR_CONFIG.monitorLookbackDays - 1)
+  );
+
+  const scopedCampaignIds = fetchScopedCampaignIds({
+    db: scope.db,
+    store: scope.store,
+    levelConfig: scope.levelConfig,
+    startDate: budgetHistoryStartDate,
+    endDate: scope.analysisRange.endDate,
+    entityId: selectedEntityId,
+    country: scope.country
+  });
+
+  const budgetHistoryEvents = await fetchMetaBudgetHistoryEvents({
+    store: scope.store,
+    startDate: budgetHistoryStartDate,
+    endDate: scope.analysisRange.endDate,
+    campaignIds: scopedCampaignIds
+  });
+
+  const budgetMonitor = buildBudgetChangeMonitor(shockAwareSeries, budgetHistoryEvents);
   const lifecycle = fetchScopeLifecycleSummary({ ...scope, entityId: selectedEntityId });
   const entitySnapshot = fetchEntitySnapshot({ ...scope, entityId: selectedEntityId });
   const countries = fetchCountryOptions({ ...scope, entityId: selectedEntityId });

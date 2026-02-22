@@ -254,6 +254,63 @@ function findSpendShiftEvents(series) {
   return events;
 }
 
+function resolvePivotIndex(series, pivotDate) {
+  if (!Array.isArray(series) || !series.length || !pivotDate) return -1;
+
+  const exactIndex = series.findIndex((row) => row?.date === pivotDate);
+  if (exactIndex >= 0) return exactIndex;
+
+  const nextIndex = series.findIndex((row) => (row?.date || '') > pivotDate);
+  if (nextIndex >= 0) return nextIndex;
+
+  return series.length - 1;
+}
+
+function buildHistoryShiftEvents(series, historyEvents = []) {
+  if (!Array.isArray(historyEvents) || historyEvents.length === 0) {
+    return [];
+  }
+
+  return historyEvents
+    .map((event) => {
+      const pivotDate = typeof event?.pivotDate === 'string' ? event.pivotDate : null;
+      const pivotIndex = resolvePivotIndex(series, pivotDate);
+      if (pivotIndex < 0) return null;
+
+      const fromBudget = Number(event?.fromBudget);
+      const toBudget = Number(event?.toBudget);
+      const hasBudgetValues = Number.isFinite(fromBudget) && Number.isFinite(toBudget);
+      const budgetShiftRatio = hasBudgetValues ? safeDeltaRatio(toBudget, fromBudget) : null;
+      const eventShiftRatio = Number(event?.shiftRatio);
+      const shiftRatio = Number.isFinite(eventShiftRatio)
+        ? eventShiftRatio
+        : (Number.isFinite(budgetShiftRatio) ? budgetShiftRatio : 0);
+
+      return {
+        pivotIndex,
+        pivotDate,
+        preSpendAvg: 0,
+        postSpendAvg: 0,
+        shiftRatio,
+        source: 'meta_history',
+        eventTime: typeof event?.eventTime === 'string' ? event.eventTime : null,
+        campaignId: event?.campaignId || null,
+        objectId: event?.objectId || null,
+        objectType: event?.objectType || null,
+        fromBudget: hasBudgetValues ? fromBudget : null,
+        toBudget: hasBudgetValues ? toBudget : null,
+        budgetShiftRatio: Number.isFinite(budgetShiftRatio) ? budgetShiftRatio : null
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const leftKey = left?.eventTime || left?.pivotDate || '';
+      const rightKey = right?.eventTime || right?.pivotDate || '';
+      return rightKey.localeCompare(leftKey);
+    })
+    .slice(0, BUDGET_MONITOR_CONFIG.historyMaxEvents);
+}
+
 function summarizeMonitorMetric({ series, event, metricKey }) {
   const preWindow = series.slice(event.pivotIndex - BUDGET_MONITOR_CONFIG.preWindowDays, event.pivotIndex);
   const postWindow = series.slice(event.pivotIndex, event.pivotIndex + BUDGET_MONITOR_CONFIG.postWindowDays);
@@ -270,7 +327,7 @@ function summarizeMonitorMetric({ series, event, metricKey }) {
   };
 }
 
-export function buildBudgetChangeMonitor(series) {
+export function buildBudgetChangeMonitor(series, budgetHistoryEvents = []) {
   if (!Array.isArray(series) || series.length < (BUDGET_MONITOR_CONFIG.preWindowDays + BUDGET_MONITOR_CONFIG.postWindowDays)) {
     return {
       hasEvent: false,
@@ -281,8 +338,11 @@ export function buildBudgetChangeMonitor(series) {
   }
 
   const lookbackSeries = getTrailingWindow(series, BUDGET_MONITOR_CONFIG.monitorLookbackDays);
-  const events = findSpendShiftEvents(lookbackSeries)
+  const historyEvents = buildHistoryShiftEvents(lookbackSeries, budgetHistoryEvents);
+  const inferredEvents = findSpendShiftEvents(lookbackSeries)
+    .map((event) => ({ ...event, source: 'inferred_spend_shift' }))
     .sort((left, right) => (right.pivotDate || '').localeCompare(left.pivotDate || ''));
+  const events = historyEvents.length ? historyEvents : inferredEvents;
 
   const latest = events[0] || null;
   if (!latest) {
@@ -293,6 +353,12 @@ export function buildBudgetChangeMonitor(series) {
       metrics: []
     };
   }
+
+  const latestSpendMetric = summarizeMonitorMetric({
+    series: lookbackSeries,
+    event: latest,
+    metricKey: 'spend'
+  });
 
   const metrics = METRIC_MONITOR_DEFS.map((metricDef) => {
     const metricStats = summarizeMonitorMetric({
@@ -317,17 +383,35 @@ export function buildBudgetChangeMonitor(series) {
     hasEvent: true,
     events: events.map((event) => ({
       pivotDate: event.pivotDate,
-      preSpendAvg: round(event.preSpendAvg, 2),
-      postSpendAvg: round(event.postSpendAvg, 2),
+      source: event.source || 'inferred_spend_shift',
+      preSpendAvg: round(
+        event.source === 'meta_history'
+          ? (summarizeMonitorMetric({ series: lookbackSeries, event, metricKey: 'spend' }).preMean || 0)
+          : event.preSpendAvg,
+        2
+      ),
+      postSpendAvg: round(
+        event.source === 'meta_history'
+          ? (summarizeMonitorMetric({ series: lookbackSeries, event, metricKey: 'spend' }).postMean || 0)
+          : event.postSpendAvg,
+        2
+      ),
       shiftRatio: round(event.shiftRatio, 4),
-      shiftPercent: normalizePercent(event.shiftRatio)
+      shiftPercent: normalizePercent(event.shiftRatio),
+      fromBudget: Number.isFinite(event.fromBudget) ? round(event.fromBudget, 2) : null,
+      toBudget: Number.isFinite(event.toBudget) ? round(event.toBudget, 2) : null,
+      budgetShiftPercent: Number.isFinite(event.budgetShiftRatio) ? normalizePercent(event.budgetShiftRatio) : null
     })),
     latest: {
       pivotDate: latest.pivotDate,
-      preSpendAvg: round(latest.preSpendAvg, 2),
-      postSpendAvg: round(latest.postSpendAvg, 2),
+      source: latest.source || 'inferred_spend_shift',
+      preSpendAvg: round(latestSpendMetric.preMean || 0, 2),
+      postSpendAvg: round(latestSpendMetric.postMean || 0, 2),
       shiftRatio: round(latest.shiftRatio, 4),
       shiftPercent: normalizePercent(latest.shiftRatio),
+      fromBudget: Number.isFinite(latest.fromBudget) ? round(latest.fromBudget, 2) : null,
+      toBudget: Number.isFinite(latest.toBudget) ? round(latest.toBudget, 2) : null,
+      budgetShiftPercent: Number.isFinite(latest.budgetShiftRatio) ? normalizePercent(latest.budgetShiftRatio) : null,
       preWindowDays: BUDGET_MONITOR_CONFIG.preWindowDays,
       postWindowDays: BUDGET_MONITOR_CONFIG.postWindowDays
     },
