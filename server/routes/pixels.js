@@ -29,6 +29,9 @@ function renderUniversalPixelScript() {
   var RAGE_CLICK_RADIUS_PX = 30;
   var SCROLL_BUCKETS = [25, 50, 75, 90];
   var MAX_STRING = 240;
+  var MAX_IDENTITY_STRING = 128;
+  var SHOPIFY_CLIENT_COOKIE_NAME = '_shopify_y';
+  var DATALAYER_USER_ID_KEYS = ['user_id', 'userId', 'userid', 'customer_id', 'customerId', 'shopper_id', 'shopperId'];
 
   function safeString(value, max) {
     try {
@@ -44,6 +47,63 @@ function renderUniversalPixelScript() {
   function safeNumber(value) {
     var n = Number(value);
     return Number.isFinite(n) ? n : null;
+  }
+
+  function normalizeIdentity(value) {
+    var str = safeString(value, MAX_IDENTITY_STRING).replace(/\s+/g, ' ').trim();
+    if (!str) return '';
+    var lower = str.toLowerCase();
+    if (lower === 'unknown' || lower === 'null' || lower === 'undefined' || lower === 'n/a') return '';
+    return str;
+  }
+
+  function readCookie(name) {
+    try {
+      var all = document.cookie ? document.cookie.split(';') : [];
+      for (var i = 0; i < all.length; i += 1) {
+        var part = all[i].trim();
+        if (!part) continue;
+        var eq = part.indexOf('=');
+        if (eq <= 0) continue;
+        var key = part.slice(0, eq).trim();
+        if (key !== name) continue;
+        var raw = part.slice(eq + 1);
+        return decodeURIComponent(raw || '');
+      }
+    } catch (_e) {}
+    return '';
+  }
+
+  function readNestedIdentity(obj) {
+    if (!obj || typeof obj !== 'object') return '';
+
+    for (var i = 0; i < DATALAYER_USER_ID_KEYS.length; i += 1) {
+      var key = DATALAYER_USER_ID_KEYS[i];
+      var direct = normalizeIdentity(obj[key]);
+      if (direct) return direct;
+    }
+
+    var userId =
+      normalizeIdentity(obj.user && obj.user.id) ||
+      normalizeIdentity(obj.customer && obj.customer.id) ||
+      normalizeIdentity(obj.identity && obj.identity.user_id) ||
+      normalizeIdentity(obj.identity && obj.identity.userId) ||
+      normalizeIdentity(obj.ecommerce && obj.ecommerce.user_id) ||
+      normalizeIdentity(obj.ecommerce && obj.ecommerce.userId);
+    if (userId) return userId;
+
+    return '';
+  }
+
+  function detectExternalUserIdFromDataLayer() {
+    try {
+      if (!Array.isArray(window.dataLayer)) return '';
+      for (var i = window.dataLayer.length - 1; i >= 0; i -= 1) {
+        var candidate = readNestedIdentity(window.dataLayer[i]);
+        if (candidate) return candidate;
+      }
+    } catch (_e) {}
+    return '';
   }
 
   function uuid() {
@@ -124,6 +184,11 @@ function renderUniversalPixelScript() {
 
   function getOrCreateClientId() {
     var key = storageKey('virona_si_client_id');
+    var shopifyClient = normalizeIdentity(readCookie(SHOPIFY_CLIENT_COOKIE_NAME));
+    if (shopifyClient) {
+      writeStorage(window.localStorage, key, shopifyClient);
+      return shopifyClient;
+    }
     var existing = readStorage(window.localStorage, key);
     if (existing) return existing;
     var id = uuid();
@@ -149,16 +214,73 @@ function renderUniversalPixelScript() {
     return id;
   }
 
+  var externalUserIdStorageKey = storageKey('virona_si_external_user_id');
+  var externalUserId = normalizeIdentity(readStorage(window.localStorage, externalUserIdStorageKey));
+  if (!externalUserId) {
+    externalUserId = detectExternalUserIdFromDataLayer();
+    if (externalUserId) {
+      writeStorage(window.localStorage, externalUserIdStorageKey, externalUserId);
+    }
+  }
+
+  function setExternalUserId(value) {
+    var normalized = normalizeIdentity(value);
+    if (!normalized) return false;
+    externalUserId = normalized;
+    writeStorage(window.localStorage, externalUserIdStorageKey, externalUserId);
+    return true;
+  }
+
+  function captureExternalUserIdFromArgs(argsLike) {
+    try {
+      var args = Array.prototype.slice.call(argsLike || []);
+      for (var i = 0; i < args.length; i += 1) {
+        var value = args[i];
+        if (!value || typeof value !== 'object') continue;
+        var found = readNestedIdentity(value);
+        if (found) setExternalUserId(found);
+      }
+    } catch (_e) {}
+  }
+
+  function attachDataLayerBridge() {
+    try {
+      if (!Array.isArray(window.dataLayer)) return;
+
+      captureExternalUserIdFromArgs(window.dataLayer);
+
+      var originalPush = window.dataLayer.push;
+      if (typeof originalPush !== 'function') return;
+      if (originalPush.__vironaWrappedPush) return;
+
+      var wrappedPush = function () {
+        captureExternalUserIdFromArgs(arguments);
+        return originalPush.apply(window.dataLayer, arguments);
+      };
+      wrappedPush.__vironaWrappedPush = true;
+      window.dataLayer.push = wrappedPush;
+    } catch (_e) {}
+  }
+
+  attachDataLayerBridge();
+
   var clientId = getOrCreateClientId();
   var sessionId = getOrCreateSessionId();
 
   function sessionContext() {
     // Refresh session id if we went idle.
     sessionId = getOrCreateSessionId();
+    var shopifyClientId = normalizeIdentity(readCookie(SHOPIFY_CLIENT_COOKIE_NAME));
+    if (!externalUserId) {
+      var detected = detectExternalUserIdFromDataLayer();
+      if (detected) setExternalUserId(detected);
+    }
 
     return {
       clientId: clientId,
       sessionId: sessionId,
+      externalUserId: externalUserId || null,
+      shopifyClientId: shopifyClientId || null,
       navigator: { userAgent: safeString(navigator.userAgent, 280) },
       document: {
         title: safeString(document.title, 140),
@@ -171,11 +293,14 @@ function renderUniversalPixelScript() {
   function sendEvent(name, data, options) {
     try {
       var opts = options || {};
+      var context = sessionContext();
       var payload = {
         store: store,
         source: VERSION,
         timestamp: new Date().toISOString(),
-        context: sessionContext(),
+        context: context,
+        external_user_id: context.externalUserId || null,
+        shopify_client_id: context.shopifyClientId || null,
         event: {
           name: name,
           data: data || {}

@@ -45,6 +45,7 @@ export function runSessionIntelligenceMigration() {
       store TEXT NOT NULL,
       session_id TEXT NOT NULL,
       client_id TEXT,
+      external_user_id TEXT,
       shopper_number INTEGER,
       source TEXT,
       event_name TEXT NOT NULL,
@@ -82,6 +83,7 @@ export function runSessionIntelligenceMigration() {
   try {
     db.exec(`ALTER TABLE si_events ADD COLUMN checkout_step TEXT`);
   } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN external_user_id TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN shopper_number INTEGER`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN device_type TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN device_os TEXT`); } catch (e) { /* column exists */ }
@@ -128,6 +130,7 @@ export function runSessionIntelligenceMigration() {
       session_id TEXT NOT NULL,
       session_number INTEGER,
       client_id TEXT,
+      last_external_user_id TEXT,
       started_at TEXT,
       last_event_at TEXT,
       entry_event_ts TEXT,
@@ -165,6 +168,7 @@ export function runSessionIntelligenceMigration() {
   `);
 
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN session_number INTEGER`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_external_user_id TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_event_ts TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_event_name TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_page_url TEXT`); } catch (e) { /* column exists */ }
@@ -207,6 +211,16 @@ export function runSessionIntelligenceMigration() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_sessions_store_shopper_number
     ON si_sessions(store, shopper_number)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_client_last_event
+    ON si_sessions(store, client_id, last_event_at)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_external_last_event
+    ON si_sessions(store, last_external_user_id, last_event_at)
   `);
 
   db.exec(`
