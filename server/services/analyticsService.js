@@ -1,6 +1,7 @@
 import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import { fetchGoogleCampaignHierarchy } from './googleAdsService.js';
 
 // Import Meta Awareness feature module for consistent status filtering
 import {
@@ -1517,9 +1518,54 @@ function buildAdCountryBreakdown(db, store, startDate, endDate, statusFilter) {
   return adCountryMap;
 }
 
+function sortHierarchyBySpend(rows = []) {
+  return [...rows].sort((a, b) => (b?.spend || 0) - (a?.spend || 0));
+}
+
+async function mergeMetaAndGoogleHierarchy({
+  store,
+  params,
+  startDate,
+  endDate,
+  breakdown,
+  includeInactive,
+  metaHierarchy
+}) {
+  const metaRows = Array.isArray(metaHierarchy) ? metaHierarchy : [];
+  const noticeParts = [];
+  let googleRows = [];
+
+  try {
+    const googleResult = await fetchGoogleCampaignHierarchy({
+      store,
+      startDate,
+      endDate,
+      breakdown,
+      includeInactive,
+      campaignId: params?.campaignId || null
+    });
+
+    if (Array.isArray(googleResult?.data) && googleResult.data.length > 0) {
+      googleRows = googleResult.data;
+    }
+
+    if (googleResult?.notice) {
+      noticeParts.push(googleResult.notice);
+    }
+  } catch (error) {
+    console.warn(`[Analytics] Google campaign merge skipped for ${store}: ${error?.message || error}`);
+    noticeParts.push('Google Ads data is temporarily unavailable.');
+  }
+
+  return {
+    data: sortHierarchyBySpend([...metaRows, ...googleRows]),
+    notice: noticeParts.join(' ').trim()
+  };
+}
+
 // Get hierarchical Meta Ad Manager data with optional breakdown
 // REDESIGNED: Country breakdown now shows as nested rows under each campaign
-export function getMetaAdManagerHierarchy(store, params) {
+export async function getMetaAdManagerHierarchy(store, params) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
   const breakdown = params.breakdown || 'none'; // none, country, age, gender, age_gender, placement
@@ -1702,14 +1748,26 @@ export function getMetaAdManagerHierarchy(store, params) {
       isActive: campaign.effective_status === 'ACTIVE',
       ...calculateMetrics(campaign),
       level: 'campaign',
+      data_source: 'Meta Ads',
       country_breakdowns: countryMap.get(campaign.campaign_id) || [],
       adsets: adsetMap.get(campaign.campaign_id) || []
     }));
 
-    return {
-      data: hierarchy,
+    const mergedHierarchy = await mergeMetaAndGoogleHierarchy({
+      store,
+      params,
+      startDate,
+      endDate,
+      breakdown,
       includeInactive,
-      dateRange: { startDate, endDate }
+      metaHierarchy: hierarchy
+    });
+
+    return {
+      data: mergedHierarchy.data,
+      includeInactive,
+      dateRange: { startDate, endDate },
+      ...(mergedHierarchy.notice ? { notice: mergedHierarchy.notice } : {})
     };
   }
 
@@ -1890,15 +1948,27 @@ export function getMetaAdManagerHierarchy(store, params) {
 
     return {
       ...campaign,
+      data_source: 'Meta Ads',
       adsets: campaignAdsets,
       country_breakdowns: [] // Empty for non-country breakdowns
     };
   });
 
-  return {
-    data: hierarchy,
+  const mergedHierarchy = await mergeMetaAndGoogleHierarchy({
+    store,
+    params,
+    startDate,
+    endDate,
+    breakdown,
     includeInactive,
-    dateRange: { startDate, endDate }
+    metaHierarchy: hierarchy
+  });
+
+  return {
+    data: mergedHierarchy.data,
+    includeInactive,
+    dateRange: { startDate, endDate },
+    ...(mergedHierarchy.notice ? { notice: mergedHierarchy.notice } : {})
   };
 }
 

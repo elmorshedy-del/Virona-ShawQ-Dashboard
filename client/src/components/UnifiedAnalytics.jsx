@@ -318,6 +318,9 @@ export default function UnifiedAnalytics({
       : level === 'adset'
         ? row.adset_name
         : row.ad_name;
+    const sourceLabel = level === 'campaign'
+      ? (row.data_source || 'Meta Ads')
+      : '';
 
     // Check if this is a country breakdown row
     const isCountryBreakdown = row.isCountryBreakdown;
@@ -373,6 +376,17 @@ export default function UnifiedAnalytics({
             <span className={`${level === 'campaign' ? 'font-semibold text-gray-900' : level === 'adset' ? 'font-medium text-gray-800' : 'text-gray-700'}`}>
               {isCountryBreakdown ? row.countryName || row.country : displayName}
             </span>
+            {level === 'campaign' && sourceLabel && (
+              <span
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${
+                  sourceLabel === 'Google Ads'
+                    ? 'bg-sky-100 text-sky-700'
+                    : 'bg-indigo-100 text-indigo-700'
+                }`}
+              >
+                {sourceLabel}
+              </span>
+            )}
           </div>
         </td>
 
@@ -486,7 +500,7 @@ export default function UnifiedAnalytics({
               Unified Campaign
             </h2>
             <p className="text-sm text-gray-500 mt-0.5">
-              Meta Ad Manager hierarchy with breakdowns. All data from Meta pixel.
+              Unified Meta + Google campaign hierarchy with shared campaign table logic.
             </p>
             {metaAdManagerNotice ? (
               <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -739,7 +753,7 @@ export default function UnifiedAnalytics({
                       </button>
                     </div>
                   ) : (
-                    <p>No campaign data available. Try syncing Meta data first.</p>
+                    <p>No campaign data available. Try syncing Meta data or check Google Ads credentials.</p>
                   )}
                 </td>
               </tr>
