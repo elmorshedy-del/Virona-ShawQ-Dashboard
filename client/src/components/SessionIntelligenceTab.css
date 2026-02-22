@@ -873,14 +873,16 @@
   position: fixed;
   inset: 0;
   z-index: 100;
-  background: rgba(15, 23, 42, 0.35);
+  background: rgba(15, 23, 42, 0.38);
   display: flex;
   justify-content: flex-end;
   padding: 14px;
+  animation: siDrawerBackdropIn 180ms ease-out;
 }
 
 .si-drawer {
-  width: min(560px, 100%);
+  width: min(40vw, 640px);
+  min-width: 420px;
   max-height: calc(100vh - 28px);
   overflow: auto;
   background: rgba(255, 255, 255, 0.92);
@@ -889,6 +891,39 @@
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
   padding: 14px;
   backdrop-filter: blur(12px);
+  animation: siDrawerPanelIn 220ms ease-out;
+}
+
+@media (max-width: 980px) {
+  .si-drawer-backdrop {
+    padding: 0;
+  }
+
+  .si-drawer {
+    width: 100%;
+    min-width: 0;
+    max-height: 100vh;
+    border-radius: 0;
+    border-right: 0;
+    border-top: 0;
+    border-bottom: 0;
+  }
+}
+
+@keyframes siDrawerBackdropIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes siDrawerPanelIn {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .si-drawer-header {
@@ -1165,8 +1200,20 @@
 }
 
 .si-summary-card,
-.si-issues-card {
+.si-issues-layout-card {
   background: rgba(255, 255, 255, 0.88);
+}
+
+.si-issues-toolbar {
+  justify-content: flex-start;
+}
+
+.si-issues-split-grid {
+  margin-top: 4px;
+}
+
+.si-issues-panel-card {
+  padding: 12px;
 }
 
 .si-action-plan-card {
@@ -1472,31 +1519,35 @@
   color: var(--si-text);
 }
 
-.si-issues-table th,
-.si-issues-table td {
+.si-issues-compact-table th,
+.si-issues-compact-table td {
   white-space: normal;
   vertical-align: top;
 }
 
-.si-issues-table td:nth-child(1) {
+.si-issues-compact-table td:nth-child(1) {
   width: 58px;
 }
 
-.si-issues-table td:nth-child(2) {
+.si-issues-compact-table td:nth-child(2) {
   min-width: 160px;
   font-weight: 800;
 }
 
-.si-issues-table td:nth-child(3) {
-  min-width: 200px;
+.si-issues-compact-table td:nth-child(3) {
+  min-width: 180px;
 }
 
-.si-issues-table td:nth-child(7) {
+.si-issues-compact-table td:nth-child(4) {
   min-width: 120px;
 }
 
-.si-issues-table td:nth-child(8) {
-  min-width: 260px;
+.si-issues-compact-table td:nth-child(6) {
+  min-width: 120px;
+}
+
+.si-issues-compact-table td:nth-child(7) {
+  min-width: 88px;
 }
 
 .si-issue-row {

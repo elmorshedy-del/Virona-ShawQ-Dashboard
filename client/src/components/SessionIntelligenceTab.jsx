@@ -29,6 +29,8 @@ const JOURNEY_STAGE_DISPLAY_ORDER = ['Home', 'Product', 'Cart', 'Checkout', 'Pay
 const JOURNEY_DEFAULT_RANGE_DAYS = 7;
 const JOURNEY_SIGNIFICANT_DELTA_RATE = 0.25;
 const JOURNEY_SIGNIFICANT_DELTA_COUNT = 3;
+const ISSUE_TABLE_ROW_LIMIT = 8;
+const ISSUE_PROOF_SESSION_LIMIT = 5;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
@@ -576,7 +578,7 @@ function verificationUi(status) {
   if (status === 'confirmed') return { label: 'Confirmed', className: 'si-verify-confirmed' };
   if (status === 'false_positive') return { label: 'False alert', className: 'si-verify-false-positive' };
   if (status === 'not_applicable') return { label: 'N/A', className: 'si-verify-na' };
-  return { label: 'Pending', className: 'si-verify-pending' };
+  return { label: 'Investigating', className: 'si-verify-pending' };
 }
 
 function pluralize(value, singular, plural) {
@@ -645,6 +647,9 @@ const ISSUE_VERIFICATION_VIEW = {
   CONFIRMED_FIRST: 'confirmed_first',
   ALL: 'all'
 };
+
+const TECHNICAL_ISSUE_TYPES = new Set(['js_errors', 'form_invalid', 'scroll_dropoff']);
+const INTERACTION_FRICTION_ISSUE_TYPES = new Set(['dead_clicks', 'rage_clicks']);
 
 const TARGET_KEY_RULES = [
   { key: 'summary.accordion__summary', label: 'Accordion toggle' },
@@ -1533,7 +1538,6 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const [eventsStatus, setEventsStatus] = useState('idle');
   const [sanityOpen, setSanityOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [showAllIssues, setShowAllIssues] = useState(false);
   const [issueVerificationView, setIssueVerificationView] = useState(ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
@@ -1610,6 +1614,26 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     setStoryEvents([]);
     setStoryError('');
   }, []);
+
+  useEffect(() => {
+    if (!storyOpen) return undefined;
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeStory();
+      }
+    };
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [closeStory, storyOpen]);
 
   const loadRealtime = useCallback(async () => {
     setRealtimeLoading(true);
@@ -2228,9 +2252,32 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     if (!hasConfirmedVerifiableIssues) return issueRows;
     return issueRows.filter((row) => !row.isVerifiable || row.verificationStatus === 'confirmed');
   }, [hasConfirmedVerifiableIssues, issueRows, issueVerificationView]);
-  const visibleIssueRows = showAllIssues ? filteredIssueRows : filteredIssueRows.slice(0, 8);
+  const technicalIssueRows = useMemo(() => (
+    filteredIssueRows.filter((row) => TECHNICAL_ISSUE_TYPES.has(row.type))
+  ), [filteredIssueRows]);
+  const interactionFrictionRows = useMemo(() => (
+    filteredIssueRows.filter((row) => INTERACTION_FRICTION_ISSUE_TYPES.has(row.type))
+  ), [filteredIssueRows]);
+  const visibleTechnicalIssueRows = technicalIssueRows.slice(0, ISSUE_TABLE_ROW_LIMIT);
+  const visibleInteractionFrictionRows = interactionFrictionRows.slice(0, ISSUE_TABLE_ROW_LIMIT);
+  const issueTableSections = useMemo(() => ([
+    {
+      key: 'technical',
+      title: 'Technical issues',
+      subtitle: 'JS/runtime/form/scroll clusters',
+      emptyMessage: 'No technical issues surfaced in this range.',
+      rows: visibleTechnicalIssueRows
+    },
+    {
+      key: 'interaction',
+      title: 'Interaction friction',
+      subtitle: 'Dead and rage clicks only',
+      emptyMessage: 'No interaction friction clusters in this range.',
+      rows: visibleInteractionFrictionRows
+    }
+  ]), [visibleInteractionFrictionRows, visibleTechnicalIssueRows]);
   const topIssue = filteredIssueRows[0] || issueRows[0] || null;
-  const developerGuideRows = filteredIssueRows.slice(0, 3);
+  const developerGuideRows = technicalIssueRows.slice(0, 3);
   const actionPlanRows = useMemo(() => (
     buildBehaviorPatternRows({ librarySessions })
   ), [librarySessions]);
@@ -2694,6 +2741,124 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         </div>
       </div>
 
+      <div className="si-card si-issues-layout-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Top issues</h3>
+          <span className="si-muted">
+            Ranked by high-intent impact • {issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST ? 'Confirmed first' : 'All issues'}
+          </span>
+        </div>
+
+        <div className="si-row si-issues-toolbar" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+          <button
+            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST ? 'si-chip-active' : ''}`}
+            type="button"
+            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST)}
+            disabled={!hasConfirmedVerifiableIssues}
+            title={hasConfirmedVerifiableIssues ? 'Show only confirmed verifier issues (+ non-verifiable issues).' : 'No confirmed verifier issues yet.'}
+          >
+            Confirmed first
+          </button>
+          <button
+            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.ALL ? 'si-chip-active' : ''}`}
+            type="button"
+            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.ALL)}
+          >
+            All issues
+          </button>
+          {verificationSummary?.total > 0 ? (
+            <span className="si-muted">
+              Verifier: {formatNumber(verificationSummary.confirmed)} confirmed, {formatNumber(verificationSummary.false_positive)} false alerts, {formatNumber(verificationSummary.unverified)} investigating
+            </span>
+          ) : null}
+        </div>
+
+        {clarityLoading ? (
+          <div className="si-empty">Loading ranked issues…</div>
+        ) : null}
+
+        {!clarityLoading && clarityError ? (
+          <div className="si-empty" style={{ color: '#b42318' }}>{clarityError}</div>
+        ) : null}
+
+        {!clarityLoading && !clarityError && issueRows.length === 0 ? (
+          <div className="si-empty">
+            No issue rows yet. Once the storefront script captures interactions, ranked issues will appear here.
+          </div>
+        ) : null}
+
+        {!clarityLoading && !clarityError && issueRows.length > 0 && filteredIssueRows.length === 0 ? (
+          <div className="si-empty">
+            No rows match the current verification filter. Switch to <strong>All issues</strong> to inspect unresolved alerts.
+          </div>
+        ) : null}
+
+        {!clarityLoading && !clarityError && filteredIssueRows.length > 0 ? (
+          <div className="si-journey-grid si-issues-split-grid">
+            {issueTableSections.map((section) => (
+              <div key={section.key} className="si-card si-journey-card si-issues-panel-card">
+                <div className="si-card-title">
+                  <h3>{section.title}</h3>
+                  <span className="si-muted">{section.subtitle}</span>
+                </div>
+                {section.rows.length === 0 ? (
+                  <div className="si-empty">{section.emptyMessage}</div>
+                ) : (
+                  <div className="si-journey-table-wrap">
+                    <table className="si-event-table si-issues-compact-table">
+                      <thead>
+                        <tr>
+                          <th>Rank</th>
+                          <th>Issue</th>
+                          <th>Where</th>
+                          <th>Sessions</th>
+                          <th>% high-intent</th>
+                          <th>Status</th>
+                          <th>Proof</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {section.rows.map((row, rowIndex) => {
+                          const verificationState = verificationUi(row.verificationStatus);
+                          const sampleList = Array.isArray(row.sampleSessions) ? row.sampleSessions : [];
+                          const proofSession = sampleList[0];
+                          const proofCount = Math.min(sampleList.length, ISSUE_PROOF_SESSION_LIMIT);
+                          return (
+                            <tr key={row.id} className={`si-issue-row si-issue-${row.type}`}>
+                              <td><strong>{rowIndex + 1}</strong></td>
+                              <td>{row.issueLabel}</td>
+                              <td title={row.whereLabel}>{row.whereLabel}</td>
+                              <td>{pluralize(row.sessionsAffected, 'session', 'sessions')}</td>
+                              <td>{formatPercent(row.highIntentRate, 0)}</td>
+                              <td title={row.verificationReason || ''}>
+                                <span className={`si-chip ${verificationState.className}`}>{verificationState.label}</span>
+                              </td>
+                              <td>
+                                {proofSession?.session_id ? (
+                                  <button
+                                    className="si-button si-button-small"
+                                    type="button"
+                                    onClick={() => openStory(proofSession.session_id, proofSession)}
+                                  >
+                                    View {pluralize(proofCount, 'session', 'sessions')}
+                                  </button>
+                                ) : (
+                                  <span className="si-muted">No sample</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
       <div className="si-card si-device-abandon-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
           <h3>Abandonment by device</h3>
@@ -2830,170 +2995,6 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         )}
       </div>
 
-      <div className="si-card si-issues-card" style={{ marginBottom: 12 }}>
-        <div className="si-card-title">
-          <h3>Top issues</h3>
-          <span className="si-muted">
-            Top {formatNumber(visibleIssueRows.length)} visible • {issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST ? 'Confirmed first' : 'All issues'}
-          </span>
-        </div>
-
-        <div className="si-row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-          <button
-            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST ? 'si-chip-active' : ''}`}
-            type="button"
-            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.CONFIRMED_FIRST)}
-            disabled={!hasConfirmedVerifiableIssues}
-            title={hasConfirmedVerifiableIssues ? 'Show only confirmed verifier issues (+ non-verifiable issues).' : 'No confirmed verifier issues yet.'}
-          >
-            Confirmed first
-          </button>
-          <button
-            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.ALL ? 'si-chip-active' : ''}`}
-            type="button"
-            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.ALL)}
-          >
-            All issues
-          </button>
-          {verificationSummary?.total > 0 ? (
-            <span className="si-muted">
-              Verifier: {formatNumber(verificationSummary.confirmed)} confirmed, {formatNumber(verificationSummary.false_positive)} false alerts, {formatNumber(verificationSummary.unverified)} pending
-            </span>
-          ) : null}
-        </div>
-
-        {clarityLoading ? (
-          <div className="si-empty">Loading ranked issues…</div>
-        ) : null}
-
-        {!clarityLoading && clarityError ? (
-          <div className="si-empty" style={{ color: '#b42318' }}>{clarityError}</div>
-        ) : null}
-
-        {!clarityLoading && !clarityError && issueRows.length === 0 ? (
-          <div className="si-empty">
-            No issue rows yet. Once the storefront script captures interactions, ranked issues will appear here.
-          </div>
-        ) : null}
-
-        {!clarityLoading && !clarityError && issueRows.length > 0 && filteredIssueRows.length === 0 ? (
-          <div className="si-empty">
-            No rows match the current verification filter. Switch to <strong>All issues</strong> to inspect pending/false alerts.
-          </div>
-        ) : null}
-
-        {!clarityLoading && !clarityError && filteredIssueRows.length > 0 ? (
-          <>
-            <table className="si-event-table si-issues-table">
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Issue</th>
-                  <th>Where</th>
-                  <th>Sessions affected</th>
-                  <th>% high-intent affected</th>
-                  <th>Confidence</th>
-                  <th>Verification</th>
-                  <th>Action</th>
-                  <th>Proof</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleIssueRows.map((row, rowIndex) => {
-                  const confidenceClass = row.confidenceLabel === 'High'
-                    ? 'si-confidence-high'
-                    : row.confidenceLabel === 'Med'
-                      ? 'si-confidence-med'
-                      : 'si-confidence-low';
-                  const verificationState = verificationUi(row.verificationStatus);
-                  const sampleList = Array.isArray(row.sampleSessions) ? row.sampleSessions : [];
-                  const proofSession = sampleList[0];
-                  const proofCount = Math.min(sampleList.length, 5);
-                  return (
-                    <tr key={row.id} className={`si-issue-row si-issue-${row.type}`}>
-                      <td><strong>{rowIndex + 1}</strong></td>
-                      <td>{row.issueLabel}</td>
-                      <td title={row.whereLabel}>{row.whereLabel}</td>
-                      <td>{pluralize(row.sessionsAffected, 'session', 'sessions')}</td>
-                      <td>{formatPercent(row.highIntentRate, 0)}</td>
-                      <td>
-                        <span className={`si-chip ${confidenceClass}`}>{row.confidenceLabel}</span>
-                      </td>
-                      <td title={row.verificationReason || ''}>
-                        <span className={`si-chip ${verificationState.className}`}>{verificationState.label}</span>
-                      </td>
-                      <td title={row.action}>{row.action}</td>
-                      <td>
-                        {proofSession?.session_id ? (
-                          <button
-                            className="si-button si-button-small"
-                            type="button"
-                            onClick={() => openStory(proofSession.session_id, proofSession)}
-                          >
-                            View {proofCount || 1} sessions
-                          </button>
-                        ) : (
-                          <span className="si-muted">No sample</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-
-            {filteredIssueRows.length > 8 ? (
-              <div className="si-row" style={{ justifyContent: 'space-between', marginTop: 10 }}>
-                <span className="si-muted">
-                  Showing {visibleIssueRows.length} of {filteredIssueRows.length} issue rows
-                </span>
-                <button
-                  className="si-button si-button-small"
-                  type="button"
-                  onClick={() => setShowAllIssues((prev) => !prev)}
-                >
-                  {showAllIssues ? 'Show top 8' : 'Show more'}
-                </button>
-              </div>
-            ) : null}
-
-            {developerGuideRows.length > 0 ? (
-              <div className="si-dev-guide">
-                <div className="si-card-title" style={{ marginTop: 14 }}>
-                  <h3>Developer fix instructions</h3>
-                  <span className="si-muted">How to resolve each top issue</span>
-                </div>
-                <div className="si-fix-grid">
-                  {developerGuideRows.map((row) => {
-                    const steps = buildDeveloperFixSteps(row);
-                    const technical = row.rawErrorMessage
-                      ? (row.rawErrorMessage.length > 140 ? `${row.rawErrorMessage.slice(0, 140)}...` : row.rawErrorMessage)
-                      : '';
-                    return (
-                      <div key={`fix-${row.id}`} className="si-fix-card">
-                        <div className="si-fix-title">{row.issueLabel}</div>
-                        <div className="si-fix-where">{row.whereLabel}</div>
-                        <ol className="si-fix-list">
-                          {steps.map((step, idx) => (
-                            <li key={`${row.id}-step-${idx}`}>{step}</li>
-                          ))}
-                        </ol>
-                        {technical ? (
-                          <div className="si-fix-tech">
-                            <span className="si-muted">Technical signature</span>
-                            <code className="si-code">{technical}</code>
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
-          </>
-        ) : null}
-      </div>
-
       <div className="si-row" style={{ marginBottom: 12, justifyContent: 'space-between', gap: 10 }}>
         <div className="si-muted">Evidence + Advanced</div>
         <button
@@ -3033,6 +3034,40 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 	          </li>
 	        </ul>
 	      </div>
+
+        {developerGuideRows.length > 0 ? (
+          <div className="si-card si-dev-guide-card" style={{ marginBottom: 12 }}>
+            <div className="si-card-title">
+              <h3>Developer fix instructions</h3>
+              <span className="si-muted">How to resolve each top technical issue</span>
+            </div>
+            <div className="si-fix-grid">
+              {developerGuideRows.map((row) => {
+                const steps = buildDeveloperFixSteps(row);
+                const technical = row.rawErrorMessage
+                  ? (row.rawErrorMessage.length > 140 ? `${row.rawErrorMessage.slice(0, 140)}...` : row.rawErrorMessage)
+                  : '';
+                return (
+                  <div key={`fix-${row.id}`} className="si-fix-card">
+                    <div className="si-fix-title">{row.issueLabel}</div>
+                    <div className="si-fix-where">{row.whereLabel}</div>
+                    <ol className="si-fix-list">
+                      {steps.map((step, idx) => (
+                        <li key={`${row.id}-step-${idx}`}>{step}</li>
+                      ))}
+                    </ol>
+                    {technical ? (
+                      <div className="si-fix-tech">
+                        <span className="si-muted">Technical signature</span>
+                        <code className="si-code">{technical}</code>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
 
 	      <div className="si-grid">
 	        <div className="si-card">
