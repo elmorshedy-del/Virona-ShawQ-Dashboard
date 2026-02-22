@@ -15,6 +15,7 @@ import {
 import TestimonialExtractor from './TestimonialExtractor';
 import VideoOverlayEditor from './VideoOverlayEditor';
 import PhotoMagicEditor from './PhotoMagicEditor';
+import CreativeProductionOS from './CreativeProductionOS';
 
 const API_BASE = '/api';
 const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
@@ -214,6 +215,7 @@ export default function CreativeStudio({ store }) {
     { id: 'overlay', label: 'Overlay Editor', icon: <Sparkles size={18} /> },
     { id: 'photo_magic', label: 'Photo Magic', icon: <Wand2 size={18} /> },
     { id: 'editor', label: 'Ad Editor', icon: <Layers size={18} /> },
+    { id: 'creative_os', label: 'Creative OS', icon: <Star size={18} /> },
     { id: 'video', label: 'Video Resizer', icon: <Film size={18} /> },
     { id: 'spy', label: 'Competitor Spy', icon: <Search size={18} /> },
     { id: 'generate', label: 'AI Generate', icon: <Wand2 size={18} /> },
@@ -235,7 +237,7 @@ export default function CreativeStudio({ store }) {
             </div>
 
             {/* Tab Navigation */}
-            <div className="flex items-center gap-1">
+            <div className="flex max-w-[60vw] items-center gap-1 overflow-x-auto py-1">
               {tabs.map(tab => (
                 <button
                   key={tab.id}
@@ -266,6 +268,7 @@ export default function CreativeStudio({ store }) {
         {activeTab === 'overlay' && <VideoOverlayEditor store={store} />}
         {activeTab === 'photo_magic' && <PhotoMagicEditor store={store} />}
         {activeTab === 'editor' && <AdEditor store={store} />}
+        {activeTab === 'creative_os' && <CreativeProductionOS store={store} />}
         {activeTab === 'video' && <VideoResizer store={store} />}
         {activeTab === 'spy' && (
           <CompetitorSpy
@@ -608,7 +611,7 @@ Return JSON array of { "color": "#hex", "reason": "short rationale" }.`;
     setDownloading(false);
   };
 
-  const callGemini = async (payload, model = "gemini-2.5-flash") => {
+  const callGemini = async (payload, model = "gemini-2.5-flash-preview-09-2025") => {
     const response = await fetch(withStore('/creative-studio/gemini', store), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
