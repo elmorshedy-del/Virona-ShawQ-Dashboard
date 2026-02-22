@@ -39,6 +39,8 @@ const execFileAsync = promisify(execFile);
 
 const router = express.Router();
 const db = getDb();
+const DEFAULT_GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash-preview-09-2025';
+const GEMINI_MODEL_FALLBACK_MESSAGE_PATTERN = /not found|unknown model|unsupported|deprecated/i;
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -292,6 +294,7 @@ const CREATIVE_OS_TIMELINE_FONT_PATH = path.join(__dirname, '..', 'assets', 'fon
 const CREATIVE_OS_TIMELINE_MAX_CAPTIONS = 120;
 const CREATIVE_OS_TIMELINE_MAX_TEXT_CHARS = 180;
 const CREATIVE_OS_TIMELINE_MAX_TTS_CHARS = 400;
+const CREATIVE_OS_TTS_PROVIDER_MAX_CHARS = 200;
 const CREATIVE_OS_MEDIA_ID_PATTERN = /^[a-zA-Z0-9_-]{8,120}$/;
 const CREATIVE_OS_TIMELINE_MAX_SEGMENTS = 24;
 const CREATIVE_OS_TIMELINE_MIN_SEGMENT_SECONDS = 0.6;
@@ -320,6 +323,8 @@ const CREATIVE_OS_TTS_LANG_ALLOWLIST = new Set([
 ]);
 const CREATIVE_OS_TTS_SOURCE_BASE_URL = 'https://translate.googleapis.com/translate_tts';
 const CREATIVE_OS_MUSIC_TRACK_DURATION_SECONDS = 30;
+const CREATIVE_OS_MUSIC_LIBRARY_WARMUP_RETRY_DELAY_MS = 60000;
+const CREATIVE_OS_PREWARM_MUSIC_LIBRARY = parseBool(process.env.CREATIVE_OS_PREWARM_MUSIC_LIBRARY ?? 'true', true);
 const CREATIVE_OS_MUSIC_LIBRARY_TRACKS = [
   {
     id: 'uplift_glow',
@@ -361,6 +366,14 @@ const CREATIVE_OS_MUSIC_LIBRARY_TRACKS = [
     license: 'Royalty-free (generated in-app)'
   }
 ];
+
+const creativeOsMusicLibraryWarmupState = {
+  status: 'idle',
+  startedAt: null,
+  completedAt: null,
+  error: null,
+  promise: null
+};
 
 const CREATIVE_OS_FORMAT_CONFIG = {
   meta_feed_4_5: {
@@ -854,6 +867,80 @@ function parseCreativeOsTtsLanguage(rawValue) {
   return 'en';
 }
 
+function splitCreativeOsTtsChunks(text, maxChunkChars = CREATIVE_OS_TTS_PROVIDER_MAX_CHARS) {
+  const normalized = sanitizeCreativeOsText(text, CREATIVE_OS_TIMELINE_MAX_TTS_CHARS, '');
+  if (!normalized) return [];
+
+  const words = normalized.split(' ').filter(Boolean);
+  const chunks = [];
+  let current = '';
+
+  for (const word of words) {
+    if (word.length > maxChunkChars) {
+      if (current) {
+        chunks.push(current);
+        current = '';
+      }
+      for (let cursor = 0; cursor < word.length; cursor += maxChunkChars) {
+        chunks.push(word.slice(cursor, cursor + maxChunkChars));
+      }
+      continue;
+    }
+
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxChunkChars) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) chunks.push(current);
+    current = word;
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+async function synthesizeCreativeOsTtsChunks({ language, textChunks }) {
+  const chunks = Array.isArray(textChunks) ? textChunks.filter(Boolean) : [];
+  if (!chunks.length) {
+    const err = new Error('TTS text is empty after chunking.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const audioParts = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+    const response = await axios.get(CREATIVE_OS_TTS_SOURCE_BASE_URL, {
+      responseType: 'arraybuffer',
+      timeout: CREATIVE_OS_TTS_TIMEOUT_MS,
+      params: {
+        ie: 'UTF-8',
+        client: 'tw-ob',
+        tl: language,
+        q: chunk,
+        idx: index,
+        total: chunks.length,
+        textlen: chunk.length
+      },
+      headers: {
+        'User-Agent': 'VironaCreativeOS/1.0'
+      }
+    });
+
+    const audioBuffer = Buffer.from(response.data || []);
+    if (!audioBuffer.length) {
+      const err = new Error(`TTS provider returned empty audio for chunk ${index + 1}/${chunks.length}.`);
+      err.statusCode = 502;
+      throw err;
+    }
+    audioParts.push(audioBuffer);
+  }
+
+  return audioParts.length === 1 ? audioParts[0] : Buffer.concat(audioParts);
+}
+
 function resolveCreativeOsTransitionType(rawValue) {
   const normalized = sanitizeCreativeOsText(rawValue, 32, 'fade').toLowerCase();
   return CREATIVE_OS_TRANSITION_ALLOWLIST.has(normalized) ? normalized : 'fade';
@@ -907,6 +994,77 @@ async function ensureCreativeOsMusicLibraryTracks() {
     }
   }
 }
+
+function getCreativeOsMusicLibraryWarmupStatus() {
+  return {
+    status: creativeOsMusicLibraryWarmupState.status,
+    started_at: creativeOsMusicLibraryWarmupState.startedAt,
+    completed_at: creativeOsMusicLibraryWarmupState.completedAt,
+    error: creativeOsMusicLibraryWarmupState.error
+  };
+}
+
+function shouldRetryCreativeOsMusicWarmup() {
+  if (creativeOsMusicLibraryWarmupState.status !== 'error') return false;
+  const completedAtMs = creativeOsMusicLibraryWarmupState.completedAt
+    ? new Date(creativeOsMusicLibraryWarmupState.completedAt).getTime()
+    : 0;
+  if (!Number.isFinite(completedAtMs) || completedAtMs <= 0) return true;
+  return (Date.now() - completedAtMs) >= CREATIVE_OS_MUSIC_LIBRARY_WARMUP_RETRY_DELAY_MS;
+}
+
+function queueCreativeOsMusicLibraryWarmup({ force = false } = {}) {
+  if (creativeOsMusicLibraryWarmupState.promise) {
+    return creativeOsMusicLibraryWarmupState.promise;
+  }
+
+  if (!force) {
+    if (creativeOsMusicLibraryWarmupState.status === 'ready') {
+      return Promise.resolve(true);
+    }
+    if (creativeOsMusicLibraryWarmupState.status === 'error' && !shouldRetryCreativeOsMusicWarmup()) {
+      return Promise.resolve(false);
+    }
+  }
+
+  creativeOsMusicLibraryWarmupState.status = 'warming';
+  creativeOsMusicLibraryWarmupState.startedAt = new Date().toISOString();
+  creativeOsMusicLibraryWarmupState.error = null;
+
+  const warmupPromise = ensureCreativeOsMusicLibraryTracks()
+    .then(() => {
+      creativeOsMusicLibraryWarmupState.status = 'ready';
+      creativeOsMusicLibraryWarmupState.completedAt = new Date().toISOString();
+      creativeOsMusicLibraryWarmupState.error = null;
+      return true;
+    })
+    .catch((error) => {
+      creativeOsMusicLibraryWarmupState.status = 'error';
+      creativeOsMusicLibraryWarmupState.completedAt = new Date().toISOString();
+      creativeOsMusicLibraryWarmupState.error = error?.code === 'ENOENT'
+        ? 'ffmpeg/ffprobe not found on server. Install ffmpeg to build music library.'
+        : (error?.message || 'Music library warmup failed.');
+      console.warn('[creative-os/music/library] background warmup failed:', error?.message || error);
+      return false;
+    })
+    .finally(() => {
+      creativeOsMusicLibraryWarmupState.promise = null;
+    });
+
+  creativeOsMusicLibraryWarmupState.promise = warmupPromise;
+  return warmupPromise;
+}
+
+function primeCreativeOsBackgroundWarmups() {
+  if (!CREATIVE_OS_PREWARM_MUSIC_LIBRARY) return;
+  setTimeout(() => {
+    queueCreativeOsMusicLibraryWarmup().catch((error) => {
+      console.warn('[creative-os/music/library] warmup bootstrap error:', error?.message || error);
+    });
+  }, 0);
+}
+
+primeCreativeOsBackgroundWarmups();
 
 function buildCreativeOsTimelineTextExpression(text) {
   return String(text || '')
@@ -1714,17 +1872,61 @@ router.post('/gemini', async (req, res) => {
       return res.status(400).json({ error: 'Payload is required.' });
     }
 
-    const resolvedModel = model || 'gemini-2.5-flash-preview-09-2025';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${resolvedModel}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    const requestedModel = sanitizeCreativeOsText(model, 128, DEFAULT_GEMINI_TEXT_MODEL);
+    const requestGemini = async (targetModel) => {
+      const modelName = sanitizeCreativeOsText(targetModel, 128, DEFAULT_GEMINI_TEXT_MODEL);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+      return axios.post(url, payload, {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
 
-    const response = await axios.post(url, payload, {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    try {
+      const response = await requestGemini(requestedModel);
+      return res.json({
+        ...response.data,
+        model: requestedModel
+      });
+    } catch (primaryError) {
+      const upstreamStatus = Number.isInteger(primaryError?.response?.status)
+        ? primaryError.response.status
+        : null;
+      const upstreamMessage = primaryError?.response?.data?.error?.message || primaryError.message || 'Gemini request failed.';
+      const shouldFallbackToDefault =
+        requestedModel !== DEFAULT_GEMINI_TEXT_MODEL &&
+        (upstreamStatus === 404 || upstreamStatus === 400) &&
+        GEMINI_MODEL_FALLBACK_MESSAGE_PATTERN.test(String(upstreamMessage || ''));
 
-    return res.json(response.data);
+      if (shouldFallbackToDefault) {
+        try {
+          const fallbackResponse = await requestGemini(DEFAULT_GEMINI_TEXT_MODEL);
+          return res.json({
+            ...fallbackResponse.data,
+            model: DEFAULT_GEMINI_TEXT_MODEL,
+            fallback_from: requestedModel
+          });
+        } catch (fallbackError) {
+          const fallbackStatus = Number.isInteger(fallbackError?.response?.status)
+            ? fallbackError.response.status
+            : null;
+          const fallbackMessage = fallbackError?.response?.data?.error?.message || fallbackError.message || 'Gemini fallback failed.';
+          console.error('Gemini fallback error:', fallbackError?.response?.data || fallbackError.message);
+          return res.status(fallbackStatus || upstreamStatus || 500).json({
+            error: fallbackMessage,
+            model: DEFAULT_GEMINI_TEXT_MODEL,
+            fallback_from: requestedModel,
+            primary_error: upstreamMessage
+          });
+        }
+      }
+
+      console.error('Gemini proxy error:', primaryError?.response?.data || primaryError.message);
+      return res.status(upstreamStatus || 500).json({ error: upstreamMessage, model: requestedModel });
+    }
   } catch (error) {
     console.error('Gemini proxy error:', error?.response?.data || error.message);
-    return res.status(500).json({ error: error?.response?.data?.error?.message || error.message });
+    const upstreamStatus = Number.isInteger(error?.response?.status) ? error.response.status : 500;
+    return res.status(upstreamStatus).json({ error: error?.response?.data?.error?.message || error.message });
   }
 });
 
@@ -4814,8 +5016,11 @@ router.post('/creative-os/video/audio/upload', upload.single('audio'), async (re
 
 router.get('/creative-os/video/music/library', async (req, res) => {
   try {
-    await ensureCreativeOsMusicLibraryTracks();
     const store = sanitizeCreativeOsText(req.query.store, 64, CREATIVE_OS_DEFAULT_STORE).toLowerCase();
+    const warmupBeforeRead = getCreativeOsMusicLibraryWarmupStatus();
+    if (warmupBeforeRead.status === 'idle' || warmupBeforeRead.status === 'error') {
+      void queueCreativeOsMusicLibraryWarmup({ force: warmupBeforeRead.status === 'error' });
+    }
 
     const tracks = [];
     for (const track of CREATIVE_OS_MUSIC_LIBRARY_TRACKS) {
@@ -4860,9 +5065,23 @@ router.get('/creative-os/video/music/library', async (req, res) => {
       });
     }
 
+    const warmup = getCreativeOsMusicLibraryWarmupStatus();
+    if (!tracks.length && warmup.status === 'error') {
+      return res.status(503).json({
+        success: false,
+        error: warmup.error || 'Music library warmup failed.',
+        generated: false,
+        initializing: false,
+        warmup,
+        tracks: []
+      });
+    }
+
     return res.json({
       success: true,
-      generated: true,
+      generated: tracks.length === CREATIVE_OS_MUSIC_LIBRARY_TRACKS.length,
+      initializing: warmup.status === 'warming',
+      warmup,
       tracks
     });
   } catch (error) {
@@ -4908,21 +5127,8 @@ router.post('/creative-os/video/tts', async (req, res) => {
     }
 
     const language = parseCreativeOsTtsLanguage(req.body?.language || req.body?.lang || 'en');
-    const response = await axios.get(CREATIVE_OS_TTS_SOURCE_BASE_URL, {
-      responseType: 'arraybuffer',
-      timeout: CREATIVE_OS_TTS_TIMEOUT_MS,
-      params: {
-        ie: 'UTF-8',
-        client: 'tw-ob',
-        tl: language,
-        q: text
-      },
-      headers: {
-        'User-Agent': 'VironaCreativeOS/1.0'
-      }
-    });
-
-    const audioBuffer = Buffer.from(response.data || []);
+    const textChunks = splitCreativeOsTtsChunks(text, CREATIVE_OS_TTS_PROVIDER_MAX_CHARS);
+    const audioBuffer = await synthesizeCreativeOsTtsChunks({ language, textChunks });
     if (!audioBuffer.length) {
       return res.status(502).json({ success: false, error: 'TTS provider returned empty audio.' });
     }
@@ -4938,14 +5144,18 @@ router.post('/creative-os/video/tts', async (req, res) => {
         ext: 'mp3',
         filename: `tts-${language}.mp3`,
         language,
-        source: 'google-tts-fallback'
+        source: textChunks.length > 1 ? 'google-tts-fallback-chunked' : 'google-tts-fallback',
+        chunk_count: textChunks.length
       }
     });
   } catch (error) {
-    console.error('[creative-os/video/tts] error:', error?.response?.status || error?.message || error);
-    return res.status(500).json({
+    const upstreamStatus = Number.isInteger(error?.response?.status) ? error.response.status : null;
+    console.error('[creative-os/video/tts] error:', upstreamStatus || error?.message || error);
+    return res.status(upstreamStatus || 500).json({
       success: false,
-      error: 'TTS generation failed. Try a shorter script or upload your own voiceover.'
+      error: upstreamStatus === 400
+        ? `TTS provider rejected the script. Try shorter phrases (${CREATIVE_OS_TTS_PROVIDER_MAX_CHARS} chars max per chunk).`
+        : 'TTS generation failed. Try a shorter script or upload your own voiceover.'
     });
   }
 });
