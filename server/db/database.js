@@ -411,6 +411,82 @@ export function initDb() {
     ON shopify_pixel_events(store, created_at)
   `);
 
+  // Checkout Blackbox events (standalone diagnostics stream)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS blackbox_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL DEFAULT 'shawq',
+      event_name TEXT NOT NULL,
+      event_ts TEXT NOT NULL,
+      source TEXT,
+      channel TEXT,
+      session_id TEXT,
+      client_id TEXT,
+      event_id TEXT,
+      order_id TEXT,
+      cart_token TEXT,
+      checkout_token TEXT,
+      checkout_button TEXT,
+      checkout_source TEXT,
+      page_url TEXT,
+      page_path TEXT,
+      referrer TEXT,
+      landing_page TEXT,
+      event_source_url TEXT,
+      country_code TEXT,
+      region_code TEXT,
+      ip_hash TEXT,
+      user_agent TEXT,
+      utm_source TEXT,
+      utm_medium TEXT,
+      utm_campaign TEXT,
+      payload_json TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN channel TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN event_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN order_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN cart_token TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN checkout_token TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN checkout_button TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN checkout_source TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN page_url TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN page_path TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN referrer TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN landing_page TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN event_source_url TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN country_code TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN region_code TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN ip_hash TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN user_agent TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN utm_source TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN utm_medium TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN utm_campaign TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN payload_json TEXT`); } catch (e) { /* column exists */ }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_event_ts
+    ON blackbox_events(store, event_ts)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_event_name_ts
+    ON blackbox_events(store, event_name, event_ts)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_session_ts
+    ON blackbox_events(store, session_id, event_ts)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_order_id
+    ON blackbox_events(store, order_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_created_at
+    ON blackbox_events(store, created_at)
+  `);
+
   // Manual orders - with store column
   db.exec(`
     CREATE TABLE IF NOT EXISTS manual_orders (
