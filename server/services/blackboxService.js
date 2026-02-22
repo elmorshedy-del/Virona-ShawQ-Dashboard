@@ -21,6 +21,8 @@ const MAX_RAW_JSON_CHARS = 20000;
 const MAX_STRING_LENGTH = 800;
 const MAX_STORE_LENGTH = 64;
 const IP_HASH_PREFIX_LENGTH = 16;
+const DUPLICATE_BUTTON_MAX_LENGTH = 160;
+const TOP_DUPLICATE_BUTTON_LIMIT = 10;
 
 const EVENT_NAME_ALIASES = new Map([
   ['checkout_started', 'begin_checkout'],
@@ -561,6 +563,29 @@ function detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds) {
   const duplicateGroups = [];
   const duplicateByButton = new Map();
   let duplicateEventCount = 0;
+  const recordDuplicateCluster = (cluster) => {
+    if (!Array.isArray(cluster) || cluster.length <= 1) return;
+
+    duplicateEventCount += cluster.length - 1;
+    const representative = cluster[0];
+    const button = safeString(
+      representative.checkout_button || representative.checkout_source,
+      DUPLICATE_BUTTON_MAX_LENGTH
+    ) || 'unknown';
+    duplicateByButton.set(button, (duplicateByButton.get(button) || 0) + (cluster.length - 1));
+    duplicateGroups.push({
+      identity_key: identityKeyFromEvent(representative) || 'unknown-identity',
+      flow_key: flowKeyFromEvent(representative),
+      checkout_button: representative.checkout_button || null,
+      checkout_source: representative.checkout_source || null,
+      country_code: representative.country_code || null,
+      region_code: representative.region_code || null,
+      page_path: representative.page_path || null,
+      count: cluster.length,
+      first_event_ts: cluster[0].event_ts,
+      last_event_ts: cluster[cluster.length - 1].event_ts
+    });
+  };
 
   for (const events of grouped.values()) {
     if (events.length < 2) continue;
@@ -583,46 +608,12 @@ function detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds) {
       if (diffSeconds <= duplicateWindowSeconds) {
         cluster.push(current);
       } else {
-        if (cluster.length > 1) {
-          duplicateEventCount += cluster.length - 1;
-          const representative = cluster[0];
-          const button = safeString(representative.checkout_button || representative.checkout_source, 160) || 'unknown';
-          duplicateByButton.set(button, (duplicateByButton.get(button) || 0) + (cluster.length - 1));
-          duplicateGroups.push({
-            identity_key: identityKeyFromEvent(representative) || 'unknown-identity',
-            flow_key: flowKeyFromEvent(representative),
-            checkout_button: representative.checkout_button || null,
-            checkout_source: representative.checkout_source || null,
-            country_code: representative.country_code || null,
-            region_code: representative.region_code || null,
-            page_path: representative.page_path || null,
-            count: cluster.length,
-            first_event_ts: cluster[0].event_ts,
-            last_event_ts: cluster[cluster.length - 1].event_ts
-          });
-        }
+        recordDuplicateCluster(cluster);
         cluster = [current];
       }
     }
 
-    if (cluster.length > 1) {
-      duplicateEventCount += cluster.length - 1;
-      const representative = cluster[0];
-      const button = safeString(representative.checkout_button || representative.checkout_source, 160) || 'unknown';
-      duplicateByButton.set(button, (duplicateByButton.get(button) || 0) + (cluster.length - 1));
-      duplicateGroups.push({
-        identity_key: identityKeyFromEvent(representative) || 'unknown-identity',
-        flow_key: flowKeyFromEvent(representative),
-        checkout_button: representative.checkout_button || null,
-        checkout_source: representative.checkout_source || null,
-        country_code: representative.country_code || null,
-        region_code: representative.region_code || null,
-        page_path: representative.page_path || null,
-        count: cluster.length,
-        first_event_ts: cluster[0].event_ts,
-        last_event_ts: cluster[cluster.length - 1].event_ts
-      });
-    }
+    recordDuplicateCluster(cluster);
   }
 
   duplicateGroups.sort((a, b) => {
@@ -634,7 +625,7 @@ function detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds) {
   const topButtons = [...duplicateByButton.entries()]
     .map(([checkout_button, count]) => ({ checkout_button, count }))
     .sort((a, b) => b.count - a.count)
-    .slice(0, 10);
+    .slice(0, TOP_DUPLICATE_BUTTON_LIMIT);
 
   return {
     duplicateEventCount,

@@ -445,27 +445,6 @@ export function initDb() {
     )
   `);
 
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN channel TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN event_id TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN order_id TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN cart_token TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN checkout_token TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN checkout_button TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN checkout_source TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN page_url TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN page_path TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN referrer TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN landing_page TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN event_source_url TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN country_code TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN region_code TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN ip_hash TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN user_agent TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN utm_source TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN utm_medium TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN utm_campaign TEXT`); } catch (e) { /* column exists */ }
-  try { db.exec(`ALTER TABLE blackbox_events ADD COLUMN payload_json TEXT`); } catch (e) { /* column exists */ }
-
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_blackbox_events_store_event_ts
     ON blackbox_events(store, event_ts)
