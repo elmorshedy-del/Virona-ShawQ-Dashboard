@@ -34,6 +34,7 @@ import WatchtowerTab from './components/WatchtowerTab';
 import CROForensicsTab from './components/CROForensicsTab';
 import ConversionUIFixLabTab from './components/ConversionUIFixLabTab';
 import CampaignIntelligenceTab from './components/CampaignIntelligenceTab';
+import CheckoutBlackboxTab from './components/CheckoutBlackboxTab';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -429,7 +430,7 @@ const STORES = {
   }
 };
 
-const TABS = ['Dashboard', 'Campaign Intelligence', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics'];
+const TABS = ['Dashboard', 'Campaign Intelligence', 'Metrics Charts', 'Attribution', 'Insights', 'Session Intelligence', 'NeoMeta', 'Product Finder', 'Customer Insights', 'Conversion/UI Fix Lab', 'Budget Efficiency', 'Budget Intelligence', 'Manual Data', 'Fatigue Detector', 'Creative Analysis 🎨 📊', 'Creative Studio ✨', 'AI Analytics', 'AI Budget', 'Budget Calculator', 'Exchange Rates', 'Watchtower', 'CRO Forensics', 'Checkout Blackbox'];
 const TAB_INDEX = Object.freeze(
   TABS.reduce((indexMap, tabLabel, index) => {
     indexMap[tabLabel] = index;
@@ -458,7 +459,8 @@ const BUDGET_CALCULATOR_TAB_INDEX = TAB_INDEX['Budget Calculator'];
 const EXCHANGE_RATES_TAB_INDEX = TAB_INDEX['Exchange Rates'];
 const WATCHTOWER_TAB_INDEX = TAB_INDEX['Watchtower'];
 const CRO_FORENSICS_TAB_INDEX = TAB_INDEX['CRO Forensics'];
-const TABS_VERSION = '2026-02-19-campaign-intelligence-after-dashboard-v1';
+const CHECKOUT_BLACKBOX_TAB_INDEX = TAB_INDEX['Checkout Blackbox'];
+const TABS_VERSION = '2026-02-22-checkout-blackbox-v1';
 const MOBILE_VIEWPORT_MAX_WIDTH_PX = 768;
 const MOBILE_VIEWPORT_QUERY = `(max-width: ${MOBILE_VIEWPORT_MAX_WIDTH_PX}px)`;
 const MOBILE_DASHBOARD_TREND_POINTS = 14;
@@ -2036,6 +2038,10 @@ export default function App() {
 
         {activeTab === CRO_FORENSICS_TAB_INDEX && (
           <CROForensicsTab />
+        )}
+
+        {activeTab === CHECKOUT_BLACKBOX_TAB_INDEX && (
+          <CheckoutBlackboxTab store={store} />
         )}
       </div>
 
