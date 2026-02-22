@@ -31,6 +31,8 @@ const JOURNEY_SIGNIFICANT_DELTA_RATE = 0.25;
 const JOURNEY_SIGNIFICANT_DELTA_COUNT = 3;
 const ISSUE_TABLE_ROW_LIMIT = 8;
 const ISSUE_PROOF_SESSION_LIMIT = 5;
+const ISSUE_SCOPE_MODE = 'all';
+const ISSUE_SCOPE_LABEL = 'All sessions';
 const ISSUE_AUTO_INVESTIGATE_MIN_AFFECTED_SESSIONS = 3;
 const ISSUE_OBSERVED_STATUS_HINT = 'Spotted and monitored closely. Automatic investigation starts when the pattern consistently affects more sessions.';
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -1854,8 +1856,8 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 
   useEffect(() => {
     if (!libraryDay) return;
-    loadClarity(libraryDay, flowMode);
-  }, [libraryDay, flowMode, loadClarity]);
+    loadClarity(libraryDay, ISSUE_SCOPE_MODE);
+  }, [libraryDay, loadClarity]);
 
   const filteredLibrarySessions = useMemo(() => {
     let list = librarySessions;
@@ -1924,7 +1926,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         loadOverview(),
         loadBrief(),
         loadFlow(libraryDay, flowMode),
-        loadClarity(libraryDay, flowMode),
+        loadClarity(libraryDay, ISSUE_SCOPE_MODE),
         loadJourneyReports(),
         loadSessions(),
         loadEvents(),
@@ -2223,15 +2225,13 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       return 'Select a day to load clarity signals for that day.';
     }
     if (hasRecentStorefrontSignals) {
-      const modeLabel = flowMode === 'high_intent_no_purchase' ? 'High intent (no purchase)' : 'All sessions';
-      return `No clarity signals found for ${libraryDay || 'the selected day'} in ${modeLabel}. Try another day or switch the mode.`;
+      return `No clarity signals found for ${libraryDay || 'the selected day'} in ${ISSUE_SCOPE_LABEL}. Try another day.`;
     }
     return 'No clarity signals yet. Install the storefront script:';
   }, [
     clarityError,
     clarityLoading,
     claritySignals,
-    flowMode,
     hasRecentStorefrontSignals,
     libraryDay,
     libraryDays.length
@@ -2853,11 +2853,13 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
                               <td><strong>{rowIndex + 1}</strong></td>
                               <td>
                                 <div className="si-issue-cell">
-                                  <span>{row.issueLabel}</span>
+                                  <span className="si-issue-name">{row.issueLabel}</span>
                                   <span className={`si-issue-type-badge si-issue-type-${issueBadge.tone}`}>{issueBadge.label}</span>
                                 </div>
                               </td>
-                              <td title={row.whereLabel}>{row.whereLabel}</td>
+                              <td title={row.whereLabel}>
+                                <span className="si-issue-where-text">{row.whereLabel}</span>
+                              </td>
                               <td>{pluralize(row.sessionsAffected, 'session', 'sessions')}</td>
                               <td>{formatPercent(row.highIntentRate, 0)}</td>
                               <td title={verificationState.hint || row.verificationReason || ''}>
@@ -2869,8 +2871,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
                                     className="si-button si-button-small"
                                     type="button"
                                     onClick={() => openStory(proofSession.session_id, proofSession)}
+                                    title={`View ${pluralize(proofCount, 'session', 'sessions')}`}
                                   >
-                                    View {pluralize(proofCount, 'session', 'sessions')}
+                                    View {proofCount || 1}
                                   </button>
                                 ) : (
                                   <span className="si-muted">No sample</span>
@@ -3521,7 +3524,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           <span className="si-muted">
             {libraryDay || claritySignals?.date || '—'}
             {' • '}
-            {flowMode === 'high_intent_no_purchase' ? 'High intent (no purchase)' : 'All sessions'}
+            {ISSUE_SCOPE_LABEL}
           </span>
         </div>
 
