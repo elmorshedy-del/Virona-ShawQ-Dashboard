@@ -145,6 +145,127 @@
   border-color: rgba(79, 70, 229, 0.18);
 }
 
+.si-journey-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1180px) {
+  .si-journey-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.si-journey-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 255, 0.9));
+}
+
+.si-journey-table-wrap {
+  border: 1px solid rgba(79, 70, 229, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.75);
+  overflow: auto;
+}
+
+.si-journey-table th,
+.si-journey-table td {
+  white-space: normal;
+}
+
+.si-journey-table td:nth-child(2),
+.si-journey-table td:nth-child(4) {
+  min-width: 170px;
+}
+
+.si-journey-stage-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.si-stage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid rgba(79, 70, 229, 0.2);
+  background: rgba(238, 242, 255, 0.62);
+  color: #312e81;
+}
+
+.si-stage-pill-inline {
+  font-size: 10px;
+  padding: 4px 8px;
+}
+
+.si-stage-pill-count {
+  color: #0f172a;
+  font-weight: 800;
+}
+
+.si-stage-trend {
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.si-stage-trend-up {
+  color: #15803d;
+}
+
+.si-stage-trend-down {
+  color: #b91c1c;
+}
+
+.si-stage-trend-flat {
+  color: #475569;
+}
+
+.si-stage-pill-significant {
+  border-color: rgba(79, 70, 229, 0.45);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.14);
+}
+
+.si-stage-home {
+  background: rgba(224, 242, 254, 0.7);
+  border-color: rgba(2, 132, 199, 0.22);
+  color: #0c4a6e;
+}
+
+.si-stage-product {
+  background: rgba(240, 253, 244, 0.76);
+  border-color: rgba(34, 197, 94, 0.24);
+  color: #166534;
+}
+
+.si-stage-cart {
+  background: rgba(254, 249, 195, 0.75);
+  border-color: rgba(245, 158, 11, 0.24);
+  color: #92400e;
+}
+
+.si-stage-checkout {
+  background: rgba(243, 232, 255, 0.74);
+  border-color: rgba(147, 51, 234, 0.24);
+  color: #6b21a8;
+}
+
+.si-stage-payment-submitted {
+  background: rgba(220, 252, 231, 0.78);
+  border-color: rgba(22, 163, 74, 0.26);
+  color: #166534;
+}
+
+.si-stage-other {
+  background: rgba(241, 245, 249, 0.78);
+  border-color: rgba(100, 116, 139, 0.24);
+  color: #334155;
+}
+
 .si-metric-label {
   display: flex;
   align-items: center;

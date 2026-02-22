@@ -24,6 +24,12 @@ const ACTION_PLAN_EMERGING_MIN_SESSIONS = 40;
 const ACTION_PLAN_ESTABLISHED_MIN_SESSIONS = 80;
 const DEVICE_ABANDONMENT_FULL_CIRCLE_DEGREES = 360;
 const JOURNEY_TABLE_LIMIT = 25;
+const JOURNEY_UI_ROW_LIMIT = 8;
+const JOURNEY_STAGE_DISPLAY_ORDER = ['Home', 'Product', 'Cart', 'Checkout', 'Payment submitted', 'Other'];
+const JOURNEY_DEFAULT_RANGE_DAYS = 7;
+const JOURNEY_SIGNIFICANT_DELTA_RATE = 0.25;
+const JOURNEY_SIGNIFICANT_DELTA_COUNT = 3;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -251,34 +257,6 @@ function formatJourneyReasonLabel(reason) {
   return key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
-function formatTopCountryList(list) {
-  if (!Array.isArray(list) || list.length === 0) return '—';
-  return list
-    .map((item) => {
-      const code = (item?.code || '').toString().trim().toUpperCase();
-      const label = countryNameFromCode(code || item?.code || '');
-      const count = Number(item?.count) || 0;
-      if (!label || label === '—') return null;
-      return `${label} (${formatNumber(count)})`;
-    })
-    .filter(Boolean)
-    .join(', ') || '—';
-}
-
-function formatTopValueList(list, valueFormatter = null) {
-  if (!Array.isArray(list) || list.length === 0) return '—';
-  return list
-    .map((item) => {
-      const value = (item?.value || '').toString().trim();
-      const count = Number(item?.count) || 0;
-      if (!value) return null;
-      const formatted = typeof valueFormatter === 'function' ? valueFormatter(value) : value;
-      return `${formatted || value} (${formatNumber(count)})`;
-    })
-    .filter(Boolean)
-    .join(', ') || '—';
-}
-
 function formatJourneyBreakdownSummary(breakdown) {
   const entries = Object.entries(breakdown || {})
     .map(([key, value]) => ({ key, count: Number(value) || 0 }))
@@ -289,6 +267,186 @@ function formatJourneyBreakdownSummary(breakdown) {
   return entries
     .map((item) => `${formatJourneyReasonLabel(item.key)}: ${formatNumber(item.count)}`)
     .join(' • ');
+}
+
+function formatJourneyPurchaseRecord(list) {
+  if (!Array.isArray(list) || list.length === 0) return 'Unknown product';
+  const normalized = list
+    .map((item) => ({
+      value: (item?.value || '').toString().trim(),
+      count: Number(item?.count) || 0
+    }))
+    .filter((item) => item.value)
+    .sort((a, b) => b.count - a.count);
+
+  if (!normalized.length) return 'Unknown product';
+  const [top, ...rest] = normalized;
+  const topLabel = `${top.value} (${formatNumber(top.count)})`;
+  if (!rest.length) return topLabel;
+  return `${topLabel} +${formatNumber(rest.length)} more`;
+}
+
+function parseIsoDayToUtcMs(value) {
+  const iso = (value || '').toString().trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const ms = Date.parse(`${iso}T00:00:00Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isoDayFromUtcMs(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value)) return '';
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function resolveJourneyComparisonRanges(dateRange) {
+  const startMs = parseIsoDayToUtcMs(dateRange?.startDate);
+  const endMs = parseIsoDayToUtcMs(dateRange?.endDate);
+
+  let currentStartMs;
+  let currentEndMs;
+
+  if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs) {
+    currentStartMs = startMs;
+    currentEndMs = endMs;
+  } else {
+    const now = new Date();
+    const todayMs = parseIsoDayToUtcMs(now.toISOString().slice(0, 10));
+    const fallbackEndMs = Number.isFinite(todayMs) ? todayMs : Date.now();
+    const daySpan = JOURNEY_DEFAULT_RANGE_DAYS - 1;
+    currentEndMs = fallbackEndMs;
+    currentStartMs = fallbackEndMs - (daySpan * MILLISECONDS_PER_DAY);
+  }
+
+  const spanDays = Math.max(1, Math.round((currentEndMs - currentStartMs) / MILLISECONDS_PER_DAY) + 1);
+  const previousEndMs = currentStartMs - MILLISECONDS_PER_DAY;
+  const previousStartMs = previousEndMs - ((spanDays - 1) * MILLISECONDS_PER_DAY);
+
+  return {
+    current: {
+      startDate: isoDayFromUtcMs(currentStartMs),
+      endDate: isoDayFromUtcMs(currentEndMs)
+    },
+    previous: {
+      startDate: isoDayFromUtcMs(previousStartMs),
+      endDate: isoDayFromUtcMs(previousEndMs)
+    }
+  };
+}
+
+function journeyStageFromLandingLabel(landingLabel) {
+  const label = (landingLabel || '').toString().toLowerCase().trim();
+  if (!label) return 'Other';
+  if (label === 'home') return 'Home';
+  if (label === 'cart') return 'Cart';
+  if (label.startsWith('product:')) return 'Product';
+  if (label.startsWith('checkout')) return 'Checkout';
+  return 'Other';
+}
+
+function journeyStageFromAbandonArea(areaLabel) {
+  const label = (areaLabel || '').toString().toLowerCase().trim();
+  if (!label) return 'Other';
+  if (label === 'home') return 'Home';
+  if (label.startsWith('product')) return 'Product';
+  if (label.startsWith('cart')) return 'Cart';
+  if (label.includes('payment')) return 'Payment submitted';
+  if (label.startsWith('checkout')) return 'Checkout';
+  return 'Other';
+}
+
+function journeyStageKey(stageLabel) {
+  const label = (stageLabel || '').toString().toLowerCase().trim();
+  if (label === 'home') return 'home';
+  if (label === 'product') return 'product';
+  if (label === 'cart') return 'cart';
+  if (label === 'checkout') return 'checkout';
+  if (label === 'payment submitted') return 'payment-submitted';
+  return 'other';
+}
+
+function buildJourneyStageBreakdown(rows, { getStage, getCount }) {
+  const totals = new Map(JOURNEY_STAGE_DISPLAY_ORDER.map((stage) => [stage, 0]));
+  for (const row of rows || []) {
+    const stage = getStage(row);
+    const count = Number(getCount(row)) || 0;
+    if (!totals.has(stage)) totals.set(stage, 0);
+    totals.set(stage, (totals.get(stage) || 0) + count);
+  }
+  return JOURNEY_STAGE_DISPLAY_ORDER
+    .map((stage) => ({ stage, count: totals.get(stage) || 0 }))
+    .filter((item) => item.count > 0);
+}
+
+function breakdownRowsToStageCountMap(breakdownRows) {
+  const out = new Map();
+  for (const item of breakdownRows || []) {
+    const stage = (item?.stage || '').toString().trim();
+    if (!stage) continue;
+    out.set(stage, Number(item?.count) || 0);
+  }
+  return out;
+}
+
+function formatStageTrendLabel(trend) {
+  const deltaRatePct = Math.round((Number(trend?.deltaRate) || 0) * 100);
+  if ((trend?.direction || 'flat') === 'up') return `↑ ${deltaRatePct}%`;
+  if ((trend?.direction || 'flat') === 'down') return `↓ ${Math.abs(deltaRatePct)}%`;
+  return '→ 0%';
+}
+
+function buildJourneyStageTrends(currentBreakdownRows, previousBreakdownRows) {
+  const currentMap = breakdownRowsToStageCountMap(currentBreakdownRows);
+  const previousMap = breakdownRowsToStageCountMap(previousBreakdownRows);
+  const stageSet = new Set([
+    ...JOURNEY_STAGE_DISPLAY_ORDER,
+    ...currentMap.keys(),
+    ...previousMap.keys()
+  ]);
+
+  const raw = Array.from(stageSet).map((stage) => {
+    const currentCount = Number(currentMap.get(stage) || 0);
+    const previousCount = Number(previousMap.get(stage) || 0);
+    const deltaCount = currentCount - previousCount;
+    const deltaRate = previousCount > 0
+      ? (deltaCount / previousCount)
+      : currentCount > 0
+        ? 1
+        : 0;
+    const direction = deltaCount > 0 ? 'up' : deltaCount < 0 ? 'down' : 'flat';
+    const significant = (
+      Math.abs(deltaCount) >= JOURNEY_SIGNIFICANT_DELTA_COUNT &&
+      Math.abs(deltaRate) >= JOURNEY_SIGNIFICANT_DELTA_RATE
+    );
+    return {
+      stage,
+      currentCount,
+      previousCount,
+      deltaCount,
+      deltaRate,
+      direction,
+      significant,
+      trendLabel: formatStageTrendLabel({ deltaRate, direction })
+    };
+  });
+
+  const topSignificant = raw
+    .filter((item) => item.significant)
+    .sort((a, b) => Math.abs(b.deltaCount) - Math.abs(a.deltaCount))[0] || null;
+
+  return raw
+    .filter((item) => item.currentCount > 0 || item.previousCount > 0)
+    .sort((a, b) => {
+      const aIdx = JOURNEY_STAGE_DISPLAY_ORDER.indexOf(a.stage);
+      const bIdx = JOURNEY_STAGE_DISPLAY_ORDER.indexOf(b.stage);
+      const safeA = aIdx >= 0 ? aIdx : JOURNEY_STAGE_DISPLAY_ORDER.length;
+      const safeB = bIdx >= 0 ? bIdx : JOURNEY_STAGE_DISPLAY_ORDER.length;
+      return safeA - safeB;
+    })
+    .map((item) => ({
+      ...item,
+      isTopSignificant: Boolean(topSignificant && topSignificant.stage === item.stage)
+    }));
 }
 
 const EVENT_LABEL_OVERRIDES = {
@@ -1384,9 +1542,11 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const [briefGenerating, setBriefGenerating] = useState(false);
   const [briefGenerateError, setBriefGenerateError] = useState('');
   const [landingPurchaseReport, setLandingPurchaseReport] = useState(null);
+  const [landingPurchasePreviousReport, setLandingPurchasePreviousReport] = useState(null);
   const [landingPurchaseLoading, setLandingPurchaseLoading] = useState(false);
   const [landingPurchaseError, setLandingPurchaseError] = useState('');
   const [abandonmentReport, setAbandonmentReport] = useState(null);
+  const [abandonmentPreviousReport, setAbandonmentPreviousReport] = useState(null);
   const [abandonmentLoading, setAbandonmentLoading] = useState(false);
   const [abandonmentError, setAbandonmentError] = useState('');
 
@@ -1397,13 +1557,10 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     persistSessionIntelligenceLlmSettings(analysisLlm);
   }, [analysisLlm]);
 
-  const journeyDateRange = useMemo(() => {
-    const startDate = (dashboardDateRange?.startDate || '').toString().trim();
-    const endDate = (dashboardDateRange?.endDate || '').toString().trim();
-    const isoDayRe = /^\d{4}-\d{2}-\d{2}$/;
-    if (!isoDayRe.test(startDate) || !isoDayRe.test(endDate)) return null;
-    return { startDate, endDate };
-  }, [dashboardDateRange?.endDate, dashboardDateRange?.startDate]);
+  const journeyComparisonRanges = useMemo(
+    () => resolveJourneyComparisonRanges(dashboardDateRange),
+    [dashboardDateRange]
+  );
 
   const openStory = useCallback(async (sessionId, stub = null) => {
     if (!libraryDay || !sessionId) return;
@@ -1508,14 +1665,18 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   }, [storeId]);
 
   const loadJourneyReports = useCallback(async () => {
-    const params = new URLSearchParams({
+    const currentParams = new URLSearchParams({
       store: storeId,
-      limit: String(JOURNEY_TABLE_LIMIT)
+      limit: String(JOURNEY_TABLE_LIMIT),
+      startDate: journeyComparisonRanges.current.startDate,
+      endDate: journeyComparisonRanges.current.endDate
     });
-    if (journeyDateRange?.startDate && journeyDateRange?.endDate) {
-      params.set('startDate', journeyDateRange.startDate);
-      params.set('endDate', journeyDateRange.endDate);
-    }
+    const previousParams = new URLSearchParams({
+      store: storeId,
+      limit: String(JOURNEY_TABLE_LIMIT),
+      startDate: journeyComparisonRanges.previous.startDate,
+      endDate: journeyComparisonRanges.previous.endDate
+    });
 
     setLandingPurchaseLoading(true);
     setLandingPurchaseError('');
@@ -1523,13 +1684,17 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     setAbandonmentError('');
 
     try {
-      const [landingPayload, abandonmentPayload] = await Promise.all([
-        fetchJson(`/api/session-intelligence/journey/landing-purchases?${params.toString()}`),
-        fetchJson(`/api/session-intelligence/journey/abandonment?${params.toString()}`)
+      const [landingPayload, abandonmentPayload, landingPreviousPayload, abandonmentPreviousPayload] = await Promise.all([
+        fetchJson(`/api/session-intelligence/journey/landing-purchases?${currentParams.toString()}`),
+        fetchJson(`/api/session-intelligence/journey/abandonment?${currentParams.toString()}`),
+        fetchJson(`/api/session-intelligence/journey/landing-purchases?${previousParams.toString()}`),
+        fetchJson(`/api/session-intelligence/journey/abandonment?${previousParams.toString()}`)
       ]);
 
       setLandingPurchaseReport(landingPayload || null);
       setAbandonmentReport(abandonmentPayload || null);
+      setLandingPurchasePreviousReport(landingPreviousPayload || null);
+      setAbandonmentPreviousReport(abandonmentPreviousPayload || null);
     } catch (error) {
       const message = error?.message || 'Failed to load journey reports';
       console.error('[SessionIntelligenceTab] journey report load failed:', error);
@@ -1537,11 +1702,13 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       setAbandonmentError(message);
       setLandingPurchaseReport(null);
       setAbandonmentReport(null);
+      setLandingPurchasePreviousReport(null);
+      setAbandonmentPreviousReport(null);
     } finally {
       setLandingPurchaseLoading(false);
       setAbandonmentLoading(false);
     }
-  }, [journeyDateRange?.endDate, journeyDateRange?.startDate, storeId]);
+  }, [journeyComparisonRanges.current.endDate, journeyComparisonRanges.current.startDate, journeyComparisonRanges.previous.endDate, journeyComparisonRanges.previous.startDate, storeId]);
 
   const loadOverview = useCallback(async () => {
     const url = `/api/session-intelligence/overview?store=${encodeURIComponent(storeId)}`;
@@ -2055,6 +2222,42 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 
   const landingRows = Array.isArray(landingPurchaseReport?.rows) ? landingPurchaseReport.rows : [];
   const abandonmentRows = Array.isArray(abandonmentReport?.rows) ? abandonmentReport.rows : [];
+  const previousLandingRows = Array.isArray(landingPurchasePreviousReport?.rows) ? landingPurchasePreviousReport.rows : [];
+  const previousAbandonmentRows = Array.isArray(abandonmentPreviousReport?.rows) ? abandonmentPreviousReport.rows : [];
+  const visibleLandingRows = landingRows.slice(0, JOURNEY_UI_ROW_LIMIT);
+  const visibleAbandonmentRows = abandonmentRows.slice(0, JOURNEY_UI_ROW_LIMIT);
+  const landingStageBreakdown = useMemo(() => (
+    buildJourneyStageBreakdown(landingRows, {
+      getStage: (row) => journeyStageFromLandingLabel(row?.landing),
+      getCount: (row) => row?.purchases
+    })
+  ), [landingRows]);
+  const previousLandingStageBreakdown = useMemo(() => (
+    buildJourneyStageBreakdown(previousLandingRows, {
+      getStage: (row) => journeyStageFromLandingLabel(row?.landing),
+      getCount: (row) => row?.purchases
+    })
+  ), [previousLandingRows]);
+  const abandonmentStageBreakdown = useMemo(() => (
+    buildJourneyStageBreakdown(abandonmentRows, {
+      getStage: (row) => journeyStageFromAbandonArea(row?.abandoned_part),
+      getCount: (row) => row?.sessions
+    })
+  ), [abandonmentRows]);
+  const previousAbandonmentStageBreakdown = useMemo(() => (
+    buildJourneyStageBreakdown(previousAbandonmentRows, {
+      getStage: (row) => journeyStageFromAbandonArea(row?.abandoned_part),
+      getCount: (row) => row?.sessions
+    })
+  ), [previousAbandonmentRows]);
+  const landingStageTrends = useMemo(
+    () => buildJourneyStageTrends(landingStageBreakdown, previousLandingStageBreakdown),
+    [landingStageBreakdown, previousLandingStageBreakdown]
+  );
+  const abandonmentStageTrends = useMemo(
+    () => buildJourneyStageTrends(abandonmentStageBreakdown, previousAbandonmentStageBreakdown),
+    [abandonmentStageBreakdown, previousAbandonmentStageBreakdown]
+  );
   const landingPeriodLabel = landingPurchaseReport?.period?.start && landingPurchaseReport?.period?.end
     ? `${landingPurchaseReport.period.start} to ${landingPurchaseReport.period.end} (UTC)`
     : 'Last 7 days (UTC)';
@@ -2302,118 +2505,152 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         </div>
       </div>
 
-      <div className="si-card" style={{ marginBottom: 12 }}>
-        <div className="si-card-title">
-          <h3>Landing pages that lead to purchases</h3>
-          <span className="si-muted">{landingPeriodLabel}</span>
+      <div className="si-journey-grid" style={{ marginBottom: 12 }}>
+        <div className="si-card si-journey-card">
+          <div className="si-card-title">
+            <h3>Abandonment map</h3>
+            <span className="si-muted">{abandonmentPeriodLabel}</span>
+          </div>
+          {abandonmentStageTrends.length > 0 ? (
+            <div className="si-journey-stage-row">
+              {abandonmentStageTrends.map((trend) => (
+                <span
+                  key={`abandon-stage-${trend.stage}`}
+                  className={`si-stage-pill si-stage-${journeyStageKey(trend.stage)} ${trend.isTopSignificant ? 'si-stage-pill-significant' : ''}`}
+                  title={`Previous: ${formatNumber(trend.previousCount)} • Delta: ${trend.deltaCount >= 0 ? '+' : ''}${formatNumber(trend.deltaCount)}`}
+                >
+                  <span>{trend.stage}</span>
+                  <span className="si-stage-pill-count">{formatNumber(trend.currentCount)}</span>
+                  <span className={`si-stage-trend si-stage-trend-${trend.direction}`}>{trend.trendLabel}</span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
+          {abandonmentLoading && !abandonmentReport ? (
+            <div className="si-empty">Loading abandonment report…</div>
+          ) : null}
+
+          {!abandonmentLoading && abandonmentError ? (
+            <div className="si-empty" style={{ color: '#b42318' }}>{abandonmentError}</div>
+          ) : null}
+
+          {!abandonmentLoading && !abandonmentError && abandonmentRows.length === 0 ? (
+            <div className="si-empty">No ranked abandonment clusters yet in this range.</div>
+          ) : null}
+
+          {!abandonmentLoading && !abandonmentError && abandonmentRows.length > 0 ? (
+            <>
+              <div className="si-journey-table-wrap">
+                <table className="si-event-table si-journey-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Section</th>
+                      <th>Drop-off area</th>
+                      <th>Product context</th>
+                      <th>Sessions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleAbandonmentRows.map((row) => {
+                      const stage = journeyStageFromAbandonArea(row?.abandoned_part);
+                      return (
+                      <tr key={`abandon-row-${row.rank}-${row.abandoned_part}-${row.product}`}>
+                        <td><strong>{row.rank}</strong></td>
+                        <td>
+                          <span className={`si-stage-pill si-stage-pill-inline si-stage-${journeyStageKey(stage)}`}>{stage}</span>
+                        </td>
+                        <td>{row.abandoned_part || '—'}</td>
+                        <td>{row.product || '—'}</td>
+                        <td>{formatNumber(row.sessions)}</td>
+                      </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="si-muted" style={{ marginTop: 10 }}>
+                Classified sessions: {formatNumber(abandonmentReport.totalAbandonSessions)}.
+                {' '}Unclassified: {formatNumber(abandonmentReport.unclassifiedSessions)}.
+                {' '}Breakdown: {formatJourneyBreakdownSummary(abandonmentReport.unclassifiedBreakdown)}.
+              </div>
+            </>
+          ) : null}
         </div>
 
-        {landingPurchaseLoading && !landingPurchaseReport ? (
-          <div className="si-empty">Loading landing-to-purchase report…</div>
-        ) : null}
-
-        {!landingPurchaseLoading && landingPurchaseError ? (
-          <div className="si-empty" style={{ color: '#b42318' }}>{landingPurchaseError}</div>
-        ) : null}
-
-        {!landingPurchaseLoading && !landingPurchaseError && landingRows.length === 0 ? (
-          <div className="si-empty">
-            No attributed purchases yet in this range.
+        <div className="si-card si-journey-card">
+          <div className="si-card-title">
+            <h3>Landing pages that lead to purchases</h3>
+            <span className="si-muted">{landingPeriodLabel}</span>
           </div>
-        ) : null}
-
-        {!landingPurchaseLoading && !landingPurchaseError && landingRows.length > 0 ? (
-          <table className="si-event-table">
-            <thead>
-              <tr>
-                <th>Rank</th>
-                <th>Landing page</th>
-                <th>Purchases</th>
-                <th>Share</th>
-                <th>Top source</th>
-                <th>Top campaign</th>
-                <th>Top countries</th>
-              </tr>
-            </thead>
-            <tbody>
-              {landingRows.map((row) => (
-                <tr key={`landing-row-${row.rank}-${row.landing}`}>
-                  <td><strong>{row.rank}</strong></td>
-                  <td>{row.landing || '—'}</td>
-                  <td>{formatNumber(row.purchases)}</td>
-                  <td>{formatPercent(row.share, 1)}</td>
-                  <td>{formatTopValueList(row.top_sources, normalizeTrafficSourceLabel)}</td>
-                  <td>{formatTopValueList(row.top_campaigns)}</td>
-                  <td>{formatTopCountryList(row.top_countries)}</td>
-                </tr>
+          {landingStageTrends.length > 0 ? (
+            <div className="si-journey-stage-row">
+              {landingStageTrends.map((trend) => (
+                <span
+                  key={`landing-stage-${trend.stage}`}
+                  className={`si-stage-pill si-stage-${journeyStageKey(trend.stage)} ${trend.isTopSignificant ? 'si-stage-pill-significant' : ''}`}
+                  title={`Previous: ${formatNumber(trend.previousCount)} • Delta: ${trend.deltaCount >= 0 ? '+' : ''}${formatNumber(trend.deltaCount)}`}
+                >
+                  <span>{trend.stage}</span>
+                  <span className="si-stage-pill-count">{formatNumber(trend.currentCount)}</span>
+                  <span className={`si-stage-trend si-stage-trend-${trend.direction}`}>{trend.trendLabel}</span>
+                </span>
               ))}
-            </tbody>
-          </table>
-        ) : null}
+            </div>
+          ) : null}
 
-        {!landingPurchaseLoading && !landingPurchaseError && landingPurchaseReport ? (
-          <div className="si-muted" style={{ marginTop: 10 }}>
-            Attributed purchases: {formatNumber(landingPurchaseReport.attributedPurchases)} / {formatNumber(landingPurchaseReport.totalPurchases)}.
-            {' '}Unattributed: {formatNumber(landingPurchaseReport.unattributedPurchases)}.
-            {' '}Breakdown: {formatJourneyBreakdownSummary(landingPurchaseReport.unattributedBreakdown)}.
-          </div>
-        ) : null}
-      </div>
+          {landingPurchaseLoading && !landingPurchaseReport ? (
+            <div className="si-empty">Loading landing-to-purchase report…</div>
+          ) : null}
 
-      <div className="si-card" style={{ marginBottom: 12 }}>
-        <div className="si-card-title">
-          <h3>Where shoppers abandon before purchase</h3>
-          <span className="si-muted">{abandonmentPeriodLabel}</span>
+          {!landingPurchaseLoading && landingPurchaseError ? (
+            <div className="si-empty" style={{ color: '#b42318' }}>{landingPurchaseError}</div>
+          ) : null}
+
+          {!landingPurchaseLoading && !landingPurchaseError && landingRows.length === 0 ? (
+            <div className="si-empty">No attributed purchases yet in this range.</div>
+          ) : null}
+
+          {!landingPurchaseLoading && !landingPurchaseError && landingRows.length > 0 ? (
+            <>
+              <div className="si-journey-table-wrap">
+                <table className="si-event-table si-journey-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Section</th>
+                      <th>Landing page</th>
+                      <th>Purchases</th>
+                      <th>Purchase record</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleLandingRows.map((row) => {
+                      const stage = journeyStageFromLandingLabel(row?.landing);
+                      return (
+                      <tr key={`landing-row-${row.rank}-${row.landing}`}>
+                        <td><strong>{row.rank}</strong></td>
+                        <td>
+                          <span className={`si-stage-pill si-stage-pill-inline si-stage-${journeyStageKey(stage)}`}>{stage}</span>
+                        </td>
+                        <td>{row.landing || '—'}</td>
+                        <td>{formatNumber(row.purchases)}</td>
+                        <td>{formatJourneyPurchaseRecord(row.top_products)}</td>
+                      </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="si-muted" style={{ marginTop: 10 }}>
+                Attributed purchases: {formatNumber(landingPurchaseReport.attributedPurchases)} / {formatNumber(landingPurchaseReport.totalPurchases)}.
+                {' '}Unattributed: {formatNumber(landingPurchaseReport.unattributedPurchases)}.
+                {' '}Breakdown: {formatJourneyBreakdownSummary(landingPurchaseReport.unattributedBreakdown)}.
+              </div>
+            </>
+          ) : null}
         </div>
-
-        {abandonmentLoading && !abandonmentReport ? (
-          <div className="si-empty">Loading abandonment report…</div>
-        ) : null}
-
-        {!abandonmentLoading && abandonmentError ? (
-          <div className="si-empty" style={{ color: '#b42318' }}>{abandonmentError}</div>
-        ) : null}
-
-        {!abandonmentLoading && !abandonmentError && abandonmentRows.length === 0 ? (
-          <div className="si-empty">
-            No ranked abandonment clusters yet in this range.
-          </div>
-        ) : null}
-
-        {!abandonmentLoading && !abandonmentError && abandonmentRows.length > 0 ? (
-          <table className="si-event-table">
-            <thead>
-              <tr>
-                <th>Rank</th>
-                <th>Abandoned part</th>
-                <th>Product</th>
-                <th>Sessions</th>
-                <th>Share</th>
-                <th>Top countries</th>
-              </tr>
-            </thead>
-            <tbody>
-              {abandonmentRows.map((row) => (
-                <tr key={`abandon-row-${row.rank}-${row.abandoned_part}-${row.product}`}>
-                  <td><strong>{row.rank}</strong></td>
-                  <td>{row.abandoned_part || '—'}</td>
-                  <td>{row.product || '—'}</td>
-                  <td>{formatNumber(row.sessions)}</td>
-                  <td>{formatPercent(row.share, 1)}</td>
-                  <td>{formatTopCountryList(row.top_countries)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : null}
-
-        {!abandonmentLoading && !abandonmentError && abandonmentReport ? (
-          <div className="si-muted" style={{ marginTop: 10 }}>
-            Classified abandon sessions: {formatNumber(abandonmentReport.totalAbandonSessions)}.
-            {' '}Unclassified: {formatNumber(abandonmentReport.unclassifiedSessions)}.
-            {' '}Breakdown: {formatJourneyBreakdownSummary(abandonmentReport.unclassifiedBreakdown)}.
-          </div>
-        ) : null}
       </div>
 
       <div className="si-card si-device-abandon-card" style={{ marginBottom: 12 }}>
