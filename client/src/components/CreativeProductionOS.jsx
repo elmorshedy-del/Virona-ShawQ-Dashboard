@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
-  ArrowRight,
   Briefcase,
   Camera,
   CheckCircle,
@@ -21,6 +19,7 @@ import {
   Sparkles,
   Star,
   Target,
+  X,
   Upload,
   Zap
 } from 'lucide-react';
@@ -51,49 +50,11 @@ const CREATIVE_MODULES = [
     helper: 'Hook-to-CTA structures, branded captions, voice + beat sync.'
   },
   {
-    id: 'product_hub',
-    title: 'Product Hub',
-    subtitle: 'Catalog intelligence layer linked to every creative action.',
-    icon: Briefcase,
-    helper: 'Shop sync, dynamic pricing, collection-driven creation flow.'
-  },
-  {
     id: 'multi_format_engine',
     title: 'Multi-Format Engine',
     subtitle: 'Design once and export ad-ready assets everywhere.',
     icon: Layout,
     helper: 'Smart recomposition, safe zones, batch export naming.'
-  }
-];
-
-const PRODUCTION_PHASES = [
-  {
-    id: 'phase_catalog',
-    title: 'Step 1: Catalog Setup',
-    shortTitle: 'Catalog Setup',
-    moduleId: 'product_hub',
-    outcome: 'Connect store catalogs and select products.'
-  },
-  {
-    id: 'phase_design',
-    title: 'Step 2: Design Build',
-    shortTitle: 'Design Build',
-    moduleId: 'design_studio',
-    outcome: 'Build the base visual and enforce brand rules.'
-  },
-  {
-    id: 'phase_video',
-    title: 'Step 3: Video Assembly',
-    shortTitle: 'Video Assembly',
-    moduleId: 'video_studio',
-    outcome: 'Create timeline variants optimized for ads.'
-  },
-  {
-    id: 'phase_export',
-    title: 'Step 4: Multi-Format Export',
-    shortTitle: 'Export',
-    moduleId: 'multi_format_engine',
-    outcome: 'Generate final files for each platform.'
   }
 ];
 
@@ -235,17 +196,9 @@ const MUSIC_MOODS = [
   { id: 'confident', label: 'Confident Pulse' }
 ];
 
-const MODULE_ANIMATION = {
-  initial: { opacity: 0, y: 14 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -10 },
-  transition: { duration: 0.24, ease: [0.25, 0.1, 0.25, 1] }
-};
-
 const PANEL_LABELS = {
   design_studio: 'Visual Production Layer',
   video_studio: 'Timeline Production Layer',
-  product_hub: 'Catalog Intelligence Layer',
   multi_format_engine: 'Distribution Layer'
 };
 
@@ -258,6 +211,8 @@ const BRAND_FONT_OPTIONS = [
 const DEFAULT_EXPORT_TARGETS = ['meta_feed_4_5', 'instagram_story_9_16', 'tiktok_9_16'];
 const DEFAULT_SCENE_PRESET_ID = 'studio_soft';
 const MAX_TIMELINE_BEATS = 24;
+const DEFAULT_CURRENCY = 'USD';
+const BRAND_LOGO_UPLOAD_DATA_URL_PREFIX = 'data:image/';
 
 const DESIGN_SCENE_PRESETS = [
   { id: 'studio_soft', label: 'Studio Soft' },
@@ -346,11 +301,19 @@ const deriveProductFromUrl = (rawValue) => {
 };
 
 const formatCurrency = (value, currency) => {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: currency || 'USD',
-    maximumFractionDigits: PRODUCT_PRICE_DECIMAL_PLACES
-  }).format(Number(value || 0));
+  const parsedValue = Number(value || 0);
+  const safeValue = Number.isFinite(parsedValue) ? parsedValue : 0;
+  const rawCurrency = String(currency || DEFAULT_CURRENCY).trim().toUpperCase();
+  const safeCurrency = /^[A-Z]{3}$/.test(rawCurrency) ? rawCurrency : DEFAULT_CURRENCY;
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: safeCurrency,
+      maximumFractionDigits: PRODUCT_PRICE_DECIMAL_PLACES
+    }).format(safeValue);
+  } catch (error) {
+    return `${safeValue.toFixed(PRODUCT_PRICE_DECIMAL_PLACES)} ${DEFAULT_CURRENCY}`;
+  }
 };
 
 const clampVariantCount = (value) => {
@@ -547,8 +510,7 @@ function ModuleButton({ module, isActive, onClick }) {
 
 export default function CreativeProductionOS({ store }) {
   const tenantKey = store || DEFAULT_TENANT;
-  const [activePhaseId, setActivePhaseId] = useState(PRODUCTION_PHASES[0].id);
-  const [activeModuleId, setActiveModuleId] = useState(PRODUCTION_PHASES[0].moduleId);
+  const [activeModuleId, setActiveModuleId] = useState(CREATIVE_MODULES[0].id);
 
   const [catalogProducts, setCatalogProducts] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -567,8 +529,11 @@ export default function CreativeProductionOS({ store }) {
     font: BRAND_FONT_OPTIONS[0].id,
     primaryColor: '#0f766e',
     accentColor: '#d97706',
+    logoUrl: '',
     enforceAcrossAssets: true
   });
+  const [brandKitLogoLoading, setBrandKitLogoLoading] = useState(false);
+  const [brandKitLogoError, setBrandKitLogoError] = useState('');
   const [designAutomation, setDesignAutomation] = useState({
     smartResize: true,
     backgroundRemoval: true,
@@ -656,10 +621,6 @@ export default function CreativeProductionOS({ store }) {
   const [exportedAssets, setExportedAssets] = useState([]);
   const [savePresetLoading, setSavePresetLoading] = useState(false);
   const [savePresetMessage, setSavePresetMessage] = useState('');
-
-  const activePhaseIndex = useMemo(() => {
-    return PRODUCTION_PHASES.findIndex((phase) => phase.id === activePhaseId);
-  }, [activePhaseId]);
 
   const activeModule = useMemo(() => {
     return CREATIVE_MODULES.find((module) => module.id === activeModuleId) || CREATIVE_MODULES[0];
@@ -871,27 +832,9 @@ export default function CreativeProductionOS({ store }) {
     };
   }, []);
 
-  const activatePhase = (phaseId) => {
-    const phase = PRODUCTION_PHASES.find((entry) => entry.id === phaseId);
-    if (!phase) return;
-    setActivePhaseId(phase.id);
-    setActiveModuleId(phase.moduleId);
-  };
-
   const activateModule = (moduleId) => {
+    if (!CREATIVE_MODULES.some((module) => module.id === moduleId)) return;
     setActiveModuleId(moduleId);
-    const linkedPhase = PRODUCTION_PHASES.find((phase) => phase.moduleId === moduleId);
-    if (linkedPhase) {
-      setActivePhaseId(linkedPhase.id);
-    }
-  };
-
-  const goToNextPhase = () => {
-    if (activePhaseIndex < 0) return;
-    const nextPhase = PRODUCTION_PHASES[activePhaseIndex + 1];
-    if (nextPhase) {
-      activatePhase(nextPhase.id);
-    }
   };
 
   const importProductFromUrl = async () => {
@@ -942,6 +885,50 @@ export default function CreativeProductionOS({ store }) {
     setDesignImagePreviewUrl(nextFile ? URL.createObjectURL(nextFile) : '');
     setDesignPipelineError('');
     setDesignPipelineResult(null);
+  };
+
+  const handleBrandLogoSelect = (event) => {
+    const nextFile = event.target.files?.[0] || null;
+    if (!nextFile) return;
+    if (!String(nextFile.type || '').toLowerCase().startsWith('image/')) {
+      setBrandKitLogoError('Upload an image file for brand logo.');
+      return;
+    }
+    setBrandKitLogoError('');
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      if (!result.startsWith(BRAND_LOGO_UPLOAD_DATA_URL_PREFIX)) {
+        setBrandKitLogoError('Unable to read logo file.');
+        return;
+      }
+      setBrandKit((previous) => ({ ...previous, logoUrl: result }));
+    };
+    reader.onerror = () => setBrandKitLogoError('Unable to read logo file.');
+    reader.readAsDataURL(nextFile);
+  };
+
+  const extractBrandLogoFromStore = async () => {
+    setBrandKitLogoLoading(true);
+    setBrandKitLogoError('');
+    try {
+      const response = await fetch(buildApiUrl('/creative-studio/creative-os/brand-kit/bootstrap', tenantKey));
+      const payload = await parseResponseJson(response);
+      const logoUrl = String(payload?.brand_kit?.logo_url || '').trim();
+      if (!logoUrl) {
+        throw new Error('No logo detected in connected store profile.');
+      }
+      setBrandKit((previous) => ({
+        ...previous,
+        logoUrl,
+        primaryColor: payload?.brand_kit?.primary_color || previous.primaryColor,
+        accentColor: payload?.brand_kit?.accent_color || previous.accentColor
+      }));
+    } catch (error) {
+      setBrandKitLogoError(error.message || 'Failed to fetch store logo.');
+    } finally {
+      setBrandKitLogoLoading(false);
+    }
   };
 
   const runStyleExtraction = async () => {
@@ -1683,53 +1670,12 @@ export default function CreativeProductionOS({ store }) {
           </div>
         </header>
 
-        <section className="creative-os-panel">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="creative-os-heading text-lg font-semibold text-slate-900">Build In Steps</h3>
-              <p className="mt-1 text-sm text-slate-600">Each step activates the right module so production stays fast and organized.</p>
-            </div>
-            <button
-              type="button"
-              onClick={goToNextPhase}
-              disabled={activePhaseIndex >= PRODUCTION_PHASES.length - 1}
-              className="inline-flex items-center gap-2 rounded-full border border-teal-200 bg-teal-50 px-4 py-2 text-sm font-semibold text-teal-700 transition disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Next Step
-              <ArrowRight size={15} />
-            </button>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {PRODUCTION_PHASES.map((phase, index) => {
-              const isActive = phase.id === activePhaseId;
-              const isCompleted = index < activePhaseIndex;
-              return (
-                <button
-                  key={phase.id}
-                  type="button"
-                  onClick={() => activatePhase(phase.id)}
-                  className={`creative-os-step ${isActive ? 'active' : ''} ${isCompleted ? 'done' : ''}`}
-                >
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-xs font-semibold text-slate-700">
-                    {index + 1}
-                  </span>
-                  <span className="text-left">
-                    <span className="creative-os-heading block text-sm font-semibold text-slate-900">{phase.shortTitle}</span>
-                    <span className="mt-1 block text-xs text-slate-600">{phase.outcome}</span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <section className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
           <aside className="space-y-4">
             <div className="creative-os-panel">
               <div className="mb-3 flex items-center gap-2 text-slate-700">
                 <Layers size={16} />
-                <h3 className="creative-os-heading text-sm font-semibold uppercase tracking-[0.14em]">Module Navigation</h3>
+                <h3 className="creative-os-heading text-sm font-semibold uppercase tracking-[0.14em]">Workspace Modules</h3>
               </div>
 
               <div className="space-y-2">
@@ -1742,6 +1688,185 @@ export default function CreativeProductionOS({ store }) {
                   />
                 ))}
               </div>
+            </div>
+
+            <div className="creative-os-panel">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-slate-700">
+                  <Briefcase size={16} />
+                  <h3 className="creative-os-heading text-sm font-semibold uppercase tracking-[0.14em]">Product Hub</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadCatalog}
+                  disabled={catalogLoading}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-60"
+                >
+                  {catalogLoading ? 'Syncing…' : 'Sync'}
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {CATALOG_INTEGRATIONS.map((integration) => {
+                  const connected = integrationState[integration.id];
+                  return (
+                    <button
+                      key={integration.id}
+                      type="button"
+                      onClick={() => toggleIntegration(integration.id)}
+                      className={`w-full rounded-xl border px-3 py-2 text-left transition ${
+                        connected ? 'border-teal-400 bg-teal-50' : 'border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="creative-os-heading text-sm font-semibold text-slate-900">{integration.title}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${connected ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-500'}`}>
+                          {connected ? 'Connected' : 'Not Connected'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Collection</p>
+                <div className="flex flex-wrap gap-2">
+                  {PRODUCT_COLLECTIONS.map((collection) => (
+                    <ToggleChip
+                      key={collection.id}
+                      selected={selectedCollectionId === collection.id}
+                      onClick={() => setSelectedCollectionId(collection.id)}
+                    >
+                      {collection.name}
+                    </ToggleChip>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDynamicPriceSync((previous) => !previous)}
+                  className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ${
+                    dynamicPriceSync ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  <RefreshCw size={13} />
+                  Dynamic Price Tags: {dynamicPriceSync ? 'Live Sync' : 'Manual'}
+                </button>
+              </div>
+
+              <div className="mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
+                {visibleProducts.map((product) => (
+                  <button
+                    key={`hub-${product.id}`}
+                    type="button"
+                    draggable
+                    onDragStart={(event) => handleProductDragStart(event, product.id)}
+                    onClick={() => setSelectedProductId(product.id)}
+                    className={`w-full rounded-xl border p-2 text-left transition ${
+                      selectedProductId === product.id ? 'border-teal-400 bg-teal-50' : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <p className="text-xs font-semibold text-slate-900">{product.name}</p>
+                    <p className="text-[11px] text-slate-500">{formatCurrency(product.price, product.currency)}</p>
+                  </button>
+                ))}
+              </div>
+              {catalogError && <p className="mt-2 text-xs text-rose-600">{catalogError}</p>}
+              {productHubMessage && <p className="mt-2 text-xs text-teal-700">{productHubMessage}</p>}
+
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveModuleId('design_studio')}
+                  className="creative-os-action-btn"
+                >
+                  <Palette size={14} />
+                  Use In Design
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveModuleId('video_studio')}
+                  className="creative-os-action-btn"
+                >
+                  <Film size={14} />
+                  Use In Video
+                </button>
+              </div>
+            </div>
+
+            <div className="creative-os-panel">
+              <div className="mb-3 flex items-center gap-2 text-slate-700">
+                <Star size={16} />
+                <h3 className="creative-os-heading text-sm font-semibold uppercase tracking-[0.14em]">Brand Kit</h3>
+              </div>
+              <p className="text-xs text-slate-500">Logo, palette, and font are applied across design, video captions, and exports.</p>
+
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <label className="text-xs text-slate-500">
+                  Primary
+                  <input
+                    type="color"
+                    value={brandKit.primaryColor}
+                    onChange={(event) => setBrandKit((previous) => ({ ...previous, primaryColor: event.target.value }))}
+                    className="mt-1 h-10 w-full rounded-lg border border-slate-200"
+                  />
+                </label>
+                <label className="text-xs text-slate-500">
+                  Accent
+                  <input
+                    type="color"
+                    value={brandKit.accentColor}
+                    onChange={(event) => setBrandKit((previous) => ({ ...previous, accentColor: event.target.value }))}
+                    className="mt-1 h-10 w-full rounded-lg border border-slate-200"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-3 block text-xs text-slate-500">
+                Font
+                <select
+                  value={brandKit.font}
+                  onChange={(event) => setBrandKit((previous) => ({ ...previous, font: event.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+                >
+                  {BRAND_FONT_OPTIONS.map((fontOption) => (
+                    <option key={fontOption.id} value={fontOption.id}>{fontOption.label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={extractBrandLogoFromStore}
+                  disabled={brandKitLogoLoading}
+                  className="creative-os-action-btn"
+                >
+                  <Sparkles size={14} />
+                  {brandKitLogoLoading ? 'Extracting…' : 'Extract Logo'}
+                </button>
+                <label className="creative-os-action-btn">
+                  <Upload size={14} />
+                  Upload Logo
+                  <input type="file" accept="image/*" onChange={handleBrandLogoSelect} className="hidden" />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setBrandKit((previous) => ({ ...previous, logoUrl: '' }))}
+                  className="creative-os-action-btn"
+                >
+                  <X size={14} />
+                  Clear
+                </button>
+              </div>
+
+              {brandKit.logoUrl && (
+                <div className="mt-3 rounded-xl border border-slate-200 bg-white p-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Active Logo</p>
+                  <img src={brandKit.logoUrl} alt="Brand kit logo" className="mt-2 h-16 w-40 rounded-lg object-contain" />
+                </div>
+              )}
+              {brandKitLogoError && <p className="mt-2 text-xs text-rose-600">{brandKitLogoError}</p>}
             </div>
 
             <div className="creative-os-panel">
@@ -1766,8 +1891,7 @@ export default function CreativeProductionOS({ store }) {
           </aside>
 
           <div>
-            <AnimatePresence mode="wait">
-              <motion.div key={activeModuleId} {...MODULE_ANIMATION}>
+            <div>
                 {activeModuleId === 'design_studio' && (
                   <div className="space-y-4">
                     <SectionCard
@@ -2029,6 +2153,11 @@ export default function CreativeProductionOS({ store }) {
                                 style={{ aspectRatio: `${canvasDimensions.width}/${canvasDimensions.height}` }}
                               >
                                 <div className="creative-os-canvas-safe-zone" />
+                                {brandKit.logoUrl && (
+                                  <div className="creative-os-canvas-logo">
+                                    <img src={brandKit.logoUrl} alt="Brand logo" className="h-full w-full object-contain" />
+                                  </div>
+                                )}
 
                                 {canvasLayers.product.visible && (
                                   <div
@@ -2683,170 +2812,6 @@ export default function CreativeProductionOS({ store }) {
                   </div>
                 )}
 
-                {activeModuleId === 'product_hub' && (
-                  <div className="space-y-4">
-                    <SectionCard
-                      title="Product Hub"
-                      helper="Catalog-aware creative layer. Drag products directly into any design or timeline context."
-                      icon={Briefcase}
-                    >
-                      <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-                        <div className="space-y-4">
-                          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="mb-2 flex items-center justify-between gap-2">
-                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Store Integrations</p>
-                              <button
-                                type="button"
-                                onClick={loadCatalog}
-                                disabled={catalogLoading}
-                                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                {catalogLoading ? 'Syncing...' : 'Sync Catalog'}
-                              </button>
-                            </div>
-                            <div className="space-y-2">
-                              {CATALOG_INTEGRATIONS.map((integration) => {
-                                const connected = integrationState[integration.id];
-                                return (
-                                  <button
-                                    key={integration.id}
-                                    type="button"
-                                    onClick={() => toggleIntegration(integration.id)}
-                                    className={`w-full rounded-xl border px-3 py-2 text-left transition ${
-                                      connected ? 'border-teal-400 bg-teal-50' : 'border-slate-200 hover:border-slate-300'
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <span className="creative-os-heading text-sm font-semibold text-slate-900">{integration.title}</span>
-                                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${connected ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-500'}`}>
-                                        {connected ? 'Connected' : 'Not Connected'}
-                                      </span>
-                                    </div>
-                                    <p className="mt-1 text-xs text-slate-500">{integration.detail}</p>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            {catalogError && <p className="mt-2 text-xs text-rose-600">{catalogError}</p>}
-                            {productHubMessage && <p className="mt-2 text-xs text-teal-700">{productHubMessage}</p>}
-                            {catalogInfo && (
-                              <p className="mt-2 text-[11px] text-slate-500">
-                                Source rows: orders {catalogInfo.order_rows || 0}, cache {catalogInfo.cache_rows || 0}, profile {catalogInfo.profile_rows || 0}
-                              </p>
-                            )}
-                          </div>
-
-                          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Collection-Aware Grouping</p>
-                            <div className="flex flex-wrap gap-2">
-                              {PRODUCT_COLLECTIONS.map((collection) => (
-                                <ToggleChip
-                                  key={collection.id}
-                                  selected={selectedCollectionId === collection.id}
-                                  onClick={() => setSelectedCollectionId(collection.id)}
-                                >
-                                  {collection.name}
-                                </ToggleChip>
-                              ))}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => setDynamicPriceSync((previous) => !previous)}
-                              className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ${
-                                dynamicPriceSync ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-600'
-                              }`}
-                            >
-                              <RefreshCw size={13} />
-                              Dynamic Price Tags: {dynamicPriceSync ? 'Live Sync' : 'Manual'}
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="space-y-4">
-                          <div className="creative-os-preview-card">
-                            <div className="mb-3 flex items-center justify-between">
-                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Product Cards</p>
-                              <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">{visibleProducts.length} visible</span>
-                            </div>
-                            <div className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
-                              {visibleProducts.map((product) => (
-                                <button
-                                  key={product.id}
-                                  type="button"
-                                  draggable
-                                  onDragStart={(event) => handleProductDragStart(event, product.id)}
-                                  onClick={() => setSelectedProductId(product.id)}
-                                  className={`w-full rounded-xl border p-3 text-left transition ${
-                                    selectedProductId === product.id
-                                      ? 'border-teal-400 bg-teal-50'
-                                      : 'border-slate-200 hover:border-slate-300'
-                                  }`}
-                                >
-                                  <div className="flex items-center justify-between gap-3">
-                                    <div>
-                                      <p className="creative-os-heading text-sm font-semibold text-slate-900">{product.name}</p>
-                                      <p className="mt-1 text-xs text-slate-500">{product.blurb}</p>
-                                    </div>
-                                    <span className="rounded-full bg-slate-900 px-2 py-1 text-xs font-semibold text-white">
-                                      {product?.price ? formatCurrency(product.price, product.currency) : 'No price'}
-                                    </span>
-                                  </div>
-                                </button>
-                              ))}
-                              {visibleProducts.length === 0 && (
-                                <div className="rounded-xl border border-dashed border-slate-300 p-3 text-xs text-slate-500">
-                                  No products in this collection yet.
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Quick Actions</p>
-                            <div className="grid gap-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const quickVariants = 5;
-                                  setVariantCount(quickVariants);
-                                  setActiveModuleId('video_studio');
-                                  generateHooks(quickVariants);
-                                }}
-                                className="creative-os-action-btn"
-                              >
-                                <Sparkles size={14} />
-                                Generate 5 Ad Variants
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setCaptionDraft(`Discover ${selectedProduct?.name || 'this product'} with premium storytelling.`);
-                                  setActiveModuleId('design_studio');
-                                }}
-                                className="creative-os-action-btn"
-                              >
-                                <MessageSquare size={14} />
-                                Build Product-first Caption Set
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setActiveModuleId('multi_format_engine');
-                                  runBatchExport();
-                                }}
-                                className="creative-os-action-btn"
-                              >
-                                <Target size={14} />
-                                Create Collection Campaign Board
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </SectionCard>
-                  </div>
-                )}
-
                 {activeModuleId === 'multi_format_engine' && (
                   <div className="space-y-4">
                     <SectionCard
@@ -2979,8 +2944,7 @@ export default function CreativeProductionOS({ store }) {
                     </SectionCard>
                   </div>
                 )}
-              </motion.div>
-            </AnimatePresence>
+            </div>
           </div>
         </section>
 
