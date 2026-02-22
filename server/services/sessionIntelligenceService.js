@@ -52,7 +52,48 @@ const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
 const lastShopperBackfillByStore = new Map();
 const realtimeFocusGeoFallbackCache = new Map();
 const lastJourneyEntryBackfillByStore = new Map();
-const SESSION_JOURNEY_LOCALE_SEGMENT_RE = /^[a-z]{2}$/i;
+const SESSION_JOURNEY_SUPPORTED_LOCALE_CODES = new Set([
+  'ar',
+  'bg',
+  'ca',
+  'cs',
+  'da',
+  'de',
+  'el',
+  'en',
+  'es',
+  'et',
+  'fa',
+  'fi',
+  'fr',
+  'he',
+  'hi',
+  'hr',
+  'hu',
+  'id',
+  'it',
+  'ja',
+  'ko',
+  'lt',
+  'lv',
+  'ms',
+  'nb',
+  'nl',
+  'pl',
+  'pt',
+  'ro',
+  'ru',
+  'sk',
+  'sl',
+  'sr',
+  'sv',
+  'th',
+  'tr',
+  'uk',
+  'vi',
+  'zh'
+]);
+const SESSION_JOURNEY_LOCALE_WITH_REGION_RE = /^([a-z]{2})[-_]([a-z]{2})$/i;
 const SESSION_JOURNEY_EXCLUDED_PATH_SEGMENTS = new Set([
   'policies',
   'policy',
@@ -119,6 +160,16 @@ function normalizePathFromAny(value) {
   }
 }
 
+function isLocalePathSegment(segment) {
+  const raw = safeString(segment).trim().toLowerCase();
+  if (!raw) return false;
+  if (SESSION_JOURNEY_SUPPORTED_LOCALE_CODES.has(raw)) return true;
+
+  const regionMatch = raw.match(SESSION_JOURNEY_LOCALE_WITH_REGION_RE);
+  if (!regionMatch) return false;
+  return SESSION_JOURNEY_SUPPORTED_LOCALE_CODES.has(regionMatch[1]);
+}
+
 function stripLocalePrefixFromPath(pathname) {
   const rawPath = normalizePathFromAny(pathname);
   if (!rawPath || !rawPath.startsWith('/')) return rawPath;
@@ -126,7 +177,7 @@ function stripLocalePrefixFromPath(pathname) {
   const parts = rawPath.split('/').filter(Boolean);
   if (!parts.length) return '/';
 
-  if (SESSION_JOURNEY_LOCALE_SEGMENT_RE.test(parts[0])) {
+  if (isLocalePathSegment(parts[0])) {
     const rest = parts.slice(1).join('/');
     return rest ? `/${rest}` : '/';
   }
@@ -3712,6 +3763,51 @@ function sessionHasMeaningfulAbandonSignal(row) {
   return false;
 }
 
+function collectLatestProductLabelBySession(db, store, sessions, range) {
+  const labelsBySession = new Map();
+  const sessionIds = uniqueSessionIds(sessions, JOURNEY_ENTRY_FALLBACK_MAX_SESSIONS);
+  if (!sessionIds.length) return labelsBySession;
+
+  const rangeStart = safeString(range?.start).trim();
+  const rangeEnd = safeString(range?.end).trim();
+  if (!rangeStart || !rangeEnd) return labelsBySession;
+
+  for (const chunk of chunkValues(sessionIds, JOURNEY_ENTRY_FALLBACK_SESSION_CHUNK)) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT
+        session_id,
+        page_path,
+        event_ts,
+        created_at
+      FROM si_events
+      WHERE store = ?
+        AND session_id IN (${placeholders})
+        AND created_at >= ?
+        AND created_at < ?
+        AND page_path IS NOT NULL
+        AND page_path != ''
+        AND (
+          page_path LIKE '/products/%'
+          OR page_path GLOB '/??/products/*'
+        )
+      ORDER BY COALESCE(event_ts, created_at) DESC
+    `).all(store, ...chunk, rangeStart, rangeEnd);
+
+    for (const row of rows) {
+      const sessionId = safeString(row?.session_id).trim();
+      if (!sessionId || labelsBySession.has(sessionId)) continue;
+      const label = extractProductLabelFromPath(row?.page_path);
+      if (!label) continue;
+      labelsBySession.set(sessionId, label);
+    }
+
+    if (labelsBySession.size >= sessionIds.length) break;
+  }
+
+  return labelsBySession;
+}
+
 export function getSessionIntelligenceLandingToPurchase(store, {
   startDate,
   endDate,
@@ -3874,27 +3970,12 @@ export function getSessionIntelligenceAbandonmentByLocation(store, {
     ORDER BY started_at DESC
   `).all(normalizedStore, range.start, range.end);
   const resolvedEntryBySession = resolveJourneyEntryContextsForRows(db, normalizedStore, sessions, { persistBackfill: true });
-
-  // Pull the latest product-page path for each session to keep product labels readable.
-  const latestProductPathRows = db.prepare(`
-    SELECT session_id, page_path, event_ts
-    FROM si_events
-    WHERE store = ?
-      AND created_at >= ?
-      AND created_at < ?
-      AND page_path IS NOT NULL
-      AND page_path != ''
-      AND lower(page_path) LIKE '%/products/%'
-    ORDER BY event_ts DESC
-  `).all(normalizedStore, range.start, range.end);
-
-  const latestProductLabelBySession = new Map();
-  for (const row of latestProductPathRows) {
-    if (latestProductLabelBySession.has(row.session_id)) continue;
-    const label = extractProductLabelFromPath(row.page_path);
-    if (!label) continue;
-    latestProductLabelBySession.set(row.session_id, label);
-  }
+  const latestProductLabelBySession = collectLatestProductLabelBySession(
+    db,
+    normalizedStore,
+    sessions,
+    range
+  );
 
   const grouped = new Map();
   const unclassifiedBreakdown = new Map();
