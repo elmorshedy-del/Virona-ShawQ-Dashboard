@@ -174,8 +174,7 @@ function getIsoDateForDashboardOffset(value, utcOffsetMinutes = BUDGET_MONITOR_C
   const parsed = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
 
-  const utcMs = parsed.getTime() + (parsed.getTimezoneOffset() * MILLISECONDS_PER_MINUTE);
-  const dashboardMs = utcMs + (utcOffsetMinutes * MILLISECONDS_PER_MINUTE);
+  const dashboardMs = parsed.getTime() + (utcOffsetMinutes * MILLISECONDS_PER_MINUTE);
   return new Date(dashboardMs).toISOString().slice(0, 10);
 }
 

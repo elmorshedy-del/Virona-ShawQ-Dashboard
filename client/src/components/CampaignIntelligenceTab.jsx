@@ -98,8 +98,7 @@ const MODEL_CARD_META = {
 };
 
 function getDashboardDateString(date = new Date()) {
-  const utcMs = date.getTime() + (date.getTimezoneOffset() * MS_PER_MINUTE);
-  const dashboardMs = utcMs + (DASHBOARD_DAY_UTC_OFFSET_MINUTES * MS_PER_MINUTE);
+  const dashboardMs = date.getTime() + (DASHBOARD_DAY_UTC_OFFSET_MINUTES * MS_PER_MINUTE);
   return new Date(dashboardMs).toISOString().split('T')[0];
 }
 
