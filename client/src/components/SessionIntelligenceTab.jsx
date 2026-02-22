@@ -2840,7 +2840,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
                                     type="button"
                                     onClick={() => openStory(proofSession.session_id, proofSession)}
                                   >
-                                    View {proofCount || 1}
+                                    View {pluralize(proofCount, 'session', 'sessions')}
                                   </button>
                                 ) : (
                                   <span className="si-muted">No sample</span>
