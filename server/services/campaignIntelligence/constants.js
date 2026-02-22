@@ -239,6 +239,13 @@ export const BUDGET_MONITOR_CONFIG = Object.freeze({
   minBaselineSpend: 150,
   minShiftRatio: 0.2,
   monitorLookbackDays: 21,
+  historyMaxEvents: 24,
+  historyFetchPageLimit: 100,
+  historyFetchMaxPages: 6,
+  historyRequestTimeoutMs: 12000,
+  historyCacheTtlMinutes: 10,
+  historyCacheMaxEntries: 30,
+  dashboardDayUtcOffsetMinutes: 300,
   deltaTiers: Object.freeze({
     strong: 0.22,
     medium: 0.12,

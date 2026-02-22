@@ -1,9 +1,11 @@
+import fetch from 'node-fetch';
 import { getDb } from '../../db/database.js';
 import {
   fetchShopifyOrders,
   getShopifyCredentialsForStore
 } from '../shopifyService.js';
 import {
+  BUDGET_MONITOR_CONFIG,
   DEFAULT_SETTINGS,
   LEVEL_CONFIG,
   ORDERS_TABLE_BY_STORE,
@@ -29,6 +31,54 @@ const SHOPIFY_DIRECT_FALLBACK_ENABLED = String(process.env[SHOPIFY_DIRECT_FALLBA
   .trim()
   .toLowerCase() !== 'false';
 const MILLISECONDS_PER_MINUTE = 60 * 1000;
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v20.0';
+const META_GRAPH_HOSTNAME = 'graph.facebook.com';
+const META_GRAPH_BASE_URL = `https://${META_GRAPH_HOSTNAME}/${META_GRAPH_VERSION}`;
+const META_AD_ACCOUNT_ID_PATTERN = /^(?:act_)?([0-9]{5,32})$/;
+const META_BUDGET_EVENT_FIELDS = 'event_time,event_type,event_type_display_name,translated_event_type,object_id,object_type,object_name,extra_data';
+const META_BUDGET_FIELD_HINT_KEYS = new Set(['field', 'field_name', 'changed_field', 'attribute', 'target']);
+const META_BUDGET_FROM_KEYS = new Set([
+  'old_value',
+  'old_value_in_minor_units',
+  'old_budget',
+  'old_budget_in_minor_units',
+  'old_daily_budget',
+  'old_daily_budget_in_minor_units',
+  'old_lifetime_budget',
+  'old_lifetime_budget_in_minor_units',
+  'before_value',
+  'before_value_in_minor_units',
+  'before_budget',
+  'before_budget_in_minor_units',
+  'previous_value',
+  'previous_value_in_minor_units',
+  'from_value',
+  'from_value_in_minor_units'
+]);
+const META_BUDGET_TO_KEYS = new Set([
+  'new_value',
+  'new_value_in_minor_units',
+  'new_budget',
+  'new_budget_in_minor_units',
+  'new_daily_budget',
+  'new_daily_budget_in_minor_units',
+  'new_lifetime_budget',
+  'new_lifetime_budget_in_minor_units',
+  'after_value',
+  'after_value_in_minor_units',
+  'after_budget',
+  'after_budget_in_minor_units',
+  'updated_value',
+  'updated_value_in_minor_units',
+  'to_value',
+  'to_value_in_minor_units'
+]);
+const META_BUDGET_MINOR_UNIT_DIVISOR = 100;
+const META_BUDGET_MINOR_UNIT_KEY_HINTS = Object.freeze(['minor', 'cent', 'subunit']);
+const META_BUDGET_HISTORY_LOOKBACK_DAYS = BUDGET_MONITOR_CONFIG.monitorLookbackDays;
+const META_BUDGET_HISTORY_CACHE_TTL_MS = BUDGET_MONITOR_CONFIG.historyCacheTtlMinutes * MILLISECONDS_PER_MINUTE;
+const META_BUDGET_HISTORY_CACHE_MAX_ENTRIES = BUDGET_MONITOR_CONFIG.historyCacheMaxEntries;
+const META_BUDGET_HISTORY_CACHE = new Map();
 const SHOPIFY_RANGE_CACHE_TTL_MINUTES = 10;
 const SHOPIFY_RANGE_CACHE_TTL_MS = SHOPIFY_RANGE_CACHE_TTL_MINUTES * MILLISECONDS_PER_MINUTE;
 const SHOPIFY_RANGE_CACHE_MAX_ENTRIES = 20;
@@ -80,6 +130,201 @@ function setCachedShopifyOrders(cacheKey, orders) {
     orders: Array.isArray(orders) ? orders : []
   });
   pruneShopifyRangeCache();
+}
+
+function getBudgetHistoryCacheKey({ store, startDate, endDate, campaignIds = [] }) {
+  const scopedCampaignIds = Array.from(new Set(campaignIds.map((id) => String(id || '').trim()).filter(Boolean)))
+    .sort()
+    .join(',');
+  return `${store}:${startDate}:${endDate}:${scopedCampaignIds || 'all'}`;
+}
+
+function pruneBudgetHistoryCache() {
+  while (META_BUDGET_HISTORY_CACHE.size > META_BUDGET_HISTORY_CACHE_MAX_ENTRIES) {
+    const oldestKey = META_BUDGET_HISTORY_CACHE.keys().next().value;
+    if (!oldestKey) break;
+    META_BUDGET_HISTORY_CACHE.delete(oldestKey);
+  }
+}
+
+function getCachedBudgetHistoryEvents(cacheKey) {
+  const cached = META_BUDGET_HISTORY_CACHE.get(cacheKey);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    META_BUDGET_HISTORY_CACHE.delete(cacheKey);
+    return null;
+  }
+  return Array.isArray(cached.events) ? cached.events : null;
+}
+
+function setCachedBudgetHistoryEvents(cacheKey, events) {
+  META_BUDGET_HISTORY_CACHE.set(cacheKey, {
+    expiresAt: Date.now() + META_BUDGET_HISTORY_CACHE_TTL_MS,
+    events: Array.isArray(events) ? events : []
+  });
+  pruneBudgetHistoryCache();
+}
+
+function normalizeMetaAdAccountId(rawAdAccountId) {
+  const match = String(rawAdAccountId || '').trim().match(META_AD_ACCOUNT_ID_PATTERN);
+  return match?.[1] || null;
+}
+
+function getMetaCredentialsForStore(store) {
+  const normalizedStore = String(store || '').trim().toLowerCase();
+  if (normalizedStore === 'shawq') {
+    return {
+      accessToken: String(process.env.SHAWQ_META_ACCESS_TOKEN || '').trim(),
+      adAccountId: normalizeMetaAdAccountId(process.env.SHAWQ_META_AD_ACCOUNT_ID)
+    };
+  }
+
+  return {
+    accessToken: String(process.env.META_ACCESS_TOKEN || process.env.VIRONAX_META_ACCESS_TOKEN || '').trim(),
+    adAccountId: normalizeMetaAdAccountId(process.env.META_AD_ACCOUNT_ID || process.env.VIRONAX_META_AD_ACCOUNT_ID)
+  };
+}
+
+function getIsoDateForDashboardOffset(value, utcOffsetMinutes = BUDGET_MONITOR_CONFIG.dashboardDayUtcOffsetMinutes) {
+  if (!value) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const dashboardMs = parsed.getTime() + (utcOffsetMinutes * MILLISECONDS_PER_MINUTE);
+  return new Date(dashboardMs).toISOString().slice(0, 10);
+}
+
+function isMinorUnitBudgetKey(rawKey) {
+  const key = String(rawKey || '').trim().toLowerCase();
+  if (!key) return false;
+  return META_BUDGET_MINOR_UNIT_KEY_HINTS.some((hint) => key.includes(hint));
+}
+
+function parseBudgetAmount(value, { isMinorUnits = false } = {}) {
+  if (value == null || value === '') return null;
+
+  let parsedValue = value;
+  if (typeof value === 'string') {
+    const sanitized = value.replace(/[^0-9.+-]/g, '');
+    if (!sanitized) return null;
+    parsedValue = Number(sanitized);
+  }
+
+  const numeric = Number(parsedValue);
+  if (!Number.isFinite(numeric)) return null;
+  if (isMinorUnits) {
+    return numeric / META_BUDGET_MINOR_UNIT_DIVISOR;
+  }
+  return numeric;
+}
+
+function parseExtraDataObject(extraData) {
+  if (!extraData) return null;
+  if (typeof extraData === 'object') return extraData;
+
+  if (typeof extraData === 'string') {
+    try {
+      const parsed = JSON.parse(extraData);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function collectNestedEntries(payload) {
+  const out = [];
+  const stack = [payload];
+
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    if (Array.isArray(current)) {
+      current.forEach((item) => stack.push(item));
+      continue;
+    }
+
+    if (typeof current !== 'object') continue;
+
+    Object.entries(current).forEach(([rawKey, value]) => {
+      const key = String(rawKey || '').trim().toLowerCase();
+      if (!key) return;
+      out.push({ key, value });
+      if (value && typeof value === 'object') {
+        stack.push(value);
+      }
+    });
+  }
+
+  return out;
+}
+
+function findNumericValueByKeys(entries, keySet) {
+  for (const entry of entries) {
+    if (!keySet.has(entry.key)) continue;
+    const parsed = parseBudgetAmount(entry.value, {
+      isMinorUnits: isMinorUnitBudgetKey(entry.key)
+    });
+    if (parsed != null) return parsed;
+  }
+  return null;
+}
+
+function inferBudgetValuesFromEntries(entries) {
+  const fromBudget = findNumericValueByKeys(entries, META_BUDGET_FROM_KEYS);
+  const toBudget = findNumericValueByKeys(entries, META_BUDGET_TO_KEYS);
+
+  if (fromBudget != null || toBudget != null) {
+    return { fromBudget, toBudget };
+  }
+
+  let fallbackBudget = null;
+  entries.forEach((entry) => {
+    if (!entry.key.includes('budget')) return;
+    const parsed = parseBudgetAmount(entry.value, {
+      isMinorUnits: isMinorUnitBudgetKey(entry.key)
+    });
+    if (parsed == null) return;
+    fallbackBudget = parsed;
+  });
+
+  return { fromBudget: null, toBudget: fallbackBudget };
+}
+
+function normalizeGraphObjectId(value) {
+  const normalized = String(value || '').trim();
+  if (!/^[0-9]{5,32}$/.test(normalized)) return null;
+  return normalized;
+}
+
+function extractCampaignIdFromEntries(entries) {
+  for (const entry of entries) {
+    if (!entry.key.includes('campaign') || !entry.key.includes('id')) continue;
+    const normalized = normalizeGraphObjectId(entry.value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    const text = await response.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch (_error) {
+      json = null;
+    }
+    return { response, json };
+  } finally {
+    clearTimeout(timerId);
+  }
 }
 
 function normalizeCountryToken(rawCountry) {
@@ -511,6 +756,215 @@ export function fetchCountryOptions(scope) {
     }))
     .sort((left, right) => right.spend - left.spend)
     .slice(0, selectorLimit);
+}
+
+export function fetchScopedCampaignIds({
+  db,
+  store,
+  levelConfig,
+  startDate,
+  endDate,
+  entityId,
+  country
+}) {
+  if (levelConfig?.idColumn === 'campaign_id' && entityId) {
+    return [String(entityId)];
+  }
+
+  const { whereSql, args } = buildScopeWhere(levelConfig, {
+    store,
+    startDate,
+    endDate,
+    entityId,
+    country
+  });
+
+  const rows = db
+    .prepare(`
+      SELECT
+        campaign_id as campaignId,
+        MAX(date) as lastSeen,
+        SUM(spend) as spend
+      FROM ${levelConfig.table}
+      WHERE ${whereSql}
+      AND campaign_id IS NOT NULL
+      AND TRIM(campaign_id) != ''
+      GROUP BY campaign_id
+      HAVING SUM(spend) > 0
+      ORDER BY lastSeen DESC, spend DESC
+      LIMIT ?
+    `)
+    .all(...args, QUERY_LIMITS.maxSelectorOptions);
+
+  if (!rows.length && entityId) {
+    return [String(entityId)];
+  }
+
+  return rows
+    .map((row) => String(row?.campaignId || '').trim())
+    .filter(Boolean);
+}
+
+function getBudgetFieldHint(entries = []) {
+  const parts = entries
+    .filter((entry) => META_BUDGET_FIELD_HINT_KEYS.has(entry.key))
+    .map((entry) => String(entry.value || '').toLowerCase())
+    .filter(Boolean);
+  return parts.join(' ');
+}
+
+function hasBudgetSignal(activity = {}, entries = []) {
+  const eventText = [
+    activity?.event_type,
+    activity?.event_type_display_name,
+    activity?.translated_event_type
+  ]
+    .map((value) => String(value || '').toLowerCase())
+    .join(' ');
+
+  const fieldHint = getBudgetFieldHint(entries);
+  if (eventText.includes('budget') || fieldHint.includes('budget')) {
+    return true;
+  }
+
+  return entries.some((entry) => entry.key.includes('budget'));
+}
+
+function resolveActivityCampaignId(activity = {}, entries = []) {
+  const objectType = String(activity?.object_type || '').toLowerCase();
+  const objectId = normalizeGraphObjectId(activity?.object_id);
+  if (objectType.includes('campaign') && objectId) {
+    return objectId;
+  }
+
+  return extractCampaignIdFromEntries(entries);
+}
+
+function buildBudgetHistoryEvent(activity = {}, allowedCampaignIds = null) {
+  const entries = collectNestedEntries(parseExtraDataObject(activity?.extra_data));
+  if (!hasBudgetSignal(activity, entries)) return null;
+
+  const campaignId = resolveActivityCampaignId(activity, entries);
+  if (allowedCampaignIds && allowedCampaignIds.size > 0) {
+    if (!campaignId || !allowedCampaignIds.has(campaignId)) return null;
+  }
+
+  const eventTimeValue = activity?.event_time || activity?.created_time || activity?.date_start;
+  const pivotDate = getIsoDateForDashboardOffset(eventTimeValue);
+  if (!pivotDate) return null;
+
+  const { fromBudget, toBudget } = inferBudgetValuesFromEntries(entries);
+  const rawShiftRatio = toBudget != null && fromBudget != null
+    ? safeDivide(toBudget - fromBudget, Math.abs(fromBudget), 0)
+    : null;
+
+  return {
+    pivotDate,
+    eventTime: typeof eventTimeValue === 'string' ? eventTimeValue : null,
+    campaignId: campaignId || null,
+    objectId: normalizeGraphObjectId(activity?.object_id),
+    objectType: String(activity?.object_type || '').toLowerCase() || null,
+    eventType: String(activity?.event_type || activity?.translated_event_type || '').toLowerCase() || null,
+    fromBudget: fromBudget != null ? round(fromBudget, 2) : null,
+    toBudget: toBudget != null ? round(toBudget, 2) : null,
+    shiftRatio: rawShiftRatio != null ? round(rawShiftRatio, 4) : null,
+    source: 'meta_history'
+  };
+}
+
+function ensureAllowedMetaNextUrl(rawUrl) {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') return null;
+    if (parsed.hostname !== META_GRAPH_HOSTNAME) return null;
+    return parsed.toString();
+  } catch (_error) {
+    return null;
+  }
+}
+
+function sortBudgetHistoryEvents(events = []) {
+  return events
+    .slice()
+    .sort((left, right) => {
+      const leftKey = left?.eventTime || left?.pivotDate || '';
+      const rightKey = right?.eventTime || right?.pivotDate || '';
+      return rightKey.localeCompare(leftKey);
+    })
+    .slice(0, BUDGET_MONITOR_CONFIG.historyMaxEvents);
+}
+
+export async function fetchMetaBudgetHistoryEvents({
+  store,
+  startDate,
+  endDate,
+  campaignIds = []
+}) {
+  const credentials = getMetaCredentialsForStore(store);
+  if (!credentials?.accessToken || !credentials?.adAccountId) {
+    return [];
+  }
+
+  const allowedCampaignIds = new Set(
+    (campaignIds || [])
+      .map((id) => normalizeGraphObjectId(id))
+      .filter(Boolean)
+  );
+
+  const cacheKey = getBudgetHistoryCacheKey({
+    store,
+    startDate,
+    endDate,
+    campaignIds: Array.from(allowedCampaignIds)
+  });
+
+  const cachedEvents = getCachedBudgetHistoryEvents(cacheKey);
+  if (cachedEvents) {
+    return cachedEvents;
+  }
+
+  const baseUrl = new URL(`${META_GRAPH_BASE_URL}/act_${credentials.adAccountId}/activities`);
+  baseUrl.searchParams.set('fields', META_BUDGET_EVENT_FIELDS);
+  baseUrl.searchParams.set('since', startDate);
+  baseUrl.searchParams.set('until', endDate);
+  baseUrl.searchParams.set('limit', String(BUDGET_MONITOR_CONFIG.historyFetchPageLimit));
+  baseUrl.searchParams.set('access_token', credentials.accessToken);
+
+  const events = [];
+  let nextUrl = baseUrl.toString();
+  let pageCount = 0;
+
+  while (nextUrl && pageCount < BUDGET_MONITOR_CONFIG.historyFetchMaxPages) {
+    pageCount += 1;
+
+    try {
+      const { response, json } = await fetchJsonWithTimeout(
+        nextUrl,
+        BUDGET_MONITOR_CONFIG.historyRequestTimeoutMs
+      );
+
+      if (!response.ok || json?.error) {
+        console.warn(`[CampaignIntelligence] Meta budget history request failed for ${store}: ${json?.error?.message || response.statusText}`);
+        break;
+      }
+
+      const pageRows = Array.isArray(json?.data) ? json.data : [];
+      pageRows.forEach((row) => {
+        const event = buildBudgetHistoryEvent(row, allowedCampaignIds);
+        if (event) events.push(event);
+      });
+
+      nextUrl = ensureAllowedMetaNextUrl(json?.paging?.next);
+    } catch (error) {
+      console.warn(`[CampaignIntelligence] Meta budget history fetch error for ${store}: ${error.message}`);
+      break;
+    }
+  }
+
+  const sortedEvents = sortBudgetHistoryEvents(events);
+  setCachedBudgetHistoryEvents(cacheKey, sortedEvents);
+  return sortedEvents;
 }
 
 function getOrdersTable(store) {
