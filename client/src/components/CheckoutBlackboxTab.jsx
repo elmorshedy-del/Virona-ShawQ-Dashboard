@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 
 const DEFAULT_LOOKBACK_DAYS = 3;
@@ -145,6 +145,7 @@ export default function CheckoutBlackboxTab({ store }) {
   const [eventsTotal, setEventsTotal] = useState(0);
   const [eventOptions, setEventOptions] = useState([]);
   const [sourceOptions, setSourceOptions] = useState([]);
+  const isRefreshingRef = useRef(false);
 
   const baseQuery = useMemo(() => ({
     store: storeId,
@@ -152,7 +153,12 @@ export default function CheckoutBlackboxTab({ store }) {
     endDate: range.endDate
   }), [storeId, range.endDate, range.startDate]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (options = {}) => {
+    const { allowHidden = true } = options || {};
+    if (!allowHidden && document.visibilityState !== 'visible') return;
+    if (isRefreshingRef.current) return;
+
+    isRefreshingRef.current = true;
     setLoading(true);
     setError('');
     try {
@@ -186,6 +192,7 @@ export default function CheckoutBlackboxTab({ store }) {
       setError(loadError?.message || 'Failed to load Blackbox data');
     } finally {
       setLoading(false);
+      isRefreshingRef.current = false;
     }
   }, [baseQuery, eventName, limit, sessionHint, source]);
 
@@ -194,29 +201,18 @@ export default function CheckoutBlackboxTab({ store }) {
   }, [loadData]);
 
   useEffect(() => {
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        loadData();
-      }
-    }, AUTO_REFRESH_INTERVAL_MS);
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        loadData();
-      }
+    const refreshVisible = () => {
+      loadData({ allowHidden: false });
     };
 
-    const handleWindowFocus = () => {
-      loadData();
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleWindowFocus);
+    const interval = window.setInterval(refreshVisible, AUTO_REFRESH_INTERVAL_MS);
+    document.addEventListener('visibilitychange', refreshVisible);
+    window.addEventListener('focus', refreshVisible);
 
     return () => {
       window.clearInterval(interval);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', refreshVisible);
+      window.removeEventListener('focus', refreshVisible);
     };
   }, [loadData]);
 
