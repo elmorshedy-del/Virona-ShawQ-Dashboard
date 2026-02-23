@@ -23,6 +23,37 @@ const MAX_STORE_LENGTH = 64;
 const IP_HASH_PREFIX_LENGTH = 16;
 const DUPLICATE_BUTTON_MAX_LENGTH = 160;
 const TOP_DUPLICATE_BUTTON_LIMIT = 10;
+const MIN_ORDER_ID_DIGITS = 6;
+
+const PURCHASE_SOURCE_WEBHOOK_KEYWORDS = [
+  'webhook',
+  'captain-hook',
+  'captain hook',
+  'orders/paid',
+  'shopify_webhook'
+];
+
+const PURCHASE_SOURCE_PIXEL_KEYWORDS = [
+  'custom_pixel',
+  'shopify_custom_pixel',
+  'shopify pixel',
+  'web pixel',
+  'web-pixel',
+  'web-pixels',
+  'browser'
+];
+
+const PURCHASE_SOURCE_GTM_KEYWORDS = [
+  'gtm',
+  'sgtm',
+  'server gtm',
+  'stape_data',
+  'theme_snippet',
+  'theme snippet',
+  'data_layer',
+  'datalayer',
+  'data client'
+];
 
 const EVENT_NAME_ALIASES = new Map([
   ['checkout_started', 'begin_checkout'],
@@ -549,6 +580,80 @@ function flowKeyFromEvent(event) {
   );
 }
 
+function safeLower(value, maxLength = MAX_STRING_LENGTH) {
+  return safeString(value, maxLength).toLowerCase();
+}
+
+function containsAnyKeyword(rawValue, keywords) {
+  if (!rawValue) return false;
+  return keywords.some((keyword) => rawValue.includes(keyword));
+}
+
+function resolveOrderIdFromPurchaseEvent(event) {
+  const directOrderId = safeString(event.order_id, 120);
+  if (directOrderId) return directOrderId;
+
+  const eventId = safeString(event.event_id, 160);
+  if (!eventId) return '';
+
+  const pattern = new RegExp(`(\\d{${MIN_ORDER_ID_DIGITS},})_purchase$`, 'i');
+  const match = eventId.match(pattern);
+  return match?.[1] || '';
+}
+
+function classifyPurchaseSource(event) {
+  const fingerprint = [
+    safeLower(event.source, 160),
+    safeLower(event.channel, 160),
+    safeLower(event.checkout_source, 160),
+    safeLower(event.checkout_button, 160),
+    safeLower(event.user_agent, 300)
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  if (!fingerprint) return 'unknown';
+  if (containsAnyKeyword(fingerprint, PURCHASE_SOURCE_WEBHOOK_KEYWORDS)) return 'webhook';
+  if (containsAnyKeyword(fingerprint, PURCHASE_SOURCE_PIXEL_KEYWORDS)) return 'pixel';
+  if (containsAnyKeyword(fingerprint, PURCHASE_SOURCE_GTM_KEYWORDS)) return 'gtm';
+  return 'unknown';
+}
+
+function summarizeCoverage(coverage) {
+  if (!coverage) return 'none';
+  const paths = [];
+  if (coverage.hasPixelPurchase) paths.push('pixel');
+  if (coverage.hasGtmPurchase) paths.push('gtm');
+  if (coverage.hasWebhookPurchase) paths.push('webhook');
+  if (coverage.hasUnknownPurchase) paths.push('unknown');
+  return paths.length ? paths.join(', ') : 'none';
+}
+
+function makeOrderCandidate(order, approxEvent, coverage, status) {
+  return {
+    order_id: safeString(order.order_id, 120),
+    date: order.date || null,
+    order_created_at: order.order_created_at || null,
+    country_code: order.country_code || null,
+    city: order.city || null,
+    state: order.state || null,
+    order_total: order.order_total || 0,
+    currency: order.currency || null,
+    customer_email: order.customer_email || null,
+    approx_last_begin_checkout_at: approxEvent?.event_ts || null,
+    approx_last_checkout_button: approxEvent?.checkout_button || approxEvent?.checkout_source || null,
+    approx_last_identity_key: approxEvent ? (identityKeyFromEvent(approxEvent) || null) : null,
+    delivery_status: status,
+    has_pixel_purchase: Boolean(coverage?.hasPixelPurchase),
+    has_gtm_purchase: Boolean(coverage?.hasGtmPurchase),
+    has_webhook_purchase: Boolean(coverage?.hasWebhookPurchase),
+    has_unknown_purchase: Boolean(coverage?.hasUnknownPurchase),
+    purchase_path_summary: summarizeCoverage(coverage),
+    purchase_events: Number(coverage?.eventCount || 0),
+    last_purchase_event_ts: coverage?.lastPurchaseAt || null
+  };
+}
+
 function detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds) {
   const grouped = new Map();
   for (const event of beginEvents) {
@@ -695,7 +800,7 @@ function findApproxLastActivityForOrder(order, beginEvents, lookbackHours) {
   return best;
 }
 
-function getGhostOrders(store, range, purchaseEvents, beginEvents, options = {}) {
+function getGhostOrders(store, range, options = {}) {
   const db = getDb();
   const maxItems = clampInt(options.ghostOrderLimit, DEFAULT_GHOST_ORDER_LIMIT, 1, MAX_GHOST_LIMIT);
   const lookbackHours = clampInt(options.approxLookbackHours, DEFAULT_APPROX_LOOKBACK_HOURS, 1, MAX_APPROX_LOOKBACK_HOURS);
@@ -716,41 +821,144 @@ function getGhostOrders(store, range, purchaseEvents, beginEvents, options = {})
       AND date BETWEEN ? AND ?
       AND COALESCE(is_excluded, 0) = 0
     ORDER BY COALESCE(order_created_at, date) DESC
-    LIMIT ?
-  `).all(store, range.startDate, range.endDate, maxItems * 5);
+  `).all(store, range.startDate, range.endDate);
 
-  const purchaseOrderIds = new Set(
-    purchaseEvents
-      .map((event) => safeString(event.order_id, 120))
-      .filter(Boolean)
-  );
+  const purchaseRows = db.prepare(`
+    SELECT
+      order_id,
+      event_id,
+      event_ts,
+      source,
+      channel,
+      checkout_source,
+      checkout_button,
+      user_agent
+    FROM blackbox_events
+    WHERE store = ?
+      AND date(event_ts) BETWEEN ? AND ?
+      AND event_name = 'purchase'
+    ORDER BY event_ts DESC, id DESC
+  `).all(store, range.startDate, range.endDate);
 
-  const ghostOrders = [];
+  const beginRows = db.prepare(`
+    SELECT
+      event_ts,
+      checkout_button,
+      checkout_source,
+      country_code,
+      region_code,
+      page_path,
+      session_id,
+      client_id,
+      ip_hash,
+      cart_token,
+      checkout_token,
+      event_id
+    FROM blackbox_events
+    WHERE store = ?
+      AND date(event_ts) BETWEEN ? AND ?
+      AND event_name = 'begin_checkout'
+    ORDER BY event_ts DESC, id DESC
+  `).all(store, range.startDate, range.endDate);
+
+  const purchaseCoverageByOrder = new Map();
+  for (const purchaseEvent of purchaseRows) {
+    const orderId = resolveOrderIdFromPurchaseEvent(purchaseEvent);
+    if (!orderId) continue;
+
+    const sourceClass = classifyPurchaseSource(purchaseEvent);
+    const existing = purchaseCoverageByOrder.get(orderId) || {
+      hasPixelPurchase: false,
+      hasGtmPurchase: false,
+      hasWebhookPurchase: false,
+      hasUnknownPurchase: false,
+      eventCount: 0,
+      lastPurchaseAt: null
+    };
+
+    existing.eventCount += 1;
+    if (!existing.lastPurchaseAt) {
+      existing.lastPurchaseAt = purchaseEvent.event_ts || null;
+    }
+
+    if (sourceClass === 'pixel') existing.hasPixelPurchase = true;
+    if (sourceClass === 'gtm') existing.hasGtmPurchase = true;
+    if (sourceClass === 'webhook') existing.hasWebhookPurchase = true;
+    if (sourceClass === 'unknown') existing.hasUnknownPurchase = true;
+
+    purchaseCoverageByOrder.set(orderId, existing);
+  }
+
+  const hasPurchaseTelemetry = purchaseRows.length > 0;
+  const hardGhostOrders = [];
+  const recoveredWebhookOnlyOrders = [];
+  const partialMissOrders = [];
+  const noTelemetryOrders = [];
+  const unknownSourceOrders = [];
+
+  let ordersWithAnyPurchase = 0;
+  let ordersWithPixelPurchase = 0;
+  let ordersWithGtmPurchase = 0;
+  let ordersWithWebhookPurchase = 0;
+
   for (const order of orderRows) {
     const orderId = safeString(order.order_id, 120);
     if (!orderId) continue;
-    if (purchaseOrderIds.has(orderId)) continue;
 
-    const approxEvent = findApproxLastActivityForOrder(order, beginEvents, lookbackHours);
-    ghostOrders.push({
-      order_id: orderId,
-      date: order.date || null,
-      order_created_at: order.order_created_at || null,
-      country_code: order.country_code || null,
-      city: order.city || null,
-      state: order.state || null,
-      order_total: order.order_total || 0,
-      currency: order.currency || null,
-      customer_email: order.customer_email || null,
-      approx_last_begin_checkout_at: approxEvent?.event_ts || null,
-      approx_last_checkout_button: approxEvent?.checkout_button || approxEvent?.checkout_source || null,
-      approx_last_identity_key: approxEvent ? (identityKeyFromEvent(approxEvent) || null) : null
-    });
+    const coverage = purchaseCoverageByOrder.get(orderId) || null;
+    const approxEvent = findApproxLastActivityForOrder(order, beginRows, lookbackHours);
+
+    if (!coverage) {
+      if (!hasPurchaseTelemetry) {
+        noTelemetryOrders.push(makeOrderCandidate(order, approxEvent, null, 'no_telemetry'));
+      } else {
+        hardGhostOrders.push(makeOrderCandidate(order, approxEvent, null, 'hard_ghost'));
+      }
+      continue;
+    }
+
+    ordersWithAnyPurchase += 1;
+    if (coverage.hasPixelPurchase) ordersWithPixelPurchase += 1;
+    if (coverage.hasGtmPurchase) ordersWithGtmPurchase += 1;
+    if (coverage.hasWebhookPurchase) ordersWithWebhookPurchase += 1;
+
+    const hasPixel = coverage.hasPixelPurchase;
+    const hasGtm = coverage.hasGtmPurchase;
+    const hasWebhook = coverage.hasWebhookPurchase;
+
+    if (!hasPixel && !hasGtm && hasWebhook) {
+      recoveredWebhookOnlyOrders.push(makeOrderCandidate(order, approxEvent, coverage, 'recovered_webhook_only'));
+      continue;
+    }
+
+    if (hasPixel !== hasGtm) {
+      partialMissOrders.push(makeOrderCandidate(order, approxEvent, coverage, 'partial_miss'));
+      continue;
+    }
+
+    if (!hasPixel && !hasGtm && coverage.hasUnknownPurchase) {
+      unknownSourceOrders.push(makeOrderCandidate(order, approxEvent, coverage, 'unknown_purchase_source'));
+    }
   }
 
   return {
     totalOrders: orderRows.length,
-    ghostOrders: ghostOrders.slice(0, maxItems)
+    purchaseTelemetryEvents: purchaseRows.length,
+    hasPurchaseTelemetry,
+    ordersWithAnyPurchase,
+    ordersWithPixelPurchase,
+    ordersWithGtmPurchase,
+    ordersWithWebhookPurchase,
+    hardGhostOrdersTotal: hardGhostOrders.length,
+    recoveredWebhookOnlyTotal: recoveredWebhookOnlyOrders.length,
+    partialMissTotal: partialMissOrders.length,
+    noTelemetryTotal: noTelemetryOrders.length,
+    unknownSourceTotal: unknownSourceOrders.length,
+    hardGhostOrders: hardGhostOrders.slice(0, maxItems),
+    recoveredWebhookOnlyOrders: recoveredWebhookOnlyOrders.slice(0, maxItems),
+    partialMissOrders: partialMissOrders.slice(0, maxItems),
+    noTelemetryOrders: noTelemetryOrders.slice(0, maxItems),
+    unknownSourceOrders: unknownSourceOrders.slice(0, maxItems)
   };
 }
 
@@ -958,8 +1166,7 @@ export function getBlackboxOverview(store, options = {}) {
 
   const duplicateDiagnostics = detectDuplicateBeginCheckout(beginEvents, duplicateWindowSeconds);
   const ghostSessions = detectGhostSessions(rows, ghostSessionLimit);
-  const ghostOrderData = getGhostOrders(normalizedStore, range, purchaseEvents, beginEvents, options);
-  const ordersMatched = Math.max(0, ghostOrderData.totalOrders - ghostOrderData.ghostOrders.length);
+  const ghostOrderData = getGhostOrders(normalizedStore, range, options);
 
   return {
     store: normalizedStore,
@@ -975,8 +1182,18 @@ export function getBlackboxOverview(store, options = {}) {
         : 0,
       ghost_sessions_without_purchase: ghostSessions.length,
       shopify_orders_in_range: ghostOrderData.totalOrders,
-      orders_with_blackbox_purchase: ordersMatched,
-      ghost_orders_without_blackbox_purchase: ghostOrderData.ghostOrders.length
+      orders_with_blackbox_purchase: ghostOrderData.ordersWithAnyPurchase,
+      orders_with_pixel_purchase: ghostOrderData.ordersWithPixelPurchase,
+      orders_with_gtm_purchase: ghostOrderData.ordersWithGtmPurchase,
+      orders_with_webhook_purchase: ghostOrderData.ordersWithWebhookPurchase,
+      blackbox_purchase_events_in_range: ghostOrderData.purchaseTelemetryEvents,
+      blackbox_purchase_stream_active: ghostOrderData.hasPurchaseTelemetry,
+      hard_ghost_orders: ghostOrderData.hardGhostOrdersTotal,
+      recovered_webhook_only_orders: ghostOrderData.recoveredWebhookOnlyTotal,
+      partial_miss_orders: ghostOrderData.partialMissTotal,
+      no_telemetry_orders: ghostOrderData.noTelemetryTotal,
+      unknown_source_orders: ghostOrderData.unknownSourceTotal,
+      ghost_orders_without_blackbox_purchase: ghostOrderData.hardGhostOrdersTotal
     },
     duplicates: {
       window_seconds: duplicateWindowSeconds,
@@ -984,7 +1201,12 @@ export function getBlackboxOverview(store, options = {}) {
       groups: duplicateDiagnostics.duplicateGroups.slice(0, 50)
     },
     ghost_sessions: ghostSessions,
-    ghost_orders: ghostOrderData.ghostOrders
+    ghost_orders: ghostOrderData.hardGhostOrders,
+    hard_ghost_orders: ghostOrderData.hardGhostOrders,
+    recovered_webhook_only_orders: ghostOrderData.recoveredWebhookOnlyOrders,
+    partial_miss_orders: ghostOrderData.partialMissOrders,
+    no_telemetry_orders: ghostOrderData.noTelemetryOrders,
+    unknown_source_orders: ghostOrderData.unknownSourceOrders
   };
 }
 

@@ -80,6 +80,55 @@ function StatCard({ label, value, hint }) {
   );
 }
 
+function OrderCandidatesTable({ title, hint, rows, emptyLabel }) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+      <p className="mt-1 text-xs text-gray-500">{hint}</p>
+      <div className="mt-3 max-h-80 overflow-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
+              <th className="py-2 pr-3">Order</th>
+              <th className="py-2 pr-3">Created</th>
+              <th className="py-2 pr-3">Geo</th>
+              <th className="py-2 pr-3">Coverage</th>
+              <th className="py-2">Approx Last Checkout</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row) => (
+              <tr key={`${row.order_id}-${row.delivery_status || 'candidate'}`} className="border-b border-gray-100 align-top">
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div className="font-mono">{row.order_id}</div>
+                  <div>{row.currency || ''} {row.order_total || ''}</div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.order_created_at || row.date)}</td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div>{row.country_code || '—'}</div>
+                  <div className="text-gray-500">{[row.city, row.state].filter(Boolean).join(', ') || '—'}</div>
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">
+                  <div className="font-mono">{row.purchase_path_summary || 'none'}</div>
+                  <div className="text-gray-500">events: {formatNumber(row.purchase_events || 0)}</div>
+                </td>
+                <td className="py-2 text-xs text-gray-700">
+                  <div>{formatTimestamp(row.approx_last_begin_checkout_at)}</div>
+                  <div className="text-gray-500">{row.approx_last_checkout_button || '—'}</div>
+                </td>
+              </tr>
+            )) : (
+              <tr>
+                <td className="py-3 text-sm text-gray-500" colSpan={5}>{emptyLabel}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function CheckoutBlackboxTab({ store }) {
   const storeId = store?.id || 'shawq';
   const [range, setRange] = useState(() => getDefaultRange(DEFAULT_LOOKBACK_DAYS));
@@ -106,11 +155,13 @@ export default function CheckoutBlackboxTab({ store }) {
     setLoading(true);
     setError('');
     try {
+      const cacheBust = Date.now();
       const common = {
         ...baseQuery,
         eventName,
         source,
-        sessionHint
+        sessionHint,
+        _ts: cacheBust
       };
       const overviewQuery = buildQueryString(common);
       const eventsQuery = buildQueryString({
@@ -155,8 +206,14 @@ export default function CheckoutBlackboxTab({ store }) {
   const duplicateGroups = overview?.duplicates?.groups || [];
   const topDuplicateButtons = overview?.duplicates?.top_buttons || [];
   const ghostSessions = overview?.ghost_sessions || [];
-  const ghostOrders = overview?.ghost_orders || [];
+  const hardGhostOrders = overview?.hard_ghost_orders || overview?.ghost_orders || [];
+  const recoveredWebhookOrders = overview?.recovered_webhook_only_orders || [];
+  const partialMissOrders = overview?.partial_miss_orders || [];
+  const noTelemetryOrders = overview?.no_telemetry_orders || [];
   const summary = overview?.summary || {};
+  const purchaseStreamActive = summary.blackbox_purchase_stream_active !== undefined
+    ? Boolean(summary.blackbox_purchase_stream_active)
+    : Number(summary.purchase_events || 0) > 0;
 
   return (
     <div className="space-y-6">
@@ -275,6 +332,12 @@ export default function CheckoutBlackboxTab({ store }) {
             {error}
           </div>
         ) : null}
+
+        {!error && !purchaseStreamActive ? (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            No Blackbox purchase stream detected in this date range. Hard ghost counts are strict and no-telemetry orders are separated below.
+          </div>
+        ) : null}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -301,12 +364,27 @@ export default function CheckoutBlackboxTab({ store }) {
         <StatCard
           label="Shopify Orders"
           value={formatNumber(summary.shopify_orders_in_range)}
-          hint={`Matched to Blackbox purchase: ${formatNumber(summary.orders_with_blackbox_purchase)}`}
+          hint={`Observed Blackbox purchases: ${formatNumber(summary.orders_with_blackbox_purchase)}`}
         />
         <StatCard
-          label="Ghost Orders"
-          value={formatNumber(summary.ghost_orders_without_blackbox_purchase)}
-          hint="Orders with no Blackbox purchase event_id/order_id match"
+          label="Hard Ghost Orders"
+          value={formatNumber(summary.hard_ghost_orders ?? summary.ghost_orders_without_blackbox_purchase)}
+          hint="Shopify order with no pixel + no GTM + no webhook purchase signal"
+        />
+        <StatCard
+          label="Recovered (Webhook Only)"
+          value={formatNumber(summary.recovered_webhook_only_orders)}
+          hint="Order recovered by webhook when pixel and GTM purchase were both missing"
+        />
+        <StatCard
+          label="Partial Miss Orders"
+          value={formatNumber(summary.partial_miss_orders)}
+          hint="Exactly one side fired (pixel xor GTM)"
+        />
+        <StatCard
+          label="No Telemetry Orders"
+          value={formatNumber(summary.no_telemetry_orders)}
+          hint="Orders in range with no purchase telemetry stream available"
         />
       </div>
 
@@ -412,47 +490,36 @@ export default function CheckoutBlackboxTab({ store }) {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="text-lg font-semibold text-gray-900">Ghost Order Candidates</h3>
-          <p className="mt-1 text-xs text-gray-500">
-            Shopify orders in range with no matching Blackbox purchase order_id.
-          </p>
-          <div className="mt-3 max-h-80 overflow-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500">
-                  <th className="py-2 pr-3">Order</th>
-                  <th className="py-2 pr-3">Created</th>
-                  <th className="py-2 pr-3">Geo</th>
-                  <th className="py-2">Approx Last Checkout</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ghostOrders.length ? ghostOrders.map((row) => (
-                  <tr key={row.order_id} className="border-b border-gray-100 align-top">
-                    <td className="py-2 pr-3 text-xs text-gray-700">
-                      <div className="font-mono">{row.order_id}</div>
-                      <div>{row.currency || ''} {row.order_total || ''}</div>
-                    </td>
-                    <td className="py-2 pr-3 text-xs text-gray-700">{formatTimestamp(row.order_created_at || row.date)}</td>
-                    <td className="py-2 pr-3 text-xs text-gray-700">
-                      <div>{row.country_code || '—'}</div>
-                      <div className="text-gray-500">{[row.city, row.state].filter(Boolean).join(', ') || '—'}</div>
-                    </td>
-                    <td className="py-2 text-xs text-gray-700">
-                      <div>{formatTimestamp(row.approx_last_begin_checkout_at)}</div>
-                      <div className="text-gray-500">{row.approx_last_checkout_button || '—'}</div>
-                    </td>
-                  </tr>
-                )) : (
-                  <tr>
-                    <td className="py-3 text-sm text-gray-500" colSpan={4}>No ghost order candidates in this range.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <OrderCandidatesTable
+          title="Hard Ghost Order Candidates"
+          hint="Strict definition: Shopify order with no pixel purchase and no GTM purchase (and no webhook recovery signal)."
+          rows={hardGhostOrders}
+          emptyLabel="No hard ghost order candidates in this range."
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <OrderCandidatesTable
+          title="Recovered (Webhook Only) Orders"
+          hint="Webhook purchase signal exists, but both pixel and GTM purchase signals are missing."
+          rows={recoveredWebhookOrders}
+          emptyLabel="No webhook-only recovered orders in this range."
+        />
+        <OrderCandidatesTable
+          title="Partial Miss Orders"
+          hint="Only one of pixel or GTM purchase signals fired for the order."
+          rows={partialMissOrders}
+          emptyLabel="No partial miss orders in this range."
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-1">
+        <OrderCandidatesTable
+          title="No Telemetry Orders"
+          hint="Orders where this range has no purchase telemetry stream to classify delivery path."
+          rows={noTelemetryOrders}
+          emptyLabel="No no-telemetry orders in this range."
+        />
       </div>
 
       <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -522,4 +589,3 @@ export default function CheckoutBlackboxTab({ store }) {
     </div>
   );
 }
-
