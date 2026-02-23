@@ -1623,7 +1623,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     const revenueDelta = currRevenue - prevRevenue;
     const revenueLift = prevRevenue > 0 ? revenueDelta / prevRevenue : null;
     const revenueShare = totalRevenueCurr > 0 ? currRevenue / totalRevenueCurr : 0;
-    const prevRevenueShare = totalOrdersPrev > 0 && prev ? prev.revenue / Array.from(previousMetrics.values()).reduce((s, p) => s + p.revenue, 0) : 0;
+    const prevRevenueShare = totalRevenuePrev > 0 && prev ? prev.revenue / totalRevenuePrev : 0;
     const sharePointsDelta = revenueShare - prevRevenueShare;
     const rankDelta = prevRank ? prevRank - currRank : null;
     const isNew = !prevRank && currOrders >= MOMENTUM_MIN_ORDERS;
