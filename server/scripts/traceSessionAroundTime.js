@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import Database from 'better-sqlite3';
 
 const DEFAULT_STORE = 'shawq';
 const DEFAULT_CHECKOUT_LOOKBACK_MINUTES = 20;
@@ -9,6 +8,7 @@ const DEFAULT_ATC_LOOKBACK_MINUTES = 10;
 const DEFAULT_FOLLOW_UP_MINUTES = 30;
 const DEFAULT_SESSION_CONTEXT_LOOKBACK_MINUTES = 120;
 const DEFAULT_MAX_RESULTS = 8;
+const DEFAULT_API_FETCH_LIMIT = 10000;
 const MILLISECONDS_PER_MINUTE = 60 * 1000;
 const SQLITE_DATE_TIME_SLICE = 19;
 const SQLITE_DATE_TIME_SEPARATOR_RE = /T/;
@@ -81,12 +81,14 @@ Usage:
     --local-date 2026-02-23 \\
     --local-time 18:20 \\
     --utc-offset +03:00 \\
+    [--api-base https://virona-shawq-dashboard-production-7573.up.railway.app] \\
     [--country FR] \\
     [--order-id 7270224167210] \\
     [--checkout-lookback-min 20] \\
     [--atc-lookback-min 10] \\
     [--follow-up-min 30] \\
     [--max-results 8] \\
+    [--api-limit 10000] \\
     [--database /absolute/path/dashboard.db] \\
     [--json]
 
@@ -94,6 +96,7 @@ Notes:
 - Time input is interpreted as local time at --utc-offset and normalized to UTC.
 - Script checks checkout events right before target time. If none found, it checks ATC events in the prior window.
 - Optional --order-id enriches with shopify_orders/shopify_order_items context (country, amount, products) when available.
+- If --api-base is provided, the script fetches day events from the Session Intelligence API instead of local SQLite.
 `);
   process.exit(code);
 }
@@ -187,7 +190,7 @@ function buildInClause(count) {
   return new Array(Math.max(0, count)).fill('?').join(', ');
 }
 
-function queryEvents({
+function queryEventsFromDb({
   db,
   store,
   eventNames,
@@ -249,6 +252,61 @@ function queryEvents({
   `;
 
   return db.prepare(sql).all(...params);
+}
+
+function queryEventsFromRows({
+  events,
+  store,
+  eventNames,
+  startUtc,
+  endUtc,
+  countryCode = null,
+  maxRows = 1000
+}) {
+  const safeMaxRows = Math.max(1, parseInteger(maxRows, 1000, 1));
+  const names = new Set((Array.isArray(eventNames) ? eventNames : []).filter(Boolean));
+  if (!names.size) return [];
+
+  return (Array.isArray(events) ? events : [])
+    .filter((event) => {
+      if (!event || event.store !== store) return false;
+      if (!names.has(event.event_name)) return false;
+      if (!event.event_ts || event.event_ts < startUtc || event.event_ts > endUtc) return false;
+      if (countryCode && event.country_code !== countryCode) return false;
+      return true;
+    })
+    .sort((a, b) => String(b.event_ts || '').localeCompare(String(a.event_ts || '')))
+    .slice(0, safeMaxRows);
+}
+
+function ensureTrailingSlashlessBase(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, { method: 'GET' });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`HTTP ${response.status} from ${url}: ${body.slice(0, 160)}`);
+  }
+  const payload = await response.json();
+  if (!payload?.success) {
+    throw new Error(payload?.error || `API call failed: ${url}`);
+  }
+  return payload;
+}
+
+async function loadEventsFromApiDay({ apiBase, store, date, limit }) {
+  const safeBase = ensureTrailingSlashlessBase(apiBase);
+  const safeLimit = Math.max(1, parseInteger(limit, DEFAULT_API_FETCH_LIMIT, 1));
+  const params = new URLSearchParams({
+    store,
+    date,
+    limit: String(safeLimit)
+  });
+  const url = `${safeBase}/api/session-intelligence/events-by-day?${params.toString()}`;
+  const payload = await fetchJson(url);
+  return Array.isArray(payload?.events) ? payload.events : [];
 }
 
 function buildSessionCandidates(events, targetUtcMs, priorityMap, preferredCountryCode = null) {
@@ -317,7 +375,7 @@ function buildSessionCandidates(events, targetUtcMs, priorityMap, preferredCount
     });
 }
 
-function loadSessionTimeline({
+function loadSessionTimelineFromDb({
   db,
   store,
   sessionId,
@@ -347,6 +405,35 @@ function loadSessionTimeline({
   `).all(store, sessionId, windowStartUtc, windowEndUtc);
 
   return rows;
+}
+
+function loadSessionTimelineFromRows({
+  events,
+  store,
+  sessionId,
+  windowStartUtc,
+  windowEndUtc
+}) {
+  return (Array.isArray(events) ? events : [])
+    .filter((event) => (
+      event &&
+      event.store === store &&
+      event.session_id === sessionId &&
+      event.event_ts &&
+      event.event_ts >= windowStartUtc &&
+      event.event_ts <= windowEndUtc
+    ))
+    .map((event) => ({
+      event_name: event.event_name,
+      event_ts: event.event_ts,
+      page_path: event.page_path || null,
+      checkout_step: event.checkout_step || null,
+      source: event.source || null,
+      country_code: event.country_code || null,
+      product_id: event.product_id || null,
+      variant_id: event.variant_id || null
+    }))
+    .sort((a, b) => String(a.event_ts || '').localeCompare(String(b.event_ts || '')));
 }
 
 function summarizeTimeline(rows, targetUtcMs) {
@@ -484,11 +571,13 @@ function printCandidateBlock(rank, candidate, timelineSummary) {
   }
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv);
   if (args.help) printUsageAndExit(0);
 
   const store = String(args.store || DEFAULT_STORE).trim();
+  const apiBase = args['api-base'] ? ensureTrailingSlashlessBase(args['api-base']) : null;
+  const apiLimit = parseInteger(args['api-limit'], DEFAULT_API_FETCH_LIMIT, 1);
   const localDate = args['local-date'];
   const localTime = args['local-time'];
   const utcOffset = args['utc-offset'];
@@ -523,23 +612,44 @@ function main() {
   const sessionContextStartUtc = toSqliteUtcDateTime(sessionContextStartUtcMs);
   const sessionContextEndUtc = toSqliteUtcDateTime(sessionContextEndUtcMs);
 
-  const databasePath = path.resolve(String(args.database || process.env.DATABASE_PATH || DEFAULT_DATABASE_PATH));
-  if (!fs.existsSync(databasePath)) {
-    throw new Error(`Database file not found: ${databasePath}`);
-  }
+  let db = null;
+  let databasePath = null;
+  let apiEvents = [];
 
-  const db = new Database(databasePath, { readonly: true });
-
-  try {
+  if (apiBase) {
+    apiEvents = await loadEventsFromApiDay({
+      apiBase,
+      store,
+      date: localDate,
+      limit: apiLimit
+    });
+  } else {
+    databasePath = path.resolve(String(args.database || process.env.DATABASE_PATH || DEFAULT_DATABASE_PATH));
+    if (!fs.existsSync(databasePath)) {
+      throw new Error(`Database file not found: ${databasePath}`);
+    }
+    const sqliteModule = await import('better-sqlite3');
+    const BetterSqlite = sqliteModule.default;
+    db = new BetterSqlite(databasePath, { readonly: true });
     if (!tableExists(db, 'si_events')) {
       throw new Error('si_events table not found in the selected database.');
     }
+  }
 
-    const orderContext = loadOrderContext(db, store, orderId);
+  try {
+    const orderContext = db ? loadOrderContext(db, store, orderId) : null;
     const effectiveCountryCode = orderContext?.country_code || countryCodeFilter || null;
 
-    const checkoutEvents = queryEvents({
+    const checkoutEvents = db ? queryEventsFromDb({
       db,
+      store,
+      eventNames: CHECKOUT_EVENT_NAMES,
+      startUtc: checkoutWindowStartUtc,
+      endUtc: targetUtc,
+      countryCode: effectiveCountryCode,
+      maxRows: Math.max(maxResults * 30, 300)
+    }) : queryEventsFromRows({
+      events: apiEvents,
       store,
       eventNames: CHECKOUT_EVENT_NAMES,
       startUtc: checkoutWindowStartUtc,
@@ -558,8 +668,16 @@ function main() {
     );
 
     if (!candidates.length) {
-      const atcEvents = queryEvents({
+      const atcEvents = db ? queryEventsFromDb({
         db,
+        store,
+        eventNames: ATC_EVENT_NAMES,
+        startUtc: atcWindowStartUtc,
+        endUtc: targetUtc,
+        countryCode: effectiveCountryCode,
+        maxRows: Math.max(maxResults * 20, 200)
+      }) : queryEventsFromRows({
+        events: apiEvents,
         store,
         eventNames: ATC_EVENT_NAMES,
         startUtc: atcWindowStartUtc,
@@ -574,8 +692,14 @@ function main() {
 
     const topCandidates = candidates.slice(0, maxResults);
     const enrichedCandidates = topCandidates.map((candidate) => {
-      const timelineRows = loadSessionTimeline({
+      const timelineRows = db ? loadSessionTimelineFromDb({
         db,
+        store,
+        sessionId: candidate.sessionId,
+        windowStartUtc: sessionContextStartUtc,
+        windowEndUtc: sessionContextEndUtc
+      }) : loadSessionTimelineFromRows({
+        events: apiEvents,
         store,
         sessionId: candidate.sessionId,
         windowStartUtc: sessionContextStartUtc,
@@ -590,6 +714,8 @@ function main() {
 
     const output = {
       store,
+      dataSource: apiBase ? 'api' : 'sqlite',
+      apiBase: apiBase || null,
       databasePath,
       localInput: {
         date: localDate,
@@ -644,7 +770,7 @@ function main() {
 
     console.log('\n=== Session Trace Around Order Moment ===');
     console.log(buildOutputLine('Store', store));
-    console.log(buildOutputLine('Database', databasePath));
+    console.log(buildOutputLine('Data source', apiBase ? `API ${apiBase}` : `SQLite ${databasePath}`));
     console.log(buildOutputLine('Local input', `${localDate} ${localTime} (${utcOffset})`));
     console.log(buildOutputLine('Normalized UTC', toIsoUtc(targetUtcMs)));
     console.log(buildOutputLine('Checkout window start', toIsoUtc(checkoutWindowStartUtcMs)));
@@ -669,8 +795,10 @@ function main() {
           console.log(`  - ${label} (${value})`);
         }
       }
-    } else if (orderId) {
+    } else if (orderId && db) {
       console.log(`\nOrder context: order_id ${orderId} not found in shopify_orders.`);
+    } else if (orderId && !db) {
+      console.log('\nOrder context: unavailable in API mode (pass --database for local order enrichment).');
     }
 
     if (!enrichedCandidates.length) {
@@ -683,12 +811,12 @@ function main() {
       printCandidateBlock(index + 1, candidate, candidate.timelineSummary);
     });
   } finally {
-    db.close();
+    if (db) db.close();
   }
 }
 
 try {
-  main();
+  await main();
 } catch (error) {
   console.error(`ERROR: ${error?.message || error}`);
   process.exit(1);
