@@ -299,11 +299,11 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         subtitle="Age, gender, and country performance signals from Meta."
         icon={sectionIcons.demographics}
       >
-	        <MetaDemographics
-	          store={store}
-	          globalDateRange={dateRange}
-	          formatCurrency={formatCurrency}
-	        />
+        <MetaDemographics
+          store={store}
+          globalDateRange={dateRange}
+          formatCurrency={formatCurrency}
+        />
       </CollapsibleSectionCard>
 
       <div className="space-y-4">
