@@ -220,6 +220,7 @@ function formatPercent(value, digits = 0) {
 }
 
 function formatSignedPercent(value, digits = 0) {
+  if (value === null) return '—';
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   const absolute = Math.abs(n);
