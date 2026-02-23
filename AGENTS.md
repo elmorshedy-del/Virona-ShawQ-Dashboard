@@ -4,6 +4,11 @@
 - At the start of every task, read and apply both `note.md` and `skill.md` in the repository root.
 - Enforce the `Critical Thread-Start Guardrail (Mandatory)` section from `skill.md` before making edits.
 
+## PR workflow (mandatory)
+- When a new implementation cycle starts after a time gap (or the previous PR is likely merged), open a fresh `codex/*` branch and create a new PR by default.
+- Do not append new work to an older PR unless the user explicitly asks for that.
+- After each commit/update, always provide the PR link in the user-facing status message.
+
 ## Product context defaults
 - Treat this codebase as a future SaaS, multi-tenant platform.
 - Any code, function, data model, sync, analytics pipeline, or UI feature must assume multiple clients, each with their own shop(s), account(s), and configuration.
