@@ -1816,7 +1816,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   }, [storeId]);
 
   const loadDayPulse = useCallback(async () => {
-    setDayPulseLoading(true);
+    if (!dayPulse) setDayPulseLoading(true);
     setDayPulseError('');
     try {
       const url = `/api/session-intelligence/day-pulse?store=${encodeURIComponent(storeId)}`;
