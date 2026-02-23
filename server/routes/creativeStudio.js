@@ -3517,7 +3517,8 @@ Return ONLY the JSON object. No explanation.`;
       let parsed = null;
       try {
         parsed = JSON.parse(rawText.replace(/```json|```/g, '').trim());
-      } catch {
+      } catch (error) {
+        console.warn('Failed to parse refinement JSON from Gemini. Raw text:', rawText, 'Error:', error);
         refined.push(ov);
         continue;
       }
