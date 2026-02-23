@@ -145,6 +145,131 @@
   border-color: rgba(79, 70, 229, 0.18);
 }
 
+.si-day-pulse-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(238, 242, 255, 0.60));
+  border-color: rgba(79, 70, 229, 0.18);
+}
+
+.si-day-pulse-main-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.si-day-pulse-value {
+  font-size: 42px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-weight: 900;
+  color: var(--si-text);
+}
+
+.si-day-pulse-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.si-day-pulse-projection {
+  font-weight: 800;
+}
+
+.si-day-pulse-projection-heavy {
+  border-color: rgba(22, 163, 74, 0.35);
+  background: rgba(22, 163, 74, 0.14);
+  color: #14532d;
+}
+
+.si-day-pulse-projection-mid {
+  border-color: rgba(79, 70, 229, 0.25);
+  background: rgba(238, 242, 255, 0.72);
+  color: #4338ca;
+}
+
+.si-day-pulse-projection-light {
+  border-color: rgba(217, 119, 6, 0.35);
+  background: rgba(254, 243, 199, 0.78);
+  color: #92400e;
+}
+
+.si-day-pulse-projected {
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.95);
+  font-weight: 700;
+}
+
+.si-day-pulse-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--si-muted);
+}
+
+.si-day-pulse-comparisons {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.si-day-pulse-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.85);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.si-day-pulse-arrow {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.si-day-pulse-delta-value {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.si-day-pulse-delta-label {
+  font-size: 12px;
+  color: var(--si-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.si-day-pulse-delta-up {
+  color: #15803d;
+}
+
+.si-day-pulse-delta-down {
+  color: #b91c1c;
+}
+
+.si-day-pulse-delta-flat,
+.si-day-pulse-delta-na {
+  color: #475569;
+}
+
+@media (max-width: 920px) {
+  .si-day-pulse-main-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .si-day-pulse-side {
+    align-items: flex-start;
+  }
+
+  .si-day-pulse-comparisons {
+    grid-template-columns: 1fr;
+  }
+}
+
 .si-journey-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -7,6 +7,7 @@ import {
   getSessionIntelligenceSessionsForDay,
   getSessionIntelligenceBriefForDay,
   getSessionIntelligenceClaritySignalsForDay,
+  getSessionIntelligenceDayPulse,
   getSessionIntelligenceLandingToPurchase,
   getSessionIntelligenceAbandonmentByLocation,
   getSessionIntelligenceFlowForDay,
@@ -40,6 +41,17 @@ router.get('/overview', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] overview error:', error);
     res.status(500).json({ success: false, error: 'Failed to load overview' });
+  }
+});
+
+router.get('/day-pulse', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const data = getSessionIntelligenceDayPulse(store);
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[SessionIntelligence] day-pulse error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load day pulse' });
   }
 });
 
