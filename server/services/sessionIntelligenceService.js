@@ -33,6 +33,8 @@ const DAY_PULSE_MIN_PACE_ELAPSED_MINUTES = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_DAY_PULSE_MIN_PACE_ELAPSED_MINUTES || '15', 10) || 15, 1),
   60
 );
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+const MILLISECONDS_PER_WEEK = 7 * MILLISECONDS_PER_DAY;
 const JOURNEY_LINK_LOOKBACK_DAYS = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_JOURNEY_LINK_LOOKBACK_DAYS || '14', 10) || 14, 1),
   90
@@ -2606,6 +2608,13 @@ function classifyProjectionBand({ projectedSessions, historicalDailySessions, re
   return 'Mid';
 }
 
+function scalePartialDaySessionsToDailyEstimate(partialSessions, elapsedMs) {
+  const sessions = safeFiniteNumber(partialSessions, 0);
+  const elapsed = safeFiniteNumber(elapsedMs, 0);
+  if (sessions <= 0 || elapsed <= 0) return 0;
+  return sessions * (MILLISECONDS_PER_DAY / elapsed);
+}
+
 export function getSessionIntelligenceDayPulse(store) {
   const db = getDb();
   ensureRecentShopperNumbers(store);
@@ -2613,13 +2622,11 @@ export function getSessionIntelligenceDayPulse(store) {
   const nowMs = Date.now();
   const dayStartMs = startOfUtcDayMs(nowMs);
   const elapsedMs = Math.max(0, nowMs - dayStartMs);
-  const elapsedSeconds = elapsedMs / 1000;
   const firstWindowMs = DAY_PULSE_FIRST_WINDOW_HOURS * 60 * 60 * 1000;
   const firstWindowEndMs = Math.min(dayStartMs + firstWindowMs, nowMs);
   const minPaceElapsedMs = DAY_PULSE_MIN_PACE_ELAPSED_MINUTES * 60 * 1000;
-  const firstWindowElapsedMs = Math.max(minPaceElapsedMs, firstWindowEndMs - dayStartMs);
-  const yesterdayStartMs = dayStartMs - (24 * 60 * 60 * 1000);
-  const lastWeekStartMs = dayStartMs - (7 * 24 * 60 * 60 * 1000);
+  const yesterdayStartMs = dayStartMs - MILLISECONDS_PER_DAY;
+  const lastWeekStartMs = dayStartMs - MILLISECONDS_PER_WEEK;
 
   const currentWindowStart = toSqliteUtcDateTime(dayStartMs);
   const currentWindowEnd = toSqliteUtcDateTime(nowMs);
@@ -2628,7 +2635,7 @@ export function getSessionIntelligenceDayPulse(store) {
   const yesterdayWindowEnd = toSqliteUtcDateTime(yesterdayStartMs + elapsedMs);
   const lastWeekWindowStart = toSqliteUtcDateTime(lastWeekStartMs);
   const lastWeekWindowEnd = toSqliteUtcDateTime(lastWeekStartMs + elapsedMs);
-  const historyStartMs = dayStartMs - (DAY_PULSE_HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const historyStartMs = dayStartMs - (DAY_PULSE_HISTORY_LOOKBACK_DAYS * MILLISECONDS_PER_DAY);
   const historyStart = toSqliteUtcDateTime(historyStartMs);
 
   const windowsRow = db.prepare(`
@@ -2664,7 +2671,7 @@ export function getSessionIntelligenceDayPulse(store) {
   const projectedSessions = paceDurationMs >= minPaceElapsedMs
     ? Math.max(
       0,
-      Math.round((firstWindowSessions / paceDurationMs) * (24 * 60 * 60 * 1000))
+      Math.round((firstWindowSessions / paceDurationMs) * MILLISECONDS_PER_DAY)
     )
     : 0;
 
@@ -2686,8 +2693,11 @@ export function getSessionIntelligenceDayPulse(store) {
 
   const fallbackReferenceCandidates = [yesterdaySameTimeSessions, lastWeekSameTimeSessions]
     .filter((value) => Number.isFinite(value) && value > 0);
-  const fallbackReferenceSessions = fallbackReferenceCandidates.length > 0
-    ? (fallbackReferenceCandidates.reduce((sum, value) => sum + value, 0) / fallbackReferenceCandidates.length)
+  const scaledFallbackReferenceCandidates = fallbackReferenceCandidates
+    .map((value) => scalePartialDaySessionsToDailyEstimate(value, elapsedMs))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const fallbackReferenceSessions = scaledFallbackReferenceCandidates.length > 0
+    ? (scaledFallbackReferenceCandidates.reduce((sum, value) => sum + value, 0) / scaledFallbackReferenceCandidates.length)
     : safeFiniteNumber(computePercentile(historicalDailySessions, 0.5), 0);
 
   const projectionLabel = classifyProjectionBand({
