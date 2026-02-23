@@ -5,6 +5,7 @@ import './SessionIntelligenceTab.css';
 
 const POLL_EVENTS_MS = 1000;
 const POLL_REALTIME_MS = 5000;
+const POLL_DAY_PULSE_MS = 10000;
 const POLL_OVERVIEW_MS = 20000;
 const POLL_JOURNEY_MS = 60000;
 const REALTIME_WINDOW_MINUTES = 30;
@@ -113,6 +114,17 @@ function timeAgo(ts) {
   return `${diffDay}d ago`;
 }
 
+function formatClockTime(ts) {
+  const date = parseSqliteTimestamp(ts);
+  if (!date) return '—';
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+}
+
 function isoDayUtc(date) {
   if (!(date instanceof Date)) return '';
   return date.toISOString().slice(0, 10);
@@ -216,6 +228,17 @@ function formatPercent(value, digits = 0) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   return `${(n * 100).toFixed(digits)}%`;
+}
+
+function formatSignedPercent(value, digits = 0) {
+  if (value === null || value === undefined) return '—';
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  const absolute = Math.abs(n);
+  const formatted = `${(absolute * 100).toFixed(digits)}%`;
+  if (n > 0) return `+${formatted}`;
+  if (n < 0) return `-${formatted}`;
+  return formatted;
 }
 
 function formatDurationSeconds(value) {
@@ -1530,6 +1553,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 
   const [overview, setOverview] = useState(null);
   const [brief, setBrief] = useState(null);
+  const [dayPulse, setDayPulse] = useState(null);
+  const [dayPulseLoading, setDayPulseLoading] = useState(false);
+  const [dayPulseError, setDayPulseError] = useState('');
   const [realtime, setRealtime] = useState(null);
   const [realtimeLoading, setRealtimeLoading] = useState(false);
   const [realtimeError, setRealtimeError] = useState('');
@@ -1586,10 +1612,20 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
   const journeyRequestIdRef = useRef(0);
+  const dayPulseDataRef = useRef(null);
+  const realtimeDataRef = useRef(null);
 
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
   }, [analysisLlm]);
+
+  useEffect(() => {
+    dayPulseDataRef.current = dayPulse;
+  }, [dayPulse]);
+
+  useEffect(() => {
+    realtimeDataRef.current = realtime;
+  }, [realtime]);
 
   const journeyComparisonRanges = useMemo(
     () => resolveJourneyComparisonRanges(dashboardDateRange),
@@ -1654,8 +1690,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     };
   }, [closeStory, storyOpen]);
 
-  const loadRealtime = useCallback(async () => {
-    setRealtimeLoading(true);
+  const loadRealtime = useCallback(async (options = {}) => {
+    const showLoading = options.showLoading !== false || !realtimeDataRef.current;
+    if (showLoading) setRealtimeLoading(true);
     setRealtimeError('');
     try {
       const params = new URLSearchParams({
@@ -1668,9 +1705,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } catch (error) {
       console.error('[SessionIntelligenceTab] realtime load failed:', error);
       setRealtimeError(error?.message || 'Failed to load realtime overview');
-      setRealtime(null);
+      if (!realtimeDataRef.current) setRealtime(null);
     } finally {
-      setRealtimeLoading(false);
+      if (showLoading) setRealtimeLoading(false);
     }
   }, [storeId]);
 
@@ -1800,6 +1837,23 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     setOverview(data.data);
   }, [storeId]);
 
+  const loadDayPulse = useCallback(async (options = {}) => {
+    const showLoading = options.showLoading !== false || !dayPulseDataRef.current;
+    if (showLoading) setDayPulseLoading(true);
+    setDayPulseError('');
+    try {
+      const url = `/api/session-intelligence/day-pulse?store=${encodeURIComponent(storeId)}`;
+      const data = await fetchJson(url);
+      setDayPulse(data.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] day pulse load failed:', error);
+      setDayPulseError(error?.message || 'Failed to load day pulse');
+      if (!dayPulseDataRef.current) setDayPulse(null);
+    } finally {
+      if (showLoading) setDayPulseLoading(false);
+    }
+  }, [storeId]);
+
   const loadBrief = useCallback(async (day = null) => {
     const params = new URLSearchParams({ store: storeId });
     if (day) params.set('date', day);
@@ -1922,6 +1976,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     setLoading(true);
     try {
       await Promise.all([
+        loadDayPulse(),
         loadRealtime(),
         loadOverview(),
         loadBrief(),
@@ -1935,14 +1990,14 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadClarity, loadEvents, loadFlow, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadClarity, loadDayPulse, loadEvents, loadFlow, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadRealtime(), loadOverview(), loadBrief(), loadJourneyReports(), loadSessions(), loadEvents(), loadLibraryDays()])
+    Promise.all([loadDayPulse(), loadRealtime(), loadOverview(), loadBrief(), loadJourneyReports(), loadSessions(), loadEvents(), loadLibraryDays()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -1954,11 +2009,18 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       });
 
     const realtimeTimer = setInterval(() => {
-      loadRealtime().catch((error) => {
+      loadRealtime({ showLoading: false }).catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] realtime poll failed:', error);
       });
     }, POLL_REALTIME_MS);
+
+    const dayPulseTimer = setInterval(() => {
+      loadDayPulse({ showLoading: false }).catch((error) => {
+        if (!active) return;
+        console.error('[SessionIntelligenceTab] day pulse poll failed:', error);
+      });
+    }, POLL_DAY_PULSE_MS);
 
     const eventsTimer = setInterval(() => {
       loadEvents().catch((error) => {
@@ -1989,11 +2051,12 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     return () => {
       active = false;
       clearInterval(realtimeTimer);
+      clearInterval(dayPulseTimer);
       clearInterval(eventsTimer);
       clearInterval(overviewTimer);
       clearInterval(journeyTimer);
     };
-  }, [loadBrief, loadEvents, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [loadBrief, loadDayPulse, loadEvents, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     setLibraryError('');
@@ -2206,6 +2269,17 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       ? `No city/region detail yet for ${realtimeFocusCountryName}.`
       : 'No geo data yet.'
     : 'No geo data yet.';
+  const dayPulseComparisons = useMemo(() => {
+    const yesterday = dayPulse?.comparisons?.yesterday || null;
+    const lastWeek = dayPulse?.comparisons?.lastWeek || null;
+    return [yesterday, lastWeek].filter(Boolean);
+  }, [dayPulse]);
+  const dayPulseProjectionClass = useMemo(() => {
+    const key = (dayPulse?.projectionLabel || '').toString().toLowerCase().trim();
+    if (key === 'heavy') return 'si-day-pulse-projection-heavy';
+    if (key === 'light') return 'si-day-pulse-projection-light';
+    return 'si-day-pulse-projection-mid';
+  }, [dayPulse?.projectionLabel]);
   const hasDayFilters = Boolean(dropoffStageFilter || dropoffDeviceFilter || dropoffCountryFilter || dropoffCampaignFilter);
   const storefrontPixelInstallUrl = useMemo(() => {
     const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '';
@@ -2401,6 +2475,59 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         </div>
 	      </div>
 
+      <div className="si-card si-day-pulse-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Today&apos;s Session Pulse</h3>
+          <span className="si-muted">
+            {dayPulse?.updatedAt
+              ? `Live • updated ${formatClockTime(dayPulse.updatedAt)}`
+              : dayPulseLoading
+                ? 'Live • updating...'
+                : 'Live'}
+          </span>
+        </div>
+
+        {dayPulseError ? (
+          <div className="si-empty" style={{ paddingTop: 6, color: '#b42318' }}>
+            {dayPulseError}
+          </div>
+        ) : (
+          <>
+            <div className="si-day-pulse-main-row">
+              <div className="si-day-pulse-value">{formatNumber(dayPulse?.sessionsSoFar || 0)}</div>
+              <div className="si-day-pulse-side">
+                <span className={`si-chip si-day-pulse-projection ${dayPulseProjectionClass}`}>
+                  {dayPulse?.projectionLabel || 'Mid'} day
+                </span>
+                <span className="si-day-pulse-projected">
+                  Projected: {formatNumber(dayPulse?.projectedSessions || 0)}
+                </span>
+              </div>
+            </div>
+
+            <div className="si-day-pulse-sub">Sessions recorded so far today</div>
+
+            <div className="si-day-pulse-comparisons">
+              {dayPulseComparisons.map((comparison, index) => {
+                const direction = (comparison?.direction || 'na').toString().toLowerCase();
+                const arrow = direction === 'up' ? '↑' : direction === 'down' ? '↓' : '→';
+                return (
+                  <div
+                    key={`${comparison.label || 'comparison'}-${index}`}
+                    className={`si-day-pulse-delta si-day-pulse-delta-${direction}`}
+                    title={`${comparison.label}: ${formatSignedPercent(comparison.delta, 0)}`}
+                  >
+                    <span className="si-day-pulse-arrow">{arrow}</span>
+                    <span className="si-day-pulse-delta-value">{formatSignedPercent(comparison.delta, 0)}</span>
+                    <span className="si-day-pulse-delta-label">{comparison.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+
       <div className="si-card si-realtime-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
           <h3>Realtime overview</h3>
@@ -2414,7 +2541,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
             {realtimeLoading ? 'Refreshing…' : 'Refresh'}
           </button>
           {realtime?.updatedAt ? (
-            <span className="si-muted">Last refreshed {timeAgo(realtime.updatedAt)}</span>
+            <span className="si-muted">Last refreshed at {formatClockTime(realtime.updatedAt)}</span>
           ) : null}
           <span className="si-spacer" />
           <span className="si-muted">Map</span>
