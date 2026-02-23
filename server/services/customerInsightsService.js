@@ -1554,6 +1554,11 @@ function assessBusinessTrigger(trigger, product) {
       headline: `"${product.title}" dropped out of your top 10`,
       action: 'Decide: markdown and clear inventory, or reinvest with refreshed creative and positioning.',
       kpi: 'Make a clear keep-or-sunset decision within 14 days'
+    },
+    discount_increase: {
+      headline: `"${product.title}" discount reliance jumped ${((product.discountShareDelta || 0) * 100).toFixed(0)}pp vs prior period`,
+      action: 'Review whether increased discounting is driving real new demand or cannibalizing full-price orders.',
+      kpi: 'Full-price order share + gross margin per unit'
     }
   };
   return templates[trigger] || { headline: '', action: '', kpi: '' };
@@ -1591,7 +1596,7 @@ function assessExceptionalEvent(event, product) {
 }
 
 // ── Main momentum engine ─────────────────────────────────────────────────────
-function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems, discountSkuMap) {
+function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems, discountSkuMap, prevDiscountSkuMap) {
   const currentMetrics = computeProductMetrics(currentItems);
   const previousMetrics = computeProductMetrics(previousItems);
   const prevPrevMetrics = prevPrevItems.length ? computeProductMetrics(prevPrevItems) : new Map();
@@ -1639,7 +1644,8 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
 
     // Discount share for this product
     const discountShare = discountSkuMap?.get(current.key) || 0;
-    const prevDiscountShare = 0; // TODO: compute from previous period when available
+    const prevDiscountShare = prevDiscountSkuMap?.get(current.key) || 0;
+    const discountShareDelta = discountShare - prevDiscountShare;
 
     // Sparkline daily data
     const sparkline = buildDailySparkline(currentItems, current.key);
@@ -1679,6 +1685,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
       prevWowGrowth,
       discountShare,
       prevDiscountShare,
+      discountShareDelta,
       sparkline,
       cusum,
       percentileLabel
@@ -1743,6 +1750,11 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     // Discount dependency
     if (p.discountShare >= MOMENTUM_DISCOUNT_DEPENDENCY && p.currOrders >= MOMENTUM_MIN_ORDERS) {
       triggers.push('discount_dependency');
+    }
+
+    // Discount share increase: rising discount reliance vs prior period
+    if (p.prevDiscountShare > 0 && p.discountShareDelta >= MOMENTUM_DISCOUNT_PP_INCREASE && p.currOrders >= MOMENTUM_MIN_ORDERS) {
+      triggers.push('discount_increase');
     }
 
     // Quiet exit: was top-10, now below threshold
@@ -1912,7 +1924,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     };
 
     // Classify as momentum or watch
-    const isNegative = ['hero_decline', 'velocity_stall', 'discount_dependency', 'quiet_exit'].includes(primaryTrigger)
+    const isNegative = ['hero_decline', 'velocity_stall', 'discount_dependency', 'discount_increase', 'quiet_exit'].includes(primaryTrigger)
       || ['first_hero_slip', 'sharp_reversal'].includes(primaryEvent);
 
     if (isNegative) {
@@ -2183,15 +2195,21 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const repeatPaths = computeRepeatPaths(items);
   const topProducts = computeTopProducts(items);
   const discountSkus = computeDiscountSkus(items);
-  // Build discount share lookup for momentum engine
+  // Build discount share lookup for momentum engine (current + previous period)
   const discountSkuMap = new Map();
   discountSkus.forEach((row) => {
-    const productKey = row.title; // Match by title since that's how discount skus are keyed
+    const productKey = row.title;
     if (productKey) discountSkuMap.set(productKey, row.discountShare || 0);
+  });
+  const prevDiscountSkus = computeDiscountSkus(previousItems);
+  const prevDiscountSkuMap = new Map();
+  prevDiscountSkus.forEach((row) => {
+    const productKey = row.title;
+    if (productKey) prevDiscountSkuMap.set(productKey, row.discountShare || 0);
   });
 
   // Momentum engine (replaces old computeProductShiftInsights)
-  const momentumResult = computeProductMomentumEngine(items, previousItems, prevPrevItems, discountSkuMap);
+  const momentumResult = computeProductMomentumEngine(items, previousItems, prevPrevItems, discountSkuMap, prevDiscountSkuMap);
   const productShiftInsights = momentumResult.insights;
 
   let ordersWithCountry = 0;
