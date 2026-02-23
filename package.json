@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "google-ads:refresh-token": "node server/scripts/generateGoogleAdsRefreshToken.js"
+    "google-ads:refresh-token": "node server/scripts/generateGoogleAdsRefreshToken.js",
+    "si:trace-moment": "node server/scripts/traceSessionAroundTime.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
