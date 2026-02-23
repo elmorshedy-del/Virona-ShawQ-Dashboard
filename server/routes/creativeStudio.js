@@ -3473,7 +3473,8 @@ async function refineOverlayPositions({ overlays, videoPath, sampleTime, videoWi
   let fullFrameB64;
   try {
     fullFrameB64 = await extractFrameBase64(videoPath, { t: sampleTime, width: null });
-  } catch {
+  } catch (error) {
+    console.warn('Could not extract full-resolution frame for refinement, skipping refinement step.', error);
     return overlays;
   }
 
