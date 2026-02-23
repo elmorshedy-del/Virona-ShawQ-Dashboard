@@ -26,6 +26,7 @@ import {
 const ENTITY_ID_PATTERN = /^[A-Za-z0-9_.:-]{2,120}$/;
 const COUNTRY_CODE_PATTERN = /^[A-Z]{2}$/;
 const NORMALIZED_COUNTRY_SQL = "UPPER(TRIM(COALESCE(country, '')))";
+const SHOPIFY_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
 const SHOPIFY_DIRECT_FALLBACK_ENV = 'CI_SHOPIFY_DIRECT_ORDER_FALLBACK';
 const SHOPIFY_DIRECT_FALLBACK_ENABLED = String(process.env[SHOPIFY_DIRECT_FALLBACK_ENV] || 'true')
   .trim()
@@ -973,7 +974,9 @@ function getOrdersTable(store) {
 
 function fetchDailyOrdersRowsFromDb({ db, store, startDate, endDate, country }) {
   const tableName = getOrdersTable(store);
-  const revenueExpression = 'COALESCE(NULLIF(subtotal, 0), order_total)';
+  const revenueExpression = tableName === 'shopify_orders'
+    ? `COALESCE(NULLIF(${SHOPIFY_REVENUE_SQL}, 0), order_total)`
+    : 'COALESCE(NULLIF(subtotal, 0), order_total)';
   const whereParts = ['store = ?', 'date BETWEEN ? AND ?', 'COALESCE(is_excluded, 0) = 0'];
   const args = [store, startDate, endDate];
 
@@ -1023,7 +1026,8 @@ function normalizeOrderCountryCode(order) {
 
 function resolveOrderRevenue(order) {
   const subtotal = toNumber(order?.subtotal);
-  if (subtotal !== 0) return subtotal;
+  const shipping = toNumber(order?.shipping);
+  if (subtotal !== 0 || shipping !== 0) return subtotal + shipping;
   return toNumber(order?.order_total);
 }
 

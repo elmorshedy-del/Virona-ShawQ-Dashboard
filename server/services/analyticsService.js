@@ -10,6 +10,8 @@ import {
   getReactivationCandidates as featureGetReactivationCandidates
 } from '../features/meta-awareness/index.js';
 
+const SHOPIFY_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
+
 // ============================================================================
 // DATE HELPERS
 // ============================================================================
@@ -120,7 +122,7 @@ export function getCitiesByCountry(store, countryCode, params) {
           city,
           state,
           COUNT(*) as orders,
-          SUM(subtotal) as revenue
+          SUM(${SHOPIFY_REVENUE_SQL}) as revenue
         FROM shopify_orders
         WHERE store = ? AND country_code = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
         AND city IS NOT NULL AND city != ''
@@ -199,7 +201,7 @@ function getTotalsForRange(db, store, startDate, endDate, params = {}) {
 
   if (store === 'shawq' && !campaignValue) {
     const ecomData = db.prepare(`
-      SELECT COUNT(*) as orders, SUM(subtotal) as revenue
+      SELECT COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue
       FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
     `).get(store, startDate, endDate) || {};
     totalOrders = ecomData.orders || 0;
@@ -410,7 +412,7 @@ function getDynamicCountries(db, store, startDate, endDate, params = {}) {
 
   if (store === 'shawq') {
     ecomData = db.prepare(`
-      SELECT country_code as countryCode, COUNT(*) as orders, SUM(subtotal) as revenue
+      SELECT country_code as countryCode, COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue
       FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL GROUP BY country_code
     `).all(store, startDate, endDate);
     dataSource = 'Shopify';
@@ -523,7 +525,7 @@ function getTrends(store, startDate, endDate, params = {}) {
 
   let salesData = [];
   if (store === 'shawq' && !campaignValue) {
-    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(subtotal) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 GROUP BY date`).all(store, startDate, endDate);
+    salesData = db.prepare(`SELECT date, COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue FROM shopify_orders WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 GROUP BY date`).all(store, startDate, endDate);
   } else {
     salesData = db.prepare(`SELECT date, SUM(conversions) as orders, SUM(conversion_value) as revenue FROM meta_daily_metrics WHERE store = ? AND date BETWEEN ? AND ?${statusFilter}${campaignClause} GROUP BY date`).all(store, startDate, endDate, ...campaignArgs);
   }
@@ -748,7 +750,7 @@ export function getCountryTrends(store, params) {
           date,
           country_code as countryCode,
           COUNT(*) as orders,
-          SUM(subtotal) as revenue
+          SUM(${SHOPIFY_REVENUE_SQL}) as revenue
         FROM shopify_orders
         WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL
         GROUP BY date, country_code
@@ -853,7 +855,7 @@ export function getNewYorkTrends(store, params) {
       SELECT
         date,
         COUNT(*) as orders,
-        SUM(subtotal) as revenue
+        SUM(${SHOPIFY_REVENUE_SQL}) as revenue
       FROM shopify_orders
       WHERE store = ?
         AND date BETWEEN ? AND ?
@@ -879,7 +881,7 @@ export function getNewYorkTrends(store, params) {
       SELECT
         city,
         COUNT(*) as orders,
-        SUM(subtotal) as revenue
+        SUM(${SHOPIFY_REVENUE_SQL}) as revenue
       FROM shopify_orders
       WHERE store = ?
         AND date BETWEEN ? AND ?
@@ -1132,7 +1134,7 @@ export function getShopifyTimeOfDay(store, params) {
       SELECT
         order_created_at,
         country_code,
-        subtotal as revenue
+        ${SHOPIFY_REVENUE_SQL} as revenue
       FROM shopify_orders
       WHERE store = ? AND date BETWEEN ? AND ?
       AND COALESCE(is_excluded, 0) = 0

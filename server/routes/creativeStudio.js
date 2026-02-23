@@ -1827,7 +1827,7 @@ function buildRecommendedLocales(store) {
     WHERE store = ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL AND country_code != ''
     GROUP BY country_code
     UNION ALL
-    SELECT country_code as country, COUNT(*) as orders, SUM(subtotal) as revenue
+    SELECT country_code as country, COUNT(*) as orders, SUM(COALESCE(subtotal, 0) + COALESCE(shipping, 0)) as revenue
     FROM shopify_orders
     WHERE store = ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL AND country_code != ''
     GROUP BY country_code
