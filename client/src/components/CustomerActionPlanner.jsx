@@ -131,6 +131,7 @@ const TRIGGER_HORIZONS = {
     new_traction: '7d',
     velocity_stall: '7d',
     discount_dependency: '28d',
+    discount_increase: '7d',
     quiet_exit: '90d',
     first_hero_slip: '24-48h',
     leaderboard_reshuffle: '7d',
@@ -147,6 +148,7 @@ const TRIGGER_OWNERS = {
     new_traction: 'Growth',
     velocity_stall: 'Merch',
     discount_dependency: 'Pricing',
+    discount_increase: 'Pricing',
     quiet_exit: 'Merch',
     first_hero_slip: 'Growth',
     leaderboard_reshuffle: 'Leadership',
@@ -290,7 +292,7 @@ function buildWatchlists({ topProducts, discountSkus, upInsight, downInsight, mo
             const signal = prod.statistical?.signal;
             const signalLabel = signal ? ` [${signal}]` : '';
 
-            if (triggers.includes('hero_decline') || triggers.includes('discount_dependency') || triggers.includes('velocity_stall') || prod.exceptionalEvent === 'first_hero_slip' || prod.exceptionalEvent === 'sharp_reversal') {
+            if (triggers.includes('hero_decline') || triggers.includes('discount_dependency') || triggers.includes('discount_increase') || triggers.includes('velocity_stall') || prod.exceptionalEvent === 'first_hero_slip' || prod.exceptionalEvent === 'sharp_reversal') {
                 atRiskSeed.push({
                     title: prod.title,
                     note: headline + signalLabel,
