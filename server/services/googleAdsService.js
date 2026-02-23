@@ -1,8 +1,9 @@
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
+import { getCountryInfo } from '../utils/countryData.js';
 import fs from 'fs';
 
-const GOOGLE_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const GOOGLE_ADS_API_BASE = 'https://googleads.googleapis.com';
+const GOOGLE_OAUTH_TOKEN_URL = process.env.GOOGLE_OAUTH_TOKEN_URL || 'https://oauth2.googleapis.com/token';
+const GOOGLE_ADS_API_BASE = process.env.GOOGLE_ADS_API_BASE_URL || 'https://googleads.googleapis.com';
 const GOOGLE_ADS_API_VERSION = process.env.GOOGLE_ADS_API_VERSION || 'v22';
 
 function getDateRange(params = {}) {
@@ -578,5 +579,465 @@ export async function getGoogleAdManagerHierarchy(params = {}) {
       source: 'google-ads-api',
       dateRange: { startDate, endDate }
     };
+  }
+}
+
+const UNIFIED_SUPPORTED_BREAKDOWNS = new Set(['none', 'country']);
+const UNIFIED_REQUIRED_CONFIG_KEYS = Object.freeze([
+  'customerId',
+  'developerToken',
+  'refreshToken',
+  'clientId',
+  'clientSecret'
+]);
+const UNIFIED_MICROS_PER_CURRENCY_UNIT = 1_000_000;
+const UNIFIED_GEO_LOOKUP_CHUNK_SIZE = 100;
+const UNIFIED_TOKEN_CACHE_TTL_MS = 55 * 60 * 1000;
+const UNIFIED_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+const UNIFIED_STATUS_MAP = Object.freeze({
+  ENABLED: 'ACTIVE',
+  PAUSED: 'PAUSED',
+  REMOVED: 'ARCHIVED'
+});
+
+const unifiedTokenCache = new Map();
+
+function normalizeStorePrefixForUnified(store) {
+  return String(store || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '_');
+}
+
+function getStoreScopedGoogleEnv(store, baseKey) {
+  const scopedKey = `${normalizeStorePrefixForUnified(store)}_${baseKey}`;
+  return process.env[scopedKey] || process.env[baseKey] || '';
+}
+
+function resolveUnifiedConfig(store) {
+  const config = {
+    customerId: normalizeCustomerId(getStoreScopedGoogleEnv(store, 'GOOGLE_ADS_CUSTOMER_ID')),
+    developerToken: String(getStoreScopedGoogleEnv(store, 'GOOGLE_ADS_DEVELOPER_TOKEN') || '').trim(),
+    refreshToken: String(getStoreScopedGoogleEnv(store, 'GOOGLE_ADS_REFRESH_TOKEN') || '').trim(),
+    clientId: String(getStoreScopedGoogleEnv(store, 'GOOGLE_ADS_CLIENT_ID') || '').trim(),
+    clientSecret: String(getStoreScopedGoogleEnv(store, 'GOOGLE_ADS_CLIENT_SECRET') || '').trim(),
+    loginCustomerId: normalizeCustomerId(getStoreScopedGoogleEnv(store, 'GOOGLE_ADS_LOGIN_CUSTOMER_ID'))
+  };
+
+  const missing = UNIFIED_REQUIRED_CONFIG_KEYS.filter((key) => !config[key]);
+  return {
+    ...config,
+    configured: missing.length === 0,
+    missing
+  };
+}
+
+function parseUnifiedCampaignFilter(campaignId) {
+  const raw = String(campaignId || '').trim();
+  if (!raw) {
+    return { skipGoogle: false, googleCampaignId: null };
+  }
+
+  if (!raw.startsWith('google:')) {
+    return { skipGoogle: true, googleCampaignId: null };
+  }
+
+  const normalizedId = normalizeCustomerId(raw.slice('google:'.length));
+  if (!normalizedId) {
+    return { skipGoogle: true, googleCampaignId: null };
+  }
+
+  return { skipGoogle: false, googleCampaignId: normalizedId };
+}
+
+function buildUnifiedWhere({ startDate, endDate, includeInactive, googleCampaignId, countryOnly = false }) {
+  const conditions = [`segments.date BETWEEN '${startDate}' AND '${endDate}'`];
+  if (countryOnly) {
+    conditions.push('segments.geo_target_country IS NOT NULL');
+  }
+
+  if (includeInactive) {
+    conditions.push('campaign.status != REMOVED');
+  } else {
+    conditions.push('campaign.status = ENABLED');
+  }
+
+  if (googleCampaignId) {
+    conditions.push(`campaign.id = ${googleCampaignId}`);
+  }
+
+  return `WHERE ${conditions.join(' AND ')}`;
+}
+
+function buildUnifiedCampaignQuery({ startDate, endDate, includeInactive, googleCampaignId }) {
+  const whereClause = buildUnifiedWhere({ startDate, endDate, includeInactive, googleCampaignId });
+  return `
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  metrics.cost_micros,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.conversions,
+  metrics.conversions_value
+FROM campaign
+${whereClause}
+ORDER BY metrics.cost_micros DESC
+LIMIT 10000
+  `.trim();
+}
+
+function buildUnifiedCountryQuery({ startDate, endDate, includeInactive, googleCampaignId }) {
+  const whereClause = buildUnifiedWhere({
+    startDate,
+    endDate,
+    includeInactive,
+    googleCampaignId,
+    countryOnly: true
+  });
+
+  return `
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  segments.geo_target_country,
+  metrics.cost_micros,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.conversions,
+  metrics.conversions_value
+FROM campaign
+${whereClause}
+ORDER BY metrics.cost_micros DESC
+LIMIT 10000
+  `.trim();
+}
+
+function buildUnifiedGeoLookupQuery(resourceNames = []) {
+  const quoted = resourceNames
+    .map((name) => `'${String(name).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`)
+    .join(', ');
+
+  return `
+SELECT
+  geo_target_constant.resource_name,
+  geo_target_constant.country_code
+FROM geo_target_constant
+WHERE geo_target_constant.resource_name IN (${quoted})
+LIMIT 10000
+  `.trim();
+}
+
+function getUnifiedStatus(status) {
+  const key = String(status || '').toUpperCase();
+  return UNIFIED_STATUS_MAP[key] || 'UNKNOWN';
+}
+
+function getUnifiedTokenCacheKey(config) {
+  return `${config.customerId}:${config.clientId}`;
+}
+
+function readUnifiedTokenCache(cacheKey) {
+  const cached = unifiedTokenCache.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() - cached.createdAt > UNIFIED_TOKEN_CACHE_TTL_MS) {
+    unifiedTokenCache.delete(cacheKey);
+    return null;
+  }
+  return cached.token;
+}
+
+function writeUnifiedTokenCache(cacheKey, token) {
+  unifiedTokenCache.set(cacheKey, { token, createdAt: Date.now() });
+}
+
+async function getUnifiedAccessToken(config) {
+  const cacheKey = getUnifiedTokenCacheKey(config);
+  const cachedToken = readUnifiedTokenCache(cacheKey);
+  if (cachedToken) {
+    return cachedToken;
+  }
+
+  const body = new URLSearchParams({
+    client_id: config.clientId,
+    client_secret: config.clientSecret,
+    refresh_token: config.refreshToken,
+    grant_type: 'refresh_token'
+  });
+
+  const response = await fetch(GOOGLE_OAUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload?.access_token) {
+    const message = payload?.error_description || (typeof payload?.error === 'string' ? payload.error : JSON.stringify(payload?.error)) || `HTTP ${response.status}`;
+  }
+
+  writeUnifiedTokenCache(cacheKey, payload.access_token);
+  return payload.access_token;
+}
+
+async function runUnifiedGoogleQuery(config, accessToken, query) {
+  return searchGoogleAds({
+    customerId: config.customerId,
+    loginCustomerId: config.loginCustomerId,
+    developerToken: config.developerToken,
+    accessToken,
+    query
+  });
+}
+
+function buildUnifiedCampaignNode(campaign) {
+  const rawCampaignId = normalizeCustomerId(campaign?.id);
+  const mappedStatus = getUnifiedStatus(campaign?.status);
+
+  return {
+    campaign_id: `google:${rawCampaignId}`,
+    campaign_name: campaign?.name || `Google Campaign ${rawCampaignId}`,
+    status: mappedStatus,
+    effective_status: mappedStatus,
+    isActive: mappedStatus === 'ACTIVE',
+    spend: 0,
+    impressions: 0,
+    reach: 0,
+    clicks: 0,
+    inline_link_clicks: 0,
+    outbound_clicks: null,
+    unique_outbound_clicks: null,
+    lpv: null,
+    atc: null,
+    checkout: null,
+    conversions: 0,
+    conversion_value: 0,
+    cost_per_inline_link_click: null,
+    level: 'campaign',
+    data_source: 'Google Ads',
+    provider: 'google',
+    adsets: [],
+    country_breakdowns: []
+  };
+}
+
+function addUnifiedMetrics(target, metrics) {
+  target.spend += asNumber(metrics?.costMicros ?? metrics?.cost_micros) / UNIFIED_MICROS_PER_CURRENCY_UNIT;
+  target.impressions += asNumber(metrics?.impressions);
+  target.clicks += asNumber(metrics?.clicks);
+  target.inline_link_clicks += asNumber(metrics?.clicks);
+  target.conversions += asNumber(metrics?.conversions);
+  target.conversion_value += asNumber(metrics?.conversionsValue ?? metrics?.conversions_value);
+}
+
+function finalizeUnifiedMetrics(target) {
+  target.cost_per_inline_link_click = target.inline_link_clicks > 0
+    ? target.spend / target.inline_link_clicks
+    : null;
+
+  target.cpc = target.cost_per_inline_link_click;
+  target.cpm = target.impressions > 0 ? (target.spend * 1000) / target.impressions : null;
+  target.ctr = target.impressions > 0 ? (target.inline_link_clicks * 100) / target.impressions : null;
+  target.roas = target.spend > 0 ? target.conversion_value / target.spend : null;
+  target.aov = target.conversions > 0 ? target.conversion_value / target.conversions : null;
+  target.cac = target.conversions > 0 ? target.spend / target.conversions : null;
+  return target;
+}
+
+async function lookupUnifiedCountryCodes(config, accessToken, resourceNames = []) {
+  const uniqueResources = Array.from(new Set(resourceNames.filter(Boolean)));
+  const countryMap = new Map();
+
+  for (let i = 0; i < uniqueResources.length; i += UNIFIED_GEO_LOOKUP_CHUNK_SIZE) {
+    const chunk = uniqueResources.slice(i, i + UNIFIED_GEO_LOOKUP_CHUNK_SIZE);
+    if (!chunk.length) continue;
+
+    try {
+      const rows = await runUnifiedGoogleQuery(
+        config,
+        accessToken,
+        buildUnifiedGeoLookupQuery(chunk)
+      );
+
+      rows.forEach((row) => {
+        const resourceName = row?.geoTargetConstant?.resourceName;
+        const countryCode = row?.geoTargetConstant?.countryCode;
+        if (resourceName && countryCode) {
+          countryMap.set(resourceName, countryCode);
+        }
+      });
+    } catch (error) {
+      console.warn(`[GoogleAds] Country lookup skipped: ${error?.message || error}`);
+      return countryMap;
+    }
+  }
+
+  return countryMap;
+}
+
+function resolveCountryCodeFromResource(resourceName, countryMap) {
+  const key = String(resourceName || '').trim();
+  if (!key) return null;
+  const code = String(countryMap.get(key) || '').trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(code) ? code : null;
+}
+
+export async function fetchGoogleCampaignHierarchy({
+  store,
+  startDate,
+  endDate,
+  breakdown = 'none',
+  includeInactive = false,
+  campaignId = null
+}) {
+  if (!UNIFIED_DATE_PATTERN.test(String(startDate || '')) || !UNIFIED_DATE_PATTERN.test(String(endDate || ''))) {
+    return { data: [], notice: 'Google Ads fetch skipped due to invalid date range.' };
+  }
+
+  const filter = parseUnifiedCampaignFilter(campaignId);
+  if (filter.skipGoogle) {
+    return { data: [], notice: '' };
+  }
+
+  if (!UNIFIED_SUPPORTED_BREAKDOWNS.has(breakdown)) {
+    return { data: [], notice: 'Google Ads currently supports No Breakdown and By Country in Unified Campaign.' };
+  }
+
+  const config = resolveUnifiedConfig(store);
+  if (!config.configured) {
+    return { data: [], notice: `Google Ads credentials are not configured for store "${store}".` };
+  }
+
+  try {
+    const accessToken = await getUnifiedAccessToken(config);
+
+    if (breakdown === 'country') {
+      const rows = await runUnifiedGoogleQuery(
+        config,
+        accessToken,
+        buildUnifiedCountryQuery({
+          startDate,
+          endDate,
+          includeInactive,
+          googleCampaignId: filter.googleCampaignId
+        })
+      );
+
+      if (!rows.length) {
+        return { data: [], notice: '' };
+      }
+
+      const countryResources = rows
+        .map((row) => row?.segments?.geoTargetCountry || row?.segments?.geo_target_country)
+        .filter(Boolean);
+      const countryCodeMap = await lookupUnifiedCountryCodes(config, accessToken, countryResources);
+
+      const campaignMap = new Map();
+      const countryBreakdownMap = new Map();
+
+      rows.forEach((row) => {
+        const campaign = row?.campaign || {};
+        const campaignIdValue = normalizeCustomerId(campaign?.id);
+        if (!campaignIdValue) return;
+
+        const prefixedCampaignId = `google:${campaignIdValue}`;
+        if (!campaignMap.has(prefixedCampaignId)) {
+          campaignMap.set(prefixedCampaignId, buildUnifiedCampaignNode(campaign));
+        }
+
+        const campaignNode = campaignMap.get(prefixedCampaignId);
+        addUnifiedMetrics(campaignNode, row?.metrics || {});
+
+        if (!countryBreakdownMap.has(prefixedCampaignId)) {
+          countryBreakdownMap.set(prefixedCampaignId, new Map());
+        }
+
+        const countryMap = countryBreakdownMap.get(prefixedCampaignId);
+        const resourceName = row?.segments?.geoTargetCountry || row?.segments?.geo_target_country;
+        const countryCode = resolveCountryCodeFromResource(resourceName, countryCodeMap);
+        const countryKey = countryCode || `UNKNOWN-${String(resourceName || '').split('/').pop() || 'geo'}`;
+
+        if (!countryMap.has(countryKey)) {
+          const countryInfo = countryCode ? getCountryInfo(countryCode) : null;
+          countryMap.set(countryKey, {
+            campaign_id: prefixedCampaignId,
+            campaign_name: campaignNode.campaign_name,
+            country: countryCode || countryKey,
+            countryName: countryInfo?.name || 'Unknown Country',
+            spend: 0,
+            impressions: 0,
+            reach: 0,
+            clicks: 0,
+            inline_link_clicks: 0,
+            outbound_clicks: null,
+            unique_outbound_clicks: null,
+            lpv: null,
+            atc: null,
+            checkout: null,
+            conversions: 0,
+            conversion_value: 0,
+            cost_per_inline_link_click: null,
+            data_source: 'Google Ads',
+            provider: 'google',
+            level: 'breakdown',
+            lastOrderDate: null
+          });
+        }
+
+        addUnifiedMetrics(countryMap.get(countryKey), row?.metrics || {});
+      });
+
+      const data = Array.from(campaignMap.values())
+        .map((campaignNode) => {
+          const countryRows = Array.from(countryBreakdownMap.get(campaignNode.campaign_id)?.values() || [])
+            .map((row) => finalizeUnifiedMetrics(row))
+            .sort((a, b) => asNumber(b.spend) - asNumber(a.spend));
+
+          return finalizeUnifiedMetrics({
+            ...campaignNode,
+            country_breakdowns: countryRows
+          });
+        })
+        .sort((a, b) => asNumber(b.spend) - asNumber(a.spend));
+
+      return { data, notice: '' };
+    }
+
+    const rows = await runUnifiedGoogleQuery(
+      config,
+      accessToken,
+      buildUnifiedCampaignQuery({
+        startDate,
+        endDate,
+        includeInactive,
+        googleCampaignId: filter.googleCampaignId
+      })
+    );
+
+    const campaignMap = new Map();
+    rows.forEach((row) => {
+      const campaign = row?.campaign || {};
+      const campaignIdValue = normalizeCustomerId(campaign?.id);
+      if (!campaignIdValue) return;
+
+      const prefixedCampaignId = `google:${campaignIdValue}`;
+      if (!campaignMap.has(prefixedCampaignId)) {
+        campaignMap.set(prefixedCampaignId, buildUnifiedCampaignNode(campaign));
+      }
+
+      addUnifiedMetrics(campaignMap.get(prefixedCampaignId), row?.metrics || {});
+    });
+
+    const data = Array.from(campaignMap.values())
+      .map((campaignNode) => finalizeUnifiedMetrics(campaignNode))
+      .sort((a, b) => asNumber(b.spend) - asNumber(a.spend));
+
+    return { data, notice: '' };
+  } catch (error) {
+    console.warn(`[GoogleAds] Failed to fetch unified campaign data for ${store}: ${error?.message || error}`);
+    return { data: [], notice: 'Google Ads data could not be loaded right now.' };
   }
 }
