@@ -114,6 +114,17 @@ function timeAgo(ts) {
   return `${diffDay}d ago`;
 }
 
+function formatClockTime(ts) {
+  const date = parseSqliteTimestamp(ts);
+  if (!date) return '—';
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+}
+
 function isoDayUtc(date) {
   if (!(date instanceof Date)) return '';
   return date.toISOString().slice(0, 10);
@@ -220,7 +231,7 @@ function formatPercent(value, digits = 0) {
 }
 
 function formatSignedPercent(value, digits = 0) {
-  if (value === null) return '—';
+  if (value === null || value === undefined) return '—';
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   const absolute = Math.abs(n);
@@ -1601,10 +1612,20 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
   const journeyRequestIdRef = useRef(0);
+  const dayPulseDataRef = useRef(null);
+  const realtimeDataRef = useRef(null);
 
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
   }, [analysisLlm]);
+
+  useEffect(() => {
+    dayPulseDataRef.current = dayPulse;
+  }, [dayPulse]);
+
+  useEffect(() => {
+    realtimeDataRef.current = realtime;
+  }, [realtime]);
 
   const journeyComparisonRanges = useMemo(
     () => resolveJourneyComparisonRanges(dashboardDateRange),
@@ -1669,8 +1690,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     };
   }, [closeStory, storyOpen]);
 
-  const loadRealtime = useCallback(async () => {
-    setRealtimeLoading(true);
+  const loadRealtime = useCallback(async (options = {}) => {
+    const showLoading = options.showLoading !== false || !realtimeDataRef.current;
+    if (showLoading) setRealtimeLoading(true);
     setRealtimeError('');
     try {
       const params = new URLSearchParams({
@@ -1683,9 +1705,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } catch (error) {
       console.error('[SessionIntelligenceTab] realtime load failed:', error);
       setRealtimeError(error?.message || 'Failed to load realtime overview');
-      setRealtime(null);
+      if (!realtimeDataRef.current) setRealtime(null);
     } finally {
-      setRealtimeLoading(false);
+      if (showLoading) setRealtimeLoading(false);
     }
   }, [storeId]);
 
@@ -1815,8 +1837,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     setOverview(data.data);
   }, [storeId]);
 
-  const loadDayPulse = useCallback(async () => {
-    if (!dayPulse) setDayPulseLoading(true);
+  const loadDayPulse = useCallback(async (options = {}) => {
+    const showLoading = options.showLoading !== false || !dayPulseDataRef.current;
+    if (showLoading) setDayPulseLoading(true);
     setDayPulseError('');
     try {
       const url = `/api/session-intelligence/day-pulse?store=${encodeURIComponent(storeId)}`;
@@ -1825,9 +1848,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } catch (error) {
       console.error('[SessionIntelligenceTab] day pulse load failed:', error);
       setDayPulseError(error?.message || 'Failed to load day pulse');
-      setDayPulse(null);
+      if (!dayPulseDataRef.current) setDayPulse(null);
     } finally {
-      setDayPulseLoading(false);
+      if (showLoading) setDayPulseLoading(false);
     }
   }, [storeId]);
 
@@ -1986,14 +2009,14 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       });
 
     const realtimeTimer = setInterval(() => {
-      loadRealtime().catch((error) => {
+      loadRealtime({ showLoading: false }).catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] realtime poll failed:', error);
       });
     }, POLL_REALTIME_MS);
 
     const dayPulseTimer = setInterval(() => {
-      loadDayPulse().catch((error) => {
+      loadDayPulse({ showLoading: false }).catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] day pulse poll failed:', error);
       });
@@ -2457,7 +2480,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           <h3>Today&apos;s Session Pulse</h3>
           <span className="si-muted">
             {dayPulse?.updatedAt
-              ? `Live • updated ${timeAgo(dayPulse.updatedAt)}`
+              ? `Live • updated ${formatClockTime(dayPulse.updatedAt)}`
               : dayPulseLoading
                 ? 'Live • updating...'
                 : 'Live'}
@@ -2518,7 +2541,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
             {realtimeLoading ? 'Refreshing…' : 'Refresh'}
           </button>
           {realtime?.updatedAt ? (
-            <span className="si-muted">Last refreshed {timeAgo(realtime.updatedAt)}</span>
+            <span className="si-muted">Last refreshed at {formatClockTime(realtime.updatedAt)}</span>
           ) : null}
           <span className="si-spacer" />
           <span className="si-muted">Map</span>

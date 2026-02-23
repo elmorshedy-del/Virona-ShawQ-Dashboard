@@ -2658,7 +2658,7 @@ export function getSessionIntelligenceDayPulse(store) {
     lastWeekWindowStart,
     lastWeekWindowEnd,
     store,
-    historyStart,
+    lastWeekWindowStart,
     currentWindowEnd
   );
 
