@@ -7,6 +7,32 @@ const RAW_RETENTION_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_RAW_RETENT
 const ABANDON_AFTER_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_ABANDON_AFTER_HOURS || '24', 10);
 const SESSION_IDLE_MINUTES = parseInt(process.env.SESSION_INTELLIGENCE_SESSION_IDLE_MINUTES || '30', 10);
 const CHECKOUT_DROP_MINUTES = parseInt(process.env.SESSION_INTELLIGENCE_CHECKOUT_DROP_MINUTES || '30', 10);
+const DAY_PULSE_FIRST_WINDOW_HOURS = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_DAY_PULSE_FIRST_WINDOW_HOURS || '4', 10) || 4, 1),
+  12
+);
+const DAY_PULSE_HISTORY_LOOKBACK_DAYS = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_DAY_PULSE_HISTORY_LOOKBACK_DAYS || '28', 10) || 28, 7),
+  180
+);
+const DAY_PULSE_MIN_HISTORY_DAYS = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_DAY_PULSE_MIN_HISTORY_DAYS || '7', 10) || 7, 3),
+  DAY_PULSE_HISTORY_LOOKBACK_DAYS
+);
+const DAY_PULSE_LIGHT_PERCENTILE = Math.min(
+  Math.max(Number(process.env.SESSION_INTELLIGENCE_DAY_PULSE_LIGHT_PERCENTILE || 0.33), 0.1),
+  0.49
+);
+const DAY_PULSE_HEAVY_PERCENTILE = Math.min(
+  Math.max(Number(process.env.SESSION_INTELLIGENCE_DAY_PULSE_HEAVY_PERCENTILE || 0.67), 0.51),
+  0.9
+);
+const DAY_PULSE_FALLBACK_HEAVY_RATIO = Math.max(Number(process.env.SESSION_INTELLIGENCE_DAY_PULSE_FALLBACK_HEAVY_RATIO || 1.15), 1.01);
+const DAY_PULSE_FALLBACK_LIGHT_RATIO = Math.min(Math.max(Number(process.env.SESSION_INTELLIGENCE_DAY_PULSE_FALLBACK_LIGHT_RATIO || 0.85), 0.1), 0.99);
+const DAY_PULSE_MIN_PACE_ELAPSED_MINUTES = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_DAY_PULSE_MIN_PACE_ELAPSED_MINUTES || '15', 10) || 15, 1),
+  60
+);
 const JOURNEY_LINK_LOOKBACK_DAYS = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_JOURNEY_LINK_LOOKBACK_DAYS || '14', 10) || 14, 1),
   90
@@ -119,6 +145,21 @@ function parseSqliteDateTimeToMs(value) {
   if (!value || typeof value !== 'string') return NaN;
   if (value.includes('T')) return Date.parse(value);
   return Date.parse(`${value.replace(' ', 'T')}Z`);
+}
+
+function startOfUtcDayMs(referenceMs = Date.now()) {
+  const date = new Date(referenceMs);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0);
+}
+
+function toSqliteUtcDateTime(ms) {
+  return normalizeSqliteDateTime(new Date(ms));
+}
+
+function toIsoDayUtc(ms) {
+  const date = new Date(ms);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
 }
 
 function safeString(value) {
@@ -2513,6 +2554,174 @@ export function cleanupSessionIntelligenceRaw({ retentionHours = RAW_RETENTION_H
   }
 
   return { deletedEvents: result.changes || 0, retentionHours: hours, cleanupEnabled: true };
+}
+
+function safeFiniteNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function percentageDelta(current, baseline) {
+  const currentValue = safeFiniteNumber(current, 0);
+  const baselineValue = safeFiniteNumber(baseline, 0);
+  if (baselineValue <= 0) {
+    if (currentValue <= 0) return 0;
+    return null;
+  }
+  return (currentValue - baselineValue) / baselineValue;
+}
+
+function directionFromDelta(delta) {
+  if (!Number.isFinite(delta)) return 'na';
+  if (delta > 0) return 'up';
+  if (delta < 0) return 'down';
+  return 'flat';
+}
+
+function classifyProjectionBand({ projectedSessions, historicalDailySessions, referenceSessions }) {
+  const projected = safeFiniteNumber(projectedSessions, 0);
+  const history = (Array.isArray(historicalDailySessions) ? historicalDailySessions : [])
+    .map((value) => safeFiniteNumber(value, NaN))
+    .filter((value) => Number.isFinite(value));
+
+  if (history.length >= DAY_PULSE_MIN_HISTORY_DAYS) {
+    const lightCutoff = computePercentile(history, DAY_PULSE_LIGHT_PERCENTILE);
+    const heavyCutoff = computePercentile(history, DAY_PULSE_HEAVY_PERCENTILE);
+
+    if (Number.isFinite(lightCutoff) && Number.isFinite(heavyCutoff)) {
+      if (projected <= lightCutoff) return 'Light';
+      if (projected >= heavyCutoff) return 'Heavy';
+      return 'Mid';
+    }
+  }
+
+  const baseline = safeFiniteNumber(referenceSessions, 0);
+  if (baseline <= 0) {
+    if (projected <= 0) return 'Mid';
+    return 'Heavy';
+  }
+
+  if (projected >= baseline * DAY_PULSE_FALLBACK_HEAVY_RATIO) return 'Heavy';
+  if (projected <= baseline * DAY_PULSE_FALLBACK_LIGHT_RATIO) return 'Light';
+  return 'Mid';
+}
+
+export function getSessionIntelligenceDayPulse(store) {
+  const db = getDb();
+  ensureRecentShopperNumbers(store);
+
+  const nowMs = Date.now();
+  const dayStartMs = startOfUtcDayMs(nowMs);
+  const elapsedMs = Math.max(0, nowMs - dayStartMs);
+  const elapsedSeconds = elapsedMs / 1000;
+  const firstWindowMs = DAY_PULSE_FIRST_WINDOW_HOURS * 60 * 60 * 1000;
+  const firstWindowEndMs = Math.min(dayStartMs + firstWindowMs, nowMs);
+  const minPaceElapsedMs = DAY_PULSE_MIN_PACE_ELAPSED_MINUTES * 60 * 1000;
+  const firstWindowElapsedMs = Math.max(minPaceElapsedMs, firstWindowEndMs - dayStartMs);
+  const yesterdayStartMs = dayStartMs - (24 * 60 * 60 * 1000);
+  const lastWeekStartMs = dayStartMs - (7 * 24 * 60 * 60 * 1000);
+
+  const currentWindowStart = toSqliteUtcDateTime(dayStartMs);
+  const currentWindowEnd = toSqliteUtcDateTime(nowMs);
+  const firstWindowEnd = toSqliteUtcDateTime(dayStartMs + Math.min(firstWindowMs, elapsedMs));
+  const yesterdayWindowStart = toSqliteUtcDateTime(yesterdayStartMs);
+  const yesterdayWindowEnd = toSqliteUtcDateTime(yesterdayStartMs + elapsedMs);
+  const lastWeekWindowStart = toSqliteUtcDateTime(lastWeekStartMs);
+  const lastWeekWindowEnd = toSqliteUtcDateTime(lastWeekStartMs + elapsedMs);
+  const historyStartMs = dayStartMs - (DAY_PULSE_HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const historyStart = toSqliteUtcDateTime(historyStartMs);
+
+  const windowsRow = db.prepare(`
+    SELECT
+      SUM(CASE WHEN started_at >= ? AND started_at < ? THEN 1 ELSE 0 END) AS today_sessions_so_far,
+      SUM(CASE WHEN started_at >= ? AND started_at < ? THEN 1 ELSE 0 END) AS today_first_window_sessions,
+      SUM(CASE WHEN started_at >= ? AND started_at < ? THEN 1 ELSE 0 END) AS yesterday_same_time_sessions,
+      SUM(CASE WHEN started_at >= ? AND started_at < ? THEN 1 ELSE 0 END) AS last_week_same_time_sessions
+    FROM si_sessions
+    WHERE store = ?
+      AND started_at >= ?
+      AND started_at < ?
+  `).get(
+    currentWindowStart,
+    currentWindowEnd,
+    currentWindowStart,
+    firstWindowEnd,
+    yesterdayWindowStart,
+    yesterdayWindowEnd,
+    lastWeekWindowStart,
+    lastWeekWindowEnd,
+    store,
+    historyStart,
+    currentWindowEnd
+  );
+
+  const todaySessionsSoFar = safeFiniteNumber(windowsRow?.today_sessions_so_far, 0);
+  const firstWindowSessions = safeFiniteNumber(windowsRow?.today_first_window_sessions, 0);
+  const yesterdaySameTimeSessions = safeFiniteNumber(windowsRow?.yesterday_same_time_sessions, 0);
+  const lastWeekSameTimeSessions = safeFiniteNumber(windowsRow?.last_week_same_time_sessions, 0);
+
+  const projectedSessions = elapsedSeconds > 0
+    ? Math.max(
+      0,
+      Math.round((firstWindowSessions / firstWindowElapsedMs) * (24 * 60 * 60 * 1000))
+    )
+    : 0;
+
+  const historyRows = db.prepare(`
+    SELECT
+      date(started_at) AS session_day,
+      COUNT(*) AS sessions
+    FROM si_sessions
+    WHERE store = ?
+      AND started_at >= ?
+      AND started_at < ?
+    GROUP BY session_day
+    ORDER BY session_day DESC
+  `).all(store, historyStart, currentWindowStart);
+
+  const historicalDailySessions = historyRows
+    .map((row) => safeFiniteNumber(row?.sessions, NaN))
+    .filter((value) => Number.isFinite(value));
+
+  const fallbackReferenceCandidates = [yesterdaySameTimeSessions, lastWeekSameTimeSessions]
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const fallbackReferenceSessions = fallbackReferenceCandidates.length > 0
+    ? (fallbackReferenceCandidates.reduce((sum, value) => sum + value, 0) / fallbackReferenceCandidates.length)
+    : safeFiniteNumber(computePercentile(historicalDailySessions, 0.5), 0);
+
+  const projectionLabel = classifyProjectionBand({
+    projectedSessions,
+    historicalDailySessions,
+    referenceSessions: fallbackReferenceSessions
+  });
+
+  const deltaVsYesterday = percentageDelta(todaySessionsSoFar, yesterdaySameTimeSessions);
+  const deltaVsLastWeek = percentageDelta(todaySessionsSoFar, lastWeekSameTimeSessions);
+
+  return {
+    store,
+    date: toIsoDayUtc(nowMs),
+    timezone: 'UTC',
+    firstWindowHours: DAY_PULSE_FIRST_WINDOW_HOURS,
+    sessionsSoFar: todaySessionsSoFar,
+    projectedSessions,
+    projectionLabel,
+    updatedAt: normalizeSqliteDateTime(new Date(nowMs)),
+    comparisons: {
+      yesterday: {
+        label: 'vs yesterday',
+        sessions: yesterdaySameTimeSessions,
+        delta: deltaVsYesterday,
+        direction: directionFromDelta(deltaVsYesterday)
+      },
+      lastWeek: {
+        label: 'vs same day last week',
+        sessions: lastWeekSameTimeSessions,
+        delta: deltaVsLastWeek,
+        direction: directionFromDelta(deltaVsLastWeek)
+      }
+    }
+  };
 }
 
 export function getSessionIntelligenceOverview(store) {
