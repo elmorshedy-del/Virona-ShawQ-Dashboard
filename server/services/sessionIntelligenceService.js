@@ -2660,10 +2660,11 @@ export function getSessionIntelligenceDayPulse(store) {
   const yesterdaySameTimeSessions = safeFiniteNumber(windowsRow?.yesterday_same_time_sessions, 0);
   const lastWeekSameTimeSessions = safeFiniteNumber(windowsRow?.last_week_same_time_sessions, 0);
 
-  const projectedSessions = elapsedSeconds > 0
+  const paceDurationMs = firstWindowEndMs - dayStartMs;
+  const projectedSessions = paceDurationMs >= minPaceElapsedMs
     ? Math.max(
       0,
-      Math.round((firstWindowSessions / firstWindowElapsedMs) * (24 * 60 * 60 * 1000))
+      Math.round((firstWindowSessions / paceDurationMs) * (24 * 60 * 60 * 1000))
     )
     : 0;
 
