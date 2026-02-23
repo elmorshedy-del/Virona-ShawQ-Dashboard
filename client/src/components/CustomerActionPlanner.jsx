@@ -216,55 +216,8 @@ function dedupeByTitle(items, limit) {
   return deduped.slice(0, limit);
 }
 
-function buildWatchlists({ topProducts, discountSkus, upInsight, downInsight, momentumData }) {
+function buildWatchlists({ topProducts, discountSkus, upInsight, downInsight }) {
   const discountLookup = makeDiscountLookup(discountSkus);
-
-  // If momentum engine data is available, use trigger-based classification
-  if (momentumData?.momentum?.length || momentumData?.watch?.length) {
-    const breakoutSeed = [];
-    const atRiskSeed = [];
-    const fadingSeed = [];
-
-    (momentumData.momentum || []).forEach((prod) => {
-      const triggers = prod.triggers || [];
-      const headline = prod.assessment?.headline || prod.title;
-      const signal = prod.statistical?.signal;
-      const signalLabel = signal ? ` [${signal}]` : '';
-      breakoutSeed.push({ title: prod.title, note: headline + signalLabel });
-    });
-
-    (momentumData.watch || []).forEach((prod) => {
-      const triggers = prod.triggers || [];
-      const headline = prod.assessment?.headline || prod.title;
-      const signal = prod.statistical?.signal;
-      const signalLabel = signal ? ` [${signal}]` : '';
-      if (triggers.includes('quiet_exit')) {
-        fadingSeed.push({ title: prod.title, note: headline + signalLabel });
-      } else {
-        atRiskSeed.push({ title: prod.title, note: headline + signalLabel });
-      }
-    });
-
-    // Fill from traditional sources if empty
-    if (!breakoutSeed.length && upInsight?.title) {
-      breakoutSeed.push({ title: cleanMoverProductTitle(upInsight.title, 'surged'), note: upInsight.detail || 'Recent positive movement vs prior window.' });
-    }
-    if (!atRiskSeed.length && downInsight?.title) {
-      atRiskSeed.push({ title: cleanMoverProductTitle(downInsight.title, 'softened'), note: downInsight.detail || 'Recent negative movement vs prior window.' });
-    }
-    const byRevenueAsc = [...(topProducts || [])].sort((a, b) => (a.revenue || 0) - (b.revenue || 0));
-    if (!fadingSeed.length) {
-      byRevenueAsc.forEach((row) => fadingSeed.push({ title: row.title, note: `Lower current contribution (${formatNumber(row.orders)} orders; ${formatNumber(row.quantity)} units).` }));
-    }
-
-    return {
-      breakout: dedupeByTitle(breakoutSeed, ACTION_PLANNER_RULES.watchlistLimit),
-      atRisk: dedupeByTitle(atRiskSeed, ACTION_PLANNER_RULES.watchlistLimit),
-      fading: dedupeByTitle(fadingSeed, ACTION_PLANNER_RULES.watchlistLimit)
-    };
-  }
-
-  // Fallback: original logic (no momentum data)
   const byRevenueDesc = [...(topProducts || [])].sort((a, b) => (b.revenue || 0) - (a.revenue || 0));
   const byRevenueAsc = [...byRevenueDesc].reverse();
 
@@ -466,7 +419,7 @@ function buildTimelineSummary(actions) {
   });
 }
 
-function buildGuardrails(data, actions, momentumData) {
+function buildGuardrails(data, actions) {
   const notes = [];
   const orders = data?.dataQuality?.orders || 0;
   const hasItems = Boolean(data?.dataQuality?.hasItems);
@@ -478,16 +431,6 @@ function buildGuardrails(data, actions, momentumData) {
     notes.push({
       id: 'window-logic',
       text: `Window logic: current period is compared to the immediately previous ${compareDays}-day window.`
-    });
-  }
-
-  // Momentum engine signal quality note
-  const allMomentum = [...(momentumData?.momentum || []), ...(momentumData?.watch || [])];
-  const confirmedCount = allMomentum.filter((p) => p.statistical?.signal === 'Confirmed' || p.statistical?.signal === 'Likely').length;
-  if (confirmedCount > 0) {
-    notes.push({
-      id: 'momentum-confidence',
-      text: `${confirmedCount} product signal${confirmedCount === 1 ? '' : 's'} confirmed or likely via statistical testing (z-test + BH FDR correction).`
     });
   }
 
@@ -572,8 +515,6 @@ export default function CustomerActionPlanner({ data, onOpenSection, embedded = 
     const discountSkus = sections.discountRefund?.discountSkus || [];
     const repeatRate = getKpiValue(data?.kpis, 'repeat-rate');
 
-    const momentumData = sections.productMomentum || null;
-
     const upInsight = insights.find((insight) => insight.id === 'product-mover-up') || null;
     const downInsight = insights.find((insight) => insight.id === 'product-mover-down') || null;
 
@@ -589,8 +530,8 @@ export default function CustomerActionPlanner({ data, onOpenSection, embedded = 
     return {
       timeline: buildTimelineSummary(actions),
       actions,
-      watchlists: buildWatchlists({ topProducts, discountSkus, upInsight, downInsight, momentumData }),
-      guardrails: buildGuardrails(data, actions, momentumData)
+      watchlists: buildWatchlists({ topProducts, discountSkus, upInsight, downInsight }),
+      guardrails: buildGuardrails(data, actions)
     };
   }, [data]);
 
