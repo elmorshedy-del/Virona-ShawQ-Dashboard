@@ -47,7 +47,7 @@ const toGeminiModelLabel = (modelName) => {
 const makeId = () => {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  } catch {}
+  } catch { }
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
@@ -640,7 +640,7 @@ export default function VideoOverlayEditor({ store }) {
     setIsInteracting(true);
     try {
       e.currentTarget?.setPointerCapture?.(e.pointerId);
-    } catch {}
+    } catch { }
   }, [naturalSize.w, naturalSize.h]);
 
   useEffect(() => {
@@ -1118,28 +1118,33 @@ export default function VideoOverlayEditor({ store }) {
                       <div
                         key={`${ov._segmentId}:${ov.id}`}
                         className={cn(
-                          'absolute rounded-xl select-none cursor-move',
+                          'absolute select-none cursor-move',
                           isSelected ? 'ring-2 ring-violet-500 shadow-sm' : 'ring-1 ring-transparent hover:ring-white/60'
                         )}
-                        style={{ left, top, width, height }}
+                        style={{ left, top, width, height, borderRadius: ov.borderRadius ? `${ov.borderRadius * Math.min(scale.x, scale.y)}px` : undefined }}
                         title={`Segment ${formatTime(ov._segmentStart)}–${formatTime(ov._segmentEnd)}`}
                         onPointerDown={(e) => beginInteraction(e, ov, 'move')}
                       >
-                        <div className="absolute inset-0 rounded-xl overflow-hidden">
+                        <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: ov.borderRadius ? `${ov.borderRadius * Math.min(scale.x, scale.y)}px` : undefined }}>
                           <div className="absolute inset-0" style={{ background }} />
                           <div className="relative w-full h-full flex items-center justify-center px-2">
-                            <span
+                            <div
                               style={{
                                 color: ov.textColor || '#fff',
                                 fontFamily: ov.fontFamily || 'Inter, system-ui, -apple-system',
                                 fontSize: ov.fontSize ? `${ov.fontSize * Math.min(scale.x, scale.y)}px` : undefined,
                                 fontWeight: ov.fontWeight || 'normal',
-                                fontStyle: ov.fontStyle || 'normal'
+                                fontStyle: ov.fontStyle || 'normal',
+                                whiteSpace: 'pre-line',
+                                textAlign: 'center',
+                                lineHeight: 1.2,
+                                overflow: 'hidden',
+                                maxHeight: '100%',
+                                maxWidth: '100%'
                               }}
-                              className="truncate"
                             >
                               {ov.text || ''}
-                            </span>
+                            </div>
                           </div>
                         </div>
 
@@ -1358,24 +1363,24 @@ export default function VideoOverlayEditor({ store }) {
                           : (ov?.backgroundColor || '#333333');
 
                         return (
-                      <button
-                        key={ov.id}
-                        type="button"
-                        onClick={() => setSelectedOverlayId(ov.id)}
-                        className={cn(
-                          'w-full rounded-2xl border px-4 py-3 text-left transition',
-                          selectedOverlayId === ov.id ? 'border-violet-200 bg-violet-50' : 'border-gray-200 hover:bg-gray-50'
-                        )}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2">
-                            <div className="h-3 w-3 rounded-full border border-gray-200" style={{ background: swatch }} />
-                            <div className="font-semibold text-gray-900">Overlay {idx + 1}</div>
-                          </div>
-                          <div className="text-xs text-gray-400">{Math.round(toNumber(ov.width, 0))}×{Math.round(toNumber(ov.height, 0))}</div>
-                        </div>
-                        <div className="mt-1 text-xs text-gray-500 truncate">{ov.text || '—'}</div>
-                      </button>
+                          <button
+                            key={ov.id}
+                            type="button"
+                            onClick={() => setSelectedOverlayId(ov.id)}
+                            className={cn(
+                              'w-full rounded-2xl border px-4 py-3 text-left transition',
+                              selectedOverlayId === ov.id ? 'border-violet-200 bg-violet-50' : 'border-gray-200 hover:bg-gray-50'
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2">
+                                <div className="h-3 w-3 rounded-full border border-gray-200" style={{ background: swatch }} />
+                                <div className="font-semibold text-gray-900">Overlay {idx + 1}</div>
+                              </div>
+                              <div className="text-xs text-gray-400">{Math.round(toNumber(ov.width, 0))}×{Math.round(toNumber(ov.height, 0))}</div>
+                            </div>
+                            <div className="mt-1 text-xs text-gray-500" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', whiteSpace: 'pre-line' }}>{ov.text || '—'}</div>
+                          </button>
                         );
                       })()
                     ))
@@ -1395,10 +1400,11 @@ export default function VideoOverlayEditor({ store }) {
                   <div className="mt-3">
                     <Label>Text</Label>
                     <div className="mt-2">
-                      <Input
-                        type="text"
+                      <textarea
+                        rows={3}
                         value={selectedOverlay.text || ''}
                         onChange={(e) => updateOverlay(selectedSegment.id, selectedOverlay.id, { text: e.target.value })}
+                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100 resize-y"
                       />
                     </div>
                   </div>
