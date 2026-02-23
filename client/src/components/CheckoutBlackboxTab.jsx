@@ -5,6 +5,7 @@ const DEFAULT_LOOKBACK_DAYS = 3;
 const EVENT_LIMIT_OPTIONS = [100, 200, 500];
 const DEFAULT_EVENT_LIMIT = 200;
 const CSV_EXPORT_LIMIT = 5000;
+const AUTO_REFRESH_INTERVAL_MS = 30 * 1000;
 
 function getIsoDate(date) {
   return date.toISOString().slice(0, 10);
@@ -192,6 +193,33 @@ export default function CheckoutBlackboxTab({ store }) {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadData();
+      }
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadData();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      loadData();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [loadData]);
+
   const handleExportCsv = useCallback(() => {
     const query = buildQueryString({
       ...baseQuery,
@@ -311,6 +339,9 @@ export default function CheckoutBlackboxTab({ store }) {
         <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
           <div>
             Last refreshed: {lastRefreshedAt ? formatTimestamp(lastRefreshedAt) : '—'}
+          </div>
+          <div>
+            Auto-refresh: every {Math.round(AUTO_REFRESH_INTERVAL_MS / 1000)}s
           </div>
           <div>
             Showing up to{' '}
