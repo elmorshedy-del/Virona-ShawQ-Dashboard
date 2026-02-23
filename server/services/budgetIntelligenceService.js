@@ -3,7 +3,7 @@ import { getAvailableCountries } from './analyticsService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { buildStatusFilter } from '../features/meta-awareness/index.js';
 
-const SHOPIFY_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
+const SHOPIFY_REVENUE_SQL = 'COALESCE(NULLIF(COALESCE(subtotal, 0) + COALESCE(shipping, 0), 0), order_total)';
 
 const FX_SAR_RATES = {
   SAR: 1,
