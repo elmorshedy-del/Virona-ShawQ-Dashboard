@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 
 const DEFAULT_LOOKBACK_DAYS = 3;
 const EVENT_LIMIT_OPTIONS = [100, 200, 500];
 const DEFAULT_EVENT_LIMIT = 200;
 const CSV_EXPORT_LIMIT = 5000;
+const AUTO_REFRESH_INTERVAL_MS = 30 * 1000;
 
 function getIsoDate(date) {
   return date.toISOString().slice(0, 10);
@@ -144,6 +145,7 @@ export default function CheckoutBlackboxTab({ store }) {
   const [eventsTotal, setEventsTotal] = useState(0);
   const [eventOptions, setEventOptions] = useState([]);
   const [sourceOptions, setSourceOptions] = useState([]);
+  const isRefreshingRef = useRef(false);
 
   const baseQuery = useMemo(() => ({
     store: storeId,
@@ -151,7 +153,12 @@ export default function CheckoutBlackboxTab({ store }) {
     endDate: range.endDate
   }), [storeId, range.endDate, range.startDate]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (options = {}) => {
+    const { allowHidden = true } = options || {};
+    if (!allowHidden && document.visibilityState !== 'visible') return;
+    if (isRefreshingRef.current) return;
+
+    isRefreshingRef.current = true;
     setLoading(true);
     setError('');
     try {
@@ -185,11 +192,28 @@ export default function CheckoutBlackboxTab({ store }) {
       setError(loadError?.message || 'Failed to load Blackbox data');
     } finally {
       setLoading(false);
+      isRefreshingRef.current = false;
     }
   }, [baseQuery, eventName, limit, sessionHint, source]);
 
   useEffect(() => {
     loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    const refreshVisible = () => {
+      loadData({ allowHidden: false });
+    };
+
+    const interval = window.setInterval(refreshVisible, AUTO_REFRESH_INTERVAL_MS);
+    document.addEventListener('visibilitychange', refreshVisible);
+    window.addEventListener('focus', refreshVisible);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshVisible);
+      window.removeEventListener('focus', refreshVisible);
+    };
   }, [loadData]);
 
   const handleExportCsv = useCallback(() => {
@@ -311,6 +335,9 @@ export default function CheckoutBlackboxTab({ store }) {
         <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
           <div>
             Last refreshed: {lastRefreshedAt ? formatTimestamp(lastRefreshedAt) : '—'}
+          </div>
+          <div>
+            Auto-refresh: every {Math.round(AUTO_REFRESH_INTERVAL_MS / 1000)}s
           </div>
           <div>
             Showing up to{' '}
