@@ -1160,20 +1160,29 @@
 
 .si-realtime-kpis {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
   margin-top: 12px;
 }
 
+.si-realtime-kpis-primary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.si-realtime-kpis-secondary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 10px;
+}
+
 @media (max-width: 1180px) {
-  .si-realtime-kpis {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .si-realtime-kpis-primary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
-  .si-realtime-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .si-realtime-kpis-primary,
+  .si-realtime-kpis-secondary {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1182,6 +1191,59 @@
   border-radius: 16px;
   padding: 12px;
   background: rgba(248, 250, 252, 0.6);
+}
+
+.si-realtime-kpi-primary {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(238, 242, 255, 0.48));
+}
+
+.si-realtime-kpi-secondary {
+  background: rgba(248, 250, 252, 0.65);
+}
+
+.si-realtime-kpi-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.si-realtime-kpi-sparkline {
+  width: 120px;
+  min-width: 120px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.si-realtime-kpi-sparkline svg {
+  width: 100%;
+  height: 100%;
+}
+
+.si-realtime-kpi-sparkline-path {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.si-realtime-kpi-sparkline-path-up {
+  stroke: #15803d;
+}
+
+.si-realtime-kpi-sparkline-path-down {
+  stroke: #b91c1c;
+}
+
+.si-realtime-kpi-sparkline-path-flat {
+  stroke: #64748b;
+}
+
+.si-realtime-kpi-sparkline-empty {
+  font-size: 10px;
+  color: #64748b;
 }
 
 .si-realtime-kpi-label {
@@ -1198,6 +1260,59 @@
   font-weight: 900;
   color: var(--si-text);
   letter-spacing: -0.02em;
+}
+
+.si-realtime-kpi-primary .si-realtime-kpi-value {
+  font-size: 24px;
+}
+
+.si-realtime-kpi-deltas {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.si-realtime-kpi-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.84);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.si-realtime-kpi-delta-arrow {
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.si-realtime-kpi-delta-value {
+  white-space: nowrap;
+}
+
+.si-realtime-kpi-delta-label {
+  color: #475569;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.si-realtime-kpi-delta-up {
+  color: #15803d;
+}
+
+.si-realtime-kpi-delta-down {
+  color: #b91c1c;
+}
+
+.si-realtime-kpi-delta-flat,
+.si-realtime-kpi-delta-na {
+  color: #475569;
 }
 
 .si-realtime-grid {
