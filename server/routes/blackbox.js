@@ -11,6 +11,12 @@ const router = express.Router();
 const DEFAULT_STORE = 'shawq';
 const MAX_BATCH_EVENTS = 50;
 
+router.use((req, res, next) => {
+  // Avoid stale diagnostics when behind CDN/proxy caches.
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  next();
+});
+
 function normalizeStoreFromRequest(req) {
   return req?.query?.store || req?.body?.store || DEFAULT_STORE;
 }
@@ -148,4 +154,3 @@ router.get('/export.csv', (req, res) => {
 });
 
 export default router;
-

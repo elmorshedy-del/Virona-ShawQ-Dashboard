@@ -155,11 +155,13 @@ export default function CheckoutBlackboxTab({ store }) {
     setLoading(true);
     setError('');
     try {
+      const cacheBust = Date.now();
       const common = {
         ...baseQuery,
         eventName,
         source,
-        sessionHint
+        sessionHint,
+        _ts: cacheBust
       };
       const overviewQuery = buildQueryString(common);
       const eventsQuery = buildQueryString({
