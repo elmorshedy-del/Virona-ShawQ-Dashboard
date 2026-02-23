@@ -33,6 +33,7 @@ import croForensicsRouter from './routes/croForensics.js';
 import conversionUiFixLabRouter from './routes/conversionUiFixLab.js';
 import campaignIntelligenceRouter from './routes/campaignIntelligence.js';
 import blackboxRouter from './routes/blackbox.js';
+import { backfillBlackboxFromShopifyPixelEvents } from './services/blackboxService.js';
 import { ensureFaceModelsLoaded } from './services/testimonialExtractorService.js';
 import { runWhatIfMigration } from './db/whatifMigration.js';
 import { runCreativeIntelligenceMigration } from './db/creativeIntelligenceMigration.js';
@@ -282,6 +283,37 @@ app.get('*', (req, res, next) => {
   }
   return res.status(200).send('Virona backend is running. Frontend build is not available on this instance.');
 });
+
+function scheduleBlackboxPixelBackfill() {
+  const enabledRaw = String(process.env.BLACKBOX_PIXEL_BACKFILL ?? '').trim().toLowerCase();
+  if (enabledRaw === '0' || enabledRaw === 'false' || enabledRaw === 'off') {
+    console.log('[Blackbox] Pixel backfill disabled via BLACKBOX_PIXEL_BACKFILL');
+    return;
+  }
+
+  const stores = ['shawq', 'vironax'];
+  const daysRaw = parseInt(String(process.env.BLACKBOX_PIXEL_BACKFILL_DAYS || process.env.BLACKBOX_BACKFILL_DAYS || ''), 10);
+  const lookbackDays = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(Math.max(daysRaw, 1), 31) : 14;
+
+  const delayRaw = parseInt(String(process.env.BLACKBOX_PIXEL_BACKFILL_DELAY_MS || ''), 10);
+  const delayMs = Number.isFinite(delayRaw) && delayRaw >= 0 ? delayRaw : 12000;
+
+  setTimeout(() => {
+    for (const store of stores) {
+      try {
+        const result = backfillBlackboxFromShopifyPixelEvents(store, { lookbackDays });
+        console.log(
+          `[Blackbox] Pixel backfill ${store}: inserted ${result.inserted}/${result.scanned} (skippedExisting=${result.skippedExisting}, skippedInvalid=${result.skippedInvalid})`
+        );
+        if (result.errors?.length) {
+          console.warn(`[Blackbox] Pixel backfill ${store} had ${result.errors.length} error(s)`, result.errors[0]);
+        }
+      } catch (error) {
+        console.warn(`[Blackbox] Pixel backfill ${store} failed:`, error?.message || error);
+      }
+    }
+  }, delayMs);
+}
 
 // Background sync every 15 minutes
 async function backgroundSync() {
@@ -614,6 +646,9 @@ async function syncDailyExchangeRate() {
 
   console.log(`[Exchange] Daily sync stored ${yesterday}: TRY→USD = ${rate.toFixed(6)}`);
 }
+
+// Populate Checkout Blackbox from existing Shopify pixel DB stream (non-PII mirror).
+scheduleBlackboxPixelBackfill();
 
 // Initial sync on startup
 setTimeout(backgroundSync, 5000);

@@ -11,6 +11,10 @@ const router = express.Router();
 const DEFAULT_STORE = 'shawq';
 const MAX_BATCH_EVENTS = 50;
 
+// Accept `navigator.sendBeacon()` default payloads (`text/plain`) without requiring callers
+// to set JSON content-type. We parse JSON strings in `parseIngestPayload` below.
+const INGEST_TEXT_LIMIT = '2mb';
+
 router.use((req, res, next) => {
   // Avoid stale diagnostics when behind CDN/proxy caches.
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -28,6 +32,27 @@ function normalizeBooleanFlag(value) {
 }
 
 function parseIngestPayload(body) {
+  if (typeof body === 'string') {
+    const trimmed = body.trim();
+    if (!trimmed) return [];
+    try {
+      // sendBeacon() often posts text/plain; allow JSON string bodies.
+      // eslint-disable-next-line no-param-reassign
+      body = JSON.parse(trimmed);
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  if (body && Buffer.isBuffer(body)) {
+    try {
+      // eslint-disable-next-line no-param-reassign
+      body = JSON.parse(body.toString('utf8'));
+    } catch (_error) {
+      return [];
+    }
+  }
+
   if (!body || typeof body !== 'object') return [];
 
   if (Array.isArray(body)) {
@@ -45,7 +70,7 @@ function parseIngestPayload(body) {
   return [body];
 }
 
-router.post('/ingest', (req, res) => {
+router.post('/ingest', express.text({ type: ['text/*'], limit: INGEST_TEXT_LIMIT }), (req, res) => {
   try {
     const items = parseIngestPayload(req.body);
     if (!items.length) {

@@ -24,6 +24,9 @@ const IP_HASH_PREFIX_LENGTH = 16;
 const DUPLICATE_BUTTON_MAX_LENGTH = 160;
 const TOP_DUPLICATE_BUTTON_LIMIT = 10;
 const MIN_ORDER_ID_DIGITS = 6;
+const DEFAULT_PIXEL_BACKFILL_DAYS = 14;
+const DEFAULT_PIXEL_BACKFILL_MAX_ROWS = 20000;
+const MAX_PIXEL_BACKFILL_MAX_ROWS = 200000;
 
 const PURCHASE_SOURCE_WEBHOOK_KEYWORDS = [
   'webhook',
@@ -967,6 +970,370 @@ function mapRowForApi(row) {
   mapped.is_begin_checkout = isBeginCheckoutEvent(row.event_name);
   mapped.is_purchase = isPurchaseEvent(row.event_name);
   return mapped;
+}
+
+function normalizeShopifyNumericId(value) {
+  const raw = safeString(value, 200);
+  if (!raw) return '';
+  const match = raw.match(/(\d{6,})/);
+  return match ? match[1] : raw;
+}
+
+function parseQueryParamsFromUrl(rawUrl) {
+  const url = safeString(rawUrl, 1800);
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.searchParams;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function extractUtmParams(payload, pageUrl) {
+  const utmSource = safeString(pickFirstString(payload, UTM_SOURCE_PATHS, 240), 240);
+  const utmMedium = safeString(pickFirstString(payload, UTM_MEDIUM_PATHS, 240), 240);
+  const utmCampaign = safeString(pickFirstString(payload, UTM_CAMPAIGN_PATHS, 240), 240);
+
+  if (utmSource || utmMedium || utmCampaign) {
+    return {
+      utm_source: utmSource || '',
+      utm_medium: utmMedium || '',
+      utm_campaign: utmCampaign || ''
+    };
+  }
+
+  const params = parseQueryParamsFromUrl(pageUrl);
+  if (!params) return { utm_source: '', utm_medium: '', utm_campaign: '' };
+
+  return {
+    utm_source: safeString(params.get('utm_source') || '', 240),
+    utm_medium: safeString(params.get('utm_medium') || '', 240),
+    utm_campaign: safeString(params.get('utm_campaign') || '', 240)
+  };
+}
+
+function extractCountryRegionFromShopifyPixel(payload) {
+  const countryCandidates = [
+    payload?.country_code,
+    payload?.countryCode,
+    payload?.geoipCountryCode,
+    payload?.data?.checkout?.shippingAddress?.countryCode,
+    payload?.data?.checkout?.billingAddress?.countryCode,
+    payload?.event?.data?.checkout?.shippingAddress?.countryCode,
+    payload?.event?.data?.checkout?.billingAddress?.countryCode,
+    payload?.checkout?.shippingAddress?.countryCode,
+    payload?.checkout?.billingAddress?.countryCode
+  ];
+
+  let country = '';
+  for (const value of countryCandidates) {
+    const normalized = normalizeCountryCode(value);
+    if (normalized) {
+      country = normalized;
+      break;
+    }
+  }
+
+  const regionCandidates = [
+    payload?.region_code,
+    payload?.regionCode,
+    payload?.data?.checkout?.shippingAddress?.provinceCode,
+    payload?.data?.checkout?.billingAddress?.provinceCode,
+    payload?.event?.data?.checkout?.shippingAddress?.provinceCode,
+    payload?.event?.data?.checkout?.billingAddress?.provinceCode,
+    payload?.checkout?.shippingAddress?.provinceCode,
+    payload?.checkout?.billingAddress?.provinceCode
+  ];
+
+  let region = '';
+  for (const value of regionCandidates) {
+    const normalized = normalizeRegionCode(value);
+    if (normalized) {
+      region = normalized;
+      break;
+    }
+  }
+
+  return { country_code: country, region_code: region };
+}
+
+function extractCheckoutTokens(payload) {
+  const checkoutToken = safeString(
+    payload?.checkout_token ||
+      payload?.checkoutToken ||
+      payload?.checkout_id ||
+      payload?.checkoutId ||
+      payload?.data?.checkout?.token ||
+      payload?.data?.checkout?.id ||
+      payload?.event?.data?.checkout?.token ||
+      payload?.event?.data?.checkout?.id ||
+      payload?.checkout?.token ||
+      payload?.checkout?.id ||
+      '',
+    200
+  );
+
+  const cartToken = safeString(
+    payload?.cart_token ||
+      payload?.cartToken ||
+      payload?.data?.cart?.token ||
+      payload?.event?.data?.cart?.token ||
+      payload?.cart?.token ||
+      '',
+    200
+  );
+
+  return { checkout_token: checkoutToken, cart_token: cartToken };
+}
+
+function extractOrderId(payload) {
+  const candidates = [
+    payload?.order_id,
+    payload?.orderId,
+    payload?.transaction_id,
+    payload?.data?.order_id,
+    payload?.data?.order?.id,
+    payload?.data?.checkout?.order?.id,
+    payload?.data?.checkout?.orderId,
+    payload?.event?.data?.order_id,
+    payload?.event?.data?.order?.id,
+    payload?.event?.data?.checkout?.order?.id,
+    payload?.event?.data?.checkout?.orderId,
+    payload?.checkout?.order?.id,
+    payload?.checkout?.orderId
+  ];
+
+  for (const value of candidates) {
+    const normalized = normalizeShopifyNumericId(value);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+// Takes any Shopify pixel payload and returns a minimal Blackbox-safe payload.
+// IMPORTANT: This intentionally drops `event.data` / `checkout` objects to avoid storing PII.
+export function sanitizeShopifyPixelPayloadForBlackbox(payload, options = {}) {
+  const store = normalizeStore(options.store || payload?.store || DEFAULT_STORE);
+  const eventType = safeString(options.eventType || pickFirstString(payload, EVENT_NAME_PATHS, 160), 160);
+  const timestamp = safeString(options.timestamp || pickFirstString(payload, TIMESTAMP_PATHS, 80), 80) || new Date().toISOString();
+
+  const context = payload?.context && typeof payload.context === 'object' ? payload.context : {};
+  const doc = context?.document && typeof context.document === 'object' ? context.document : {};
+
+  const pageUrl = safeString(
+    doc?.location?.href ||
+      doc?.locationHref ||
+      payload?.page_url ||
+      payload?.page_location ||
+      '',
+    1600
+  );
+
+  const referrer = safeString(
+    doc?.referrer ||
+      payload?.referrer ||
+      '',
+    1200
+  );
+
+  const sessionId = safeString(
+    payload?.session_id ||
+      payload?.sessionId ||
+      context?.session_id ||
+      context?.sessionId ||
+      '',
+    120
+  );
+
+  const clientId = safeString(
+    payload?.client_id ||
+      payload?.clientId ||
+      context?.client_id ||
+      context?.clientId ||
+      '',
+    120
+  );
+
+  const { checkout_token: checkoutToken, cart_token: cartToken } = extractCheckoutTokens(payload);
+  const orderId = extractOrderId(payload);
+
+  const normalizedEventName = normalizeEventName(eventType);
+  const isPurchase = normalizedEventName === 'purchase';
+  const eventIdFromPayload = safeString(pickFirstString(payload, EVENT_ID_PATHS, 160), 160);
+
+  let eventId = eventIdFromPayload;
+  if (!eventId) {
+    if (isPurchase && orderId) eventId = `${orderId}_purchase`;
+    else if (checkoutToken) eventId = `${checkoutToken}_${normalizedEventName}`;
+    else if (cartToken) eventId = `${cartToken}_${normalizedEventName}`;
+  }
+
+  const checkoutButton = safeString(pickFirstString(payload, CHECKOUT_BUTTON_PATHS, 160), 160);
+  const checkoutSource = safeString(pickFirstString(payload, CHECKOUT_SOURCE_PATHS, 160), 160);
+
+  const { utm_source: utmSource, utm_medium: utmMedium, utm_campaign: utmCampaign } = extractUtmParams(payload, pageUrl);
+  const { country_code: countryCode, region_code: regionCode } = extractCountryRegionFromShopifyPixel(payload);
+
+  const landingPage = safeString(pickFirstString(payload, LANDING_PAGE_PATHS, 1200), 1200);
+  const eventSourceUrl = safeString(pickFirstString(payload, EVENT_SOURCE_URL_PATHS, 1200), 1200) || pageUrl;
+
+  const source = safeString(options.source || pickFirstString(payload, SOURCE_PATHS, 120), 120) || 'shopify_custom_pixel';
+  const channel = safeString(options.channel || pickFirstString(payload, CHANNEL_PATHS, 120), 120) || 'shopify_pixel';
+
+  const sanitized = {
+    store,
+    source,
+    channel,
+    timestamp,
+    event: eventType,
+    session_id: sessionId,
+    client_id: clientId,
+    event_id: eventId,
+    order_id: orderId,
+    cart_token: cartToken,
+    checkout_token: checkoutToken,
+    checkout_button: checkoutButton,
+    checkout_source: checkoutSource,
+    page_url: pageUrl,
+    referrer,
+    landing_page: landingPage,
+    event_source_url: eventSourceUrl,
+    country_code: countryCode,
+    region_code: regionCode,
+    utm_source: utmSource,
+    utm_medium: utmMedium,
+    utm_campaign: utmCampaign
+  };
+
+  // Drop empty keys to keep payload_json small and reduce noise.
+  Object.keys(sanitized).forEach((key) => {
+    const value = sanitized[key];
+    if (value === null || value === undefined) {
+      delete sanitized[key];
+      return;
+    }
+    if (typeof value === 'string' && !value.trim()) delete sanitized[key];
+  });
+
+  return sanitized;
+}
+
+export function backfillBlackboxFromShopifyPixelEvents(store, options = {}) {
+  const db = getDb();
+  const normalizedStore = normalizeStore(store);
+  const lookbackDays = clampInt(options.lookbackDays, DEFAULT_PIXEL_BACKFILL_DAYS, 1, MAX_LOOKBACK_DAYS);
+  const maxRows = clampInt(options.maxRows, DEFAULT_PIXEL_BACKFILL_MAX_ROWS, 100, MAX_PIXEL_BACKFILL_MAX_ROWS);
+  const range = resolveDateRange({ lookbackDays });
+
+  const existingRows = db.prepare(`
+    SELECT event_name, event_id, order_id, checkout_token, cart_token, session_id, client_id
+    FROM blackbox_events
+    WHERE store = ?
+      AND date(event_ts) BETWEEN ? AND ?
+      AND (event_name LIKE '%checkout%' OR event_name = 'purchase' OR event_name = 'payment_info_submitted')
+  `).all(normalizedStore, range.startDate, range.endDate);
+
+  const makeKey = (row) => {
+    const eventName = safeString(row?.event_name, 120);
+    const orderId = safeString(row?.order_id, 120);
+    const checkoutToken = safeString(row?.checkout_token, 160);
+    const cartToken = safeString(row?.cart_token, 160);
+    const sessionId = safeString(row?.session_id, 120);
+    const clientId = safeString(row?.client_id, 120);
+
+    let eventId = safeString(row?.event_id, 160);
+    // Normalize missing event_id into the deterministic forms we use for backfill/mirror.
+    if (!eventId) {
+      if (eventName === 'purchase' && orderId) {
+        eventId = `${orderId}_purchase`;
+      } else if (checkoutToken) {
+        eventId = `${checkoutToken}_${eventName}`;
+      } else if (cartToken) {
+        eventId = `${cartToken}_${eventName}`;
+      }
+    }
+    return `${eventName}|${eventId}|${orderId}|${checkoutToken}|${cartToken}|${sessionId}|${clientId}`;
+  };
+
+  const existingKeys = new Set(existingRows.map(makeKey));
+
+  const pixelRows = db.prepare(`
+    SELECT id, event_type, event_ts, created_at, payload_json
+    FROM shopify_pixel_events
+    WHERE store = ?
+      AND date(created_at) BETWEEN ? AND ?
+      AND (
+        LOWER(event_type) LIKE '%checkout%'
+        OR LOWER(event_type) = 'payment_info_submitted'
+      )
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `).all(normalizedStore, range.startDate, range.endDate, maxRows);
+
+  let inserted = 0;
+  let skippedExisting = 0;
+  let skippedInvalid = 0;
+  const errors = [];
+
+  for (const row of pixelRows) {
+    let payload = null;
+    try {
+      payload = row.payload_json ? JSON.parse(row.payload_json) : null;
+    } catch (_error) {
+      payload = null;
+    }
+    if (!payload) {
+      skippedInvalid += 1;
+      continue;
+    }
+
+    const sanitized = sanitizeShopifyPixelPayloadForBlackbox(payload, {
+      store: normalizedStore,
+      eventType: row.event_type,
+      timestamp: row.event_ts || row.created_at,
+      source: 'shopify_custom_pixel',
+      channel: 'shopify_pixel_backfill'
+    });
+
+    const key = makeKey({
+      event_name: normalizeEventName(sanitized.event || row.event_type),
+      event_id: sanitized.event_id || '',
+      order_id: sanitized.order_id || '',
+      checkout_token: sanitized.checkout_token || '',
+      cart_token: sanitized.cart_token || '',
+      session_id: sanitized.session_id || '',
+      client_id: sanitized.client_id || ''
+    });
+
+    if (existingKeys.has(key)) {
+      skippedExisting += 1;
+      continue;
+    }
+
+    try {
+      recordBlackboxEvent({ store: normalizedStore, payload: sanitized, req: undefined });
+      existingKeys.add(key);
+      inserted += 1;
+    } catch (error) {
+      errors.push({
+        id: row.id,
+        event_type: row.event_type,
+        error: error?.message || String(error)
+      });
+    }
+  }
+
+  return {
+    store: normalizedStore,
+    range,
+    lookbackDays,
+    scanned: pixelRows.length,
+    inserted,
+    skippedExisting,
+    skippedInvalid,
+    errors: errors.slice(0, 20)
+  };
 }
 
 export function recordBlackboxEvent({ store, payload, req }) {

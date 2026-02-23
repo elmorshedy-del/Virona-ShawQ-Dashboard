@@ -1,6 +1,7 @@
 import express from 'express';
 import { getDb } from '../db/database.js';
 import { recordSessionIntelligenceEvent } from '../services/sessionIntelligenceService.js';
+import { recordBlackboxEvent, sanitizeShopifyPixelPayloadForBlackbox } from '../services/blackboxService.js';
 
 const router = express.Router();
 
@@ -787,6 +788,7 @@ router.post('/shopify', async (req, res) => {
     const ts = normalizeEventTimestamp(payload);
     let dbWriteError = null;
     let siIngest = null;
+    let blackboxIngest = null;
 
     // Best-effort GeoIP enrichment: prefer explicit checkout address country (when available),
     // then edge-provided headers, then IP-based lookup.
@@ -826,6 +828,23 @@ router.post('/shopify', async (req, res) => {
       console.warn('[Pixels] Session Intelligence ingest failed:', siError?.message || siError);
     }
 
+    // Checkout Blackbox mirror (best-effort): records only a minimal, non-PII payload.
+    try {
+      if (isCheckoutRelated(type)) {
+        const sanitized = sanitizeShopifyPixelPayloadForBlackbox(payload, {
+          store,
+          eventType: type,
+          timestamp: ts,
+          source: 'shopify_custom_pixel',
+          channel: 'shopify_pixel_bridge'
+        });
+        blackboxIngest = recordBlackboxEvent({ store, payload: sanitized, req });
+      }
+    } catch (bbError) {
+      blackboxIngest = { ok: false, error: bbError?.message || String(bbError) };
+      console.warn('[Pixels] Blackbox mirror failed:', bbError?.message || bbError);
+    }
+
     res.json({
       success: true,
       ...(wantsDebug ? {
@@ -835,7 +854,8 @@ router.post('/shopify', async (req, res) => {
           timestamp: ts,
           dbWriteOk: !dbWriteError,
           dbWriteError: dbWriteError ? (dbWriteError?.message || String(dbWriteError)) : null,
-          siIngest: siIngest || { ok: false, reason: 'ingest_not_executed' }
+          siIngest: siIngest || { ok: false, reason: 'ingest_not_executed' },
+          blackboxIngest
         }
       } : {})
     });
