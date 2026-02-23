@@ -14,6 +14,11 @@ import {
   resolveNonRevenueKeywords
 } from './orderExclusionService.js';
 
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+const DEFAULT_SHOPIFY_SYNC_RANGE_DAYS = 30;
+const MIN_SHOPIFY_SYNC_RANGE_DAYS = 1;
+const MAX_SHOPIFY_SYNC_RANGE_DAYS = 3650;
+
 function normalizeShopDomain(shop) {
   if (!shop || typeof shop !== 'string') return null;
   const trimmed = shop.trim().toLowerCase();
@@ -151,6 +156,20 @@ function getShopifyHeaders(accessToken) {
     'X-Shopify-Access-Token': accessToken,
     'Content-Type': 'application/json'
   };
+}
+
+function clampSyncRangeDays(value) {
+  const parsed = Number.parseInt(String(value ?? DEFAULT_SHOPIFY_SYNC_RANGE_DAYS), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_SHOPIFY_SYNC_RANGE_DAYS;
+  return Math.min(MAX_SHOPIFY_SYNC_RANGE_DAYS, Math.max(MIN_SHOPIFY_SYNC_RANGE_DAYS, parsed));
+}
+
+function normalizeStoreKeySet(storeKeys = []) {
+  if (!Array.isArray(storeKeys)) return new Set();
+  const normalizedKeys = storeKeys
+    .map((key) => sanitizeStoreKey(key, ''))
+    .filter(Boolean);
+  return new Set(normalizedKeys);
 }
 
 function extractProductImageUrl(product) {
@@ -425,16 +444,25 @@ export async function fetchShopifyOrders(dateStart, dateEnd, options = {}) {
   }
 }
 
-export async function syncShopifyOrders() {
+export async function syncShopifyOrders(options = {}) {
   const db = getDb();
+  const rangeDays = clampSyncRangeDays(options?.rangeDays ?? process.env.SHOPIFY_SYNC_RANGE_DAYS);
   const endDate = formatDateAsGmt3(new Date());
   const startDate = formatDateAsGmt3(
-    new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    new Date(Date.now() - (rangeDays - 1) * MILLISECONDS_PER_DAY)
   );
-  const credentialsList = getAllShopifyCredentials();
+  const requestedStoreKeys = normalizeStoreKeySet(options?.storeKeys || []);
+  const availableCredentials = getAllShopifyCredentials();
+  const credentialsList = requestedStoreKeys.size
+    ? availableCredentials.filter((credential) =>
+      requestedStoreKeys.has(sanitizeStoreKey(credential?.analyticsStore, ''))
+    )
+    : availableCredentials;
 
   if (!credentialsList.length) {
-    const fallbackStore = sanitizeStoreKey(process.env.SHOPIFY_DEFAULT_STORE_KEY || process.env.SHAWQ_STORE_KEY || 'shawq');
+    const fallbackStore = requestedStoreKeys.size
+      ? Array.from(requestedStoreKeys)[0]
+      : sanitizeStoreKey(process.env.SHOPIFY_DEFAULT_STORE_KEY || process.env.SHAWQ_STORE_KEY || 'shawq');
     db.prepare(`
       INSERT INTO sync_log (store, source, status, error_message)
       VALUES (?, 'shopify', 'error', 'Missing Shopify credentials')
@@ -573,7 +601,14 @@ export async function syncShopifyOrders() {
     }
   }
 
-  return { success: true, records: totalInserted, storesSynced: credentialsList.length };
+  return {
+    success: true,
+    records: totalInserted,
+    storesSynced: credentialsList.length,
+    rangeDays,
+    startDate,
+    endDate
+  };
 }
 
 export function getShopifyConnectionStatus() {

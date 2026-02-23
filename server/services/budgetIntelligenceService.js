@@ -3,6 +3,8 @@ import { getAvailableCountries } from './analyticsService.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { buildStatusFilter } from '../features/meta-awareness/index.js';
 
+const SHOPIFY_REVENUE_SQL = 'COALESCE(NULLIF(COALESCE(subtotal, 0) + COALESCE(shipping, 0), 0), order_total)';
+
 const FX_SAR_RATES = {
   SAR: 1,
   USD: 1 / 3.75
@@ -217,7 +219,7 @@ export function getBudgetIntelligence(store, params) {
     `).all(store, startDate, endDate);
   } else {
     ecommerceOrders = db.prepare(`
-      SELECT country_code as country, COUNT(*) as orders, SUM(subtotal) as revenue
+      SELECT country_code as country, COUNT(*) as orders, SUM(${SHOPIFY_REVENUE_SQL}) as revenue
       FROM shopify_orders
       WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0 AND country_code IS NOT NULL AND country_code != ''
       GROUP BY country_code

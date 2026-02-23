@@ -4,6 +4,7 @@ import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 const DEFAULT_RANGE_DAYS = 60;
 const DEFAULT_SCAN_DAYS = 14;
 const DEFAULT_WINDOW_DAYS = 14;
+const SHOPIFY_REVENUE_FALLBACK_SQL = 'COALESCE(NULLIF(COALESCE(subtotal, 0) + COALESCE(shipping, 0), 0), order_total)';
 
 function clampInt(value, { min, max, fallback }) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -82,7 +83,7 @@ function getOrdersDailyAgg(store, startDate, endDate) {
       SELECT
         date,
         COUNT(*) as orders,
-        SUM(COALESCE(NULLIF(subtotal, 0), order_total)) as revenue,
+        SUM(${SHOPIFY_REVENUE_FALLBACK_SQL}) as revenue,
         SUM(COALESCE(discount, 0)) as discount
       FROM shopify_orders
       WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
@@ -689,7 +690,7 @@ export function getWatchtowerDrivers(store, metricKey, dateStr, params = {}) {
   // Default: revenue/orders drivers by country
   const ordersTable = getOrdersTable(store);
   const revenueExpr = ordersTable === 'shopify_orders'
-    ? 'SUM(COALESCE(NULLIF(subtotal, 0), order_total))'
+    ? `SUM(${SHOPIFY_REVENUE_FALLBACK_SQL})`
     : 'SUM(COALESCE(NULLIF(subtotal, 0), order_total))';
   const exclusionClause = ['shopify_orders', 'salla_orders'].includes(ordersTable)
     ? ' AND COALESCE(is_excluded, 0) = 0'
