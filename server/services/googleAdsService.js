@@ -776,8 +776,7 @@ async function getUnifiedAccessToken(config) {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload?.access_token) {
-    const message = payload?.error_description || payload?.error || `HTTP ${response.status}`;
-    throw new Error(`OAuth token exchange failed: ${message}`);
+    const message = payload?.error_description || (typeof payload?.error === 'string' ? payload.error : JSON.stringify(payload?.error)) || `HTTP ${response.status}`;
   }
 
   writeUnifiedTokenCache(cacheKey, payload.access_token);
