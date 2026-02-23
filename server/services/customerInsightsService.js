@@ -36,8 +36,8 @@ const BUNDLE_T1_MIN_ANCHOR_ORDERS = Math.max(
   1,
   Number.parseInt(
     process.env.CUSTOMER_INSIGHTS_BUNDLE_T1_MIN_ANCHOR_ORDERS
-      || process.env.CUSTOMER_INSIGHTS_BUNDLE_MIN_ANCHOR_ORDERS
-      || '20',
+    || process.env.CUSTOMER_INSIGHTS_BUNDLE_MIN_ANCHOR_ORDERS
+    || '20',
     10
   ) || 20
 );
@@ -45,8 +45,8 @@ const BUNDLE_T1_MIN_PAIR_ORDERS = Math.max(
   1,
   Number.parseInt(
     process.env.CUSTOMER_INSIGHTS_BUNDLE_T1_MIN_PAIR_ORDERS
-      || process.env.CUSTOMER_INSIGHTS_BUNDLE_MIN_PAIR_ORDERS
-      || '8',
+    || process.env.CUSTOMER_INSIGHTS_BUNDLE_MIN_PAIR_ORDERS
+    || '8',
     10
   ) || 8
 );
@@ -1164,8 +1164,8 @@ function computeBundles(items) {
   scoredByPair.forEach((pairRows, pairKey) => {
     const strategicRows = pairRows.filter((row) =>
       Number.isFinite(row.anchorAvgRevenue)
-        && Number.isFinite(row.attachAvgRevenue)
-        && row.anchorAvgRevenue >= row.attachAvgRevenue
+      && Number.isFinite(row.attachAvgRevenue)
+      && row.anchorAvgRevenue >= row.attachAvgRevenue
     );
     const pool = strategicRows.length ? strategicRows : pairRows;
     const sortedPool = [...pool].sort((a, b) => {
@@ -1583,6 +1583,319 @@ function computeProductShiftInsights(currentItems, previousItems, minOrders = 2)
   return insights;
 }
 
+// ── Product Momentum Engine (additive — runs alongside computeProductShiftInsights) ──
+
+const MOMENTUM_MIN_ORDERS = Math.max(1, Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_MIN_ORDERS || '3', 10) || 3);
+const MOMENTUM_HERO_SHARE_DROP = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_HERO_SHARE_DROP || '0.15');
+const MOMENTUM_CONCENTRATION_RISK = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_CONCENTRATION_RISK || '0.25');
+const MOMENTUM_RISING_PILLAR_SHARE = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_RISING_PILLAR_SHARE || '0.10');
+const MOMENTUM_DISCOUNT_DEPENDENCY = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_DISCOUNT_DEPENDENCY || '0.50');
+const MOMENTUM_CUSUM_THRESHOLD = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_CUSUM_THRESHOLD || '4.0');
+const MOMENTUM_FDR_ALPHA = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_FDR_ALPHA || '0.20');
+const MOMENTUM_RESULT_LIMIT = Math.max(1, Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_RESULT_LIMIT || '6', 10) || 6);
+
+function computeMomentumZTest(k1, n1, k2, n2) {
+  if (!n1 || !n2) return 1;
+  const p1 = k1 / n1;
+  const p2 = k2 / n2;
+  const pPooled = (k1 + k2) / (n1 + n2);
+  if (pPooled <= 0 || pPooled >= 1) return 1;
+  const se = Math.sqrt(pPooled * (1 - pPooled) * (1 / n1 + 1 / n2));
+  if (se <= 0) return 1;
+  const z = (p1 - p2) / se;
+  // Normal CDF approx (Abramowitz & Stegun)
+  const absZ = Math.abs(z);
+  const t = 1 / (1 + 0.2316419 * absZ);
+  const d = 0.3989422804014327 * Math.exp(-absZ * absZ / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.8212560 + t * 1.3302744))));
+  return clamp(2 * p, 0, 1);
+}
+
+function computeMomentumCUSUM(dailyCounts) {
+  if (!dailyCounts.length) return { driftUp: false, driftDown: false, maxUp: 0, maxDown: 0 };
+  const mean = dailyCounts.reduce((s, v) => s + v, 0) / dailyCounts.length;
+  const std = Math.sqrt(dailyCounts.reduce((s, v) => s + (v - mean) ** 2, 0) / dailyCounts.length) || 1;
+  const slack = 0.5 * std;
+  let sumUp = 0, sumDown = 0, maxUp = 0, maxDown = 0;
+  dailyCounts.forEach((val) => {
+    sumUp = Math.max(0, sumUp + (val - mean - slack));
+    sumDown = Math.max(0, sumDown + (mean - slack - val));
+    maxUp = Math.max(maxUp, sumUp);
+    maxDown = Math.max(maxDown, sumDown);
+  });
+  const threshold = MOMENTUM_CUSUM_THRESHOLD * std;
+  return { driftUp: maxUp >= threshold, driftDown: maxDown >= threshold, maxUp: std > 0 ? maxUp / std : 0, maxDown: std > 0 ? maxDown / std : 0 };
+}
+
+function buildMomentumSparkline(items, productKey) {
+  const dayMap = new Map();
+  items.forEach((row) => {
+    if (getProductKey(row) !== productKey || !row.order_created_at) return;
+    const day = String(row.order_created_at).slice(0, 10);
+    dayMap.set(day, (dayMap.get(day) || 0) + 1);
+  });
+  return Array.from(dayMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, orders]) => ({ date, orders }));
+}
+
+function getMomentumSignalLabel(qValue) {
+  if (qValue <= 0.05) return 'Confirmed';
+  if (qValue <= 0.10) return 'Likely';
+  if (qValue <= 0.20) return 'Possible';
+  return 'Emerging';
+}
+
+function getMomentumSeverity(triggers, events) {
+  if (triggers.includes('hero_decline') || events.includes('first_hero_slip') || events.includes('sharp_reversal')) return 'critical';
+  if (triggers.includes('concentration_risk') || triggers.includes('velocity_stall') || events.includes('leaderboard_reshuffle')) return 'high';
+  if (triggers.includes('rising_pillar') || triggers.includes('new_traction') || events.includes('meteoric_rise') || events.includes('record_period')) return 'medium';
+  return 'low';
+}
+
+function getMomentumAssessment(product, trigger, event) {
+  const templates = {
+    hero_decline: { headline: `"${product.title}" share dropped`, action: 'Audit PDP conversion, check stock levels, defend placement.', kpi: 'Share recovery within 14 days' },
+    concentration_risk: { headline: `"${product.title}" drives ${(product.revenueShare * 100).toFixed(0)}% of revenue`, action: 'Diversify demand across catalog to reduce single-product risk.', kpi: 'Top-SKU share below 25%' },
+    rising_pillar: { headline: `"${product.title}" is becoming a pillar`, action: 'Increase inventory, boost placement, test bundle pairings.', kpi: 'Sustain share growth for 2 more periods' },
+    new_traction: { headline: `"${product.title}" is a new entrant`, action: 'Feature in collection pages, test paid amplification.', kpi: 'Move into top-10 within 14 days' },
+    velocity_stall: { headline: `"${product.title}" growth stalled`, action: 'Check if creative fatigue, pricing, or competitor pressure caused the stall.', kpi: 'Resume positive WoW growth' },
+    discount_dependency: { headline: `"${product.title}" relies heavily on discounts`, action: 'Test full-price positioning, reduce promo frequency.', kpi: 'Full-price order share above 50%' },
+    quiet_exit: { headline: `"${product.title}" dropped out of top 10`, action: 'Decide: markdown and clear, or reinvest with refreshed creative.', kpi: 'Keep-or-sunset decision within 14 days' },
+    first_hero_slip: { headline: `"${product.title}" lost #1 position`, action: 'Investigate what displaced it and whether the shift is structural.', kpi: 'Reclaim #1 or validate new leader' },
+    leaderboard_reshuffle: { headline: 'Multiple top products changed rank', action: 'Review whether this is seasonal rotation or a demand shift.', kpi: 'Stable top-5 by next review' },
+    meteoric_rise: { headline: `"${product.title}" jumped into the top 10`, action: 'Ensure inventory depth, feature prominently, capture the wave.', kpi: 'Sustain rank for 2+ periods' },
+    record_period: { headline: `"${product.title}" hit a record`, action: 'Double down on what drove it — creative, channel, or pricing.', kpi: 'Maintain above prior peak' },
+    sustained_streak: { headline: `"${product.title}" grew 3+ consecutive periods`, action: 'This is a proven winner. Scale inventory and marketing spend.', kpi: 'Continue growth trajectory' },
+    sharp_reversal: { headline: `"${product.title}" reversed from growth to decline`, action: 'Urgent: diagnose root cause (stock, price, competition).', kpi: 'Stabilize within 7 days' }
+  };
+  const key = trigger || event;
+  return templates[key] || { headline: product.title, action: 'Monitor this product closely.', kpi: 'Track rank and revenue share' };
+}
+
+function computeProductMomentum(currentItems, previousItems) {
+  const currentMetrics = computeProductMetrics(currentItems);
+  const previousMetrics = computeProductMetrics(previousItems);
+
+  if (!currentMetrics.size) return { momentum: [], watch: [] };
+
+  const { sorted: currentSorted, ranks: currentRanks } = rankProducts(currentMetrics);
+  const { ranks: previousRanks } = rankProducts(previousMetrics);
+
+  const totalOrdersCurr = Array.from(currentMetrics.values()).reduce((s, p) => s + p.orders, 0);
+  const totalOrdersPrev = Array.from(previousMetrics.values()).reduce((s, p) => s + p.orders, 0);
+  const totalRevenueCurr = Array.from(currentMetrics.values()).reduce((s, p) => s + p.revenue, 0);
+
+  const allProducts = [];
+
+  currentMetrics.forEach((current) => {
+    const prev = previousMetrics.get(current.key);
+    const currRank = currentRanks.get(current.key) || null;
+    const prevRank = previousRanks.get(current.key) || null;
+    const currOrders = current.orders;
+    const prevOrders = prev?.orders || 0;
+    const currRevenue = current.revenue || 0;
+    const prevRevenue = prev?.revenue || 0;
+    const revenueShare = totalRevenueCurr > 0 ? currRevenue / totalRevenueCurr : 0;
+    const rankDelta = prevRank ? prevRank - currRank : null;
+    const isNew = !prevRank && currOrders >= MOMENTUM_MIN_ORDERS;
+    const wowGrowth = prevOrders > 0 ? currOrders / prevOrders : (currOrders > 0 ? 2 : 0);
+
+    const pValue = totalOrdersCurr >= 5 && totalOrdersPrev >= 5
+      ? computeMomentumZTest(currOrders, totalOrdersCurr, prevOrders, totalOrdersPrev)
+      : 1;
+
+    const sparkline = buildMomentumSparkline(currentItems, current.key);
+    const dailyCounts = sparkline.map((d) => d.orders);
+    const cusum = computeMomentumCUSUM(dailyCounts);
+
+    allProducts.push({
+      key: current.key,
+      title: current.title,
+      image_url: currentSorted.find((r) => r.key === current.key)?.image_url || null,
+      rank: currRank,
+      prevRank,
+      rankDelta,
+      currOrders,
+      prevOrders,
+      currRevenue,
+      prevRevenue,
+      revenueShare,
+      isNew,
+      pValue,
+      wowGrowth,
+      sparkline,
+      cusum
+    });
+  });
+
+  // BH FDR correction
+  const pValues = allProducts.map((p) => p.pValue);
+  const qValues = computeBenjaminiHochbergQValues(pValues);
+  allProducts.forEach((p, i) => {
+    p.qValue = qValues[i] ?? 1;
+    p.signal = getMomentumSignalLabel(p.qValue);
+    p.significant = p.qValue <= MOMENTUM_FDR_ALPHA;
+  });
+
+  // Layer 1: Business triggers
+  const triggeredProducts = [];
+  allProducts.forEach((p) => {
+    if (p.currOrders < MOMENTUM_MIN_ORDERS && p.prevOrders < MOMENTUM_MIN_ORDERS) return;
+
+    const triggers = [];
+
+    // Hero decline
+    if (p.prevRank && p.prevRank <= 2 && p.rank && p.rank > p.prevRank) {
+      const prevTotalRev = Array.from(previousMetrics.values()).reduce((s, x) => s + x.revenue, 0);
+      const prevShare = prevTotalRev > 0 ? p.prevRevenue / prevTotalRev : 0;
+      if (prevShare > 0 && (prevShare - p.revenueShare) / prevShare >= MOMENTUM_HERO_SHARE_DROP) {
+        triggers.push('hero_decline');
+      }
+    }
+
+    // Concentration risk
+    if (p.revenueShare > MOMENTUM_CONCENTRATION_RISK) {
+      triggers.push('concentration_risk');
+    }
+
+    // Rising pillar
+    if (p.revenueShare >= MOMENTUM_RISING_PILLAR_SHARE && p.wowGrowth > 1.0) {
+      triggers.push('rising_pillar');
+    }
+
+    // New traction
+    if (p.isNew && p.currOrders >= 5) {
+      triggers.push('new_traction');
+    }
+
+    // Velocity stall
+    if (p.prevOrders > 0 && p.wowGrowth <= 1.0 && p.currOrders >= MOMENTUM_MIN_ORDERS && p.prevRank && p.prevRank <= 10) {
+      triggers.push('velocity_stall');
+    }
+
+    // Discount dependency (check discount skus later, for now use order-level)
+    // Note: this uses the item-level discount check
+    const discountedItemCount = currentItems.filter((row) => getProductKey(row) === p.key && toNumber(row.discount) > 0).length;
+    const totalItemCount = currentItems.filter((row) => getProductKey(row) === p.key).length;
+    const discountShare = totalItemCount > 0 ? discountedItemCount / totalItemCount : 0;
+    if (discountShare >= MOMENTUM_DISCOUNT_DEPENDENCY && p.currOrders >= MOMENTUM_MIN_ORDERS) {
+      triggers.push('discount_dependency');
+    }
+
+    // Quiet exit
+    if (p.prevRank && p.prevRank <= 10 && (p.rank > 10 || p.currOrders < MOMENTUM_MIN_ORDERS)) {
+      triggers.push('quiet_exit');
+    }
+
+    if (triggers.length) {
+      triggeredProducts.push({ ...p, triggers });
+    }
+  });
+
+  // Layer 2: Exceptional events
+  const exceptionalEvents = [];
+
+  // First hero slip: #1 held previously, now lost
+  const currLeader = allProducts.find((p) => p.rank === 1);
+  const prevLeaderKey = Array.from(previousRanks.entries()).find(([, r]) => r === 1)?.[0];
+  if (prevLeaderKey && currLeader && currLeader.key !== prevLeaderKey) {
+    const slipped = allProducts.find((p) => p.key === prevLeaderKey);
+    if (slipped) {
+      exceptionalEvents.push({ ...slipped, exceptionalEvent: 'first_hero_slip' });
+    }
+  }
+
+  // Leaderboard reshuffle: 3+ of top-5 changed rank
+  const top5Curr = allProducts.filter((p) => p.rank && p.rank <= 5);
+  const reshuffled = top5Curr.filter((p) => p.prevRank && p.prevRank !== p.rank);
+  if (reshuffled.length >= 3) {
+    exceptionalEvents.push({ ...reshuffled[0], exceptionalEvent: 'leaderboard_reshuffle' });
+  }
+
+  // Meteoric rise: jumped 5+ ranks from bottom half into top 10
+  allProducts.forEach((p) => {
+    if (p.prevRank && p.rank && p.rank <= 10 && p.prevRank > currentMetrics.size / 2 && (p.prevRank - p.rank) >= 5) {
+      exceptionalEvents.push({ ...p, exceptionalEvent: 'meteoric_rise' });
+    }
+  });
+
+  // Sharp reversal: was top-3 grower, now declining
+  allProducts.forEach((p) => {
+    if (p.prevRank && p.prevRank <= 3 && p.wowGrowth < 1.0 && p.prevOrders > 0 && p.currOrders >= MOMENTUM_MIN_ORDERS) {
+      exceptionalEvents.push({ ...p, exceptionalEvent: 'sharp_reversal' });
+    }
+  });
+
+  // Classify into momentum (positive) vs watch (negative)
+  const momentumProducts = [];
+  const watchProducts = [];
+  const seen = new Set();
+
+  // Process triggered products
+  triggeredProducts.forEach((p) => {
+    if (seen.has(p.key)) return;
+    seen.add(p.key);
+    const primaryTrigger = p.triggers[0];
+    const event = exceptionalEvents.find((e) => e.key === p.key)?.exceptionalEvent || null;
+    const severity = getMomentumSeverity(p.triggers, event ? [event] : []);
+    const assessment = getMomentumAssessment(p, primaryTrigger, event);
+
+    const enriched = {
+      key: p.key,
+      title: p.title,
+      image_url: p.image_url,
+      rank: p.rank,
+      prevRank: p.prevRank,
+      triggers: p.triggers,
+      exceptionalEvent: event,
+      sparkline: p.sparkline,
+      statistical: { signal: p.signal, qValue: p.qValue, significant: p.significant, cusum: p.cusum },
+      assessment: { severity, headline: assessment.headline, action: assessment.action, kpi: assessment.kpi }
+    };
+
+    const isNegative = ['hero_decline', 'velocity_stall', 'discount_dependency', 'quiet_exit'].includes(primaryTrigger);
+    if (isNegative) {
+      watchProducts.push(enriched);
+    } else {
+      momentumProducts.push(enriched);
+    }
+  });
+
+  // Process exceptional events not already covered
+  exceptionalEvents.forEach((e) => {
+    if (seen.has(e.key)) return;
+    seen.add(e.key);
+    const severity = getMomentumSeverity([], [e.exceptionalEvent]);
+    const assessment = getMomentumAssessment(e, null, e.exceptionalEvent);
+
+    const enriched = {
+      key: e.key,
+      title: e.title,
+      image_url: e.image_url,
+      rank: e.rank,
+      prevRank: e.prevRank,
+      triggers: [],
+      exceptionalEvent: e.exceptionalEvent,
+      sparkline: e.sparkline,
+      statistical: { signal: e.signal, qValue: e.qValue, significant: e.significant, cusum: e.cusum },
+      assessment: { severity, headline: assessment.headline, action: assessment.action, kpi: assessment.kpi }
+    };
+
+    const isNegative = ['first_hero_slip', 'sharp_reversal'].includes(e.exceptionalEvent);
+    if (isNegative) {
+      watchProducts.push(enriched);
+    } else {
+      momentumProducts.push(enriched);
+    }
+  });
+
+  return {
+    momentum: momentumProducts.slice(0, MOMENTUM_RESULT_LIMIT),
+    watch: watchProducts.slice(0, MOMENTUM_RESULT_LIMIT)
+  };
+}
+
 
 function computeDiscountSkus(items) {
   const bySku = new Map();
@@ -1782,6 +2095,7 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const topProducts = computeTopProducts(items);
   const discountSkus = computeDiscountSkus(items);
   const productShiftInsights = computeProductShiftInsights(items, previousItems, 2);
+  const productMomentum = computeProductMomentum(items, previousItems);
 
   let ordersWithCountry = 0;
   const topCountry = orders.reduce((best, row) => {
@@ -1939,6 +2253,13 @@ export async function getCustomerInsightsPayload(store, params = {}) {
       topProducts: {
         summary: topProducts.length ? 'Top products by revenue and order count.' : 'Top products will appear once line-item data is synced.',
         products: topProducts
+      },
+      productMomentum: {
+        summary: (productMomentum.momentum.length || productMomentum.watch.length)
+          ? 'Product momentum and watch signals detected.'
+          : 'Product momentum insights will appear after sufficient order history builds up.',
+        momentum: productMomentum.momentum,
+        watch: productMomentum.watch
       },
       cohorts: {
         summary: customerStats.customerCount
