@@ -166,7 +166,8 @@ const TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION = {
 const TIME_OF_DAY_ORDERS_LINE_COLOR = '#6366f1';
 const TIME_OF_DAY_PACING_LINE_COLOR = '#0f766e';
 const KPI_MONTH_SUMMARY_THRESHOLDS = {
-  strongDirectionalDeltaPct: 15
+  strongDirectionalDeltaPct: 15,
+  minHistoryMonthsForAllTime: 2
 };
 
 const toNumber = (value) => {
@@ -2512,10 +2513,12 @@ function DashboardTab({
         .map((item) => getMetricValue(item, kpi.key))
         .filter((val) => Number.isFinite(val) && val > 0);
 
-      const maxValue = historyValues.length ? Math.max(...historyValues) : null;
-      const minValue = historyValues.length ? Math.min(...historyValues) : null;
-      const isAllTimeHigh = maxValue != null && value >= maxValue;
-      const isAllTimeLow = minValue != null && value <= minValue;
+      const hasAllTimeContext =
+        historyValues.length >= KPI_MONTH_SUMMARY_THRESHOLDS.minHistoryMonthsForAllTime;
+      const maxValue = hasAllTimeContext ? Math.max(...historyValues) : null;
+      const minValue = hasAllTimeContext ? Math.min(...historyValues) : null;
+      const isAllTimeHigh = hasAllTimeContext && maxValue != null && value >= maxValue;
+      const isAllTimeLow = hasAllTimeContext && minValue != null && value <= minValue;
       const lowerIsBetter = kpi.direction === 'down';
       const isBestEver = lowerIsBetter ? isAllTimeLow : isAllTimeHigh;
       const isWorstEver = lowerIsBetter ? isAllTimeHigh : isAllTimeLow;
@@ -5498,10 +5501,10 @@ function DashboardTab({
               key={summary.key}
               className={`relative rounded-full border px-3 py-1 text-[11px] font-semibold ${
                 summary.tone === 'positive'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 shadow-[0_8px_18px_rgba(16,185,129,0.16)]'
                   : summary.tone === 'negative'
-                    ? 'bg-rose-50 text-rose-700 border-rose-200'
-                    : 'bg-gray-50 text-gray-700 border-gray-200'
+                    ? 'bg-rose-50 text-rose-700 border-rose-200 shadow-[0_8px_18px_rgba(244,63,94,0.14)]'
+                    : 'bg-gray-50 text-gray-700 border-gray-200 shadow-[0_6px_14px_rgba(15,23,42,0.10)]'
               } ${summary.isCelebrating ? 'summary-pill-celebrate summary-pill-intense pr-8' : ''}`}
             >
               <span>{summary.text}</span>
