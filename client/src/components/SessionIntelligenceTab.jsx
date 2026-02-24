@@ -282,7 +282,7 @@ function buildRealtimeSparklinePath(trendRows, {
   });
   const min = Math.min(...values);
   const max = Math.max(...values);
-  const range = Math.max(max - min, 1);
+  const range = max - min;
   const innerWidth = Math.max(width - (padding * 2), 1);
   const innerHeight = Math.max(height - (padding * 2), 1);
   const stepX = rows.length > 1 ? innerWidth / (rows.length - 1) : 0;
@@ -290,7 +290,7 @@ function buildRealtimeSparklinePath(trendRows, {
   return values
     .map((value, index) => {
       const x = padding + (index * stepX);
-      const normalized = (value - min) / range;
+      const normalized = range > 0 ? (value - min) / range : 0.5;
       const y = padding + ((1 - normalized) * innerHeight);
       const command = index === 0 ? 'M' : 'L';
       return `${command}${x.toFixed(2)},${y.toFixed(2)}`;
