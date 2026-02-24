@@ -73,28 +73,13 @@ const CLARITY_SIGNAL_EVENT_NAMES = [
 ];
 
 const THEME_SIGNAL_SOURCES = ['theme_pixel', 'virona-pixel-v1'];
-const CLARITY_SIGNAL_PLACEHOLDERS = CLARITY_SIGNAL_EVENT_NAMES.map(() => '?').join(',');
-const THEME_SIGNAL_SOURCE_PLACEHOLDERS = THEME_SIGNAL_SOURCES.map(() => '?').join(',');
 
 const SHOPPER_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 const REALTIME_FOCUS_GEO_LIMIT = 12;
 const REALTIME_GEO_FALLBACK_SAMPLE_LIMIT = 1500;
 const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
-const REALTIME_METRIC_TREND_DAYS = Math.min(
-  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_REALTIME_TREND_DAYS || '7', 10) || 7, 5),
-  14
-);
-const REALTIME_METRIC_CACHE_TTL_MS = Math.min(
-  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_REALTIME_METRIC_CACHE_TTL_MS || '15000', 10) || 15000, 1000),
-  60000
-);
-const REALTIME_METRIC_CACHE_MAX_ENTRIES = Math.min(
-  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_REALTIME_METRIC_CACHE_MAX_ENTRIES || '200', 10) || 200, 20),
-  2000
-);
 const lastShopperBackfillByStore = new Map();
 const realtimeFocusGeoFallbackCache = new Map();
-const realtimeMetricReferenceCache = new Map();
 const lastJourneyEntryBackfillByStore = new Map();
 const SESSION_JOURNEY_SUPPORTED_LOCALE_CODES = new Set([
   'ar',
@@ -3180,195 +3165,6 @@ function incrementNestedMapCount(outerMap, parentKey, childKey, amount = 1) {
   incrementMapCount(innerMap, child, amount);
 }
 
-function buildRealtimeShopperKeySql(alias) {
-  const normalizedAlias = safeString(alias).trim() || 'r';
-  return `
-    CASE
-      WHEN COALESCE(${normalizedAlias}.shopper_number, 0) > 0 THEN 'shopper:' || CAST(${normalizedAlias}.shopper_number AS TEXT)
-      WHEN COALESCE(${normalizedAlias}.client_id, '') <> '' THEN 'client:' || ${normalizedAlias}.client_id
-      WHEN COALESCE(${normalizedAlias}.session_id, '') <> '' THEN 'session:' || ${normalizedAlias}.session_id
-      ELSE NULL
-    END
-  `;
-}
-
-function queryRealtimeMetricSnapshot(db, {
-  store,
-  startAt,
-  endAt
-}) {
-  const shopperKeyExpr = buildRealtimeShopperKeySql('r');
-  const row = db.prepare(`
-    WITH filtered AS (
-      SELECT id, session_id, client_id, shopper_number
-      FROM si_events
-      WHERE store = ?
-        AND created_at >= ?
-        AND created_at < ?
-        AND lower(event_name) NOT IN (${CLARITY_SIGNAL_PLACEHOLDERS})
-        AND COALESCE(lower(source), '') NOT IN (${THEME_SIGNAL_SOURCE_PLACEHOLDERS})
-    ),
-    recent AS (
-      SELECT session_id, MAX(id) AS last_id
-      FROM filtered
-      GROUP BY session_id
-    ),
-    latest_rows AS (
-      SELECT f.session_id, f.client_id, f.shopper_number
-      FROM filtered f
-      JOIN recent r ON r.last_id = f.id
-    )
-    SELECT
-      (SELECT COUNT(*) FROM filtered) AS events,
-      (SELECT COUNT(*) FROM latest_rows) AS sessions,
-      (SELECT COUNT(DISTINCT ${shopperKeyExpr}) FROM latest_rows r) AS shoppers
-  `).get(
-    store,
-    startAt,
-    endAt,
-    ...CLARITY_SIGNAL_EVENT_NAMES,
-    ...THEME_SIGNAL_SOURCES
-  );
-
-  return {
-    events: safeFiniteNumber(row?.events, 0),
-    sessions: safeFiniteNumber(row?.sessions, 0),
-    shoppers: safeFiniteNumber(row?.shoppers, 0)
-  };
-}
-
-function toRealtimeMetricComparison({ label, current, baseline }) {
-  const delta = percentageDelta(current, baseline);
-  return {
-    label,
-    value: safeFiniteNumber(baseline, 0),
-    delta,
-    direction: directionFromDelta(delta)
-  };
-}
-
-function buildRealtimeMetricModel({
-  key,
-  current,
-  yesterday,
-  lastWeek,
-  trendRows
-}) {
-  return {
-    key,
-    current: safeFiniteNumber(current, 0),
-    yesterday: toRealtimeMetricComparison({
-      label: 'vs yesterday',
-      current,
-      baseline: yesterday
-    }),
-    lastWeek: toRealtimeMetricComparison({
-      label: 'vs same day last week',
-      current,
-      baseline: lastWeek
-    }),
-    trend: trendRows.map((row) => ({
-      date: row.date,
-      value: safeFiniteNumber(row?.[key], 0)
-    }))
-  };
-}
-
-function computeRealtimeMetricReferences(db, { store, windowMinutes, nowMs }) {
-  const windowMs = Math.max(1, safeFiniteNumber(windowMinutes, 30)) * 60 * 1000;
-  const snapshotsByWindow = new Map();
-
-  const getSnapshotAt = (endMs) => {
-    const normalizedEndMs = Math.max(0, safeFiniteNumber(endMs, nowMs));
-    const startMs = Math.max(0, normalizedEndMs - windowMs);
-    const key = `${startMs}|${normalizedEndMs}`;
-    if (snapshotsByWindow.has(key)) return snapshotsByWindow.get(key);
-
-    const snapshot = queryRealtimeMetricSnapshot(db, {
-      store,
-      startAt: toSqliteUtcDateTime(startMs),
-      endAt: toSqliteUtcDateTime(normalizedEndMs)
-    });
-    snapshotsByWindow.set(key, snapshot);
-    return snapshot;
-  };
-
-  const currentSnapshot = getSnapshotAt(nowMs);
-  const yesterdaySnapshot = getSnapshotAt(nowMs - MILLISECONDS_PER_DAY);
-  const lastWeekSnapshot = getSnapshotAt(nowMs - MILLISECONDS_PER_WEEK);
-
-  const trendRows = [];
-  for (let offset = REALTIME_METRIC_TREND_DAYS - 1; offset >= 0; offset -= 1) {
-    const dayMs = nowMs - (offset * MILLISECONDS_PER_DAY);
-    const snapshot = getSnapshotAt(dayMs);
-    trendRows.push({
-      date: toIsoDayUtc(dayMs),
-      ...snapshot
-    });
-  }
-
-  return {
-    generatedAt: normalizeSqliteDateTime(new Date(nowMs)),
-    trendDays: REALTIME_METRIC_TREND_DAYS,
-    sessions: buildRealtimeMetricModel({
-      key: 'sessions',
-      current: currentSnapshot.sessions,
-      yesterday: yesterdaySnapshot.sessions,
-      lastWeek: lastWeekSnapshot.sessions,
-      trendRows
-    }),
-    shoppers: buildRealtimeMetricModel({
-      key: 'shoppers',
-      current: currentSnapshot.shoppers,
-      yesterday: yesterdaySnapshot.shoppers,
-      lastWeek: lastWeekSnapshot.shoppers,
-      trendRows
-    }),
-    events: buildRealtimeMetricModel({
-      key: 'events',
-      current: currentSnapshot.events,
-      yesterday: yesterdaySnapshot.events,
-      lastWeek: lastWeekSnapshot.events,
-      trendRows
-    })
-  };
-}
-
-function pruneRealtimeMetricReferenceCache(nowMs) {
-  if (realtimeMetricReferenceCache.size <= REALTIME_METRIC_CACHE_MAX_ENTRIES) return;
-
-  const entries = Array.from(realtimeMetricReferenceCache.entries())
-    .sort((a, b) => (a[1]?.expiresAtMs || 0) - (b[1]?.expiresAtMs || 0));
-
-  for (const [cacheKey, entry] of entries) {
-    if ((entry?.expiresAtMs || 0) <= nowMs || realtimeMetricReferenceCache.size > REALTIME_METRIC_CACHE_MAX_ENTRIES) {
-      realtimeMetricReferenceCache.delete(cacheKey);
-    }
-    if (realtimeMetricReferenceCache.size <= REALTIME_METRIC_CACHE_MAX_ENTRIES) break;
-  }
-}
-
-function getRealtimeMetricReferences(db, { store, windowMinutes }) {
-  const nowMs = Date.now();
-  const cacheKey = `${store}|${windowMinutes}`;
-  const cached = realtimeMetricReferenceCache.get(cacheKey);
-  if (cached && cached.expiresAtMs > nowMs) return cached.metrics;
-
-  const metrics = computeRealtimeMetricReferences(db, {
-    store,
-    windowMinutes,
-    nowMs
-  });
-
-  realtimeMetricReferenceCache.set(cacheKey, {
-    metrics,
-    expiresAtMs: nowMs + REALTIME_METRIC_CACHE_TTL_MS
-  });
-  pruneRealtimeMetricReferenceCache(nowMs);
-
-  return metrics;
-}
-
 function getRealtimeFocusGeoFallback(db, normalizedStore, windowExpr, focusCountry) {
   if (!focusCountry) return { regions: [], cities: [] };
 
@@ -3435,10 +3231,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
   const window = Math.min(Math.max(parseInt(windowMinutes, 10) || 30, 1), 180);
   const max = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
   const windowExpr = `-${window} minutes`;
-  const realtimeMetrics = getRealtimeMetricReferences(db, {
-    store: normalizedStore,
-    windowMinutes: window
-  });
+  const clarityPlaceholders = CLARITY_SIGNAL_EVENT_NAMES.map(() => '?').join(',');
+  const themeSourcePlaceholders = THEME_SIGNAL_SOURCES.map(() => '?').join(',');
 
   const totals = db.prepare(`
     SELECT
@@ -3448,8 +3242,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
-      AND lower(event_name) NOT IN (${CLARITY_SIGNAL_PLACEHOLDERS})
-      AND COALESCE(lower(source), '') NOT IN (${THEME_SIGNAL_SOURCE_PLACEHOLDERS})
+      AND lower(event_name) NOT IN (${clarityPlaceholders})
+      AND COALESCE(lower(source), '') NOT IN (${themeSourcePlaceholders})
   `).get(
     normalizedStore,
     windowExpr,
@@ -3463,8 +3257,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       FROM si_events
       WHERE store = ?
         AND created_at >= datetime('now', ?)
-        AND lower(event_name) NOT IN (${CLARITY_SIGNAL_PLACEHOLDERS})
-        AND COALESCE(lower(source), '') NOT IN (${THEME_SIGNAL_SOURCE_PLACEHOLDERS})
+        AND lower(event_name) NOT IN (${clarityPlaceholders})
+        AND COALESCE(lower(source), '') NOT IN (${themeSourcePlaceholders})
       GROUP BY session_id
     )
     SELECT
@@ -3570,8 +3364,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     FROM si_events
     WHERE store = ?
       AND created_at >= datetime('now', ?)
-      AND lower(event_name) NOT IN (${CLARITY_SIGNAL_PLACEHOLDERS})
-      AND COALESCE(lower(source), '') NOT IN (${THEME_SIGNAL_SOURCE_PLACEHOLDERS})
+      AND lower(event_name) NOT IN (${clarityPlaceholders})
+      AND COALESCE(lower(source), '') NOT IN (${themeSourcePlaceholders})
     GROUP BY lower(event_name)
     ORDER BY count DESC
   `).all(
@@ -3613,10 +3407,9 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     windowMinutes: window,
     updatedAt: new Date().toISOString(),
     lastEventAt: totals?.last_event_at || null,
-    activeSessions: safeFiniteNumber(realtimeMetrics?.sessions?.current, latest.length),
-    activeShoppers: safeFiniteNumber(realtimeMetrics?.shoppers?.current, visitors.size),
-    events: safeFiniteNumber(realtimeMetrics?.events?.current, Number(totals?.events) || 0),
-    metrics: realtimeMetrics,
+    activeSessions: latest.length,
+    activeShoppers: visitors.size,
+    events: Number(totals?.events) || 0,
     breakdowns: {
       stages: topCountsFromMap(stageCounts, 20).map((row) => ({ stage: row.value, count: row.count })),
       pages: topCountsFromMap(pageCounts, max),

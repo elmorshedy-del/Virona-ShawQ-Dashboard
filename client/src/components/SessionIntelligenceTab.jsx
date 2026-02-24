@@ -11,16 +11,6 @@ const POLL_JOURNEY_MS = 60000;
 const REALTIME_WINDOW_MINUTES = 30;
 const REQUEST_TIMEOUT_MS = 15000;
 const REALTIME_GEO_ROWS_LIMIT = 8;
-const REALTIME_KPI_SPARKLINE_WIDTH = 120;
-const REALTIME_KPI_SPARKLINE_HEIGHT = 30;
-const REALTIME_KPI_SPARKLINE_PADDING = 4;
-const REALTIME_DELTA_EPSILON = 1e-9;
-const REALTIME_METRIC_CARD_CONFIG = [
-  { key: 'sessions', label: 'Active sessions' },
-  { key: 'shoppers', label: 'Active shoppers' },
-  { key: 'events', label: 'Total events' }
-];
-const REALTIME_METRIC_COMPARISON_KEYS = ['yesterday', 'lastWeek'];
 const CLARITY_SIGNAL_EVENT_NAMES = new Set([
   'rage_click',
   'dead_click',
@@ -249,68 +239,6 @@ function formatSignedPercent(value, digits = 0) {
   if (n > 0) return `+${formatted}`;
   if (n < 0) return `-${formatted}`;
   return formatted;
-}
-
-function normalizeDeltaDirection(direction, delta) {
-  const normalized = (direction || '').toString().trim().toLowerCase();
-  if (normalized === 'up' || normalized === 'down' || normalized === 'flat') return normalized;
-
-  const deltaValue = Number(delta);
-  if (!Number.isFinite(deltaValue)) return 'na';
-  if (deltaValue > REALTIME_DELTA_EPSILON) return 'up';
-  if (deltaValue < -REALTIME_DELTA_EPSILON) return 'down';
-  return 'flat';
-}
-
-function deltaArrow(direction) {
-  if (direction === 'up') return '↑';
-  if (direction === 'down') return '↓';
-  return '→';
-}
-
-function buildRealtimeSparklinePath(trendRows, {
-  width = REALTIME_KPI_SPARKLINE_WIDTH,
-  height = REALTIME_KPI_SPARKLINE_HEIGHT,
-  padding = REALTIME_KPI_SPARKLINE_PADDING
-} = {}) {
-  const rows = Array.isArray(trendRows) ? trendRows : [];
-  if (rows.length < 2) return '';
-
-  const values = rows.map((row) => {
-    const value = Number(row?.value);
-    return Number.isFinite(value) ? value : 0;
-  });
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min;
-  const innerWidth = Math.max(width - (padding * 2), 1);
-  const innerHeight = Math.max(height - (padding * 2), 1);
-  const stepX = rows.length > 1 ? innerWidth / (rows.length - 1) : 0;
-
-  return values
-    .map((value, index) => {
-      const x = padding + (index * stepX);
-      const normalized = range > 0 ? (value - min) / range : 0.5;
-      const y = padding + ((1 - normalized) * innerHeight);
-      const command = index === 0 ? 'M' : 'L';
-      return `${command}${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(' ');
-}
-
-function realtimeSparklineDirection(trendRows) {
-  const values = (Array.isArray(trendRows) ? trendRows : [])
-    .map((row) => {
-      const value = Number(row?.value);
-      return Number.isFinite(value) ? value : null;
-    })
-    .filter((value) => value !== null);
-
-  if (values.length < 2) return 'flat';
-  const delta = values[values.length - 1] - values[0];
-  if (delta > REALTIME_DELTA_EPSILON) return 'up';
-  if (delta < -REALTIME_DELTA_EPSILON) return 'down';
-  return 'flat';
 }
 
 function formatDurationSeconds(value) {
@@ -2341,45 +2269,6 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       ? `No city/region detail yet for ${realtimeFocusCountryName}.`
       : 'No geo data yet.'
     : 'No geo data yet.';
-  const realtimeMetricCards = useMemo(() => (
-    REALTIME_METRIC_CARD_CONFIG.map((config) => {
-      const metric = realtime?.metrics?.[config.key] || null;
-      const fallbackValue = config.key === 'sessions'
-        ? realtime?.activeSessions
-        : config.key === 'shoppers'
-          ? realtime?.activeShoppers
-          : realtime?.events;
-      const trend = Array.isArray(metric?.trend) ? metric.trend : [];
-      const sparklinePath = buildRealtimeSparklinePath(trend);
-      const sparklineDirection = realtimeSparklineDirection(trend);
-      const comparisons = REALTIME_METRIC_COMPARISON_KEYS
-        .map((comparisonKey) => metric?.[comparisonKey])
-        .filter((comparison) => comparison && typeof comparison === 'object')
-        .map((comparison) => {
-          const direction = normalizeDeltaDirection(comparison.direction, comparison.delta);
-          return {
-            ...comparison,
-            direction,
-            arrow: deltaArrow(direction),
-            deltaLabel: formatSignedPercent(comparison.delta, 0)
-          };
-        });
-
-      return {
-        key: config.key,
-        label: config.label,
-        value: metric?.current ?? fallbackValue ?? 0,
-        sparklinePath,
-        sparklineDirection,
-        comparisons
-      };
-    })
-  ), [realtime]);
-  const realtimeKeyEventCards = useMemo(() => ([
-    { key: 'atc', label: 'ATC', value: realtime?.keyEvents?.atc },
-    { key: 'checkout_started', label: 'Checkout', value: realtime?.keyEvents?.checkout_started },
-    { key: 'purchase', label: 'Purchase', value: realtime?.keyEvents?.purchase }
-  ]), [realtime?.keyEvents?.atc, realtime?.keyEvents?.checkout_started, realtime?.keyEvents?.purchase]);
   const dayPulseComparisons = useMemo(() => {
     const yesterday = dayPulse?.comparisons?.yesterday || null;
     const lastWeek = dayPulse?.comparisons?.lastWeek || null;
@@ -2680,52 +2569,31 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           </div>
         ) : null}
 
-        <div className="si-realtime-kpis si-realtime-kpis-primary">
-          {realtimeMetricCards.map((card) => (
-            <div key={card.key} className="si-realtime-kpi si-realtime-kpi-primary">
-              <div className="si-realtime-kpi-head">
-                <div className="si-realtime-kpi-label">{card.label}</div>
-                <div className="si-realtime-kpi-sparkline" aria-hidden="true">
-                  {card.sparklinePath ? (
-                    <svg
-                      viewBox={`0 0 ${REALTIME_KPI_SPARKLINE_WIDTH} ${REALTIME_KPI_SPARKLINE_HEIGHT}`}
-                      role="presentation"
-                    >
-                      <path
-                        d={card.sparklinePath}
-                        className={`si-realtime-kpi-sparkline-path si-realtime-kpi-sparkline-path-${card.sparklineDirection}`}
-                      />
-                    </svg>
-                  ) : (
-                    <span className="si-realtime-kpi-sparkline-empty">No trend yet</span>
-                  )}
-                </div>
-              </div>
-              <div className="si-realtime-kpi-value">{formatNumber(card.value)}</div>
-              <div className="si-realtime-kpi-deltas">
-                {card.comparisons.map((comparison) => (
-                  <div
-                    key={`${card.key}-${comparison.label || 'comparison'}`}
-                    className={`si-realtime-kpi-delta si-realtime-kpi-delta-${comparison.direction}`}
-                    title={`${comparison.label || ''}: ${comparison.deltaLabel} (baseline ${formatNumber(comparison.value)})`}
-                  >
-                    <span className="si-realtime-kpi-delta-arrow">{comparison.arrow}</span>
-                    <span className="si-realtime-kpi-delta-value">{comparison.deltaLabel}</span>
-                    <span className="si-realtime-kpi-delta-label">{comparison.label || 'comparison'}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="si-realtime-kpis si-realtime-kpis-secondary">
-          {realtimeKeyEventCards.map((card) => (
-            <div key={card.key} className="si-realtime-kpi si-realtime-kpi-secondary">
-              <div className="si-realtime-kpi-label">{card.label}</div>
-              <div className="si-realtime-kpi-value">{formatNumber(card.value)}</div>
-            </div>
-          ))}
+        <div className="si-realtime-kpis">
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Active sessions</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.activeSessions)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Active shoppers</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.activeShoppers)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Events</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.events)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">ATC</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.atc)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Checkout</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.checkout_started)}</div>
+          </div>
+          <div className="si-realtime-kpi">
+            <div className="si-realtime-kpi-label">Purchase</div>
+            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.purchase)}</div>
+          </div>
         </div>
 
         <div className="si-realtime-grid">
