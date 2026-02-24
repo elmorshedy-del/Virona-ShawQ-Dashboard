@@ -166,8 +166,10 @@ const TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION = {
 const TIME_OF_DAY_ORDERS_LINE_COLOR = '#6366f1';
 const TIME_OF_DAY_PACING_LINE_COLOR = '#0f766e';
 const KPI_MONTH_SUMMARY_THRESHOLDS = {
-  strongDirectionalDeltaPct: 15
+  strongDirectionalDeltaPct: 15,
+  minHistoryMonthsForAllTime: 2
 };
+const KPI_HEADLINE_INCLUDE_INACTIVE = true;
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -543,6 +545,7 @@ export default function App() {
   }, [applyMonthSelection, selectedMonthKey]);
   
   const [dashboard, setDashboard] = useState(null);
+  const [headlineDashboard, setHeadlineDashboard] = useState(null);
   const [efficiency, setEfficiency] = useState(null);
   const [efficiencyTrends, setEfficiencyTrends] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
@@ -857,6 +860,10 @@ export default function App() {
       applyDashboardRange(regionCompareParams);
       
       params.set('showArrows', shouldShowArrows);
+      const headlineDashboardParams = new URLSearchParams(params);
+      if (KPI_HEADLINE_INCLUDE_INACTIVE) {
+        headlineDashboardParams.set('includeInactive', 'true');
+      }
 
       // Include inactive campaigns/adsets/ads if toggle is on
       if (includeInactive) {
@@ -882,6 +889,7 @@ export default function App() {
 
       const [
         dashData,
+        headlineDashData,
         effData,
         effTrends,
         recs,
@@ -897,6 +905,10 @@ export default function App() {
         dowData
       ] = await Promise.all([
         fetchJson(`${API_BASE}/analytics/dashboard?${params}`, {}),
+        fetchJson(`${API_BASE}/analytics/dashboard?${headlineDashboardParams}`, {}).catch((error) => {
+          console.warn('[Dashboard] Failed to load KPI headline dataset:', error?.message || error);
+          return null;
+        }),
         fetchJson(`${API_BASE}/analytics/efficiency?${params}`, {}),
         fetchJson(`${API_BASE}/analytics/efficiency/trends?${params}`, []),
         fetchJson(`${API_BASE}/analytics/recommendations?${params}`, []),
@@ -922,6 +934,7 @@ export default function App() {
       ]);
 
       setDashboard(dashData || {});
+      setHeadlineDashboard(headlineDashData || dashData || {});
       setEfficiency(effData || {});
       setEfficiencyTrends(Array.isArray(effTrends) ? effTrends : []);
       setRecommendations(Array.isArray(recs) ? recs : []);
@@ -1848,6 +1861,8 @@ export default function App() {
           isMobileViewport ? (
             <MobileDashboardTab
               dashboard={dashboard}
+              kpiOverview={headlineDashboard?.overview}
+              kpiTrends={headlineDashboard?.trends}
               formatCurrency={formatCurrency}
               formatNumber={formatNumber}
               campaignScopeLabel={campaignScopeLabel}
@@ -1855,6 +1870,8 @@ export default function App() {
           ) : (
             <DashboardTab
               dashboard={dashboard}
+              kpiOverview={headlineDashboard?.overview}
+              kpiTrends={headlineDashboard?.trends}
               expandedKpis={expandedKpis}
               setExpandedKpis={setExpandedKpis}
               formatCurrency={formatCurrency}
@@ -2102,6 +2119,8 @@ function SortableHeader({ label, field, sortConfig, onSort, className = '' }) {
 
 function DashboardTab({
   dashboard = {},
+  kpiOverview = null,
+  kpiTrends = null,
   expandedKpis = [],
   setExpandedKpis = () => {},
   formatCurrency = () => 0,
@@ -2175,6 +2194,10 @@ function DashboardTab({
   diagnosticsCampaignOptions = [],
 }) {
   const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
+  const overviewForKpis = (kpiOverview && typeof kpiOverview === 'object') ? kpiOverview : overview;
+  const kpiTrendsForCards = Array.isArray(kpiTrends)
+    ? kpiTrends
+    : (Array.isArray(trends) ? trends : []);
 
   const [countrySortConfig, setCountrySortConfig] = useState({ field: 'totalOrders', direction: 'desc' });
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
@@ -2277,7 +2300,7 @@ function DashboardTab({
         endDate: today
       });
 
-      if (includeInactive) {
+      if (KPI_HEADLINE_INCLUDE_INACTIVE) {
         params.set('includeInactive', 'true');
       }
 
@@ -2305,7 +2328,7 @@ function DashboardTab({
     return () => {
       isActive = false;
     };
-  }, [store?.id, includeInactive, selectedCampaignId]);
+  }, [store?.id, selectedCampaignId]);
 
   // Note: toggleHideCampaign, showAllCampaigns, and handleCampaignSelect
   // are now implemented in the UnifiedAnalytics component
@@ -2460,12 +2483,12 @@ function DashboardTab({
   }, [monthHistoryDailyMap, monthHistoryError, monthHistoryLoading, monthHistoryTrends, monthMode, selectedMonthKey, monthlyTotalsMap]);
 
   const kpis = [
-    { key: 'revenue', label: 'Revenue', value: overview.revenue, change: overview.revenueChange, format: 'currency', color: '#8b5cf6', direction: 'up' },
-    { key: 'spend', label: 'Ad Spend', value: overview.spend, change: overview.spendChange, format: 'currency', color: '#6366f1', direction: 'up' },
-    { key: 'orders', label: 'Orders', value: overview.orders, change: overview.ordersChange, format: 'number', color: '#22c55e', direction: 'up' },
-    { key: 'aov', label: 'AOV', value: overview.aov, change: overview.aovChange, format: 'currency', color: '#f59e0b', direction: 'up' },
-    { key: 'cac', label: 'CAC', value: overview.cac, change: overview.cacChange, format: 'currency', color: '#ef4444', direction: 'down' },
-    { key: 'roas', label: 'ROAS', value: overview.roas, change: overview.roasChange, format: 'roas', color: '#10b981', direction: 'up' },
+    { key: 'revenue', label: 'Revenue', value: overviewForKpis.revenue, change: overviewForKpis.revenueChange, format: 'currency', color: '#8b5cf6', direction: 'up' },
+    { key: 'spend', label: 'Ad Spend', value: overviewForKpis.spend, change: overviewForKpis.spendChange, format: 'currency', color: '#6366f1', direction: 'up' },
+    { key: 'orders', label: 'Orders', value: overviewForKpis.orders, change: overviewForKpis.ordersChange, format: 'number', color: '#22c55e', direction: 'up' },
+    { key: 'aov', label: 'AOV', value: overviewForKpis.aov, change: overviewForKpis.aovChange, format: 'currency', color: '#f59e0b', direction: 'up' },
+    { key: 'cac', label: 'CAC', value: overviewForKpis.cac, change: overviewForKpis.cacChange, format: 'currency', color: '#ef4444', direction: 'down' },
+    { key: 'roas', label: 'ROAS', value: overviewForKpis.roas, change: overviewForKpis.roasChange, format: 'roas', color: '#10b981', direction: 'up' },
   ];
 
   const kpiMonthSummaries = useMemo(() => {
@@ -2502,7 +2525,7 @@ function DashboardTab({
       const directionalDeltaPct = getDirectionalDeltaPct(rawDeltaPct, kpi.direction);
       const formattedDelta = directionalDeltaPct == null
         ? '—'
-        : `${directionalDeltaPct > 0 ? '+' : ''}${directionalDeltaPct.toFixed(0)}%`;
+        : `${rawDeltaPct > 0 ? '+' : ''}${rawDeltaPct.toFixed(0)}%`;
       const formattedValue = formatMetricValue(kpi.key, value);
 
       let text = `${monthContext.prefix}: ${formattedValue} · ${formattedDelta} vs ${monthContext.prevLabel}`;
@@ -2512,10 +2535,12 @@ function DashboardTab({
         .map((item) => getMetricValue(item, kpi.key))
         .filter((val) => Number.isFinite(val) && val > 0);
 
-      const maxValue = historyValues.length ? Math.max(...historyValues) : null;
-      const minValue = historyValues.length ? Math.min(...historyValues) : null;
-      const isAllTimeHigh = maxValue != null && value >= maxValue;
-      const isAllTimeLow = minValue != null && value <= minValue;
+      const hasAllTimeContext =
+        historyValues.length >= KPI_MONTH_SUMMARY_THRESHOLDS.minHistoryMonthsForAllTime;
+      const maxValue = hasAllTimeContext ? Math.max(...historyValues) : null;
+      const minValue = hasAllTimeContext ? Math.min(...historyValues) : null;
+      const isAllTimeHigh = hasAllTimeContext && maxValue != null && value >= maxValue;
+      const isAllTimeLow = hasAllTimeContext && minValue != null && value <= minValue;
       const lowerIsBetter = kpi.direction === 'down';
       const isBestEver = lowerIsBetter ? isAllTimeLow : isAllTimeHigh;
       const isWorstEver = lowerIsBetter ? isAllTimeHigh : isAllTimeLow;
@@ -5498,10 +5523,10 @@ function DashboardTab({
               key={summary.key}
               className={`relative rounded-full border px-3 py-1 text-[11px] font-semibold ${
                 summary.tone === 'positive'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 shadow-[0_8px_18px_rgba(16,185,129,0.16)]'
                   : summary.tone === 'negative'
-                    ? 'bg-rose-50 text-rose-700 border-rose-200'
-                    : 'bg-gray-50 text-gray-700 border-gray-200'
+                    ? 'bg-rose-50 text-rose-700 border-rose-200 shadow-[0_8px_18px_rgba(244,63,94,0.14)]'
+                    : 'bg-gray-50 text-gray-700 border-gray-200 shadow-[0_6px_14px_rgba(15,23,42,0.10)]'
               } ${summary.isCelebrating ? 'summary-pill-celebrate summary-pill-intense pr-8' : ''}`}
             >
               <span>{summary.text}</span>
@@ -5531,7 +5556,7 @@ function DashboardTab({
           <KPICard 
             key={kpi.key}
             kpi={kpi}
-            trends={trends}
+            trends={kpiTrendsForCards}
             expanded={kpi.key === 'orders' ? showOrdersTrend : expandedKpis.includes(kpi.key)}
             onToggle={kpi.key === 'orders' ? handleOrdersCardClick : () => toggleKpi(kpi.key)}
             formatCurrency={formatCurrency}
@@ -8007,11 +8032,15 @@ function DashboardTab({
 
 function MobileDashboardTab({
   dashboard = {},
+  kpiOverview = null,
+  kpiTrends = null,
   formatCurrency = () => '$0',
   formatNumber = () => '0',
   campaignScopeLabel = 'All Campaigns'
 }) {
   const { overview = {}, trends = [], campaigns = [], countries = [], dateRange = {} } = dashboard || {};
+  const overviewForKpis = (kpiOverview && typeof kpiOverview === 'object') ? kpiOverview : overview;
+  const trendsForKpis = Array.isArray(kpiTrends) ? kpiTrends : trends;
 
   const formatTrendDate = useCallback((value) => {
     if (!value) return 'N/A';
@@ -8026,23 +8055,23 @@ function MobileDashboardTab({
   }, []);
 
   const kpis = useMemo(() => ([
-    { key: 'revenue', label: 'Revenue', value: toNumber(overview.revenue), change: toNumber(overview.revenueChange), format: 'currency' },
-    { key: 'spend', label: 'Ad Spend', value: toNumber(overview.spend), change: toNumber(overview.spendChange), format: 'currency' },
-    { key: 'orders', label: 'Orders', value: toNumber(overview.orders), change: toNumber(overview.ordersChange), format: 'number' },
-    { key: 'aov', label: 'AOV', value: toNumber(overview.aov), change: toNumber(overview.aovChange), format: 'currency' },
-    { key: 'cac', label: 'CAC', value: toNumber(overview.cac), change: toNumber(overview.cacChange), format: 'currency' },
-    { key: 'roas', label: 'ROAS', value: toNumber(overview.roas), change: toNumber(overview.roasChange), format: 'roas' }
-  ]), [overview]);
+    { key: 'revenue', label: 'Revenue', value: toNumber(overviewForKpis.revenue), change: toNumber(overviewForKpis.revenueChange), format: 'currency' },
+    { key: 'spend', label: 'Ad Spend', value: toNumber(overviewForKpis.spend), change: toNumber(overviewForKpis.spendChange), format: 'currency' },
+    { key: 'orders', label: 'Orders', value: toNumber(overviewForKpis.orders), change: toNumber(overviewForKpis.ordersChange), format: 'number' },
+    { key: 'aov', label: 'AOV', value: toNumber(overviewForKpis.aov), change: toNumber(overviewForKpis.aovChange), format: 'currency' },
+    { key: 'cac', label: 'CAC', value: toNumber(overviewForKpis.cac), change: toNumber(overviewForKpis.cacChange), format: 'currency' },
+    { key: 'roas', label: 'ROAS', value: toNumber(overviewForKpis.roas), change: toNumber(overviewForKpis.roasChange), format: 'roas' }
+  ]), [overviewForKpis]);
 
   const trendData = useMemo(() => (
-    (Array.isArray(trends) ? trends : [])
+    (Array.isArray(trendsForKpis) ? trendsForKpis : [])
       .slice(-MOBILE_DASHBOARD_TREND_POINTS)
       .map((point, index) => ({
         id: point?.date || point?.bucketExpectedEndDate || point?.bucketEndDate || `pt-${index}`,
         dateLabel: formatTrendDate(point?.date || point?.bucketExpectedEndDate || point?.bucketEndDate),
         orders: toNumber(point?.orders)
       }))
-  ), [formatTrendDate, trends]);
+  ), [formatTrendDate, trendsForKpis]);
 
   const topCampaigns = useMemo(() => (
     (Array.isArray(campaigns) ? campaigns : [])
