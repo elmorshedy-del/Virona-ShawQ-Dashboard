@@ -2193,7 +2193,7 @@ function DashboardTab({
   chartMode = 'bucket',
   diagnosticsCampaignOptions = [],
 }) {
-  const { overview = {}, trends = {}, campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
+  const { overview = {}, trends = [], campaigns = [], countries = [], diagnostics = {} } = dashboard || {};
   const overviewForKpis = (kpiOverview && typeof kpiOverview === 'object') ? kpiOverview : overview;
   const kpiTrendsForCards = Array.isArray(kpiTrends)
     ? kpiTrends
