@@ -221,7 +221,7 @@ function Sparkline({ points }) {
     <div className="pm-sparkline">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={points}>
-          <Line type="monotone" dataKey="orders" strokeWidth={2} stroke="#334155" dot={false} />
+          <Line type="monotone" dataKey="orders" strokeWidth={2} stroke="var(--pm-signal-emerging-text)" dot={false} />
         </LineChart>
       </ResponsiveContainer>
     </div>

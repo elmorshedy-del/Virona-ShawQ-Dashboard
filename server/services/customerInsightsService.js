@@ -143,6 +143,13 @@ const MOMENTUM_FDR_TARGET = clamp(
   Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_FDR || '0.1'),
   0.01, 0.25
 );
+const MOMENTUM_Q_VALUE_THRESHOLD_CONFIRMED = 0.05;
+const MOMENTUM_Q_VALUE_THRESHOLD_LIKELY = 0.10;
+const MOMENTUM_Q_VALUE_THRESHOLD_POSSIBLE = 0.20;
+const MOMENTUM_NEW_TRACTION_MIN_ORDERS = Math.max(
+  1,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_NEW_TRACTION_MIN_ORDERS || '5', 10) || 5
+);
 
 const normalizeStoreEnvKey = (store) =>
   String(store || '')
@@ -1494,9 +1501,9 @@ function buildDailySparkline(items, productKey) {
 
 // ── Momentum signal label (mirrors bundle convention) ────────────────────────
 function getMomentumSignalLabel(qValue) {
-  if (qValue <= 0.05) return 'Confirmed';
-  if (qValue <= 0.10) return 'Likely';
-  if (qValue <= 0.20) return 'Possible';
+  if (qValue <= MOMENTUM_Q_VALUE_THRESHOLD_CONFIRMED) return 'Confirmed';
+  if (qValue <= MOMENTUM_Q_VALUE_THRESHOLD_LIKELY) return 'Likely';
+  if (qValue <= MOMENTUM_Q_VALUE_THRESHOLD_POSSIBLE) return 'Possible';
   return 'Emerging';
 }
 
@@ -1511,7 +1518,7 @@ function getMomentumSeverity(trigger, signal, revenueAtRisk) {
 // ── Momentum tier ────────────────────────────────────────────────────────────
 function getMomentumTier(qValue, currOrders, prevOrders) {
   if (qValue <= MOMENTUM_FDR_TARGET && currOrders >= 5 && prevOrders >= 5) return 'T1';
-  if (qValue <= 0.20 && currOrders >= MOMENTUM_MIN_ORDERS) return 'T2';
+  if (qValue <= MOMENTUM_Q_VALUE_THRESHOLD_POSSIBLE && currOrders >= MOMENTUM_MIN_ORDERS) return 'T2';
   if (currOrders >= 2) return 'T3';
   return null;
 }
@@ -1728,17 +1735,17 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     }
 
     // Rising pillar: crosses share threshold and is accelerating
-    if (p.revenueShare >= MOMENTUM_RISING_PILLAR_SHARE && p.wowGrowth > 1.0 && p.sharePointsDelta > 0 && p.qValue <= 0.20) {
+    if (p.revenueShare >= MOMENTUM_RISING_PILLAR_SHARE && p.wowGrowth > 1.0 && p.sharePointsDelta > 0 && p.qValue <= MOMENTUM_Q_VALUE_THRESHOLD_POSSIBLE) {
       triggers.push('rising_pillar');
     }
 
     // New product traction
-    if (p.isNew && p.currOrders >= 5) {
+    if (p.isNew && p.currOrders >= MOMENTUM_NEW_TRACTION_MIN_ORDERS) {
       triggers.push('new_traction');
     }
 
     // Velocity stall: growth flipped from positive to ≤ 0
-    if (p.prevWowGrowth != null && p.prevWowGrowth > 1.0 && p.wowGrowth <= 1.0 && p.currOrders >= MOMENTUM_MIN_ORDERS && p.qValue <= 0.20) {
+    if (p.prevWowGrowth != null && p.prevWowGrowth > 1.0 && p.wowGrowth <= 1.0 && p.currOrders >= MOMENTUM_MIN_ORDERS && p.qValue <= MOMENTUM_Q_VALUE_THRESHOLD_POSSIBLE) {
       triggers.push('velocity_stall');
     }
 
@@ -1881,6 +1888,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
       triggers: p.triggers,
       exceptionalEvents: events,
       facts: {
+        // Keep both key styles for compatibility across old and spec-driven frontends.
         revenueShare: p.revenueShare,
         prevRevenueShare: p.prevRevenueShare,
         sharePointsDelta: p.sharePointsDelta,
@@ -2396,7 +2404,7 @@ export async function getCustomerInsightsPayload(store, params = {}) {
             heroDeclineShareDrop: MOMENTUM_HERO_SHARE_DROP,
             concentrationRisk: MOMENTUM_CONCENTRATION_RISK,
             risingPillarShare: MOMENTUM_RISING_PILLAR_SHARE,
-            newTractionMinOrders: 5,
+            newTractionMinOrders: MOMENTUM_NEW_TRACTION_MIN_ORDERS,
             velocityStallMinOrders: MOMENTUM_MIN_ORDERS,
             discountDependencyShare: MOMENTUM_DISCOUNT_DEPENDENCY,
             discountDependencyIncrease: MOMENTUM_DISCOUNT_PP_INCREASE,
