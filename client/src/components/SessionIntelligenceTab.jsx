@@ -97,8 +97,11 @@ const DEVICE_ABANDONMENT_SEGMENTS = [
   { key: 'desktop', label: 'Desktop', color: '#14b8a6' },
   { key: 'unknown', label: 'Unknown', color: '#94a3b8' }
 ];
-
-const DEVICE_ABANDON_SECTION_ORDER = ['Payment', 'Checkout', 'Cart', 'Product', 'Landing'];
+const DEVICE_ABANDONMENT_RANGE_OPTIONS = [
+  { key: 'week', label: 'Week' },
+  { key: 'month', label: 'Month' },
+  { key: 'all', label: 'All time' }
+];
 
 function parseSqliteTimestamp(ts) {
   if (!ts || typeof ts !== 'string') return null;
@@ -1019,34 +1022,6 @@ function noPurchase(session) {
   return !hasPurchase(session);
 }
 
-function deviceSegmentKeyFromSession(session) {
-  const rawType = normalizeLooseKey(session?.device_type);
-  const rawOs = normalizeLooseKey(session?.device_os);
-
-  if (rawType === 'desktop' || rawType.includes('desktop')) return 'desktop';
-  if (rawOs === 'ios' || rawType === 'ios' || rawType === 'ipados' || rawType.includes('ios') || rawType.includes('ipad')) return 'ios';
-  if (rawOs === 'android' || rawType === 'android' || rawType === 'android tablet' || rawType.includes('android')) return 'android';
-  return 'unknown';
-}
-
-function abandonSectionLabelFromSession(session) {
-  const stage = inferDropoffStageFromSummary(session);
-  if (stage === 'checkout_payment') return 'Payment';
-  if (stage === 'checkout_contact' || stage === 'checkout_shipping') return 'Checkout';
-  if (stage === 'cart' || stage === 'atc') return 'Cart';
-  if (stage === 'product') return 'Product';
-  return 'Landing';
-}
-
-function compareAbandonSectionEntries(a, b) {
-  if (b[1] !== a[1]) return b[1] - a[1];
-  const aOrder = DEVICE_ABANDON_SECTION_ORDER.indexOf(a[0]);
-  const bOrder = DEVICE_ABANDON_SECTION_ORDER.indexOf(b[0]);
-  const safeA = aOrder >= 0 ? aOrder : DEVICE_ABANDON_SECTION_ORDER.length;
-  const safeB = bOrder >= 0 ? bOrder : DEVICE_ABANDON_SECTION_ORDER.length;
-  return safeA - safeB;
-}
-
 function buildTrafficAdjustedPieGradient(rows) {
   const list = Array.isArray(rows) ? rows : [];
   let cursorDegrees = 0;
@@ -1067,102 +1042,86 @@ function buildTrafficAdjustedPieGradient(rows) {
   return `conic-gradient(${segments.join(', ')})`;
 }
 
-function buildDeviceAbandonmentModel({ librarySessions }) {
-  const sessions = Array.isArray(librarySessions) ? librarySessions : [];
-  const buckets = new Map(
-    DEVICE_ABANDONMENT_SEGMENTS.map((segment) => [
-      segment.key,
-      {
-        ...segment,
-        totalSessions: 0,
-        abandonSessions: 0,
-        sectionCounts: new Map()
-      }
-    ])
-  );
-
-  sessions.forEach((session) => {
-    const segmentKey = deviceSegmentKeyFromSession(session);
-    const isAbandon = noPurchase(session);
-
-    const bucket = buckets.get(segmentKey);
-    if (!bucket) return;
-
-    bucket.totalSessions += 1;
-    if (!isAbandon) return;
-
-    bucket.abandonSessions += 1;
-    const section = abandonSectionLabelFromSession(session);
-    bucket.sectionCounts.set(section, (bucket.sectionCounts.get(section) || 0) + 1);
-  });
-
-  const rows = DEVICE_ABANDONMENT_SEGMENTS.map((segment) => {
-    const bucket = buckets.get(segment.key);
-    const totalSessions = Number(bucket?.totalSessions) || 0;
-    const abandonSessions = Number(bucket?.abandonSessions) || 0;
-    const abandonRate = totalSessions > 0 ? (abandonSessions / totalSessions) : 0;
-    const topSectionEntry = Array.from(bucket?.sectionCounts?.entries?.() || [])
-      .sort(compareAbandonSectionEntries)[0] || null;
-    const topSectionLabel = topSectionEntry ? topSectionEntry[0] : '—';
-    const topSectionCount = topSectionEntry ? Number(topSectionEntry[1]) || 0 : 0;
-    const topSectionShare = abandonSessions > 0 ? (topSectionCount / abandonSessions) : 0;
-
-    return {
-      ...segment,
-      totalSessions,
-      abandonSessions,
-      abandonRate,
-      topSectionLabel,
-      topSectionCount,
-      topSectionShare
-    };
-  });
-
-  const totalClassifiedSessions = rows.reduce((sum, row) => sum + row.totalSessions, 0);
-  const totalClassifiedAbandon = rows.reduce((sum, row) => sum + row.abandonSessions, 0);
-  const baselineAbandonRate = totalClassifiedSessions > 0 ? (totalClassifiedAbandon / totalClassifiedSessions) : 0;
-
-  const withNormalization = rows.map((row) => {
-    const trafficShare = totalClassifiedSessions > 0 ? (row.totalSessions / totalClassifiedSessions) : 0;
-    const abandonShare = totalClassifiedAbandon > 0 ? (row.abandonSessions / totalClassifiedAbandon) : 0;
-    const expectedAbandon = row.totalSessions * baselineAbandonRate;
-    const excessAbandon = row.abandonSessions - expectedAbandon;
-    const adjustedIndex = trafficShare > 0 ? (abandonShare / trafficShare) : 0;
-    return {
-      ...row,
-      trafficShare,
-      abandonShare,
-      expectedAbandon,
-      excessAbandon,
-      adjustedIndex
-    };
-  });
-
-  const adjustedIndexTotal = withNormalization.reduce((sum, row) => sum + row.adjustedIndex, 0);
-  const rowsWithAdjustedShare = withNormalization.map((row) => ({
-    ...row,
-    adjustedShare: adjustedIndexTotal > 0 ? (row.adjustedIndex / adjustedIndexTotal) : 0
+function createEmptyDeviceAbandonmentModel(range = 'month') {
+  const rows = DEVICE_ABANDONMENT_SEGMENTS.map((segment) => ({
+    ...segment,
+    totalSessions: 0,
+    abandonSessions: 0,
+    abandonRate: 0,
+    topSectionLabel: '—',
+    topSectionCount: 0,
+    topSectionShare: 0,
+    trafficShare: 0,
+    abandonShare: 0,
+    expectedAbandon: 0,
+    excessAbandon: 0,
+    adjustedIndex: 0,
+    adjustedShare: 0
   }));
 
-  const topOverIndexed = rowsWithAdjustedShare
-    .filter((row) => row.excessAbandon > 0)
-    .sort((a, b) => {
-      if (b.adjustedIndex !== a.adjustedIndex) return b.adjustedIndex - a.adjustedIndex;
-      return b.excessAbandon - a.excessAbandon;
-    })[0] || null;
-
-  const unknownRow = rowsWithAdjustedShare.find((row) => row.key === 'unknown') || null;
-
   return {
-    rows: rowsWithAdjustedShare,
-    totalSessions: totalClassifiedSessions,
-    totalAbandonSessions: totalClassifiedAbandon,
-    baselineAbandonRate,
-    unknownSessions: unknownRow?.totalSessions || 0,
-    pieGradient: buildTrafficAdjustedPieGradient(rowsWithAdjustedShare),
-    topOverIndexed
+    range,
+    periodLabel: range === 'week' ? 'Last 7 days' : range === 'all' ? 'All time' : 'Last 30 days',
+    rangeStart: null,
+    rangeEnd: null,
+    rows,
+    totalSessions: 0,
+    totalAbandonSessions: 0,
+    baselineAbandonRate: 0,
+    unknownSessions: 0,
+    topOverIndexed: null,
+    updatedAt: null,
+    pieGradient: buildTrafficAdjustedPieGradient(rows)
   };
 }
+
+function normalizeDeviceAbandonmentPayload(payload, range) {
+  const fallback = createEmptyDeviceAbandonmentModel(range);
+  if (!payload || typeof payload !== 'object') return fallback;
+
+  const rowsByKey = new Map(
+    (Array.isArray(payload.rows) ? payload.rows : [])
+      .map((row) => [normalizeLooseKey(row?.key), row])
+      .filter(([key]) => Boolean(key))
+  );
+
+  const rows = DEVICE_ABANDONMENT_SEGMENTS.map((segment) => {
+    const source = rowsByKey.get(segment.key) || {};
+    return {
+      ...segment,
+      totalSessions: Number(source.totalSessions) || 0,
+      abandonSessions: Number(source.abandonSessions) || 0,
+      abandonRate: Number(source.abandonRate) || 0,
+      topSectionLabel: source.topSectionLabel || '—',
+      topSectionCount: Number(source.topSectionCount) || 0,
+      topSectionShare: Number(source.topSectionShare) || 0,
+      trafficShare: Number(source.trafficShare) || 0,
+      abandonShare: Number(source.abandonShare) || 0,
+      expectedAbandon: Number(source.expectedAbandon) || 0,
+      excessAbandon: Number(source.excessAbandon) || 0,
+      adjustedIndex: Number(source.adjustedIndex) || 0,
+      adjustedShare: Number(source.adjustedShare) || 0
+    };
+  });
+
+  const normalized = {
+    range: payload.range || range || fallback.range,
+    periodLabel: payload.periodLabel || fallback.periodLabel,
+    rangeStart: payload.rangeStart || null,
+    rangeEnd: payload.rangeEnd || null,
+    rows,
+    totalSessions: Number(payload.totalSessions) || 0,
+    totalAbandonSessions: Number(payload.totalAbandonSessions) || 0,
+    baselineAbandonRate: Number(payload.baselineAbandonRate) || 0,
+    unknownSessions: Number(payload.unknownSessions) || 0,
+    topOverIndexed: payload.topOverIndexed || null,
+    updatedAt: payload.updatedAt || null
+  };
+
+  normalized.pieGradient = buildTrafficAdjustedPieGradient(normalized.rows);
+  return normalized;
+}
+
 
 function actionPlanStatusForCount(count) {
   const sessions = Math.max(0, Number(count) || 0);
@@ -1737,10 +1696,15 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const [abandonmentPreviousReport, setAbandonmentPreviousReport] = useState(null);
   const [abandonmentLoading, setAbandonmentLoading] = useState(false);
   const [abandonmentError, setAbandonmentError] = useState('');
+  const [deviceAbandonmentRange, setDeviceAbandonmentRange] = useState('month');
+  const [deviceAbandonmentModel, setDeviceAbandonmentModel] = useState(() => createEmptyDeviceAbandonmentModel('month'));
+  const [deviceAbandonmentLoading, setDeviceAbandonmentLoading] = useState(false);
+  const [deviceAbandonmentError, setDeviceAbandonmentError] = useState('');
 
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
   const journeyRequestIdRef = useRef(0);
+  const deviceAbandonmentRequestIdRef = useRef(0);
   const dayPulseDataRef = useRef(null);
   const realtimeDataRef = useRef(null);
 
@@ -1960,6 +1924,35 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     }
   }, [journeyComparisonRanges.current.endDate, journeyComparisonRanges.current.startDate, journeyComparisonRanges.previous.endDate, journeyComparisonRanges.previous.startDate, storeId]);
 
+  const loadDeviceAbandonment = useCallback(async (range = 'month', options = {}) => {
+    const requestId = deviceAbandonmentRequestIdRef.current + 1;
+    deviceAbandonmentRequestIdRef.current = requestId;
+
+    const normalizedRange = (range || 'month').toString().trim().toLowerCase() || 'month';
+    const showLoading = options.showLoading !== false;
+    if (showLoading) setDeviceAbandonmentLoading(true);
+    setDeviceAbandonmentError('');
+
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        range: normalizedRange
+      });
+      const payload = await fetchJson(`/api/session-intelligence/device-abandonment?${params.toString()}`);
+      if (requestId !== deviceAbandonmentRequestIdRef.current) return;
+      setDeviceAbandonmentModel(normalizeDeviceAbandonmentPayload(payload?.data, normalizedRange));
+    } catch (error) {
+      if (requestId !== deviceAbandonmentRequestIdRef.current) return;
+      console.error('[SessionIntelligenceTab] device abandonment load failed:', error);
+      setDeviceAbandonmentError(error?.message || 'Failed to load device abandonment');
+      setDeviceAbandonmentModel((previous) => previous || createEmptyDeviceAbandonmentModel(normalizedRange));
+    } finally {
+      if (requestId === deviceAbandonmentRequestIdRef.current && showLoading) {
+        setDeviceAbandonmentLoading(false);
+      }
+    }
+  }, [storeId]);
+
   const loadOverview = useCallback(async () => {
     const url = `/api/session-intelligence/overview?store=${encodeURIComponent(storeId)}`;
     const data = await fetchJson(url);
@@ -2042,6 +2035,12 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     loadClarity(libraryDay, ISSUE_SCOPE_MODE);
   }, [libraryDay, loadClarity]);
 
+  useEffect(() => {
+    loadDeviceAbandonment(deviceAbandonmentRange, { showLoading: true }).catch((error) => {
+      console.error('[SessionIntelligenceTab] device abandonment effect load failed:', error);
+    });
+  }, [deviceAbandonmentRange, loadDeviceAbandonment]);
+
   const filteredLibrarySessions = useMemo(() => {
     let list = librarySessions;
 
@@ -2108,6 +2107,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         loadDayPulse(),
         loadRealtime(),
         loadOverview(),
+        loadDeviceAbandonment(deviceAbandonmentRange, { showLoading: false }),
         loadBrief(),
         loadFlow(libraryDay, flowMode),
         loadClarity(libraryDay, ISSUE_SCOPE_MODE),
@@ -2119,14 +2119,23 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadClarity, loadDayPulse, loadEvents, loadFlow, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [deviceAbandonmentRange, flowMode, libraryDay, loadBrief, loadClarity, loadDayPulse, loadDeviceAbandonment, loadEvents, loadFlow, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadDayPulse(), loadRealtime(), loadOverview(), loadBrief(), loadJourneyReports(), loadSessions(), loadEvents(), loadLibraryDays()])
+    Promise.all([
+      loadDayPulse(),
+      loadRealtime(),
+      loadOverview(),
+      loadBrief(),
+      loadJourneyReports(),
+      loadSessions(),
+      loadEvents(),
+      loadLibraryDays()
+    ])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -2582,9 +2591,6 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const developerGuideRows = technicalIssueRows.slice(0, 3);
   const actionPlanRows = useMemo(() => (
     buildBehaviorPatternRows({ librarySessions })
-  ), [librarySessions]);
-  const deviceAbandonmentModel = useMemo(() => (
-    buildDeviceAbandonmentModel({ librarySessions })
   ), [librarySessions]);
 
   useEffect(() => {
@@ -3271,13 +3277,43 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       <div className="si-card si-device-abandon-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
           <h3>Abandonment by device</h3>
-          <span className="si-muted">Traffic-adjusted view • {libraryDay || 'Today'}</span>
-        </div>
-        {deviceAbandonmentModel.totalSessions === 0 ? (
-          <div className="si-empty">
-            No classified iOS/Android/Desktop sessions yet for this day.
+          <div className="si-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <span className="si-muted">Full session population • {deviceAbandonmentModel.periodLabel || 'Last 30 days'}</span>
+            <div className="si-row" style={{ gap: 6 }}>
+              {DEVICE_ABANDONMENT_RANGE_OPTIONS.map((option) => (
+                <button
+                  key={`device-range-${option.key}`}
+                  className={`si-button si-button-small ${deviceAbandonmentRange === option.key ? 'si-button-active' : ''}`}
+                  type="button"
+                  onClick={() => setDeviceAbandonmentRange(option.key)}
+                  disabled={deviceAbandonmentLoading}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
-        ) : (
+        </div>
+
+        {deviceAbandonmentError ? (
+          <div className="si-empty" style={{ color: '#b42318' }}>
+            {deviceAbandonmentError}
+          </div>
+        ) : null}
+
+        {deviceAbandonmentLoading && deviceAbandonmentModel.totalSessions === 0 ? (
+          <div className="si-empty">
+            Loading full-session device abandonment…
+          </div>
+        ) : null}
+
+        {!deviceAbandonmentError && !deviceAbandonmentLoading && deviceAbandonmentModel.totalSessions === 0 ? (
+          <div className="si-empty">
+            No classified iOS/Android/Desktop sessions found for this period.
+          </div>
+        ) : null}
+
+        {!deviceAbandonmentError && deviceAbandonmentModel.totalSessions > 0 ? (
           <>
             <div className="si-device-abandon-layout">
               <div className="si-device-pie-wrap">
@@ -3319,7 +3355,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
             ) : null}
             {deviceAbandonmentModel.topOverIndexed ? (
               <div className="si-device-callout">
-                Strongest over-index today: <strong>{deviceAbandonmentModel.topOverIndexed.label}</strong> ({formatPercent(deviceAbandonmentModel.topOverIndexed.abandonRate, 1)} abandon rate), most commonly at <strong>{deviceAbandonmentModel.topOverIndexed.topSectionLabel}</strong>.
+                Strongest over-index in this period: <strong>{deviceAbandonmentModel.topOverIndexed.label}</strong> ({formatPercent(deviceAbandonmentModel.topOverIndexed.abandonRate, 1)} abandon rate), most commonly at <strong>{deviceAbandonmentModel.topOverIndexed.topSectionLabel}</strong>.
               </div>
             ) : null}
 
@@ -3355,7 +3391,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
               </tbody>
             </table>
           </>
-        )}
+        ) : null}
       </div>
 
       <div className="si-card si-action-plan-card" style={{ marginBottom: 12 }}>

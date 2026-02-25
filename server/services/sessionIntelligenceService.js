@@ -92,6 +92,17 @@ const REALTIME_METRIC_CACHE_MAX_ENTRIES = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_REALTIME_METRIC_CACHE_MAX_ENTRIES || '200', 10) || 200, 20),
   2000
 );
+const DEVICE_ABANDONMENT_RANGE_DAYS = Object.freeze({
+  week: 7,
+  month: 30
+});
+const DEVICE_ABANDONMENT_SEGMENTS = Object.freeze([
+  { key: 'ios', label: 'iOS', color: '#6366f1' },
+  { key: 'android', label: 'Android', color: '#0ea5e9' },
+  { key: 'desktop', label: 'Desktop', color: '#14b8a6' },
+  { key: 'unknown', label: 'Unknown', color: '#94a3b8' }
+]);
+const DEVICE_ABANDONMENT_SECTION_ORDER = ['Payment', 'Checkout', 'Cart', 'Product', 'Landing'];
 const lastShopperBackfillByStore = new Map();
 const realtimeFocusGeoFallbackCache = new Map();
 const realtimeMetricReferenceCache = new Map();
@@ -2747,6 +2758,185 @@ export function getSessionIntelligenceDayPulse(store) {
         direction: directionFromDelta(deltaVsLastWeek)
       }
     }
+  };
+}
+
+function normalizeDeviceAbandonmentRange(raw) {
+  const key = safeString(raw).toLowerCase().trim();
+  if (key === 'week' || key === '7d' || key === '7days') return 'week';
+  if (key === 'all' || key === 'all_time' || key === 'all-time') return 'all';
+  return 'month';
+}
+
+function buildDeviceAbandonmentRangeWindow(range, nowMs = Date.now()) {
+  const normalizedRange = normalizeDeviceAbandonmentRange(range);
+  if (normalizedRange === 'all') {
+    return {
+      range: normalizedRange,
+      start: null,
+      end: toSqliteUtcDateTime(nowMs),
+      label: 'All time'
+    };
+  }
+
+  const days = DEVICE_ABANDONMENT_RANGE_DAYS[normalizedRange] || DEVICE_ABANDONMENT_RANGE_DAYS.month;
+  const startMs = nowMs - (days * MILLISECONDS_PER_DAY);
+  return {
+    range: normalizedRange,
+    start: toSqliteUtcDateTime(startMs),
+    end: toSqliteUtcDateTime(nowMs),
+    label: `Last ${days} days`
+  };
+}
+
+function compareDeviceAbandonmentSectionEntries(a, b) {
+  if ((b?.count || 0) !== (a?.count || 0)) return (b?.count || 0) - (a?.count || 0);
+  const aOrder = DEVICE_ABANDONMENT_SECTION_ORDER.indexOf(a?.label);
+  const bOrder = DEVICE_ABANDONMENT_SECTION_ORDER.indexOf(b?.label);
+  const safeA = aOrder >= 0 ? aOrder : DEVICE_ABANDONMENT_SECTION_ORDER.length;
+  const safeB = bOrder >= 0 ? bOrder : DEVICE_ABANDONMENT_SECTION_ORDER.length;
+  return safeA - safeB;
+}
+
+function queryDeviceAbandonmentRows(db, normalizedStore, window) {
+  const whereClauses = ['store = ?', 'started_at IS NOT NULL'];
+  const params = [normalizedStore];
+  if (window?.start) {
+    whereClauses.push('started_at >= ?');
+    params.push(window.start);
+  }
+  if (window?.end) {
+    whereClauses.push('started_at < ?');
+    params.push(window.end);
+  }
+
+  const whereSql = whereClauses.join('\n      AND ');
+
+  return db.prepare(`
+    WITH scoped AS (
+      SELECT
+        CASE
+          WHEN lower(COALESCE(last_device_type, '')) LIKE '%desktop%' THEN 'desktop'
+          WHEN lower(COALESCE(last_device_os, '')) = 'ios'
+            OR lower(COALESCE(last_device_type, '')) IN ('ios', 'ipados')
+            OR lower(COALESCE(last_device_type, '')) LIKE '%ios%'
+            OR lower(COALESCE(last_device_type, '')) LIKE '%ipad%'
+          THEN 'ios'
+          WHEN lower(COALESCE(last_device_os, '')) = 'android'
+            OR lower(COALESCE(last_device_type, '')) IN ('android', 'android tablet')
+            OR lower(COALESCE(last_device_type, '')) LIKE '%android%'
+          THEN 'android'
+          ELSE 'unknown'
+        END AS device_segment,
+        CASE WHEN purchase_at IS NULL THEN 1 ELSE 0 END AS is_abandon,
+        CASE
+          WHEN purchase_at IS NOT NULL THEN NULL
+          WHEN lower(COALESCE(last_checkout_step, '')) = 'payment' THEN 'Payment'
+          WHEN checkout_started_at IS NOT NULL
+            OR lower(COALESCE(last_checkout_step, '')) IN ('contact', 'shipping', 'review')
+          THEN 'Checkout'
+          WHEN atc_at IS NOT NULL THEN 'Cart'
+          WHEN COALESCE(last_product_id, '') <> '' THEN 'Product'
+          ELSE 'Landing'
+        END AS abandon_section
+      FROM si_sessions
+      WHERE ${whereSql}
+    )
+    SELECT
+      device_segment,
+      COUNT(*) AS total_sessions,
+      SUM(is_abandon) AS abandon_sessions,
+      SUM(CASE WHEN is_abandon = 1 AND abandon_section = 'Payment' THEN 1 ELSE 0 END) AS payment_abandons,
+      SUM(CASE WHEN is_abandon = 1 AND abandon_section = 'Checkout' THEN 1 ELSE 0 END) AS checkout_abandons,
+      SUM(CASE WHEN is_abandon = 1 AND abandon_section = 'Cart' THEN 1 ELSE 0 END) AS cart_abandons,
+      SUM(CASE WHEN is_abandon = 1 AND abandon_section = 'Product' THEN 1 ELSE 0 END) AS product_abandons,
+      SUM(CASE WHEN is_abandon = 1 AND abandon_section = 'Landing' THEN 1 ELSE 0 END) AS landing_abandons
+    FROM scoped
+    GROUP BY device_segment
+  `).all(...params);
+}
+
+export function getSessionIntelligenceDeviceAbandonment(store, { range = 'month' } = {}) {
+  const db = getDb();
+  ensureRecentShopperNumbers(store);
+  const normalizedStore = safeString(store).trim().toLowerCase() || 'shawq';
+  const window = buildDeviceAbandonmentRangeWindow(range, Date.now());
+
+  const rawRows = queryDeviceAbandonmentRows(db, normalizedStore, window);
+  const rowByKey = new Map(rawRows.map((row) => [safeString(row?.device_segment).trim().toLowerCase(), row]));
+
+  const rows = DEVICE_ABANDONMENT_SEGMENTS.map((segment) => {
+    const source = rowByKey.get(segment.key) || {};
+    const totalSessions = safeFiniteNumber(source.total_sessions, 0);
+    const abandonSessions = safeFiniteNumber(source.abandon_sessions, 0);
+    const sectionEntries = [
+      { label: 'Payment', count: safeFiniteNumber(source.payment_abandons, 0) },
+      { label: 'Checkout', count: safeFiniteNumber(source.checkout_abandons, 0) },
+      { label: 'Cart', count: safeFiniteNumber(source.cart_abandons, 0) },
+      { label: 'Product', count: safeFiniteNumber(source.product_abandons, 0) },
+      { label: 'Landing', count: safeFiniteNumber(source.landing_abandons, 0) }
+    ].sort(compareDeviceAbandonmentSectionEntries);
+    const topSection = sectionEntries.find((entry) => entry.count > 0) || null;
+
+    return {
+      ...segment,
+      totalSessions,
+      abandonSessions,
+      abandonRate: totalSessions > 0 ? (abandonSessions / totalSessions) : 0,
+      topSectionLabel: topSection?.label || '—',
+      topSectionCount: topSection?.count || 0,
+      topSectionShare: topSection && abandonSessions > 0 ? (topSection.count / abandonSessions) : 0
+    };
+  });
+
+  const totalSessions = rows.reduce((sum, row) => sum + row.totalSessions, 0);
+  const totalAbandonSessions = rows.reduce((sum, row) => sum + row.abandonSessions, 0);
+  const baselineAbandonRate = totalSessions > 0 ? (totalAbandonSessions / totalSessions) : 0;
+
+  const rowsWithIndex = rows.map((row) => {
+    const trafficShare = totalSessions > 0 ? (row.totalSessions / totalSessions) : 0;
+    const abandonShare = totalAbandonSessions > 0 ? (row.abandonSessions / totalAbandonSessions) : 0;
+    const expectedAbandon = row.totalSessions * baselineAbandonRate;
+    const excessAbandon = row.abandonSessions - expectedAbandon;
+    const adjustedIndex = trafficShare > 0 ? (abandonShare / trafficShare) : 0;
+    return {
+      ...row,
+      trafficShare,
+      abandonShare,
+      expectedAbandon,
+      excessAbandon,
+      adjustedIndex
+    };
+  });
+
+  const adjustedIndexTotal = rowsWithIndex.reduce((sum, row) => sum + row.adjustedIndex, 0);
+  const rowsWithAdjustedShare = rowsWithIndex.map((row) => ({
+    ...row,
+    adjustedShare: adjustedIndexTotal > 0 ? (row.adjustedIndex / adjustedIndexTotal) : 0
+  }));
+
+  const topOverIndexed = rowsWithAdjustedShare
+    .filter((row) => row.excessAbandon > 0)
+    .sort((a, b) => {
+      if (b.adjustedIndex !== a.adjustedIndex) return b.adjustedIndex - a.adjustedIndex;
+      return b.excessAbandon - a.excessAbandon;
+    })[0] || null;
+
+  const unknownRow = rowsWithAdjustedShare.find((row) => row.key === 'unknown') || null;
+
+  return {
+    store: normalizedStore,
+    range: window.range,
+    periodLabel: window.label,
+    rangeStart: window.start,
+    rangeEnd: window.end,
+    rows: rowsWithAdjustedShare,
+    totalSessions,
+    totalAbandonSessions,
+    baselineAbandonRate,
+    unknownSessions: unknownRow?.totalSessions || 0,
+    topOverIndexed,
+    updatedAt: normalizeSqliteDateTime(new Date())
   };
 }
 

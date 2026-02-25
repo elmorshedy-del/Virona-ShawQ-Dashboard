@@ -7,6 +7,7 @@ import {
   getSessionIntelligenceSessionsForDay,
   getSessionIntelligenceBriefForDay,
   getSessionIntelligenceClaritySignalsForDay,
+  getSessionIntelligenceDeviceAbandonment,
   getSessionIntelligenceDayPulse,
   getSessionIntelligenceLandingToPurchase,
   getSessionIntelligenceAbandonmentByLocation,
@@ -52,6 +53,18 @@ router.get('/day-pulse', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] day-pulse error:', error);
     res.status(500).json({ success: false, error: 'Failed to load day pulse' });
+  }
+});
+
+router.get('/device-abandonment', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const range = req.query.range || 'month';
+    const data = getSessionIntelligenceDeviceAbandonment(store, { range });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[SessionIntelligence] device-abandonment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load device abandonment' });
   }
 });
 
