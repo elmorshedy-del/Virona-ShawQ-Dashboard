@@ -117,6 +117,11 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_events_store_event_ts
+    ON si_events(store, event_ts)
+  `);
+
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_events_store_campaign
     ON si_events(store, utm_campaign, created_at)
   `);
