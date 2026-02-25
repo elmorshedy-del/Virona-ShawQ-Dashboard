@@ -1503,9 +1503,8 @@ function getMomentumSignalLabel(qValue) {
 // ── Momentum severity ────────────────────────────────────────────────────────
 function getMomentumSeverity(trigger, signal, revenueAtRisk) {
   const absRisk = Math.abs(revenueAtRisk || 0);
-  if (trigger === 'hero_decline' && (signal === 'Confirmed' || signal === 'Likely')) return 'critical';
-  if (absRisk > 5000 || trigger === 'hero_decline') return 'high';
-  if (absRisk > 1000 || signal === 'Confirmed' || signal === 'Likely') return 'medium';
+  if (absRisk > 5000 || (trigger === 'hero_decline' && signal === 'Confirmed')) return 'high';
+  if (absRisk > 1000 || signal === 'Likely') return 'medium';
   return 'low';
 }
 
@@ -1591,7 +1590,7 @@ function assessExceptionalEvent(event, product) {
 }
 
 // ── Main momentum engine ─────────────────────────────────────────────────────
-function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems, discountSkuMap) {
+function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems, discountSkuMap, prevDiscountSkuMap) {
   const currentMetrics = computeProductMetrics(currentItems);
   const previousMetrics = computeProductMetrics(previousItems);
   const prevPrevMetrics = prevPrevItems.length ? computeProductMetrics(prevPrevItems) : new Map();
@@ -1605,6 +1604,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
   const totalOrdersCurr = Array.from(currentMetrics.values()).reduce((s, p) => s + p.orders, 0);
   const totalOrdersPrev = Array.from(previousMetrics.values()).reduce((s, p) => s + p.orders, 0);
   const totalRevenueCurr = Array.from(currentMetrics.values()).reduce((s, p) => s + p.revenue, 0);
+  const totalRevenuePrev = Array.from(previousMetrics.values()).reduce((s, p) => s + p.revenue, 0);
 
   // Collect all products for z-test and FDR
   const allProducts = [];
@@ -1623,7 +1623,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     const revenueDelta = currRevenue - prevRevenue;
     const revenueLift = prevRevenue > 0 ? revenueDelta / prevRevenue : null;
     const revenueShare = totalRevenueCurr > 0 ? currRevenue / totalRevenueCurr : 0;
-    const prevRevenueShare = totalOrdersPrev > 0 && prev ? prev.revenue / Array.from(previousMetrics.values()).reduce((s, p) => s + p.revenue, 0) : 0;
+    const prevRevenueShare = totalRevenuePrev > 0 && prev ? prev.revenue / totalRevenuePrev : 0;
     const sharePointsDelta = revenueShare - prevRevenueShare;
     const rankDelta = prevRank ? prevRank - currRank : null;
     const isNew = !prevRank && currOrders >= MOMENTUM_MIN_ORDERS;
@@ -1639,7 +1639,8 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
 
     // Discount share for this product
     const discountShare = discountSkuMap?.get(current.key) || 0;
-    const prevDiscountShare = 0; // TODO: compute from previous period when available
+    const prevDiscountShare = prevDiscountSkuMap?.get(current.key) || 0;
+    const discountShareDelta = discountShare - prevDiscountShare;
 
     // Sparkline daily data
     const sparkline = buildDailySparkline(currentItems, current.key);
@@ -1679,6 +1680,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
       prevWowGrowth,
       discountShare,
       prevDiscountShare,
+      discountShareDelta,
       sparkline,
       cusum,
       percentileLabel
@@ -1715,7 +1717,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     // Hero decline: top-2 product share drops significantly
     if (p.rank <= 2 && p.prevRank && p.prevRank <= 2 && p.sharePointsDelta < 0) {
       const relDrop = p.prevRevenueShare > 0 ? Math.abs(p.sharePointsDelta) / p.prevRevenueShare : 0;
-      if (relDrop >= MOMENTUM_HERO_SHARE_DROP && p.qValue <= 0.20) {
+      if (relDrop >= MOMENTUM_HERO_SHARE_DROP && p.qValue <= MOMENTUM_FDR_TARGET) {
         triggers.push('hero_decline');
       }
     }
@@ -1726,7 +1728,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     }
 
     // Rising pillar: crosses share threshold and is accelerating
-    if (p.revenueShare >= MOMENTUM_RISING_PILLAR_SHARE && p.wowGrowth > 1.0 && p.sharePointsDelta > 0) {
+    if (p.revenueShare >= MOMENTUM_RISING_PILLAR_SHARE && p.wowGrowth > 1.0 && p.sharePointsDelta > 0 && p.qValue <= 0.20) {
       triggers.push('rising_pillar');
     }
 
@@ -1736,17 +1738,21 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     }
 
     // Velocity stall: growth flipped from positive to ≤ 0
-    if (p.prevWowGrowth != null && p.prevWowGrowth > 1.0 && p.wowGrowth <= 1.0 && p.currOrders >= MOMENTUM_MIN_ORDERS) {
+    if (p.prevWowGrowth != null && p.prevWowGrowth > 1.0 && p.wowGrowth <= 1.0 && p.currOrders >= MOMENTUM_MIN_ORDERS && p.qValue <= 0.20) {
       triggers.push('velocity_stall');
     }
 
     // Discount dependency
-    if (p.discountShare >= MOMENTUM_DISCOUNT_DEPENDENCY && p.currOrders >= MOMENTUM_MIN_ORDERS) {
+    if (
+      p.discountShare >= MOMENTUM_DISCOUNT_DEPENDENCY
+      && p.discountShareDelta >= MOMENTUM_DISCOUNT_PP_INCREASE
+      && p.currOrders >= MOMENTUM_MIN_ORDERS
+    ) {
       triggers.push('discount_dependency');
     }
 
     // Quiet exit: was top-10, now below threshold
-    if (p.prevRank && p.prevRank <= 10 && (p.rank > 10 || p.currOrders < MOMENTUM_MIN_ORDERS)) {
+    if (p.prevRank && p.prevRank <= 10 && p.currOrders < MOMENTUM_MIN_ORDERS) {
       triggers.push('quiet_exit');
     }
 
@@ -1775,7 +1781,7 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     if (prevHeroKey && prevHeroKey !== currentHero.key) {
       let tenure = 1;
       if (prevPrevHeroKey === prevHeroKey) tenure = 2;
-      if (tenure >= 2) {
+      if ((tenure + 1) >= MOMENTUM_HERO_TENURE_MIN) {
         const slippedProduct = allProducts.find((p) => p.key === prevHeroKey);
         if (slippedProduct) {
           slippedProduct.heroTenure = tenure + 1;
@@ -1861,11 +1867,10 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
     const assessment = primaryTrigger ? assessBusinessTrigger(primaryTrigger, p) : { headline: '', action: '', kpi: '' };
     const eventAssessment = primaryEvent ? assessExceptionalEvent(primaryEvent, p) : null;
 
-    const severity = primaryTrigger
-      ? getMomentumSeverity(primaryTrigger, p.signal, p.revenueDelta)
-      : 'medium';
-
     const revenueAtRisk = p.revenueDelta < 0 ? Math.abs(p.revenueDelta) * 2 : p.revenueDelta;
+    const severity = primaryTrigger
+      ? getMomentumSeverity(primaryTrigger, p.signal, revenueAtRisk)
+      : 'medium';
 
     const enriched = {
       key: p.key,
@@ -1879,7 +1884,9 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
         revenueShare: p.revenueShare,
         prevRevenueShare: p.prevRevenueShare,
         sharePointsDelta: p.sharePointsDelta,
+        shareDelta: p.sharePointsDelta,
         revenueDelta: p.revenueDelta,
+        revenueImpact: p.revenueDelta,
         revenueLift: p.revenueLift,
         ordersDelta: p.currOrders - p.prevOrders,
         rank: p.rank,
@@ -1923,9 +1930,9 @@ function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems
   });
 
   // Sort by severity
-  const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-  momentumProducts.sort((a, b) => (severityOrder[a.assessment.severity] ?? 3) - (severityOrder[b.assessment.severity] ?? 3));
-  watchProducts.sort((a, b) => (severityOrder[a.assessment.severity] ?? 3) - (severityOrder[b.assessment.severity] ?? 3));
+  const severityOrder = { high: 0, medium: 1, low: 2 };
+  momentumProducts.sort((a, b) => (severityOrder[a.assessment.severity] ?? 2) - (severityOrder[b.assessment.severity] ?? 2));
+  watchProducts.sort((a, b) => (severityOrder[a.assessment.severity] ?? 2) - (severityOrder[b.assessment.severity] ?? 2));
 
   // ── Build backward-compatible insight cards ──────────────────────────────
   const insights = [];
@@ -2113,19 +2120,28 @@ function buildInsights({
   }
 
   const priority = {
-    'product-mover-up': 1.25,
-    'product-mover-down': 1.1,
+    'product-mover-up': 1.0,
+    'product-mover-down': 1.0,
     bundle: 1.05,
     segment: 1.0,
     'discount-reliance': 0.95,
     'repeat-rate-opportunity': 0.9,
     timing: 0.55
   };
+  const triggerPriority = {
+    hero_decline: 1.5,
+    concentration_risk: 1.3,
+    velocity_stall: 1.2,
+    rising_pillar: 1.15,
+    discount_dependency: 1.1,
+    new_traction: 1.0,
+    quiet_exit: 0.95
+  };
 
   return insights
     .map((insight) => {
       const conf = Number.isFinite(insight.confidence) ? insight.confidence : 0.5;
-      const weight = priority[insight.id] ?? 0.75;
+      const weight = triggerPriority[insight.trigger] ?? priority[insight.id] ?? 0.75;
       return { ...insight, _score: weight * conf };
     })
     .sort((a, b) => (b._score || 0) - (a._score || 0))
@@ -2183,21 +2199,36 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const repeatPaths = computeRepeatPaths(items);
   const topProducts = computeTopProducts(items);
   const discountSkus = computeDiscountSkus(items);
-  // Build discount share lookup for momentum engine
+  // Build discount share lookup for momentum engine (current + previous period)
   const discountSkuMap = new Map();
   discountSkus.forEach((row) => {
-    const productKey = row.title; // Match by title since that's how discount skus are keyed
+    const productKey = row.title;
     if (productKey) discountSkuMap.set(productKey, row.discountShare || 0);
+  });
+  const prevDiscountSkus = computeDiscountSkus(previousItems);
+  const prevDiscountSkuMap = new Map();
+  prevDiscountSkus.forEach((row) => {
+    const productKey = row.title;
+    if (productKey) prevDiscountSkuMap.set(productKey, row.discountShare || 0);
   });
 
   // Momentum engine (replaces old computeProductShiftInsights)
   let momentumResult = { insights: [], momentum: [], watch: [] };
   try {
-    momentumResult = computeProductMomentumEngine(items, previousItems, prevPrevItems, discountSkuMap);
+    momentumResult = computeProductMomentumEngine(items, previousItems, prevPrevItems, discountSkuMap, prevDiscountSkuMap);
   } catch (err) {
     console.error('[CustomerInsights] Product momentum engine failed, skipping:', err.message);
   }
   const productShiftInsights = momentumResult.insights;
+  const momentumProducts = [...momentumResult.watch, ...momentumResult.momentum];
+  const momentumSeverityOrder = { high: 0, medium: 1, low: 2 };
+  const sortedMomentumProducts = [...momentumProducts]
+    .sort((a, b) => (momentumSeverityOrder[a.assessment?.severity] ?? 2) - (momentumSeverityOrder[b.assessment?.severity] ?? 2));
+  const watchCount = momentumResult.watch.length;
+  const momentumCount = momentumResult.momentum.length;
+  const momentumSummary = (watchCount || momentumCount)
+    ? `${watchCount} product${watchCount === 1 ? '' : 's'} need${watchCount === 1 ? 's' : ''} attention, ${momentumCount} product${momentumCount === 1 ? '' : 's'} gaining traction`
+    : 'No product momentum triggers crossed thresholds in this window.';
 
   let ordersWithCountry = 0;
   const topCountry = orders.reduce((best, row) => {
@@ -2357,9 +2388,21 @@ export async function getCustomerInsightsPayload(store, params = {}) {
         products: topProducts
       },
       productMomentum: {
-        summary: (momentumResult.momentum.length || momentumResult.watch.length)
-          ? 'Product momentum and watch signals detected.'
-          : 'Product momentum insights will appear after sufficient order history builds up.',
+        summary: momentumSummary,
+        products: sortedMomentumProducts,
+        methodology: {
+          description: 'Products are monitored using period-over-period order-share testing with false-discovery control. Insights fire only when a business-relevant threshold is crossed.',
+          thresholds: {
+            heroDeclineShareDrop: MOMENTUM_HERO_SHARE_DROP,
+            concentrationRisk: MOMENTUM_CONCENTRATION_RISK,
+            risingPillarShare: MOMENTUM_RISING_PILLAR_SHARE,
+            newTractionMinOrders: 5,
+            velocityStallMinOrders: MOMENTUM_MIN_ORDERS,
+            discountDependencyShare: MOMENTUM_DISCOUNT_DEPENDENCY,
+            discountDependencyIncrease: MOMENTUM_DISCOUNT_PP_INCREASE,
+            quietExitMinOrders: MOMENTUM_MIN_ORDERS
+          }
+        },
         momentum: momentumResult.momentum,
         watch: momentumResult.watch
       },
