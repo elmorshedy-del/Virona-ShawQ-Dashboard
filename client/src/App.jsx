@@ -35,6 +35,7 @@ import CROForensicsTab from './components/CROForensicsTab';
 import ConversionUIFixLabTab from './components/ConversionUIFixLabTab';
 import CampaignIntelligenceTab from './components/CampaignIntelligenceTab';
 import CheckoutBlackboxTab from './components/CheckoutBlackboxTab';
+import './components/FunnelDiagnostics.css';
 
 // Fixed "Connected" badge component
 const ConnectedBadge = () => (
@@ -170,6 +171,40 @@ const KPI_MONTH_SUMMARY_THRESHOLDS = {
   minHistoryMonthsForAllTime: 2
 };
 const KPI_HEADLINE_INCLUDE_INACTIVE = true;
+const DEFAULT_FUNNEL_BASELINE_MODE = 'month';
+const FUNNEL_BASELINE_OPTIONS = [
+  {
+    value: 'week',
+    label: '1W',
+    title: '1 Week Baseline',
+    description: 'Compares against the 7 days before your current range.',
+    direction: 'Shows short-term momentum shifts.'
+  },
+  {
+    value: 'month',
+    label: '1M',
+    title: '1 Month Baseline',
+    description: 'Compares against the 30 days before your current range.',
+    direction: 'Shows balanced medium-term direction.'
+  },
+  {
+    value: '3months',
+    label: '3M',
+    title: '3 Months Baseline',
+    description: 'Compares against the 90 days before your current range.',
+    direction: 'Shows broader trend direction.'
+  },
+  {
+    value: 'historical',
+    label: 'Historical',
+    title: 'Historical Baseline',
+    description: 'Compares against all data before your current range.',
+    direction: 'Shows long-run anchor direction.'
+  }
+];
+const DEFAULT_FUNNEL_BASELINE_OPTION = FUNNEL_BASELINE_OPTIONS.find(
+  (option) => option.value === DEFAULT_FUNNEL_BASELINE_MODE
+) || FUNNEL_BASELINE_OPTIONS[0];
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -603,6 +638,7 @@ export default function App() {
   const [funnelDiagnostics, setFunnelDiagnostics] = useState(null);
   const [diagnosticsExpanded, setDiagnosticsExpanded] = useState(true);
   const [selectedDiagnosticsCampaign, setSelectedDiagnosticsCampaign] = useState(null);
+  const [funnelBaselineMode, setFunnelBaselineMode] = useState(DEFAULT_FUNNEL_BASELINE_MODE);
 
   // Hide/show campaigns state
   const [hiddenCampaigns, setHiddenCampaigns] = useState(new Set());
@@ -629,6 +665,9 @@ export default function App() {
   }, [metaAdManagerData]);
 
   const store = STORES[currentStore];
+  const selectedFunnelBaselineOption = FUNNEL_BASELINE_OPTIONS.find(
+    (option) => option.value === funnelBaselineMode
+  ) || DEFAULT_FUNNEL_BASELINE_OPTION;
   const isProductFinderTab = activeTab === PRODUCT_FINDER_TAB_INDEX;
   const hidesGlobalDateControls = isProductFinderTab || activeTab === CAMPAIGN_INTELLIGENCE_TAB_INDEX;
   const selectedCampaignOption = useMemo(
@@ -1312,7 +1351,8 @@ export default function App() {
     const fetchDiagnostics = async () => {
       try {
         const params = new URLSearchParams({
-          store: currentStore
+          store: currentStore,
+          baselineMode: funnelBaselineMode
         });
 
         if (dateRange.type === 'custom') {
@@ -1350,7 +1390,7 @@ export default function App() {
     };
 
     fetchDiagnostics();
-  }, [currentStore, dateRange, storeLoaded, selectedDiagnosticsCampaign]);
+  }, [currentStore, dateRange, storeLoaded, selectedDiagnosticsCampaign, funnelBaselineMode]);
 
   async function handleSync() {
     setSyncing(true);
@@ -5852,7 +5892,7 @@ function DashboardTab({
       {/* FUNNEL DIAGNOSTICS - Campaign-level diagnostics */}
       {funnelDiagnostics && (
         <>
-          <div className="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3">
+          <div className="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-start gap-4">
             <div>
               <div className="text-sm font-semibold text-gray-800">Funnel analysis scope</div>
               <div className="text-xs text-gray-500">View all campaigns or focus on a specific one.</div>
@@ -5879,6 +5919,36 @@ function DashboardTab({
                 </button>
               )}
             </div>
+            <div className="w-full border-t border-gray-100" />
+            <div className="w-full">
+              <div className="text-sm font-semibold text-gray-800">Baseline lens</div>
+              <div className="text-xs text-gray-500">
+                1W = short-term, 1M (default) = balanced, 3M = trend, Historical = long-run anchor.
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {FUNNEL_BASELINE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setFunnelBaselineMode(option.value)}
+                    title={`${option.description} ${option.direction}`}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                      funnelBaselineMode === option.value
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    {option.label}
+                    {option.value === DEFAULT_FUNNEL_BASELINE_MODE ? ' (Default)' : ''}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 text-xs text-gray-600">
+                <span className="font-semibold text-gray-800">{selectedFunnelBaselineOption.title}:</span>{' '}
+                {selectedFunnelBaselineOption.description}{' '}
+                <span className="text-gray-500">{selectedFunnelBaselineOption.direction}</span>
+              </div>
+            </div>
           </div>
 
           <FunnelDiagnostics
@@ -5888,6 +5958,7 @@ function DashboardTab({
             expanded={diagnosticsExpanded}
             setExpanded={setDiagnosticsExpanded}
             onClearSelection={() => setSelectedDiagnosticsCampaign(null)}
+            activeBaselineOption={selectedFunnelBaselineOption}
           />
         </>
       )}
@@ -9346,19 +9417,92 @@ function ManualDataTab({
 // FUNNEL DIAGNOSTICS COMPONENT
 // ============================================================================
 
-// Benchmark constants (inline for frontend)
-const JEWELRY_BENCHMARKS = {
-  ctr: { poor: 1.0, average: 1.5, good: 2.5 },
-  cpc: { poor: 5, average: 3, good: 1.5 },
-  cpm: { poor: 60, average: 40, good: 20 },
-  frequency: { poor: 3.0, average: 2.0, good: 1.3 },
-  lpvRate: { poor: 50, average: 70, good: 85 },
-  atcRate: { poor: 2, average: 4, good: 7 },
-  checkoutRate: { poor: 25, average: 40, good: 55 },
-  purchaseRate: { poor: 30, average: 50, good: 70 },
-  cvr: { poor: 0.5, average: 1.0, good: 2.0 },
-  roas: { poor: 1.5, average: 2.5, good: 4.0 },
-  cacPercent: { poor: 50, average: 30, good: 15 },
+const BASELINE_DELTA_BANDS = {
+  excellentPct: 12,
+  goodPct: 5,
+  poorPct: -5
+};
+
+const BASELINE_GAUGE_DELTA_RANGE_PCT = 30;
+const DEFAULT_GAUGE_MARKER_PERCENT = 50;
+const SPARKLINE_WIDTH = 60;
+const SPARKLINE_HEIGHT = 20;
+const SPARKLINE_PADDING = 4;
+
+const LOWER_IS_BETTER_METRIC_KEYS = new Set(['cpc', 'cpm', 'cac']);
+
+const FUNNEL_STATUS_CONFIG = {
+  excellent: { label: 'Excellent', className: 'fdx-status fdx-status-excellent' },
+  good: { label: 'Good', className: 'fdx-status fdx-status-good' },
+  average: { label: 'Average', className: 'fdx-status fdx-status-average' },
+  poor: { label: 'Poor', className: 'fdx-status fdx-status-poor' },
+  unknown: { label: 'No Data', className: 'fdx-status fdx-status-unknown' }
+};
+
+const FUNNEL_METRIC_CONFIG = {
+  uniqueReach: { label: 'Unique Reach', format: 'integer', recommendationKey: 'uniqueReach' },
+  ctr: { label: 'CTR', format: 'percent', recommendationKey: 'ctr' },
+  cpc: { label: 'CPC', format: 'currency', recommendationKey: 'cpc' },
+  cpm: { label: 'CPM', format: 'currency', recommendationKey: 'cpm' },
+  frequency: { label: 'Frequency', format: 'number', recommendationKey: 'frequency' },
+  lpvRate: { label: 'LPV Rate', format: 'percent', recommendationKey: 'lpvRate' },
+  atcRate: { label: 'ATC Rate', format: 'percent', recommendationKey: 'atcRate' },
+  checkoutRate: { label: 'Checkout Rate', format: 'percent', recommendationKey: 'checkoutRate' },
+  purchaseRate: { label: 'Purchase Rate', format: 'percent', recommendationKey: 'purchaseRate' },
+  cvr: { label: 'CVR', format: 'percent', recommendationKey: 'cvr' },
+  roas: { label: 'ROAS', format: 'roas', recommendationKey: 'roas' },
+  cac: { label: 'CAC', format: 'currency', recommendationKey: 'cac' }
+};
+
+const FUNNEL_STAGE_CONFIG = [
+  {
+    key: 'upper',
+    label: 'Upper Funnel (Awareness)',
+    tone: 'blue',
+    metricKeys: ['uniqueReach', 'ctr', 'cpc', 'cpm', 'frequency']
+  },
+  {
+    key: 'mid',
+    label: 'Mid Funnel (Consideration)',
+    tone: 'purple',
+    metricKeys: ['lpvRate', 'atcRate']
+  },
+  {
+    key: 'lower',
+    label: 'Lower Funnel (Conversion)',
+    tone: 'green',
+    metricKeys: ['checkoutRate', 'purchaseRate', 'cvr', 'roas', 'cac']
+  }
+];
+
+const FUNNEL_STAGE_TONE_CLASSES = {
+  blue: { dotClass: 'fdx-dot-blue', labelClass: 'fdx-label-blue' },
+  purple: { dotClass: 'fdx-dot-purple', labelClass: 'fdx-label-purple' },
+  green: { dotClass: 'fdx-dot-green', labelClass: 'fdx-label-green' }
+};
+
+const toFiniteNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const getDirectionalDelta = (rawDelta, metricKey) => {
+  if (!Number.isFinite(rawDelta)) return null;
+  return LOWER_IS_BETTER_METRIC_KEYS.has(metricKey) ? -rawDelta : rawDelta;
+};
+
+const getBaselineTier = (directionalDelta) => {
+  if (!Number.isFinite(directionalDelta)) return 'unknown';
+  if (directionalDelta >= BASELINE_DELTA_BANDS.excellentPct) return 'excellent';
+  if (directionalDelta >= BASELINE_DELTA_BANDS.goodPct) return 'good';
+  if (directionalDelta <= BASELINE_DELTA_BANDS.poorPct) return 'poor';
+  return 'average';
+};
+
+const getGaugeMarkerPercent = (directionalDelta) => {
+  if (!Number.isFinite(directionalDelta)) return DEFAULT_GAUGE_MARKER_PERCENT;
+  const clampedDelta = Math.max(-BASELINE_GAUGE_DELTA_RANGE_PCT, Math.min(BASELINE_GAUGE_DELTA_RANGE_PCT, directionalDelta));
+  return ((clampedDelta + BASELINE_GAUGE_DELTA_RANGE_PCT) / (BASELINE_GAUGE_DELTA_RANGE_PCT * 2)) * 100;
 };
 
 const ALERT_THRESHOLDS = {
@@ -9375,9 +9519,13 @@ const ALERT_THRESHOLDS = {
 };
 
 const DIAGNOSTIC_RECOMMENDATIONS = {
+  uniqueReach: {
+    poor: 'Unique reach is lagging your prior baseline. Broaden high-intent audience pools, reduce over-fragmented ad sets, and refresh top creatives to recover reach efficiently.',
+    average: 'Reach is near your baseline. Keep audience expansion tests running to prevent fatigue and unlock new scale.'
+  },
   ctr: {
     poor: "Creative fatigue or wrong audience. Test new ad creatives with different hooks, try video content, or refine audience targeting. Check if ad frequency is too high.",
-    average: "Creative is performing at industry average. A/B test new headlines, images, or CTAs to push into good territory."
+    average: "Creative is close to your current baseline. A/B test new headlines, images, or CTAs to push into stronger territory."
   },
   cpc: {
     poor: "Paying too much per click. Review audience targeting - may be too narrow or competitive. Try broader audiences or lookalikes. Check if bidding strategy is optimal.",
@@ -9397,7 +9545,7 @@ const DIAGNOSTIC_RECOMMENDATIONS = {
   },
   atcRate: {
     poor: "Visitors view products but don't add to cart. Review: 1) Product images quality and angles, 2) Price perception vs competitors, 3) Missing trust signals (reviews, guarantees), 4) Unclear product details or sizing, 5) No urgency or scarcity messaging.",
-    average: "ATC is at jewelry industry average. Test adding social proof, urgency timers, or better product photography."
+    average: "ATC is close to your baseline. Test adding social proof, urgency timers, or better product photography."
   },
   checkoutRate: {
     poor: "Customers add to cart but don't start checkout. Check: 1) Surprise shipping costs, 2) Required account creation, 3) Cart page UX issues, 4) Missing payment options, 5) No guest checkout. Consider cart abandonment emails.",
@@ -9408,8 +9556,8 @@ const DIAGNOSTIC_RECOMMENDATIONS = {
     average: "Purchase completion is average. Consider adding buy-now-pay-later options or express checkout."
   },
   cvr: {
-    poor: "Overall conversion is below jewelry benchmarks. Identify the biggest funnel drop-off (LPV->ATC->Checkout->Purchase) and fix that first. Consider if traffic quality is the issue.",
-    average: "Conversion rate is normal for jewelry (high-consideration purchase). Focus on retargeting warm audiences and email flows."
+    poor: "Overall conversion is below your baseline. Identify the biggest funnel drop-off (LPV->ATC->Checkout->Purchase) and fix that first. Consider if traffic quality is the issue.",
+    average: "Conversion rate is near baseline. Focus on retargeting warm audiences and email flows."
   },
   roas: {
     poor: "Campaign is not profitable. Options: 1) Pause and optimize before spending more, 2) Reduce budget significantly, 3) Focus only on best-performing audiences/countries, 4) Check if product margins can support paid ads at current CAC.",
@@ -9444,28 +9592,20 @@ const ALERT_RECOMMENDATIONS = {
   lpvRate_spike: "Landing page view rate improved! Good traffic quality and page performance."
 };
 
-function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency, expanded, setExpanded, onClearSelection }) {
+function FunnelDiagnostics({
+  data,
+  currency = 'SAR',
+  formatCurrency,
+  expanded,
+  setExpanded,
+  onClearSelection,
+  activeBaselineOption = null
+}) {
   if (!data || !data.current) {
     return null;
   }
 
-  const { current, previous, changes, sparklineData, campaignName } = data;
-
-  // Determine tier for a metric
-  const getTier = (value, benchmark, lowerIsBetter = false) => {
-    if (value == null || isNaN(value)) return 'unknown';
-    if (lowerIsBetter) {
-      if (value <= benchmark.good) return 'excellent';
-      if (value <= benchmark.average) return 'good';
-      if (value <= benchmark.poor) return 'average';
-      return 'poor';
-    } else {
-      if (value >= benchmark.good) return 'excellent';
-      if (value >= benchmark.average) return 'good';
-      if (value >= benchmark.poor) return 'average';
-      return 'poor';
-    }
-  };
+  const { current, previous, changes, sparklineData, campaignName, period, baseline } = data;
 
   // Generate alerts based on changes
   const generateAlerts = () => {
@@ -9507,18 +9647,23 @@ function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency, expanded, s
 
   const alerts = generateAlerts();
 
-  const tierConfig = {
-    excellent: { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', label: 'Excellent' },
-    good: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', label: 'Good' },
-    average: { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', label: 'Average' },
-    poor: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', label: 'Poor' },
-    unknown: { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-500', label: 'No Data' }
-  };
+  const baselinePeriodLabel = period?.prevStartDate && period?.prevEndDate
+    ? `${period.prevStartDate} to ${period.prevEndDate}`
+    : 'No baseline data available';
 
-  // Mini sparkline component
-  const Sparkline = ({ data: sparkData, metricKey, inverted = false }) => {
-    if (!sparkData || sparkData.length < 2) return null;
-    const values = sparkData.map(d => d?.[metricKey] || 0).filter(v => !isNaN(v));
+  const currentPeriodLabel = period?.startDate && period?.endDate
+    ? `${period.startDate} to ${period.endDate}`
+    : '';
+  const baselineLabel = baseline?.label || activeBaselineOption?.title || 'Baseline';
+  const baselineDescription = baseline?.description || activeBaselineOption?.description || 'Comparison reference for baseline lens.';
+  const baselineDirection = baseline?.direction || activeBaselineOption?.direction || '';
+
+  const Sparkline = ({ metricKey }) => {
+    if (!Array.isArray(sparklineData) || sparklineData.length < 2) return null;
+    const values = sparklineData
+      .map((entry) => toFiniteNumber(entry?.[metricKey]))
+      .filter((value) => Number.isFinite(value));
+
     if (values.length < 2) return null;
 
     const max = Math.max(...values);
@@ -9526,22 +9671,25 @@ function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency, expanded, s
     const range = max - min || 1;
 
     const points = values.map((v, i) => {
-      const x = (i / (values.length - 1)) * 60;
-      const y = 20 - ((v - min) / range) * 16;
+      const x = (i / (values.length - 1)) * SPARKLINE_WIDTH;
+      const y = SPARKLINE_HEIGHT - SPARKLINE_PADDING - ((v - min) / range) * (SPARKLINE_HEIGHT - (SPARKLINE_PADDING * 2));
       return `${x},${y}`;
     }).join(' ');
 
     const trend = values[values.length - 1] - values[0];
-    const color = inverted
-      ? (trend > 0 ? '#ef4444' : '#22c55e')
-      : (trend > 0 ? '#22c55e' : '#ef4444');
+    const directionalTrend = getDirectionalDelta(trend, metricKey);
+    const stroke = directionalTrend > 0
+      ? '#16a34a'
+      : directionalTrend < 0
+        ? '#e11d48'
+        : '#86868b';
 
     return (
-      <svg width="60" height="24" className="inline-block ml-2">
+      <svg width={SPARKLINE_WIDTH} height={SPARKLINE_HEIGHT} className="fdx-sparkline">
         <polyline
           fill="none"
-          stroke={color}
-          strokeWidth="2"
+          stroke={stroke}
+          strokeWidth="1.8"
           points={points}
         />
       </svg>
@@ -9549,280 +9697,202 @@ function FunnelDiagnostics({ data, currency = 'SAR', formatCurrency, expanded, s
   };
 
   const formatValue = (value, format) => {
-    if (value == null || isNaN(value)) return '-';
+    if (!Number.isFinite(value)) return '-';
+    if (format === 'integer') return Math.round(value).toLocaleString('en-US');
     if (format === 'percent') return `${value.toFixed(2)}%`;
-    if (format === 'currency') return `${value.toFixed(2)} ${currency}`;
+    if (format === 'currency') {
+      if (typeof formatCurrency === 'function') return formatCurrency(value);
+      return `${value.toFixed(2)} ${currency}`;
+    }
     if (format === 'roas') return `${value.toFixed(2)}x`;
     if (format === 'number') return value.toFixed(2);
     return value;
   };
 
-  const formatChange = (change) => {
-    if (change == null || isNaN(change)) return '';
-    const sign = change >= 0 ? '+' : '';
-    return `${sign}${change.toFixed(1)}%`;
+  const getChangeBadge = (metricKey, rawChange) => {
+    if (!Number.isFinite(rawChange)) return null;
+    const directionalDelta = getDirectionalDelta(rawChange, metricKey);
+    const arrow = rawChange > 0 ? '↑' : rawChange < 0 ? '↓' : '→';
+    const toneClass = directionalDelta > 0
+      ? 'fdx-change-up'
+      : directionalDelta < 0
+        ? 'fdx-change-down'
+        : 'fdx-change-neutral';
+
+    return {
+      className: `fdx-change-badge ${toneClass}`,
+      label: `${arrow} ${Math.abs(rawChange).toFixed(1)}%`
+    };
   };
 
-  // Metric card component
-  const MetricCard = ({ name, metricKey, value, benchmark, benchmarkText, format, change, lowerIsBetter = false, recommendation }) => {
-    const tier = getTier(value, benchmark, lowerIsBetter);
-    const config = tierConfig[tier];
-    const changeColor = lowerIsBetter
-      ? (change > 0 ? 'text-red-500' : 'text-green-500')
-      : (change > 0 ? 'text-green-500' : 'text-red-500');
+  const renderMetricRows = (metricKey, metricIndex) => {
+    const config = FUNNEL_METRIC_CONFIG[metricKey];
+    if (!config) return [];
 
-    return (
-      <div className={`p-4 rounded-lg border ${config.bg} ${config.border}`}>
-        <div className="flex items-center justify-between mb-1">
-          <span className="font-semibold text-gray-800 text-sm">{name}</span>
-          <div className="flex items-center">
-            <span className={`text-lg font-bold ${config.text}`}>{formatValue(value, format)}</span>
-            <Sparkline data={sparklineData} metricKey={metricKey} inverted={lowerIsBetter} />
+    const currentValue = toFiniteNumber(current?.[metricKey]);
+    const baselineValue = toFiniteNumber(previous?.[metricKey]);
+    const rawChange = toFiniteNumber(changes?.[metricKey]);
+    const directionalDelta = getDirectionalDelta(rawChange, metricKey);
+    const tierKey = getBaselineTier(directionalDelta);
+    const status = FUNNEL_STATUS_CONFIG[tierKey] || FUNNEL_STATUS_CONFIG.unknown;
+    const changeBadge = getChangeBadge(metricKey, rawChange);
+    const markerPercent = getGaugeMarkerPercent(directionalDelta);
+    const recommendation = DIAGNOSTIC_RECOMMENDATIONS[config.recommendationKey]?.[tierKey] || '';
+    const showTip = (tierKey === 'poor' || tierKey === 'average') && recommendation;
+    const groupStartClass = metricIndex > 0 ? 'fdx-group-start' : '';
+
+    const rows = [
+      <tr key={`${metricKey}-metric`} className={groupStartClass}>
+        <th>Metric</th>
+        <td className="fdx-metric-name">{config.label}</td>
+      </tr>,
+      <tr key={`${metricKey}-value`}>
+        <th>Value</th>
+        <td>
+          <div className="fdx-value-line">
+            <span className="fdx-metric-value">{formatValue(currentValue, config.format)}</span>
+            {changeBadge ? (
+              <span className={changeBadge.className}>{changeBadge.label}</span>
+            ) : (
+              <span className="fdx-muted">No baseline data</span>
+            )}
+            <Sparkline metricKey={metricKey} />
           </div>
-        </div>
-        {change != null && !isNaN(change) && (
-          <div className={`text-xs ${changeColor} mb-2`}>
-            {formatChange(change)} vs previous period
+          <div className="fdx-baseline-inline">
+            Baseline: <span>{formatValue(baselineValue, config.format)}</span>
           </div>
-        )}
-        <div className="text-xs text-gray-500 mb-1">
-          Benchmark: {benchmarkText}
-        </div>
-        <div className={`text-xs font-medium ${config.text}`}>
-          Status: {config.label}
-        </div>
-        {tier === 'poor' && recommendation && (
-          <div className="mt-3 p-2 bg-white bg-opacity-70 rounded text-xs text-gray-600">
-            <span className="font-semibold">Tip:</span> {recommendation}
+        </td>
+      </tr>,
+      <tr key={`${metricKey}-status`}>
+        <th>Status & Gauge</th>
+        <td>
+          <div className="fdx-status-gauge-line">
+            <span className={status.className}>{status.label}</span>
+            <div className="fdx-gauge-wrap">
+              <div className="fdx-gauge-bar">
+                <div className="fdx-gauge-marker" style={{ left: `${markerPercent}%` }} />
+              </div>
+              <div className="fdx-gauge-labels">
+                <span>Below</span>
+                <span>Base</span>
+                <span>Above</span>
+              </div>
+            </div>
           </div>
-        )}
-      </div>
-    );
+        </td>
+      </tr>
+    ];
+
+    if (showTip) {
+      rows.push(
+        <tr key={`${metricKey}-action`}>
+          <th>Action</th>
+          <td>
+            <div className="fdx-tip-box">
+              <b>Tip:</b> {recommendation}
+            </div>
+          </td>
+        </tr>
+      );
+    }
+
+    return rows;
   };
-
-  // Calculate CAC as % of AOV
-  const cacPercent = current.aov > 0 ? (current.cac / current.aov) * 100 : 0;
 
   return (
-    <div className="bg-white rounded-xl shadow-sm mb-6 overflow-hidden">
-      {/* Collapsible Header */}
+    <div className="fdx-card">
       <div
-        className="px-6 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 border-b border-gray-100"
+        className="fdx-card-header"
         onClick={() => setExpanded(!expanded)}
       >
-        <div className="flex items-center gap-3">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <span>🔍</span> Funnel Diagnostics
-          </h2>
+        <div className="fdx-card-title-group">
+          <div className="fdx-card-icon" aria-hidden="true">🔍</div>
+          <div>
+            <div className="fdx-card-title">Funnel Diagnostics</div>
+            <div className="fdx-card-subtitle">Your baseline: {baselineLabel}</div>
+          </div>
           {campaignName ? (
-            <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-medium">
+            <span className="fdx-badge fdx-badge-active">
               {campaignName}
             </span>
           ) : (
-            <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-sm">
+            <span className="fdx-badge">
               All Campaigns
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="fdx-card-actions">
           {campaignName && onClearSelection && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onClearSelection();
               }}
-              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg"
+              className="fdx-clear-button"
             >
-              ✕ Clear Selection
+              Clear Selection
             </button>
           )}
-          <span className="text-gray-400 text-sm">
+          <span className="fdx-collapse-label">
             {expanded ? '▲ Collapse' : '▼ Expand'}
           </span>
         </div>
       </div>
 
-      {/* Collapsible Content */}
       {expanded && (
-        <div className="p-6">
-          {/* Benchmark Label */}
-          <div className="flex justify-end mb-4">
-            <span className="text-xs text-gray-400">Benchmarks: Jewelry Industry 2024-25</span>
+        <div className="fdx-content">
+          <div className="fdx-baseline-summary">
+            <div className="fdx-baseline-title">{baselineLabel} Window: {baselinePeriodLabel}</div>
+            {currentPeriodLabel && (
+              <div className="fdx-baseline-subtitle">Current Window: {currentPeriodLabel}</div>
+            )}
+            <div className="fdx-baseline-subtitle">
+              {baselineDescription} {baselineDirection}
+            </div>
           </div>
 
-          {/* Alert Banners */}
           {alerts.length > 0 && (
-            <div className="mb-6 space-y-2">
+            <div className="fdx-alerts">
               {alerts.map((alert, i) => (
                 <div
                   key={i}
-                  className={`p-3 rounded-lg border ${
+                  className={`fdx-alert ${
                     alert.type === 'drop'
-                      ? 'bg-red-50 border-red-200'
-                      : 'bg-green-50 border-green-200'
+                      ? 'fdx-alert-danger'
+                      : 'fdx-alert-success'
                   }`}
                 >
-                  <div className="flex items-start gap-2">
-                    <span className="text-lg">{alert.type === 'drop' ? '🔴' : '🟢'}</span>
-                    <div>
-                      <div className={`font-semibold ${alert.type === 'drop' ? 'text-red-700' : 'text-green-700'}`}>
-                        {alert.type === 'drop' ? 'ALERT' : 'WIN'}: {alert.metric.toUpperCase()} {alert.type === 'drop' ? 'dropped' : 'improved'} {alert.change.toFixed(0)}%
-                      </div>
-                      <div className="text-sm text-gray-600 mt-1">
-                        → {alert.recommendation}
-                      </div>
-                    </div>
+                  <div className="fdx-alert-icon">{alert.type === 'drop' ? '⚠' : '✓'}</div>
+                  <div>
+                    <h4>{alert.metric.toUpperCase()} {alert.type === 'drop' ? 'dropped' : 'improved'} {alert.change.toFixed(0)}%</h4>
+                    <p>{alert.recommendation}</p>
                   </div>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Upper Funnel */}
-      <div className="mb-6">
-        <h3 className="text-sm font-semibold text-blue-600 uppercase tracking-wide mb-3 flex items-center gap-2">
-          <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-          Upper Funnel (Awareness)
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard
-            name="CTR"
-            metricKey="ctr"
-            value={current.ctr}
-            benchmark={JEWELRY_BENCHMARKS.ctr}
-            benchmarkText={`<1% Poor | 1-1.5% Avg | 1.5-2.5% Good | >2.5% Excellent`}
-            format="percent"
-            change={changes.ctr}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.ctr.poor}
-          />
-          <MetricCard
-            name="CPC"
-            metricKey="cpc"
-            value={current.cpc}
-            benchmark={JEWELRY_BENCHMARKS.cpc}
-            benchmarkText={`>5 ${currency} Poor | 3-5 Avg | 1.5-3 Good | <1.5 Excellent`}
-            format="currency"
-            change={changes.cpc}
-            lowerIsBetter={true}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.cpc.poor}
-          />
-          <MetricCard
-            name="CPM"
-            metricKey="cpm"
-            value={current.cpm}
-            benchmark={JEWELRY_BENCHMARKS.cpm}
-            benchmarkText={`>60 ${currency} Poor | 40-60 Avg | 20-40 Good | <20 Excellent`}
-            format="currency"
-            change={changes.cpm}
-            lowerIsBetter={true}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.cpm.poor}
-          />
-          <MetricCard
-            name="Frequency"
-            metricKey="frequency"
-            value={current.frequency}
-            benchmark={JEWELRY_BENCHMARKS.frequency}
-            benchmarkText=">3 Poor | 2-3 Avg | 1.3-2 Good | 1-1.3 Excellent"
-            format="number"
-            change={changes.frequency}
-            lowerIsBetter={true}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.frequency.poor}
-          />
-        </div>
-      </div>
+          <div className="fdx-stage-grid">
+            {FUNNEL_STAGE_CONFIG.map((stage) => {
+              const tone = FUNNEL_STAGE_TONE_CLASSES[stage.tone] || FUNNEL_STAGE_TONE_CLASSES.blue;
 
-      {/* Mid Funnel */}
-      <div className="mb-6">
-        <h3 className="text-sm font-semibold text-purple-600 uppercase tracking-wide mb-3 flex items-center gap-2">
-          <span className="w-2 h-2 bg-purple-500 rounded-full"></span>
-          Mid Funnel (Consideration)
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard
-            name="LPV Rate"
-            metricKey="lpvRate"
-            value={current.lpvRate}
-            benchmark={JEWELRY_BENCHMARKS.lpvRate}
-            benchmarkText="<50% Poor | 50-70% Avg | 70-85% Good | >85% Excellent"
-            format="percent"
-            change={changes.lpvRate}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.lpvRate.poor}
-          />
-          <MetricCard
-            name="ATC Rate"
-            metricKey="atcRate"
-            value={current.atcRate}
-            benchmark={JEWELRY_BENCHMARKS.atcRate}
-            benchmarkText="<2% Poor | 2-4% Avg | 4-7% Good | >7% Excellent"
-            format="percent"
-            change={changes.atcRate}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.atcRate.poor}
-          />
-        </div>
-      </div>
-
-      {/* Lower Funnel */}
-      <div>
-        <h3 className="text-sm font-semibold text-green-600 uppercase tracking-wide mb-3 flex items-center gap-2">
-          <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-          Lower Funnel (Conversion)
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard
-            name="Checkout Rate"
-            metricKey="checkoutRate"
-            value={current.checkoutRate}
-            benchmark={JEWELRY_BENCHMARKS.checkoutRate}
-            benchmarkText="<25% Poor | 25-40% Avg | 40-55% Good | >55% Excellent"
-            format="percent"
-            change={changes.checkoutRate}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.checkoutRate.poor}
-          />
-          <MetricCard
-            name="Purchase Rate"
-            metricKey="purchaseRate"
-            value={current.purchaseRate}
-            benchmark={JEWELRY_BENCHMARKS.purchaseRate}
-            benchmarkText="<30% Poor | 30-50% Avg | 50-70% Good | >70% Excellent"
-            format="percent"
-            change={changes.purchaseRate}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.purchaseRate.poor}
-          />
-          <MetricCard
-            name="CVR"
-            metricKey="cvr"
-            value={current.cvr}
-            benchmark={JEWELRY_BENCHMARKS.cvr}
-            benchmarkText="<0.5% Poor | 0.5-1% Avg | 1-2% Good | >2% Excellent"
-            format="percent"
-            change={changes.cvr}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.cvr.poor}
-          />
-          <MetricCard
-            name="ROAS"
-            metricKey="roas"
-            value={current.roas}
-            benchmark={JEWELRY_BENCHMARKS.roas}
-            benchmarkText="<1.5x Poor | 1.5-2.5x Avg | 2.5-4x Good | >4x Excellent"
-            format="roas"
-            change={changes.roas}
-            recommendation={DIAGNOSTIC_RECOMMENDATIONS.roas.poor}
-          />
-        </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
-            <MetricCard
-              name="CAC"
-              metricKey="cac"
-              value={current.cac}
-              benchmark={JEWELRY_BENCHMARKS.cacPercent}
-              benchmarkText={`>50% AOV Poor | 30-50% Avg | 15-30% Good | <15% Excellent (${cacPercent.toFixed(0)}% of AOV)`}
-              format="currency"
-              change={changes.cac}
-              lowerIsBetter={true}
-              recommendation={DIAGNOSTIC_RECOMMENDATIONS.cac.poor}
-            />
+              return (
+                <section key={stage.key} className="fdx-stage-section">
+                  <div className="fdx-section-label">
+                    <span className={`fdx-section-dot ${tone.dotClass}`} />
+                    <span className={`fdx-section-name ${tone.labelClass}`}>{stage.label}</span>
+                  </div>
+                  <div className="fdx-table-scroll">
+                    <table className="fdx-vtable">
+                      <tbody>
+                        {stage.metricKeys.flatMap((metricKey, metricIndex) => renderMetricRows(metricKey, metricIndex))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              );
+            })}
           </div>
-        </div>
         </div>
       )}
     </div>
