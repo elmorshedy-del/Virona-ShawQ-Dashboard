@@ -44,6 +44,18 @@ const VERIFIER_DEAD_CLICK_ATTEMPTS = clampInt(
   1,
   10
 );
+const VERIFIER_SELECTOR_CANDIDATE_LIMIT = clampInt(
+  process.env.SESSION_INTELLIGENCE_VERIFIER_SELECTOR_CANDIDATE_LIMIT,
+  6,
+  2,
+  12
+);
+const VERIFIER_SELECTOR_ERROR_PREVIEW_CHARS = clampInt(
+  process.env.SESSION_INTELLIGENCE_VERIFIER_SELECTOR_ERROR_PREVIEW_CHARS,
+  180,
+  80,
+  500
+);
 const VERIFIER_DEAD_CLICK_CONFIRM_RATIO = clampFloat(
   process.env.SESSION_INTELLIGENCE_VERIFIER_DEAD_CLICK_CONFIRM_RATIO,
   0.67,
@@ -62,6 +74,25 @@ const VERIFIER_ALLOW_NO_SANDBOX = safeString(process.env.SESSION_INTELLIGENCE_VE
 const VERIFIER_ALLOW_PRIVATE_NETWORK_TARGETS = safeString(process.env.SESSION_INTELLIGENCE_VERIFIER_ALLOW_PRIVATE_NETWORK_TARGETS)
   .toLowerCase()
   .trim() === 'true';
+const VERIFIER_SELECTOR_CLASS_TOKEN_TERMINATORS = new Set([
+  ' ',
+  '\t',
+  '\n',
+  '\r',
+  '\f',
+  '>',
+  '+',
+  '~',
+  ',',
+  '.',
+  '#',
+  '[',
+  ']',
+  '{',
+  '}',
+  '(',
+  ')'
+]);
 
 let parsedStoreBaseUrls = null;
 const verificationJobByScope = new Map();
@@ -161,6 +192,92 @@ function normalizeErrorSignature(value) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 160);
+}
+
+function isVerifierSelectorClassTokenTerminator(char) {
+  return VERIFIER_SELECTOR_CLASS_TOKEN_TERMINATORS.has(char);
+}
+
+function escapeVerifierClassToken(token) {
+  const raw = safeString(token);
+  if (!raw) return '';
+
+  let escaped = '';
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+
+    if (char === '\\' && index + 1 < raw.length) {
+      escaped += `\\${raw[index + 1]}`;
+      index += 1;
+      continue;
+    }
+
+    if (/^[a-zA-Z0-9_-]$/.test(char)) {
+      escaped += char;
+      continue;
+    }
+
+    escaped += `\\${char}`;
+  }
+
+  return escaped;
+}
+
+function escapeVerifierClassTokens(selector) {
+  const rawSelector = safeString(selector).trim();
+  if (!rawSelector) return '';
+
+  let output = '';
+  let cursor = 0;
+
+  while (cursor < rawSelector.length) {
+    const char = rawSelector[cursor];
+    if (char !== '.') {
+      output += char;
+      cursor += 1;
+      continue;
+    }
+
+    output += '.';
+    cursor += 1;
+
+    let classToken = '';
+    while (cursor < rawSelector.length) {
+      const current = rawSelector[cursor];
+      if (isVerifierSelectorClassTokenTerminator(current)) break;
+      classToken += current;
+      cursor += 1;
+    }
+
+    output += classToken ? escapeVerifierClassToken(classToken) : '';
+  }
+
+  return output;
+}
+
+function buildVerifierSelectorCandidates(targetKey) {
+  const raw = safeString(targetKey).trim();
+  if (!raw) return [];
+
+  const candidates = [];
+  const seen = new Set();
+  const pushCandidate = (value, source) => {
+    const selector = safeString(value).trim();
+    if (!selector || seen.has(selector)) return;
+    seen.add(selector);
+    candidates.push({ selector, source });
+  };
+
+  const compactWhitespace = raw.replace(/\s+/g, ' ').trim();
+  const escapedRawClasses = escapeVerifierClassTokens(raw);
+  const escapedCompactClasses = escapeVerifierClassTokens(compactWhitespace);
+
+  pushCandidate(raw, 'raw');
+  pushCandidate(compactWhitespace, 'whitespace_compact');
+  pushCandidate(escapedRawClasses, 'escaped_classes_raw');
+  pushCandidate(escapedCompactClasses, 'escaped_classes_compact');
+
+  return candidates.slice(0, VERIFIER_SELECTOR_CANDIDATE_LIMIT);
 }
 
 function buildIssueKey({ issueType, page, targetKey, errorSignature }) {
@@ -578,8 +695,8 @@ async function getMutationCount(page) {
 }
 
 async function verifyDeadLikeIssue(page, issue, issueUrl) {
-  const selector = safeString(issue.targetKey).trim();
-  if (!selector) {
+  const rawSelector = safeString(issue.targetKey).trim();
+  if (!rawSelector) {
     return {
       status: 'unverified',
       confidence: 0,
@@ -594,24 +711,66 @@ async function verifyDeadLikeIssue(page, issue, issueUrl) {
   });
   await sleep(VERIFIER_POST_LOAD_WAIT_MS);
 
-  let handle = null;
-  try {
-    handle = await page.$(selector);
-  } catch (error) {
+  const selectorCandidates = buildVerifierSelectorCandidates(rawSelector);
+  if (!selectorCandidates.length) {
     return {
       status: 'unverified',
       confidence: 0,
-      reason: `Invalid selector syntax: ${safeString(error?.message || error).slice(0, 140)}`,
-      evidence: { url: issueUrl, selector }
+      reason: 'Missing selector in signal payload.',
+      evidence: { url: issueUrl }
     };
   }
 
-  if (!handle) {
+  let selectedSelector = null;
+  const selectorAttempts = [];
+  for (const candidate of selectorCandidates) {
+    try {
+      const handle = await page.$(candidate.selector);
+      const found = Boolean(handle);
+      if (handle) await handle.dispose().catch(() => {});
+      selectorAttempts.push({
+        selector: candidate.selector,
+        source: candidate.source,
+        found
+      });
+      if (found) {
+        selectedSelector = candidate.selector;
+        break;
+      }
+    } catch (error) {
+      selectorAttempts.push({
+        selector: candidate.selector,
+        source: candidate.source,
+        found: false,
+        error: safeString(error?.message || error).slice(0, VERIFIER_SELECTOR_ERROR_PREVIEW_CHARS)
+      });
+    }
+  }
+
+  const allSyntaxInvalid = selectorAttempts.length > 0 && selectorAttempts.every((attempt) => attempt.error);
+  if (allSyntaxInvalid) {
+    return {
+      status: 'unverified',
+      confidence: 0,
+      reason: 'Selector syntax is invalid after normalization attempts.',
+      evidence: {
+        url: issueUrl,
+        selector: rawSelector,
+        attempts: selectorAttempts
+      }
+    };
+  }
+
+  if (!selectedSelector) {
     return {
       status: 'false_positive',
       confidence: 0.62,
       reason: 'Selector not found on page during verification.',
-      evidence: { url: issueUrl, selector }
+      evidence: {
+        url: issueUrl,
+        selector: rawSelector,
+        attempts: selectorAttempts
+      }
     };
   }
 
@@ -636,12 +795,12 @@ async function verifyDeadLikeIssue(page, issue, issueUrl) {
 
     let clickError = null;
     try {
-      await page.$eval(selector, (el) => {
+      await page.$eval(selectedSelector, (el) => {
         el.scrollIntoView({ block: 'center', inline: 'center' });
       });
-      await page.click(selector, { delay: 25 });
+      await page.click(selectedSelector, { delay: 25 });
     } catch (error) {
-      clickError = safeString(error?.message || error).slice(0, 140);
+      clickError = safeString(error?.message || error).slice(0, VERIFIER_SELECTOR_ERROR_PREVIEW_CHARS);
     }
 
     await sleep(VERIFIER_CLICK_SETTLE_MS);
@@ -673,7 +832,9 @@ async function verifyDeadLikeIssue(page, issue, issueUrl) {
       reason: 'Repeated clicks produced no navigation, network, or DOM response.',
       evidence: {
         url: issueUrl,
-        selector,
+        selector: selectedSelector,
+        raw_selector: rawSelector,
+        selector_attempts: selectorAttempts,
         dead_attempts: deadAttempts,
         responsive_attempts: responsiveAttempts,
         attempts: attemptEvidence
@@ -687,13 +848,16 @@ async function verifyDeadLikeIssue(page, issue, issueUrl) {
     reason: 'Target responded to click during verification.',
     evidence: {
       url: issueUrl,
-      selector,
+      selector: selectedSelector,
+      raw_selector: rawSelector,
+      selector_attempts: selectorAttempts,
       dead_attempts: deadAttempts,
       responsive_attempts: responsiveAttempts,
       attempts: attemptEvidence
     }
   };
 }
+
 
 async function verifyCandidate(page, store, issue) {
   if (!VERIFIABLE_SIGNAL_TYPES.has(issue.issueType)) {
