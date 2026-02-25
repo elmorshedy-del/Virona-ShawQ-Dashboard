@@ -29,6 +29,7 @@ import CreativeStudio from './components/CreativeStudio';
 import ExchangeRateDebug from './components/ExchangeRateDebug';
 import CurrencyToggle from './components/CurrencyToggle';
 import LiveCheckoutIndicator from './components/LiveCheckoutIndicator';
+import PerformancePulseStrip from './components/PerformancePulseStrip';
 import CustomerInsightsTab from './components/CustomerInsightsTab';
 import WatchtowerTab from './components/WatchtowerTab';
 import CROForensicsTab from './components/CROForensicsTab';
@@ -5609,6 +5610,16 @@ function DashboardTab({
           />
         ))}
       </div>
+
+      <PerformancePulseStrip
+        apiBase={API_BASE}
+        storeId={store?.id}
+        dateRange={dateRange}
+        selectedCampaignId={selectedCampaignId}
+        includeInactive={includeInactive}
+        formatCurrency={formatCurrency}
+        formatNumber={formatNumber}
+      />
 
       {/* Smart Alerts */}
       <div className="bg-white rounded-xl p-6 shadow-sm">
