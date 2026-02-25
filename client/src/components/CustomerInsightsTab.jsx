@@ -22,6 +22,7 @@ import {
 import MetaDemographics from './MetaDemographics';
 import BundleInsightsSection from './BundleInsightsSection';
 import CustomerActionPlanner from './CustomerActionPlanner';
+import './CustomerInsightsTabMomentum.css';
 
 const formatPercent = (value) => {
   if (value == null || Number.isNaN(value)) return '—';
@@ -40,6 +41,7 @@ const confidenceLabel = (value) => {
 };
 
 const sectionIcons = {
+  productMomentum: Activity,
   topProducts: Package,
   cohorts: TrendingUp,
   repeat: Activity,
@@ -200,6 +202,155 @@ function ProductThumbnail({ src, title }) {
   );
 }
 
+const MOMENTUM_SEVERITY_LABELS = {
+  high: 'High risk',
+  medium: 'Medium risk',
+  low: 'Opportunity'
+};
+
+function humanizeTrigger(value) {
+  if (!value) return 'N/A';
+  return String(value).replace(/_/g, ' ');
+}
+
+function Sparkline({ points }) {
+  if (!Array.isArray(points) || points.length < 2) {
+    return <div className="pm-sparkline-empty">No trend line yet</div>;
+  }
+  return (
+    <div className="pm-sparkline">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={points}>
+          <Line type="monotone" dataKey="orders" strokeWidth={2} stroke="#334155" dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function SignalBadge({ signal }) {
+  if (!signal) return null;
+  const key = String(signal).toLowerCase();
+  return (
+    <span className={`pm-signal-badge pm-signal-${key}`}>
+      {signal}
+    </span>
+  );
+}
+
+function MomentumCard({ product, mode }) {
+  const severity = product?.assessment?.severity || 'low';
+  const headline = product?.assessment?.headline || product?.title || 'Product signal';
+  const action = product?.assessment?.action || '';
+  const triggerText = humanizeTrigger(mode === 'layer1' ? product?.trigger : product?.exceptionalEvent);
+
+  return (
+    <article className={`pm-card pm-severity-${severity}`}>
+      <div className="pm-card-header">
+        <div className="pm-card-title-wrap">
+          <h4 className="pm-card-title">{headline}</h4>
+          <div className="pm-card-meta">
+            <span className="pm-trigger">{triggerText}</span>
+            <SignalBadge signal={product?.statistical?.signal} />
+          </div>
+        </div>
+        <span className="pm-severity-pill">{MOMENTUM_SEVERITY_LABELS[severity] || MOMENTUM_SEVERITY_LABELS.low}</span>
+      </div>
+
+      <div className="pm-card-body">
+        <div className="pm-card-facts">
+          <div className="pm-fact-row">
+            <span>Revenue share</span>
+            <strong>{formatPercent(product?.facts?.revenueShare)}</strong>
+          </div>
+          <div className="pm-fact-row">
+            <span>Share delta</span>
+            <strong>{formatPercent(product?.facts?.shareDelta)}</strong>
+          </div>
+          <div className="pm-fact-row">
+            <span>Revenue impact</span>
+            <strong>{formatNumber(product?.facts?.revenueImpact)}</strong>
+          </div>
+        </div>
+        <Sparkline points={product?.sparkline || []} />
+      </div>
+
+      {action ? <p className="pm-card-action">{action}</p> : null}
+    </article>
+  );
+}
+
+function ProductMomentumSection({ section }) {
+  const [showMethodology, setShowMethodology] = useState(false);
+  const layer1 = (section?.products || []).filter((row) => row?.trigger);
+  const layer2 = (section?.products || []).filter((row) => row?.exceptionalEvent);
+  const thresholds = section?.methodology?.thresholds || {};
+
+  return (
+    <div className="pm-root">
+      <div className="pm-summary">{section?.summary || 'No product momentum triggers crossed thresholds in this window.'}</div>
+
+      <div className="pm-layer-grid">
+        <div className="pm-layer">
+          <div className="pm-layer-head">
+            <h4>Layer 1: Business triggers</h4>
+            <span>{layer1.length} active</span>
+          </div>
+          {layer1.length ? (
+            <div className="pm-list">
+              {layer1.map((product) => (
+                <MomentumCard key={`layer1-${product.key}-${product.trigger}`} product={product} mode="layer1" />
+              ))}
+            </div>
+          ) : (
+            <div className="pm-empty">No Layer 1 trigger is active in this window.</div>
+          )}
+        </div>
+
+        <div className="pm-layer">
+          <div className="pm-layer-head">
+            <h4>Layer 2: Exceptional events</h4>
+            <span>{layer2.length} detected</span>
+          </div>
+          {layer2.length ? (
+            <div className="pm-list">
+              {layer2.map((product) => (
+                <MomentumCard key={`layer2-${product.key}-${product.exceptionalEvent}`} product={product} mode="layer2" />
+              ))}
+            </div>
+          ) : (
+            <div className="pm-empty">No Layer 2 event is active in this window.</div>
+          )}
+        </div>
+      </div>
+
+      <div className="pm-methodology">
+        <button
+          type="button"
+          onClick={() => setShowMethodology((prev) => !prev)}
+          className="pm-methodology-toggle"
+        >
+          {showMethodology ? 'Hide methodology' : 'Show methodology'}
+        </button>
+
+        {showMethodology ? (
+          <div className="pm-methodology-body">
+            <p>{section?.methodology?.description || 'Methodology details are not available.'}</p>
+            <div className="pm-threshold-grid">
+              {Object.entries(thresholds).map(([key, value]) => (
+                <div key={key} className="pm-threshold-row">
+                  <span>{humanizeTrigger(key)}</span>
+                  <strong>{typeof value === 'number' ? value.toFixed(2) : String(value)}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export default function CustomerInsightsTab({ data, loading, formatCurrency, store, dateRange }) {
   const kpis = data?.kpis || [];
   const insights = data?.insights || [];
@@ -307,6 +458,15 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
       </CollapsibleSectionCard>
 
       <div className="space-y-4">
+        <SectionCard
+          id="ci-productMomentum"
+          title="Product Momentum & Watch"
+          subtitle={sections.productMomentum?.summary || 'Business-grade product momentum monitoring'}
+          icon={sectionIcons.productMomentum}
+        >
+          <ProductMomentumSection section={sections.productMomentum || {}} />
+        </SectionCard>
+
         <SectionCard
           id="ci-topProducts"
           title="Top Products"
