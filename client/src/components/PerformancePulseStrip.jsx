@@ -134,6 +134,7 @@ export default function PerformancePulseStrip({
 
   const startDate = dateRange?.startDate || '';
   const endDate = dateRange?.endDate || '';
+  const hasQueryContext = Boolean(storeId && startDate && endDate);
 
   useEffect(() => {
     if (!storeId || !startDate || !endDate) {
@@ -192,13 +193,7 @@ export default function PerformancePulseStrip({
     watchlist: clipRows(pulseData?.watchlist)
   }), [pulseData]);
 
-  const showEmptyState = !loading
-    && rows.topCountries.length === 0
-    && rows.topAds.length === 0
-    && rows.bestSellerProducts.length === 0
-    && rows.watchlist.length === 0;
-
-  if (showEmptyState) {
+  if (!hasQueryContext) {
     return null;
   }
 
