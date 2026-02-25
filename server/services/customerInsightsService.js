@@ -86,6 +86,64 @@ const BUNDLE_ACTION_WINDOW_DAYS = Math.max(
 
 const DEFAULT_STORE_TIMEZONE = process.env.STORE_TIMEZONE_DEFAULT || 'UTC';
 
+// ── Product Momentum & Watch engine ──────────────────────────────────────────
+const MOMENTUM_MIN_ORDERS = Math.max(
+  1,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_MIN_ORDERS || '3', 10) || 3
+);
+const MOMENTUM_HERO_SHARE_DROP = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_HERO_SHARE_DROP || '0.15'),
+  0.05, 0.5
+);
+const MOMENTUM_CONCENTRATION_RISK = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_CONCENTRATION_RISK || '0.25'),
+  0.1, 0.6
+);
+const MOMENTUM_RISING_PILLAR_SHARE = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_RISING_PILLAR_SHARE || '0.10'),
+  0.03, 0.3
+);
+const MOMENTUM_DISCOUNT_DEPENDENCY = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_DISCOUNT_DEPENDENCY || '0.50'),
+  0.2, 0.9
+);
+const MOMENTUM_DISCOUNT_PP_INCREASE = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_DISCOUNT_PP_INCREASE || '0.10'),
+  0.03, 0.3
+);
+const MOMENTUM_RESULT_LIMIT = Math.max(
+  1,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_RESULT_LIMIT || '6', 10) || 6
+);
+const MOMENTUM_CUSUM_THRESHOLD = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_CUSUM_THRESHOLD || '4'),
+  1, 20
+);
+const MOMENTUM_HERO_TENURE_MIN = Math.max(
+  2,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_HERO_TENURE_MIN || '3', 10) || 3
+);
+const MOMENTUM_RESHUFFLE_MIN = Math.max(
+  2,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_RESHUFFLE_MIN || '3', 10) || 3
+);
+const MOMENTUM_METEORIC_RANK_JUMP = Math.max(
+  3,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_METEORIC_RANK_JUMP || '5', 10) || 5
+);
+const MOMENTUM_STREAK_MIN_PERIODS = Math.max(
+  2,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_STREAK_MIN_PERIODS || '3', 10) || 3
+);
+const MOMENTUM_STREAK_MIN_GROWTH = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_STREAK_MIN_GROWTH || '0.10'),
+  0.01, 0.5
+);
+const MOMENTUM_FDR_TARGET = clamp(
+  Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_FDR || '0.1'),
+  0.01, 0.25
+);
+
 const normalizeStoreEnvKey = (store) =>
   String(store || '')
     .toUpperCase()
@@ -1363,238 +1421,8 @@ function rankProducts(metricsMap) {
   return { sorted, ranks };
 }
 
-const PRODUCT_SHIFT_REPORTING_RULES = Object.freeze({
-  percentMultiplier: 100,
-  minBaselineForPercent: 20,
-  minAbsoluteDeltaForPercent: 3,
-  foldFirstThreshold: 10
-});
-
-function normalizeSalesLiftForPercent(lift) {
-  if (!Number.isFinite(lift)) return null;
-  if (lift >= -1) return lift;
-
-  const declineMultiple = Math.abs(lift);
-  if (declineMultiple <= 0) return -1;
-
-  // Convert "N times lower" encoded lift (e.g. -10) into percent-drop space.
-  return -(1 - (1 / declineMultiple));
-}
-
-function formatSalesLiftPercent(lift) {
-  const normalizedLift = normalizeSalesLiftForPercent(lift);
-  if (normalizedLift == null) return null;
-  return Math.abs(normalizedLift * PRODUCT_SHIFT_REPORTING_RULES.percentMultiplier).toFixed(0) + '%';
-}
-
-function inferRevenueFold({ direction, prevRevenue, currRevenue, revenueLift }) {
-  if (Number.isFinite(prevRevenue) && prevRevenue > 0 && Number.isFinite(currRevenue) && currRevenue >= 0) {
-    if (direction === 'down' && currRevenue < prevRevenue) {
-      if (currRevenue === 0) return Infinity;
-      return prevRevenue / currRevenue;
-    }
-    if (direction === 'up' && currRevenue > prevRevenue) {
-      return currRevenue / prevRevenue;
-    }
-  }
-
-  if (!Number.isFinite(revenueLift)) return null;
-  if (direction === 'down') {
-    if (revenueLift < -1) return Math.abs(revenueLift);
-    if (revenueLift < 0) return 1 / (1 + revenueLift);
-    return null;
-  }
-  if (direction === 'up') {
-    if (revenueLift > -1) return 1 + revenueLift;
-    return null;
-  }
-  return null;
-}
-
-function shouldShowPercentChange({ prevRevenue, revenueDelta, fold }) {
-  if (!Number.isFinite(prevRevenue) || prevRevenue < PRODUCT_SHIFT_REPORTING_RULES.minBaselineForPercent) {
-    return false;
-  }
-  if (!Number.isFinite(revenueDelta) || Math.abs(revenueDelta) < PRODUCT_SHIFT_REPORTING_RULES.minAbsoluteDeltaForPercent) {
-    return false;
-  }
-  if (fold == null) return true;
-  if (!Number.isFinite(fold)) return false;
-  return fold < PRODUCT_SHIFT_REPORTING_RULES.foldFirstThreshold;
-}
-
-function formatFoldValue(fold) {
-  if (!Number.isFinite(fold)) return '∞';
-  const rounded = Math.round(fold);
-  if (Math.abs(fold - rounded) < 0.05) return String(rounded);
-  return fold.toFixed(1);
-}
-
-function buildRevenueChangeNarrative({
-  direction,
-  revenueDelta,
-  revenueLift,
-  prevRevenue,
-  currRevenue
-}) {
-  const deltaMagnitude = Number.isFinite(revenueDelta) ? Math.abs(revenueDelta).toFixed(0) : null;
-  const percentChange = formatSalesLiftPercent(revenueLift);
-  const foldChange = inferRevenueFold({
-    direction,
-    prevRevenue,
-    currRevenue,
-    revenueLift
-  });
-  const usePercent = shouldShowPercentChange({
-    prevRevenue,
-    revenueDelta,
-    fold: foldChange
-  });
-
-  if (direction === 'down') {
-    if (deltaMagnitude != null && usePercent && percentChange != null) {
-      return `Revenue down ${deltaMagnitude} (${percentChange})`;
-    }
-    if (deltaMagnitude != null && foldChange != null) {
-      return `Revenue down ${deltaMagnitude} (${formatFoldValue(foldChange)}x lower)`;
-    }
-    if (percentChange != null) return `Revenue down ${percentChange}`;
-    return `Revenue ${Number.isFinite(revenueDelta) ? revenueDelta.toFixed(0) : '0'}`;
-  }
-
-  if (deltaMagnitude != null && usePercent && percentChange != null) {
-    return `Revenue up ${deltaMagnitude} (${percentChange})`;
-  }
-  if (deltaMagnitude != null && foldChange != null) {
-    return `Revenue up ${deltaMagnitude} (${formatFoldValue(foldChange)}x)`;
-  }
-  if (percentChange != null) return `Revenue up ${percentChange}`;
-
-  if (!Number.isFinite(revenueDelta)) return 'Revenue unchanged';
-  const fallbackMagnitude = Math.abs(revenueDelta).toFixed(0);
-  return `Revenue ${revenueDelta >= 0 ? '+' : '-'}${fallbackMagnitude}`;
-}
-
-function computeProductShiftInsights(currentItems, previousItems, minOrders = 2) {
-  const currentMetrics = computeProductMetrics(currentItems);
-  const previousMetrics = computeProductMetrics(previousItems);
-
-  if (!currentMetrics.size) return [];
-
-  const { ranks: currentRanks } = rankProducts(currentMetrics);
-  const { ranks: previousRanks } = rankProducts(previousMetrics);
-
-  const candidates = [];
-
-  currentMetrics.forEach((current) => {
-    const prev = previousMetrics.get(current.key);
-    const prevRank = previousRanks.get(current.key) || null;
-    const currRank = currentRanks.get(current.key) || null;
-    const prevRevenue = prev?.revenue || 0;
-    const currRevenue = current.revenue || 0;
-    const revenueDelta = currRevenue - prevRevenue;
-    const revenueLift = prevRevenue > 0 ? revenueDelta / prevRevenue : null;
-    const rankDelta = prevRank ? prevRank - currRank : null;
-    const isNew = !prevRank && current.orders >= minOrders;
-
-    if (current.orders < minOrders && (!prev || prev.orders < minOrders)) return;
-
-    const significant = isNew || (prevRank && (Math.abs(rankDelta || 0) >= 3 || (revenueLift != null && Math.abs(revenueLift) >= 0.5)));
-    if (!significant) return;
-
-    candidates.push({
-      key: current.key,
-      title: current.title,
-      currRank,
-      prevRank,
-      currRevenue,
-      prevRevenue,
-      rankDelta,
-      revenueDelta,
-      revenueLift,
-      currOrders: current.orders,
-      prevOrders: prev?.orders || 0,
-      isNew
-    });
-  });
-
-  if (!candidates.length) return [];
-
-  const gainers = candidates.filter((c) => c.isNew || (c.rankDelta != null && c.rankDelta > 0) || (c.revenueLift != null && c.revenueLift > 0));
-  const decliners = candidates.filter((c) => (c.rankDelta != null && c.rankDelta < 0) || (c.revenueLift != null && c.revenueLift < -0.25));
-
-  gainers.sort((a, b) => {
-    if (a.isNew !== b.isNew) return a.isNew ? -1 : 1;
-    if ((b.rankDelta || 0) !== (a.rankDelta || 0)) return (b.rankDelta || 0) - (a.rankDelta || 0);
-    return (b.revenueLift || 0) - (a.revenueLift || 0);
-  });
-
-  decliners.sort((a, b) => {
-    if ((a.rankDelta || 0) !== (b.rankDelta || 0)) return (a.rankDelta || 0) - (b.rankDelta || 0);
-    return (a.revenueLift || 0) - (b.revenueLift || 0);
-  });
-
-  const insights = [];
-  const topGainer = gainers[0];
-  const topDecliner = decliners[0];
-
-  if (topGainer) {
-    const moveLabel = topGainer.isNew
-      ? 'New entrant at #' + topGainer.currRank
-      : 'Up ' + topGainer.rankDelta + ' spots to #' + topGainer.currRank;
-    const gainerDirection = topGainer.revenueDelta < 0 ? 'down' : 'up';
-    const liftLabel = buildRevenueChangeNarrative({
-      direction: gainerDirection,
-      revenueDelta: topGainer.revenueDelta,
-      revenueLift: topGainer.revenueLift,
-      prevRevenue: topGainer.prevRevenue,
-      currRevenue: topGainer.currRevenue
-    });
-    insights.push({
-      id: 'product-mover-up',
-      title: topGainer.title + ' surged',
-      detail: moveLabel + '. ' + liftLabel + ' vs last window.',
-      impact: 'Product momentum',
-      target: 'topProducts',
-      confidence: scoreConfidence(Math.max(topGainer.currOrders, topGainer.prevOrders))
-    });
-  }
-
-  if (topDecliner) {
-    const moveLabel = 'Down ' + Math.abs(topDecliner.rankDelta || 0) + ' spots to #' + topDecliner.currRank;
-    const declinerDirection = topDecliner.revenueDelta <= 0 ? 'down' : 'up';
-    const liftLabel = buildRevenueChangeNarrative({
-      direction: declinerDirection,
-      revenueDelta: topDecliner.revenueDelta,
-      revenueLift: topDecliner.revenueLift,
-      prevRevenue: topDecliner.prevRevenue,
-      currRevenue: topDecliner.currRevenue
-    });
-    insights.push({
-      id: 'product-mover-down',
-      title: topDecliner.title + ' softened',
-      detail: moveLabel + '. ' + liftLabel + ' vs last window.',
-      impact: 'Product watch',
-      target: 'topProducts',
-      confidence: scoreConfidence(Math.max(topDecliner.currOrders, topDecliner.prevOrders))
-    });
-  }
-
-  return insights;
-}
-
-// ── Product Momentum Engine (additive — runs alongside computeProductShiftInsights) ──
-
-const MOMENTUM_MIN_ORDERS = Math.max(1, Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_MIN_ORDERS || '3', 10) || 3);
-const MOMENTUM_HERO_SHARE_DROP = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_HERO_SHARE_DROP || '0.15');
-const MOMENTUM_CONCENTRATION_RISK = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_CONCENTRATION_RISK || '0.25');
-const MOMENTUM_RISING_PILLAR_SHARE = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_RISING_PILLAR_SHARE || '0.10');
-const MOMENTUM_DISCOUNT_DEPENDENCY = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_DISCOUNT_DEPENDENCY || '0.50');
-const MOMENTUM_CUSUM_THRESHOLD = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_CUSUM_THRESHOLD || '4.0');
-const MOMENTUM_FDR_ALPHA = Number.parseFloat(process.env.CUSTOMER_INSIGHTS_MOMENTUM_FDR_ALPHA || '0.20');
-const MOMENTUM_RESULT_LIMIT = Math.max(1, Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_RESULT_LIMIT || '6', 10) || 6);
-
-function computeMomentumZTest(k1, n1, k2, n2) {
+// ── Two-proportion z-test ────────────────────────────────────────────────────
+function computeTwoProportionZTest(k1, n1, k2, n2) {
   if (!n1 || !n2) return 1;
   const p1 = k1 / n1;
   const p2 = k2 / n2;
@@ -1603,14 +1431,16 @@ function computeMomentumZTest(k1, n1, k2, n2) {
   const se = Math.sqrt(pPooled * (1 - pPooled) * (1 / n1 + 1 / n2));
   if (se <= 0) return 1;
   const z = (p1 - p2) / se;
+  // Two-sided p-value via normal CDF approximation
   const absZ = Math.abs(z);
   const t = 1 / (1 + 0.2316419 * absZ);
-  const d = 0.3989422804014327 * Math.exp(-absZ * absZ / 2);
-  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.8212560 + t * 1.3302744))));
+  const d = 0.3989422804014327;
+  const p = d * Math.exp(-absZ * absZ / 2) * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.8212560 + t * 1.3302744))));
   return clamp(2 * p, 0, 1);
 }
 
-function computeMomentumCUSUM(dailyCounts) {
+// ── CUSUM (cumulative sum control chart) ─────────────────────────────────────
+function computeCUSUM(dailyCounts) {
   if (!dailyCounts.length) return { driftUp: false, driftDown: false, maxUp: 0, maxDown: 0 };
   const mean = dailyCounts.reduce((s, v) => s + v, 0) / dailyCounts.length;
   const std = Math.sqrt(dailyCounts.reduce((s, v) => s + (v - mean) ** 2, 0) / dailyCounts.length) || 1;
@@ -1626,21 +1456,43 @@ function computeMomentumCUSUM(dailyCounts) {
     maxDown = Math.max(maxDown, sumDown);
   });
   const threshold = MOMENTUM_CUSUM_THRESHOLD * std;
-  return { driftUp: maxUp >= threshold, driftDown: maxDown >= threshold, maxUp: std > 0 ? maxUp / std : 0, maxDown: std > 0 ? maxDown / std : 0 };
+  return {
+    driftUp: maxUp >= threshold,
+    driftDown: maxDown >= threshold,
+    maxUp: std > 0 ? maxUp / std : 0,
+    maxDown: std > 0 ? maxDown / std : 0
+  };
 }
 
-function buildMomentumSparkline(items, productKey) {
-  const dayMap = new Map();
+// ── Empirical percentile rank ────────────────────────────────────────────────
+function empiricalPercentileLabel(currentValue, historicalValues) {
+  if (!historicalValues.length) return null;
+  const sorted = [...historicalValues].sort((a, b) => a - b);
+  if (currentValue > sorted[sorted.length - 1]) return 'Best period on record for this product';
+  if (currentValue < sorted[0]) return 'Worst period on record for this product';
+  const below = sorted.filter((v) => v < currentValue).length;
+  const pct = below / sorted.length;
+  if (pct >= 0.8) return 'Unusually strong for this product';
+  if (pct <= 0.2) return 'Unusually slow for this product';
+  return null;
+}
+
+// ── Daily sparkline builder ──────────────────────────────────────────────────
+function buildDailySparkline(items, productKey) {
+  const daily = new Map();
   items.forEach((row) => {
-    if (getProductKey(row) !== productKey || !row.order_created_at) return;
-    const day = String(row.order_created_at).slice(0, 10);
-    dayMap.set(day, (dayMap.get(day) || 0) + 1);
+    const pk = getProductKey(row);
+    if (pk !== productKey || !row.date) return;
+    const d = String(row.date).slice(0, 10);
+    const entry = daily.get(d) || { date: d, orders: 0, revenue: 0 };
+    entry.orders += 1;
+    entry.revenue += toNumber(row.price) * toNumber(row.quantity || 1);
+    daily.set(d, entry);
   });
-  return Array.from(dayMap.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, orders]) => ({ date, orders }));
+  return Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// ── Momentum signal label (mirrors bundle convention) ────────────────────────
 function getMomentumSignalLabel(qValue) {
   if (qValue <= 0.05) return 'Confirmed';
   if (qValue <= 0.10) return 'Likely';
@@ -1648,114 +1500,188 @@ function getMomentumSignalLabel(qValue) {
   return 'Emerging';
 }
 
-function getMomentumSeverity(triggers, events) {
-  if (triggers.includes('hero_decline') || events.includes('first_hero_slip') || events.includes('sharp_reversal')) return 'critical';
-  if (triggers.includes('concentration_risk') || triggers.includes('velocity_stall') || events.includes('leaderboard_reshuffle')) return 'high';
-  if (triggers.includes('rising_pillar') || triggers.includes('new_traction') || events.includes('meteoric_rise') || events.includes('record_period')) return 'medium';
+// ── Momentum severity ────────────────────────────────────────────────────────
+function getMomentumSeverity(trigger, signal, revenueAtRisk) {
+  const absRisk = Math.abs(revenueAtRisk || 0);
+  if (trigger === 'hero_decline' && (signal === 'Confirmed' || signal === 'Likely')) return 'critical';
+  if (absRisk > 5000 || trigger === 'hero_decline') return 'high';
+  if (absRisk > 1000 || signal === 'Confirmed' || signal === 'Likely') return 'medium';
   return 'low';
 }
 
-function getMomentumAssessment(product, trigger, event) {
-  const revSharePct = Number.isFinite(product.revenueShare) ? (product.revenueShare * 100).toFixed(0) : '?';
+// ── Momentum tier ────────────────────────────────────────────────────────────
+function getMomentumTier(qValue, currOrders, prevOrders) {
+  if (qValue <= MOMENTUM_FDR_TARGET && currOrders >= 5 && prevOrders >= 5) return 'T1';
+  if (qValue <= 0.20 && currOrders >= MOMENTUM_MIN_ORDERS) return 'T2';
+  if (currOrders >= 2) return 'T3';
+  return null;
+}
+
+// ── Business trigger assessment ──────────────────────────────────────────────
+function assessBusinessTrigger(trigger, product) {
   const templates = {
-    hero_decline: { headline: `"${product.title}" share dropped`, action: 'Audit PDP conversion, check stock levels, defend placement.', kpi: 'Share recovery within 14 days' },
-    concentration_risk: { headline: `"${product.title}" drives ${revSharePct}% of revenue`, action: 'Diversify demand across catalog to reduce single-product risk.', kpi: 'Top-SKU share below 25%' },
-    rising_pillar: { headline: `"${product.title}" is becoming a pillar`, action: 'Increase inventory, boost placement, test bundle pairings.', kpi: 'Sustain share growth for 2 more periods' },
-    new_traction: { headline: `"${product.title}" is a new entrant`, action: 'Feature in collection pages, test paid amplification.', kpi: 'Move into top-10 within 14 days' },
-    velocity_stall: { headline: `"${product.title}" growth stalled`, action: 'Check if creative fatigue, pricing, or competitor pressure caused the stall.', kpi: 'Resume positive WoW growth' },
-    discount_dependency: { headline: `"${product.title}" relies heavily on discounts`, action: 'Test full-price positioning, reduce promo frequency.', kpi: 'Full-price order share above 50%' },
-    quiet_exit: { headline: `"${product.title}" dropped out of top 10`, action: 'Decide: markdown and clear, or reinvest with refreshed creative.', kpi: 'Keep-or-sunset decision within 14 days' },
-    first_hero_slip: { headline: `"${product.title}" lost #1 position`, action: 'Investigate what displaced it and whether the shift is structural.', kpi: 'Reclaim #1 or validate new leader' },
-    leaderboard_reshuffle: { headline: 'Multiple top products changed rank', action: 'Review whether this is seasonal rotation or a demand shift.', kpi: 'Stable top-5 by next review' },
-    meteoric_rise: { headline: `"${product.title}" jumped into the top 10`, action: 'Ensure inventory depth, feature prominently, capture the wave.', kpi: 'Sustain rank for 2+ periods' },
-    sharp_reversal: { headline: `"${product.title}" reversed from growth to decline`, action: 'Urgent: diagnose root cause (stock, price, competition).', kpi: 'Stabilize within 7 days' }
+    hero_decline: {
+      headline: `Your #${product.rank} product lost ${Math.abs(product.sharePointsDelta || 0).toFixed(1)}pp of revenue share`,
+      action: 'Audit stock levels, creative fatigue, and pricing vs competitors. If all clear, test a refreshed PDP within 7 days.',
+      kpi: `Recover revenue share above ${((product.prevRevenueShare || 0) * 100).toFixed(0)}% within 14 days`
+    },
+    concentration_risk: {
+      headline: `"${product.title}" is ${((product.revenueShare || 0) * 100).toFixed(0)}% of your revenue — high dependency`,
+      action: 'Redistribute ad spend across 2-3 secondary products. Develop alternatives to reduce single-product risk.',
+      kpi: 'Reduce top-product share below 25% over 90 days'
+    },
+    rising_pillar: {
+      headline: `"${product.title}" crossed ${((product.revenueShare || 0) * 100).toFixed(0)}% share and is still accelerating`,
+      action: 'Increase ad spend allocation, add to homepage hero, ensure 3-week stock buffer.',
+      kpi: `Maintain share above ${((product.revenueShare || 0) * 100 * 0.8).toFixed(0)}% for 14 days`
+    },
+    new_traction: {
+      headline: `"${product.title}" is a new product gaining traction (${product.currOrders} orders)`,
+      action: 'Keep spend allocation, don\'t kill early. Monitor conversion rate and return rate.',
+      kpi: 'Sustain or grow order volume for 2 more weeks'
+    },
+    velocity_stall: {
+      headline: `"${product.title}" growth stalled after weeks of gains`,
+      action: 'Diagnose: is it seasonal, stock, or creative fatigue? Test A/B on PDP or offer.',
+      kpi: 'Resume positive week-over-week growth within 14 days'
+    },
+    discount_dependency: {
+      headline: `"${product.title}" is ${((product.discountShare || 0) * 100).toFixed(0)}% discount-driven — margin at risk`,
+      action: 'Re-evaluate promotion strategy. Test reducing discount depth by 5-10% to measure demand sensitivity.',
+      kpi: 'Reduce discount share below 50% while maintaining order volume'
+    },
+    quiet_exit: {
+      headline: `"${product.title}" dropped out of your top 10`,
+      action: 'Decide: markdown and clear inventory, or reinvest with refreshed creative and positioning.',
+      kpi: 'Make a clear keep-or-sunset decision within 14 days'
+    }
   };
-  const key = trigger || event;
-  return templates[key] || { headline: product.title, action: 'Monitor this product closely.', kpi: 'Track rank and revenue share' };
+  return templates[trigger] || { headline: '', action: '', kpi: '' };
 }
 
-function buildMomentumDiscountMap(items) {
-  const byKey = new Map();
-  items.forEach((row) => {
-    const pk = getProductKey(row);
-    if (!pk) return;
-    const entry = byKey.get(pk) || { total: 0, discounted: 0 };
-    entry.total += 1;
-    if (toNumber(row.discount) > 0) entry.discounted += 1;
-    byKey.set(pk, entry);
-  });
-  const result = new Map();
-  byKey.forEach((val, key) => {
-    result.set(key, val.total > 0 ? val.discounted / val.total : 0);
-  });
-  return result;
+// ── Exceptional event headline ───────────────────────────────────────────────
+function assessExceptionalEvent(event, product) {
+  const templates = {
+    first_hero_slip: {
+      headline: `Your #1 product slipped for the first time in ${product.heroTenure || '?'} periods`,
+      subline: 'A stable leader destabilizing is a structural shift — investigate what changed'
+    },
+    leaderboard_reshuffle: {
+      headline: `${product.reshuffleCount || '?'} of your top 5 products changed rank this period`,
+      subline: 'The demand landscape is shifting fast — review assortment strategy'
+    },
+    meteoric_rise: {
+      headline: `"${product.title}" jumped ${product.rankJump || '?'} spots into your top ${product.rank}`,
+      subline: 'Something caught fire — capitalize before the window closes'
+    },
+    record_period: {
+      headline: `"${product.title}" hit an all-time high — ${product.currOrders} orders`,
+      subline: 'Demand peak — ensure stock, scale spend to ride the wave'
+    },
+    sustained_streak: {
+      headline: `"${product.title}" has grown ${product.streakLength || '?'} periods in a row`,
+      subline: 'Reliable grower — flagship candidate, prioritize in marketing'
+    },
+    sharp_reversal: {
+      headline: `"${product.title}" went from top grower to declining in one period`,
+      subline: 'Was it a promo spike or organic demand? Investigate immediately'
+    }
+  };
+  return templates[event] || { headline: '', subline: '' };
 }
 
-function computeProductMomentum(currentItems, previousItems) {
+// ── Main momentum engine ─────────────────────────────────────────────────────
+function computeProductMomentumEngine(currentItems, previousItems, prevPrevItems, discountSkuMap) {
   const currentMetrics = computeProductMetrics(currentItems);
   const previousMetrics = computeProductMetrics(previousItems);
+  const prevPrevMetrics = prevPrevItems.length ? computeProductMetrics(prevPrevItems) : new Map();
 
-  if (!currentMetrics.size) return { momentum: [], watch: [] };
+  if (!currentMetrics.size) return { insights: [], momentum: [], watch: [] };
 
   const { sorted: currentSorted, ranks: currentRanks } = rankProducts(currentMetrics);
   const { ranks: previousRanks } = rankProducts(previousMetrics);
+  const { ranks: prevPrevRanks } = prevPrevMetrics.size ? rankProducts(prevPrevMetrics) : { ranks: new Map() };
 
   const totalOrdersCurr = Array.from(currentMetrics.values()).reduce((s, p) => s + p.orders, 0);
   const totalOrdersPrev = Array.from(previousMetrics.values()).reduce((s, p) => s + p.orders, 0);
   const totalRevenueCurr = Array.from(currentMetrics.values()).reduce((s, p) => s + p.revenue, 0);
-  const totalRevenuePrev = Array.from(previousMetrics.values()).reduce((s, p) => s + p.revenue, 0);
 
-  // Pre-built discount lookup — O(n) once, not O(n*m) per product
-  const discountMap = buildMomentumDiscountMap(currentItems);
-
-  // Image lookup map
-  const imageMap = new Map();
-  currentSorted.forEach((r) => { if (r.image_url) imageMap.set(r.key, r.image_url); });
-
+  // Collect all products for z-test and FDR
   const allProducts = [];
 
   currentMetrics.forEach((current) => {
     const prev = previousMetrics.get(current.key);
+    const prevPrev = prevPrevMetrics.get(current.key);
     const currRank = currentRanks.get(current.key) || null;
     const prevRank = previousRanks.get(current.key) || null;
+    const prevPrevRank = prevPrevRanks.get(current.key) || null;
     const currOrders = current.orders;
-    const prevOrders = prev ? prev.orders : 0;
+    const prevOrders = prev?.orders || 0;
+    const prevPrevOrders = prevPrev?.orders || 0;
     const currRevenue = current.revenue || 0;
-    const prevRevenue = prev ? (prev.revenue || 0) : 0;
+    const prevRevenue = prev?.revenue || 0;
+    const revenueDelta = currRevenue - prevRevenue;
+    const revenueLift = prevRevenue > 0 ? revenueDelta / prevRevenue : null;
     const revenueShare = totalRevenueCurr > 0 ? currRevenue / totalRevenueCurr : 0;
-    const prevRevenueShare = totalRevenuePrev > 0 && prev ? prevRevenue / totalRevenuePrev : 0;
+    const prevRevenueShare = totalOrdersPrev > 0 && prev ? prev.revenue / Array.from(previousMetrics.values()).reduce((s, p) => s + p.revenue, 0) : 0;
+    const sharePointsDelta = revenueShare - prevRevenueShare;
     const rankDelta = prevRank ? prevRank - currRank : null;
     const isNew = !prevRank && currOrders >= MOMENTUM_MIN_ORDERS;
-    const wowGrowth = prevOrders > 0 ? currOrders / prevOrders : (currOrders > 0 ? 2 : 0);
-    const discountShare = discountMap.get(current.key) || 0;
 
+    // z-test for share shift
     const pValue = totalOrdersCurr >= 5 && totalOrdersPrev >= 5
-      ? computeMomentumZTest(currOrders, totalOrdersCurr, prevOrders, totalOrdersPrev)
+      ? computeTwoProportionZTest(currOrders, totalOrdersCurr, prevOrders, totalOrdersPrev)
       : 1;
 
-    const sparkline = buildMomentumSparkline(currentItems, current.key);
+    // Week-over-week growth (orders-based)
+    const wowGrowth = prevOrders > 0 ? currOrders / prevOrders : (currOrders > 0 ? 2 : 0);
+    const prevWowGrowth = prevPrevOrders > 0 && prevOrders > 0 ? prevOrders / prevPrevOrders : null;
+
+    // Discount share for this product
+    const discountShare = discountSkuMap?.get(current.key) || 0;
+    const prevDiscountShare = 0; // TODO: compute from previous period when available
+
+    // Sparkline daily data
+    const sparkline = buildDailySparkline(currentItems, current.key);
     const dailyCounts = sparkline.map((d) => d.orders);
-    const cusum = computeMomentumCUSUM(dailyCounts);
+
+    // CUSUM
+    const cusum = computeCUSUM(dailyCounts);
+
+    // Historical orders for empirical percentile
+    const historicalOrders = [prevOrders];
+    if (prevPrevOrders > 0) historicalOrders.push(prevPrevOrders);
+
+    // Empirical percentile label
+    const percentileLabel = empiricalPercentileLabel(currOrders, historicalOrders);
 
     allProducts.push({
       key: current.key,
       title: current.title,
-      image_url: imageMap.get(current.key) || null,
+      image_url: currentSorted.find((r) => r.key === current.key)?.image_url || null,
       rank: currRank,
       prevRank,
+      prevPrevRank,
       rankDelta,
       currOrders,
       prevOrders,
+      prevPrevOrders,
       currRevenue,
       prevRevenue,
+      revenueDelta,
+      revenueLift,
       revenueShare,
       prevRevenueShare,
+      sharePointsDelta,
       isNew,
       pValue,
       wowGrowth,
+      prevWowGrowth,
       discountShare,
+      prevDiscountShare,
       sparkline,
-      cusum
+      cusum,
+      percentileLabel
     });
   });
 
@@ -1763,52 +1689,63 @@ function computeProductMomentum(currentItems, previousItems) {
   const pValues = allProducts.map((p) => p.pValue);
   const qValues = computeBenjaminiHochbergQValues(pValues);
   allProducts.forEach((p, i) => {
-    p.qValue = qValues[i] != null ? qValues[i] : 1;
+    p.qValue = qValues[i];
     p.signal = getMomentumSignalLabel(p.qValue);
-    p.significant = p.qValue <= MOMENTUM_FDR_ALPHA;
+    p.tier = getMomentumTier(p.qValue, p.currOrders, p.prevOrders);
   });
 
-  // Layer 1: Business triggers
-  const triggeredProducts = [];
+  // Wilson CI on current order share
   allProducts.forEach((p) => {
-    if (p.currOrders < MOMENTUM_MIN_ORDERS && p.prevOrders < MOMENTUM_MIN_ORDERS) return;
+    if (totalOrdersCurr > 0) {
+      const ci = computeWilsonInterval(p.currOrders, totalOrdersCurr);
+      p.wilsonCiLow = ci.low;
+      p.wilsonCiHigh = ci.high;
+    } else {
+      p.wilsonCiLow = 0;
+      p.wilsonCiHigh = 0;
+    }
+  });
 
+  // ── Layer 1: Business triggers ───────────────────────────────────────────
+  const triggeredProducts = [];
+
+  allProducts.forEach((p) => {
     const triggers = [];
 
-    // Hero decline
-    if (p.prevRank && p.prevRank <= 2 && p.rank && p.rank > p.prevRank) {
-      const prevShare = p.prevRevenueShare || 0;
-      if (prevShare > 0 && (prevShare - p.revenueShare) / prevShare >= MOMENTUM_HERO_SHARE_DROP) {
+    // Hero decline: top-2 product share drops significantly
+    if (p.rank <= 2 && p.prevRank && p.prevRank <= 2 && p.sharePointsDelta < 0) {
+      const relDrop = p.prevRevenueShare > 0 ? Math.abs(p.sharePointsDelta) / p.prevRevenueShare : 0;
+      if (relDrop >= MOMENTUM_HERO_SHARE_DROP && p.qValue <= 0.20) {
         triggers.push('hero_decline');
       }
     }
 
-    // Concentration risk
+    // Concentration risk: single product > threshold of revenue
     if (p.revenueShare > MOMENTUM_CONCENTRATION_RISK) {
       triggers.push('concentration_risk');
     }
 
-    // Rising pillar
-    if (p.revenueShare >= MOMENTUM_RISING_PILLAR_SHARE && p.wowGrowth > 1.0) {
+    // Rising pillar: crosses share threshold and is accelerating
+    if (p.revenueShare >= MOMENTUM_RISING_PILLAR_SHARE && p.wowGrowth > 1.0 && p.sharePointsDelta > 0) {
       triggers.push('rising_pillar');
     }
 
-    // New traction
+    // New product traction
     if (p.isNew && p.currOrders >= 5) {
       triggers.push('new_traction');
     }
 
-    // Velocity stall
-    if (p.prevOrders > 0 && p.wowGrowth <= 1.0 && p.currOrders >= MOMENTUM_MIN_ORDERS && p.prevRank && p.prevRank <= 10) {
+    // Velocity stall: growth flipped from positive to ≤ 0
+    if (p.prevWowGrowth != null && p.prevWowGrowth > 1.0 && p.wowGrowth <= 1.0 && p.currOrders >= MOMENTUM_MIN_ORDERS) {
       triggers.push('velocity_stall');
     }
 
-    // Discount dependency — uses pre-built map, no per-product scan
+    // Discount dependency
     if (p.discountShare >= MOMENTUM_DISCOUNT_DEPENDENCY && p.currOrders >= MOMENTUM_MIN_ORDERS) {
       triggers.push('discount_dependency');
     }
 
-    // Quiet exit
+    // Quiet exit: was top-10, now below threshold
     if (p.prevRank && p.prevRank <= 10 && (p.rank > 10 || p.currOrders < MOMENTUM_MIN_ORDERS)) {
       triggers.push('quiet_exit');
     }
@@ -1818,69 +1755,166 @@ function computeProductMomentum(currentItems, previousItems) {
     }
   });
 
-  // Layer 2: Exceptional events
+  // ── Layer 2: Exceptional events ──────────────────────────────────────────
   const exceptionalEvents = [];
 
-  // First hero slip
-  const currLeader = allProducts.find((p) => p.rank === 1);
-  const prevLeaderKey = Array.from(previousRanks.entries()).find(([, r]) => r === 1);
-  if (prevLeaderKey && currLeader && currLeader.key !== prevLeaderKey[0]) {
-    const slipped = allProducts.find((p) => p.key === prevLeaderKey[0]);
-    if (slipped) {
-      exceptionalEvents.push({ ...slipped, exceptionalEvent: 'first_hero_slip' });
+  // First hero slip: #1 held for multiple periods, just lost it
+  const currentHero = allProducts.find((p) => p.rank === 1);
+  if (currentHero) {
+    const prevHeroKey = Array.from(previousMetrics.entries()).reduce((best, [key, val]) => {
+      const r = previousRanks.get(key);
+      return r === 1 ? key : best;
+    }, null);
+    const prevPrevHeroKey = prevPrevRanks.size
+      ? Array.from(prevPrevMetrics.entries()).reduce((best, [key]) => {
+        const r = prevPrevRanks.get(key);
+        return r === 1 ? key : best;
+      }, null)
+      : null;
+
+    if (prevHeroKey && prevHeroKey !== currentHero.key) {
+      let tenure = 1;
+      if (prevPrevHeroKey === prevHeroKey) tenure = 2;
+      if (tenure >= 2) {
+        const slippedProduct = allProducts.find((p) => p.key === prevHeroKey);
+        if (slippedProduct) {
+          slippedProduct.heroTenure = tenure + 1;
+          exceptionalEvents.push({ event: 'first_hero_slip', product: slippedProduct });
+        }
+      }
     }
   }
 
-  // Leaderboard reshuffle
-  const top5Curr = allProducts.filter((p) => p.rank && p.rank <= 5);
-  const reshuffled = top5Curr.filter((p) => p.prevRank && p.prevRank !== p.rank);
-  if (reshuffled.length >= 3) {
-    exceptionalEvents.push({ ...reshuffled[0], exceptionalEvent: 'leaderboard_reshuffle' });
+  // Leaderboard reshuffle: ≥ N of top-5 changed rank
+  const top5Current = allProducts.filter((p) => p.rank <= 5);
+  const reshuffled = top5Current.filter((p) => p.prevRank && p.prevRank !== p.rank).length;
+  if (reshuffled >= MOMENTUM_RESHUFFLE_MIN) {
+    const representative = top5Current[0];
+    if (representative) {
+      representative.reshuffleCount = reshuffled;
+      exceptionalEvents.push({ event: 'leaderboard_reshuffle', product: representative });
+    }
   }
 
-  // Meteoric rise
-  const halfSize = currentMetrics.size / 2;
+  // Meteoric rise: bottom-half jumped into top-10
   allProducts.forEach((p) => {
-    if (p.prevRank && p.rank && p.rank <= 10 && p.prevRank > halfSize && (p.prevRank - p.rank) >= 5) {
-      exceptionalEvents.push({ ...p, exceptionalEvent: 'meteoric_rise' });
+    if (p.prevRank && p.rank <= 10 && (p.prevRank - p.rank) >= MOMENTUM_METEORIC_RANK_JUMP && p.prevRank > allProducts.length / 2) {
+      p.rankJump = p.prevRank - p.rank;
+      exceptionalEvents.push({ event: 'meteoric_rise', product: p });
     }
   });
 
-  // Sharp reversal
+  // Record period: highest-ever orders (compared to available history)
   allProducts.forEach((p) => {
-    if (p.prevRank && p.prevRank <= 3 && p.wowGrowth < 1.0 && p.prevOrders > 0 && p.currOrders >= MOMENTUM_MIN_ORDERS) {
-      exceptionalEvents.push({ ...p, exceptionalEvent: 'sharp_reversal' });
+    const maxHistorical = Math.max(p.prevOrders, p.prevPrevOrders || 0);
+    if (maxHistorical > 0 && p.currOrders > maxHistorical * 1.2 && p.currOrders >= 5) {
+      exceptionalEvents.push({ event: 'record_period', product: p });
     }
   });
 
-  // Classify into momentum vs watch
+  // Sustained streak: grew for multiple consecutive periods
+  allProducts.forEach((p) => {
+    if (p.prevWowGrowth != null && p.prevWowGrowth >= (1 + MOMENTUM_STREAK_MIN_GROWTH) && p.wowGrowth >= (1 + MOMENTUM_STREAK_MIN_GROWTH)) {
+      p.streakLength = p.prevPrevOrders > 0 ? 3 : 2;
+      if (p.streakLength >= MOMENTUM_STREAK_MIN_PERIODS) {
+        exceptionalEvents.push({ event: 'sustained_streak', product: p });
+      }
+    }
+  });
+
+  // Sharp reversal: was top-3 grower, now declining
+  const prevGrowthRanked = allProducts
+    .filter((p) => p.prevWowGrowth != null && p.prevWowGrowth > 1.0)
+    .sort((a, b) => (b.prevWowGrowth || 0) - (a.prevWowGrowth || 0));
+  const topGrowers = prevGrowthRanked.slice(0, 3);
+  topGrowers.forEach((p) => {
+    if (p.wowGrowth < 1.0 && p.currOrders >= MOMENTUM_MIN_ORDERS) {
+      exceptionalEvents.push({ event: 'sharp_reversal', product: p });
+    }
+  });
+
+  // ── Build event map for triggered products ───────────────────────────────
+  const eventMap = new Map();
+  exceptionalEvents.forEach(({ event, product }) => {
+    const existing = eventMap.get(product.key) || [];
+    existing.push(event);
+    eventMap.set(product.key, existing);
+  });
+
+  // ── Build enriched insights (backward-compatible IDs) ────────────────────
+  const allTriggered = [...triggeredProducts];
+  // Add exceptional-event-only products not already triggered
+  exceptionalEvents.forEach(({ product }) => {
+    if (!allTriggered.find((t) => t.key === product.key)) {
+      allTriggered.push({ ...product, triggers: [] });
+    }
+  });
+
   const momentumProducts = [];
   const watchProducts = [];
-  const seen = new Set();
 
-  triggeredProducts.forEach((p) => {
-    if (seen.has(p.key)) return;
-    seen.add(p.key);
-    const primaryTrigger = p.triggers[0];
-    const event = exceptionalEvents.find((e) => e.key === p.key);
-    const eventName = event ? event.exceptionalEvent : null;
-    const severity = getMomentumSeverity(p.triggers, eventName ? [eventName] : []);
-    const assessment = getMomentumAssessment(p, primaryTrigger, eventName);
+  allTriggered.forEach((p) => {
+    const events = eventMap.get(p.key) || [];
+    const primaryTrigger = p.triggers[0] || null;
+    const primaryEvent = events[0] || null;
+
+    const assessment = primaryTrigger ? assessBusinessTrigger(primaryTrigger, p) : { headline: '', action: '', kpi: '' };
+    const eventAssessment = primaryEvent ? assessExceptionalEvent(primaryEvent, p) : null;
+
+    const severity = primaryTrigger
+      ? getMomentumSeverity(primaryTrigger, p.signal, p.revenueDelta)
+      : 'medium';
+
+    const revenueAtRisk = p.revenueDelta < 0 ? Math.abs(p.revenueDelta) * 2 : p.revenueDelta;
 
     const enriched = {
       key: p.key,
       title: p.title,
       image_url: p.image_url,
-      rank: p.rank,
-      prevRank: p.prevRank,
+      trigger: primaryTrigger,
+      exceptionalEvent: primaryEvent,
       triggers: p.triggers,
-      exceptionalEvent: eventName,
-      sparkline: p.sparkline,
-      statistical: { signal: p.signal, qValue: p.qValue, significant: p.significant, cusum: p.cusum },
-      assessment: { severity: severity, headline: assessment.headline, action: assessment.action, kpi: assessment.kpi }
+      exceptionalEvents: events,
+      facts: {
+        revenueShare: p.revenueShare,
+        prevRevenueShare: p.prevRevenueShare,
+        sharePointsDelta: p.sharePointsDelta,
+        revenueDelta: p.revenueDelta,
+        revenueLift: p.revenueLift,
+        ordersDelta: p.currOrders - p.prevOrders,
+        rank: p.rank,
+        prevRank: p.prevRank,
+        weekOverWeekGrowth: p.wowGrowth,
+        discountShare: p.discountShare,
+        percentileLabel: p.percentileLabel,
+        heroTenure: p.heroTenure || null,
+        rankJump: p.rankJump || null,
+        streakLength: p.streakLength || null,
+        reshuffleCount: p.reshuffleCount || null
+      },
+      statistical: {
+        pValue: p.pValue,
+        qValue: p.qValue,
+        signal: p.signal,
+        tier: p.tier,
+        wilsonCi: { low: p.wilsonCiLow, high: p.wilsonCiHigh },
+        cusum: { driftUp: p.cusum.driftUp, driftDown: p.cusum.driftDown }
+      },
+      assessment: {
+        severity,
+        revenueAtRisk,
+        headline: eventAssessment?.headline || assessment.headline,
+        subline: eventAssessment?.subline || '',
+        action: assessment.action || (eventAssessment ? 'Investigate this pattern break immediately.' : ''),
+        kpi: assessment.kpi || ''
+      },
+      sparkline: p.sparkline
     };
 
-    const isNegative = ['hero_decline', 'velocity_stall', 'discount_dependency', 'quiet_exit'].includes(primaryTrigger);
+    // Classify as momentum or watch
+    const isNegative = ['hero_decline', 'velocity_stall', 'discount_dependency', 'quiet_exit'].includes(primaryTrigger)
+      || ['first_hero_slip', 'sharp_reversal'].includes(primaryEvent);
+
     if (isNegative) {
       watchProducts.push(enriched);
     } else {
@@ -1888,34 +1922,58 @@ function computeProductMomentum(currentItems, previousItems) {
     }
   });
 
-  exceptionalEvents.forEach((e) => {
-    if (seen.has(e.key)) return;
-    seen.add(e.key);
-    const severity = getMomentumSeverity([], [e.exceptionalEvent]);
-    const assessment = getMomentumAssessment(e, null, e.exceptionalEvent);
+  // Sort by severity
+  const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+  momentumProducts.sort((a, b) => (severityOrder[a.assessment.severity] ?? 3) - (severityOrder[b.assessment.severity] ?? 3));
+  watchProducts.sort((a, b) => (severityOrder[a.assessment.severity] ?? 3) - (severityOrder[b.assessment.severity] ?? 3));
 
-    const enriched = {
-      key: e.key,
-      title: e.title,
-      image_url: e.image_url,
-      rank: e.rank,
-      prevRank: e.prevRank,
-      triggers: [],
-      exceptionalEvent: e.exceptionalEvent,
-      sparkline: e.sparkline,
-      statistical: { signal: e.signal, qValue: e.qValue, significant: e.significant, cusum: e.cusum },
-      assessment: { severity: severity, headline: assessment.headline, action: assessment.action, kpi: assessment.kpi }
-    };
+  // ── Build backward-compatible insight cards ──────────────────────────────
+  const insights = [];
+  const topMomentum = momentumProducts[0];
+  const topWatch = watchProducts[0];
 
-    const isNegative = ['first_hero_slip', 'sharp_reversal'].includes(e.exceptionalEvent);
-    if (isNegative) {
-      watchProducts.push(enriched);
-    } else {
-      momentumProducts.push(enriched);
-    }
-  });
+  if (topMomentum) {
+    const t = topMomentum;
+    insights.push({
+      id: 'product-mover-up',
+      title: t.title + ' surged',
+      detail: t.assessment.headline + (t.assessment.subline ? ' — ' + t.assessment.subline : ''),
+      impact: 'Product momentum',
+      target: 'topProducts',
+      confidence: t.statistical.signal === 'Confirmed' ? 0.9 : t.statistical.signal === 'Likely' ? 0.75 : t.statistical.signal === 'Possible' ? 0.55 : 0.4,
+      // Enriched fields
+      trigger: t.trigger,
+      exceptionalEvent: t.exceptionalEvent,
+      signal: t.statistical.signal,
+      severity: t.assessment.severity,
+      facts: t.facts,
+      assessment: t.assessment,
+      sparkline: t.sparkline
+    });
+  }
+
+  if (topWatch) {
+    const t = topWatch;
+    insights.push({
+      id: 'product-mover-down',
+      title: t.title + ' softened',
+      detail: t.assessment.headline + (t.assessment.subline ? ' — ' + t.assessment.subline : ''),
+      impact: 'Product watch',
+      target: 'topProducts',
+      confidence: t.statistical.signal === 'Confirmed' ? 0.9 : t.statistical.signal === 'Likely' ? 0.75 : t.statistical.signal === 'Possible' ? 0.55 : 0.4,
+      // Enriched fields
+      trigger: t.trigger,
+      exceptionalEvent: t.exceptionalEvent,
+      signal: t.statistical.signal,
+      severity: t.assessment.severity,
+      facts: t.facts,
+      assessment: t.assessment,
+      sparkline: t.sparkline
+    });
+  }
 
   return {
+    insights,
     momentum: momentumProducts.slice(0, MOMENTUM_RESULT_LIMIT),
     watch: watchProducts.slice(0, MOMENTUM_RESULT_LIMIT)
   };
@@ -2086,9 +2144,14 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const prevEndDate = shiftDate(endDate, -days);
   let previousItems = store === 'shawq' ? getOrderItems(db, store, prevStartDate, prevEndDate) : [];
 
-  if (store === 'shawq' && (items.length || previousItems.length)) {
+  // Prev-prev lookback for momentum engine (streak detection, growth history)
+  const prevPrevStartDate = shiftDate(startDate, -days * 2);
+  const prevPrevEndDate = shiftDate(endDate, -days * 2);
+  let prevPrevItems = store === 'shawq' ? getOrderItems(db, store, prevPrevStartDate, prevPrevEndDate) : [];
+
+  if (store === 'shawq' && (items.length || previousItems.length || prevPrevItems.length)) {
     const productIds = Array.from(new Set(
-      items.concat(previousItems)
+      items.concat(previousItems, prevPrevItems)
         .map((row) => row.product_id)
         .filter(Boolean)
         .map((id) => String(id))
@@ -2097,6 +2160,7 @@ export async function getCustomerInsightsPayload(store, params = {}) {
       await ensureShopifyProductsCached(store, productIds);
       items = getOrderItems(db, store, startDate, endDate);
       previousItems = getOrderItems(db, store, prevStartDate, prevEndDate);
+      prevPrevItems = getOrderItems(db, store, prevPrevStartDate, prevPrevEndDate);
     }
   }
 
@@ -2119,15 +2183,16 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const repeatPaths = computeRepeatPaths(items);
   const topProducts = computeTopProducts(items);
   const discountSkus = computeDiscountSkus(items);
-  const productShiftInsights = computeProductShiftInsights(items, previousItems, 2);
+  // Build discount share lookup for momentum engine
+  const discountSkuMap = new Map();
+  discountSkus.forEach((row) => {
+    const productKey = row.title; // Match by title since that's how discount skus are keyed
+    if (productKey) discountSkuMap.set(productKey, row.discountShare || 0);
+  });
 
-  // Momentum engine — wrapped in try/catch so it can never crash the endpoint
-  let productMomentum = { momentum: [], watch: [] };
-  try {
-    productMomentum = computeProductMomentum(items, previousItems);
-  } catch (err) {
-    console.error('[CustomerInsights] Product momentum engine failed, skipping:', err.message);
-  }
+  // Momentum engine (replaces old computeProductShiftInsights)
+  const momentumResult = computeProductMomentumEngine(items, previousItems, prevPrevItems, discountSkuMap);
+  const productShiftInsights = momentumResult.insights;
 
   let ordersWithCountry = 0;
   const topCountry = orders.reduce((best, row) => {
@@ -2287,11 +2352,11 @@ export async function getCustomerInsightsPayload(store, params = {}) {
         products: topProducts
       },
       productMomentum: {
-        summary: (productMomentum.momentum.length || productMomentum.watch.length)
+        summary: (momentumResult.momentum.length || momentumResult.watch.length)
           ? 'Product momentum and watch signals detected.'
           : 'Product momentum insights will appear after sufficient order history builds up.',
-        momentum: productMomentum.momentum,
-        watch: productMomentum.watch
+        momentum: momentumResult.momentum,
+        watch: momentumResult.watch
       },
       cohorts: {
         summary: customerStats.customerCount
