@@ -2264,22 +2264,96 @@ export function getFunnelDiagnostics(store, params) {
   const { startDate, endDate } = getDateRange(params);
   const campaignId = params.campaignId || null; // Optional campaign filter
   const statusFilter = buildStatusFilter(params);
+  const FUNNEL_BASELINE_MODES = {
+    week: {
+      days: 7,
+      label: '1W Baseline',
+      description: 'Uses the 7 days immediately before your current range.',
+      direction: 'Short-term momentum signal.'
+    },
+    month: {
+      days: 30,
+      label: '1M Baseline',
+      description: 'Uses the 30 days immediately before your current range.',
+      direction: 'Balanced near-term direction.'
+    },
+    '3months': {
+      days: 90,
+      label: '3M Baseline',
+      description: 'Uses the 90 days immediately before your current range.',
+      direction: 'Broader trend direction.'
+    },
+    historical: {
+      days: null,
+      label: 'Historical Baseline',
+      description: 'Uses all historical data before your current range.',
+      direction: 'Long-run anchor direction.'
+    }
+  };
+  const DEFAULT_FUNNEL_BASELINE_MODE = 'month';
 
-  // Calculate previous period for comparison
-  const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
-  const prevEndDate = new Date(new Date(startDate).getTime() - (1000 * 60 * 60 * 24));
-  const prevStartDate = new Date(prevEndDate.getTime() - ((daysDiff - 1) * 1000 * 60 * 60 * 24));
-  const prevStartStr = formatDateAsGmt3(prevStartDate);
-  const prevEndStr = formatDateAsGmt3(prevEndDate);
+  const resolveBaselineMode = (rawMode) => {
+    if (typeof rawMode !== 'string') return DEFAULT_FUNNEL_BASELINE_MODE;
+    const normalized = rawMode.trim().toLowerCase();
+    return FUNNEL_BASELINE_MODES[normalized] ? normalized : DEFAULT_FUNNEL_BASELINE_MODE;
+  };
+
+  const baselineMode = resolveBaselineMode(params.baselineMode);
+  const baselineConfig = FUNNEL_BASELINE_MODES[baselineMode];
+
+  const baselineEndDate = new Date(new Date(startDate).getTime() - MILLISECONDS_PER_DAY);
+  const baselineEndStr = formatDateAsGmt3(baselineEndDate);
+
+  const resolveHistoricalBaselineStart = () => {
+    const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
+    const queryParams = campaignId
+      ? [store, baselineEndStr, campaignId]
+      : [store, baselineEndStr];
+
+    const result = db.prepare(`
+      SELECT MIN(date) AS startDate
+      FROM meta_daily_metrics
+      WHERE store = ? AND date <= ?${campaignFilter}${statusFilter}
+    `).get(...queryParams);
+
+    return result?.startDate || null;
+  };
+
+  const resolveBaselineRange = () => {
+    if (baselineMode === 'historical') {
+      const historicalStartDate = resolveHistoricalBaselineStart();
+      if (!historicalStartDate) {
+        return { startDate: null, endDate: null };
+      }
+      return { startDate: historicalStartDate, endDate: baselineEndStr };
+    }
+
+    const baselineDays = baselineConfig.days;
+    const baselineStartDate = new Date(
+      baselineEndDate.getTime() - (baselineDays - 1) * MILLISECONDS_PER_DAY
+    );
+    return {
+      startDate: formatDateAsGmt3(baselineStartDate),
+      endDate: baselineEndStr
+    };
+  };
+
+  const baselineRange = resolveBaselineRange();
+  const baselineStartStr = baselineRange.startDate;
+  const baselineEndDateStr = baselineRange.endDate;
 
   // Build WHERE clause with optional campaign filter
   const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
   const queryParams = campaignId
     ? [store, startDate, endDate, campaignId]
     : [store, startDate, endDate];
-  const prevQueryParams = campaignId
-    ? [store, prevStartStr, prevEndStr, campaignId]
-    : [store, prevStartStr, prevEndStr];
+  const baselineQueryParams = baselineStartStr && baselineEndDateStr
+    ? (
+      campaignId
+        ? [store, baselineStartStr, baselineEndDateStr, campaignId]
+        : [store, baselineStartStr, baselineEndDateStr]
+    )
+    : null;
 
   // Get current period metrics
   const currentQuery = `
@@ -2298,7 +2372,7 @@ export function getFunnelDiagnostics(store, params) {
   `;
 
   const current = db.prepare(currentQuery).get(...queryParams);
-  const previous = db.prepare(currentQuery).get(...prevQueryParams);
+  const previous = baselineQueryParams ? db.prepare(currentQuery).get(...baselineQueryParams) : null;
 
   // Get daily data for sparklines (last 7 days of current period)
   const dailyQuery = `
@@ -2326,8 +2400,8 @@ export function getFunnelDiagnostics(store, params) {
   let campaignName = null;
   if (campaignId) {
     const campaignInfo = db.prepare(
-      'SELECT campaign_name FROM meta_daily_metrics WHERE campaign_id = ? LIMIT 1'
-    ).get(campaignId);
+      'SELECT campaign_name FROM meta_daily_metrics WHERE store = ? AND campaign_id = ? LIMIT 1'
+    ).get(store, campaignId);
     campaignName = campaignInfo?.campaign_name || null;
   }
 
@@ -2351,6 +2425,7 @@ export function getFunnelDiagnostics(store, params) {
       cpc: clicks > 0 ? spend / clicks : 0,
       cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
       frequency: reach > 0 ? impressions / reach : 0,
+      uniqueReach: reach,
       lpvRate: clicks > 0 ? (lpv / clicks) * 100 : 0,
       atcRate: lpv > 0 ? (atc / lpv) * 100 : 0,
       checkoutRate: atc > 0 ? (checkout / atc) * 100 : 0,
@@ -2381,6 +2456,7 @@ export function getFunnelDiagnostics(store, params) {
   };
 
   const changes = currentMetrics && previousMetrics ? {
+    uniqueReach: calcChange(currentMetrics.uniqueReach, previousMetrics.uniqueReach),
     ctr: calcChange(currentMetrics.ctr, previousMetrics.ctr),
     cpc: calcChange(currentMetrics.cpc, previousMetrics.cpc),
     cpm: calcChange(currentMetrics.cpm, previousMetrics.cpm),
@@ -2401,6 +2477,19 @@ export function getFunnelDiagnostics(store, params) {
     sparklineData,
     campaignId,
     campaignName,
-    period: { startDate, endDate, prevStartDate: prevStartStr, prevEndDate: prevEndStr }
+    period: {
+      startDate,
+      endDate,
+      prevStartDate: baselineStartStr,
+      prevEndDate: baselineEndDateStr
+    },
+    baseline: {
+      mode: baselineMode,
+      label: baselineConfig.label,
+      description: baselineConfig.description,
+      direction: baselineConfig.direction,
+      startDate: baselineStartStr,
+      endDate: baselineEndDateStr
+    }
   };
 }

@@ -224,8 +224,8 @@ router.get('/google-ad-manager', async (req, res) => {
 // Supports ?includeInactive=true
 router.get('/funnel-diagnostics', (req, res) => {
   try {
-    const { store, startDate, endDate, campaignId, includeInactive } = req.query;
-    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate, campaignId, includeInactive });
+    const { store, startDate, endDate, campaignId, includeInactive, baselineMode } = req.query;
+    const data = getFunnelDiagnostics(store || 'vironax', { startDate, endDate, campaignId, includeInactive, baselineMode });
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Analytics] Funnel diagnostics error:', error);
