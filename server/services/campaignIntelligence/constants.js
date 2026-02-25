@@ -237,7 +237,7 @@ export const BUDGET_MONITOR_CONFIG = Object.freeze({
   preWindowDays: 3,
   postWindowDays: 3,
   minBaselineSpend: 150,
-  minShiftRatio: 0.2,
+  minShiftRatio: 0.3,
   monitorLookbackDays: 21,
   historyMaxEvents: 24,
   historyFetchPageLimit: 100,

@@ -32,6 +32,30 @@ import {
   round
 } from './utils.js';
 
+const SNAPSHOT_CACHE_TTL_MS = 45 * 1000;
+const SNAPSHOT_CACHE_MAX_ENTRIES = 80;
+const SNAPSHOT_CACHE = new Map();
+const SNAPSHOT_CACHE_QUERY_KEYS = Object.freeze([
+  'store',
+  'level',
+  'entityId',
+  'country',
+  'startDate',
+  'endDate',
+  'anchorWindowDays',
+  'anchorStartDate',
+  'anchorEndDate',
+  'analysisWindowDays',
+  'sentinelPreset',
+  'headroomPreset',
+  'launchPreset',
+  'launchMinDays',
+  'launchMaxDays',
+  'targetRoas',
+  'targetCpa',
+  'targetHorizonDays'
+]);
+
 function resolvePresetName(rawPreset) {
   const normalized = String(rawPreset || DEFAULT_SETTINGS.defaultPreset).trim().toLowerCase();
   if (MODEL_PRESET_OPTIONS.has(normalized)) {
@@ -123,6 +147,38 @@ function attachSmoothedSeries(series) {
   }));
 }
 
+function buildSnapshotCacheKey(query = {}) {
+  return SNAPSHOT_CACHE_QUERY_KEYS
+    .map((key) => `${key}=${String(query?.[key] ?? '').trim()}`)
+    .join('&');
+}
+
+function pruneSnapshotCache() {
+  while (SNAPSHOT_CACHE.size > SNAPSHOT_CACHE_MAX_ENTRIES) {
+    const oldestKey = SNAPSHOT_CACHE.keys().next().value;
+    if (!oldestKey) break;
+    SNAPSHOT_CACHE.delete(oldestKey);
+  }
+}
+
+function getCachedSnapshot(cacheKey) {
+  const entry = SNAPSHOT_CACHE.get(cacheKey);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    SNAPSHOT_CACHE.delete(cacheKey);
+    return null;
+  }
+  return entry.payload || null;
+}
+
+function setCachedSnapshot(cacheKey, payload) {
+  SNAPSHOT_CACHE.set(cacheKey, {
+    expiresAt: Date.now() + SNAPSHOT_CACHE_TTL_MS,
+    payload
+  });
+  pruneSnapshotCache();
+}
+
 async function getScopedBaselineRows({ scope }) {
   const baselineMetaRows = fetchDailyMetaRows({
     db: scope.db,
@@ -171,6 +227,12 @@ async function getScopedBaselineRows({ scope }) {
 }
 
 export async function getCampaignIntelligenceSnapshot(query = {}) {
+  const snapshotCacheKey = buildSnapshotCacheKey(query);
+  const cachedSnapshot = getCachedSnapshot(snapshotCacheKey);
+  if (cachedSnapshot) {
+    return cachedSnapshot;
+  }
+
   const scope = normalizeCampaignIntelligenceRequest(query);
   const modelSettings = resolveModelSettings(query);
 
@@ -187,7 +249,7 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     country: scope.country
   });
 
-  const analysisOrderRows = await fetchDailyOrdersRows({
+  const analysisOrderRowsPromise = fetchDailyOrdersRows({
     db: scope.db,
     store: scope.store,
     startDate: scope.analysisRange.startDate,
@@ -195,13 +257,41 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     country: scope.country
   });
 
+  const baselineDataPromise = getScopedBaselineRows({ scope: { ...scope, entityId: selectedEntityId } });
+
+  const budgetHistoryStartDate = addDaysIso(
+    scope.analysisRange.endDate,
+    -(BUDGET_MONITOR_CONFIG.monitorLookbackDays - 1)
+  );
+
+  const scopedCampaignIds = fetchScopedCampaignIds({
+    db: scope.db,
+    store: scope.store,
+    levelConfig: scope.levelConfig,
+    startDate: budgetHistoryStartDate,
+    endDate: scope.analysisRange.endDate,
+    entityId: selectedEntityId,
+    country: scope.country
+  });
+
+  const budgetHistoryEventsPromise = fetchMetaBudgetHistoryEvents({
+    store: scope.store,
+    startDate: budgetHistoryStartDate,
+    endDate: scope.analysisRange.endDate,
+    campaignIds: scopedCampaignIds
+  });
+
+  const [analysisOrderRows, baselineData, budgetHistoryEvents] = await Promise.all([
+    analysisOrderRowsPromise,
+    baselineDataPromise,
+    budgetHistoryEventsPromise
+  ]);
+
   const analysisSeries = mergeDailySeries({
     dateRange: listDateRange(scope.analysisRange.startDate, scope.analysisRange.endDate),
     metaRows: analysisMetaRows,
     orderRows: analysisOrderRows
   });
-
-  const baselineData = await getScopedBaselineRows({ scope: { ...scope, entityId: selectedEntityId } });
 
   const shockAwareSeries = buildShockAwareSeries(analysisSeries);
   const shockAwareBaselineSeries = buildShockAwareSeries(baselineData.baselineSeries);
@@ -223,28 +313,6 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     seedKey: `${scope.store}:${scope.level}:${selectedEntityId || 'all'}:${scope.country}:${scope.analysisRange.endDate}`
   });
 
-  const budgetHistoryStartDate = addDaysIso(
-    scope.analysisRange.endDate,
-    -(BUDGET_MONITOR_CONFIG.monitorLookbackDays - 1)
-  );
-
-  const scopedCampaignIds = fetchScopedCampaignIds({
-    db: scope.db,
-    store: scope.store,
-    levelConfig: scope.levelConfig,
-    startDate: budgetHistoryStartDate,
-    endDate: scope.analysisRange.endDate,
-    entityId: selectedEntityId,
-    country: scope.country
-  });
-
-  const budgetHistoryEvents = await fetchMetaBudgetHistoryEvents({
-    store: scope.store,
-    startDate: budgetHistoryStartDate,
-    endDate: scope.analysisRange.endDate,
-    campaignIds: scopedCampaignIds
-  });
-
   const budgetMonitor = buildBudgetChangeMonitor(shockAwareSeries, budgetHistoryEvents);
   const lifecycle = fetchScopeLifecycleSummary({ ...scope, entityId: selectedEntityId });
   const entitySnapshot = fetchEntitySnapshot({ ...scope, entityId: selectedEntityId });
@@ -253,7 +321,7 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
   const analysisSummary = buildDailyAggregationSummary(shockAwareSeries);
   const anchorSummary = buildDailyAggregationSummary(shockAwareBaselineSeries);
 
-  return {
+  const snapshot = {
     success: true,
     generatedAt: new Date().toISOString(),
     scope: {
@@ -297,4 +365,7 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     models: modelBundle,
     education: EDUCATION_SECTIONS
   };
+
+  setCachedSnapshot(snapshotCacheKey, snapshot);
+  return snapshot;
 }

@@ -69,6 +69,11 @@ function getLeadingWindow(series, days) {
   return series.slice(0, Math.min(days, series.length));
 }
 
+function getSpendActiveSeries(series) {
+  if (!Array.isArray(series)) return [];
+  return series.filter((row) => (Number(row?.spend) || 0) > 0);
+}
+
 function summarizeSeriesWindow(series) {
   const totals = series.reduce((accumulator, row) => {
     accumulator.spend += Number(row.spend) || 0;
@@ -225,35 +230,6 @@ function classifyShiftIntent(metricKey, deltaRatio) {
   return SHIFT_INTENT.neutral;
 }
 
-function findSpendShiftEvents(series) {
-  const events = [];
-  const { preWindowDays, postWindowDays, minBaselineSpend, minShiftRatio } = BUDGET_MONITOR_CONFIG;
-
-  for (let index = preWindowDays; index <= series.length - postWindowDays; index += 1) {
-    const preWindow = series.slice(index - preWindowDays, index);
-    const postWindow = series.slice(index, index + postWindowDays);
-
-    if (!preWindow.length || !postWindow.length) continue;
-
-    const preSpendAvg = mean(preWindow.map((row) => row.spend)) || 0;
-    const postSpendAvg = mean(postWindow.map((row) => row.spend)) || 0;
-    if (preSpendAvg < minBaselineSpend) continue;
-
-    const shiftRatio = safeDeltaRatio(postSpendAvg, preSpendAvg);
-    if (Math.abs(shiftRatio) < minShiftRatio) continue;
-
-    events.push({
-      pivotIndex: index,
-      pivotDate: series[index]?.date || null,
-      preSpendAvg,
-      postSpendAvg,
-      shiftRatio
-    });
-  }
-
-  return events;
-}
-
 function resolvePivotIndex(series, pivotDate) {
   if (!Array.isArray(series) || !series.length || !pivotDate) return -1;
 
@@ -283,26 +259,26 @@ function buildHistoryShiftEvents(series, historyEvents = []) {
         && event?.toBudget != null
         && Number.isFinite(fromBudget)
         && Number.isFinite(toBudget);
-      const budgetShiftRatio = hasBudgetValues ? safeDeltaRatio(toBudget, fromBudget) : null;
-      const eventShiftRatio = Number(event?.shiftRatio);
-      const shiftRatio = Number.isFinite(eventShiftRatio)
-        ? eventShiftRatio
-        : (Number.isFinite(budgetShiftRatio) ? budgetShiftRatio : 0);
+      if (!hasBudgetValues) return null;
+
+      const budgetShiftRatio = safeDeltaRatio(toBudget, fromBudget);
+      if (!Number.isFinite(budgetShiftRatio)) return null;
+      if (Math.abs(budgetShiftRatio) < BUDGET_MONITOR_CONFIG.minShiftRatio) return null;
 
       return {
         pivotIndex,
         pivotDate,
         preSpendAvg: 0,
         postSpendAvg: 0,
-        shiftRatio,
+        shiftRatio: budgetShiftRatio,
         source: 'meta_history',
         eventTime: typeof event?.eventTime === 'string' ? event.eventTime : null,
         campaignId: event?.campaignId || null,
         objectId: event?.objectId || null,
         objectType: event?.objectType || null,
-        fromBudget: hasBudgetValues ? fromBudget : null,
-        toBudget: hasBudgetValues ? toBudget : null,
-        budgetShiftRatio: Number.isFinite(budgetShiftRatio) ? budgetShiftRatio : null
+        fromBudget,
+        toBudget,
+        budgetShiftRatio
       };
     })
     .filter(Boolean)
@@ -342,10 +318,7 @@ export function buildBudgetChangeMonitor(series, budgetHistoryEvents = []) {
 
   const lookbackSeries = getTrailingWindow(series, BUDGET_MONITOR_CONFIG.monitorLookbackDays);
   const historyEvents = buildHistoryShiftEvents(lookbackSeries, budgetHistoryEvents);
-  const inferredEvents = findSpendShiftEvents(lookbackSeries)
-    .map((event) => ({ ...event, source: 'inferred_spend_shift' }))
-    .sort((left, right) => (right.pivotDate || '').localeCompare(left.pivotDate || ''));
-  const events = historyEvents.length ? historyEvents : inferredEvents;
+  const events = historyEvents;
 
   const latest = events[0] || null;
   if (!latest) {
@@ -386,17 +359,13 @@ export function buildBudgetChangeMonitor(series, budgetHistoryEvents = []) {
     hasEvent: true,
     events: events.map((event) => ({
       pivotDate: event.pivotDate,
-      source: event.source || 'inferred_spend_shift',
+      source: 'meta_history',
       preSpendAvg: round(
-        event.source === 'meta_history'
-          ? (summarizeMonitorMetric({ series: lookbackSeries, event, metricKey: 'spend' }).preMean || 0)
-          : event.preSpendAvg,
+        summarizeMonitorMetric({ series: lookbackSeries, event, metricKey: 'spend' }).preMean || 0,
         2
       ),
       postSpendAvg: round(
-        event.source === 'meta_history'
-          ? (summarizeMonitorMetric({ series: lookbackSeries, event, metricKey: 'spend' }).postMean || 0)
-          : event.postSpendAvg,
+        summarizeMonitorMetric({ series: lookbackSeries, event, metricKey: 'spend' }).postMean || 0,
         2
       ),
       shiftRatio: round(event.shiftRatio, 4),
@@ -407,7 +376,7 @@ export function buildBudgetChangeMonitor(series, budgetHistoryEvents = []) {
     })),
     latest: {
       pivotDate: latest.pivotDate,
-      source: latest.source || 'inferred_spend_shift',
+      source: 'meta_history',
       preSpendAvg: round(latestSpendMetric.preMean || 0, 2),
       postSpendAvg: round(latestSpendMetric.postMean || 0, 2),
       shiftRatio: round(latest.shiftRatio, 4),
@@ -436,6 +405,8 @@ function buildSignal({
   const normalizedRisk = direction === 'lower_better'
     ? clamp01(deltaRatio / Math.max(thresholdRatio, 1e-6))
     : clamp01((-deltaRatio) / Math.max(thresholdRatio, 1e-6));
+  const hasBaseline = Number.isFinite(baselineValue) && Math.abs(baselineValue) > 1e-9;
+  const adverseDirection = direction === 'lower_better' ? deltaRatio > 0 : deltaRatio < 0;
 
   return {
     key,
@@ -448,7 +419,9 @@ function buildSignal({
     deltaPercent: normalizePercent(deltaRatio),
     thresholdPercent: normalizePercent(thresholdRatio),
     risk: round(normalizedRisk, 4),
-    weightedImpact: round(normalizedRisk * weight * 100, 2)
+    weightedImpact: round(normalizedRisk * weight * 100, 2),
+    hasBaseline,
+    trend: hasBaseline ? (adverseDirection ? 'deteriorated' : 'improved') : 'insufficient_baseline'
   };
 }
 
@@ -481,14 +454,46 @@ function estimateModelConfidence({
 export function buildMatureSentinelModel({ analysisSeries, anchorSeries, presetName = 'balanced' }) {
   const { name: resolvedPresetName, config: preset } = resolvePresetOption(SENTINEL_PRESETS, presetName);
 
-  const currentWindow = getTrailingWindow(analysisSeries, preset.currentWindowDays);
-  let baselineWindow = anchorSeries;
+  const spendActiveAnalysisSeries = getSpendActiveSeries(analysisSeries);
+  const spendActiveAnchorSeries = getSpendActiveSeries(anchorSeries);
+  const currentWindow = getTrailingWindow(spendActiveAnalysisSeries, preset.currentWindowDays);
+  let baselineWindow = spendActiveAnchorSeries;
 
   if (!baselineWindow.length) {
     baselineWindow = getLeadingWindow(
-      analysisSeries,
+      spendActiveAnalysisSeries,
       Math.max(preset.currentWindowDays * 3, preset.currentWindowDays + 1)
     );
+  }
+
+  if (!currentWindow.length) {
+    return {
+      id: 'mature_sentinel',
+      name: 'Mature Campaign Sentinel',
+      preset: resolvedPresetName,
+      status: { code: 'stable', label: 'Stable', tone: 'healthy' },
+      riskScore: 0,
+      confidence: 0.1,
+      decisionWindowDays: preset.policyRecheckWindowDays,
+      decisionWindowSource: 'policy',
+      decisionWindowPolicyDays: preset.policyRecheckWindowDays,
+      decisionWindowLearningAdjustmentDays: 0,
+      summary: 'Stable: no active spend days in the current watch window.',
+      action: 'Wait for fresh delivery data before re-scoring risk signals.',
+      signals: [],
+      policy: {
+        warningThreshold: preset.warningThreshold,
+        criticalThreshold: preset.criticalThreshold,
+        minimumCurrentClicks: preset.minimumCurrentClicks
+      },
+      evidence: {
+        currentWindowDays: 0,
+        baselineWindowDays: baselineWindow.length,
+        currentTotals: summarizeSeriesWindow([]).totals,
+        baselineTotals: summarizeSeriesWindow(baselineWindow).totals,
+        averageShockZ: 0
+      }
+    };
   }
 
   const currentSummary = summarizeSeriesWindow(currentWindow);
@@ -624,7 +629,9 @@ function calculateSaturationRisk(series) {
 export function buildHeadroomModel({ analysisSeries, anchorSeries, presetName = 'balanced' }) {
   const { name: resolvedPresetName, config: preset } = resolvePresetOption(HEADROOM_PRESETS, presetName);
 
-  const combinedSeries = [...anchorSeries, ...analysisSeries];
+  const spendActiveAnalysisSeries = getSpendActiveSeries(analysisSeries);
+  const spendActiveAnchorSeries = getSpendActiveSeries(anchorSeries);
+  const combinedSeries = [...spendActiveAnchorSeries, ...spendActiveAnalysisSeries];
   const usablePoints = combinedSeries
     .map((row, index) => ({
       date: row.date,
@@ -644,7 +651,7 @@ export function buildHeadroomModel({ analysisSeries, anchorSeries, presetName = 
   const regression = weightedLinearRegression(regressionPoints);
   const elasticity = clampNumber(regression.slope, 0, 1.4);
 
-  const baselineWindow = getTrailingWindow(analysisSeries, preset.baselineWindowDays);
+  const baselineWindow = getTrailingWindow(spendActiveAnalysisSeries, preset.baselineWindowDays);
   const efficiencySeries = baselineWindow.map((row) => safeDivide((row.orders || row.conversions || 0), Math.max(row.spend, 1), 0));
   const efficiencyBaseline = mean(efficiencySeries) || 0;
   const efficiencyTrend = safeDivide(linearTrendSlope(efficiencySeries), Math.max(efficiencyBaseline, 1e-6), 0);
@@ -680,7 +687,7 @@ export function buildHeadroomModel({ analysisSeries, anchorSeries, presetName = 
     1
   );
 
-  const currentSpend = mean(getTrailingWindow(analysisSeries, preset.baselineWindowDays).map((row) => row.spend)) || 0;
+  const currentSpend = mean(getTrailingWindow(spendActiveAnalysisSeries, preset.baselineWindowDays).map((row) => row.spend)) || 0;
   let suggestedPctChange = 0;
   let status = 'hold';
 
@@ -1111,21 +1118,25 @@ export function buildModelBundle({
   targetHorizonDays,
   seedKey
 }) {
+  const spendActiveAnalysisSeries = getSpendActiveSeries(analysisSeries);
+  const spendActiveAnchorSeries = getSpendActiveSeries(anchorSeries);
+  const spendActiveBaselineSeries = getSpendActiveSeries(baselineSeries);
+
   const sentinel = buildMatureSentinelModel({
-    analysisSeries,
-    anchorSeries,
+    analysisSeries: spendActiveAnalysisSeries.length ? spendActiveAnalysisSeries : analysisSeries,
+    anchorSeries: spendActiveAnchorSeries.length ? spendActiveAnchorSeries : anchorSeries,
     presetName: sentinelPreset
   });
 
   const headroom = buildHeadroomModel({
-    analysisSeries,
-    anchorSeries,
+    analysisSeries: spendActiveAnalysisSeries.length ? spendActiveAnalysisSeries : analysisSeries,
+    anchorSeries: spendActiveAnchorSeries.length ? spendActiveAnchorSeries : anchorSeries,
     presetName: headroomPreset
   });
 
   const launchJudge = buildLaunchJudgeModel({
-    analysisSeries,
-    baselineSeries,
+    analysisSeries: spendActiveAnalysisSeries.length ? spendActiveAnalysisSeries : analysisSeries,
+    baselineSeries: spendActiveBaselineSeries.length ? spendActiveBaselineSeries : baselineSeries,
     store,
     presetName: launchPreset,
     launchMinDays,
@@ -1137,14 +1148,14 @@ export function buildModelBundle({
   });
 
   const launchJudgeEligibility = evaluateLaunchJudgeEligibility({
-    analysisSeries,
+    analysisSeries: spendActiveAnalysisSeries.length ? spendActiveAnalysisSeries : analysisSeries,
     launchJudge
   });
   const scopedLaunchJudge = launchJudgeEligibility.eligible ? launchJudge : null;
   const modelList = [sentinel, headroom, scopedLaunchJudge].filter(Boolean);
   const calibration = buildCalibrationLayer({
     models: modelList,
-    series: analysisSeries
+    series: spendActiveAnalysisSeries.length ? spendActiveAnalysisSeries : analysisSeries
   });
 
   return {

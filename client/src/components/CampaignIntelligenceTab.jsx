@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BarChart3,
@@ -34,6 +34,7 @@ const REGIONAL_INDICATOR_OFFSET = 127397;
 const SIGNAL_NEAR_THRESHOLD_RATIO = 0.6;
 const SIGNAL_ZERO_BASELINE_EPSILON = 1e-9;
 const SIGNAL_CONTRIBUTION_DECIMALS = 2;
+const ANALYSIS_REQUEST_DEBOUNCE_MS = 250;
 const TODAY_REFRESH_INTERVAL_MS = 60 * 1000;
 const MINUTES_PER_HOUR = 60;
 const MS_PER_MINUTE = 60 * 1000;
@@ -238,6 +239,14 @@ function getSignalState(signal) {
     };
   }
 
+  if (adversePercent <= 0) {
+    return {
+      code: 'not_triggered',
+      label: 'No risk signal',
+      detail: 'Direction is favorable vs anchor baseline.'
+    };
+  }
+
   return {
     code: 'not_triggered',
     label: 'Not triggered',
@@ -262,6 +271,29 @@ function getSignalTriggerText(signal) {
   const comparator = direction === 'lower_better' ? '>=' : '<=';
 
   return `Triggers when ${metricLabel} ${comparator} ${formatSignalMetricValue(signal, boundaryValue)}.`;
+}
+
+function getSignalDisplayLabel(signal) {
+  const fallback = String(signal?.label || 'Signal').trim() || 'Signal';
+  const baseline = Number(signal?.baselineValue) || 0;
+  const current = Number(signal?.currentValue) || 0;
+  if (Math.abs(baseline) <= SIGNAL_ZERO_BASELINE_EPSILON) {
+    return fallback;
+  }
+
+  const direction = getSignalDirection(signal);
+  const improved = direction === 'lower_better' ? current < baseline : current > baseline;
+  if (!improved) return fallback;
+
+  if (signal?.key === 'cpm') return 'CPM improvement';
+  if (signal?.key === 'cvr') return 'CVR improvement';
+  if (signal?.key === 'lpvRate') return 'Funnel quality improvement';
+  if (signal?.key === 'ordersPerSpend') return 'Orders per spend improvement';
+  return fallback;
+}
+
+function formatSignalSource(source) {
+  return String(source || '').replace(/_/g, ' ');
 }
 
 async function readJsonResponse(response) {
@@ -500,6 +532,7 @@ export default function CampaignIntelligenceTab({ store }) {
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState(null);
   const [selectedModelId, setSelectedModelId] = useState('mature_sentinel');
+  const requestRef = useRef({ id: 0, controller: null });
 
   const modelCards = useMemo(() => {
     if (!snapshot?.models) return [];
@@ -514,6 +547,14 @@ export default function CampaignIntelligenceTab({ store }) {
   const runAnalysis = useCallback(async () => {
     if (!store?.id) return;
 
+    requestRef.current.id += 1;
+    const requestId = requestRef.current.id;
+    if (requestRef.current.controller) {
+      requestRef.current.controller.abort();
+    }
+    const controller = new AbortController();
+    requestRef.current.controller = controller;
+
     setLoading(true);
     setError('');
 
@@ -523,25 +564,44 @@ export default function CampaignIntelligenceTab({ store }) {
         ...analysisParams
       });
 
-      const response = await fetch(`${API_ENDPOINT}?${params.toString()}`);
+      const response = await fetch(`${API_ENDPOINT}?${params.toString()}`, {
+        signal: controller.signal
+      });
       const json = await readJsonResponse(response);
 
       if (!response.ok || !json?.success) {
         throw new Error(json?.error || `Failed to load campaign intelligence (HTTP ${response.status})`);
       }
 
+      if (requestRef.current.id !== requestId) return;
       setSnapshot(json);
     } catch (loadError) {
+      if (loadError?.name === 'AbortError') {
+        return;
+      }
+      if (requestRef.current.id !== requestId) return;
       setSnapshot(null);
       setError(loadError?.message || 'Failed to load campaign intelligence');
     } finally {
-      setLoading(false);
+      if (requestRef.current.id === requestId) {
+        setLoading(false);
+      }
     }
   }, [store?.id, analysisParams]);
 
   useEffect(() => {
-    runAnalysis();
-  }, [runAnalysis]);
+    if (!store?.id) return undefined;
+    const timerId = setTimeout(() => {
+      runAnalysis();
+    }, ANALYSIS_REQUEST_DEBOUNCE_MS);
+    return () => clearTimeout(timerId);
+  }, [store?.id, runAnalysis]);
+
+  useEffect(() => () => {
+    if (requestRef.current.controller) {
+      requestRef.current.controller.abort();
+    }
+  }, []);
 
   useEffect(() => {
     if (!entityId || !snapshot?.selectors?.entities) return;
@@ -594,15 +654,11 @@ export default function CampaignIntelligenceTab({ store }) {
           && event.toBudget != null
           && Number.isFinite(Number(event.fromBudget))
           && Number.isFinite(Number(event.toBudget));
-        const deltaPercent = hasBudgetValues
-          ? Number(event.budgetShiftPercent || 0)
-          : Number(event.shiftPercent || 0);
-        const fromValue = hasBudgetValues
-          ? formatMoney(event.fromBudget || 0, store)
-          : formatMoney(event.preSpendAvg || 0, store);
-        const toValue = hasBudgetValues
-          ? formatMoney(event.toBudget || 0, store)
-          : formatMoney(event.postSpendAvg || 0, store);
+        if (!hasBudgetValues) return null;
+
+        const deltaPercent = Number(event.budgetShiftPercent || 0);
+        const fromValue = formatMoney(event.fromBudget || 0, store);
+        const toValue = formatMoney(event.toBudget || 0, store);
 
         return {
           date: event.pivotDate,
@@ -1033,10 +1089,11 @@ export default function CampaignIntelligenceTab({ store }) {
                   <div className="space-y-2">
                     {toArray(selectedModel.signals).slice(0, 4).map((signal, index) => {
                       const signalState = getSignalState(signal);
+                      const signalDisplayLabel = getSignalDisplayLabel(signal);
                       return (
                         <div key={getListKey('signal', signal, index)} className="rounded-xl border border-slate-200 p-3">
                           <div className="flex items-center justify-between gap-2">
-                            <div className="font-medium text-slate-900">{signal.label}</div>
+                            <div className="font-medium text-slate-900">{signalDisplayLabel}</div>
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${SIGNAL_STATUS_STYLES[signalState.code] || SIGNAL_STATUS_STYLES.not_triggered}`}>
                               {signalState.label}
                             </span>
@@ -1046,7 +1103,7 @@ export default function CampaignIntelligenceTab({ store }) {
                             Baseline {formatSignalMetricValue(signal, signal.baselineValue)} {' -> '} Current {formatSignalMetricValue(signal, signal.currentValue)}
                           </div>
                           <div className="text-xs text-slate-600 mt-1">
-                            Delta {formatDeltaPercent(signal.deltaPercent, 2)} | Threshold {formatNumber(signal.thresholdPercent, 1)}% | Source {signal.source}
+                            Delta {formatDeltaPercent(signal.deltaPercent, 2)} | Threshold {formatNumber(signal.thresholdPercent, 1)}% | Source {formatSignalSource(signal.source)}
                           </div>
                           <div className="text-xs text-slate-600 mt-1">
                             {getSignalTriggerText(signal)}
@@ -1159,18 +1216,18 @@ export default function CampaignIntelligenceTab({ store }) {
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <div className="text-sm font-semibold text-slate-900">Budget Change Monitor</div>
-            <div className="text-xs text-slate-500 mt-1">Compares pre-change vs post-change metrics for the latest significant spend shift.</div>
+            <div className="text-xs text-slate-500 mt-1">Compares pre-change vs post-change metrics for the latest significant Meta-recorded budget change.</div>
           </div>
           {snapshot?.budgetMonitor?.latest && (
             <div className="text-xs text-slate-600">
               Pivot day: <span className="font-semibold">{snapshot.budgetMonitor.latest.pivotDate}</span>
-              {' • '}Budget shift: <span className="font-semibold">{formatDeltaPercent((snapshot.budgetMonitor.latest.budgetShiftPercent ?? snapshot.budgetMonitor.latest.shiftPercent ?? 0), 1)}</span>
+              {' • '}Budget shift: <span className="font-semibold">{formatDeltaPercent((snapshot.budgetMonitor.latest.budgetShiftPercent ?? 0), 1)}</span>
             </div>
           )}
         </div>
 
         {!snapshot?.budgetMonitor?.hasEvent && (
-          <div className="mt-4 text-sm text-slate-500">No significant spend-shift event detected in the recent monitor window.</div>
+          <div className="mt-4 text-sm text-slate-500">No significant Meta budget-change event detected in the recent monitor window.</div>
         )}
 
         {snapshot?.budgetMonitor?.hasEvent && (

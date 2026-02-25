@@ -195,6 +195,16 @@ function getIsoDateForDashboardOffset(value, utcOffsetMinutes = BUDGET_MONITOR_C
   return new Date(dashboardMs).toISOString().slice(0, 10);
 }
 
+function getCurrentDashboardDate(utcOffsetMinutes = BUDGET_MONITOR_CONFIG.dashboardDayUtcOffsetMinutes) {
+  return getIsoDateForDashboardOffset(new Date(), utcOffsetMinutes);
+}
+
+function getLatestCompletedDashboardDate(utcOffsetMinutes = BUDGET_MONITOR_CONFIG.dashboardDayUtcOffsetMinutes) {
+  const dashboardToday = getCurrentDashboardDate(utcOffsetMinutes);
+  if (!dashboardToday) return null;
+  return addDaysIso(dashboardToday, -1);
+}
+
 function isMinorUnitBudgetKey(rawKey) {
   const key = String(rawKey || '').trim().toLowerCase();
   if (!key) return false;
@@ -278,21 +288,7 @@ function inferBudgetValuesFromEntries(entries) {
   const fromBudget = findNumericValueByKeys(entries, META_BUDGET_FROM_KEYS);
   const toBudget = findNumericValueByKeys(entries, META_BUDGET_TO_KEYS);
 
-  if (fromBudget != null || toBudget != null) {
-    return { fromBudget, toBudget };
-  }
-
-  let fallbackBudget = null;
-  entries.forEach((entry) => {
-    if (!entry.key.includes('budget')) return;
-    const parsed = parseBudgetAmount(entry.value, {
-      isMinorUnits: isMinorUnitBudgetKey(entry.key)
-    });
-    if (parsed == null) return;
-    fallbackBudget = parsed;
-  });
-
-  return { fromBudget: null, toBudget: fallbackBudget };
+  return { fromBudget, toBudget };
 }
 
 function normalizeGraphObjectId(value) {
@@ -468,10 +464,30 @@ function normalizeCountry(rawCountry) {
   return normalized;
 }
 
-function getLatestMetricDate(db, store, levelConfig) {
+function getLatestMetricDate({
+  db,
+  store,
+  levelConfig,
+  entityId,
+  country
+}) {
+  const whereParts = ['store = ?', 'COALESCE(spend, 0) > 0'];
+  const args = [store];
+
+  if (entityId) {
+    whereParts.push(`${levelConfig.idColumn} = ?`);
+    args.push(entityId);
+  }
+
+  if (country && country !== 'ALL') {
+    const countryFilter = buildCountryWhereClause(country);
+    whereParts.push(countryFilter.clause);
+    args.push(...countryFilter.args);
+  }
+
   const row = db
-    .prepare(`SELECT MAX(date) as maxDate FROM ${levelConfig.table} WHERE store = ?`)
-    .get(store);
+    .prepare(`SELECT MAX(date) as maxDate FROM ${levelConfig.table} WHERE ${whereParts.join(' AND ')}`)
+    .get(...args);
   return parseIsoDate(row?.maxDate);
 }
 
@@ -514,8 +530,32 @@ function resolveRangeWindow({
   endDate,
   analysisWindowDays
 }) {
-  const latestDate = getLatestMetricDate(db, store, levelConfig);
-  const resolvedEndDate = parseIsoDate(endDate) || latestDate || new Date().toISOString().slice(0, 10);
+  const lifecycleStartDate = getScopeFirstSeenDate({
+    db,
+    store,
+    levelConfig,
+    entityId,
+    country
+  });
+
+  const latestScopeDate = getLatestMetricDate({
+    db,
+    store,
+    levelConfig,
+    entityId,
+    country
+  });
+
+  const requestedEndDate = parseIsoDate(endDate);
+  let resolvedEndDate = requestedEndDate || latestScopeDate || getCurrentDashboardDate() || new Date().toISOString().slice(0, 10);
+
+  if (!requestedEndDate && latestScopeDate) {
+    const latestCompletedDashboardDate = getLatestCompletedDashboardDate();
+    if (latestCompletedDashboardDate && latestScopeDate > latestCompletedDashboardDate) {
+      const isFirstLifecycleDay = lifecycleStartDate != null && lifecycleStartDate === latestScopeDate;
+      resolvedEndDate = isFirstLifecycleDay ? latestScopeDate : latestCompletedDashboardDate;
+    }
+  }
 
   const requestedStartDate = parseIsoDate(startDate);
   if (requestedStartDate) {
@@ -530,13 +570,6 @@ function resolveRangeWindow({
     };
   }
 
-  const lifecycleStartDate = getScopeFirstSeenDate({
-    db,
-    store,
-    levelConfig,
-    entityId,
-    country
-  });
   if (lifecycleStartDate && lifecycleStartDate <= resolvedEndDate) {
     return {
       startDate: lifecycleStartDate,

@@ -86,6 +86,7 @@ function runScenario({
   store,
   anchorRows,
   analysisRows,
+  budgetHistoryEvents = [],
   expected
 }) {
   const shockAwareAnchor = buildShockAwareSeries(anchorRows);
@@ -107,11 +108,14 @@ function runScenario({
     seedKey: `qc-${name}`
   });
 
-  const monitor = buildBudgetChangeMonitor(shockAwareAnalysis);
+  const monitor = buildBudgetChangeMonitor(shockAwareAnalysis, budgetHistoryEvents);
 
   assert(Number.isFinite(modelBundle.sentinel.riskScore), `${name}: sentinel risk score should be finite`);
   assert(Number.isFinite(modelBundle.headroom.headroomScore), `${name}: headroom score should be finite`);
-  assert(modelBundle.launchJudge.status, `${name}: launch judge status should exist`);
+  assert(modelBundle.launchJudgeEligibility, `${name}: launch judge eligibility should exist`);
+  if (modelBundle.launchJudge) {
+    assert(modelBundle.launchJudge.status, `${name}: launch judge status should exist when eligible`);
+  }
   assert(modelBundle.calibration.reliabilityBand.length === 2, `${name}: calibration band should be available`);
 
   if (expected?.minSentinelRisk != null) {
@@ -133,6 +137,7 @@ function runScenario({
   }
 
   if (expected?.minRoasProbability != null) {
+    assert(modelBundle.launchJudge, `${name}: launch judge should be present for ROAS probability assertions`);
     assert(
       modelBundle.launchJudge.probabilities.hitTargetRoas >= expected.minRoasProbability,
       `${name}: expected ROAS hit probability >= ${expected.minRoasProbability}, got ${modelBundle.launchJudge.probabilities.hitTargetRoas}`
@@ -140,6 +145,7 @@ function runScenario({
   }
 
   if (expected?.statusIncludes?.length) {
+    assert(modelBundle.launchJudge, `${name}: launch judge should be present for launch status assertions`);
     assert(
       expected.statusIncludes.includes(modelBundle.launchJudge.status),
       `${name}: expected launch status in ${expected.statusIncludes.join(', ')}, got ${modelBundle.launchJudge.status}`
@@ -150,8 +156,9 @@ function runScenario({
     name,
     sentinelRisk: modelBundle.sentinel.riskScore,
     headroomScore: modelBundle.headroom.headroomScore,
-    launchStatus: modelBundle.launchJudge.status,
-    roasHitProbability: modelBundle.launchJudge.probabilities.hitTargetRoas,
+    launchStatus: modelBundle.launchJudge?.status || 'not_eligible',
+    roasHitProbability: modelBundle.launchJudge?.probabilities?.hitTargetRoas ?? null,
+    launchEligible: modelBundle.launchJudgeEligibility?.eligible || false,
     monitorDetected: monitor.hasEvent
   };
 }
@@ -255,6 +262,15 @@ function buildScenarios() {
       store: 'shawq',
       anchorRows: deteriorationAnchor,
       analysisRows: deteriorationAnalysis,
+      budgetHistoryEvents: [
+        {
+          pivotDate: '2026-01-29',
+          eventTime: '2026-01-29T09:00:00Z',
+          fromBudget: 1020,
+          toBudget: 1450,
+          source: 'meta_history'
+        }
+      ],
       expected: {
         minSentinelRisk: 55,
         requiresMonitorEvent: true
