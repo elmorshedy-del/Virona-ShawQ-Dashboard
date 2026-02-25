@@ -8064,7 +8064,7 @@ function MobileDashboardTab({
   ]), [overviewForKpis]);
 
   const trendData = useMemo(() => (
-    (Array.isArray(trendsForKpis) ? trendsForKpis : [])
+    (trendsForKpis)
       .slice(-MOBILE_DASHBOARD_TREND_POINTS)
       .map((point, index) => ({
         id: point?.date || point?.bucketExpectedEndDate || point?.bucketEndDate || `pt-${index}`,
