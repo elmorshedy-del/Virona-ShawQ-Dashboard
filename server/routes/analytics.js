@@ -21,6 +21,7 @@ import {
   getCitiesByCountry,
   getMetaAdManagerHierarchy,
   getFunnelDiagnostics,
+  getPerformancePulse,
   getReactivationCandidates,
   getAllMetaObjects
 } from '../services/analyticsService.js';
@@ -41,6 +42,18 @@ router.get('/dashboard', (req, res) => {
   } catch (error) {
     console.error('Dashboard error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Performance pulse cards (compact second hierarchy under KPI cards)
+router.get('/performance-pulse', (req, res) => {
+  try {
+    const store = req.query.store || 'vironax';
+    const data = getPerformancePulse(store, req.query);
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Analytics] Performance pulse error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

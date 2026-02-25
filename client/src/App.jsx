@@ -1963,6 +1963,9 @@ export default function App() {
               setDiagnosticsExpanded={setDiagnosticsExpanded}
               selectedDiagnosticsCampaign={selectedDiagnosticsCampaign}
               setSelectedDiagnosticsCampaign={setSelectedDiagnosticsCampaign}
+              funnelBaselineMode={funnelBaselineMode}
+              setFunnelBaselineMode={setFunnelBaselineMode}
+              selectedFunnelBaselineOption={selectedFunnelBaselineOption}
               hiddenCampaigns={hiddenCampaigns}
               setHiddenCampaigns={setHiddenCampaigns}
               showHiddenDropdown={showHiddenDropdown}
@@ -2220,6 +2223,9 @@ function DashboardTab({
   setDiagnosticsExpanded = () => {},
   selectedDiagnosticsCampaign = null,
   setSelectedDiagnosticsCampaign = () => {},
+  funnelBaselineMode = DEFAULT_FUNNEL_BASELINE_MODE,
+  setFunnelBaselineMode = () => {},
+  selectedFunnelBaselineOption = DEFAULT_FUNNEL_BASELINE_OPTION,
   hiddenCampaigns = new Set(),
   setHiddenCampaigns = () => {},
   showHiddenDropdown = false,
