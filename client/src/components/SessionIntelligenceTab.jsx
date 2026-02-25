@@ -14,11 +14,12 @@ const REALTIME_GEO_ROWS_LIMIT = 8;
 const REALTIME_KPI_SPARKLINE_WIDTH = 120;
 const REALTIME_KPI_SPARKLINE_HEIGHT = 30;
 const REALTIME_KPI_SPARKLINE_PADDING = 4;
+const REALTIME_KPI_SPARKLINE_CURVE_FACTOR = 0.18;
 const REALTIME_DELTA_EPSILON = 1e-9;
 const REALTIME_METRIC_CARD_CONFIG = [
-  { key: 'sessions', label: 'Active sessions' },
-  { key: 'shoppers', label: 'Active shoppers' },
-  { key: 'events', label: 'Total events' }
+  { key: 'sessions', label: 'Sessions today' },
+  { key: 'shoppers', label: 'Shoppers today' },
+  { key: 'events', label: 'Events today' }
 ];
 const REALTIME_METRIC_COMPARISON_KEYS = ['yesterday', 'lastWeek'];
 const CLARITY_SIGNAL_EVENT_NAMES = new Set([
@@ -251,6 +252,20 @@ function formatSignedPercent(value, digits = 0) {
   return formatted;
 }
 
+function formatComparisonDeltaLabel({ delta, current, baseline }) {
+  const baseLabel = formatSignedPercent(delta, 0);
+  if (baseLabel !== '—') return baseLabel;
+
+  const currentValue = Number(current);
+  const baselineValue = Number(baseline);
+  const safeCurrent = Number.isFinite(currentValue) ? currentValue : 0;
+  const safeBaseline = Number.isFinite(baselineValue) ? baselineValue : 0;
+
+  if (safeBaseline <= 0 && safeCurrent > 0) return 'New';
+  if (safeBaseline <= 0 && safeCurrent <= 0) return '0%';
+  return '—';
+}
+
 function normalizeDeltaDirection(direction, delta) {
   const normalized = (direction || '').toString().trim().toLowerCase();
   if (normalized === 'up' || normalized === 'down' || normalized === 'flat') return normalized;
@@ -268,13 +283,27 @@ function deltaArrow(direction) {
   return '→';
 }
 
-function buildRealtimeSparklinePath(trendRows, {
+function resolveComparisonDirection({ direction, delta, current, baseline }) {
+  const normalized = normalizeDeltaDirection(direction, delta);
+  if (normalized !== 'na') return normalized;
+
+  const currentValue = Number(current);
+  const baselineValue = Number(baseline);
+  const safeCurrent = Number.isFinite(currentValue) ? currentValue : 0;
+  const safeBaseline = Number.isFinite(baselineValue) ? baselineValue : 0;
+
+  if (safeBaseline <= 0 && safeCurrent > 0) return 'up';
+  if (safeBaseline <= 0 && safeCurrent <= 0) return 'flat';
+  return 'na';
+}
+
+function buildRealtimeSparklineGeometry(trendRows, {
   width = REALTIME_KPI_SPARKLINE_WIDTH,
   height = REALTIME_KPI_SPARKLINE_HEIGHT,
   padding = REALTIME_KPI_SPARKLINE_PADDING
 } = {}) {
   const rows = Array.isArray(trendRows) ? trendRows : [];
-  if (rows.length < 2) return '';
+  if (rows.length < 2) return null;
 
   const values = rows.map((row) => {
     const value = Number(row?.value);
@@ -286,16 +315,44 @@ function buildRealtimeSparklinePath(trendRows, {
   const innerWidth = Math.max(width - (padding * 2), 1);
   const innerHeight = Math.max(height - (padding * 2), 1);
   const stepX = rows.length > 1 ? innerWidth / (rows.length - 1) : 0;
+  const points = values.map((value, index) => {
+    const x = padding + (index * stepX);
+    const normalized = range > 0 ? (value - min) / range : 0.5;
+    const y = padding + ((1 - normalized) * innerHeight);
+    return { x, y };
+  });
 
-  return values
-    .map((value, index) => {
-      const x = padding + (index * stepX);
-      const normalized = range > 0 ? (value - min) / range : 0.5;
-      const y = padding + ((1 - normalized) * innerHeight);
-      const command = index === 0 ? 'M' : 'L';
-      return `${command}${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(' ');
+  if (points.length < 2) return null;
+
+  const lineParts = [`M${points[0].x.toFixed(2)},${points[0].y.toFixed(2)}`];
+  for (let idx = 0; idx < points.length - 1; idx += 1) {
+    const p0 = idx > 0 ? points[idx - 1] : points[idx];
+    const p1 = points[idx];
+    const p2 = points[idx + 1];
+    const p3 = idx !== points.length - 2 ? points[idx + 2] : p2;
+
+    const c1x = p1.x + ((p2.x - p0.x) * REALTIME_KPI_SPARKLINE_CURVE_FACTOR);
+    const c1y = p1.y + ((p2.y - p0.y) * REALTIME_KPI_SPARKLINE_CURVE_FACTOR);
+    const c2x = p2.x - ((p3.x - p1.x) * REALTIME_KPI_SPARKLINE_CURVE_FACTOR);
+    const c2y = p2.y - ((p3.y - p1.y) * REALTIME_KPI_SPARKLINE_CURVE_FACTOR);
+
+    lineParts.push(
+      `C${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)}`
+    );
+  }
+
+  const linePath = lineParts.join(' ');
+  const baselineY = (height - padding).toFixed(2);
+  const first = points[0];
+  const last = points[points.length - 1];
+  const areaPath = `${linePath} L${last.x.toFixed(2)},${baselineY} L${first.x.toFixed(2)},${baselineY} Z`;
+
+  return {
+    linePath,
+    areaPath,
+    firstPoint: first,
+    lastPoint: last
+  };
 }
 
 function realtimeSparklineDirection(trendRows) {
@@ -2349,27 +2406,40 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         : config.key === 'shoppers'
           ? realtime?.activeShoppers
           : realtime?.events;
+      const currentValue = metric?.current ?? fallbackValue ?? 0;
       const trend = Array.isArray(metric?.trend) ? metric.trend : [];
-      const sparklinePath = buildRealtimeSparklinePath(trend);
+      const sparkline = buildRealtimeSparklineGeometry(trend);
       const sparklineDirection = realtimeSparklineDirection(trend);
       const comparisons = REALTIME_METRIC_COMPARISON_KEYS
         .map((comparisonKey) => metric?.[comparisonKey])
         .filter((comparison) => comparison && typeof comparison === 'object')
         .map((comparison) => {
-          const direction = normalizeDeltaDirection(comparison.direction, comparison.delta);
+          const baseline = Number(comparison.value);
+          const safeBaseline = Number.isFinite(baseline) ? baseline : 0;
+          const direction = resolveComparisonDirection({
+            direction: comparison.direction,
+            delta: comparison.delta,
+            current: currentValue,
+            baseline: safeBaseline
+          });
           return {
             ...comparison,
+            value: safeBaseline,
             direction,
             arrow: deltaArrow(direction),
-            deltaLabel: formatSignedPercent(comparison.delta, 0)
+            deltaLabel: formatComparisonDeltaLabel({
+              delta: comparison.delta,
+              current: currentValue,
+              baseline: safeBaseline
+            })
           };
         });
 
       return {
         key: config.key,
         label: config.label,
-        value: metric?.current ?? fallbackValue ?? 0,
-        sparklinePath,
+        value: currentValue,
+        sparkline,
         sparklineDirection,
         comparisons
       };
@@ -2383,7 +2453,30 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const dayPulseComparisons = useMemo(() => {
     const yesterday = dayPulse?.comparisons?.yesterday || null;
     const lastWeek = dayPulse?.comparisons?.lastWeek || null;
-    return [yesterday, lastWeek].filter(Boolean);
+    return [yesterday, lastWeek]
+      .filter(Boolean)
+      .map((comparison) => {
+        const baseline = Number(comparison.sessions);
+        const safeBaseline = Number.isFinite(baseline) ? baseline : 0;
+        const current = Number(dayPulse?.sessionsSoFar) || 0;
+        const direction = resolveComparisonDirection({
+          direction: comparison.direction,
+          delta: comparison.delta,
+          current,
+          baseline: safeBaseline
+        });
+        return {
+          ...comparison,
+          sessions: safeBaseline,
+          direction,
+          arrow: deltaArrow(direction),
+          deltaLabel: formatComparisonDeltaLabel({
+            delta: comparison.delta,
+            current,
+            baseline: safeBaseline
+          })
+        };
+      });
   }, [dayPulse]);
   const dayPulseProjectionClass = useMemo(() => {
     const key = (dayPulse?.projectionLabel || '').toString().toLowerCase().trim();
@@ -2621,16 +2714,16 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
             <div className="si-day-pulse-comparisons">
               {dayPulseComparisons.map((comparison, index) => {
                 const direction = (comparison?.direction || 'na').toString().toLowerCase();
-                const arrow = direction === 'up' ? '↑' : direction === 'down' ? '↓' : '→';
                 return (
                   <div
                     key={`${comparison.label || 'comparison'}-${index}`}
                     className={`si-day-pulse-delta si-day-pulse-delta-${direction}`}
-                    title={`${comparison.label}: ${formatSignedPercent(comparison.delta, 0)}`}
+                    title={`${comparison.label}: ${comparison.deltaLabel} (baseline ${formatNumber(comparison.sessions)} sessions)`}
                   >
-                    <span className="si-day-pulse-arrow">{arrow}</span>
-                    <span className="si-day-pulse-delta-value">{formatSignedPercent(comparison.delta, 0)}</span>
+                    <span className="si-day-pulse-arrow">{comparison.arrow}</span>
+                    <span className="si-day-pulse-delta-value">{comparison.deltaLabel}</span>
                     <span className="si-day-pulse-delta-label">{comparison.label}</span>
+                    <span className="si-day-pulse-delta-baseline">{formatNumber(comparison.sessions)} sessions</span>
                   </div>
                 );
               })}
@@ -2643,7 +2736,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         <div className="si-card-title">
           <h3>Realtime overview</h3>
           <span className="si-muted">
-            Last {REALTIME_WINDOW_MINUTES}m • {realtime?.lastEventAt ? `Last event ${timeAgo(realtime.lastEventAt)}` : '—'}
+            KPI cards: today so far • Map/events: last {REALTIME_WINDOW_MINUTES}m • {realtime?.lastEventAt ? `Last event ${timeAgo(realtime.lastEventAt)}` : '—'}
           </span>
         </div>
 
@@ -2686,14 +2779,37 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
               <div className="si-realtime-kpi-head">
                 <div className="si-realtime-kpi-label">{card.label}</div>
                 <div className="si-realtime-kpi-sparkline" aria-hidden="true">
-                  {card.sparklinePath ? (
+                  {card.sparkline?.linePath ? (
                     <svg
                       viewBox={`0 0 ${REALTIME_KPI_SPARKLINE_WIDTH} ${REALTIME_KPI_SPARKLINE_HEIGHT}`}
                       role="presentation"
                     >
+                      <defs>
+                        <linearGradient id={`si-sparkline-gradient-${card.key}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="currentColor" stopOpacity="0.26" />
+                          <stop offset="100%" stopColor="currentColor" stopOpacity="0.02" />
+                        </linearGradient>
+                      </defs>
                       <path
-                        d={card.sparklinePath}
+                        d={card.sparkline.areaPath}
+                        className={`si-realtime-kpi-sparkline-area si-realtime-kpi-sparkline-area-${card.sparklineDirection}`}
+                        fill={`url(#si-sparkline-gradient-${card.key})`}
+                      />
+                      <path
+                        d={card.sparkline.linePath}
                         className={`si-realtime-kpi-sparkline-path si-realtime-kpi-sparkline-path-${card.sparklineDirection}`}
+                      />
+                      <circle
+                        cx={card.sparkline.firstPoint?.x ?? 0}
+                        cy={card.sparkline.firstPoint?.y ?? 0}
+                        r="2"
+                        className={`si-realtime-kpi-sparkline-dot si-realtime-kpi-sparkline-dot-${card.sparklineDirection}`}
+                      />
+                      <circle
+                        cx={card.sparkline.lastPoint?.x ?? 0}
+                        cy={card.sparkline.lastPoint?.y ?? 0}
+                        r="2.4"
+                        className={`si-realtime-kpi-sparkline-dot si-realtime-kpi-sparkline-dot-${card.sparklineDirection}`}
                       />
                     </svg>
                   ) : (
@@ -2712,6 +2828,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
                     <span className="si-realtime-kpi-delta-arrow">{comparison.arrow}</span>
                     <span className="si-realtime-kpi-delta-value">{comparison.deltaLabel}</span>
                     <span className="si-realtime-kpi-delta-label">{comparison.label || 'comparison'}</span>
+                    <span className="si-realtime-kpi-delta-baseline">{formatNumber(comparison.value)}</span>
                   </div>
                 ))}
               </div>

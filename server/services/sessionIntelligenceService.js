@@ -3192,36 +3192,35 @@ function buildRealtimeShopperKeySql(alias) {
   `;
 }
 
-function queryRealtimeMetricSnapshot(db, {
+function queryRealtimeDayToTimeSnapshot(db, {
   store,
   startAt,
   endAt
 }) {
-  const shopperKeyExpr = buildRealtimeShopperKeySql('r');
-  const row = db.prepare(`
-    WITH filtered AS (
-      SELECT id, session_id, client_id, shopper_number
-      FROM si_events
-      WHERE store = ?
-        AND created_at >= ?
-        AND created_at < ?
-        AND lower(event_name) NOT IN (${CLARITY_SIGNAL_PLACEHOLDERS})
-        AND COALESCE(lower(source), '') NOT IN (${THEME_SIGNAL_SOURCE_PLACEHOLDERS})
-    ),
-    recent AS (
-      SELECT session_id, MAX(id) AS last_id
-      FROM filtered
-      GROUP BY session_id
-    ),
-    latest_rows AS (
-      SELECT f.session_id, f.client_id, f.shopper_number
-      FROM filtered f
-      JOIN recent r ON r.last_id = f.id
-    )
+  const shopperKeyExpr = buildRealtimeShopperKeySql('s');
+
+  const sessionsRow = db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM filtered) AS events,
-      (SELECT COUNT(*) FROM latest_rows) AS sessions,
-      (SELECT COUNT(DISTINCT ${shopperKeyExpr}) FROM latest_rows r) AS shoppers
+      COUNT(*) AS sessions,
+      COUNT(DISTINCT ${shopperKeyExpr}) AS shoppers
+    FROM si_sessions s
+    WHERE s.store = ?
+      AND s.started_at >= ?
+      AND s.started_at < ?
+  `).get(
+    store,
+    startAt,
+    endAt
+  );
+
+  const eventsRow = db.prepare(`
+    SELECT COUNT(*) AS events
+    FROM si_events e
+    WHERE e.store = ?
+      AND e.event_ts >= ?
+      AND e.event_ts < ?
+      AND lower(e.event_name) NOT IN (${CLARITY_SIGNAL_PLACEHOLDERS})
+      AND COALESCE(lower(e.source), '') NOT IN (${THEME_SIGNAL_SOURCE_PLACEHOLDERS})
   `).get(
     store,
     startAt,
@@ -3231,9 +3230,9 @@ function queryRealtimeMetricSnapshot(db, {
   );
 
   return {
-    events: safeFiniteNumber(row?.events, 0),
-    sessions: safeFiniteNumber(row?.sessions, 0),
-    shoppers: safeFiniteNumber(row?.shoppers, 0)
+    events: safeFiniteNumber(eventsRow?.events, 0),
+    sessions: safeFiniteNumber(sessionsRow?.sessions, 0),
+    shoppers: safeFiniteNumber(sessionsRow?.shoppers, 0)
   };
 }
 
@@ -3274,20 +3273,24 @@ function buildRealtimeMetricModel({
   };
 }
 
-function computeRealtimeMetricReferences(db, { store, windowMinutes, nowMs }) {
-  const windowMs = Math.max(1, safeFiniteNumber(windowMinutes, 30)) * 60 * 1000;
+function computeRealtimeMetricReferences(db, { store, nowMs }) {
+  const todayStartMs = startOfUtcDayMs(nowMs);
+  const elapsedMs = Math.max(1, nowMs - todayStartMs);
   const snapshotsByWindow = new Map();
 
   const getSnapshotAt = (endMs) => {
     const normalizedEndMs = Math.max(0, safeFiniteNumber(endMs, nowMs));
-    const startMs = Math.max(0, normalizedEndMs - windowMs);
-    const key = `${startMs}|${normalizedEndMs}`;
+    const dayStartMs = startOfUtcDayMs(normalizedEndMs);
+    const windowEndMs = Math.min(dayStartMs + elapsedMs, dayStartMs + MILLISECONDS_PER_DAY);
+    const startMs = dayStartMs;
+    const endWindowMs = Math.max(startMs + 1000, windowEndMs);
+    const key = `${startMs}|${endWindowMs}`;
     if (snapshotsByWindow.has(key)) return snapshotsByWindow.get(key);
 
-    const snapshot = queryRealtimeMetricSnapshot(db, {
+    const snapshot = queryRealtimeDayToTimeSnapshot(db, {
       store,
       startAt: toSqliteUtcDateTime(startMs),
-      endAt: toSqliteUtcDateTime(normalizedEndMs)
+      endAt: toSqliteUtcDateTime(endWindowMs)
     });
     snapshotsByWindow.set(key, snapshot);
     return snapshot;
@@ -3348,15 +3351,14 @@ function pruneRealtimeMetricReferenceCache(nowMs) {
   }
 }
 
-function getRealtimeMetricReferences(db, { store, windowMinutes }) {
+function getRealtimeMetricReferences(db, { store }) {
   const nowMs = Date.now();
-  const cacheKey = `${store}|${windowMinutes}`;
+  const cacheKey = `${store}|day_to_time`;
   const cached = realtimeMetricReferenceCache.get(cacheKey);
   if (cached && cached.expiresAtMs > nowMs) return cached.metrics;
 
   const metrics = computeRealtimeMetricReferences(db, {
     store,
-    windowMinutes,
     nowMs
   });
 
@@ -3435,10 +3437,7 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
   const window = Math.min(Math.max(parseInt(windowMinutes, 10) || 30, 1), 180);
   const max = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
   const windowExpr = `-${window} minutes`;
-  const realtimeMetrics = getRealtimeMetricReferences(db, {
-    store: normalizedStore,
-    windowMinutes: window
-  });
+  const realtimeMetrics = getRealtimeMetricReferences(db, { store: normalizedStore });
 
   const totals = db.prepare(`
     SELECT

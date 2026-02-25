@@ -214,9 +214,14 @@
 }
 
 .si-day-pulse-delta {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  grid-template-areas:
+    "arrow value label"
+    ". baseline baseline";
   align-items: center;
-  gap: 7px;
+  column-gap: 7px;
+  row-gap: 2px;
   border-radius: 12px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(255, 255, 255, 0.85);
@@ -225,21 +230,31 @@
 }
 
 .si-day-pulse-arrow {
+  grid-area: arrow;
   font-size: 13px;
   font-weight: 900;
 }
 
 .si-day-pulse-delta-value {
+  grid-area: value;
   font-size: 12px;
   font-weight: 900;
 }
 
 .si-day-pulse-delta-label {
+  grid-area: label;
   font-size: 12px;
   color: var(--si-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.si-day-pulse-delta-baseline {
+  grid-area: baseline;
+  font-size: 11px;
+  color: rgba(71, 85, 105, 0.95);
+  font-weight: 700;
 }
 
 .si-day-pulse-delta-up {
@@ -1229,6 +1244,10 @@
   stroke-linejoin: round;
 }
 
+.si-realtime-kpi-sparkline-area {
+  pointer-events: none;
+}
+
 .si-realtime-kpi-sparkline-path-up {
   stroke: #15803d;
 }
@@ -1239,6 +1258,24 @@
 
 .si-realtime-kpi-sparkline-path-flat {
   stroke: #64748b;
+}
+
+.si-realtime-kpi-sparkline-area-up,
+.si-realtime-kpi-sparkline-dot-up {
+  color: #15803d;
+  fill: #15803d;
+}
+
+.si-realtime-kpi-sparkline-area-down,
+.si-realtime-kpi-sparkline-dot-down {
+  color: #b91c1c;
+  fill: #b91c1c;
+}
+
+.si-realtime-kpi-sparkline-area-flat,
+.si-realtime-kpi-sparkline-dot-flat {
+  color: #64748b;
+  fill: #64748b;
 }
 
 .si-realtime-kpi-sparkline-empty {
@@ -1300,6 +1337,12 @@
   color: #475569;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.si-realtime-kpi-delta-baseline {
+  font-weight: 700;
+  color: rgba(71, 85, 105, 0.9);
+  margin-left: 2px;
 }
 
 .si-realtime-kpi-delta-up {
