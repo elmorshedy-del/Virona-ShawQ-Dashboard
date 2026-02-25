@@ -476,7 +476,7 @@ function calculateUnderperformingRisk(entity) {
     : 0;
   const lowOrderPenalty = lowOrderDeficit * PERFORMANCE_PULSE_LOW_ORDER_WEIGHT;
   const lowOrderSpendPenalty = lowOrderDeficit > 0 ? spend * PERFORMANCE_PULSE_LOW_ORDER_SPEND_WEIGHT : 0;
-  const lowRoasPenalty = Math.max(0, PERFORMANCE_PULSE_LOW_ROAS_TARGET - roas) * PERFORMANCE_PULSE_LOW_ROAS_WEIGHT;
+  const lowRoasPenalty = spend > 0 ? Math.max(0, PERFORMANCE_PULSE_LOW_ROAS_TARGET - roas) * PERFORMANCE_PULSE_LOW_ROAS_WEIGHT : 0;
   const signalPenalty = (entity.signals?.day === 'down' ? PERFORMANCE_PULSE_SIGNAL_DOWN_BONUS : 0)
     + (entity.signals?.week === 'down' ? PERFORMANCE_PULSE_SIGNAL_DOWN_BONUS : 0);
   const zeroOrderDraggerPenalty = isZeroOrderDragger
