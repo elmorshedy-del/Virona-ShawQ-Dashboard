@@ -5896,14 +5896,14 @@ function DashboardTab({
 
 
       {/* FUNNEL DIAGNOSTICS - Campaign-level diagnostics */}
-      {funnelDiagnostics && (
-        <>
-          <div className="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-start gap-4">
-            <div>
-              <div className="text-sm font-semibold text-gray-800">Funnel analysis scope</div>
-              <div className="text-xs text-gray-500">View all campaigns or focus on a specific one.</div>
-            </div>
-            <div className="flex items-center gap-2 min-w-[240px]">
+	      {funnelDiagnostics && (
+	        <>
+	          <div className="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-start gap-4">
+	            <div>
+	              <div className="text-sm font-semibold text-gray-800">Funnel analysis scope</div>
+	              <div className="text-xs text-gray-500">View all campaigns or focus on a specific one.</div>
+	            </div>
+	            <div className="flex items-center gap-2 min-w-[240px]">
               <select
                 value={selectedDiagnosticsCampaign || ''}
                 onChange={(e) => setSelectedDiagnosticsCampaign(e.target.value || null)}
@@ -5920,54 +5920,26 @@ function DashboardTab({
                 <button
                   onClick={() => setSelectedDiagnosticsCampaign(null)}
                   className="px-3 py-2 text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            <div className="w-full border-t border-gray-100" />
-            <div className="w-full">
-              <div className="text-sm font-semibold text-gray-800">Baseline lens</div>
-              <div className="text-xs text-gray-500">
-                1W = short-term, 1M (default) = balanced, 3M = trend, Historical = long-run anchor.
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                {FUNNEL_BASELINE_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => setFunnelBaselineMode(option.value)}
-                    title={`${option.description} ${option.direction}`}
-                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
-                      funnelBaselineMode === option.value
-                        ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                    }`}
-                  >
-                    {option.label}
-                    {option.value === DEFAULT_FUNNEL_BASELINE_MODE ? ' (Default)' : ''}
-                  </button>
-                ))}
-              </div>
-              <div className="mt-2 text-xs text-gray-600">
-                <span className="font-semibold text-gray-800">{selectedFunnelBaselineOption.title}:</span>{' '}
-                {selectedFunnelBaselineOption.description}{' '}
-                <span className="text-gray-500">{selectedFunnelBaselineOption.direction}</span>
-              </div>
-            </div>
-          </div>
+	                >
+	                  Clear
+	                </button>
+	              )}
+	            </div>
+	          </div>
 
-          <FunnelDiagnostics
-            data={funnelDiagnostics}
-            currency={store.currencySymbol === '$' ? 'USD' : 'SAR'}
+	          <FunnelDiagnostics
+	            data={funnelDiagnostics}
+	            currency={store.currencySymbol === '$' ? 'USD' : 'SAR'}
             formatCurrency={formatCurrency}
-            expanded={diagnosticsExpanded}
-            setExpanded={setDiagnosticsExpanded}
-            onClearSelection={() => setSelectedDiagnosticsCampaign(null)}
-            activeBaselineOption={selectedFunnelBaselineOption}
-          />
-        </>
-      )}
+	            expanded={diagnosticsExpanded}
+	            setExpanded={setDiagnosticsExpanded}
+	            onClearSelection={() => setSelectedDiagnosticsCampaign(null)}
+	            baselineMode={funnelBaselineMode}
+	            onBaselineModeChange={setFunnelBaselineMode}
+	            activeBaselineOption={selectedFunnelBaselineOption}
+	          />
+	        </>
+	      )}
 
       {/* Legacy Funnel Diagnostics */}
       {diagnostics && diagnostics.length > 0 && (
@@ -9605,6 +9577,8 @@ function FunnelDiagnostics({
   expanded,
   setExpanded,
   onClearSelection,
+  baselineMode = DEFAULT_FUNNEL_BASELINE_MODE,
+  onBaselineModeChange = () => {},
   activeBaselineOption = null
 }) {
   if (!data || !data.current) {
@@ -9663,6 +9637,9 @@ function FunnelDiagnostics({
   const baselineLabel = baseline?.label || activeBaselineOption?.title || 'Baseline';
   const baselineDescription = baseline?.description || activeBaselineOption?.description || 'Comparison reference for baseline lens.';
   const baselineDirection = baseline?.direction || activeBaselineOption?.direction || '';
+  const effectiveBaselineMode = FUNNEL_BASELINE_OPTIONS.some((option) => option.value === baselineMode)
+    ? baselineMode
+    : (baseline?.mode || DEFAULT_FUNNEL_BASELINE_MODE);
 
   const Sparkline = ({ metricKey }) => {
     if (!Array.isArray(sparklineData) || sparklineData.length < 2) return null;
@@ -9845,13 +9822,29 @@ function FunnelDiagnostics({
         </div>
       </div>
 
-      {expanded && (
-        <div className="fdx-content">
-          <div className="fdx-baseline-summary">
-            <div className="fdx-baseline-title">{baselineLabel} Window: {baselinePeriodLabel}</div>
-            {currentPeriodLabel && (
-              <div className="fdx-baseline-subtitle">Current Window: {currentPeriodLabel}</div>
-            )}
+	      {expanded && (
+	        <div className="fdx-content">
+	          <div className="fdx-baseline-summary">
+	            <div className="fdx-baseline-toggle-head">
+	              <div className="fdx-baseline-title">Baseline Lens</div>
+	              <div className="fdx-baseline-toggle-group">
+	                {FUNNEL_BASELINE_OPTIONS.map((option) => (
+	                  <button
+	                    key={option.value}
+	                    type="button"
+	                    onClick={() => onBaselineModeChange(option.value)}
+	                    title={`${option.description} ${option.direction}`}
+	                    className={`fdx-baseline-toggle ${effectiveBaselineMode === option.value ? 'fdx-baseline-toggle-active' : ''}`}
+	                  >
+	                    {option.label}
+	                  </button>
+	                ))}
+	              </div>
+	            </div>
+	            <div className="fdx-baseline-title">{baselineLabel} Window: {baselinePeriodLabel}</div>
+	            {currentPeriodLabel && (
+	              <div className="fdx-baseline-subtitle">Current Window: {currentPeriodLabel}</div>
+	            )}
             <div className="fdx-baseline-subtitle">
               {baselineDescription} {baselineDirection}
             </div>

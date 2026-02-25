@@ -123,6 +123,44 @@
   margin-bottom: 16px;
 }
 
+.fdx-baseline-toggle-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.fdx-baseline-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.fdx-baseline-toggle {
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #6b7280;
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.fdx-baseline-toggle:hover {
+  background: #f8fafc;
+}
+
+.fdx-baseline-toggle-active {
+  border-color: #6366f1;
+  background: #eef2ff;
+  color: #4338ca;
+}
+
 .fdx-baseline-title {
   font-size: 12px;
   font-weight: 700;
@@ -526,6 +564,15 @@
   .fdx-card-actions {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .fdx-baseline-toggle-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .fdx-baseline-toggle-group {
+    justify-content: flex-start;
   }
 }
 
