@@ -2191,7 +2191,12 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   });
 
   // Momentum engine (replaces old computeProductShiftInsights)
-  const momentumResult = computeProductMomentumEngine(items, previousItems, prevPrevItems, discountSkuMap);
+  let momentumResult = { insights: [], momentum: [], watch: [] };
+  try {
+    momentumResult = computeProductMomentumEngine(items, previousItems, prevPrevItems, discountSkuMap);
+  } catch (err) {
+    console.error('[CustomerInsights] Product momentum engine failed, skipping:', err.message);
+  }
   const productShiftInsights = momentumResult.insights;
 
   let ordersWithCountry = 0;
