@@ -9737,8 +9737,8 @@ function FunnelDiagnostics({
     const status = FUNNEL_STATUS_CONFIG[tierKey] || FUNNEL_STATUS_CONFIG.unknown;
     const changeBadge = getChangeBadge(metricKey, rawChange);
     const markerPercent = getGaugeMarkerPercent(directionalDelta);
-    const recommendation = DIAGNOSTIC_RECOMMENDATIONS[config.recommendationKey]?.poor || '';
-    const showTip = tierKey === 'poor' && recommendation;
+    const recommendation = DIAGNOSTIC_RECOMMENDATIONS[config.recommendationKey]?.[tierKey] || '';
+    const showTip = (tierKey === 'poor' || tierKey === 'average') && recommendation;
     const groupStartClass = metricIndex > 0 ? 'fdx-group-start' : '';
 
     const rows = [
