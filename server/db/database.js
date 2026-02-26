@@ -207,6 +207,63 @@ export function initDb() {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_priors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      prior_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_regime_state (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      regime_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_calibration_bins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      bin_index INTEGER NOT NULL,
+      expected_confidence REAL DEFAULT 0,
+      observed_success_proxy REAL DEFAULT 0,
+      sample_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, bin_index)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_uncertainty_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      reliability REAL DEFAULT 0,
+      calibration_error REAL DEFAULT 0,
+      uncertainty REAL DEFAULT 0,
+      confidence REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);

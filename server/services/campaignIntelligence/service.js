@@ -33,6 +33,7 @@ import {
 } from './utils.js';
 import { loadLearningState, saveLearningState } from './learningState.js';
 import { upsertFeatureStoreRows } from './featureStore.js';
+import { loadModelStateBundle, saveModelStateBundle } from './modelStateStore.js';
 
 const SNAPSHOT_CACHE_TTL_MS = 45 * 1000;
 const SNAPSHOT_CACHE_MAX_ENTRIES = 80;
@@ -324,12 +325,28 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     headroomPreset: modelSettings.headroomPreset,
     launchPreset: modelSettings.launchPreset
   });
+  const modelStateBundle = loadModelStateBundle({
+    store: scope.store,
+    scopeKey: learningScopeKey
+  });
+  const legacyLearningState = loadLearningState({
+    store: scope.store,
+    scopeKey: learningScopeKey
+  });
+  const previousLearningState = {
+    sentinelRiskEwma: modelStateBundle?.priors?.mature_sentinel?.riskScore != null
+      ? Number(modelStateBundle.priors.mature_sentinel.riskScore) / 100
+      : legacyLearningState?.sentinelRiskEwma,
+    calibrationReliabilityEwma: modelStateBundle?.priors?.calibration_layer?.reliability
+      ?? legacyLearningState?.calibrationReliabilityEwma,
+    calibrationErrorEwma: modelStateBundle?.priors?.calibration_layer?.calibrationError
+      ?? legacyLearningState?.calibrationErrorEwma,
+    shockEwma: legacyLearningState?.shockEwma,
+    observationCount: legacyLearningState?.observationCount
+  };
 
   const modelBundle = buildModelBundle({
-    previousLearningState: loadLearningState({
-      store: scope.store,
-      scopeKey: learningScopeKey
-    }),
+    previousLearningState,
     analysisSeries: shockAwareSeries,
     anchorSeries: shockAwareBaselineSeries,
     baselineSeries: shockAwarePeerSeries,
@@ -349,6 +366,20 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     store: scope.store,
     scopeKey: learningScopeKey,
     state: modelBundle.learningState
+  });
+  saveModelStateBundle({
+    store: scope.store,
+    scopeKey: learningScopeKey,
+    generatedAt: modelBundle?.learningState?.updatedAt || new Date().toISOString(),
+    modelBundle: modelBundle?.learningState
+      ? {
+          ...modelBundle,
+          calibration: {
+            ...modelBundle.calibration,
+            confidence: modelBundle.calibration?.reliability
+          }
+        }
+      : modelBundle
   });
 
   const budgetMonitor = buildBudgetChangeMonitor(shockAwareSeries, budgetHistoryEvents);
