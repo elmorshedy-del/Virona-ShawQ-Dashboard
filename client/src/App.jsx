@@ -149,9 +149,18 @@ const CTR_COMPARE_LIMIT = 3;
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const TIME_OF_DAY_DEFAULT_DAYS = 14;
 const TIME_OF_DAY_EXTENDED_DAYS = 30;
+const TIME_OF_DAY_HOURS_PER_DAY = 24;
+const TIME_OF_DAY_GMT3_OFFSET_HOURS = 3;
+const TIME_OF_DAY_GMT3_OFFSET_MS = TIME_OF_DAY_GMT3_OFFSET_HOURS * 60 * 60 * 1000;
+const TIME_OF_DAY_ALIGNMENT_LOCAL = 'local';
+const TIME_OF_DAY_ALIGNMENT_BUDGET = 'budget';
 const TIME_OF_DAY_WINDOW_OPTIONS = [
   { value: TIME_OF_DAY_DEFAULT_DAYS, label: `${TIME_OF_DAY_DEFAULT_DAYS} Days` },
   { value: TIME_OF_DAY_EXTENDED_DAYS, label: `${TIME_OF_DAY_EXTENDED_DAYS} Days` }
+];
+const TIME_OF_DAY_ALIGNMENT_OPTIONS = [
+  { value: TIME_OF_DAY_ALIGNMENT_LOCAL, label: 'Local Day' },
+  { value: TIME_OF_DAY_ALIGNMENT_BUDGET, label: 'Budget Day (GMT+3)' }
 ];
 const TIME_OF_DAY_REGION_OPTIONS = [
   { value: 'all', label: 'All Orders' },
@@ -206,6 +215,11 @@ const FUNNEL_BASELINE_OPTIONS = [
 const DEFAULT_FUNNEL_BASELINE_OPTION = FUNNEL_BASELINE_OPTIONS.find(
   (option) => option.value === DEFAULT_FUNNEL_BASELINE_MODE
 ) || FUNNEL_BASELINE_OPTIONS[0];
+const TIME_OF_DAY_BURN_MARKER_COLOR = '#dc2626';
+const TIME_OF_DAY_BURN_GAP_THRESHOLD_PERCENT = 1.5;
+const TIME_OF_DAY_BURN_MIN_PACING_INCREMENT_PERCENT = 0.75;
+const TIME_OF_DAY_BURN_LOW_ORDER_SHARE_MULTIPLIER = 0.75;
+const TIME_OF_DAY_BURN_SUMMARY_LIMIT = 3;
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -215,6 +229,52 @@ const toNumber = (value) => {
   }
   if (value && typeof value === 'object' && 'value' in value) return Number(value.value);
   return 0;
+};
+
+const normalizeHourOfDay = (hour) => {
+  const parsedHour = Number.parseInt(hour, 10);
+  if (!Number.isFinite(parsedHour)) return 0;
+  return ((parsedHour % TIME_OF_DAY_HOURS_PER_DAY) + TIME_OF_DAY_HOURS_PER_DAY) % TIME_OF_DAY_HOURS_PER_DAY;
+};
+
+const formatHourOfDayLabel = (hour) => {
+  const normalizedHour = normalizeHourOfDay(hour);
+  if (normalizedHour === 0) return '12 AM';
+  if (normalizedHour < 12) return `${normalizedHour} AM`;
+  if (normalizedHour === 12) return '12 PM';
+  return `${normalizedHour - 12} PM`;
+};
+
+const getGmt3ResetHourInTimezone = (timezone, referenceDate = new Date()) => {
+  if (!timezone) return 0;
+
+  const gmt3Now = new Date(referenceDate.getTime() + TIME_OF_DAY_GMT3_OFFSET_MS);
+  const gmt3MidnightUtcMs = Date.UTC(
+    gmt3Now.getUTCFullYear(),
+    gmt3Now.getUTCMonth(),
+    gmt3Now.getUTCDate(),
+    0,
+    0,
+    0,
+    0
+  ) - TIME_OF_DAY_GMT3_OFFSET_MS;
+
+  const gmt3ResetInstant = new Date(gmt3MidnightUtcMs);
+
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour: '2-digit',
+      hour12: false
+    }).formatToParts(gmt3ResetInstant);
+    const hourPart = parts.find((part) => part.type === 'hour')?.value;
+    const parsedHour = Number.parseInt(hourPart, 10);
+    if (Number.isFinite(parsedHour)) return normalizeHourOfDay(parsedHour);
+  } catch (error) {
+    // Ignore and fall back to UTC hour.
+  }
+
+  return normalizeHourOfDay(gmt3ResetInstant.getUTCHours());
 };
 
 const getMean = (values = []) => {
@@ -2250,6 +2310,7 @@ function DashboardTab({
   const [campaignSortConfig, setCampaignSortConfig] = useState({ field: 'spend', direction: 'desc' });
   const [showCountryTrends, setShowCountryTrends] = useState(false);
   const [showCampaignTrends, setShowCampaignTrends] = useState(false);
+  const [timeOfDayAlignmentMode, setTimeOfDayAlignmentMode] = useState(TIME_OF_DAY_ALIGNMENT_BUDGET);
   const [metaView, setMetaView] = useState('campaign'); // 'campaign' | 'country'
   const [showMetaBreakdown, setShowMetaBreakdown] = useState(false); // Section 2 collapse
   const [expandedCountries, setExpandedCountries] = useState(new Set());
@@ -4906,8 +4967,18 @@ function DashboardTab({
     || TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION.all;
   const timeOfDayTimezone = timeOfDay?.timezone ?? fallbackTimeOfDayTimezone;
   const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
+  const totalBudgetSpend = toNumber(timeOfDay?.totalBudgetSpend);
   const timeOfDaySource = timeOfDay?.source || '';
   const timeOfDayMessage = timeOfDay?.message || '';
+  const hasBudgetPacing = Boolean(timeOfDay?.hasBudgetPacing);
+  const gmt3ResetHourInZone = useMemo(
+    () => getGmt3ResetHourInTimezone(timeOfDayTimezone),
+    [timeOfDayTimezone]
+  );
+  const gmt3ResetHourLabel = useMemo(
+    () => formatHourOfDayLabel(gmt3ResetHourInZone),
+    [gmt3ResetHourInZone]
+  );
   const resolvedTimeOfDayWindowDays = Number.isFinite(Number(timeOfDay?.windowDays))
     ? Number(timeOfDay.windowDays)
     : (Number.isFinite(Number(selectedTimeOfDayWindowDays))
@@ -4918,31 +4989,98 @@ function DashboardTab({
     const sortedTimeOfDay = [...timeOfDayData]
       .sort((a, b) => (Number(a?.hour) || 0) - (Number(b?.hour) || 0));
     const totalOrders = sortedTimeOfDay.reduce((sum, point) => sum + toNumber(point?.orders), 0);
+    const averageOrderSharePercent = totalOrders > 0 ? (100 / TIME_OF_DAY_HOURS_PER_DAY) : 0;
 
-    let fallbackCumulativeOrders = 0;
-    return sortedTimeOfDay.map((point) => {
-      const pointOrders = toNumber(point?.orders);
-      const hour = Number.isFinite(Number(point?.hour)) ? Number(point.hour) : 0;
-      fallbackCumulativeOrders += pointOrders;
-      const fallbackPacingPercent = totalOrders > 0 ? (fallbackCumulativeOrders / totalOrders) * 100 : 0;
-      const serverBudgetPacingPercent = Number(point?.budgetPacingPercent);
-      const budgetPacingPercent = Number.isFinite(serverBudgetPacingPercent)
-        ? serverBudgetPacingPercent
-        : fallbackPacingPercent;
+    const enrichedData = sortedTimeOfDay.map((point) => {
+      const hour = Number.isFinite(Number(point?.hour)) ? normalizeHourOfDay(point.hour) : 0;
+      const orders = toNumber(point?.orders);
+      const budgetSpend = toNumber(point?.budgetSpend);
+      const orderSharePercent = totalOrders > 0 ? ((orders / totalOrders) * 100) : 0;
+      const expectedSpend = totalBudgetSpend > 0
+        ? totalBudgetSpend * (orderSharePercent / 100)
+        : 0;
+      const burnAmount = Math.max(0, budgetSpend - expectedSpend);
 
       return {
         ...point,
         hour,
-        hourLabel: `${hour}:00`,
-        budgetPacingPercent
+        hourLabel: point?.label || formatHourOfDayLabel(hour),
+        budgetSpend,
+        orderSharePercent,
+        burnAmount,
+        budgetDayOrder: normalizeHourOfDay(hour - gmt3ResetHourInZone)
       };
     });
-  }, [timeOfDayData]);
+
+    const orderedData = timeOfDayAlignmentMode === TIME_OF_DAY_ALIGNMENT_BUDGET
+      ? [...enrichedData].sort((a, b) => a.budgetDayOrder - b.budgetDayOrder)
+      : enrichedData;
+
+    let cumulativeBudgetSpend = 0;
+
+    return orderedData.map((point) => {
+      const pacingIncrementPercent = hasBudgetPacing && totalBudgetSpend > 0
+        ? (point.budgetSpend / totalBudgetSpend) * 100
+        : null;
+      let budgetPacingPercent = null;
+
+      if (hasBudgetPacing && totalBudgetSpend > 0) {
+        cumulativeBudgetSpend += point.budgetSpend;
+        budgetPacingPercent = (cumulativeBudgetSpend / totalBudgetSpend) * 100;
+      }
+
+      const pacingGapPercent = Number.isFinite(pacingIncrementPercent)
+        ? (pacingIncrementPercent - point.orderSharePercent)
+        : null;
+
+      const isBurnWindow = Boolean(
+        hasBudgetPacing
+        && totalOrders > 0
+        && Number.isFinite(pacingIncrementPercent)
+        && Number.isFinite(pacingGapPercent)
+        && pacingIncrementPercent >= TIME_OF_DAY_BURN_MIN_PACING_INCREMENT_PERCENT
+        && pacingGapPercent >= TIME_OF_DAY_BURN_GAP_THRESHOLD_PERCENT
+        && point.orderSharePercent <= (averageOrderSharePercent * TIME_OF_DAY_BURN_LOW_ORDER_SHARE_MULTIPLIER)
+        && point.burnAmount > 0
+      );
+
+      return {
+        ...point,
+        budgetPacingPercent,
+        pacingIncrementPercent,
+        pacingGapPercent,
+        isBurnWindow
+      };
+    });
+  }, [timeOfDayData, hasBudgetPacing, totalBudgetSpend, gmt3ResetHourInZone, timeOfDayAlignmentMode]);
 
   const totalHourlyOrders = useMemo(
     () => hourlyChartData.reduce((sum, point) => sum + toNumber(point?.orders), 0),
     [hourlyChartData]
   );
+
+  const burnSummary = useMemo(() => {
+    if (!hasBudgetPacing || totalBudgetSpend <= 0 || totalHourlyOrders <= 0) {
+      return {
+        burnAmount: 0,
+        burnRatePercent: 0,
+        topBurnWindows: []
+      };
+    }
+
+    const burnWindows = hourlyChartData
+      .filter((point) => point?.isBurnWindow && toNumber(point?.burnAmount) > 0)
+      .sort((a, b) => toNumber(b?.burnAmount) - toNumber(a?.burnAmount));
+
+    const burnAmount = burnWindows.reduce((sum, point) => sum + toNumber(point?.burnAmount), 0);
+    const burnRatePercent = totalBudgetSpend > 0 ? ((burnAmount / totalBudgetSpend) * 100) : 0;
+
+    return {
+      burnAmount,
+      burnRatePercent,
+      topBurnWindows: burnWindows.slice(0, TIME_OF_DAY_BURN_SUMMARY_LIMIT)
+    };
+  }, [hasBudgetPacing, totalBudgetSpend, totalHourlyOrders, hourlyChartData]);
 
   const currentHourInTimeOfDayTimezone = useMemo(() => {
     try {
@@ -4971,7 +5109,9 @@ function DashboardTab({
     const ordersValue = toNumber(point?.orders);
     const pacingValue = Number.isFinite(point?.budgetPacingPercent)
       ? Number(point.budgetPacingPercent)
-      : 0;
+      : null;
+    const burnValue = toNumber(point?.burnAmount);
+    const isBurnWindow = Boolean(point?.isBurnWindow && burnValue > 0);
 
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm">
@@ -4989,12 +5129,38 @@ function DashboardTab({
               <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_PACING_LINE_COLOR }} />
               Budget pacing
             </span>
-            <span className="font-semibold text-gray-900">{pacingValue.toFixed(1)}%</span>
+            <span className="font-semibold text-gray-900">
+              {Number.isFinite(pacingValue) ? `${pacingValue.toFixed(1)}%` : '—'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-gray-700">
+            <span className="inline-flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_BURN_MARKER_COLOR }} />
+              Burn estimate
+            </span>
+            <span className="font-semibold text-gray-900">
+              {isBurnWindow ? formatCurrency(burnValue) : '—'}
+            </span>
           </div>
         </div>
       </div>
     );
-  }, [formatNumber]);
+  }, [formatNumber, formatCurrency]);
+
+  const renderTimeOfDayBurnDot = useCallback(({ cx, cy, payload }) => {
+    if (cx == null || cy == null) return null;
+    if (!payload?.isBurnWindow) return null;
+    return (
+      <circle
+        cx={cx}
+        cy={cy}
+        r={4}
+        fill={TIME_OF_DAY_BURN_MARKER_COLOR}
+        stroke="#ffffff"
+        strokeWidth={1.5}
+      />
+    );
+  }, []);
 
   const handleCountrySort = (field) => {
     setCountrySortConfig(prev => ({
@@ -6000,6 +6166,11 @@ function DashboardTab({
               <span className="inline-flex items-center px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 font-medium">
                 {timeOfDayTimezone}
               </span>
+              {timeOfDayAlignmentMode === TIME_OF_DAY_ALIGNMENT_BUDGET && (
+                <span className="inline-flex items-center px-2 py-1 rounded-full bg-rose-50 text-rose-700 font-medium">
+                  Reset: {gmt3ResetHourLabel}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
               <span>Window:</span>
@@ -6013,6 +6184,24 @@ function DashboardTab({
                         : 'bg-white text-gray-600 border'
                     }`}
                     onClick={() => setSelectedTimeOfDayWindowDays(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
+              <span>Alignment:</span>
+              <div className="flex items-center gap-1">
+                {TIME_OF_DAY_ALIGNMENT_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    className={`px-2 py-1 rounded ${
+                      timeOfDayAlignmentMode === option.value
+                        ? 'bg-gray-200 text-gray-900'
+                        : 'bg-white text-gray-600 border'
+                    }`}
+                    onClick={() => setTimeOfDayAlignmentMode(option.value)}
                   >
                     {option.label}
                   </button>
@@ -6039,6 +6228,26 @@ function DashboardTab({
                 </div>
               </div>
             )}
+            {timeOfDayAlignmentMode === TIME_OF_DAY_ALIGNMENT_BUDGET && (
+              <p className="text-xs text-gray-500 mt-1">
+                Budget day starts at {gmt3ResetHourLabel} in {timeOfDayTimezone} (anchored to 12 AM GMT+3).
+              </p>
+            )}
+            {hasBudgetPacing && burnSummary.topBurnWindows.length > 0 && (
+              <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
+                <span>Top burn hours:</span>
+                {burnSummary.topBurnWindows.map((point) => (
+                  <span
+                    key={`burn-${point.hour}`}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-rose-50 text-rose-700 font-medium"
+                  >
+                    <span>{point.hourLabel}</span>
+                    <span>•</span>
+                    <span>{formatCurrency(toNumber(point?.burnAmount))}</span>
+                  </span>
+                ))}
+              </div>
+            )}
             {timeOfDay?.sampleTimestamps?.length > 0 && (
               <p className="text-xs text-gray-500 mt-1">
                 Sample timestamps: {timeOfDay.sampleTimestamps.join(', ')}
@@ -6052,8 +6261,24 @@ function DashboardTab({
               <>
                 <div className="text-xs uppercase text-gray-400 mt-2">Budget pacing now</div>
                 <div className="text-sm font-semibold" style={{ color: TIME_OF_DAY_PACING_LINE_COLOR }}>
-                  {Number(currentTimeOfDayPoint.budgetPacingPercent || 0).toFixed(1)}%
+                  {Number.isFinite(Number(currentTimeOfDayPoint.budgetPacingPercent))
+                    ? `${Number(currentTimeOfDayPoint.budgetPacingPercent).toFixed(1)}%`
+                    : '—'}
                 </div>
+                {!hasBudgetPacing && (
+                  <div className="text-[10px] text-gray-500 mt-1">No Meta spend in window</div>
+                )}
+                {hasBudgetPacing && (
+                  <>
+                    <div className="text-xs uppercase text-gray-400 mt-2">Estimated burn</div>
+                    <div className="text-sm font-semibold" style={{ color: TIME_OF_DAY_BURN_MARKER_COLOR }}>
+                      {formatCurrency(burnSummary.burnAmount)}
+                    </div>
+                    <div className="text-[10px] text-gray-500">
+                      {burnSummary.burnRatePercent.toFixed(1)}% of selected budget window
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -6090,7 +6315,7 @@ function DashboardTab({
                   stroke={TIME_OF_DAY_PACING_LINE_COLOR}
                   strokeWidth={2}
                   strokeDasharray="4 3"
-                  dot={false}
+                  dot={renderTimeOfDayBurnDot}
                   activeDot={false}
                 />
               </LineChart>
