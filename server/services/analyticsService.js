@@ -2,6 +2,8 @@ import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { fetchGoogleCampaignHierarchy } from './googleAdsService.js';
+import fetch from 'node-fetch';
+import { extractMetaCreativeThumbnailUrl } from '../utils/metaCreativeMedia.js';
 
 // Import Meta Awareness feature module for consistent status filtering
 import {
@@ -36,6 +38,10 @@ const PERFORMANCE_PULSE_LOW_ROAS_WEIGHT = 6;
 const PERFORMANCE_PULSE_ZERO_ORDER_DRAGGER_BONUS = 30;
 const PERFORMANCE_PULSE_ZERO_ORDER_SPEND_WEIGHT = 1;
 const PERFORMANCE_PULSE_SIGNAL_DOWN_BONUS = 4;
+const PERFORMANCE_PULSE_META_THUMBNAIL_FETCH_LIMIT = 12;
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v19.0';
+const META_GRAPH_BASE_URL = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+const META_GRAPH_NODE_ID_PATTERN = /^[0-9]{5,32}$/;
 
 // ============================================================================
 // DATE HELPERS
@@ -558,6 +564,77 @@ function getCountryOrdersSourceConfig(store) {
   return null;
 }
 
+function getMetaAccessTokenForStore(store) {
+  if (store === 'shawq') {
+    return String(process.env.SHAWQ_META_ACCESS_TOKEN || '').trim();
+  }
+  return String(process.env.META_ACCESS_TOKEN || process.env.VIRONAX_META_ACCESS_TOKEN || '').trim();
+}
+
+function normalizeMetaGraphNodeId(rawId) {
+  const normalized = String(rawId || '').trim().replace(/^act_/, '');
+  return META_GRAPH_NODE_ID_PATTERN.test(normalized) ? normalized : '';
+}
+
+async function fetchMetaCreativeThumbnailUrlByAdId(adId, accessToken) {
+  const fields = 'creative{thumbnail_url,image_url,object_story_spec{video_data,link_data,photo_data},asset_feed_spec{videos,images}}';
+  const params = new URLSearchParams({
+    fields,
+    access_token: accessToken
+  });
+  const url = `${META_GRAPH_BASE_URL}/${encodeURIComponent(adId)}?${params.toString()}`;
+
+  try {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    const creative = payload?.creative || payload?.data?.creative || null;
+    return extractMetaCreativeThumbnailUrl(creative);
+  } catch (error) {
+    console.warn('[Analytics] Failed to fetch Meta creative thumbnail', {
+      adId,
+      error: error?.message || String(error)
+    });
+    return null;
+  }
+}
+
+async function getMetaCreativeThumbnailMap(store, adIds = []) {
+  const accessToken = getMetaAccessTokenForStore(store);
+  if (!accessToken || !Array.isArray(adIds) || adIds.length === 0) {
+    return new Map();
+  }
+
+  const uniqueAdIds = Array.from(new Set(
+    adIds
+      .map((id) => normalizeMetaGraphNodeId(id))
+      .filter(Boolean)
+  )).slice(0, PERFORMANCE_PULSE_META_THUMBNAIL_FETCH_LIMIT);
+
+  if (uniqueAdIds.length === 0) {
+    return new Map();
+  }
+
+  const thumbnailEntries = await Promise.all(
+    uniqueAdIds.map(async (adId) => {
+      const thumbnailUrl = await fetchMetaCreativeThumbnailUrlByAdId(adId, accessToken);
+      return [adId, thumbnailUrl];
+    })
+  );
+
+  const thumbnailMap = new Map();
+  thumbnailEntries.forEach(([adId, thumbnailUrl]) => {
+    if (thumbnailUrl) {
+      thumbnailMap.set(adId, thumbnailUrl);
+    }
+  });
+
+  return thumbnailMap;
+}
+
 function getSafeCountryLabel(countryCode) {
   const info = getCountryInfo(countryCode);
   return {
@@ -566,7 +643,7 @@ function getSafeCountryLabel(countryCode) {
   };
 }
 
-export function getPerformancePulse(store, params = {}) {
+export async function getPerformancePulse(store, params = {}) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
   const previousDayDate = shiftDateKey(endDate, PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS.previousDay);
@@ -805,6 +882,13 @@ export function getPerformancePulse(store, params = {}) {
       if (!adThumbnailMap.has(row.adId)) {
         adThumbnailMap.set(row.adId, row.thumbnailUrl);
       }
+    });
+  }
+
+  if (adIds.length > 0) {
+    const metaThumbnailMap = await getMetaCreativeThumbnailMap(store, adIds);
+    metaThumbnailMap.forEach((thumbnailUrl, adId) => {
+      adThumbnailMap.set(adId, thumbnailUrl);
     });
   }
 
