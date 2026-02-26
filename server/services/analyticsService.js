@@ -1926,16 +1926,12 @@ export function getShopifyTimeOfDay(store, params) {
 
     const formattedData = [];
     let cumulativeBudgetSpend = 0;
-    let cumulativeOrderCount = 0;
     for (let hour = 0; hour < 24; hour++) {
       const stats = hourBuckets[hour];
-      cumulativeOrderCount += stats.orders || 0;
-
-      let budgetSpend = 0;
-      let budgetPacingPercent = totalZoneOrders > 0 ? (cumulativeOrderCount / totalZoneOrders) * 100 : 0;
+      const budgetSpend = totalZoneSpend > 0 ? (budgetSpendByHour[hour] || 0) : 0;
+      let budgetPacingPercent = null;
 
       if (totalZoneSpend > 0) {
-        budgetSpend = budgetSpendByHour[hour] || 0;
         cumulativeBudgetSpend += budgetSpend;
         budgetPacingPercent = (cumulativeBudgetSpend / totalZoneSpend) * 100;
       }
@@ -1958,9 +1954,10 @@ export function getShopifyTimeOfDay(store, params) {
       windowDays: lookbackDays,
       totalOrders: rawData.length,
       totalBudgetSpend: totalZoneSpend,
+      hasBudgetPacing: totalZoneSpend > 0,
       budgetPacingSource: totalZoneSpend > 0
         ? 'meta_country_spend_weighted_by_shopify_order_timing'
-        : 'shopify_order_distribution_fallback',
+        : 'meta_spend_unavailable',
       sampleTimestamps: [],
       source: 'Shopify'
     };

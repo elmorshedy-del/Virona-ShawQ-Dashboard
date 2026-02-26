@@ -4908,6 +4908,7 @@ function DashboardTab({
   const timeOfDayData = Array.isArray(timeOfDay?.data) ? timeOfDay.data : [];
   const timeOfDaySource = timeOfDay?.source || '';
   const timeOfDayMessage = timeOfDay?.message || '';
+  const hasBudgetPacing = Boolean(timeOfDay?.hasBudgetPacing);
   const resolvedTimeOfDayWindowDays = Number.isFinite(Number(timeOfDay?.windowDays))
     ? Number(timeOfDay.windowDays)
     : (Number.isFinite(Number(selectedTimeOfDayWindowDays))
@@ -4917,18 +4918,13 @@ function DashboardTab({
   const hourlyChartData = useMemo(() => {
     const sortedTimeOfDay = [...timeOfDayData]
       .sort((a, b) => (Number(a?.hour) || 0) - (Number(b?.hour) || 0));
-    const totalOrders = sortedTimeOfDay.reduce((sum, point) => sum + toNumber(point?.orders), 0);
 
-    let fallbackCumulativeOrders = 0;
     return sortedTimeOfDay.map((point) => {
-      const pointOrders = toNumber(point?.orders);
       const hour = Number.isFinite(Number(point?.hour)) ? Number(point.hour) : 0;
-      fallbackCumulativeOrders += pointOrders;
-      const fallbackPacingPercent = totalOrders > 0 ? (fallbackCumulativeOrders / totalOrders) * 100 : 0;
       const serverBudgetPacingPercent = Number(point?.budgetPacingPercent);
       const budgetPacingPercent = Number.isFinite(serverBudgetPacingPercent)
         ? serverBudgetPacingPercent
-        : fallbackPacingPercent;
+        : null;
 
       return {
         ...point,
@@ -4971,7 +4967,7 @@ function DashboardTab({
     const ordersValue = toNumber(point?.orders);
     const pacingValue = Number.isFinite(point?.budgetPacingPercent)
       ? Number(point.budgetPacingPercent)
-      : 0;
+      : null;
 
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm">
@@ -4989,7 +4985,9 @@ function DashboardTab({
               <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_PACING_LINE_COLOR }} />
               Budget pacing
             </span>
-            <span className="font-semibold text-gray-900">{pacingValue.toFixed(1)}%</span>
+            <span className="font-semibold text-gray-900">
+              {Number.isFinite(pacingValue) ? `${pacingValue.toFixed(1)}%` : '—'}
+            </span>
           </div>
         </div>
       </div>
@@ -6052,8 +6050,13 @@ function DashboardTab({
               <>
                 <div className="text-xs uppercase text-gray-400 mt-2">Budget pacing now</div>
                 <div className="text-sm font-semibold" style={{ color: TIME_OF_DAY_PACING_LINE_COLOR }}>
-                  {Number(currentTimeOfDayPoint.budgetPacingPercent || 0).toFixed(1)}%
+                  {Number.isFinite(Number(currentTimeOfDayPoint.budgetPacingPercent))
+                    ? `${Number(currentTimeOfDayPoint.budgetPacingPercent).toFixed(1)}%`
+                    : '—'}
                 </div>
+                {!hasBudgetPacing && (
+                  <div className="text-[10px] text-gray-500 mt-1">No Meta spend in window</div>
+                )}
               </>
             )}
           </div>
