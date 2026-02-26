@@ -188,6 +188,7 @@
   color: var(--ci-text-primary);
   letter-spacing: -0.02em;
   line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .ci-upper .hero-subtitle {
@@ -229,6 +230,7 @@
   font-weight: 600;
   line-height: 1.5;
   color: var(--ci-text-primary);
+  overflow-wrap: anywhere;
 }
 
 .ci-upper .arrow-icon {
@@ -468,6 +470,7 @@
   line-height: 1.3;
   letter-spacing: -0.01em;
   color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .pm-card-meta {
@@ -487,6 +490,7 @@
   border-radius: var(--radius-sm);
   padding: 4px 8px;
   text-transform: lowercase;
+  overflow-wrap: anywhere;
 }
 
 .pm-severity-pill {
@@ -614,6 +618,7 @@
   border: 1px solid rgba(0, 0, 0, 0.05);
   border-radius: var(--radius-sm);
   padding: 4px 8px;
+  overflow-wrap: anywhere;
 }
 
 .pm-signal-confirmed {
