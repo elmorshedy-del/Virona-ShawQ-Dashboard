@@ -5,7 +5,6 @@ import {
   Target,
   ShoppingBag,
   Activity,
-  ArrowUpRight,
   Package,
   Users,
   ChevronDown,
@@ -51,87 +50,144 @@ const sectionIcons = {
   demographics: Users
 };
 
+const UPPER_METRIC_SLOT_COUNT = 4;
+const MOMENTUM_WINDOW_OPTIONS = [
+  { id: '7d', label: '7d', type: 'days', value: 7 },
+  { id: '14d', label: '14d', type: 'days', value: 14 },
+  { id: '1m', label: '1m', type: 'months', value: 1 },
+  { id: '3m', label: '3m', type: 'months', value: 3 }
+];
+const DEFAULT_MOMENTUM_WINDOW_ID = MOMENTUM_WINDOW_OPTIONS[0].id;
+const MOMENTUM_LAYER1_RISK_TRIGGERS = new Set([
+  'hero_decline',
+  'concentration_risk',
+  'velocity_stall',
+  'discount_dependency',
+  'quiet_exit'
+]);
+const MOMENTUM_LAYER1_OPPORTUNITY_TRIGGERS = new Set([
+  'rising_pillar',
+  'new_traction'
+]);
+const MOMENTUM_LAYER2_RISK_EVENTS = new Set([
+  'first_hero_slip',
+  'leaderboard_reshuffle',
+  'sharp_reversal'
+]);
+const MOMENTUM_LAYER2_OPPORTUNITY_EVENTS = new Set([
+  'meteoric_rise',
+  'record_period',
+  'sustained_streak'
+]);
 
+const getMomentumPolarity = (product, mode) => {
+  const trigger = String(product?.trigger || '').toLowerCase();
+  const event = String(product?.exceptionalEvent || '').toLowerCase();
 
-function KpiCard({ label, value, format, hint, formatter, index = 0 }) {
-  const displayValue = useMemo(() => {
-    if (format === 'percent') return formatPercent(value);
-    if (format === 'currency') return formatter ? formatter(value, 0) : formatNumber(value);
-    if (format === 'number') return formatNumber(value);
-    return value || '—';
-  }, [format, value, formatter]);
+  if (mode === 'layer1') {
+    if (MOMENTUM_LAYER1_RISK_TRIGGERS.has(trigger)) return 'risk';
+    if (MOMENTUM_LAYER1_OPPORTUNITY_TRIGGERS.has(trigger)) return 'opportunity';
+  } else {
+    if (MOMENTUM_LAYER2_RISK_EVENTS.has(event)) return 'risk';
+    if (MOMENTUM_LAYER2_OPPORTUNITY_EVENTS.has(event)) return 'opportunity';
+  }
 
-  const textSizeClass = useMemo(() => {
-    const len = String(displayValue).length;
-    if (len <= 8) return 'text-3xl';
-    if (len <= 12) return 'text-2xl';
-    if (len <= 20) return 'text-lg';
-    if (len <= 30) return 'text-base';
-    return 'text-sm';
-  }, [displayValue]);
+  const impact = Number(product?.facts?.revenueImpact ?? product?.facts?.revenueDelta);
+  if (Number.isFinite(impact)) return impact < 0 ? 'risk' : 'opportunity';
+  return 'opportunity';
+};
 
-  const accent = useMemo(() => {
-    const accents = [
-      'from-indigo-500/10 via-white to-white',
-      'from-emerald-500/10 via-white to-white',
-      'from-amber-500/10 via-white to-white',
-      'from-fuchsia-500/10 via-white to-white',
-      'from-cyan-500/10 via-white to-white',
-      'from-rose-500/10 via-white to-white',
-      'from-slate-500/10 via-white to-white'
-    ];
-    return accents[index % accents.length];
-  }, [index]);
+const getMomentumSeverityLabel = (severity, polarity, mode, hasTrigger) => {
+  if (mode === 'layer2' && !hasTrigger) {
+    return polarity === 'risk' ? 'Risk' : 'Opportunity';
+  }
 
+  const cleanSeverity = String(severity || '').toLowerCase();
+  const prefix = cleanSeverity === 'high'
+    ? 'High'
+    : cleanSeverity === 'medium'
+      ? 'Medium'
+      : cleanSeverity === 'low'
+        ? 'Low'
+        : '';
+  if (!prefix) return polarity === 'risk' ? 'Risk' : 'Opportunity';
+  return `${prefix} ${polarity === 'risk' ? 'risk' : 'opportunity'}`;
+};
+
+const buildInsightsParams = (store, windowId = DEFAULT_MOMENTUM_WINDOW_ID) => {
+  const selectedWindow = MOMENTUM_WINDOW_OPTIONS.find((option) => option.id === windowId) || MOMENTUM_WINDOW_OPTIONS[0];
+  const params = new URLSearchParams();
+  params.set('store', String(store || 'shawq'));
+  params.set(selectedWindow.type, String(selectedWindow.value));
+  return params;
+};
+
+const formatSignedNumber = (value) => {
+  if (value == null || Number.isNaN(value)) return '—';
+  const rounded = Math.round(value);
+  const prefix = rounded > 0 ? '+' : rounded < 0 ? '-' : '';
+  return `${prefix}${Math.abs(rounded).toLocaleString()}`;
+};
+
+const formatSharePoints = (value) => {
+  if (value == null || Number.isNaN(value)) return '—';
+  const points = value * 100;
+  const prefix = points > 0 ? '+' : points < 0 ? '-' : '';
+  return `${prefix}${Math.abs(points).toFixed(1)}pp`;
+};
+
+const getUpperMetricById = (kpis, id) => (kpis || []).find((row) => row?.id === id) || null;
+
+const resolveUpperMetrics = (kpis = []) => {
+  const ordered = [
+    getUpperMetricById(kpis, 'best-segment'),
+    getUpperMetricById(kpis, 'ltv90'),
+    getUpperMetricById(kpis, 'repeat-rate'),
+    getUpperMetricById(kpis, 'discount-reliance')
+  ];
+
+  const fallback = kpis.filter((row) => !ordered.includes(row));
+  const filled = [...ordered];
+  while (filled.length < UPPER_METRIC_SLOT_COUNT && fallback.length) {
+    filled.push(fallback.shift());
+  }
+  while (filled.length < UPPER_METRIC_SLOT_COUNT) {
+    filled.push(null);
+  }
+  return filled.slice(0, UPPER_METRIC_SLOT_COUNT);
+};
+
+const resolveTopBundle = (sections, kpis = []) => {
+  const topPair = sections?.bundles?.bundles?.[0]?.pair;
+  if (Array.isArray(topPair) && topPair.length >= 2) {
+    return { from: String(topPair[0]), to: String(topPair[1]) };
+  }
+  const topBundleKpi = getUpperMetricById(kpis, 'top-bundle')?.value;
+  if (topBundleKpi) {
+    const parts = String(topBundleKpi).split(/->|→/).map((part) => part.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      return { from: parts[0], to: parts[1] };
+    }
+  }
+  return null;
+};
+
+const formatUpperMetricValue = (metric, formatCurrency) => {
+  if (!metric) return '—';
+  if (metric.format === 'percent') return formatPercent(metric.value);
+  if (metric.format === 'currency') return formatCurrency ? formatCurrency(metric.value, 0) : formatNumber(metric.value);
+  if (metric.format === 'number') return formatNumber(metric.value);
+  if (metric.value == null) return '—';
+  return String(metric.value);
+};
+
+function UpperMetricCard({ metric, formatCurrency }) {
+  const value = formatUpperMetricValue(metric, formatCurrency);
   return (
-    <div
-      className="group relative flex min-h-[128px] flex-col overflow-hidden rounded-3xl border border-gray-200/70 bg-white p-5 shadow-sm transition-shadow duration-200 hover:shadow-md"
-      title={String(displayValue).length > 20 ? displayValue : undefined}
-    >
-      <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${accent}`} />
-      <div className="pointer-events-none absolute inset-0 rounded-3xl ring-1 ring-inset ring-gray-900/5" />
-
-      <div className="relative z-10 flex h-full flex-col">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
-          {label}
-        </div>
-        <div className="mt-3 flex flex-1 items-start">
-          <div className={`${textSizeClass} font-semibold leading-tight tracking-tight text-gray-950 break-words hyphens-auto tabular-nums`}>
-            {displayValue}
-          </div>
-        </div>
-        {hint && (
-          <div className="mt-auto pt-2 text-xs text-gray-600 line-clamp-2">
-            {hint}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function InsightCard({ insight, onInvestigate }) {
-  const canInvestigate = Boolean(insight?.target && onInvestigate);
-
-  return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
-      <div className="flex items-center justify-between">
-        <div className="text-sm font-semibold text-gray-900">{insight.title}</div>
-        <div className="text-xs font-semibold text-indigo-600">{insight.impact}</div>
-      </div>
-      <div className="mt-2 text-sm text-gray-600">{insight.detail}</div>
-      <div className="mt-3 flex items-center justify-between text-xs text-gray-400">
-        <span>{insight.confidence ? `Confidence: ${confidenceLabel(insight.confidence)}` : 'Confidence: —'}</span>
-        {canInvestigate ? (
-          <button
-            type="button"
-            onClick={() => onInvestigate?.(insight)}
-            className="flex items-center gap-1 font-medium text-indigo-600 hover:text-indigo-700"
-          >
-            View details <ArrowUpRight className="h-3 w-3" />
-          </button>
-        ) : null}
-      </div>
+    <div className="card ci-card-metric">
+      <div className="card-label">{metric?.label || 'Metric'}</div>
+      <div className="metric-huge-value">{value}</div>
+      {metric?.hint ? <div className="metric-subtitle">{metric.hint}</div> : null}
     </div>
   );
 }
@@ -202,26 +258,27 @@ function ProductThumbnail({ src, title }) {
   );
 }
 
-const MOMENTUM_SEVERITY_LABELS = {
-  high: 'High risk',
-  medium: 'Medium risk',
-  low: 'Opportunity'
-};
-
 function humanizeTrigger(value) {
   if (!value) return 'N/A';
   return String(value).replace(/_/g, ' ');
 }
 
-function Sparkline({ points }) {
+function Sparkline({ points, polarity }) {
   if (!Array.isArray(points) || points.length < 2) {
     return <div className="pm-sparkline-empty">No trend line yet</div>;
   }
   return (
-    <div className="pm-sparkline">
+    <div className={`pm-sparkline ${polarity}`}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={points}>
-          <Line type="monotone" dataKey="orders" strokeWidth={2} stroke="var(--pm-signal-emerging-text)" dot={false} />
+          <Line
+            type="monotone"
+            dataKey="orders"
+            strokeWidth={2.5}
+            stroke="var(--pm-spark-stroke)"
+            dot={false}
+            style={{ filter: 'var(--pm-spark-shadow)' }}
+          />
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -239,13 +296,17 @@ function SignalBadge({ signal }) {
 }
 
 function MomentumCard({ product, mode }) {
-  const severity = product?.assessment?.severity || 'low';
+  const hasTrigger = Boolean(product?.trigger);
+  const severity = product?.assessment?.severity || null;
+  const polarity = getMomentumPolarity(product, mode);
+  const severityLabel = getMomentumSeverityLabel(severity, polarity, mode, hasTrigger);
   const headline = product?.assessment?.headline || product?.title || 'Product signal';
   const action = product?.assessment?.action || '';
   const triggerText = humanizeTrigger(mode === 'layer1' ? product?.trigger : product?.exceptionalEvent);
+  const impactClass = polarity === 'risk' ? 'pm-impact-risk' : 'pm-impact-opportunity';
 
   return (
-    <article className={`pm-card pm-severity-${severity}`}>
+    <article className={`pm-card ${polarity} pm-severity-${severity || 'medium'}`}>
       <div className="pm-card-header">
         <div className="pm-card-title-wrap">
           <h4 className="pm-card-title">{headline}</h4>
@@ -254,7 +315,9 @@ function MomentumCard({ product, mode }) {
             <SignalBadge signal={product?.statistical?.signal} />
           </div>
         </div>
-        <span className="pm-severity-pill">{MOMENTUM_SEVERITY_LABELS[severity] || MOMENTUM_SEVERITY_LABELS.low}</span>
+        <span className={`pm-severity-pill ${!hasTrigger ? `binary ${polarity}` : ''}`}>
+          {severityLabel}
+        </span>
       </div>
 
       <div className="pm-card-body">
@@ -265,14 +328,14 @@ function MomentumCard({ product, mode }) {
           </div>
           <div className="pm-fact-row">
             <span>Share delta</span>
-            <strong>{formatPercent(product?.facts?.shareDelta)}</strong>
+            <strong>{formatSharePoints(product?.facts?.shareDelta)}</strong>
           </div>
           <div className="pm-fact-row">
             <span>Revenue impact</span>
-            <strong>{formatNumber(product?.facts?.revenueImpact)}</strong>
+            <strong className={impactClass}>{formatSignedNumber(product?.facts?.revenueImpact)}</strong>
           </div>
         </div>
-        <Sparkline points={product?.sparkline || []} />
+        <Sparkline points={product?.sparkline || []} polarity={polarity} />
       </div>
 
       {action ? <p className="pm-card-action">{action}</p> : null}
@@ -280,31 +343,101 @@ function MomentumCard({ product, mode }) {
   );
 }
 
-function ProductMomentumSection({ section }) {
+function ProductMomentumSection({ store }) {
   const [showMethodology, setShowMethodology] = useState(false);
-  const layer1 = (section?.products || []).filter((row) => row?.trigger);
-  const layer2 = (section?.products || []).filter((row) => row?.exceptionalEvent);
-  const thresholds = section?.methodology?.thresholds || {};
+  const [windowId, setWindowId] = useState(DEFAULT_MOMENTUM_WINDOW_ID);
+  const [windowSection, setWindowSection] = useState(null);
+  const [windowLoading, setWindowLoading] = useState(false);
+  const [windowError, setWindowError] = useState(false);
+
+  useEffect(() => {
+    const params = buildInsightsParams(store, windowId);
+    const controller = new AbortController();
+    let active = true;
+
+    const loadWindow = async () => {
+      setWindowLoading(true);
+      setWindowError(false);
+      try {
+        const response = await fetch(`/api/customer-insights?${params.toString()}`, {
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        if (!active) return;
+        setWindowSection(payload?.data?.sections?.productMomentum || null);
+      } catch (error) {
+        if (!active || error?.name === 'AbortError') return;
+        setWindowError(true);
+        setWindowSection(null);
+      } finally {
+        if (active) setWindowLoading(false);
+      }
+    };
+
+    if (store) {
+      loadWindow();
+    }
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [store, windowId]);
+
+  const activeSection = windowSection;
+  const layer1 = (activeSection?.products || []).filter((row) => row?.trigger);
+  const layer2 = (activeSection?.products || []).filter((row) => row?.exceptionalEvent);
+  const thresholds = activeSection?.methodology?.thresholds || {};
+  const activeSummary = activeSection?.summary || (windowLoading
+    ? 'Loading momentum window...'
+    : 'No product momentum triggers crossed thresholds in this window.');
 
   return (
     <div className="pm-root">
-      <div className="pm-summary">{section?.summary || 'No product momentum triggers crossed thresholds in this window.'}</div>
+      <section className="pm-panel pm-top">
+        <div>
+          <div className="pm-title">Product Momentum & Watch</div>
+          <div className="pm-sub">Independent momentum monitor with dedicated time-window selectors.</div>
+        </div>
+        <div className="pm-toggles">
+          {MOMENTUM_WINDOW_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`pm-btn ${windowId === option.id ? 'active' : ''}`}
+              onClick={() => setWindowId(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </section>
 
-      <div className="pm-layer-grid">
+      <div className="pm-summary">{activeSummary || 'No product momentum triggers crossed thresholds in this window.'}</div>
+      <section className="pm-panel pm-grid">
         <div className="pm-layer">
           <div className="pm-layer-head">
             <h4>Layer 1: Business triggers</h4>
-            <span>{layer1.length} active</span>
+            <span>{windowLoading ? 'Loading...' : `${layer1.length} active`}</span>
           </div>
           {layer1.length ? (
             <div className="pm-list">
-              {layer1.map((product) => (
-                <MomentumCard key={`layer1-${product.key}-${product.trigger}`} product={product} mode="layer1" />
+              {layer1.map((product, index) => (
+                <MomentumCard
+                  key={`layer1-${product?.key || 'product'}-${product?.trigger || index}`}
+                  product={product}
+                  mode="layer1"
+                />
               ))}
             </div>
           ) : (
             <div className="pm-empty">No Layer 1 trigger is active in this window.</div>
           )}
+          {windowError ? (
+            <div className="pm-note">Could not load momentum data for the selected window.</div>
+          ) : null}
         </div>
 
         <div className="pm-layer">
@@ -314,15 +447,19 @@ function ProductMomentumSection({ section }) {
           </div>
           {layer2.length ? (
             <div className="pm-list">
-              {layer2.map((product) => (
-                <MomentumCard key={`layer2-${product.key}-${product.exceptionalEvent}`} product={product} mode="layer2" />
+              {layer2.map((product, index) => (
+                <MomentumCard
+                  key={`layer2-${product?.key || 'product'}-${product?.exceptionalEvent || index}`}
+                  product={product}
+                  mode="layer2"
+                />
               ))}
             </div>
           ) : (
             <div className="pm-empty">No Layer 2 event is active in this window.</div>
           )}
         </div>
-      </div>
+      </section>
 
       <div className="pm-methodology">
         <button
@@ -335,7 +472,7 @@ function ProductMomentumSection({ section }) {
 
         {showMethodology ? (
           <div className="pm-methodology-body">
-            <p>{section?.methodology?.description || 'Methodology details are not available.'}</p>
+            <p>{activeSection?.methodology?.description || 'Methodology details are not available.'}</p>
             <div className="pm-threshold-grid">
               {Object.entries(thresholds).map(([key, value]) => (
                 <div key={key} className="pm-threshold-row">
@@ -353,12 +490,19 @@ function ProductMomentumSection({ section }) {
 
 export default function CustomerInsightsTab({ data, loading, formatCurrency, store, dateRange }) {
   const kpis = data?.kpis || [];
-  const insights = data?.insights || [];
   const sections = data?.sections || {};
   const dataQuality = data?.dataQuality || {};
   const hero = data?.hero || null;
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
+  const upperMetrics = useMemo(() => resolveUpperMetrics(kpis), [kpis]);
+  const topBundle = useMemo(() => resolveTopBundle(sections, kpis), [sections, kpis]);
+  const heroMetricValue = useMemo(() => {
+    if (!hero) return '—';
+    if (hero.metricFormat === 'percent') return formatPercent(hero.metricValue);
+    if (hero.metricFormat === 'currency') return formatCurrency(hero.metricValue, 0);
+    return hero.metricValue ?? '—';
+  }, [hero, formatCurrency]);
 
   const showToast = (message) => {
     setToast(message);
@@ -380,69 +524,54 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 ci-premium">
       {toast ? (
         <div className="fixed bottom-6 right-6 z-50 max-w-sm rounded-2xl border border-gray-200 bg-white/90 px-4 py-3 text-sm text-gray-900 shadow-lg backdrop-blur">
           {toast}
         </div>
       ) : null}
 
-      {hero ? (
-        <div className="relative overflow-hidden rounded-3xl border border-gray-200/70 bg-white p-6 shadow-sm">
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-indigo-500/8 via-white to-white" />
-          <div className="pointer-events-none absolute inset-0 rounded-3xl ring-1 ring-inset ring-gray-900/5" />
-
-          <div className="relative z-10 flex items-start justify-between gap-6 flex-wrap">
-            <div className="max-w-2xl">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
-                Customer brief
+      <section className="ci-upper">
+        <div className="dashboard-container">
+          <div className="row-1">
+            <div className="card card-hero">
+              <div className="hero-left">
+                <div className="card-label">Customer Brief</div>
+                <div className="hero-title">{hero?.title || 'Customer brief will appear once enough data is available.'}</div>
+                <div className="hero-subtitle">{hero?.subtitle || 'Insights update when line-item and customer data are synced.'}</div>
               </div>
-              <div className="mt-3 text-2xl font-semibold tracking-tight text-gray-950">
-                {hero.title}
-              </div>
-              <div className="mt-2 text-sm leading-relaxed text-gray-600">
-                {hero.subtitle}
+              <div className="hero-right">
+                <div className="card-label">{hero?.metricLabel || 'Revenue Share'}</div>
+                <div className="metric-huge-value">{heroMetricValue}</div>
+                <div className="confidence-text">
+                  {confidenceLabel(hero?.confidence || 0)} · Sample: {formatNumber(hero?.sampleSize || 0)}
+                </div>
               </div>
             </div>
+          </div>
 
-            <div className="min-w-[220px] rounded-3xl border border-gray-200/70 bg-white/70 px-5 py-4 shadow-sm backdrop-blur">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
-                {hero.metricLabel}
-              </div>
-              <div className="mt-2 text-3xl font-semibold tracking-tight text-gray-950 tabular-nums">
-                {hero.metricFormat === 'percent' ? formatPercent(hero.metricValue) : hero.metricValue}
-              </div>
-              <div className="mt-2 text-xs text-gray-600">
-                Confidence: {confidenceLabel(hero.confidence || 0)} · Sample: {formatNumber(hero.sampleSize || 0)}
+          <div className="row-2">
+            {upperMetrics.map((metric, index) => (
+              <UpperMetricCard key={metric?.id || `upper-metric-${index}`} metric={metric} formatCurrency={formatCurrency} />
+            ))}
+          </div>
+
+          <div className="row-3">
+            <div className="card card-bundle">
+              <div className="card-label">Top Bundle</div>
+              <div className="bundle-text">
+                {topBundle ? (
+                  <>
+                    {topBundle.from} <span className="arrow-icon">→</span> {topBundle.to}
+                  </>
+                ) : (
+                  'Bundle signal will appear once enough pair evidence is detected.'
+                )}
               </div>
             </div>
           </div>
         </div>
-      ) : null}
-
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {kpis.map((kpi, index) => (
-          <KpiCard key={kpi.id} {...kpi} formatter={formatCurrency} index={index} />
-        ))}
-      </div>
-
-      <div>
-        <div className="mb-3 text-sm font-semibold text-gray-700">Actionable Insights</div>
-        <div className="grid gap-4 md:grid-cols-3">
-          {insights.map((insight) => (
-            <InsightCard
-              key={insight.id}
-              insight={insight}
-              onInvestigate={() => scrollToSection(insight.target)}
-            />
-          ))}
-          {insights.length === 0 && (
-            <div className="col-span-full rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500">
-              Insights will appear once enough data accumulates.
-            </div>
-          )}
-        </div>
-      </div>
+      </section>
 
       <CollapsibleSectionCard
         id="ci-metaDemographics"
@@ -464,7 +593,7 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
           subtitle={sections.productMomentum?.summary || 'Business-grade product momentum monitoring'}
           icon={sectionIcons.productMomentum}
         >
-          <ProductMomentumSection section={sections.productMomentum || {}} />
+          <ProductMomentumSection store={store} />
         </SectionCard>
 
         <SectionCard
