@@ -377,9 +377,7 @@ function ProductMomentumSection({ store }) {
       }
     };
 
-    if (store) {
-      loadWindow();
-    }
+    loadWindow();
     return () => {
       active = false;
       controller.abort();
