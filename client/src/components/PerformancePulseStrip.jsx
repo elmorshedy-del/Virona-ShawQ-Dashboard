@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
-const PERFORMANCE_PULSE_VISIBLE_ROWS = 3;
+const PERFORMANCE_PULSE_VISIBLE_ROWS = 2;
+const PERFORMANCE_PULSE_SIGNAL_DELTA_CAP = 999;
+
 const PERFORMANCE_PULSE_FALLBACK_DATA = {
   topCountries: [],
   underperformingCountries: [],
@@ -10,10 +12,39 @@ const PERFORMANCE_PULSE_FALLBACK_DATA = {
   watchlist: []
 };
 
+const PERFORMANCE_PULSE_LAYOUT = {
+  shell: 'rounded-2xl border border-slate-200 bg-gradient-to-b from-slate-50 to-white px-2 py-2 shadow-[0_12px_28px_rgba(15,23,42,0.08)]',
+  shellTitle: 'text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500',
+  shellSubtitle: 'text-[9px] text-slate-500',
+  card: 'rounded-xl border border-slate-200 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.08)]',
+  cardMinWidth: 'min-w-[250px]',
+  cardHeader: 'flex items-start justify-between border-b border-slate-100 px-2 py-1.5',
+  cardTitle: 'text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500',
+  cardSubtitle: 'mt-0.5 text-[9px] text-slate-500',
+  cardBody: 'space-y-1 p-1.5',
+  empty: 'rounded-md border border-dashed border-slate-200 bg-slate-50 px-2 py-2 text-center text-[9px] text-slate-500',
+  row: 'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg border px-1.5 py-1.5',
+  rowDefault: 'border-slate-100 bg-white',
+  rowDanger: 'border-rose-100 bg-rose-50/40',
+  entity: 'min-w-0 flex items-center gap-1.5',
+  flag: 'text-sm leading-none',
+  entityName: 'truncate text-[10px] font-semibold text-slate-900',
+  entityMeta: 'text-[9px] text-slate-500',
+  metricCol: 'flex shrink-0 flex-col items-end gap-0.5',
+  metricPrimary: 'whitespace-nowrap text-[10px] font-semibold text-slate-900',
+  metricPrimaryDanger: 'whitespace-nowrap text-[10px] font-semibold text-rose-700',
+  metricSecondary: 'whitespace-nowrap text-[9px] text-slate-500'
+};
+
 const SIGNAL_META = {
   up: { arrow: '▲', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   down: { arrow: '▼', className: 'bg-rose-50 text-rose-700 border-rose-200' },
   flat: { arrow: '•', className: 'bg-slate-100 text-slate-600 border-slate-200' }
+};
+
+const SIGNAL_LABELS = {
+  day: '1D',
+  week: '7D'
 };
 
 const asFiniteNumber = (value, fallback = 0) => {
@@ -64,11 +95,11 @@ const getSignalTone = (signal) => {
 
 const formatSignalDeltaLabel = (value) => {
   const numeric = asFiniteNumber(value, 0);
-  const abs = Math.abs(numeric);
+  const abs = Math.min(Math.abs(numeric), PERFORMANCE_PULSE_SIGNAL_DELTA_CAP);
   const precision = abs >= 10 ? 0 : 1;
-  const fixed = numeric.toFixed(precision);
-  const signed = numeric > 0 ? `+${fixed}` : fixed;
-  return `${signed}%`;
+  const fixed = abs.toFixed(precision);
+  const sign = numeric > 0 ? '+' : numeric < 0 ? '-' : '';
+  return `${sign}${fixed}%`;
 };
 
 function SignalChip({ label, signal, deltaPct }) {
@@ -76,22 +107,22 @@ function SignalChip({ label, signal, deltaPct }) {
   const deltaLabel = formatSignalDeltaLabel(deltaPct);
 
   return (
-    <span className={`inline-flex h-5 min-w-[54px] items-center justify-center rounded-md border px-1.5 text-[10px] font-semibold ${tone.className}`}>
-      {label} {tone.arrow} {deltaLabel}
+    <span className={`inline-flex h-4 items-center justify-center rounded border px-1 text-[8px] font-semibold leading-none ${tone.className}`}>
+      {label}{tone.arrow}{deltaLabel}
     </span>
   );
 }
 
-function SignalPair({ signals = {} }) {
+function SignalPair({ signals = {}, className = '' }) {
   const daySignal = signals?.day || 'flat';
   const weekSignal = signals?.week || 'flat';
   const dayDeltaPct = signals?.dayDeltaPct;
   const weekDeltaPct = signals?.weekDeltaPct;
 
   return (
-    <div className="flex items-center gap-1">
-      <SignalChip label="D-1" signal={daySignal} deltaPct={dayDeltaPct} />
-      <SignalChip label="D-7" signal={weekSignal} deltaPct={weekDeltaPct} />
+    <div className={`flex items-center gap-0.5 whitespace-nowrap ${className}`.trim()}>
+      <SignalChip label={SIGNAL_LABELS.day} signal={daySignal} deltaPct={dayDeltaPct} />
+      <SignalChip label={SIGNAL_LABELS.week} signal={weekSignal} deltaPct={weekDeltaPct} />
     </div>
   );
 }
@@ -100,7 +131,7 @@ function CompactName({ value, className = '' }) {
   const text = String(value || '').trim() || 'Untitled';
 
   return (
-    <span className={`group relative block max-w-[150px] ${className}`.trim()}>
+    <span className={`group relative block max-w-[96px] ${className}`.trim()}>
       <span className="block truncate">{text}</span>
       <span className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden max-w-[240px] rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white shadow-lg group-hover:block">
         {text}
@@ -115,14 +146,14 @@ function EntityThumb({ thumbnailUrl, fallback, className = '' }) {
       <img
         src={thumbnailUrl}
         alt=""
-        className={`h-8 w-8 rounded-lg object-cover shadow-sm ring-1 ring-slate-200 ${className}`.trim()}
+        className={`h-7 w-7 rounded-md object-cover shadow-sm ring-1 ring-slate-200 ${className}`.trim()}
         loading="lazy"
       />
     );
   }
 
   return (
-    <span className={`inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-sm font-semibold text-slate-600 ring-1 ring-slate-200 ${className}`.trim()}>
+    <span className={`inline-flex h-7 w-7 items-center justify-center rounded-md bg-slate-100 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200 ${className}`.trim()}>
       {fallback}
     </span>
   );
@@ -130,22 +161,43 @@ function EntityThumb({ thumbnailUrl, fallback, className = '' }) {
 
 function PulseCard({ title, subtitle, rows, emptyText, renderRow }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
-      <div className="flex items-start justify-between border-b border-slate-100 px-3 py-2.5">
+    <div className={`${PERFORMANCE_PULSE_LAYOUT.card} ${PERFORMANCE_PULSE_LAYOUT.cardMinWidth}`}>
+      <div className={PERFORMANCE_PULSE_LAYOUT.cardHeader}>
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">{title}</div>
-          <div className="mt-0.5 text-[11px] text-slate-500">{subtitle}</div>
+          <div className={PERFORMANCE_PULSE_LAYOUT.cardTitle}>{title}</div>
+          <div className={PERFORMANCE_PULSE_LAYOUT.cardSubtitle}>{subtitle}</div>
         </div>
       </div>
-      <div className="space-y-1 p-2">
+      <div className={PERFORMANCE_PULSE_LAYOUT.cardBody}>
         {rows.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-2 py-3 text-center text-[11px] text-slate-500">
+          <div className={PERFORMANCE_PULSE_LAYOUT.empty}>
             {emptyText}
           </div>
         ) : (
           rows.map((row, index) => renderRow(row, index))
         )}
       </div>
+    </div>
+  );
+}
+
+function PulseMetricColumn({ primary, secondary, tertiary, signals, danger = false }) {
+  return (
+    <div className={PERFORMANCE_PULSE_LAYOUT.metricCol}>
+      <div className="text-right">
+        <div className={danger ? PERFORMANCE_PULSE_LAYOUT.metricPrimaryDanger : PERFORMANCE_PULSE_LAYOUT.metricPrimary}>{primary}</div>
+        {secondary ? <div className={PERFORMANCE_PULSE_LAYOUT.metricSecondary}>{secondary}</div> : null}
+        {tertiary ? <div className={PERFORMANCE_PULSE_LAYOUT.metricSecondary}>{tertiary}</div> : null}
+      </div>
+      <SignalPair signals={signals} />
+    </div>
+  );
+}
+
+function PulseRow({ danger = false, children }) {
+  return (
+    <div className={`${PERFORMANCE_PULSE_LAYOUT.row} ${danger ? PERFORMANCE_PULSE_LAYOUT.rowDanger : PERFORMANCE_PULSE_LAYOUT.rowDefault}`}>
+      {children}
     </div>
   );
 }
@@ -221,7 +273,8 @@ export default function PerformancePulseStrip({
     topCountries: clipRows(pulseData?.topCountries),
     underperformingCountries: clipRows(pulseData?.underperformingCountries),
     topAds: clipRows(pulseData?.topAds),
-    underperformingAds: clipRows(pulseData?.underperformingAds)
+    underperformingAds: clipRows(pulseData?.underperformingAds),
+    bestSellerProducts: clipRows(pulseData?.bestSellerProducts)
   }), [pulseData]);
 
   const countryOrdersSource = String(pulseData?.countryOrdersSource || '').trim();
@@ -244,52 +297,49 @@ export default function PerformancePulseStrip({
 
   return (
     <div className="mx-auto w-full max-w-6xl">
-      <div className="rounded-[20px] border border-slate-200 bg-gradient-to-b from-slate-50 to-white px-3 py-3 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Daily Performance Pulse</div>
-          <div className="text-[10px] text-slate-500">Signals vs day-before and 7-days-before</div>
+      <div className={PERFORMANCE_PULSE_LAYOUT.shell}>
+        <div className="mb-1.5 flex items-center justify-between">
+          <div className={PERFORMANCE_PULSE_LAYOUT.shellTitle}>Daily Performance Pulse</div>
+          <div className={PERFORMANCE_PULSE_LAYOUT.shellSubtitle}>Signals vs day-before and 7-days-before</div>
         </div>
 
         {loading && (
-          <div className="mb-2 rounded-lg bg-slate-100 px-2 py-1 text-[11px] text-slate-500">
+          <div className="mb-1 rounded-lg bg-slate-100 px-2 py-1 text-[9px] text-slate-500">
             Loading pulse cards...
           </div>
         )}
 
         {error && (
-          <div className="mb-2 rounded-lg bg-rose-50 px-2 py-1 text-[11px] text-rose-700">
+          <div className="mb-1 rounded-lg bg-rose-50 px-2 py-1 text-[9px] text-rose-700">
             Pulse unavailable: {error}
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-3">
           <PulseCard
             title="Top Countries"
             subtitle={countrySubtitle}
             rows={rows.topCountries}
             emptyText="No country activity yet."
-            renderRow={(country, index) => (
-              <div key={country?.id || country?.code || `country-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-white px-2 py-2">
-                <div className="min-w-0 flex items-center gap-2">
-                  <span className="text-lg leading-none">{country?.flag || '🏳️'}</span>
-                  <div className="min-w-0">
-                    <div className="truncate text-[12px] font-semibold text-slate-900" title={country?.name || country?.code}>
-                      {country?.name || country?.code || 'Unknown'}
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      {formatNumber(asFiniteNumber(country?.orders))} orders
+            renderRow={(country, index) => {
+              const name = country?.name || country?.code || 'Unknown';
+              return (
+                <PulseRow key={country?.id || country?.code || `country-${index}`}>
+                  <div className={PERFORMANCE_PULSE_LAYOUT.entity}>
+                    <span className={PERFORMANCE_PULSE_LAYOUT.flag}>{country?.flag || '🏳️'}</span>
+                    <div className="min-w-0">
+                      <div className={PERFORMANCE_PULSE_LAYOUT.entityName} title={name}>{name}</div>
+                      <div className={PERFORMANCE_PULSE_LAYOUT.entityMeta}>{formatNumber(asFiniteNumber(country?.orders))} orders</div>
                     </div>
                   </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <div className="text-right">
-                    <div className="text-[11px] font-semibold text-slate-900">ROAS {formatRoas(country?.roas)}</div>
-                    <div className="text-[10px] text-slate-500">{formatCurrency(asFiniteNumber(country?.spend))}</div>
-                  </div>
-                  <SignalPair signals={country?.signals} />
-                </div>
-              </div>
-            )}
+                  <PulseMetricColumn
+                    primary={`ROAS ${formatRoas(country?.roas)}`}
+                    secondary={formatCurrency(asFiniteNumber(country?.spend))}
+                    signals={country?.signals}
+                  />
+                </PulseRow>
+              );
+            }}
           />
 
           <PulseCard
@@ -297,30 +347,27 @@ export default function PerformancePulseStrip({
             subtitle="Lowest orders or zero-order spend draggers"
             rows={rows.underperformingCountries}
             emptyText="No underperforming countries found."
-            renderRow={(country, index) => (
-              <div key={country?.id || country?.code || `drag-country-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-rose-100 bg-rose-50/40 px-2 py-2">
-                <div className="min-w-0 flex items-center gap-2">
-                  <span className="text-lg leading-none">{country?.flag || '🏳️'}</span>
-                  <div className="min-w-0">
-                    <div className="truncate text-[12px] font-semibold text-slate-900" title={country?.name || country?.code}>
-                      {country?.name || country?.code || 'Unknown'}
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      {formatNumber(asFiniteNumber(country?.orders))} orders
-                    </div>
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <div className="text-right">
-                    <div className="text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(country?.riskScore).toFixed(1)}</div>
-                    <div className="text-[10px] text-slate-500">
-                      ROAS {formatRoas(country?.roas)} · {formatCurrency(asFiniteNumber(country?.spend))}
+            renderRow={(country, index) => {
+              const name = country?.name || country?.code || 'Unknown';
+              return (
+                <PulseRow key={country?.id || country?.code || `drag-country-${index}`} danger>
+                  <div className={PERFORMANCE_PULSE_LAYOUT.entity}>
+                    <span className={PERFORMANCE_PULSE_LAYOUT.flag}>{country?.flag || '🏳️'}</span>
+                    <div className="min-w-0">
+                      <div className={PERFORMANCE_PULSE_LAYOUT.entityName} title={name}>{name}</div>
+                      <div className={PERFORMANCE_PULSE_LAYOUT.entityMeta}>{formatNumber(asFiniteNumber(country?.orders))} orders</div>
                     </div>
                   </div>
-                  <SignalPair signals={country?.signals} />
-                </div>
-              </div>
-            )}
+                  <PulseMetricColumn
+                    danger
+                    primary={`Risk ${asFiniteNumber(country?.riskScore).toFixed(1)}`}
+                    secondary={`ROAS ${formatRoas(country?.roas)}`}
+                    tertiary={formatCurrency(asFiniteNumber(country?.spend))}
+                    signals={country?.signals}
+                  />
+                </PulseRow>
+              );
+            }}
           />
 
           <PulseCard
@@ -329,24 +376,20 @@ export default function PerformancePulseStrip({
             rows={rows.topAds}
             emptyText="No ad activity yet."
             renderRow={(ad, index) => (
-              <div key={ad?.id || `top-ad-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-white px-2 py-2">
-                <div className="min-w-0 flex items-center gap-2">
+              <PulseRow key={ad?.id || `top-ad-${index}`}>
+                <div className={PERFORMANCE_PULSE_LAYOUT.entity}>
                   <EntityThumb thumbnailUrl={ad?.thumbnailUrl} fallback="A" />
                   <div className="min-w-0">
-                    <CompactName value={ad?.name} className="text-[12px] font-semibold text-slate-900" />
-                    <div className="text-[10px] text-slate-500">
-                      {formatNumber(asFiniteNumber(ad?.orders))} orders
-                    </div>
+                    <CompactName value={ad?.name} className={PERFORMANCE_PULSE_LAYOUT.entityName} />
+                    <div className={PERFORMANCE_PULSE_LAYOUT.entityMeta}>{formatNumber(asFiniteNumber(ad?.orders))} orders</div>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <div className="text-right">
-                    <div className="text-[11px] font-semibold text-slate-900">ROAS {formatRoas(ad?.roas)}</div>
-                    <div className="text-[10px] text-slate-500">{formatCurrency(asFiniteNumber(ad?.spend))}</div>
-                  </div>
-                  <SignalPair signals={ad?.signals} />
-                </div>
-              </div>
+                <PulseMetricColumn
+                  primary={`ROAS ${formatRoas(ad?.roas)}`}
+                  secondary={formatCurrency(asFiniteNumber(ad?.spend))}
+                  signals={ad?.signals}
+                />
+              </PulseRow>
             )}
           />
 
@@ -356,26 +399,44 @@ export default function PerformancePulseStrip({
             rows={rows.underperformingAds}
             emptyText="No underperforming ads found."
             renderRow={(ad, index) => (
-              <div key={ad?.id || `drag-ad-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-rose-100 bg-rose-50/40 px-2 py-2">
-                <div className="min-w-0 flex items-center gap-2">
+              <PulseRow key={ad?.id || `drag-ad-${index}`} danger>
+                <div className={PERFORMANCE_PULSE_LAYOUT.entity}>
                   <EntityThumb thumbnailUrl={ad?.thumbnailUrl} fallback="A" />
                   <div className="min-w-0">
-                    <CompactName value={ad?.name} className="text-[12px] font-semibold text-slate-900" />
-                    <div className="text-[10px] text-slate-500">
-                      {formatNumber(asFiniteNumber(ad?.orders))} orders
-                    </div>
+                    <CompactName value={ad?.name} className={PERFORMANCE_PULSE_LAYOUT.entityName} />
+                    <div className={PERFORMANCE_PULSE_LAYOUT.entityMeta}>{formatNumber(asFiniteNumber(ad?.orders))} orders</div>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <div className="text-right">
-                    <div className="text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(ad?.riskScore).toFixed(1)}</div>
-                    <div className="text-[10px] text-slate-500">
-                      ROAS {formatRoas(ad?.roas)} · {formatCurrency(asFiniteNumber(ad?.spend))}
-                    </div>
+                <PulseMetricColumn
+                  danger
+                  primary={`Risk ${asFiniteNumber(ad?.riskScore).toFixed(1)}`}
+                  secondary={`ROAS ${formatRoas(ad?.roas)}`}
+                  tertiary={formatCurrency(asFiniteNumber(ad?.spend))}
+                  signals={ad?.signals}
+                />
+              </PulseRow>
+            )}
+          />
+
+          <PulseCard
+            title="Top Products"
+            subtitle="Best sellers in range"
+            rows={rows.bestSellerProducts}
+            emptyText="No product orders in range."
+            renderRow={(product, index) => (
+              <PulseRow key={product?.id || `product-${index}`}>
+                <div className={PERFORMANCE_PULSE_LAYOUT.entity}>
+                  <EntityThumb thumbnailUrl={product?.thumbnailUrl} fallback="P" />
+                  <div className="min-w-0">
+                    <CompactName value={product?.name} className={PERFORMANCE_PULSE_LAYOUT.entityName} />
+                    <div className={PERFORMANCE_PULSE_LAYOUT.entityMeta}>{formatNumber(asFiniteNumber(product?.orders))} orders</div>
                   </div>
-                  <SignalPair signals={ad?.signals} />
                 </div>
-              </div>
+                <PulseMetricColumn
+                  primary={`Rev ${formatCurrency(asFiniteNumber(product?.revenue))}`}
+                  signals={product?.signals}
+                />
+              </PulseRow>
             )}
           />
         </div>
