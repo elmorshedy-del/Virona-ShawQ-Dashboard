@@ -17,6 +17,7 @@ const PERFORMANCE_PULSE_LAYOUT = {
   shellTitle: 'text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500',
   shellSubtitle: 'text-[9px] text-slate-500',
   card: 'rounded-xl border border-slate-200 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.08)]',
+  cardMinWidth: 'min-w-[250px]',
   cardHeader: 'flex items-start justify-between border-b border-slate-100 px-2 py-1.5',
   cardTitle: 'text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500',
   cardSubtitle: 'mt-0.5 text-[9px] text-slate-500',
@@ -160,7 +161,7 @@ function EntityThumb({ thumbnailUrl, fallback, className = '' }) {
 
 function PulseCard({ title, subtitle, rows, emptyText, renderRow }) {
   return (
-    <div className={PERFORMANCE_PULSE_LAYOUT.card}>
+    <div className={`${PERFORMANCE_PULSE_LAYOUT.card} ${PERFORMANCE_PULSE_LAYOUT.cardMinWidth}`}>
       <div className={PERFORMANCE_PULSE_LAYOUT.cardHeader}>
         <div className="min-w-0">
           <div className={PERFORMANCE_PULSE_LAYOUT.cardTitle}>{title}</div>
@@ -314,7 +315,7 @@ export default function PerformancePulseStrip({
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-5">
+        <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-3">
           <PulseCard
             title="Top Countries"
             subtitle={countrySubtitle}
