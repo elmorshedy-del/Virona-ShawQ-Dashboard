@@ -76,20 +76,20 @@ function SignalChip({ label, signal, deltaPct }) {
   const deltaLabel = formatSignalDeltaLabel(deltaPct);
 
   return (
-    <span className={`inline-flex h-5 min-w-[54px] items-center justify-center rounded-md border px-1.5 text-[10px] font-semibold ${tone.className}`}>
+    <span className={`inline-flex h-5 min-w-[50px] items-center justify-center rounded-md border px-1.5 text-[9px] font-semibold ${tone.className}`}>
       {label} {tone.arrow} {deltaLabel}
     </span>
   );
 }
 
-function SignalPair({ signals = {} }) {
+function SignalPair({ signals = {}, className = '' }) {
   const daySignal = signals?.day || 'flat';
   const weekSignal = signals?.week || 'flat';
   const dayDeltaPct = signals?.dayDeltaPct;
   const weekDeltaPct = signals?.weekDeltaPct;
 
   return (
-    <div className="flex items-center gap-1">
+    <div className={`flex items-center gap-1 whitespace-nowrap ${className}`.trim()}>
       <SignalChip label="D-1" signal={daySignal} deltaPct={dayDeltaPct} />
       <SignalChip label="D-7" signal={weekSignal} deltaPct={weekDeltaPct} />
     </div>
@@ -281,10 +281,10 @@ export default function PerformancePulseStrip({
                     </div>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-col items-end gap-1">
                   <div className="text-right">
-                    <div className="text-[11px] font-semibold text-slate-900">ROAS {formatRoas(country?.roas)}</div>
-                    <div className="text-[10px] text-slate-500">{formatCurrency(asFiniteNumber(country?.spend))}</div>
+                    <div className="whitespace-nowrap text-[11px] font-semibold text-slate-900">ROAS {formatRoas(country?.roas)}</div>
+                    <div className="whitespace-nowrap text-[10px] text-slate-500">{formatCurrency(asFiniteNumber(country?.spend))}</div>
                   </div>
                   <SignalPair signals={country?.signals} />
                 </div>
@@ -310,12 +310,11 @@ export default function PerformancePulseStrip({
                     </div>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-col items-end gap-1">
                   <div className="text-right">
-                    <div className="text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(country?.riskScore).toFixed(1)}</div>
-                    <div className="text-[10px] text-slate-500">
-                      ROAS {formatRoas(country?.roas)} · {formatCurrency(asFiniteNumber(country?.spend))}
-                    </div>
+                    <div className="whitespace-nowrap text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(country?.riskScore).toFixed(1)}</div>
+                    <div className="whitespace-nowrap text-[10px] text-slate-500">ROAS {formatRoas(country?.roas)}</div>
+                    <div className="whitespace-nowrap text-[10px] text-slate-500">{formatCurrency(asFiniteNumber(country?.spend))}</div>
                   </div>
                   <SignalPair signals={country?.signals} />
                 </div>
@@ -339,10 +338,10 @@ export default function PerformancePulseStrip({
                     </div>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-col items-end gap-1">
                   <div className="text-right">
-                    <div className="text-[11px] font-semibold text-slate-900">ROAS {formatRoas(ad?.roas)}</div>
-                    <div className="text-[10px] text-slate-500">{formatCurrency(asFiniteNumber(ad?.spend))}</div>
+                    <div className="whitespace-nowrap text-[11px] font-semibold text-slate-900">ROAS {formatRoas(ad?.roas)}</div>
+                    <div className="whitespace-nowrap text-[10px] text-slate-500">{formatCurrency(asFiniteNumber(ad?.spend))}</div>
                   </div>
                   <SignalPair signals={ad?.signals} />
                 </div>
@@ -366,12 +365,11 @@ export default function PerformancePulseStrip({
                     </div>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-col items-end gap-1">
                   <div className="text-right">
-                    <div className="text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(ad?.riskScore).toFixed(1)}</div>
-                    <div className="text-[10px] text-slate-500">
-                      ROAS {formatRoas(ad?.roas)} · {formatCurrency(asFiniteNumber(ad?.spend))}
-                    </div>
+                    <div className="whitespace-nowrap text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(ad?.riskScore).toFixed(1)}</div>
+                    <div className="whitespace-nowrap text-[10px] text-slate-500">ROAS {formatRoas(ad?.roas)}</div>
+                    <div className="whitespace-nowrap text-[10px] text-slate-500">{formatCurrency(asFiniteNumber(ad?.spend))}</div>
                   </div>
                   <SignalPair signals={ad?.signals} />
                 </div>
