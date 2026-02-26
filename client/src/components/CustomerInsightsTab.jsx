@@ -51,9 +51,13 @@ const sectionIcons = {
 };
 
 const UPPER_METRIC_SLOT_COUNT = 4;
-const MOMENTUM_LIVE_WINDOW_DAYS = 7;
-const MOMENTUM_MODE_LIVE = 'live';
-const MOMENTUM_MODE_SELECTED = 'selected';
+const MOMENTUM_WINDOW_OPTIONS = [
+  { id: '7d', label: '7d', type: 'days', value: 7 },
+  { id: '14d', label: '14d', type: 'days', value: 14 },
+  { id: '1m', label: '1m', type: 'months', value: 1 },
+  { id: '3m', label: '3m', type: 'months', value: 3 }
+];
+const DEFAULT_MOMENTUM_WINDOW_ID = MOMENTUM_WINDOW_OPTIONS[0].id;
 const MOMENTUM_LAYER1_RISK_TRIGGERS = new Set([
   'hero_decline',
   'concentration_risk',
@@ -110,32 +114,11 @@ const getMomentumSeverityLabel = (severity, polarity, mode, hasTrigger) => {
   return `${prefix} ${polarity === 'risk' ? 'risk' : 'opportunity'}`;
 };
 
-const buildInsightsParams = (store, range) => {
+const buildInsightsParams = (store, windowId = DEFAULT_MOMENTUM_WINDOW_ID) => {
+  const selectedWindow = MOMENTUM_WINDOW_OPTIONS.find((option) => option.id === windowId) || MOMENTUM_WINDOW_OPTIONS[0];
   const params = new URLSearchParams();
   params.set('store', String(store || 'shawq'));
-  if (!range || typeof range !== 'object') {
-    params.set('days', String(MOMENTUM_LIVE_WINDOW_DAYS));
-    return params;
-  }
-
-  if (range.type === 'custom' && range.start && range.end) {
-    params.set('startDate', range.start);
-    params.set('endDate', range.end);
-    return params;
-  }
-
-  if (range.type === 'yesterday') {
-    params.set('yesterday', '1');
-    return params;
-  }
-
-  const value = Number(range.value);
-  if (range.type && Number.isFinite(value) && value > 0) {
-    params.set(range.type, String(value));
-    return params;
-  }
-
-  params.set('days', String(MOMENTUM_LIVE_WINDOW_DAYS));
+  params.set(selectedWindow.type, String(selectedWindow.value));
   return params;
 };
 
@@ -360,21 +343,21 @@ function MomentumCard({ product, mode }) {
   );
 }
 
-function ProductMomentumSection({ section, store, dateRange }) {
+function ProductMomentumSection({ store }) {
   const [showMethodology, setShowMethodology] = useState(false);
-  const [layer1Mode, setLayer1Mode] = useState(MOMENTUM_MODE_LIVE);
-  const [liveSection, setLiveSection] = useState(null);
-  const [liveLoading, setLiveLoading] = useState(false);
-  const [liveError, setLiveError] = useState(false);
+  const [windowId, setWindowId] = useState(DEFAULT_MOMENTUM_WINDOW_ID);
+  const [windowSection, setWindowSection] = useState(null);
+  const [windowLoading, setWindowLoading] = useState(false);
+  const [windowError, setWindowError] = useState(false);
 
   useEffect(() => {
-    const params = buildInsightsParams(store, { type: 'days', value: MOMENTUM_LIVE_WINDOW_DAYS });
+    const params = buildInsightsParams(store, windowId);
     const controller = new AbortController();
     let active = true;
 
-    const loadLiveLayer = async () => {
-      setLiveLoading(true);
-      setLiveError(false);
+    const loadWindow = async () => {
+      setWindowLoading(true);
+      setWindowError(false);
       try {
         const response = await fetch(`/api/customer-insights?${params.toString()}`, {
           signal: controller.signal
@@ -384,55 +367,51 @@ function ProductMomentumSection({ section, store, dateRange }) {
         }
         const payload = await response.json();
         if (!active) return;
-        setLiveSection(payload?.data?.sections?.productMomentum || null);
+        setWindowSection(payload?.data?.sections?.productMomentum || null);
       } catch (error) {
         if (!active || error?.name === 'AbortError') return;
-        setLiveError(true);
-        setLiveSection(null);
+        setWindowError(true);
+        setWindowSection(null);
       } finally {
-        if (active) setLiveLoading(false);
+        if (active) setWindowLoading(false);
       }
     };
 
     if (store) {
-      loadLiveLayer();
+      loadWindow();
     }
     return () => {
       active = false;
       controller.abort();
     };
-  }, [store]);
+  }, [store, windowId]);
 
-  const layer1Selected = (section?.products || []).filter((row) => row?.trigger);
-  const layer1Live = (liveSection?.products || []).filter((row) => row?.trigger);
-  const layer1 = layer1Mode === MOMENTUM_MODE_LIVE && layer1Live.length ? layer1Live : layer1Selected;
-  const layer2 = (section?.products || []).filter((row) => row?.exceptionalEvent);
-  const thresholds = (layer1Mode === MOMENTUM_MODE_LIVE ? liveSection?.methodology : section?.methodology)?.thresholds || section?.methodology?.thresholds || {};
-  const activeSummary = layer1Mode === MOMENTUM_MODE_LIVE ? (liveSection?.summary || section?.summary) : section?.summary;
-  const selectedLabel = dateRange?.type === 'custom' ? 'Selected Range' : 'Selected Range';
+  const activeSection = windowSection;
+  const layer1 = (activeSection?.products || []).filter((row) => row?.trigger);
+  const layer2 = (activeSection?.products || []).filter((row) => row?.exceptionalEvent);
+  const thresholds = activeSection?.methodology?.thresholds || {};
+  const activeSummary = activeSection?.summary || (windowLoading
+    ? 'Loading momentum window...'
+    : 'No product momentum triggers crossed thresholds in this window.');
 
   return (
     <div className="pm-root">
       <section className="pm-panel pm-top">
         <div>
           <div className="pm-title">Product Momentum & Watch</div>
-          <div className="pm-sub">Live monitor + review mode, with unified risk/opportunity color logic.</div>
+          <div className="pm-sub">Independent momentum monitor with dedicated time-window selectors.</div>
         </div>
         <div className="pm-toggles">
-          <button
-            type="button"
-            className={`pm-btn ${layer1Mode === MOMENTUM_MODE_LIVE ? 'active' : ''}`}
-            onClick={() => setLayer1Mode(MOMENTUM_MODE_LIVE)}
-          >
-            Layer 1: Live ({MOMENTUM_LIVE_WINDOW_DAYS}d)
-          </button>
-          <button
-            type="button"
-            className={`pm-btn ${layer1Mode === MOMENTUM_MODE_SELECTED ? 'active' : ''}`}
-            onClick={() => setLayer1Mode(MOMENTUM_MODE_SELECTED)}
-          >
-            Layer 1: {selectedLabel}
-          </button>
+          {MOMENTUM_WINDOW_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`pm-btn ${windowId === option.id ? 'active' : ''}`}
+              onClick={() => setWindowId(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
       </section>
 
@@ -441,11 +420,7 @@ function ProductMomentumSection({ section, store, dateRange }) {
         <div className="pm-layer">
           <div className="pm-layer-head">
             <h4>Layer 1: Business triggers</h4>
-            <span>
-              {layer1Mode === MOMENTUM_MODE_LIVE && liveLoading
-                ? 'Loading...'
-                : `${layer1.length} active`}
-            </span>
+            <span>{windowLoading ? 'Loading...' : `${layer1.length} active`}</span>
           </div>
           {layer1.length ? (
             <div className="pm-list">
@@ -460,8 +435,8 @@ function ProductMomentumSection({ section, store, dateRange }) {
           ) : (
             <div className="pm-empty">No Layer 1 trigger is active in this window.</div>
           )}
-          {layer1Mode === MOMENTUM_MODE_LIVE && liveError ? (
-            <div className="pm-note">Live 7d data could not be loaded, showing selected range instead.</div>
+          {windowError ? (
+            <div className="pm-note">Could not load momentum data for the selected window.</div>
           ) : null}
         </div>
 
@@ -497,7 +472,7 @@ function ProductMomentumSection({ section, store, dateRange }) {
 
         {showMethodology ? (
           <div className="pm-methodology-body">
-            <p>{section?.methodology?.description || 'Methodology details are not available.'}</p>
+            <p>{activeSection?.methodology?.description || 'Methodology details are not available.'}</p>
             <div className="pm-threshold-grid">
               {Object.entries(thresholds).map(([key, value]) => (
                 <div key={key} className="pm-threshold-row">
@@ -618,7 +593,7 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
           subtitle={sections.productMomentum?.summary || 'Business-grade product momentum monitoring'}
           icon={sectionIcons.productMomentum}
         >
-          <ProductMomentumSection section={sections.productMomentum || {}} store={store} dateRange={dateRange} />
+          <ProductMomentumSection store={store} />
         </SectionCard>
 
         <SectionCard
