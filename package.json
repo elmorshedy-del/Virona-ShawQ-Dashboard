@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "google-ads:refresh-token": "node server/scripts/generateGoogleAdsRefreshToken.js"
+    "google-ads:refresh-token": "node server/scripts/generateGoogleAdsRefreshToken.js",
+    "campaign-intelligence:train-daily": "node server/scripts/campaignIntelligenceDailyTrainer.js",
+    "campaign-intelligence:learning-health": "node server/scripts/campaignIntelligenceLearningHealth.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

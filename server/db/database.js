@@ -264,6 +264,41 @@ export function initDb() {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      model_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 0,
+      trained_at TEXT NOT NULL,
+      artifact_json TEXT NOT NULL,
+      metrics_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, model_version)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_training_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_date TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL,
+      stores_scanned INTEGER DEFAULT 0,
+      scopes_scanned INTEGER DEFAULT 0,
+      models_scanned INTEGER DEFAULT 0,
+      versions_promoted INTEGER DEFAULT 0,
+      versions_rejected INTEGER DEFAULT 0,
+      summary_json TEXT,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);

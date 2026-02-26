@@ -50,6 +50,7 @@ import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
 import { cleanupSessionIntelligenceRaw } from './services/sessionIntelligenceService.js';
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
+import { runCampaignIntelligenceDailyTrainer } from './services/campaignIntelligence/trainer.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
 import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
 import {
@@ -690,6 +691,16 @@ scheduleGmt3DailyJob('Meta day-turn sync', dayTurnMetaSync);
 
 setTimeout(syncDailyExchangeRate, 10000); // Run shortly after startup
 scheduleGmt3DailyJob('daily exchange rate sync', syncDailyExchangeRate);
+setTimeout(() => {
+  runCampaignIntelligenceDailyTrainer()
+    .then((result) => {
+      console.log('[Campaign Intelligence Trainer] Startup run complete:', result);
+    })
+    .catch((error) => {
+      console.warn('[Campaign Intelligence Trainer] Startup run failed:', error?.message || error);
+    });
+}, 30000);
+scheduleGmt3DailyJob('campaign intelligence daily trainer', runCampaignIntelligenceDailyTrainer);
 
 setTimeout(() => {
   const bootstrapDays = resolveExchangeBootstrapDays();
