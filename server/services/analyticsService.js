@@ -2,6 +2,12 @@ import { getCountryInfo, getAllCountries } from '../utils/countryData.js';
 import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { fetchGoogleCampaignHierarchy } from './googleAdsService.js';
+import fetch from 'node-fetch';
+import {
+  extractMetaCreativeThumbnailUrl,
+  extractMetaCreativeVideoId,
+  extractBestMetaVideoThumbnailUrl
+} from '../utils/metaCreativeMedia.js';
 
 // Import Meta Awareness feature module for consistent status filtering
 import {
@@ -15,6 +21,10 @@ const SALLA_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
 
 const PERFORMANCE_PULSE_LIMIT = 4;
 const PERFORMANCE_PULSE_SIGNAL_DELTA_THRESHOLD = 0.05;
+const PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS = Object.freeze({
+  previousDay: -1,
+  previousWeek: -7
+});
 const PERFORMANCE_PULSE_SIGNAL_WEIGHTS = {
   roas: 0.7,
   orders: 0.3
@@ -32,6 +42,10 @@ const PERFORMANCE_PULSE_LOW_ROAS_WEIGHT = 6;
 const PERFORMANCE_PULSE_ZERO_ORDER_DRAGGER_BONUS = 30;
 const PERFORMANCE_PULSE_ZERO_ORDER_SPEND_WEIGHT = 1;
 const PERFORMANCE_PULSE_SIGNAL_DOWN_BONUS = 4;
+const PERFORMANCE_PULSE_META_THUMBNAIL_FETCH_LIMIT = 12;
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v19.0';
+const META_GRAPH_BASE_URL = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+const META_GRAPH_NODE_ID_PATTERN = /^[0-9]{5,32}$/;
 
 // ============================================================================
 // DATE HELPERS
@@ -455,14 +469,26 @@ function resolvePulseSignal(currentSnapshot, baselineSnapshot, options = {}) {
     totalWeight += weights.revenue;
   }
 
-  if (totalWeight <= 0) return 'flat';
-  return toSignal(weightedTotal / totalWeight);
+  if (totalWeight <= 0) {
+    return { direction: 'flat', deltaPct: 0 };
+  }
+
+  const weightedDelta = weightedTotal / totalWeight;
+  return {
+    direction: toSignal(weightedDelta),
+    deltaPct: weightedDelta * 100
+  };
 }
 
 function resolvePulseSignals(currentSnapshot, previousDaySnapshot, previousWeekSnapshot, options = {}) {
+  const daySignal = resolvePulseSignal(currentSnapshot, previousDaySnapshot, options);
+  const weekSignal = resolvePulseSignal(currentSnapshot, previousWeekSnapshot, options);
+
   return {
-    day: resolvePulseSignal(currentSnapshot, previousDaySnapshot, options),
-    week: resolvePulseSignal(currentSnapshot, previousWeekSnapshot, options)
+    day: daySignal.direction,
+    week: weekSignal.direction,
+    dayDeltaPct: daySignal.deltaPct,
+    weekDeltaPct: weekSignal.deltaPct
   };
 }
 
@@ -498,6 +524,17 @@ function sortByUnderperformingRisk(a, b) {
   return (b.revenue || 0) - (a.revenue || 0);
 }
 
+function sortByDailyTopPerformance(a, b) {
+  const ordersDelta = (b.orders || 0) - (a.orders || 0);
+  if (ordersDelta !== 0) return ordersDelta;
+
+  const roasA = Number.isFinite(a.roas) ? a.roas : -1;
+  const roasB = Number.isFinite(b.roas) ? b.roas : -1;
+  if (roasB !== roasA) return roasB - roasA;
+
+  return (b.spend || 0) - (a.spend || 0);
+}
+
 function tableExists(db, tableName) {
   if (!tableName) return false;
   const row = db.prepare(`
@@ -531,6 +568,112 @@ function getCountryOrdersSourceConfig(store) {
   return null;
 }
 
+function getMetaAccessTokenForStore(store) {
+  if (store === 'shawq') {
+    return String(process.env.SHAWQ_META_ACCESS_TOKEN || '').trim();
+  }
+  return String(process.env.META_ACCESS_TOKEN || process.env.VIRONAX_META_ACCESS_TOKEN || '').trim();
+}
+
+function normalizeMetaGraphNodeId(rawId) {
+  const normalized = String(rawId || '').trim().replace(/^act_/, '');
+  return META_GRAPH_NODE_ID_PATTERN.test(normalized) ? normalized : '';
+}
+
+async function fetchMetaCreativeThumbnailUrlByAdId(adId, accessToken) {
+  const fields = 'creative{thumbnail_url,image_url,object_story_spec{video_data,link_data,photo_data},asset_feed_spec{videos,images}}';
+  const params = new URLSearchParams({
+    fields,
+    access_token: accessToken
+  });
+  const url = `${META_GRAPH_BASE_URL}/${encodeURIComponent(adId)}?${params.toString()}`;
+
+  try {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    const creative = payload?.creative || payload?.data?.creative || null;
+    const creativeThumbnailUrl = extractMetaCreativeThumbnailUrl(creative);
+    const videoId = normalizeMetaGraphNodeId(extractMetaCreativeVideoId(creative));
+
+    if (!videoId) {
+      return creativeThumbnailUrl;
+    }
+
+    const videoThumbnailUrl = await fetchMetaVideoBestThumbnailUrlByVideoId(videoId, accessToken);
+    return videoThumbnailUrl || creativeThumbnailUrl;
+  } catch (error) {
+    console.warn('[Analytics] Failed to fetch Meta creative thumbnail', {
+      adId,
+      error: error?.message || String(error)
+    });
+    return null;
+  }
+}
+
+async function fetchMetaVideoBestThumbnailUrlByVideoId(videoId, accessToken) {
+  const normalizedVideoId = normalizeMetaGraphNodeId(videoId);
+  if (!normalizedVideoId) return null;
+
+  const params = new URLSearchParams({
+    fields: 'picture,thumbnails{uri,height,width}',
+    access_token: accessToken
+  });
+  const url = `${META_GRAPH_BASE_URL}/${encodeURIComponent(normalizedVideoId)}?${params.toString()}`;
+
+  try {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    return extractBestMetaVideoThumbnailUrl(payload);
+  } catch (error) {
+    console.warn('[Analytics] Failed to fetch Meta video thumbnails', {
+      videoId: normalizedVideoId,
+      error: error?.message || String(error)
+    });
+    return null;
+  }
+}
+
+async function getMetaCreativeThumbnailMap(store, adIds = []) {
+  const accessToken = getMetaAccessTokenForStore(store);
+  if (!accessToken || !Array.isArray(adIds) || adIds.length === 0) {
+    return new Map();
+  }
+
+  const uniqueAdIds = Array.from(new Set(
+    adIds
+      .map((id) => normalizeMetaGraphNodeId(id))
+      .filter(Boolean)
+  )).slice(0, PERFORMANCE_PULSE_META_THUMBNAIL_FETCH_LIMIT);
+
+  if (uniqueAdIds.length === 0) {
+    return new Map();
+  }
+
+  const thumbnailEntries = await Promise.all(
+    uniqueAdIds.map(async (adId) => {
+      const thumbnailUrl = await fetchMetaCreativeThumbnailUrlByAdId(adId, accessToken);
+      return [adId, thumbnailUrl];
+    })
+  );
+
+  const thumbnailMap = new Map();
+  thumbnailEntries.forEach(([adId, thumbnailUrl]) => {
+    if (thumbnailUrl) {
+      thumbnailMap.set(adId, thumbnailUrl);
+    }
+  });
+
+  return thumbnailMap;
+}
+
 function getSafeCountryLabel(countryCode) {
   const info = getCountryInfo(countryCode);
   return {
@@ -539,11 +682,11 @@ function getSafeCountryLabel(countryCode) {
   };
 }
 
-export function getPerformancePulse(store, params = {}) {
+export async function getPerformancePulse(store, params = {}) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
-  const previousDayDate = shiftDateKey(endDate, -1);
-  const previousWeekDate = shiftDateKey(endDate, -7);
+  const previousDayDate = shiftDateKey(endDate, PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS.previousDay);
+  const previousWeekDate = shiftDateKey(endDate, PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS.previousWeek);
   const comparisonDates = [endDate, previousDayDate, previousWeekDate].filter(Boolean);
   const comparisonDatePlaceholders = comparisonDates.map(() => '?').join(', ');
 
@@ -566,12 +709,12 @@ export function getPerformancePulse(store, params = {}) {
         SUM(${countryOrdersSource.revenueSql}) AS revenue
       FROM ${countryOrdersSource.table}
       WHERE store = ?
-        AND date BETWEEN ? AND ?
+        AND date = ?
         AND COALESCE(is_excluded, 0) = 0
         AND ${countryOrdersSource.countryColumn} IS NOT NULL
         AND ${countryOrdersSource.countryColumn} != ''
       GROUP BY ${countryOrdersSource.countryColumn}
-    `).all(store, startDate, endDate);
+    `).all(store, endDate);
 
     if (comparisonDates.length > 0) {
       dailyCountryOrderRows = db.prepare(`
@@ -597,12 +740,12 @@ export function getPerformancePulse(store, params = {}) {
       SUM(spend) AS spend
     FROM meta_daily_metrics
     WHERE store = ?
-      AND date BETWEEN ? AND ?
+      AND date = ?
       AND country IS NOT NULL
       AND country != ''
       AND country != 'ALL'${statusFilter}${campaignClause}
     GROUP BY country
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, endDate, ...campaignArgs);
 
   const dailyCountrySpendRows = comparisonDates.length > 0 ? db.prepare(`
     SELECT
@@ -702,13 +845,7 @@ export function getPerformancePulse(store, params = {}) {
     .filter((entity) => entity.orders > 0 || entity.spend > 0);
 
   const topCountries = [...countryEntities]
-    .sort((a, b) => {
-      const roasA = Number.isFinite(a.roas) ? a.roas : -1;
-      const roasB = Number.isFinite(b.roas) ? b.roas : -1;
-      if (roasB !== roasA) return roasB - roasA;
-      if (b.orders !== a.orders) return b.orders - a.orders;
-      return b.spend - a.spend;
-    })
+    .sort(sortByDailyTopPerformance)
     .slice(0, PERFORMANCE_PULSE_LIMIT);
 
   const underperformingCountries = [...countryEntities]
@@ -728,9 +865,9 @@ export function getPerformancePulse(store, params = {}) {
       SUM(conversion_value) AS revenue
     FROM meta_ad_metrics
     WHERE store = ?
-      AND date BETWEEN ? AND ?${adStatusFilter}${campaignClause}
+      AND date = ?${adStatusFilter}${campaignClause}
     GROUP BY ad_id
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, endDate, ...campaignArgs);
 
   const dailyAds = comparisonDates.length > 0 ? db.prepare(`
     SELECT
@@ -817,23 +954,33 @@ export function getPerformancePulse(store, params = {}) {
     })
     .filter((entity) => entity.orders > 0 || entity.spend > 0);
 
-  const topAds = [...adEntities]
-    .sort((a, b) => {
-      const roasA = Number.isFinite(a.roas) ? a.roas : -1;
-      const roasB = Number.isFinite(b.roas) ? b.roas : -1;
-      if (roasB !== roasA) return roasB - roasA;
-      if (b.orders !== a.orders) return b.orders - a.orders;
-      return b.spend - a.spend;
-    })
+  let topAds = [...adEntities]
+    .sort(sortByDailyTopPerformance)
     .slice(0, PERFORMANCE_PULSE_LIMIT);
 
-  const underperformingAds = [...adEntities]
+  let underperformingAds = [...adEntities]
     .map((entity) => ({
       ...entity,
       riskScore: calculateUnderperformingRisk(entity)
     }))
     .sort(sortByUnderperformingRisk)
     .slice(0, PERFORMANCE_PULSE_LIMIT);
+
+  const prioritizedAdIds = Array.from(new Set([
+    ...topAds.map((ad) => ad.id),
+    ...underperformingAds.map((ad) => ad.id)
+  ].filter(Boolean)));
+
+  if (prioritizedAdIds.length > 0) {
+    const metaThumbnailMap = await getMetaCreativeThumbnailMap(store, prioritizedAdIds);
+    const withHqThumbnails = (rows) => rows.map((row) => ({
+      ...row,
+      thumbnailUrl: metaThumbnailMap.get(row.id) || row.thumbnailUrl || null
+    }));
+
+    topAds = withHqThumbnails(topAds);
+    underperformingAds = withHqThumbnails(underperformingAds);
+  }
 
   const productEntities = [];
   if (store === 'shawq') {
@@ -853,14 +1000,14 @@ export function getPerformancePulse(store, params = {}) {
         ON p.store = i.store
        AND p.product_id = i.product_id
       WHERE i.store = ?
-        AND o.date BETWEEN ? AND ?
+        AND o.date = ?
         AND COALESCE(o.is_excluded, 0) = 0
         AND COALESCE(i.is_excluded, 0) = 0
       GROUP BY ${productKeySql}
       HAVING orders > 0
       ORDER BY orders DESC, revenue DESC
       LIMIT ?
-    `).all(store, startDate, endDate, PERFORMANCE_PULSE_LIMIT);
+    `).all(store, endDate, PERFORMANCE_PULSE_LIMIT);
 
     const dailyProducts = comparisonDates.length > 0 ? db.prepare(`
       SELECT
@@ -2977,8 +3124,6 @@ export function getFunnelDiagnostics(store, params) {
     const checkout = d.checkout || 0;
     const purchases = d.purchases || 0;
     const revenue = d.revenue || 0;
-
-    if (impressions === 0) return null;
 
     return {
       ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,

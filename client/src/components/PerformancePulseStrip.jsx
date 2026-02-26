@@ -11,9 +11,9 @@ const PERFORMANCE_PULSE_FALLBACK_DATA = {
 };
 
 const SIGNAL_META = {
-  up: { arrow: '↑', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-  down: { arrow: '↓', className: 'bg-rose-50 text-rose-700 border-rose-200' },
-  flat: { arrow: '→', className: 'bg-slate-100 text-slate-600 border-slate-200' }
+  up: { arrow: '▲', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  down: { arrow: '▼', className: 'bg-rose-50 text-rose-700 border-rose-200' },
+  flat: { arrow: '•', className: 'bg-slate-100 text-slate-600 border-slate-200' }
 };
 
 const asFiniteNumber = (value, fallback = 0) => {
@@ -62,19 +62,50 @@ const getSignalTone = (signal) => {
   return SIGNAL_META.flat;
 };
 
+const formatSignalDeltaLabel = (value) => {
+  const numeric = asFiniteNumber(value, 0);
+  const abs = Math.abs(numeric);
+  const precision = abs >= 10 ? 0 : 1;
+  const fixed = numeric.toFixed(precision);
+  const signed = numeric > 0 ? `+${fixed}` : fixed;
+  return `${signed}%`;
+};
+
+function SignalChip({ label, signal, deltaPct }) {
+  const tone = getSignalTone(signal);
+  const deltaLabel = formatSignalDeltaLabel(deltaPct);
+
+  return (
+    <span className={`inline-flex h-5 min-w-[54px] items-center justify-center rounded-md border px-1.5 text-[10px] font-semibold ${tone.className}`}>
+      {label} {tone.arrow} {deltaLabel}
+    </span>
+  );
+}
+
 function SignalPair({ signals = {} }) {
-  const dayTone = getSignalTone(signals?.day);
-  const weekTone = getSignalTone(signals?.week);
+  const daySignal = signals?.day || 'flat';
+  const weekSignal = signals?.week || 'flat';
+  const dayDeltaPct = signals?.dayDeltaPct;
+  const weekDeltaPct = signals?.weekDeltaPct;
 
   return (
     <div className="flex items-center gap-1">
-      <span className={`inline-flex h-5 min-w-[30px] items-center justify-center rounded-md border px-1.5 text-[10px] font-semibold ${dayTone.className}`}>
-        D {dayTone.arrow}
-      </span>
-      <span className={`inline-flex h-5 min-w-[30px] items-center justify-center rounded-md border px-1.5 text-[10px] font-semibold ${weekTone.className}`}>
-        W {weekTone.arrow}
-      </span>
+      <SignalChip label="D-1" signal={daySignal} deltaPct={dayDeltaPct} />
+      <SignalChip label="D-7" signal={weekSignal} deltaPct={weekDeltaPct} />
     </div>
+  );
+}
+
+function CompactName({ value, className = '' }) {
+  const text = String(value || '').trim() || 'Untitled';
+
+  return (
+    <span className={`group relative block max-w-[150px] ${className}`.trim()}>
+      <span className="block truncate">{text}</span>
+      <span className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden max-w-[240px] rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white shadow-lg group-hover:block">
+        {text}
+      </span>
+    </span>
   );
 }
 
@@ -188,10 +219,24 @@ export default function PerformancePulseStrip({
 
   const rows = useMemo(() => ({
     topCountries: clipRows(pulseData?.topCountries),
+    underperformingCountries: clipRows(pulseData?.underperformingCountries),
     topAds: clipRows(pulseData?.topAds),
-    bestSellerProducts: clipRows(pulseData?.bestSellerProducts),
-    watchlist: clipRows(pulseData?.watchlist)
+    underperformingAds: clipRows(pulseData?.underperformingAds)
   }), [pulseData]);
+
+  const countryOrdersSource = String(pulseData?.countryOrdersSource || '').trim();
+  const countrySubtitle = useMemo(() => {
+    if (storeId === 'shawq') {
+      return 'Orders from Shopify + Meta spend';
+    }
+    if (!countryOrdersSource || countryOrdersSource === 'Unavailable') {
+      return 'Orders + Meta spend';
+    }
+    if (countryOrdersSource === 'Meta') {
+      return 'Orders from Meta conversions + Meta spend';
+    }
+    return `Orders from ${countryOrdersSource} + Meta spend`;
+  }, [countryOrdersSource, storeId]);
 
   if (!hasQueryContext) {
     return null;
@@ -202,7 +247,7 @@ export default function PerformancePulseStrip({
       <div className="rounded-[20px] border border-slate-200 bg-gradient-to-b from-slate-50 to-white px-3 py-3 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Daily Performance Pulse</div>
-          <div className="text-[10px] text-slate-500">Signals vs day-before and week-before</div>
+          <div className="text-[10px] text-slate-500">Signals vs day-before and 7-days-before</div>
         </div>
 
         {loading && (
@@ -220,7 +265,7 @@ export default function PerformancePulseStrip({
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
           <PulseCard
             title="Top Countries"
-            subtitle="Orders from Shopify/Salla + Meta spend"
+            subtitle={countrySubtitle}
             rows={rows.topCountries}
             emptyText="No country activity yet."
             renderRow={(country, index) => (
@@ -248,18 +293,47 @@ export default function PerformancePulseStrip({
           />
 
           <PulseCard
+            title="Dragging Countries"
+            subtitle="Lowest orders or zero-order spend draggers"
+            rows={rows.underperformingCountries}
+            emptyText="No underperforming countries found."
+            renderRow={(country, index) => (
+              <div key={country?.id || country?.code || `drag-country-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-rose-100 bg-rose-50/40 px-2 py-2">
+                <div className="min-w-0 flex items-center gap-2">
+                  <span className="text-lg leading-none">{country?.flag || '🏳️'}</span>
+                  <div className="min-w-0">
+                    <div className="truncate text-[12px] font-semibold text-slate-900" title={country?.name || country?.code}>
+                      {country?.name || country?.code || 'Unknown'}
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      {formatNumber(asFiniteNumber(country?.orders))} orders
+                    </div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="text-right">
+                    <div className="text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(country?.riskScore).toFixed(1)}</div>
+                    <div className="text-[10px] text-slate-500">
+                      ROAS {formatRoas(country?.roas)} · {formatCurrency(asFiniteNumber(country?.spend))}
+                    </div>
+                  </div>
+                  <SignalPair signals={country?.signals} />
+                </div>
+              </div>
+            )}
+          />
+
+          <PulseCard
             title="Top Ads"
             subtitle="Best current ad momentum"
             rows={rows.topAds}
             emptyText="No ad activity yet."
             renderRow={(ad, index) => (
-              <div key={ad?.id || `ad-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-white px-2 py-2">
+              <div key={ad?.id || `top-ad-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-white px-2 py-2">
                 <div className="min-w-0 flex items-center gap-2">
                   <EntityThumb thumbnailUrl={ad?.thumbnailUrl} fallback="A" />
                   <div className="min-w-0">
-                    <div className="truncate text-[12px] font-semibold text-slate-900" title={ad?.name}>
-                      {ad?.name || 'Untitled ad'}
-                    </div>
+                    <CompactName value={ad?.name} className="text-[12px] font-semibold text-slate-900" />
                     <div className="text-[10px] text-slate-500">
                       {formatNumber(asFiniteNumber(ad?.orders))} orders
                     </div>
@@ -277,72 +351,32 @@ export default function PerformancePulseStrip({
           />
 
           <PulseCard
-            title="Best Seller"
-            subtitle="Top product in selected range"
-            rows={rows.bestSellerProducts}
-            emptyText="No product order items found."
-            renderRow={(product, index) => (
-              <div key={product?.id || `product-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-white px-2 py-2">
+            title="Dragging Ads"
+            subtitle="Lowest orders or zero-order spend draggers"
+            rows={rows.underperformingAds}
+            emptyText="No underperforming ads found."
+            renderRow={(ad, index) => (
+              <div key={ad?.id || `drag-ad-${index}`} className="flex items-center justify-between gap-2 rounded-xl border border-rose-100 bg-rose-50/40 px-2 py-2">
                 <div className="min-w-0 flex items-center gap-2">
-                  <EntityThumb thumbnailUrl={product?.thumbnailUrl} fallback="P" />
+                  <EntityThumb thumbnailUrl={ad?.thumbnailUrl} fallback="A" />
                   <div className="min-w-0">
-                    <div className="truncate text-[12px] font-semibold text-slate-900" title={product?.name}>
-                      {product?.name || 'Untitled product'}
-                    </div>
+                    <CompactName value={ad?.name} className="text-[12px] font-semibold text-slate-900" />
                     <div className="text-[10px] text-slate-500">
-                      {formatNumber(asFiniteNumber(product?.orders))} orders
+                      {formatNumber(asFiniteNumber(ad?.orders))} orders
                     </div>
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <div className="text-right">
-                    <div className="text-[11px] font-semibold text-slate-900">{formatCurrency(asFiniteNumber(product?.revenue))}</div>
-                    <div className="text-[10px] text-slate-500">Revenue</div>
+                    <div className="text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(ad?.riskScore).toFixed(1)}</div>
+                    <div className="text-[10px] text-slate-500">
+                      ROAS {formatRoas(ad?.roas)} · {formatCurrency(asFiniteNumber(ad?.spend))}
+                    </div>
                   </div>
-                  <SignalPair signals={product?.signals} />
+                  <SignalPair signals={ad?.signals} />
                 </div>
               </div>
             )}
-          />
-
-          <PulseCard
-            title="Watchlist"
-            subtitle="Lowest orders or zero-order spend draggers"
-            rows={rows.watchlist}
-            emptyText="No underperforming entities found."
-            renderRow={(entry, index) => {
-              const fallback = entry?.entityType === 'country' ? '🌍' : 'A';
-              const prefix = entry?.entityType === 'country'
-                ? (entry?.flag || '🌍')
-                : <EntityThumb thumbnailUrl={entry?.thumbnailUrl} fallback={fallback} />;
-
-              return (
-                <div key={`${entry?.entityType || 'entity'}-${entry?.id || index}`} className="flex items-center justify-between gap-2 rounded-xl border border-rose-100 bg-rose-50/40 px-2 py-2">
-                  <div className="min-w-0 flex items-center gap-2">
-                    {typeof prefix === 'string' ? (
-                      <span className="text-lg leading-none">{prefix}</span>
-                    ) : (
-                      prefix
-                    )}
-                    <div className="min-w-0">
-                      <div className="truncate text-[12px] font-semibold text-slate-900" title={entry?.name}>
-                        {entry?.name || 'Unknown'}
-                      </div>
-                      <div className="text-[10px] text-slate-500">
-                        {formatNumber(asFiniteNumber(entry?.orders))} orders · {formatCurrency(asFiniteNumber(entry?.spend))}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <div className="text-right">
-                      <div className="text-[11px] font-semibold text-rose-700">Risk {asFiniteNumber(entry?.riskScore).toFixed(1)}</div>
-                      <div className="text-[10px] text-slate-500">ROAS {formatRoas(entry?.roas)}</div>
-                    </div>
-                    <SignalPair signals={entry?.signals} />
-                  </div>
-                </div>
-              );
-            }}
           />
         </div>
       </div>

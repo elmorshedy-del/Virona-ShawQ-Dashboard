@@ -46,10 +46,10 @@ router.get('/dashboard', (req, res) => {
 });
 
 // Performance pulse cards (compact second hierarchy under KPI cards)
-router.get('/performance-pulse', (req, res) => {
+router.get('/performance-pulse', async (req, res) => {
   try {
     const store = req.query.store || 'vironax';
-    const data = getPerformancePulse(store, req.query);
+    const data = await getPerformancePulse(store, req.query);
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Analytics] Performance pulse error:', error);
