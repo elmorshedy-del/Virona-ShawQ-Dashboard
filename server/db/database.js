@@ -162,6 +162,19 @@ export function initDb() {
     )
   `);
 
+  // Campaign intelligence persistent learning state (tenant + scope scoped).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_learning_state (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key)
+    )
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);

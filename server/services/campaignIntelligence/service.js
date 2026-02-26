@@ -31,6 +31,7 @@ import {
   listDateRange,
   round
 } from './utils.js';
+import { loadLearningState, saveLearningState } from './learningState.js';
 
 const SNAPSHOT_CACHE_TTL_MS = 45 * 1000;
 const SNAPSHOT_CACHE_MAX_ENTRIES = 80;
@@ -151,6 +152,24 @@ function buildSnapshotCacheKey(query = {}) {
   return SNAPSHOT_CACHE_QUERY_KEYS
     .map((key) => `${key}=${String(query?.[key] ?? '').trim()}`)
     .join('&');
+}
+
+function buildLearningStateScopeKey({
+  level,
+  entityId,
+  country,
+  sentinelPreset,
+  headroomPreset,
+  launchPreset
+}) {
+  return [
+    `level:${level || 'campaign'}`,
+    `entity:${entityId || 'all'}`,
+    `country:${country || 'ALL'}`,
+    `sentinel:${sentinelPreset || 'balanced'}`,
+    `headroom:${headroomPreset || 'balanced'}`,
+    `launch:${launchPreset || 'balanced'}`
+  ].join('|');
 }
 
 function pruneSnapshotCache() {
@@ -296,8 +315,20 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
   const shockAwareSeries = buildShockAwareSeries(analysisSeries);
   const shockAwareBaselineSeries = buildShockAwareSeries(baselineData.baselineSeries);
   const shockAwarePeerSeries = buildShockAwareSeries(baselineData.peerSeries);
+  const learningScopeKey = buildLearningStateScopeKey({
+    level: scope.level,
+    entityId: selectedEntityId,
+    country: scope.country,
+    sentinelPreset: modelSettings.sentinelPreset,
+    headroomPreset: modelSettings.headroomPreset,
+    launchPreset: modelSettings.launchPreset
+  });
 
   const modelBundle = buildModelBundle({
+    previousLearningState: loadLearningState({
+      store: scope.store,
+      scopeKey: learningScopeKey
+    }),
     analysisSeries: shockAwareSeries,
     anchorSeries: shockAwareBaselineSeries,
     baselineSeries: shockAwarePeerSeries,
@@ -311,6 +342,12 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     targetCpa: modelSettings.targetCpa,
     targetHorizonDays: modelSettings.targetHorizonDays,
     seedKey: `${scope.store}:${scope.level}:${selectedEntityId || 'all'}:${scope.country}:${scope.analysisRange.endDate}`
+  });
+
+  saveLearningState({
+    store: scope.store,
+    scopeKey: learningScopeKey,
+    state: modelBundle.learningState
   });
 
   const budgetMonitor = buildBudgetChangeMonitor(shockAwareSeries, budgetHistoryEvents);

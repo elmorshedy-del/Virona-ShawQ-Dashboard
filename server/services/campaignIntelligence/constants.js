@@ -253,6 +253,11 @@ export const BUDGET_MONITOR_CONFIG = Object.freeze({
   })
 });
 
+export const LEARNING_STATE_CONFIG = Object.freeze({
+  ewmaAlpha: 0.35,
+  minimumPointsForPersistence: 3
+});
+
 export const METRIC_DIRECTION = Object.freeze({
   spend: 'neutral',
   reach: 'higher_better',
