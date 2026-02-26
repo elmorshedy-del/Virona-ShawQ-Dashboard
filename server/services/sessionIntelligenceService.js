@@ -46,6 +46,11 @@ const JOURNEY_ENTRY_FALLBACK_SESSION_CHUNK = 250;
 const JOURNEY_ENTRY_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 const JOURNEY_PRODUCT_ID_PREVIEW_CHARS = 14;
 const UNKNOWN_EVENT_NAME = 'unknown';
+const SESSION_INTELLIGENCE_EXTERNAL_ID_MAX_LENGTH = 160;
+const SESSION_INTELLIGENCE_EXTERNAL_ID_LOOKBACK_DAYS = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_EXTERNAL_ID_LOOKBACK_DAYS || '30', 10) || 30, 1),
+  180
+);
 const MIN_SESSIONS_FOR_SCROLL_DROPOFF = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_SCROLL_DROPOFF_MIN_SESSIONS || '8', 10) || 8, 1),
   500
@@ -189,6 +194,16 @@ function safeTruncate(value, max = 240) {
   const str = safeString(value);
   if (!str) return null;
   return str.length > max ? str.slice(0, max) : str;
+}
+
+function normalizeExternalUserId(value) {
+  const normalized = safeString(value).replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+  const lowered = normalized.toLowerCase();
+  if (lowered === 'unknown' || lowered === 'null' || lowered === 'undefined' || lowered === 'n/a') {
+    return null;
+  }
+  return normalized.slice(0, SESSION_INTELLIGENCE_EXTERNAL_ID_MAX_LENGTH);
 }
 
 function safeDecodeUriComponent(value) {
@@ -1359,6 +1374,64 @@ function findRecentClientCampaign(db, store, clientId) {
   return safeJsonParse(row?.last_campaign_json);
 }
 
+function findRecentExternalUserIdBySession(db, store, sessionId) {
+  if (!sessionId) return null;
+  try {
+    const row = db.prepare(`
+      SELECT last_external_user_id
+      FROM si_sessions
+      WHERE store = ?
+        AND session_id = ?
+        AND COALESCE(last_external_user_id, '') != ''
+      LIMIT 1
+    `).get(store, sessionId);
+    return normalizeExternalUserId(row?.last_external_user_id);
+  } catch (error) {
+    if (shouldUseSchemaFallback(error)) return null;
+    throw error;
+  }
+}
+
+function findRecentExternalUserIdByCheckoutToken(db, store, checkoutToken) {
+  if (!checkoutToken) return null;
+  try {
+    const row = db.prepare(`
+      SELECT last_external_user_id
+      FROM si_sessions
+      WHERE store = ?
+        AND last_checkout_token = ?
+        AND COALESCE(last_external_user_id, '') != ''
+        AND COALESCE(last_event_at, updated_at, created_at) >= datetime('now', ?)
+      ORDER BY COALESCE(last_event_at, updated_at, created_at) DESC
+      LIMIT 1
+    `).get(store, checkoutToken, `-${SESSION_INTELLIGENCE_EXTERNAL_ID_LOOKBACK_DAYS} days`);
+    return normalizeExternalUserId(row?.last_external_user_id);
+  } catch (error) {
+    if (shouldUseSchemaFallback(error)) return null;
+    throw error;
+  }
+}
+
+function findRecentExternalUserIdByClient(db, store, clientId) {
+  if (!clientId) return null;
+  try {
+    const row = db.prepare(`
+      SELECT last_external_user_id
+      FROM si_sessions
+      WHERE store = ?
+        AND client_id = ?
+        AND COALESCE(last_external_user_id, '') != ''
+        AND COALESCE(last_event_at, updated_at, created_at) >= datetime('now', ?)
+      ORDER BY COALESCE(last_event_at, updated_at, created_at) DESC
+      LIMIT 1
+    `).get(store, clientId, `-${SESSION_INTELLIGENCE_EXTERNAL_ID_LOOKBACK_DAYS} days`);
+    return normalizeExternalUserId(row?.last_external_user_id);
+  } catch (error) {
+    if (shouldUseSchemaFallback(error)) return null;
+    throw error;
+  }
+}
+
 function extractAttributionFields(campaign) {
   if (!campaign || typeof campaign !== 'object') {
     return {
@@ -1462,6 +1535,76 @@ function extractLocation(payload) {
   return { pageUrl: null, pagePath: null, checkoutToken: null, checkoutStep: null, campaign: null };
 }
 
+function extractExternalIdentity(payload) {
+  const envelope = getEventEnvelope(payload);
+  const eventData = getEventData(payload);
+  const externalUserCandidates = [
+    payload?.external_user_id,
+    payload?.externalUserId,
+    payload?.event?.external_user_id,
+    payload?.event?.externalUserId,
+    payload?.context?.external_user_id,
+    payload?.context?.externalUserId,
+    payload?.context?.identity?.external_user_id,
+    payload?.context?.identity?.externalUserId,
+    payload?.context?.user?.id,
+    payload?.context?.customer?.id,
+    payload?.data?.external_user_id,
+    payload?.data?.externalUserId,
+    envelope?.external_user_id,
+    envelope?.externalUserId,
+    envelope?.context?.external_user_id,
+    envelope?.context?.externalUserId,
+    envelope?.context?.identity?.external_user_id,
+    envelope?.context?.identity?.externalUserId,
+    envelope?.context?.user?.id,
+    envelope?.context?.customer?.id,
+    eventData?.external_user_id,
+    eventData?.externalUserId,
+    eventData?._si?.external_user_id,
+    eventData?._si?.externalUserId
+  ];
+
+  let externalUserId = null;
+  for (const value of externalUserCandidates) {
+    externalUserId = normalizeExternalUserId(value);
+    if (externalUserId) break;
+  }
+
+  const shopifyClientCandidates = [
+    payload?.shopify_client_id,
+    payload?.shopifyClientId,
+    payload?.event?.shopify_client_id,
+    payload?.event?.shopifyClientId,
+    payload?.context?.shopify_client_id,
+    payload?.context?.shopifyClientId,
+    payload?.context?.identity?.shopify_client_id,
+    payload?.context?.identity?.shopifyClientId,
+    envelope?.shopify_client_id,
+    envelope?.shopifyClientId,
+    envelope?.context?.shopify_client_id,
+    envelope?.context?.shopifyClientId,
+    envelope?.context?.identity?.shopify_client_id,
+    envelope?.context?.identity?.shopifyClientId,
+    eventData?.shopify_client_id,
+    eventData?.shopifyClientId,
+    eventData?._si?.shopify_client_id,
+    eventData?._si?.shopifyClientId
+  ];
+
+  let shopifyClientId = null;
+  for (const value of shopifyClientCandidates) {
+    const normalized = safeTruncate(value, SESSION_INTELLIGENCE_EXTERNAL_ID_MAX_LENGTH);
+    if (!normalized) continue;
+    const trimmed = normalized.trim();
+    if (!trimmed) continue;
+    shopifyClientId = trimmed;
+    break;
+  }
+
+  return { externalUserId, shopifyClientId };
+}
+
 function extractSessionIdentifiers(payload) {
   const envelope = getEventEnvelope(payload);
   const sessionCandidates = [
@@ -1482,16 +1625,28 @@ function extractSessionIdentifiers(payload) {
   const clientCandidates = [
     payload?.event?.context?.clientId,
     payload?.event?.context?.client_id,
+    payload?.event?.context?.shopifyClientId,
+    payload?.event?.context?.shopify_client_id,
     payload?.event?.clientId,
     payload?.event?.client_id,
+    payload?.event?.shopifyClientId,
+    payload?.event?.shopify_client_id,
     payload?.context?.clientId,
     payload?.context?.client_id,
+    payload?.context?.shopifyClientId,
+    payload?.context?.shopify_client_id,
     payload?.clientId,
     payload?.client_id,
+    payload?.shopifyClientId,
+    payload?.shopify_client_id,
     envelope?.context?.clientId,
     envelope?.context?.client_id,
+    envelope?.context?.shopifyClientId,
+    envelope?.context?.shopify_client_id,
     envelope?.clientId,
-    envelope?.client_id
+    envelope?.client_id,
+    envelope?.shopifyClientId,
+    envelope?.shopify_client_id
   ];
 
   let sessionId = null;
@@ -1895,6 +2050,7 @@ function tryRecordSessionIntelligenceEventFallback({
   normalizedStore,
   sessionId,
   clientId,
+  externalUserId,
   shopperNumber,
   source,
   eventName,
@@ -1927,6 +2083,7 @@ function tryRecordSessionIntelligenceEventFallback({
     store: normalizedStore,
     session_id: sessionId,
     client_id: clientId,
+    external_user_id: externalUserId,
     shopper_number: shopperNumber,
     source,
     event_name: eventName,
@@ -1960,6 +2117,7 @@ function tryRecordSessionIntelligenceEventFallback({
     store: normalizedStore,
     session_id: sessionId,
     client_id: clientId,
+    last_external_user_id: externalUserId,
     started_at: eventTs,
     last_event_at: eventTs,
     entry_event_ts: entryCandidate?.entry_event_ts || null,
@@ -2005,6 +2163,7 @@ function tryRecordSessionIntelligenceEventFallback({
 
       const updatePayload = {
         client_id: clientId || undefined,
+        last_external_user_id: externalUserId || undefined,
         last_event_at: eventTs,
         entry_event_ts: shouldSetEntry ? (entryCandidate?.entry_event_ts || undefined) : undefined,
         entry_event_name: shouldSetEntry ? (entryCandidate?.entry_event_name || undefined) : undefined,
@@ -2063,6 +2222,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
 
   const location = extractLocation(payload);
   const identifiers = extractSessionIdentifiers(payload);
+  const externalIdentity = extractExternalIdentity(payload);
   const { deviceType, deviceOs } = inferDeviceInfo(payload);
   const countryCode = extractCountryCode(payload);
   const product = extractProductIdentifiers(eventDataRaw);
@@ -2075,10 +2235,23 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     inferCheckoutStepFromEvent(eventName, eventDataRaw) ||
     null;
 
-  const clientId = identifiers.clientId || null;
+  let clientId = identifiers.clientId || externalIdentity.shopifyClientId || null;
+  let externalUserId = externalIdentity.externalUserId || null;
   const linkedSessionId = checkoutToken
     ? findSessionIdByCheckoutToken(db, normalizedStore, checkoutToken)
     : null;
+
+  if (!externalUserId) {
+    externalUserId =
+      findRecentExternalUserIdBySession(db, normalizedStore, linkedSessionId || identifiers.sessionId) ||
+      findRecentExternalUserIdByCheckoutToken(db, normalizedStore, checkoutToken) ||
+      findRecentExternalUserIdByClient(db, normalizedStore, clientId) ||
+      null;
+  }
+
+  if (!clientId && externalUserId) {
+    clientId = `ext:${externalUserId}`;
+  }
 
   if (shouldSkipLowSignalEvent({
     eventName,
@@ -2147,6 +2320,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
   if (deviceType) siMeta.device_type = deviceType;
   if (deviceOs) siMeta.device_os = deviceOs;
   if (countryCode) siMeta.country_code = countryCode;
+  if (externalUserId) siMeta.external_user_id = externalUserId;
   if (resolvedCampaign) siMeta.campaign = resolvedCampaign;
   if (product?.productId) siMeta.product_id = product.productId;
   if (product?.variantId) siMeta.variant_id = product.variantId;
@@ -2164,6 +2338,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       store,
       session_id,
       client_id,
+      external_user_id,
       shopper_number,
       source,
       event_name,
@@ -2191,7 +2366,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       irclickid,
       data_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const now = normalizeSqliteDateTime();
@@ -2203,6 +2378,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       session_id,
       session_number,
       client_id,
+      last_external_user_id,
       started_at,
       last_event_at,
       entry_event_ts,
@@ -2256,11 +2432,13 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       ?,
       ?,
       ?,
+      ?,
       ?
     )
     ON CONFLICT(store, session_id) DO UPDATE SET
       session_number = COALESCE(si_sessions.session_number, excluded.session_number),
       client_id = COALESCE(excluded.client_id, si_sessions.client_id),
+      last_external_user_id = COALESCE(excluded.last_external_user_id, si_sessions.last_external_user_id),
       started_at = CASE
         WHEN si_sessions.started_at IS NULL THEN excluded.started_at
         WHEN excluded.started_at IS NULL THEN si_sessions.started_at
@@ -2416,6 +2594,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       normalizedStore,
       sessionId,
       clientId,
+      externalUserId,
       shopperNumber,
       source,
       eventName,
@@ -2449,6 +2628,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       sessionId,
       sessionNumber,
       clientId,
+      externalUserId,
       eventTs,
       eventTs,
       entryCandidate?.entry_event_ts || null,
@@ -2496,6 +2676,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       normalizedStore,
       sessionId,
       clientId,
+      externalUserId,
       shopperNumber,
       source,
       eventName,
@@ -2530,6 +2711,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       eventTs,
       checkoutToken,
       checkoutStep,
+      externalUserId,
       degradedWrite: true
     };
   }
@@ -2543,6 +2725,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     eventTs,
     checkoutToken,
     checkoutStep,
+    externalUserId,
     degradedWrite: false
   };
 }
@@ -5267,6 +5450,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
   const max = Math.min(Math.max(parseInt(limit, 10) || 800, 1), 5000);
   const range = dayRangeUtc(dateStr);
   if (!range) return [];
+  const externalUserIdSelect = buildSiEventsExternalUserIdSelect(db, { alias: 'e' });
 
   if (sessionId) {
     return db.prepare(`
@@ -5275,6 +5459,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
         e.store,
         e.session_id,
         s.session_number,
+        ${externalUserIdSelect},
         e.event_name,
         e.event_ts,
         e.page_path,
@@ -5320,6 +5505,7 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
       e.store,
       e.session_id,
       s.session_number,
+      ${externalUserIdSelect},
       e.event_name,
       e.event_ts,
       e.page_path,
@@ -5360,11 +5546,13 @@ export function getSessionIntelligenceEventsForDay(store, dateStr, { sessionId =
 export function getSessionIntelligenceEventsForSession(store, sessionId, limit = 1200) {
   const db = getDb();
   const max = Math.min(Math.max(parseInt(limit, 10) || 1200, 1), 5000);
+  const externalUserIdSelect = buildSiEventsExternalUserIdSelect(db);
   return db.prepare(`
     SELECT
       id,
       store,
       session_id,
+      ${externalUserIdSelect},
       event_name,
       event_ts,
       page_path,
@@ -5407,6 +5595,13 @@ function buildAiTimeline(events) {
     utm_campaign: e.utm_campaign || null,
     utm_source: e.utm_source || null
   }));
+}
+
+function buildSiEventsExternalUserIdSelect(db, { alias = null } = {}) {
+  const columns = getTableColumnSet(db, 'si_events');
+  const columnExpr = alias ? `${alias}.external_user_id` : 'external_user_id';
+  if (columns.has('external_user_id')) return `${columnExpr} AS external_user_id`;
+  return 'NULL AS external_user_id';
 }
 
 export async function analyzeSessionIntelligenceSession({

@@ -75,6 +75,11 @@ If you want Clarity‑style signals (rage clicks, dead clicks, scroll depth, JS 
 
 This works on Shopify and also works on non‑Shopify sites (custom storefronts, WooCommerce, etc.).
 
+Identity stitching notes:
+
+- The script passively reads `window.dataLayer` for an existing `user_id`/`userId` value and forwards it as `external_user_id` (no GTM/dataLayer rewrite required).
+- On Shopify storefronts, it also forwards `_shopify_y` as `shopify_client_id` to improve journey stitching between storefront events and checkout events.
+
 ### Legacy (inline) click tracking snippet
 
 If you only want the original extra UI clicks (e.g. “Size chart” open **and out‑of‑stock size clicks**) without the universal script, add this just before `</body>` in `layout/theme.liquid`:
