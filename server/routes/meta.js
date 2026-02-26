@@ -1,7 +1,10 @@
 import express from 'express';
 import { timingSafeEqual } from 'crypto';
 import fetch from 'node-fetch';
-import { extractMetaCreativeThumbnailUrl } from '../utils/metaCreativeMedia.js';
+import {
+  extractMetaCreativeThumbnailUrl,
+  extractBestMetaVideoThumbnailUrl
+} from '../utils/metaCreativeMedia.js';
 
 const router = express.Router();
 
@@ -1026,20 +1029,7 @@ router.get('/ads/:adId/video', async (req, res) => {
   }
 
   const videoData = videoResult.data || {};
-  const thumbnails = Array.isArray(videoData?.thumbnails?.data) ? videoData.thumbnails.data : [];
-  const bestThumbnail = thumbnails.reduce((best, item) => {
-    if (!item?.uri) return best;
-    if (!best) return item;
-    const bestArea = (Number(best.width) || 0) * (Number(best.height) || 0);
-    const itemArea = (Number(item.width) || 0) * (Number(item.height) || 0);
-    if (itemArea > bestArea) return item;
-    return best;
-  }, null);
-  const thumbnailUrl =
-    bestThumbnail?.uri ||
-    videoData?.picture ||
-    thumbnails[0]?.uri ||
-    null;
+  const thumbnailUrl = extractBestMetaVideoThumbnailUrl(videoData);
 
   res.json({
     video_id: videoId,

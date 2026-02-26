@@ -3,7 +3,11 @@ import { getDb } from '../db/database.js';
 import { formatDateAsGmt3 } from '../utils/dateUtils.js';
 import { fetchGoogleCampaignHierarchy } from './googleAdsService.js';
 import fetch from 'node-fetch';
-import { extractMetaCreativeThumbnailUrl } from '../utils/metaCreativeMedia.js';
+import {
+  extractMetaCreativeThumbnailUrl,
+  extractMetaCreativeVideoId,
+  extractBestMetaVideoThumbnailUrl
+} from '../utils/metaCreativeMedia.js';
 
 // Import Meta Awareness feature module for consistent status filtering
 import {
@@ -592,10 +596,45 @@ async function fetchMetaCreativeThumbnailUrlByAdId(adId, accessToken) {
 
     const payload = await response.json();
     const creative = payload?.creative || payload?.data?.creative || null;
-    return extractMetaCreativeThumbnailUrl(creative);
+    const creativeThumbnailUrl = extractMetaCreativeThumbnailUrl(creative);
+    const videoId = normalizeMetaGraphNodeId(extractMetaCreativeVideoId(creative));
+
+    if (!videoId) {
+      return creativeThumbnailUrl;
+    }
+
+    const videoThumbnailUrl = await fetchMetaVideoBestThumbnailUrlByVideoId(videoId, accessToken);
+    return videoThumbnailUrl || creativeThumbnailUrl;
   } catch (error) {
     console.warn('[Analytics] Failed to fetch Meta creative thumbnail', {
       adId,
+      error: error?.message || String(error)
+    });
+    return null;
+  }
+}
+
+async function fetchMetaVideoBestThumbnailUrlByVideoId(videoId, accessToken) {
+  const normalizedVideoId = normalizeMetaGraphNodeId(videoId);
+  if (!normalizedVideoId) return null;
+
+  const params = new URLSearchParams({
+    fields: 'picture,thumbnails{uri,height,width}',
+    access_token: accessToken
+  });
+  const url = `${META_GRAPH_BASE_URL}/${encodeURIComponent(normalizedVideoId)}?${params.toString()}`;
+
+  try {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    return extractBestMetaVideoThumbnailUrl(payload);
+  } catch (error) {
+    console.warn('[Analytics] Failed to fetch Meta video thumbnails', {
+      videoId: normalizedVideoId,
       error: error?.message || String(error)
     });
     return null;
@@ -885,13 +924,6 @@ export async function getPerformancePulse(store, params = {}) {
     });
   }
 
-  if (adIds.length > 0) {
-    const metaThumbnailMap = await getMetaCreativeThumbnailMap(store, adIds);
-    metaThumbnailMap.forEach((thumbnailUrl, adId) => {
-      adThumbnailMap.set(adId, thumbnailUrl);
-    });
-  }
-
   const adEntities = currentAds
     .map((row) => {
       const adId = row.adId;
@@ -922,17 +954,33 @@ export async function getPerformancePulse(store, params = {}) {
     })
     .filter((entity) => entity.orders > 0 || entity.spend > 0);
 
-  const topAds = [...adEntities]
+  let topAds = [...adEntities]
     .sort(sortByDailyTopPerformance)
     .slice(0, PERFORMANCE_PULSE_LIMIT);
 
-  const underperformingAds = [...adEntities]
+  let underperformingAds = [...adEntities]
     .map((entity) => ({
       ...entity,
       riskScore: calculateUnderperformingRisk(entity)
     }))
     .sort(sortByUnderperformingRisk)
     .slice(0, PERFORMANCE_PULSE_LIMIT);
+
+  const prioritizedAdIds = Array.from(new Set([
+    ...topAds.map((ad) => ad.id),
+    ...underperformingAds.map((ad) => ad.id)
+  ].filter(Boolean)));
+
+  if (prioritizedAdIds.length > 0) {
+    const metaThumbnailMap = await getMetaCreativeThumbnailMap(store, prioritizedAdIds);
+    const withHqThumbnails = (rows) => rows.map((row) => ({
+      ...row,
+      thumbnailUrl: metaThumbnailMap.get(row.id) || row.thumbnailUrl || null
+    }));
+
+    topAds = withHqThumbnails(topAds);
+    underperformingAds = withHqThumbnails(underperformingAds);
+  }
 
   const productEntities = [];
   if (store === 'shawq') {

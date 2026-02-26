@@ -42,3 +42,41 @@ export function extractMetaCreativeThumbnailUrl(creative) {
   if (creative.thumbnail_url) return creative.thumbnail_url;
   return null;
 }
+
+export function extractMetaCreativeVideoId(creative) {
+  if (!creative) return null;
+
+  const directVideoId = creative?.object_story_spec?.video_data?.video_id;
+  if (directVideoId) return String(directVideoId);
+
+  const linkVideoId = creative?.object_story_spec?.link_data?.video_id;
+  if (linkVideoId) return String(linkVideoId);
+
+  const assetVideos = creative?.asset_feed_spec?.videos;
+  if (Array.isArray(assetVideos) && assetVideos.length > 0) {
+    const videoEntry = assetVideos.find((video) => video?.video_id) || assetVideos[0];
+    if (videoEntry?.video_id) return String(videoEntry.video_id);
+  }
+
+  const carouselElements = creative?.object_story_spec?.link_data?.child_attachments;
+  if (Array.isArray(carouselElements)) {
+    const videoElement = carouselElements.find((element) => element?.video_id);
+    if (videoElement?.video_id) return String(videoElement.video_id);
+  }
+
+  return null;
+}
+
+export function extractBestMetaVideoThumbnailUrl(videoData) {
+  const thumbnails = Array.isArray(videoData?.thumbnails?.data) ? videoData.thumbnails.data : [];
+  const bestThumbnail = thumbnails.reduce((best, item) => {
+    if (!item?.uri) return best;
+    if (!best) return item;
+    const bestArea = (Number(best.width) || 0) * (Number(best.height) || 0);
+    const itemArea = (Number(item.width) || 0) * (Number(item.height) || 0);
+    if (itemArea > bestArea) return item;
+    return best;
+  }, null);
+
+  return bestThumbnail?.uri || videoData?.picture || thumbnails[0]?.uri || null;
+}
