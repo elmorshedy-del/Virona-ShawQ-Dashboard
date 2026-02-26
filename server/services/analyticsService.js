@@ -15,6 +15,10 @@ const SALLA_REVENUE_SQL = '(COALESCE(subtotal, 0) + COALESCE(shipping, 0))';
 
 const PERFORMANCE_PULSE_LIMIT = 4;
 const PERFORMANCE_PULSE_SIGNAL_DELTA_THRESHOLD = 0.05;
+const PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS = Object.freeze({
+  previousDay: -1,
+  previousWeek: -7
+});
 const PERFORMANCE_PULSE_SIGNAL_WEIGHTS = {
   roas: 0.7,
   orders: 0.3
@@ -455,14 +459,26 @@ function resolvePulseSignal(currentSnapshot, baselineSnapshot, options = {}) {
     totalWeight += weights.revenue;
   }
 
-  if (totalWeight <= 0) return 'flat';
-  return toSignal(weightedTotal / totalWeight);
+  if (totalWeight <= 0) {
+    return { direction: 'flat', deltaPct: 0 };
+  }
+
+  const weightedDelta = weightedTotal / totalWeight;
+  return {
+    direction: toSignal(weightedDelta),
+    deltaPct: weightedDelta * 100
+  };
 }
 
 function resolvePulseSignals(currentSnapshot, previousDaySnapshot, previousWeekSnapshot, options = {}) {
+  const daySignal = resolvePulseSignal(currentSnapshot, previousDaySnapshot, options);
+  const weekSignal = resolvePulseSignal(currentSnapshot, previousWeekSnapshot, options);
+
   return {
-    day: resolvePulseSignal(currentSnapshot, previousDaySnapshot, options),
-    week: resolvePulseSignal(currentSnapshot, previousWeekSnapshot, options)
+    day: daySignal.direction,
+    week: weekSignal.direction,
+    dayDeltaPct: daySignal.deltaPct,
+    weekDeltaPct: weekSignal.deltaPct
   };
 }
 
@@ -496,6 +512,17 @@ function sortByUnderperformingRisk(a, b) {
   if ((a.orders || 0) !== (b.orders || 0)) return (a.orders || 0) - (b.orders || 0);
   if ((b.spend || 0) !== (a.spend || 0)) return (b.spend || 0) - (a.spend || 0);
   return (b.revenue || 0) - (a.revenue || 0);
+}
+
+function sortByDailyTopPerformance(a, b) {
+  const ordersDelta = (b.orders || 0) - (a.orders || 0);
+  if (ordersDelta !== 0) return ordersDelta;
+
+  const roasA = Number.isFinite(a.roas) ? a.roas : -1;
+  const roasB = Number.isFinite(b.roas) ? b.roas : -1;
+  if (roasB !== roasA) return roasB - roasA;
+
+  return (b.spend || 0) - (a.spend || 0);
 }
 
 function tableExists(db, tableName) {
@@ -542,8 +569,8 @@ function getSafeCountryLabel(countryCode) {
 export function getPerformancePulse(store, params = {}) {
   const db = getDb();
   const { startDate, endDate } = getDateRange(params);
-  const previousDayDate = shiftDateKey(endDate, -1);
-  const previousWeekDate = shiftDateKey(endDate, -7);
+  const previousDayDate = shiftDateKey(endDate, PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS.previousDay);
+  const previousWeekDate = shiftDateKey(endDate, PERFORMANCE_PULSE_DAY_COMPARISON_OFFSETS.previousWeek);
   const comparisonDates = [endDate, previousDayDate, previousWeekDate].filter(Boolean);
   const comparisonDatePlaceholders = comparisonDates.map(() => '?').join(', ');
 
@@ -566,12 +593,12 @@ export function getPerformancePulse(store, params = {}) {
         SUM(${countryOrdersSource.revenueSql}) AS revenue
       FROM ${countryOrdersSource.table}
       WHERE store = ?
-        AND date BETWEEN ? AND ?
+        AND date = ?
         AND COALESCE(is_excluded, 0) = 0
         AND ${countryOrdersSource.countryColumn} IS NOT NULL
         AND ${countryOrdersSource.countryColumn} != ''
       GROUP BY ${countryOrdersSource.countryColumn}
-    `).all(store, startDate, endDate);
+    `).all(store, endDate);
 
     if (comparisonDates.length > 0) {
       dailyCountryOrderRows = db.prepare(`
@@ -597,12 +624,12 @@ export function getPerformancePulse(store, params = {}) {
       SUM(spend) AS spend
     FROM meta_daily_metrics
     WHERE store = ?
-      AND date BETWEEN ? AND ?
+      AND date = ?
       AND country IS NOT NULL
       AND country != ''
       AND country != 'ALL'${statusFilter}${campaignClause}
     GROUP BY country
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, endDate, ...campaignArgs);
 
   const dailyCountrySpendRows = comparisonDates.length > 0 ? db.prepare(`
     SELECT
@@ -702,13 +729,7 @@ export function getPerformancePulse(store, params = {}) {
     .filter((entity) => entity.orders > 0 || entity.spend > 0);
 
   const topCountries = [...countryEntities]
-    .sort((a, b) => {
-      const roasA = Number.isFinite(a.roas) ? a.roas : -1;
-      const roasB = Number.isFinite(b.roas) ? b.roas : -1;
-      if (roasB !== roasA) return roasB - roasA;
-      if (b.orders !== a.orders) return b.orders - a.orders;
-      return b.spend - a.spend;
-    })
+    .sort(sortByDailyTopPerformance)
     .slice(0, PERFORMANCE_PULSE_LIMIT);
 
   const underperformingCountries = [...countryEntities]
@@ -728,9 +749,9 @@ export function getPerformancePulse(store, params = {}) {
       SUM(conversion_value) AS revenue
     FROM meta_ad_metrics
     WHERE store = ?
-      AND date BETWEEN ? AND ?${adStatusFilter}${campaignClause}
+      AND date = ?${adStatusFilter}${campaignClause}
     GROUP BY ad_id
-  `).all(store, startDate, endDate, ...campaignArgs);
+  `).all(store, endDate, ...campaignArgs);
 
   const dailyAds = comparisonDates.length > 0 ? db.prepare(`
     SELECT
@@ -818,13 +839,7 @@ export function getPerformancePulse(store, params = {}) {
     .filter((entity) => entity.orders > 0 || entity.spend > 0);
 
   const topAds = [...adEntities]
-    .sort((a, b) => {
-      const roasA = Number.isFinite(a.roas) ? a.roas : -1;
-      const roasB = Number.isFinite(b.roas) ? b.roas : -1;
-      if (roasB !== roasA) return roasB - roasA;
-      if (b.orders !== a.orders) return b.orders - a.orders;
-      return b.spend - a.spend;
-    })
+    .sort(sortByDailyTopPerformance)
     .slice(0, PERFORMANCE_PULSE_LIMIT);
 
   const underperformingAds = [...adEntities]
@@ -853,14 +868,14 @@ export function getPerformancePulse(store, params = {}) {
         ON p.store = i.store
        AND p.product_id = i.product_id
       WHERE i.store = ?
-        AND o.date BETWEEN ? AND ?
+        AND o.date = ?
         AND COALESCE(o.is_excluded, 0) = 0
         AND COALESCE(i.is_excluded, 0) = 0
       GROUP BY ${productKeySql}
       HAVING orders > 0
       ORDER BY orders DESC, revenue DESC
       LIMIT ?
-    `).all(store, startDate, endDate, PERFORMANCE_PULSE_LIMIT);
+    `).all(store, endDate, PERFORMANCE_PULSE_LIMIT);
 
     const dailyProducts = comparisonDates.length > 0 ? db.prepare(`
       SELECT
@@ -2977,8 +2992,6 @@ export function getFunnelDiagnostics(store, params) {
     const checkout = d.checkout || 0;
     const purchases = d.purchases || 0;
     const revenue = d.revenue || 0;
-
-    if (impressions === 0) return null;
 
     return {
       ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
