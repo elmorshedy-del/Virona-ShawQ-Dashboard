@@ -175,6 +175,38 @@ export function initDb() {
     )
   `);
 
+  // Campaign intelligence feature store (daily training features by scoped entity).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_feature_store (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      level TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      country TEXT NOT NULL DEFAULT 'ALL',
+      date TEXT NOT NULL,
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      orders INTEGER DEFAULT 0,
+      revenue REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      cvr REAL DEFAULT 0,
+      cpm REAL DEFAULT 0,
+      lpv_rate REAL DEFAULT 0,
+      orders_per_spend REAL DEFAULT 0,
+      roas REAL DEFAULT 0,
+      shock_max_z REAL DEFAULT 0,
+      generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, level, entity_id, country, date)
+    )
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);

@@ -32,6 +32,7 @@ import {
   round
 } from './utils.js';
 import { loadLearningState, saveLearningState } from './learningState.js';
+import { upsertFeatureStoreRows } from './featureStore.js';
 
 const SNAPSHOT_CACHE_TTL_MS = 45 * 1000;
 const SNAPSHOT_CACHE_MAX_ENTRIES = 80;
@@ -357,10 +358,20 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
 
   const analysisSummary = buildDailyAggregationSummary(shockAwareSeries);
   const anchorSummary = buildDailyAggregationSummary(shockAwareBaselineSeries);
+  const generatedAt = new Date().toISOString();
+
+  upsertFeatureStoreRows({
+    store: scope.store,
+    level: scope.level,
+    entityId: selectedEntityId || 'all',
+    country: scope.country,
+    rows: shockAwareSeries,
+    generatedAt
+  });
 
   const snapshot = {
     success: true,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     scope: {
       store: scope.store,
       level: scope.level,
