@@ -66,11 +66,8 @@ const formatSignalDeltaLabel = (value) => {
   const numeric = asFiniteNumber(value, 0);
   const abs = Math.abs(numeric);
   const precision = abs >= 10 ? 0 : 1;
-  const signed = numeric > 0
-    ? `+${abs.toFixed(precision)}`
-    : numeric < 0
-      ? `-${abs.toFixed(precision)}`
-      : `${abs.toFixed(precision)}`;
+  const fixed = numeric.toFixed(precision);
+  const signed = numeric > 0 ? `+${fixed}` : fixed;
   return `${signed}%`;
 };
 
@@ -104,7 +101,7 @@ function CompactName({ value, className = '' }) {
 
   return (
     <span className={`group relative block max-w-[150px] ${className}`.trim()}>
-      <span className="block truncate" title={text}>{text}</span>
+      <span className="block truncate">{text}</span>
       <span className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden max-w-[240px] rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white shadow-lg group-hover:block">
         {text}
       </span>
