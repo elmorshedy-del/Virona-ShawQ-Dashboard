@@ -218,7 +218,6 @@ const DEFAULT_FUNNEL_BASELINE_OPTION = FUNNEL_BASELINE_OPTIONS.find(
 const TIME_OF_DAY_BURN_MARKER_COLOR = '#dc2626';
 const TIME_OF_DAY_BURN_GAP_THRESHOLD_PERCENT = 1.5;
 const TIME_OF_DAY_BURN_MIN_PACING_INCREMENT_PERCENT = 0.75;
-const TIME_OF_DAY_BURN_LOW_ORDER_SHARE_MULTIPLIER = 0.75;
 const TIME_OF_DAY_BURN_SUMMARY_LIMIT = 3;
 
 const toNumber = (value) => {
@@ -4989,7 +4988,6 @@ function DashboardTab({
     const sortedTimeOfDay = [...timeOfDayData]
       .sort((a, b) => (Number(a?.hour) || 0) - (Number(b?.hour) || 0));
     const totalOrders = sortedTimeOfDay.reduce((sum, point) => sum + toNumber(point?.orders), 0);
-    const averageOrderSharePercent = totalOrders > 0 ? (100 / TIME_OF_DAY_HOURS_PER_DAY) : 0;
 
     const enrichedData = sortedTimeOfDay.map((point) => {
       const hour = Number.isFinite(Number(point?.hour)) ? normalizeHourOfDay(point.hour) : 0;
@@ -5040,7 +5038,6 @@ function DashboardTab({
         && Number.isFinite(pacingGapPercent)
         && pacingIncrementPercent >= TIME_OF_DAY_BURN_MIN_PACING_INCREMENT_PERCENT
         && pacingGapPercent >= TIME_OF_DAY_BURN_GAP_THRESHOLD_PERCENT
-        && point.orderSharePercent <= (averageOrderSharePercent * TIME_OF_DAY_BURN_LOW_ORDER_SHARE_MULTIPLIER)
         && point.burnAmount > 0
       );
 
