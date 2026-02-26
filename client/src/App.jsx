@@ -4971,6 +4971,8 @@ function DashboardTab({
   const timeOfDaySource = timeOfDay?.source || '';
   const timeOfDayMessage = timeOfDay?.message || '';
   const hasBudgetPacing = Boolean(timeOfDay?.hasBudgetPacing);
+  const pacingSeriesLabel = hasBudgetPacing ? 'Budget pacing' : 'Order pacing (proxy)';
+  const pacingNowLabel = hasBudgetPacing ? 'Budget pacing now' : 'Order pacing now (proxy)';
   const gmt3ResetHourInZone = useMemo(
     () => getGmt3ResetHourInTimezone(timeOfDayTimezone),
     [timeOfDayTimezone]
@@ -5017,16 +5019,20 @@ function DashboardTab({
       : enrichedData;
 
     let cumulativeBudgetSpend = 0;
+    let cumulativeOrders = 0;
 
     return orderedData.map((point) => {
       const pacingIncrementPercent = hasBudgetPacing && totalBudgetSpend > 0
         ? (point.budgetSpend / totalBudgetSpend) * 100
-        : null;
+        : (totalOrders > 0 ? point.orderSharePercent : null);
       let budgetPacingPercent = null;
 
       if (hasBudgetPacing && totalBudgetSpend > 0) {
         cumulativeBudgetSpend += point.budgetSpend;
         budgetPacingPercent = (cumulativeBudgetSpend / totalBudgetSpend) * 100;
+      } else if (totalOrders > 0) {
+        cumulativeOrders += point.orders;
+        budgetPacingPercent = (cumulativeOrders / totalOrders) * 100;
       }
 
       const pacingGapPercent = Number.isFinite(pacingIncrementPercent)
@@ -5125,14 +5131,14 @@ function DashboardTab({
             <span className="font-semibold text-gray-900">{formatNumber(ordersValue)}</span>
           </div>
           <div className="flex items-center justify-between gap-3 text-gray-700">
-            <span className="inline-flex items-center gap-2">
-              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_PACING_LINE_COLOR }} />
-              Budget pacing
-            </span>
-            <span className="font-semibold text-gray-900">
-              {Number.isFinite(pacingValue) ? `${pacingValue.toFixed(1)}%` : '—'}
-            </span>
-          </div>
+              <span className="inline-flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_PACING_LINE_COLOR }} />
+                {pacingSeriesLabel}
+              </span>
+              <span className="font-semibold text-gray-900">
+                {Number.isFinite(pacingValue) ? `${pacingValue.toFixed(1)}%` : '—'}
+              </span>
+            </div>
           <div className="flex items-center justify-between gap-3 text-gray-700">
             <span className="inline-flex items-center gap-2">
               <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_BURN_MARKER_COLOR }} />
@@ -5145,7 +5151,7 @@ function DashboardTab({
         </div>
       </div>
     );
-  }, [formatNumber, formatCurrency]);
+  }, [formatNumber, formatCurrency, pacingSeriesLabel]);
 
   const renderTimeOfDayBurnDot = useCallback(({ cx, cy, payload }) => {
     if (cx == null || cy == null) return null;
@@ -6259,14 +6265,16 @@ function DashboardTab({
             <div className="text-2xl font-bold text-gray-900">{totalHourlyOrders}</div>
             {currentTimeOfDayPoint && (
               <>
-                <div className="text-xs uppercase text-gray-400 mt-2">Budget pacing now</div>
+                <div className="text-xs uppercase text-gray-400 mt-2">{pacingNowLabel}</div>
                 <div className="text-sm font-semibold" style={{ color: TIME_OF_DAY_PACING_LINE_COLOR }}>
                   {Number.isFinite(Number(currentTimeOfDayPoint.budgetPacingPercent))
                     ? `${Number(currentTimeOfDayPoint.budgetPacingPercent).toFixed(1)}%`
                     : '—'}
                 </div>
                 {!hasBudgetPacing && (
-                  <div className="text-[10px] text-gray-500 mt-1">No Meta spend in window</div>
+                  <div className="text-[10px] text-gray-500 mt-1">
+                    No Meta spend in window, using order pacing proxy.
+                  </div>
                 )}
                 {hasBudgetPacing && (
                   <>
