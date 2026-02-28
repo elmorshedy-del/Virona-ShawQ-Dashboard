@@ -31,6 +31,9 @@ import {
   listDateRange,
   round
 } from './utils.js';
+import { loadLearningState, saveLearningState } from './learningState.js';
+import { upsertFeatureStoreRows } from './featureStore.js';
+import { loadModelStateBundle, saveModelStateBundle } from './modelStateStore.js';
 
 const SNAPSHOT_CACHE_TTL_MS = 45 * 1000;
 const SNAPSHOT_CACHE_MAX_ENTRIES = 80;
@@ -151,6 +154,24 @@ function buildSnapshotCacheKey(query = {}) {
   return SNAPSHOT_CACHE_QUERY_KEYS
     .map((key) => `${key}=${String(query?.[key] ?? '').trim()}`)
     .join('&');
+}
+
+function buildLearningStateScopeKey({
+  level,
+  entityId,
+  country,
+  sentinelPreset,
+  headroomPreset,
+  launchPreset
+}) {
+  return [
+    `level:${level || 'campaign'}`,
+    `entity:${entityId || 'all'}`,
+    `country:${country || 'ALL'}`,
+    `sentinel:${sentinelPreset || 'balanced'}`,
+    `headroom:${headroomPreset || 'balanced'}`,
+    `launch:${launchPreset || 'balanced'}`
+  ].join('|');
 }
 
 function pruneSnapshotCache() {
@@ -296,8 +317,36 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
   const shockAwareSeries = buildShockAwareSeries(analysisSeries);
   const shockAwareBaselineSeries = buildShockAwareSeries(baselineData.baselineSeries);
   const shockAwarePeerSeries = buildShockAwareSeries(baselineData.peerSeries);
+  const learningScopeKey = buildLearningStateScopeKey({
+    level: scope.level,
+    entityId: selectedEntityId,
+    country: scope.country,
+    sentinelPreset: modelSettings.sentinelPreset,
+    headroomPreset: modelSettings.headroomPreset,
+    launchPreset: modelSettings.launchPreset
+  });
+  const modelStateBundle = loadModelStateBundle({
+    store: scope.store,
+    scopeKey: learningScopeKey
+  });
+  const legacyLearningState = loadLearningState({
+    store: scope.store,
+    scopeKey: learningScopeKey
+  });
+  const previousLearningState = {
+    sentinelRiskEwma: modelStateBundle?.priors?.mature_sentinel?.riskScore != null
+      ? Number(modelStateBundle.priors.mature_sentinel.riskScore) / 100
+      : legacyLearningState?.sentinelRiskEwma,
+    calibrationReliabilityEwma: modelStateBundle?.priors?.calibration_layer?.reliability
+      ?? legacyLearningState?.calibrationReliabilityEwma,
+    calibrationErrorEwma: modelStateBundle?.priors?.calibration_layer?.calibrationError
+      ?? legacyLearningState?.calibrationErrorEwma,
+    shockEwma: legacyLearningState?.shockEwma,
+    observationCount: legacyLearningState?.observationCount
+  };
 
   const modelBundle = buildModelBundle({
+    previousLearningState,
     analysisSeries: shockAwareSeries,
     anchorSeries: shockAwareBaselineSeries,
     baselineSeries: shockAwarePeerSeries,
@@ -313,6 +362,26 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     seedKey: `${scope.store}:${scope.level}:${selectedEntityId || 'all'}:${scope.country}:${scope.analysisRange.endDate}`
   });
 
+  saveLearningState({
+    store: scope.store,
+    scopeKey: learningScopeKey,
+    state: modelBundle.learningState
+  });
+  saveModelStateBundle({
+    store: scope.store,
+    scopeKey: learningScopeKey,
+    generatedAt: modelBundle?.learningState?.updatedAt || new Date().toISOString(),
+    modelBundle: modelBundle?.learningState
+      ? {
+          ...modelBundle,
+          calibration: {
+            ...modelBundle.calibration,
+            confidence: modelBundle.calibration?.reliability
+          }
+        }
+      : modelBundle
+  });
+
   const budgetMonitor = buildBudgetChangeMonitor(shockAwareSeries, budgetHistoryEvents);
   const lifecycle = fetchScopeLifecycleSummary({ ...scope, entityId: selectedEntityId });
   const entitySnapshot = fetchEntitySnapshot({ ...scope, entityId: selectedEntityId });
@@ -320,10 +389,20 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
 
   const analysisSummary = buildDailyAggregationSummary(shockAwareSeries);
   const anchorSummary = buildDailyAggregationSummary(shockAwareBaselineSeries);
+  const generatedAt = new Date().toISOString();
+
+  upsertFeatureStoreRows({
+    store: scope.store,
+    level: scope.level,
+    entityId: selectedEntityId || 'all',
+    country: scope.country,
+    rows: shockAwareSeries,
+    generatedAt
+  });
 
   const snapshot = {
     success: true,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     scope: {
       store: scope.store,
       level: scope.level,

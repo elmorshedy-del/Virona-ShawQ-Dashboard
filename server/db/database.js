@@ -162,6 +162,164 @@ export function initDb() {
     )
   `);
 
+  // Campaign intelligence persistent learning state (tenant + scope scoped).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_learning_state (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key)
+    )
+  `);
+
+  // Campaign intelligence feature store (daily training features by scoped entity).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_feature_store (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      level TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      country TEXT NOT NULL DEFAULT 'ALL',
+      date TEXT NOT NULL,
+      spend REAL DEFAULT 0,
+      impressions INTEGER DEFAULT 0,
+      reach INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      landing_page_views INTEGER DEFAULT 0,
+      add_to_cart INTEGER DEFAULT 0,
+      checkouts_initiated INTEGER DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      orders INTEGER DEFAULT 0,
+      revenue REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      cvr REAL DEFAULT 0,
+      cpm REAL DEFAULT 0,
+      lpv_rate REAL DEFAULT 0,
+      orders_per_spend REAL DEFAULT 0,
+      roas REAL DEFAULT 0,
+      shock_max_z REAL DEFAULT 0,
+      generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, level, entity_id, country, date)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_priors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      prior_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_regime_state (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      regime_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_calibration_bins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      bin_index INTEGER NOT NULL,
+      expected_confidence REAL DEFAULT 0,
+      observed_success_proxy REAL DEFAULT 0,
+      sample_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, bin_index)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_uncertainty_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      reliability REAL DEFAULT 0,
+      calibration_error REAL DEFAULT 0,
+      uncertainty REAL DEFAULT 0,
+      confidence REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, date)
+    )
+  `);
+  try {
+    db.exec(`
+      DELETE FROM campaign_intelligence_model_uncertainty_history
+      WHERE id NOT IN (
+        SELECT MAX(id)
+        FROM campaign_intelligence_model_uncertainty_history
+        GROUP BY store, scope_key, model_id, date
+      )
+    `);
+  } catch (error) {
+    console.warn('[DB] Failed to deduplicate campaign_intelligence_model_uncertainty_history', error?.message || error);
+  }
+  try {
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ci_uncertainty_unique
+      ON campaign_intelligence_model_uncertainty_history (store, scope_key, model_id, date)
+    `);
+  } catch (error) {
+    console.warn('[DB] Failed to enforce unique uncertainty index', error?.message || error);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_model_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      model_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 0,
+      trained_at TEXT NOT NULL,
+      artifact_json TEXT NOT NULL,
+      metrics_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, model_version)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_training_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_date TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL,
+      stores_scanned INTEGER DEFAULT 0,
+      scopes_scanned INTEGER DEFAULT 0,
+      models_scanned INTEGER DEFAULT 0,
+      versions_promoted INTEGER DEFAULT 0,
+      versions_rejected INTEGER DEFAULT 0,
+      summary_json TEXT,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);

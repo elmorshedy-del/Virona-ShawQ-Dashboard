@@ -2,6 +2,7 @@ import {
   BUDGET_MONITOR_CONFIG,
   CONFIDENCE_CALIBRATION,
   HEADROOM_PRESETS,
+  LEARNING_STATE_CONFIG,
   LAUNCH_PRESETS,
   METRIC_DIRECTION,
   MODEL_PRESET_OPTIONS,
@@ -1084,6 +1085,15 @@ function countActiveSpendDays(series) {
   return series.filter((row) => (Number(row?.spend) || 0) > 0).length;
 }
 
+function blendEwma(previousValue, currentValue) {
+  const previous = Number(previousValue);
+  const current = Number(currentValue);
+  if (!Number.isFinite(current)) return Number.isFinite(previous) ? previous : null;
+  if (!Number.isFinite(previous)) return current;
+  const alpha = LEARNING_STATE_CONFIG.ewmaAlpha;
+  return (alpha * current) + ((1 - alpha) * previous);
+}
+
 function evaluateLaunchJudgeEligibility({ analysisSeries, launchJudge }) {
   const activeSpendDays = countActiveSpendDays(analysisSeries);
   const maxTrialDays = Math.max(
@@ -1116,7 +1126,8 @@ export function buildModelBundle({
   targetRoas,
   targetCpa,
   targetHorizonDays,
-  seedKey
+  seedKey,
+  previousLearningState = null
 }) {
   const spendActiveAnalysisSeries = getSpendActiveSeries(analysisSeries);
   const spendActiveAnchorSeries = getSpendActiveSeries(anchorSeries);
@@ -1158,12 +1169,64 @@ export function buildModelBundle({
     series: spendActiveAnalysisSeries.length ? spendActiveAnalysisSeries : analysisSeries
   });
 
+  const currentShockMean = clamp01(
+    safeDivide(
+      mean((spendActiveAnalysisSeries.length ? spendActiveAnalysisSeries : analysisSeries).map((row) => row?.shocks?.maxZ || 0)) || 0,
+      SHOCK_FILTER_CONFIG.severeShockZ,
+      0
+    )
+  );
+
+  const learnedRiskEwma = blendEwma(previousLearningState?.sentinelRiskEwma, safeDivide(sentinel.riskScore, 100, 0));
+  const learnedShockEwma = blendEwma(previousLearningState?.shockEwma, currentShockMean);
+  const learnedReliabilityEwma = blendEwma(previousLearningState?.calibrationReliabilityEwma, calibration.reliability);
+  const learnedErrorEwma = blendEwma(previousLearningState?.calibrationErrorEwma, calibration.calibrationError);
+
+  if (Number.isFinite(learnedRiskEwma) && sentinel.status?.code !== 'critical') {
+    const learnedRiskAdjustmentDays = learnedRiskEwma >= 0.55 ? 1 : 0;
+    const learnedShockAdjustmentDays = Number.isFinite(learnedShockEwma) && learnedShockEwma >= 0.65 ? 1 : 0;
+    const adjustmentDays = Math.max(
+      sentinel.decisionWindowLearningAdjustmentDays || 0,
+      learnedRiskAdjustmentDays,
+      learnedShockAdjustmentDays
+    );
+    sentinel.decisionWindowLearningAdjustmentDays = adjustmentDays;
+    sentinel.decisionWindowDays = sentinel.decisionWindowPolicyDays + adjustmentDays;
+    sentinel.decisionWindowSource = adjustmentDays > 0 ? 'policy_plus_learning' : 'policy';
+  }
+
+  if (Number.isFinite(learnedReliabilityEwma)) {
+    calibration.reliability = round(clampNumber(learnedReliabilityEwma, 0, 1), 4);
+  }
+  if (Number.isFinite(learnedErrorEwma)) {
+    calibration.calibrationError = round(clampNumber(learnedErrorEwma, 0.02, 0.35), 4);
+  }
+  calibration.reliabilityBand = [
+    round(clampNumber(calibration.reliability - calibration.calibrationError, 0, 1), 4),
+    round(clampNumber(calibration.reliability + calibration.calibrationError, 0, 1), 4)
+  ];
+  calibration.summary = `Confidence reliability centers around ${normalizePercent(calibration.reliability)}% with ~${normalizePercent(calibration.calibrationError)}% expected calibration error.`;
+
+  const learningState = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    sentinelRiskEwma: Number.isFinite(learnedRiskEwma) ? round(learnedRiskEwma, 6) : null,
+    shockEwma: Number.isFinite(learnedShockEwma) ? round(learnedShockEwma, 6) : null,
+    calibrationReliabilityEwma: Number.isFinite(learnedReliabilityEwma) ? round(learnedReliabilityEwma, 6) : null,
+    calibrationErrorEwma: Number.isFinite(learnedErrorEwma) ? round(learnedErrorEwma, 6) : null,
+    observationCount: Math.max(
+      Number(previousLearningState?.observationCount) || 0,
+      0
+    ) + 1
+  };
+
   return {
     sentinel,
     headroom,
     launchJudge: scopedLaunchJudge,
     launchJudgeEligibility,
     calibration,
-    topDrivers: buildTopDrivers(modelList)
+    topDrivers: buildTopDrivers(modelList),
+    learningState
   };
 }
