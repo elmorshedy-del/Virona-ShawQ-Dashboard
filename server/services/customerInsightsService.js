@@ -278,30 +278,46 @@ function shiftDate(dateStr, deltaDays) {
   return formatDateAsGmt3(d);
 }
 
+const ORDERS_TABLE_SHOPIFY = 'shopify_orders';
+const ORDERS_TABLE_SALLA = 'salla_orders';
+
+function getDefaultOrdersTableForStore(store) {
+  return store === 'vironax' ? ORDERS_TABLE_SALLA : ORDERS_TABLE_SHOPIFY;
+}
+
 function resolveCanonicalStore(db, inputStore) {
   const requested = String(inputStore || 'shawq').trim();
   const fallback = requested || 'shawq';
+  const fallbackLower = fallback.toLowerCase();
 
-  const exact =
-    db.prepare('SELECT store FROM shopify_orders WHERE store = ? LIMIT 1').get(fallback)?.store
-    || db.prepare('SELECT store FROM salla_orders WHERE store = ? LIMIT 1').get(fallback)?.store;
-  if (exact) return String(exact);
+  const findStoreInTable = (table, value, caseInsensitive = false) => {
+    const whereClause = caseInsensitive ? 'store = ? COLLATE NOCASE' : 'store = ?';
+    return db.prepare(`SELECT store FROM ${table} WHERE ${whereClause} LIMIT 1`).get(value)?.store || null;
+  };
 
-  const caseInsensitive =
-    db.prepare('SELECT store FROM shopify_orders WHERE store = ? COLLATE NOCASE LIMIT 1').get(fallback)?.store
-    || db.prepare('SELECT store FROM salla_orders WHERE store = ? COLLATE NOCASE LIMIT 1').get(fallback)?.store;
-  if (caseInsensitive) return String(caseInsensitive);
+  const exactShopify = findStoreInTable(ORDERS_TABLE_SHOPIFY, fallback, false);
+  if (exactShopify) {
+    return { store: String(exactShopify), ordersTable: ORDERS_TABLE_SHOPIFY };
+  }
+  const exactSalla = findStoreInTable(ORDERS_TABLE_SALLA, fallback, false);
+  if (exactSalla) {
+    return { store: String(exactSalla), ordersTable: ORDERS_TABLE_SALLA };
+  }
 
-  return fallback.toLowerCase();
+  const ciShopify = findStoreInTable(ORDERS_TABLE_SHOPIFY, fallback, true);
+  if (ciShopify) {
+    return { store: String(ciShopify), ordersTable: ORDERS_TABLE_SHOPIFY };
+  }
+  const ciSalla = findStoreInTable(ORDERS_TABLE_SALLA, fallback, true);
+  if (ciSalla) {
+    return { store: String(ciSalla), ordersTable: ORDERS_TABLE_SALLA };
+  }
+
+  return { store: fallbackLower, ordersTable: getDefaultOrdersTableForStore(fallbackLower) };
 }
 
-function getOrdersTable(store) {
-  return store === 'vironax' ? 'salla_orders' : 'shopify_orders';
-}
-
-function getOrderRows(db, store, startDate, endDate) {
-  const table = getOrdersTable(store);
-  if (table === 'shopify_orders') {
+function getOrderRows(db, ordersTable, store, startDate, endDate) {
+  if (ordersTable === ORDERS_TABLE_SHOPIFY) {
     return db.prepare(`
       SELECT
         order_id,
@@ -316,7 +332,7 @@ function getOrderRows(db, store, startDate, endDate) {
         order_created_at as order_ts,
         customer_id,
         customer_email
-      FROM shopify_orders
+      FROM ${ORDERS_TABLE_SHOPIFY}
       WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
     `).all(store, startDate, endDate);
   }
@@ -335,13 +351,13 @@ function getOrderRows(db, store, startDate, endDate) {
       created_at as order_ts,
       NULL as customer_id,
       NULL as customer_email
-    FROM salla_orders
+    FROM ${ORDERS_TABLE_SALLA}
     WHERE store = ? AND date BETWEEN ? AND ? AND COALESCE(is_excluded, 0) = 0
   `).all(store, startDate, endDate);
 }
 
-function getOrderItems(db, store, startDate, endDate) {
-  if (getOrdersTable(store) !== 'shopify_orders') return [];
+function getOrderItems(db, ordersTable, store, startDate, endDate) {
+  if (ordersTable !== ORDERS_TABLE_SHOPIFY) return [];
   return db.prepare(`
     SELECT
       oi.order_id,
@@ -2176,22 +2192,24 @@ function buildInsights({
 
 export async function getCustomerInsightsPayload(store, params = {}) {
   const db = getDb();
-  const resolvedStore = resolveCanonicalStore(db, store);
+  const resolvedStoreConfig = resolveCanonicalStore(db, store);
+  const resolvedStore = resolvedStoreConfig.store;
+  const ordersTable = resolvedStoreConfig.ordersTable;
   const { startDate, endDate, days } = getDateRange(params);
 
-  const orders = getOrderRows(db, resolvedStore, startDate, endDate);
-  let items = getOrderItems(db, resolvedStore, startDate, endDate);
+  const orders = getOrderRows(db, ordersTable, resolvedStore, startDate, endDate);
+  let items = getOrderItems(db, ordersTable, resolvedStore, startDate, endDate);
 
   const prevStartDate = shiftDate(startDate, -days);
   const prevEndDate = shiftDate(endDate, -days);
-  let previousItems = getOrderItems(db, resolvedStore, prevStartDate, prevEndDate);
+  let previousItems = getOrderItems(db, ordersTable, resolvedStore, prevStartDate, prevEndDate);
 
   // Prev-prev lookback for momentum engine (streak detection, growth history)
   const prevPrevStartDate = shiftDate(startDate, -days * 2);
   const prevPrevEndDate = shiftDate(endDate, -days * 2);
-  let prevPrevItems = getOrderItems(db, resolvedStore, prevPrevStartDate, prevPrevEndDate);
+  let prevPrevItems = getOrderItems(db, ordersTable, resolvedStore, prevPrevStartDate, prevPrevEndDate);
 
-  if (getOrdersTable(resolvedStore) === 'shopify_orders' && (items.length || previousItems.length || prevPrevItems.length)) {
+  if (ordersTable === ORDERS_TABLE_SHOPIFY && (items.length || previousItems.length || prevPrevItems.length)) {
     const productIds = Array.from(new Set(
       items.concat(previousItems, prevPrevItems)
         .map((row) => row.product_id)
@@ -2201,9 +2219,9 @@ export async function getCustomerInsightsPayload(store, params = {}) {
     if (productIds.length) {
       try {
         await ensureShopifyProductsCached(resolvedStore, productIds);
-        items = getOrderItems(db, resolvedStore, startDate, endDate);
-        previousItems = getOrderItems(db, resolvedStore, prevStartDate, prevEndDate);
-        prevPrevItems = getOrderItems(db, resolvedStore, prevPrevStartDate, prevPrevEndDate);
+        items = getOrderItems(db, ordersTable, resolvedStore, startDate, endDate);
+        previousItems = getOrderItems(db, ordersTable, resolvedStore, prevStartDate, prevEndDate);
+        prevPrevItems = getOrderItems(db, ordersTable, resolvedStore, prevPrevStartDate, prevPrevEndDate);
       } catch (cacheError) {
         console.warn('[CustomerInsights] Product cache refresh skipped:', cacheError?.message || cacheError);
       }
