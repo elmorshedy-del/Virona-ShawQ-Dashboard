@@ -133,6 +133,13 @@ export function saveModelStateBundle({
     INSERT INTO campaign_intelligence_model_uncertainty_history (
       store, scope_key, model_id, date, reliability, calibration_error, uncertainty, confidence, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(store, scope_key, model_id, date)
+    DO UPDATE SET
+      reliability = excluded.reliability,
+      calibration_error = excluded.calibration_error,
+      uncertainty = excluded.uncertainty,
+      confidence = excluded.confidence,
+      created_at = excluded.created_at
   `);
 
   const transaction = db.transaction(() => {

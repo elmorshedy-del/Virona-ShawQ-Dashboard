@@ -260,9 +260,30 @@ export function initDb() {
       calibration_error REAL DEFAULT 0,
       uncertainty REAL DEFAULT 0,
       confidence REAL DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, scope_key, model_id, date)
     )
   `);
+  try {
+    db.exec(`
+      DELETE FROM campaign_intelligence_model_uncertainty_history
+      WHERE id NOT IN (
+        SELECT MAX(id)
+        FROM campaign_intelligence_model_uncertainty_history
+        GROUP BY store, scope_key, model_id, date
+      )
+    `);
+  } catch (error) {
+    console.warn('[DB] Failed to deduplicate campaign_intelligence_model_uncertainty_history', error?.message || error);
+  }
+  try {
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ci_uncertainty_unique
+      ON campaign_intelligence_model_uncertainty_history (store, scope_key, model_id, date)
+    `);
+  } catch (error) {
+    console.warn('[DB] Failed to enforce unique uncertainty index', error?.message || error);
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS campaign_intelligence_model_versions (

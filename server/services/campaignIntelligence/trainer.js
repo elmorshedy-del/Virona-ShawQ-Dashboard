@@ -74,16 +74,6 @@ function getMaxModelVersion(db, { store, scopeKey, modelId }) {
   return Math.max(0, Math.round(toFinite(row?.max_version, 0)));
 }
 
-function getActiveVersion(db, { store, scopeKey, modelId }) {
-  return db.prepare(`
-    SELECT id, model_version
-    FROM campaign_intelligence_model_versions
-    WHERE store = ? AND scope_key = ? AND model_id = ? AND is_active = 1
-    ORDER BY model_version DESC
-    LIMIT 1
-  `).get(store, scopeKey, modelId);
-}
-
 function loadModelArtifact(db, { store, scopeKey, modelId }) {
   const priorRow = db.prepare(`
     SELECT prior_json
@@ -182,7 +172,6 @@ export async function runCampaignIntelligenceDailyTrainer({ store = null, runDat
           const promoted = shouldPromoteVersion(metrics);
 
           const artifact = loadModelArtifact(db, { store: storeName, scopeKey, modelId });
-          const activeVersion = getActiveVersion(db, { store: storeName, scopeKey, modelId });
           const nextVersion = getMaxModelVersion(db, { store: storeName, scopeKey, modelId }) + 1;
           const trainedAt = new Date().toISOString();
 
@@ -211,13 +200,6 @@ export async function runCampaignIntelligenceDailyTrainer({ store = null, runDat
             `).run(storeName, scopeKey, modelId, nextVersion);
           } else {
             versionsRejected += 1;
-            if (activeVersion) {
-              db.prepare(`
-                UPDATE campaign_intelligence_model_versions
-                SET is_active = 0
-                WHERE store = ? AND scope_key = ? AND model_id = ? AND model_version = ?
-              `).run(storeName, scopeKey, modelId, nextVersion);
-            }
           }
 
           summary.push({
