@@ -117,7 +117,7 @@ const getMomentumSeverityLabel = (severity, polarity, mode, hasTrigger) => {
 const buildInsightsParams = (store, windowId = DEFAULT_MOMENTUM_WINDOW_ID) => {
   const selectedWindow = MOMENTUM_WINDOW_OPTIONS.find((option) => option.id === windowId) || MOMENTUM_WINDOW_OPTIONS[0];
   const params = new URLSearchParams();
-  params.set('store', String(store || 'shawq'));
+  params.set('store', String(store || 'shawq').trim().toLowerCase());
   params.set(selectedWindow.type, String(selectedWindow.value));
   return params;
 };
