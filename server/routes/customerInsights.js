@@ -5,7 +5,7 @@ const router = express.Router();
 
 router.get('/', async (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
+    const store = String(req.query.store || 'shawq').trim();
     const data = await getCustomerInsightsPayload(store, req.query);
     res.json({ success: true, data });
   } catch (error) {

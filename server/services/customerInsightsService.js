@@ -278,6 +278,23 @@ function shiftDate(dateStr, deltaDays) {
   return formatDateAsGmt3(d);
 }
 
+function resolveCanonicalStore(db, inputStore) {
+  const requested = String(inputStore || 'shawq').trim();
+  const fallback = requested || 'shawq';
+
+  const exact =
+    db.prepare('SELECT store FROM shopify_orders WHERE store = ? LIMIT 1').get(fallback)?.store
+    || db.prepare('SELECT store FROM salla_orders WHERE store = ? LIMIT 1').get(fallback)?.store;
+  if (exact) return String(exact);
+
+  const caseInsensitive =
+    db.prepare('SELECT store FROM shopify_orders WHERE store = ? COLLATE NOCASE LIMIT 1').get(fallback)?.store
+    || db.prepare('SELECT store FROM salla_orders WHERE store = ? COLLATE NOCASE LIMIT 1').get(fallback)?.store;
+  if (caseInsensitive) return String(caseInsensitive);
+
+  return fallback.toLowerCase();
+}
+
 function getOrdersTable(store) {
   return store === 'vironax' ? 'salla_orders' : 'shopify_orders';
 }
@@ -324,7 +341,7 @@ function getOrderRows(db, store, startDate, endDate) {
 }
 
 function getOrderItems(db, store, startDate, endDate) {
-  if (store !== 'shawq') return [];
+  if (getOrdersTable(store) !== 'shopify_orders') return [];
   return db.prepare(`
     SELECT
       oi.order_id,
@@ -2159,21 +2176,22 @@ function buildInsights({
 
 export async function getCustomerInsightsPayload(store, params = {}) {
   const db = getDb();
+  const resolvedStore = resolveCanonicalStore(db, store);
   const { startDate, endDate, days } = getDateRange(params);
 
-  const orders = getOrderRows(db, store, startDate, endDate);
-  let items = getOrderItems(db, store, startDate, endDate);
+  const orders = getOrderRows(db, resolvedStore, startDate, endDate);
+  let items = getOrderItems(db, resolvedStore, startDate, endDate);
 
   const prevStartDate = shiftDate(startDate, -days);
   const prevEndDate = shiftDate(endDate, -days);
-  let previousItems = store === 'shawq' ? getOrderItems(db, store, prevStartDate, prevEndDate) : [];
+  let previousItems = getOrderItems(db, resolvedStore, prevStartDate, prevEndDate);
 
   // Prev-prev lookback for momentum engine (streak detection, growth history)
   const prevPrevStartDate = shiftDate(startDate, -days * 2);
   const prevPrevEndDate = shiftDate(endDate, -days * 2);
-  let prevPrevItems = store === 'shawq' ? getOrderItems(db, store, prevPrevStartDate, prevPrevEndDate) : [];
+  let prevPrevItems = getOrderItems(db, resolvedStore, prevPrevStartDate, prevPrevEndDate);
 
-  if (store === 'shawq' && (items.length || previousItems.length || prevPrevItems.length)) {
+  if (getOrdersTable(resolvedStore) === 'shopify_orders' && (items.length || previousItems.length || prevPrevItems.length)) {
     const productIds = Array.from(new Set(
       items.concat(previousItems, prevPrevItems)
         .map((row) => row.product_id)
@@ -2181,10 +2199,14 @@ export async function getCustomerInsightsPayload(store, params = {}) {
         .map((id) => String(id))
     ));
     if (productIds.length) {
-      await ensureShopifyProductsCached(store, productIds);
-      items = getOrderItems(db, store, startDate, endDate);
-      previousItems = getOrderItems(db, store, prevStartDate, prevEndDate);
-      prevPrevItems = getOrderItems(db, store, prevPrevStartDate, prevPrevEndDate);
+      try {
+        await ensureShopifyProductsCached(resolvedStore, productIds);
+        items = getOrderItems(db, resolvedStore, startDate, endDate);
+        previousItems = getOrderItems(db, resolvedStore, prevStartDate, prevEndDate);
+        prevPrevItems = getOrderItems(db, resolvedStore, prevPrevStartDate, prevPrevEndDate);
+      } catch (cacheError) {
+        console.warn('[CustomerInsights] Product cache refresh skipped:', cacheError?.message || cacheError);
+      }
     }
   }
 
@@ -2194,8 +2216,8 @@ export async function getCustomerInsightsPayload(store, params = {}) {
 
   const discountMetrics = computeDiscountMetrics(orders);
   const customerStats = computeCustomerStats(orders);
-  const metaSegment = getMetaTopSegment(db, store, startDate, endDate);
-  const timing = getTopTiming(orders, store);
+  const metaSegment = getMetaTopSegment(db, resolvedStore, startDate, endDate);
+  const timing = getTopTiming(orders, resolvedStore);
   const hasBundleStoreSufficiency = totalOrders >= BUNDLE_STORE_MIN_ELIGIBLE_ORDERS;
   const previousBundleLookup = hasBundleStoreSufficiency ? computeDirectionalBundleLookup(previousItems) : new Map();
   const bundles = hasBundleStoreSufficiency
