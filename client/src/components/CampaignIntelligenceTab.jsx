@@ -24,6 +24,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts';
+import CampaignIntelligenceUnifiedSection from './CampaignIntelligenceUnifiedSection';
 
 const API_ENDPOINT = '/api/campaign-intelligence/snapshot';
 const DEFAULT_ANCHOR_DAYS = 21;
@@ -1313,6 +1314,14 @@ export default function CampaignIntelligenceTab({ store }) {
           </div>
         </div>
       )}
+
+      <CampaignIntelligenceUnifiedSection
+        snapshot={snapshot}
+        analysisParams={analysisParams}
+        targetRoas={targetRoas}
+        store={store}
+        onSnapshotUpdate={setSnapshot}
+      />
     </div>
   );
 }

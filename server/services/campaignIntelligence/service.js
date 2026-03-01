@@ -16,6 +16,7 @@ import {
   fetchMetaBudgetHistoryEvents,
   fetchScopedCampaignIds,
   fetchScopeLifecycleSummary,
+  fetchUnifiedHierarchyRows,
   mergeDailySeries,
   normalizeCampaignIntelligenceRequest
 } from './data.js';
@@ -34,6 +35,12 @@ import {
 import { loadLearningState, saveLearningState } from './learningState.js';
 import { upsertFeatureStoreRows } from './featureStore.js';
 import { loadModelStateBundle, saveModelStateBundle } from './modelStateStore.js';
+import {
+  buildCampaignIntelligenceBriefScopeKey,
+  getCampaignIntelligenceBriefModelOptions,
+  getCampaignIntelligenceBriefSettings,
+  getLatestCampaignIntelligenceBrief
+} from './briefs.js';
 
 const SNAPSHOT_CACHE_TTL_MS = 45 * 1000;
 const SNAPSHOT_CACHE_MAX_ENTRIES = 80;
@@ -386,6 +393,31 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
   const lifecycle = fetchScopeLifecycleSummary({ ...scope, entityId: selectedEntityId });
   const entitySnapshot = fetchEntitySnapshot({ ...scope, entityId: selectedEntityId });
   const countries = fetchCountryOptions({ ...scope, entityId: selectedEntityId });
+  const hierarchyRows = fetchUnifiedHierarchyRows({
+    db: scope.db,
+    store: scope.store,
+    analysisRange: scope.analysisRange,
+    anchorRange: scope.anchorRange,
+    country: scope.country,
+    selectorLimit: scope.selectorLimit,
+    focusLevel: scope.level,
+    focusEntityId: selectedEntityId
+  });
+  const briefScopeKey = buildCampaignIntelligenceBriefScopeKey({
+    level: scope.level,
+    entityId: selectedEntityId,
+    country: scope.country
+  });
+  const briefSettings = getCampaignIntelligenceBriefSettings(scope.store);
+  const latestBrief = getLatestCampaignIntelligenceBrief({
+    store: scope.store,
+    scopeKey: briefScopeKey
+  });
+  const briefModels = getCampaignIntelligenceBriefModelOptions();
+  const briefProviderAvailability = briefModels.reduce((accumulator, modelDef) => ({
+    ...accumulator,
+    [modelDef.provider]: accumulator[modelDef.provider] || Boolean(modelDef.enabled)
+  }), {});
 
   const analysisSummary = buildDailyAggregationSummary(shockAwareSeries);
   const anchorSummary = buildDailyAggregationSummary(shockAwareBaselineSeries);
@@ -442,7 +474,17 @@ export async function getCampaignIntelligenceSnapshot(query = {}) {
     },
     budgetMonitor,
     models: modelBundle,
-    education: EDUCATION_SECTIONS
+    education: EDUCATION_SECTIONS,
+    hierarchy: {
+      rows: hierarchyRows
+    },
+    brief: {
+      scopeKey: briefScopeKey,
+      settings: briefSettings,
+      latest: latestBrief,
+      modelOptions: briefModels,
+      providerAvailability: briefProviderAvailability
+    }
   };
 
   setCachedSnapshot(snapshotCacheKey, snapshot);

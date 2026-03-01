@@ -58,6 +58,71 @@ export const DEFAULT_SETTINGS = Object.freeze({
   defaultPreset: 'balanced'
 });
 
+export const BRIEF_SCHEDULE_MODES = Object.freeze({
+  manual: 'manual',
+  daily: 'daily'
+});
+
+export const BRIEF_DEFAULT_SETTINGS = Object.freeze({
+  scheduleMode: BRIEF_SCHEDULE_MODES.manual,
+  provider: 'openai',
+  model: 'gpt-5.2',
+  reasoningEffort: 'medium',
+  verbosity: 'low'
+});
+
+export const BRIEF_MODEL_CATALOG = Object.freeze({
+  openai: Object.freeze([
+    Object.freeze({
+      provider: 'openai',
+      model: 'gpt-5.2',
+      label: 'GPT-5.2',
+      inputUsdPerMillionTokens: 1.75,
+      outputUsdPerMillionTokens: 14.0,
+      defaultReasoningEffort: 'medium',
+      defaultVerbosity: 'low'
+    }),
+    Object.freeze({
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      label: 'GPT-4o mini',
+      inputUsdPerMillionTokens: 0.15,
+      outputUsdPerMillionTokens: 0.6,
+      defaultReasoningEffort: 'medium',
+      defaultVerbosity: 'low'
+    })
+  ]),
+  deepseek: Object.freeze([
+    Object.freeze({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      label: 'DeepSeek Chat',
+      inputUsdPerMillionTokens: 0.27,
+      outputUsdPerMillionTokens: 1.1,
+      defaultReasoningEffort: 'medium',
+      defaultVerbosity: 'low'
+    }),
+    Object.freeze({
+      provider: 'deepseek',
+      model: 'deepseek-reasoner',
+      label: 'DeepSeek Reasoner',
+      inputUsdPerMillionTokens: 0.55,
+      outputUsdPerMillionTokens: 2.19,
+      defaultReasoningEffort: 'medium',
+      defaultVerbosity: 'low'
+    })
+  ])
+});
+
+export const BRIEF_PROMPT_CONFIG = Object.freeze({
+  maxHierarchyRows: 60,
+  maxSignalRowsPerModel: 4,
+  maxTopDrivers: 8,
+  maxOutputTokens: 2200,
+  // Used for transparent cost estimate when providers do not return token usage.
+  estimatedCharsPerToken: 4
+});
+
 export const MODEL_PRESET_OPTIONS = new Set(['conservative', 'balanced', 'aggressive']);
 
 export const SENTINEL_PRESETS = Object.freeze({
