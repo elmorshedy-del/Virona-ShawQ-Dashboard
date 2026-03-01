@@ -52,6 +52,7 @@ import { cleanupSessionIntelligenceRaw } from './services/sessionIntelligenceSer
 import { runQueuedInvestigationJobs } from './services/sessionIntelligenceInvestigationService.js';
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
 import { runCampaignIntelligenceDailyTrainer } from './services/campaignIntelligence/trainer.js';
+import { runCampaignIntelligenceDailyBriefs } from './services/campaignIntelligence/briefScheduler.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
 import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
 import {
@@ -739,6 +740,17 @@ setTimeout(() => {
     });
 }, 30000);
 scheduleGmt3DailyJob('campaign intelligence daily trainer', runCampaignIntelligenceDailyTrainer);
+
+setTimeout(() => {
+  runCampaignIntelligenceDailyBriefs()
+    .then((result) => {
+      console.log('[Campaign Intelligence Brief] Startup run complete:', result);
+    })
+    .catch((error) => {
+      console.warn('[Campaign Intelligence Brief] Startup run failed:', error?.message || error);
+    });
+}, 35000);
+scheduleGmt3DailyJob('campaign intelligence daily brief', runCampaignIntelligenceDailyBriefs);
 
 setTimeout(() => {
   const bootstrapDays = resolveExchangeBootstrapDays();

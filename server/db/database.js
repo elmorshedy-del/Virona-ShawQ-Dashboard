@@ -320,6 +320,51 @@ export function initDb() {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_brief_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      schedule_mode TEXT NOT NULL DEFAULT 'manual',
+      provider TEXT NOT NULL DEFAULT 'openai',
+      model TEXT NOT NULL DEFAULT 'gpt-5.2',
+      reasoning_effort TEXT NOT NULL DEFAULT 'medium',
+      verbosity TEXT NOT NULL DEFAULT 'low',
+      scope_level TEXT NOT NULL DEFAULT 'campaign',
+      scope_entity_id TEXT,
+      scope_country TEXT NOT NULL DEFAULT 'ALL',
+      scope_start_date TEXT,
+      scope_end_date TEXT,
+      scope_anchor_days INTEGER NOT NULL DEFAULT 21,
+      scope_anchor_start_date TEXT,
+      scope_anchor_end_date TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_intelligence_llm_briefs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      brief_date TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      estimated_input_tokens INTEGER DEFAULT 0,
+      estimated_output_tokens INTEGER DEFAULT 0,
+      estimated_cost_usd REAL DEFAULT 0,
+      prompt_json TEXT NOT NULL,
+      brief_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_ci_llm_briefs_scope_date
+    ON campaign_intelligence_llm_briefs(store, scope_key, brief_date, created_at)
+  `);
+
   // Backfill missing notification columns for existing databases
   try {
     db.exec(`ALTER TABLE notifications ADD COLUMN country TEXT`);
