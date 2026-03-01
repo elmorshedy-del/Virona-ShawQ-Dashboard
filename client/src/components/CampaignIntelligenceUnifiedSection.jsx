@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BarChart3, ChevronDown, ChevronRight, ListChecks, Loader2, RefreshCw, Save, Sparkles, Target } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react';
 
 const BRIEF_ENDPOINT_GENERATE = '/api/campaign-intelligence/brief/generate';
 const BRIEF_ENDPOINT_SETTINGS = '/api/campaign-intelligence/brief/settings';
@@ -34,12 +34,12 @@ const METRIC_CONFIG = Object.freeze({
 });
 
 const CELL_STATUS_STYLE = Object.freeze({
-  strong_good: 'bg-emerald-50 border-emerald-200 text-emerald-800',
-  good: 'bg-green-50 border-green-200 text-green-800',
-  caution: 'bg-amber-50 border-amber-200 text-amber-800',
-  bad: 'bg-orange-50 border-orange-200 text-orange-800',
-  critical: 'bg-red-50 border-red-200 text-red-800',
-  insufficient: 'bg-slate-50 border-slate-200 text-slate-500'
+  strong_good: 'bg-[#ecfdf3] border-[#a7f3d0] text-[#065f46]',
+  good: 'bg-[#f0fdf4] border-[#bbf7d0] text-[#166534]',
+  caution: 'bg-[#fffbeb] border-[#fde68a] text-[#92400e]',
+  bad: 'bg-[#fff7ed] border-[#fdba74] text-[#9a3412]',
+  critical: 'bg-[#fef2f2] border-[#fca5a5] text-[#991b1b]',
+  insufficient: 'bg-[#f8fafc] border-[#cbd5e1] text-[#64748b]'
 });
 
 const METRIC_STATUS_THRESHOLDS = Object.freeze({
@@ -85,6 +85,87 @@ const ROW_DEPTH_OFFSET_PX = 14;
 const CHART_WIDTH = 280;
 const CHART_HEIGHT = 64;
 const CHART_EPSILON = 1e-6;
+const TABLE_MIN_WIDTH_PX = 1500;
+const PANEL_CHART_WIDTH = 300;
+const PANEL_CHART_HEIGHT = 82;
+const UI_SURFACE_STYLE = Object.freeze({
+  cardBorder: '#dfe5ff',
+  tableHeaderBg: '#f7f9ff',
+  tableHeaderText: '#5e6da2',
+  tableRowHover: '#f7f9ff',
+  tableRowActive: '#f2f5ff',
+  panelMutedText: '#5d6785'
+});
+const ACTIVE_STATUS_VALUES = Object.freeze(new Set(['ACTIVE']));
+const TREND_HEALTH_PROXY_CONFIG = Object.freeze({
+  roasWeight: 22,
+  cvrWeight: 2600,
+  min: 0,
+  max: 100
+});
+const DRIVER_SIGNAL_LIMIT = 5;
+const INSUFFICIENT_FUNDS_ERROR_CODE = 'insufficient_funds';
+const INSUFFICIENT_FUNDS_MESSAGE = 'LLM credits/funds are insufficient for brief generation. Add billing/credits, then retry.';
+const BRIEF_REPORT_KEYS = Object.freeze([
+  'executiveSummary',
+  'toWatch',
+  'toDo',
+  'draggers',
+  'creativePriorities',
+  'notes'
+]);
+const MOCK_VIEW_OPTIONS = Object.freeze([
+  { value: 'hierarchy', label: 'Campaign / Ad Set / Ad' },
+  { value: 'geo_split', label: 'Campaign / Country split' }
+]);
+const MOCK_WINDOW_OPTIONS = Object.freeze([
+  { value: '14d', label: 'Last 14 full days' },
+  { value: '7d', label: 'Last 7 full days' }
+]);
+const MOCK_TRIAGE_OPTIONS = Object.freeze([
+  { value: 'attention', label: 'Only Needs Attention' },
+  { value: 'all', label: 'Show All' }
+]);
+const DEFAULT_COUNTRY_OPTION = Object.freeze({
+  code: 'ALL',
+  label: 'All Active'
+});
+const WINDOW_DAY_LOOKUP = Object.freeze({
+  '14d': 14,
+  '7d': 7
+});
+const KEY_COLORED_METRICS = Object.freeze(new Set(['roas', 'costAtc', 'purchaseIc']));
+const DIRECTION_DISPLAY_STYLE = Object.freeze({
+  improving: 'bg-[#e9fbf3] text-[#12855f]',
+  stable: 'bg-[#eef2ff] text-[#5f6b93]',
+  deteriorating: 'bg-[#ffeded] text-[#b42828]',
+  saturating: 'bg-[#fff5e6] text-[#b46a00]',
+  insufficient: 'bg-[#f1f5f9] text-[#64748b]'
+});
+const DRAGGER_IMPACT_WASTE_RATIO = Object.freeze({
+  high: 0.2,
+  medium: 0.14,
+  low: 0.08
+});
+const DRAGGER_CONFIDENCE_SCORE = Object.freeze({
+  high: 86,
+  medium: 72,
+  low: 58
+});
+const DEFAULT_RECHECK_WINDOW = '24h';
+const DEFAULT_TRIGGER_THRESHOLD = 'Monitor next full day';
+const DEFAULT_ACTION_SCOPE_LEVEL = 'Scope';
+const DEFAULT_ACTION_SCOPE_NAME = 'Current scope';
+const BEST_FOR_BUSINESS_WEIGHTS = Object.freeze({
+  efficiency: 0.45,
+  volume: 0.3,
+  stability: 0.15,
+  incrementality: 0.1
+});
+const MAX_COUNTRY_BOARD_ROWS = 8;
+const MAX_REGIME_ROWS = 6;
+const CROSS_ENTITY_INSIGHT_LIMIT = 5;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function toFiniteNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -105,6 +186,15 @@ function round(value, digits = 2) {
   if (!Number.isFinite(numeric)) return 0;
   const factor = 10 ** digits;
   return Math.round(numeric * factor) / factor;
+}
+
+function safeDivide(numerator, denominator) {
+  const top = Number(numerator);
+  const bottom = Number(denominator);
+  if (!Number.isFinite(top) || !Number.isFinite(bottom) || Math.abs(bottom) < CHART_EPSILON) {
+    return 0;
+  }
+  return top / bottom;
 }
 
 function formatUsd(value) {
@@ -144,6 +234,25 @@ function formatCompactNumber(value) {
   return numeric.toLocaleString(undefined, {
     maximumFractionDigits: 0
   });
+}
+
+function getCountryDisplayName(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  if (!normalized || normalized === 'ALL') return DEFAULT_COUNTRY_OPTION.label;
+  if (!/^[A-Z]{2}$/.test(normalized)) return normalized;
+  try {
+    const displayNames = new Intl.DisplayNames(['en'], { type: 'region' });
+    return displayNames.of(normalized) || normalized;
+  } catch (_error) {
+    return normalized;
+  }
+}
+
+function toCountryFlag(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalized)) return '';
+  const chars = [...normalized].map((char) => String.fromCodePoint(127397 + char.charCodeAt(0)));
+  return chars.join('');
 }
 
 function formatMetricValue(metricKey, value) {
@@ -330,11 +439,145 @@ function resolveDirection(row, targetRoas, healthScore) {
   return 'stable';
 }
 
+function rowNeedsAttention(row, targetRoas) {
+  const healthScore = toFiniteNumber(row?.healthScore, 0);
+  if (healthScore < HEALTH_RULES.statusCutoffs.watch) return true;
+  if (row?.direction === 'deteriorating' || row?.direction === 'saturating') return true;
+
+  const riskMetrics = ['roas', 'costAtc', 'purchaseIc'];
+  return riskMetrics.some((metricKey) => {
+    const now = row?.metrics?.now?.[metricKey];
+    const baseline = row?.metrics?.baseline?.[metricKey];
+    const status = resolveCellStatus(metricKey, now, baseline, targetRoas);
+    return status.code === 'bad' || status.code === 'critical';
+  });
+}
+
 function directionPillStyle(direction) {
-  if (direction === 'improving') return 'bg-emerald-100 text-emerald-800';
-  if (direction === 'deteriorating') return 'bg-red-100 text-red-800';
-  if (direction === 'saturating') return 'bg-amber-100 text-amber-800';
-  return 'bg-slate-100 text-slate-700';
+  if (direction === 'improving') return 'bg-[#e9fbf3] text-[#12855f]';
+  if (direction === 'deteriorating') return 'bg-[#ffeded] text-[#b42828]';
+  if (direction === 'saturating') return 'bg-[#fff5e6] text-[#b46a00]';
+  return 'bg-[#eef2ff] text-[#5f6b93]';
+}
+
+function toIsoDateString(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function addDaysIso(baseIsoDate, days) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(baseIsoDate || ''))) return null;
+  const baseDate = new Date(`${baseIsoDate}T00:00:00`);
+  if (Number.isNaN(baseDate.getTime())) return null;
+  baseDate.setDate(baseDate.getDate() + Number(days || 0));
+  return toIsoDateString(baseDate);
+}
+
+function buildWindowRange(windowMode, endDate) {
+  const windowDays = WINDOW_DAY_LOOKUP[windowMode] || WINDOW_DAY_LOOKUP['14d'];
+  const normalizedEndDate = /^\d{4}-\d{2}-\d{2}$/.test(String(endDate || ''))
+    ? endDate
+    : toIsoDateString();
+  const startDate = addDaysIso(normalizedEndDate, -(windowDays - 1)) || normalizedEndDate;
+  return { startDate, endDate: normalizedEndDate, windowDays };
+}
+
+function parseScopeParts(scopeText) {
+  const normalized = String(scopeText || '').trim();
+  if (!normalized) {
+    return {
+      level: 'Scope',
+      entity: 'Unknown',
+      country: 'ALL'
+    };
+  }
+
+  const parts = normalized.split('·').map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    return {
+      level: parts[0],
+      entity: parts.slice(1).join(' · '),
+      country: 'ALL'
+    };
+  }
+
+  return {
+    level: 'Scope',
+    entity: normalized,
+    country: 'ALL'
+  };
+}
+
+function resolveDirectionStyle(direction) {
+  const normalized = String(direction || '').trim().toLowerCase();
+  return DIRECTION_DISPLAY_STYLE[normalized] || DIRECTION_DISPLAY_STYLE.stable;
+}
+
+function resolveDirectionFromScore(score) {
+  if (!Number.isFinite(score)) return 'insufficient';
+  if (score >= HEALTH_RULES.statusCutoffs.strong) return 'improving';
+  if (score >= HEALTH_RULES.statusCutoffs.healthy) return 'stable';
+  if (score >= HEALTH_RULES.statusCutoffs.watch) return 'saturating';
+  return 'deteriorating';
+}
+
+function computeEstimatedDailyWaste(spend, impact) {
+  const normalizedSpend = Math.max(0, toFiniteNumber(spend, 0));
+  const ratio = DRAGGER_IMPACT_WASTE_RATIO[impact] || DRAGGER_IMPACT_WASTE_RATIO.low;
+  return round(normalizedSpend * ratio, 2);
+}
+
+function deriveCreativeStability(row) {
+  const cpmNow = toFiniteNumber(row?.metrics?.now?.cpm, 0);
+  const cpmBase = toFiniteNumber(row?.metrics?.baseline?.cpm, cpmNow);
+  if (cpmNow <= 0 || cpmBase <= 0) return 50;
+  const variance = Math.abs((cpmNow - cpmBase) / cpmBase);
+  return clamp(round((1 - variance) * 100, 1), 0, 100);
+}
+
+function deriveCreativeIncrementality(row, targetRoas) {
+  const roasNow = toFiniteNumber(row?.metrics?.now?.roas, 0);
+  const roasBase = toFiniteNumber(row?.metrics?.baseline?.roas, roasNow);
+  const purchaseIcNow = toFiniteNumber(row?.metrics?.now?.purchaseIc, 0);
+  const purchaseIcBase = toFiniteNumber(row?.metrics?.baseline?.purchaseIc, purchaseIcNow);
+
+  const roasLift = roasBase > 0 ? (roasNow / roasBase) : (roasNow / Math.max(targetRoas, 0.1));
+  const purchaseLift = purchaseIcBase > 0 ? (purchaseIcNow / purchaseIcBase) : (purchaseIcNow / KEY_METRIC_BOUNDS.purchaseIcFloorRate);
+  const normalized = ((roasLift * 0.7) + (purchaseLift * 0.3)) * 100;
+  return clamp(round(normalized, 1), 0, 140);
+}
+
+function normalizeStatusValue(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  return normalized || null;
+}
+
+function isActiveEntityRow(row = {}) {
+  const statusCandidates = [
+    row?.effectiveStatus,
+    row?.effective_status,
+    row?.status,
+    row?.campaignStatus,
+    row?.campaign_effective_status,
+    row?.adset_effective_status,
+    row?.ad_effective_status
+  ]
+    .map(normalizeStatusValue)
+    .filter(Boolean);
+
+  if (!statusCandidates.length) {
+    return true;
+  }
+
+  return statusCandidates.some((status) => ACTIVE_STATUS_VALUES.has(status));
+}
+
+function titleCaseDirection(value) {
+  const text = String(value || 'stable').trim().toLowerCase();
+  if (!text) return 'Stable';
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function getVisibleRows(rows, expandedIds) {
@@ -471,10 +714,14 @@ function computeCreativePriorityRows(rows, targetRoas) {
 }
 
 function buildDeterministicBriefFallback(snapshot, rows, targetRoas) {
-  const sentinelSummary = String(snapshot?.models?.sentinel?.summary || '').trim();
-  const topDrivers = Array.isArray(snapshot?.models?.topDrivers) ? snapshot.models.topDrivers : [];
+  const analysisRoas = toFiniteNumber(snapshot?.summary?.analysis?.rates?.roas, 0);
+  const analysisCtr = toFiniteNumber(snapshot?.summary?.analysis?.rates?.ctr, 0);
+  const analysisCvr = toFiniteNumber(snapshot?.summary?.analysis?.rates?.cvr, 0);
+  const anchorRoas = toFiniteNumber(snapshot?.summary?.anchor?.rates?.roas, 0);
+  const deltaVsAnchor = anchorRoas > 0 ? ((analysisRoas - anchorRoas) / anchorRoas) * 100 : 0;
 
-  const draggers = computeDraggerRows(rows, targetRoas).map((row) => ({
+  const computedDraggers = computeDraggerRows(rows, targetRoas);
+  const draggers = computedDraggers.map((row) => ({
     scope: row.scope,
     issue: row.issue,
     evidence: `Impact score ${row.impactScore}`,
@@ -487,10 +734,10 @@ function buildDeterministicBriefFallback(snapshot, rows, targetRoas) {
     reason: `Composite score ${row.compositeScore} from efficiency + volume balance.`
   }));
 
-  const toWatch = (topDrivers.slice(0, 4)).map((driver) => ({
-    scope: driver.modelName || 'Model',
-    signal: driver.label || 'Driver',
-    why: `Impact ${formatNumber(driver.impact || 0, 2)} | Delta ${formatNumber(driver.deltaPercent || 0, 2)}%`,
+  const toWatch = computedDraggers.slice(0, 4).map((row) => ({
+    scope: row.scope,
+    signal: row.issue,
+    why: `Impact score ${formatNumber(row.impactScore || 0, 2)} from efficiency and spend-weighted deterioration.`,
     recheck: '24h'
   }));
 
@@ -508,7 +755,7 @@ function buildDeterministicBriefFallback(snapshot, rows, targetRoas) {
   ];
 
   return {
-    executiveSummary: sentinelSummary || 'Deterministic brief: monitor quality drift and keep scaling decisions inside guardrails.',
+    executiveSummary: `Scope delivered ROAS ${formatNumber(analysisRoas, 2)} vs anchor ${formatNumber(anchorRoas, 2)} (${formatNumber(deltaVsAnchor, 1)}%), CTR ${formatNumber(analysisCtr * 100, 2)}%, CVR ${formatNumber(analysisCvr * 100, 2)}%. Prioritize highest-impact draggers first.`,
     draggers,
     creativePriorities: priorities,
     toWatch,
@@ -520,18 +767,65 @@ function buildDeterministicBriefFallback(snapshot, rows, targetRoas) {
   };
 }
 
-function normalizeBriefForRender(briefReport, fallbackBrief) {
-  if (!briefReport) return fallbackBrief;
+function hasBriefShape(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return BRIEF_REPORT_KEYS.some((key) => key in value);
+}
+
+function tryParseSummaryEmbeddedBrief(summaryText) {
+  const normalized = String(summaryText || '').trim();
+  if (!normalized.startsWith('{') || !normalized.endsWith('}')) return null;
+  try {
+    const parsed = JSON.parse(normalized);
+    return hasBriefShape(parsed) ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function coerceBriefReport(briefReport) {
+  if (!hasBriefShape(briefReport)) return briefReport;
+  const parsedSummary = tryParseSummaryEmbeddedBrief(briefReport.executiveSummary);
+  if (!parsedSummary) return briefReport;
+
+  const parsedSummaryText = String(parsedSummary.executiveSummary || '').trim();
+  const sourceSummaryText = String(briefReport.executiveSummary || '').trim();
 
   return {
-    executiveSummary: String(briefReport.executiveSummary || fallbackBrief.executiveSummary || '').trim() || fallbackBrief.executiveSummary,
-    draggers: Array.isArray(briefReport.draggers) && briefReport.draggers.length ? briefReport.draggers : fallbackBrief.draggers,
+    ...parsedSummary,
+    ...briefReport,
+    executiveSummary: parsedSummaryText || sourceSummaryText,
+    toWatch: Array.isArray(briefReport.toWatch) && briefReport.toWatch.length
+      ? briefReport.toWatch
+      : parsedSummary.toWatch,
+    toDo: Array.isArray(briefReport.toDo) && briefReport.toDo.length
+      ? briefReport.toDo
+      : parsedSummary.toDo,
+    draggers: Array.isArray(briefReport.draggers) && briefReport.draggers.length
+      ? briefReport.draggers
+      : parsedSummary.draggers,
     creativePriorities: Array.isArray(briefReport.creativePriorities) && briefReport.creativePriorities.length
       ? briefReport.creativePriorities
+      : parsedSummary.creativePriorities,
+    notes: Array.isArray(briefReport.notes) && briefReport.notes.length
+      ? briefReport.notes
+      : parsedSummary.notes
+  };
+}
+
+function normalizeBriefForRender(briefReport, fallbackBrief) {
+  const resolvedBrief = coerceBriefReport(briefReport);
+  if (!resolvedBrief) return fallbackBrief;
+
+  return {
+    executiveSummary: String(resolvedBrief.executiveSummary || fallbackBrief.executiveSummary || '').trim() || fallbackBrief.executiveSummary,
+    draggers: Array.isArray(resolvedBrief.draggers) && resolvedBrief.draggers.length ? resolvedBrief.draggers : fallbackBrief.draggers,
+    creativePriorities: Array.isArray(resolvedBrief.creativePriorities) && resolvedBrief.creativePriorities.length
+      ? resolvedBrief.creativePriorities
       : fallbackBrief.creativePriorities,
-    toWatch: Array.isArray(briefReport.toWatch) && briefReport.toWatch.length ? briefReport.toWatch : fallbackBrief.toWatch,
-    toDo: Array.isArray(briefReport.toDo) && briefReport.toDo.length ? briefReport.toDo : fallbackBrief.toDo,
-    notes: Array.isArray(briefReport.notes) && briefReport.notes.length ? briefReport.notes : fallbackBrief.notes
+    toWatch: Array.isArray(resolvedBrief.toWatch) && resolvedBrief.toWatch.length ? resolvedBrief.toWatch : fallbackBrief.toWatch,
+    toDo: Array.isArray(resolvedBrief.toDo) && resolvedBrief.toDo.length ? resolvedBrief.toDo : fallbackBrief.toDo,
+    notes: Array.isArray(resolvedBrief.notes) && resolvedBrief.notes.length ? resolvedBrief.notes : fallbackBrief.notes
   };
 }
 
@@ -590,10 +884,26 @@ function formatBriefCost(costUsd) {
   return `$${numeric.toFixed(6)}`;
 }
 
-function formatBriefModelOptionLabel(option) {
-  const inPrice = Number(option.inputUsdPerMillionTokens || 0).toFixed(2);
-  const outPrice = Number(option.outputUsdPerMillionTokens || 0).toFixed(2);
-  return `${option.label} (${option.provider}) • in $${inPrice}/M • out $${outPrice}/M`;
+function resolveBriefGenerationErrorMessage(response, payload) {
+  const rawMessage = String(payload?.error || '').trim();
+  const code = String(payload?.code || '').trim().toLowerCase();
+  const messageLower = rawMessage.toLowerCase();
+  const isInsufficientFunds = code === INSUFFICIENT_FUNDS_ERROR_CODE
+    || response?.status === 402
+    || messageLower.includes('insufficient')
+    || messageLower.includes('credits')
+    || messageLower.includes('billing')
+    || messageLower.includes('payment required');
+
+  if (isInsufficientFunds) {
+    return INSUFFICIENT_FUNDS_MESSAGE;
+  }
+
+  if (rawMessage) {
+    return rawMessage;
+  }
+
+  return `Brief generation failed (HTTP ${response?.status || 500})`;
 }
 
 export default function CampaignIntelligenceUnifiedSection({
@@ -601,12 +911,17 @@ export default function CampaignIntelligenceUnifiedSection({
   analysisParams,
   store,
   targetRoas,
-  onSnapshotUpdate
+  onSnapshotUpdate,
+  onAnalysisParamsChange
 }) {
   const hierarchyRows = Array.isArray(snapshot?.hierarchy?.rows) ? snapshot.hierarchy.rows : [];
 
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [selectedRowId, setSelectedRowId] = useState('');
+  const [viewMode, setViewMode] = useState(MOCK_VIEW_OPTIONS[0].value);
+  const [windowMode, setWindowMode] = useState(MOCK_WINDOW_OPTIONS[0].value);
+  const [triageMode, setTriageMode] = useState(MOCK_TRIAGE_OPTIONS[0].value);
+  const [toolbarCountryCode, setToolbarCountryCode] = useState(() => String(analysisParams?.country || 'ALL').toUpperCase());
 
   const briefMeta = snapshot?.brief || {};
   const [scheduleMode, setScheduleMode] = useState('manual');
@@ -654,6 +969,28 @@ export default function CampaignIntelligenceUnifiedSection({
     setVerbosity(settings.verbosity || 'low');
   }, [briefMeta]);
 
+  useEffect(() => {
+    setToolbarCountryCode(String(analysisParams?.country || 'ALL').toUpperCase());
+  }, [analysisParams?.country]);
+
+  useEffect(() => {
+    const start = String(analysisParams?.startDate || '').trim();
+    const end = String(analysisParams?.endDate || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return;
+
+    const startDate = new Date(`${start}T00:00:00`);
+    const endDate = new Date(`${end}T00:00:00`);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return;
+
+    const diffMs = endDate.getTime() - startDate.getTime();
+    const inclusiveDays = Math.floor(diffMs / MILLISECONDS_PER_DAY) + 1;
+    if (inclusiveDays === WINDOW_DAY_LOOKUP['7d']) {
+      setWindowMode('7d');
+    } else if (inclusiveDays === WINDOW_DAY_LOOKUP['14d']) {
+      setWindowMode('14d');
+    }
+  }, [analysisParams?.endDate, analysisParams?.startDate]);
+
   const modelOptions = useMemo(() => {
     const options = Array.isArray(briefMeta?.modelOptions) ? briefMeta.modelOptions : [];
     return options.filter((option) => option.enabled);
@@ -684,7 +1021,9 @@ export default function CampaignIntelligenceUnifiedSection({
   }, [modelOptionsForProvider, selectedModel]);
 
   const rowsWithComputed = useMemo(() => {
-    return hierarchyRows.map((row) => {
+    return hierarchyRows
+      .filter((row) => isActiveEntityRow(row))
+      .map((row) => {
       const healthScore = computeHealthScore(row, targetRoas);
       const direction = resolveDirection(row, targetRoas, healthScore);
       return {
@@ -694,22 +1033,101 @@ export default function CampaignIntelligenceUnifiedSection({
         healthScore,
         direction
       };
-    });
+      });
   }, [hierarchyRows, targetRoas]);
 
-  const visibleRows = useMemo(() => getVisibleRows(rowsWithComputed, expandedIds), [rowsWithComputed, expandedIds]);
+  const triageFilteredRows = useMemo(() => {
+    if (triageMode !== 'attention') return rowsWithComputed;
+    return rowsWithComputed.filter((row) => rowNeedsAttention(row, targetRoas));
+  }, [rowsWithComputed, triageMode, targetRoas]);
 
-  const childrenByParent = useMemo(() => listToMapByParent(rowsWithComputed), [rowsWithComputed]);
+  const displayRows = useMemo(() => {
+    if (viewMode !== 'geo_split') return triageFilteredRows;
+    return triageFilteredRows.filter((row) => row.level === 'campaign');
+  }, [triageFilteredRows, viewMode]);
+
+  const visibleRows = useMemo(() => getVisibleRows(displayRows, expandedIds), [displayRows, expandedIds]);
+
+  const childrenByParent = useMemo(() => listToMapByParent(displayRows), [displayRows]);
 
   const selectedRow = useMemo(() => {
-    if (!rowsWithComputed.length) return null;
-    return rowsWithComputed.find((row) => row.id === selectedRowId) || rowsWithComputed[0];
-  }, [rowsWithComputed, selectedRowId]);
+    if (!displayRows.length) return null;
+    return displayRows.find((row) => row.id === selectedRowId) || displayRows[0];
+  }, [displayRows, selectedRowId]);
 
   const timelineDaily = useMemo(() => (Array.isArray(snapshot?.timeline?.daily) ? snapshot.timeline.daily : []), [snapshot]);
+  const analysisEndDate = snapshot?.scope?.analysisEndDate || analysisParams?.endDate || toIsoDateString();
 
-  const ctrSeries = useMemo(() => timelineDaily.map((row) => toFiniteNumber(row.ctr) * 100), [timelineDaily]);
-  const reachSeries = useMemo(() => timelineDaily.map((row) => toFiniteNumber(row.reach)), [timelineDaily]);
+  const countryOptions = useMemo(() => {
+    const selectorRows = Array.isArray(snapshot?.selectors?.countries) ? snapshot.selectors.countries : [];
+    const normalizedRows = selectorRows
+      .map((row) => ({
+        code: String(row?.code || '').trim().toUpperCase() || 'ALL',
+        spend: toFiniteNumber(row?.spend, 0),
+        conversions: toFiniteNumber(row?.conversions, 0),
+        conversionValue: toFiniteNumber(row?.conversionValue, 0),
+        addToCart: toFiniteNumber(row?.addToCart, 0),
+        checkoutsInitiated: toFiniteNumber(row?.checkoutsInitiated, 0),
+        clicks: toFiniteNumber(row?.clicks, 0),
+        impressions: toFiniteNumber(row?.impressions, 0),
+        cpm: toFiniteNumber(row?.cpm, 0),
+        costAtc: toFiniteNumber(row?.costAtc, 0),
+        purchaseIc: toFiniteNumber(row?.purchaseIc, 0),
+        roas: toFiniteNumber(row?.roas, 0)
+      }))
+      .filter((row) => row.code);
+
+    const uniqueRows = [];
+    const seen = new Set();
+    for (const row of normalizedRows) {
+      if (seen.has(row.code)) continue;
+      seen.add(row.code);
+      uniqueRows.push({
+        ...row,
+        label: row.code === 'ALL' ? DEFAULT_COUNTRY_OPTION.label : getCountryDisplayName(row.code),
+        flag: toCountryFlag(row.code)
+      });
+    }
+
+    if (!seen.has('ALL')) {
+      uniqueRows.unshift({
+        ...DEFAULT_COUNTRY_OPTION,
+        spend: 0,
+        conversions: 0,
+        conversionValue: 0,
+        addToCart: 0,
+        checkoutsInitiated: 0,
+        clicks: 0,
+        impressions: 0,
+        cpm: 0,
+        costAtc: 0,
+        purchaseIc: 0,
+        roas: 0,
+        flag: ''
+      });
+    }
+
+    return uniqueRows;
+  }, [snapshot?.selectors?.countries]);
+
+  const windowedTimeline = useMemo(() => {
+    const { startDate, endDate } = buildWindowRange(windowMode, analysisEndDate);
+    return timelineDaily.filter((row) => String(row?.date || '') >= startDate && String(row?.date || '') <= endDate);
+  }, [analysisEndDate, timelineDaily, windowMode]);
+
+  const ctrSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.ctr) * 100), [windowedTimeline]);
+  const reachSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.reach)), [windowedTimeline]);
+  const purchasesSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.orders ?? row.conversions)), [windowedTimeline]);
+  const spendSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.spend)), [windowedTimeline]);
+  const healthSeries = useMemo(() => {
+    const config = TREND_HEALTH_PROXY_CONFIG;
+    return windowedTimeline.map((row) => {
+      const roas = toFiniteNumber(row?.roas);
+      const cvr = toFiniteNumber(row?.cvr);
+      const weighted = (roas * config.roasWeight) + (cvr * config.cvrWeight);
+      return clamp(weighted, config.min, config.max);
+    });
+  }, [windowedTimeline]);
 
   const metricDeltaDetails = useMemo(() => {
     if (!selectedRow) return [];
@@ -738,12 +1156,17 @@ export default function CampaignIntelligenceUnifiedSection({
     return [];
   }, [renderedBrief]);
 
-  const creativeRows = useMemo(() => {
-    if (Array.isArray(renderedBrief?.creativePriorities)) {
-      return renderedBrief.creativePriorities.slice(0, TOP_CREATIVES_LIMIT);
+  const runBadgeText = useMemo(() => {
+    const timestampValue = activeBrief?.createdAt || snapshot?.generatedAt || null;
+    if (!timestampValue) {
+      return 'Manual run';
     }
-    return [];
-  }, [renderedBrief]);
+    const parsed = new Date(timestampValue);
+    if (Number.isNaN(parsed.getTime())) {
+      return 'Manual run';
+    }
+    return `Run ${parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • ${parsed.toLocaleDateString()}`;
+  }, [activeBrief?.createdAt, snapshot?.generatedAt]);
 
   const watchRows = useMemo(() => {
     if (Array.isArray(renderedBrief?.toWatch)) {
@@ -764,6 +1187,241 @@ export default function CampaignIntelligenceUnifiedSection({
     return renderedBrief.notes.slice(0, BRIEF_NOTES_LIMIT);
   }, [renderedBrief]);
 
+  const windowSummary = useMemo(() => buildWindowRange(windowMode, analysisEndDate), [analysisEndDate, windowMode]);
+
+  const scopeRulesText = useMemo(() => {
+    const anchorSource = String(snapshot?.scope?.anchorSource || 'policy').replace(/_/g, ' ');
+    return {
+      scope: 'active entities only',
+      baseline: 'business floor + own baseline + peer benchmark',
+      anchorSource
+    };
+  }, [snapshot?.scope?.anchorSource]);
+
+  const countryHealthRows = useMemo(() => {
+    const rows = countryOptions
+      .filter((row) => row.code !== 'ALL')
+      .map((row) => {
+        const roas = row.roas > 0 ? row.roas : safeDivide(row.conversionValue, row.spend);
+        const costAtc = row.costAtc > 0 ? row.costAtc : safeDivide(row.spend, row.addToCart);
+        const purchaseIc = row.purchaseIc > 0 ? row.purchaseIc : safeDivide(row.conversions, row.checkoutsInitiated);
+
+        const pseudoRow = {
+          metrics: {
+            now: {
+              roas,
+              costAtc,
+              purchaseIc,
+              ctr: safeDivide(row.clicks, row.impressions),
+              cpm: row.cpm,
+              spend: row.spend
+            },
+            baseline: {
+              roas: toFiniteNumber(snapshot?.summary?.anchor?.rates?.roas, roas),
+              costAtc: toFiniteNumber(snapshot?.summary?.anchor?.totals?.spend, 0) > 0
+                ? safeDivide(toFiniteNumber(snapshot?.summary?.anchor?.totals?.spend, 0), Math.max(1, toFiniteNumber(snapshot?.summary?.anchor?.totals?.landingPageViews, 0)))
+                : costAtc,
+              purchaseIc: KEY_METRIC_BOUNDS.purchaseIcFloorRate,
+              ctr: toFiniteNumber(snapshot?.summary?.anchor?.rates?.ctr, 0),
+              cpm: toFiniteNumber(snapshot?.summary?.anchor?.rates?.cpm, row.cpm)
+            }
+          }
+        };
+
+        const healthScore = computeHealthScore(pseudoRow, targetRoas);
+        const direction = resolveDirectionFromScore(healthScore);
+
+        return {
+          ...row,
+          roas,
+          costAtc,
+          purchaseIc,
+          healthScore,
+          direction
+        };
+      })
+      .sort((left, right) => right.spend - left.spend);
+
+    return rows.slice(0, MAX_COUNTRY_BOARD_ROWS);
+  }, [countryOptions, snapshot?.summary?.anchor, targetRoas]);
+
+  const countryRegimeRows = useMemo(() => {
+    const analysisStartDate = snapshot?.scope?.analysisStartDate || windowSummary.startDate;
+    return countryHealthRows
+      .slice(0, MAX_REGIME_ROWS)
+      .map((row) => {
+        const direction = row.direction || 'stable';
+        const confidence = clamp(
+          Math.round(
+            42
+              + Math.min(30, Math.log10(Math.max(1, row.spend + 1)) * 16)
+              + Math.min(22, Math.log10(Math.max(1, row.conversions + 1)) * 18)
+          ),
+          0,
+          100
+        );
+        return {
+          code: row.code,
+          label: row.label,
+          flag: row.flag,
+          direction,
+          confidence,
+          sinceDate: analysisStartDate
+        };
+      });
+  }, [countryHealthRows, snapshot?.scope?.analysisStartDate, windowSummary.startDate]);
+
+  const draggerDetailRows = useMemo(() => {
+    const rowIndex = new Map(triageFilteredRows.map((row) => [String(row.name || '').toLowerCase(), row]));
+
+    return draggerRows.map((row, index) => {
+      const parsedScope = parseScopeParts(row.scope);
+      const rowNameKey = String(parsedScope.entity || '').toLowerCase();
+      const matchedRow = rowIndex.get(rowNameKey) || null;
+      const impact = String(row.impact || 'medium').toLowerCase();
+      const waste = computeEstimatedDailyWaste(matchedRow?.metrics?.now?.spend || 0, impact);
+      const confidence = DRAGGER_CONFIDENCE_SCORE[impact] || DRAGGER_CONFIDENCE_SCORE.medium;
+      const classLabel = /bleed/i.test(`${row.issue || ''} ${row.scope || ''}`) ? 'bleed' : 'dragger';
+
+      return {
+        id: `${row.scope}-${index}`,
+        level: parsedScope.level,
+        entity: parsedScope.entity,
+        country: parsedScope.country,
+        classLabel,
+        confidence,
+        waste,
+        reason: `${row.issue}${row.evidence ? ` ${row.evidence}` : ''}`.trim()
+      };
+    });
+  }, [draggerRows, triageFilteredRows]);
+
+  const toWatchDetailRows = useMemo(() => {
+    return watchRows.map((row, index) => {
+      const parsedScope = parseScopeParts(row.scope);
+      const status = /risk|critical|decline|deteriorat/i.test(String(row.signal || '')) ? 'risk' : 'watch';
+      return {
+        id: `${row.scope}-${index}`,
+        level: parsedScope.level,
+        entity: parsedScope.entity,
+        status,
+        signal: String(row.signal || 'No signal').trim(),
+        threshold: String(row.triggerThreshold || DEFAULT_TRIGGER_THRESHOLD).trim(),
+        recheck: String(row.recheck || DEFAULT_RECHECK_WINDOW).trim()
+      };
+    });
+  }, [watchRows]);
+
+  const toDoDetailRows = useMemo(() => {
+    return todoRows.map((row, index) => ({
+      id: `${row.priority}-${index}`,
+      priority: String(row.priority || 'P3').trim().toUpperCase(),
+      level: String(row.level || DEFAULT_ACTION_SCOPE_LEVEL).trim(),
+      entity: String(row.entity || DEFAULT_ACTION_SCOPE_NAME).trim(),
+      action: String(row.action || '').trim(),
+      expectedImpact: String(row.expectedImpact || 'Efficiency stabilization in the next full-day window.').trim(),
+      guardrail: String(row.guardrail || 'Keep changes bounded and verify after one full day.').trim()
+    }));
+  }, [todoRows]);
+
+  const bestForBusinessRows = useMemo(() => {
+    const baseRows = triageFilteredRows.filter((row) => row.level === 'ad');
+    const rankedRows = (baseRows.length ? baseRows : triageFilteredRows.filter((row) => row.level !== 'campaign'))
+      .slice()
+      .sort((left, right) => toFiniteNumber(right?.metrics?.now?.spend, 0) - toFiniteNumber(left?.metrics?.now?.spend, 0))
+      .slice(0, TOP_CREATIVES_LIMIT * 2);
+
+    const maxSpend = Math.max(...rankedRows.map((row) => toFiniteNumber(row?.metrics?.now?.spend, 0)), CHART_EPSILON);
+    const rows = rankedRows.map((row) => {
+      const efficiency = clamp((toFiniteNumber(row?.metrics?.now?.roas, 0) / Math.max(targetRoas, 0.1)) * 100, 0, 130);
+      const volume = clamp((toFiniteNumber(row?.metrics?.now?.spend, 0) / maxSpend) * 100, 0, 100);
+      const stability = deriveCreativeStability(row);
+      const incrementality = deriveCreativeIncrementality(row, targetRoas);
+      const score = (
+        (efficiency * BEST_FOR_BUSINESS_WEIGHTS.efficiency)
+        + (volume * BEST_FOR_BUSINESS_WEIGHTS.volume)
+        + (stability * BEST_FOR_BUSINESS_WEIGHTS.stability)
+        + (incrementality * BEST_FOR_BUSINESS_WEIGHTS.incrementality)
+      );
+
+      return {
+        id: row.id,
+        adName: row.name,
+        campaignName: row.campaignName || 'N/A',
+        adsetName: row.adsetName || 'N/A',
+        efficiency: round(efficiency, 1),
+        volume: round(volume, 1),
+        stability: round(stability, 1),
+        incrementality: round(incrementality, 1),
+        score: round(score, 1)
+      };
+    });
+
+    return rows
+      .sort((left, right) => right.score - left.score)
+      .slice(0, TOP_CREATIVES_LIMIT);
+  }, [targetRoas, triageFilteredRows]);
+
+  const crossEntityInsights = useMemo(() => {
+    const insights = [];
+    if (bestForBusinessRows.length >= 2) {
+      const top = bestForBusinessRows[0];
+      const second = bestForBusinessRows[1];
+      insights.push(`Top ad leader: ${top.adName} outranks ${second.adName} on combined efficiency and volume.`);
+    }
+    if (draggerDetailRows.length > 0) {
+      const primaryDragger = draggerDetailRows[0];
+      insights.push(`Primary dragger: ${primaryDragger.entity} shows a ${primaryDragger.classLabel} pattern with estimated waste ${formatUsd(primaryDragger.waste)}.`);
+    }
+    if (countryHealthRows.length > 0) {
+      const weakestCountry = countryHealthRows.slice().sort((left, right) => left.healthScore - right.healthScore)[0];
+      insights.push(`Country pressure point: ${weakestCountry.label} is below the portfolio median health score.`);
+    }
+    if (watchRows.length > 0) {
+      insights.push(`Watchlist concentration: ${watchRows.length} scoped signals currently need follow-up checks.`);
+    }
+    if (!insights.length) {
+      insights.push('No high-confidence cross-entity outliers detected in the selected window.');
+    }
+    return insights.slice(0, CROSS_ENTITY_INSIGHT_LIMIT);
+  }, [bestForBusinessRows, countryHealthRows, draggerDetailRows, watchRows]);
+
+  const rootCauseRows = useMemo(() => {
+    return draggerDetailRows.slice(0, 4).map((row, index) => ({
+      id: `${row.id}-${index}`,
+      scope: `${row.entity}${row.country !== 'ALL' ? ` (${row.country})` : ''}`,
+      stage: row.classLabel === 'bleed' ? 'ATC/LPV -> Purchase/IC' : 'LPV/Click -> ATC/LPV',
+      evidence: row.reason || 'See watchlist signals',
+      fix: row.classLabel === 'bleed'
+        ? 'Trim or replace weak creative; keep budget capped until efficiency stabilizes.'
+        : 'Keep spend stable and rotate weaker creatives to recover funnel quality.',
+      check: 'Re-check after one full day with spend held stable.'
+    }));
+  }, [draggerDetailRows]);
+
+  const budgetDirectionRows = useMemo(() => {
+    return countryHealthRows.slice(0, 3).map((row) => {
+      if (row.healthScore >= HEALTH_RULES.statusCutoffs.strong) {
+        return `${row.label}: hold to +8% only if Cost/ATC stays within cap for 2 full days.`;
+      }
+      if (row.healthScore >= HEALTH_RULES.statusCutoffs.watch) {
+        return `${row.label}: hold budget; rotate weak ads before scaling.`;
+      }
+      return `${row.label}: reduce by 10% until funnel quality recovers to baseline band.`;
+    });
+  }, [countryHealthRows]);
+
+  const tomorrowWatchlistRows = useMemo(() => {
+    if (watchRows.length > 0) {
+      return watchRows.slice(0, 5).map((row) => `${row.signal} -> ${row.recheck || DEFAULT_RECHECK_WINDOW}.`);
+    }
+    return [
+      'Cost/ATC rising above cap for two full days.',
+      'LPV/Click softening while CTR is stable.',
+      'Frequency and CPM rising together.'
+    ];
+  }, [watchRows]);
+
   const toggleExpand = useCallback((rowId) => {
     setExpandedIds((previous) => {
       const next = new Set(previous);
@@ -775,6 +1433,29 @@ export default function CampaignIntelligenceUnifiedSection({
       return next;
     });
   }, []);
+
+  const handleCountryChange = useCallback((nextCountryCode) => {
+    const normalizedCode = String(nextCountryCode || 'ALL').trim().toUpperCase() || 'ALL';
+    setToolbarCountryCode(normalizedCode);
+    if (typeof onAnalysisParamsChange === 'function') {
+      onAnalysisParamsChange({
+        country: normalizedCode,
+        entityId: ''
+      });
+    }
+  }, [onAnalysisParamsChange]);
+
+  const handleWindowChange = useCallback((nextWindowMode) => {
+    const normalizedWindow = WINDOW_DAY_LOOKUP[nextWindowMode] ? nextWindowMode : MOCK_WINDOW_OPTIONS[0].value;
+    setWindowMode(normalizedWindow);
+
+    if (typeof onAnalysisParamsChange !== 'function') return;
+    const nextRange = buildWindowRange(normalizedWindow, analysisEndDate);
+    onAnalysisParamsChange({
+      startDate: nextRange.startDate,
+      endDate: nextRange.endDate
+    });
+  }, [analysisEndDate, onAnalysisParamsChange]);
 
   const runBriefGeneration = useCallback(async () => {
     if (!store?.id) return;
@@ -801,7 +1482,7 @@ export default function CampaignIntelligenceUnifiedSection({
       const json = await readJsonResponse(response);
 
       if (!response.ok || !json?.success) {
-        throw new Error(json?.error || `Brief generation failed (HTTP ${response.status})`);
+        throw new Error(resolveBriefGenerationErrorMessage(response, json));
       }
 
       setManualBrief(json.brief || null);
@@ -856,116 +1537,137 @@ export default function CampaignIntelligenceUnifiedSection({
     }
   }, [analysisParams, reasoningEffort, scheduleMode, selectedModel, selectedProvider, store?.id, verbosity]);
 
-  const scopeHasRows = rowsWithComputed.length > 0;
+  const openFullDiagnosis = useCallback(async () => {
+    if (!store?.id || briefBusy || settingsBusy) return;
+    setStatusMessage('');
+    setBriefError('');
+    setSettingsError('');
+
+    await saveBriefSettings();
+    await runBriefGeneration();
+  }, [briefBusy, runBriefGeneration, saveBriefSettings, settingsBusy, store?.id]);
+
+  const scopeHasRows = displayRows.length > 0;
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-3xl border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-blue-50 p-5 md:p-6 shadow-sm">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
+    <div className="space-y-3">
+      <section
+        className="rounded-2xl border bg-white p-4 md:p-[18px]"
+        style={{ borderColor: UI_SURFACE_STYLE.cardBorder }}
+      >
+        <div className="flex items-start justify-between gap-3 flex-wrap">
           <div>
-            <h3 className="text-[25px] font-semibold text-slate-900 tracking-tight" style={{ fontFamily: TYPOGRAPHY_HEADING }}>
-              Unified Funnel Health Console
+            <h3 className="text-[24px] font-semibold text-[#0f172a]" style={{ fontFamily: TYPOGRAPHY_HEADING }}>
+              Unified Funnel Health Manager
             </h3>
-            <p className="mt-1 text-sm text-slate-600 max-w-4xl">
-              One-screen campaign, ad set, and ad triage with deterministic health scoring plus optional LLM daily brief.
+            <p className="text-[13px] text-[#5d6785] mt-0.5">
+              Meta-style hierarchy with funnel-health-only columns and directional triage.
             </p>
           </div>
-          <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+          <span
+            className="inline-flex items-center rounded-full border px-3 py-2 text-xs font-semibold text-[#31407b]"
+            style={{ borderColor: '#d5dcff', background: 'linear-gradient(135deg, #f4f6ff, #f6fbff)' }}
+          >
             Live Data
           </span>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 lg:grid-cols-5 gap-3">
-          <div>
-            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Brief Mode</label>
+        <div className="mt-3 grid grid-cols-1 lg:grid-cols-5 gap-2.5">
+          <div className="grid gap-1.5">
+            <label className="text-[11px] uppercase tracking-[0.5px] font-bold text-[#6372a8]">View</label>
             <select
-              value={scheduleMode}
-              onChange={(event) => setScheduleMode(event.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+              value={viewMode}
+              onChange={(event) => setViewMode(event.target.value)}
+              className="h-[39px] rounded-[10px] border bg-white px-2.5 text-[13px] font-semibold text-[#1a2754]"
+              style={{ borderColor: '#d8defa' }}
             >
-              <option value="manual">Manual only</option>
-              <option value="daily">Daily end-of-day</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">LLM Provider</label>
-            <select
-              value={selectedProvider}
-              onChange={(event) => setSelectedProvider(event.target.value)}
-              disabled={!llmAvailable}
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
-            >
-              {!llmAvailable && <option value="">No providers configured</option>}
-              {providerOptions.map((provider) => (
-                <option key={provider} value={provider}>{provider}</option>
+              {MOCK_VIEW_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
           </div>
 
-          <div className="lg:col-span-2">
-            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Model</label>
+          <div className="grid gap-1.5">
+            <label className="text-[11px] uppercase tracking-[0.5px] font-bold text-[#6372a8]">Country</label>
             <select
-              value={selectedModel}
-              onChange={(event) => setSelectedModel(event.target.value)}
-              disabled={!llmAvailable}
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+              value={toolbarCountryCode}
+              onChange={(event) => handleCountryChange(event.target.value)}
+              className="h-[39px] rounded-[10px] border bg-white px-2.5 text-[13px] font-semibold text-[#1a2754]"
+              style={{ borderColor: '#d8defa' }}
             >
-              {!llmAvailable && <option value="">No models configured</option>}
-              {modelOptionsForProvider.map((option) => (
-                <option key={`${option.provider}:${option.model}`} value={option.model}>
-                  {formatBriefModelOptionLabel(option)}
+              {countryOptions.map((option) => (
+                <option key={`country-option-${option.code}`} value={option.code}>
+                  {option.flag ? `${option.flag} ` : ''}{option.label}
                 </option>
               ))}
             </select>
           </div>
 
-          <div className="flex items-end gap-2">
+          <div className="grid gap-1.5">
+            <label className="text-[11px] uppercase tracking-[0.5px] font-bold text-[#6372a8]">Window</label>
+            <select
+              value={windowMode}
+              onChange={(event) => handleWindowChange(event.target.value)}
+              className="h-[39px] rounded-[10px] border bg-white px-2.5 text-[13px] font-semibold text-[#1a2754]"
+              style={{ borderColor: '#d8defa' }}
+            >
+              {MOCK_WINDOW_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid gap-1.5">
+            <label className="text-[11px] uppercase tracking-[0.5px] font-bold text-[#6372a8]">Triage</label>
+            <select
+              value={triageMode}
+              onChange={(event) => setTriageMode(event.target.value)}
+              className="h-[39px] rounded-[10px] border bg-white px-2.5 text-[13px] font-semibold text-[#1a2754]"
+              style={{ borderColor: '#d8defa' }}
+            >
+              {MOCK_TRIAGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid gap-1.5">
+            <label className="text-[11px] uppercase tracking-[0.5px] font-bold text-[#6372a8]">Action</label>
             <button
               type="button"
-              onClick={saveBriefSettings}
-              disabled={settingsBusy || !store?.id}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              onClick={openFullDiagnosis}
+              disabled={!scopeHasRows || !store?.id || !llmAvailable || briefBusy || settingsBusy}
+              className="h-[39px] rounded-[10px] border-0 text-[13px] font-semibold text-white inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+              style={{ background: 'linear-gradient(90deg, #5b4fff, #1f63ff)' }}
             >
-              {settingsBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Save Mode
-            </button>
-            <button
-              type="button"
-              onClick={runBriefGeneration}
-              disabled={briefBusy || !store?.id || !scopeHasRows || !llmAvailable}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
-            >
-              {briefBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              Generate Brief
+              {briefBusy || settingsBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              Open Full Diagnosis
             </button>
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
-          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1">
-            <RefreshCw className="w-3.5 h-3.5 text-indigo-600" />
-            {scheduleMode === 'daily' ? 'Daily mode: enabled (runs at end of day)' : 'Daily mode: off (manual only)'}
-          </span>
-          {activeBrief && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1">
-              Last run: {activeBrief.source} • {activeBrief.provider} {activeBrief.model} • Cost {formatBriefCost(activeBrief.estimatedCostUsd)}
-            </span>
-          )}
+        <div
+          className="mt-3 rounded-[10px] border border-dashed px-2.5 py-2 text-[11px] text-[#44527f] flex flex-wrap gap-2.5"
+          style={{ borderColor: '#cdd6ff', background: '#f8faff' }}
+        >
+          <span><b className="text-[#24376e]">Cell logic:</b> current value only (no delta coloring)</span>
+          <span><b className="text-[#24376e]">Compared against:</b> {scopeRulesText.baseline}</span>
+          <span><b className="text-[#24376e]">Key colored cells:</b> ROAS, Cost/ATC, Purchase/IC, Health</span>
+          <span><b className="text-[#24376e]">Scope:</b> {scopeRulesText.scope}</span>
+          <span><b className="text-[#24376e]">Mode:</b> {scheduleMode === 'daily' ? 'daily end-of-day' : 'manual'} ({scopeRulesText.anchorSource})</span>
+          {activeBrief && <span><b className="text-[#24376e]">Cost:</b> {formatBriefCost(activeBrief.estimatedCostUsd || 0)}</span>}
         </div>
 
         {!llmAvailable && (
           <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            No LLM provider is configured on the server. Add at least one provider key to enable brief generation.
+            LLM provider is not configured. Configure provider keys to enable daily diagnosis generation.
           </div>
         )}
-
         {statusMessage && (
           <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
             {statusMessage}
           </div>
         )}
-
         {(briefError || settingsError) && (
           <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
             {briefError || settingsError}
@@ -974,27 +1676,27 @@ export default function CampaignIntelligenceUnifiedSection({
       </section>
 
       {!scopeHasRows && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600">
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
           No hierarchy rows are available for the current scope.
         </section>
       )}
 
       {scopeHasRows && (
-        <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4">
-          <div className="rounded-3xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <section className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_360px] gap-3.5">
+          <div className="rounded-2xl border bg-white overflow-hidden" style={{ borderColor: UI_SURFACE_STYLE.cardBorder }}>
             <div className="overflow-auto">
-              <table className="min-w-[1500px] w-full border-collapse">
+              <table className="w-full border-collapse" style={{ minWidth: `${TABLE_MIN_WIDTH_PX}px` }}>
                 <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 bg-slate-50">
-                    <th className="sticky top-0 z-10 bg-slate-50 py-3 px-3 border-b">Entity</th>
-                    <th className="sticky top-0 z-10 bg-slate-50 py-3 px-3 border-b">Spend</th>
+                  <tr>
+                    <th className="sticky top-0 z-10 py-[11px] px-[10px] text-left text-[11px] uppercase tracking-[0.4px] border-b whitespace-nowrap" style={{ background: '#f7f9ff', color: '#5e6da2', borderColor: UI_SURFACE_STYLE.cardBorder }}>Entity</th>
+                    <th className="sticky top-0 z-10 py-[11px] px-[10px] text-left text-[11px] uppercase tracking-[0.4px] border-b whitespace-nowrap" style={{ background: '#f7f9ff', color: '#5e6da2', borderColor: UI_SURFACE_STYLE.cardBorder }}>Spend {windowSummary.windowDays}d</th>
                     {METRIC_KEYS.map((metricKey) => (
-                      <th key={`header-${metricKey}`} className="sticky top-0 z-10 bg-slate-50 py-3 px-3 border-b">
+                      <th key={`header-${metricKey}`} className="sticky top-0 z-10 py-[11px] px-[10px] text-left text-[11px] uppercase tracking-[0.4px] border-b whitespace-nowrap" style={{ background: '#f7f9ff', color: '#5e6da2', borderColor: UI_SURFACE_STYLE.cardBorder }}>
                         {METRIC_CONFIG[metricKey].label}
                       </th>
                     ))}
-                    <th className="sticky top-0 z-10 bg-slate-50 py-3 px-3 border-b">Health</th>
-                    <th className="sticky top-0 z-10 bg-slate-50 py-3 px-3 border-b">Direction</th>
+                    <th className="sticky top-0 z-10 py-[11px] px-[10px] text-left text-[11px] uppercase tracking-[0.4px] border-b whitespace-nowrap" style={{ background: '#f7f9ff', color: '#5e6da2', borderColor: UI_SURFACE_STYLE.cardBorder }}>Health Score</th>
+                    <th className="sticky top-0 z-10 py-[11px] px-[10px] text-left text-[11px] uppercase tracking-[0.4px] border-b whitespace-nowrap" style={{ background: '#f7f9ff', color: '#5e6da2', borderColor: UI_SURFACE_STYLE.cardBorder }}>Direction</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1003,14 +1705,23 @@ export default function CampaignIntelligenceUnifiedSection({
                     const childRows = childrenByParent.get(row.id) || [];
                     const hasChildren = childRows.length > 0;
                     const healthState = getHealthState(row.healthScore);
+                    const healthBarGradient = row.healthScore >= HEALTH_RULES.statusCutoffs.healthy
+                      ? 'linear-gradient(90deg,#06b37d,#31d098)'
+                      : row.healthScore >= HEALTH_RULES.statusCutoffs.watch
+                        ? 'linear-gradient(90deg,#f6b226,#ffcf65)'
+                        : 'linear-gradient(90deg,#f05353,#ff7b7b)';
 
                     return (
                       <tr
                         key={row.id}
-                        className={`border-b border-slate-100 hover:bg-indigo-50/40 cursor-pointer ${isSelected ? 'bg-indigo-50/70' : ''}`}
+                        className="cursor-pointer border-b"
+                        style={{
+                          borderColor: '#eef1ff',
+                          background: isSelected ? '#f2f5ff' : 'transparent'
+                        }}
                         onClick={() => setSelectedRowId(row.id)}
                       >
-                        <td className="py-2.5 px-3">
+                        <td className="py-2 px-[10px] min-w-[260px]">
                           <div className="flex items-center gap-2" style={{ marginLeft: `${row.depth * ROW_DEPTH_OFFSET_PX}px` }}>
                             {hasChildren ? (
                               <button
@@ -1019,48 +1730,50 @@ export default function CampaignIntelligenceUnifiedSection({
                                   event.stopPropagation();
                                   toggleExpand(row.id);
                                 }}
-                                className="h-5 w-5 rounded border border-slate-300 text-slate-500 inline-flex items-center justify-center"
+                                className="h-[18px] w-[18px] rounded-[4px] border text-[11px] leading-[15px] inline-flex items-center justify-center"
+                                style={{ borderColor: '#d0d7f7', color: '#4964ca', background: '#fff' }}
                               >
                                 {expandedIds.has(row.id) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                               </button>
                             ) : (
-                              <span className="inline-block w-5" />
+                              <span className="inline-block w-[18px]" />
                             )}
                             <div>
-                              <div className="text-sm font-semibold text-slate-900">{row.name}</div>
-                              <div className="text-[10px] uppercase tracking-wide text-slate-500">{row.type}</div>
+                              <div className="text-[13px] font-semibold text-[#1a2754] max-w-[250px] truncate">{row.name}</div>
+                              <div className="text-[10px] uppercase tracking-[0.4px] font-bold text-[#6f7fb6]">{row.type}</div>
                             </div>
                           </div>
                         </td>
 
-                        <td className="py-2.5 px-3 text-sm font-semibold text-slate-800">
-                          {formatUsd(row?.metrics?.now?.spend)}
-                        </td>
+                        <td className="py-2 px-[10px] text-[12px] font-semibold text-[#1a2754]">{formatUsd(row?.metrics?.now?.spend)}</td>
 
                         {METRIC_KEYS.map((metricKey) => {
                           const now = row?.metrics?.now?.[metricKey];
                           const baseline = row?.metrics?.baseline?.[metricKey];
-                          const state = resolveCellStatus(metricKey, now, baseline, targetRoas);
-
+                          const computedState = resolveCellStatus(metricKey, now, baseline, targetRoas);
+                          const visibleStateCode = KEY_COLORED_METRICS.has(metricKey) ? computedState.code : 'insufficient';
+                          const visibleNote = KEY_COLORED_METRICS.has(metricKey) ? computedState.note : 'Current';
                           return (
-                            <td key={`${row.id}-${metricKey}`} className="py-2 px-2.5">
-                              <div className={`rounded-lg border px-2 py-1.5 min-w-[104px] ${CELL_STATUS_STYLE[state.code]}`}>
-                                <div className="text-[12px] font-semibold leading-4">{formatMetricValue(metricKey, now)}</div>
-                                <div className="text-[10px] mt-0.5 opacity-90">{state.note}</div>
+                            <td key={`${row.id}-${metricKey}`} className="py-1.5 px-2">
+                              <div className={`min-w-[96px] rounded-[10px] border px-2 py-1.5 ${CELL_STATUS_STYLE[visibleStateCode]}`}>
+                                <div className="text-[12px] font-bold leading-4">{formatMetricValue(metricKey, now)}</div>
+                                <div className="text-[10px] mt-0.5 font-semibold opacity-90">{visibleNote}</div>
                               </div>
                             </td>
                           );
                         })}
 
-                        <td className="py-2 px-2.5">
-                          <div className={`rounded-lg border px-2 py-1.5 min-w-[94px] ${CELL_STATUS_STYLE[healthState.code]}`}>
-                            <div className="text-[12px] font-semibold">{row.healthScore}</div>
-                            <div className="text-[10px] mt-0.5 opacity-90">{healthState.note}</div>
+                        <td className="py-1.5 px-2">
+                          <div className={`min-w-[96px] rounded-[10px] border px-2 py-1.5 ${CELL_STATUS_STYLE[healthState.code]}`}>
+                            <div className="text-[12px] font-bold leading-4 text-[#1a2754]">{row.healthScore}</div>
+                            <div className="mt-1 w-[96px] h-[7px] rounded-full bg-[#e7ebff] overflow-hidden">
+                              <span className="block h-full rounded-full" style={{ width: `${clamp(row.healthScore, 0, 100)}%`, background: healthBarGradient }} />
+                            </div>
                           </div>
                         </td>
 
-                        <td className="py-2.5 px-3">
-                          <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${directionPillStyle(row.direction)}`}>
+                        <td className="py-2 px-[10px]">
+                          <span className={`inline-flex rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.3px] ${directionPillStyle(row.direction)}`}>
                             {row.direction}
                           </span>
                         </td>
@@ -1072,200 +1785,381 @@ export default function CampaignIntelligenceUnifiedSection({
             </div>
           </div>
 
-          <aside className="rounded-3xl border border-indigo-100 bg-white shadow-sm p-4 space-y-3">
+          <aside className="rounded-2xl border bg-white p-3.5 grid gap-3" style={{ borderColor: UI_SURFACE_STYLE.cardBorder }}>
             <div>
-              <h4 className="text-lg font-semibold text-slate-900" style={{ fontFamily: TYPOGRAPHY_HEADING }}>Diagnostic Brief</h4>
-              <p className="text-xs text-slate-500 mt-1">Immediate metric explanation for the selected row.</p>
+              <h4 className="text-[18px] font-semibold text-[#0f172a]" style={{ fontFamily: TYPOGRAPHY_HEADING }}>
+                {selectedRow ? selectedRow.name : 'Select a row'}
+              </h4>
+              <p className="mt-0.5 text-[12px] text-[#5d6785]">
+                {selectedRow ? `${selectedRow.type} | Health ${selectedRow.healthScore}` : 'Right panel explains exactly what changed first.'}
+              </p>
             </div>
 
-            {selectedRow && (
-              <>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-semibold text-slate-900">{selectedRow.name}</div>
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${directionPillStyle(selectedRow.direction)}`}>
-                      {selectedRow.direction}
-                    </span>
+            <section className="rounded-xl border p-2.5" style={{ borderColor: '#e4e8ff', background: 'linear-gradient(165deg, #fbfcff, #f6f8ff)' }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="text-[12px] font-bold text-[#1b2a61]">Top Drivers</div>
+                {selectedRow && (
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.3px] ${directionPillStyle(selectedRow.direction)}`}>
+                    {titleCaseDirection(selectedRow.direction)}
+                  </span>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                {selectedRow && metricDeltaDetails.slice(0, DRIVER_SIGNAL_LIMIT).map((item) => (
+                  <div key={`${selectedRow.id}-driver-${item.metricKey}`} className="flex items-start justify-between gap-2 text-[12px] py-0.5">
+                    <div>
+                      <div className="font-semibold text-[#1b2a61]">{item.label}</div>
+                      <div className="text-[#5d6785]">Baseline {formatMetricValue(item.metricKey, item.baseline)} {' -> '} Current {formatMetricValue(item.metricKey, item.now)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold text-[#1b2a61]">{item.delta}</div>
+                      <div className="text-[10px] text-[#5d6785]">{item.status.note}</div>
+                    </div>
                   </div>
-                  <div className="mt-2 text-xs text-slate-600">
-                    {selectedRow.type} • Health score {selectedRow.healthScore}
-                  </div>
-                </div>
+                ))}
+                {!selectedRow && <div className="text-[12px] text-[#5d6785]">No row selected.</div>}
+              </div>
+            </section>
 
-                <div className="rounded-xl border border-slate-200 p-3">
-                  <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-500">What changed vs baseline</div>
-                  <div className="mt-2 space-y-2">
-                    {metricDeltaDetails.map((item) => (
-                      <div key={`${selectedRow.id}-delta-${item.metricKey}`} className="rounded-lg border border-slate-200 p-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-xs font-semibold text-slate-800">{item.label}</div>
-                          <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${CELL_STATUS_STYLE[item.status.code]}`}>
-                            {item.status.note}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-[11px] text-slate-600">
-                          Baseline {formatMetricValue(item.metricKey, item.baseline)} {'->'} Current {formatMetricValue(item.metricKey, item.now)}
-                        </div>
-                        <div className="text-[11px] text-slate-600">Delta {item.delta}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+            <section className="rounded-[10px] border p-2" style={{ borderColor: '#e2e7ff', background: '#fff' }}>
+              <div className="text-[12px] font-bold text-[#1b2a61]">Funnel Trend ({windowSummary.windowDays}d)</div>
+              <svg viewBox={`0 0 ${PANEL_CHART_WIDTH} ${PANEL_CHART_HEIGHT}`} className="w-full h-[82px] mt-1">
+                <polyline points={buildSparklinePoints(purchasesSeries, PANEL_CHART_WIDTH, PANEL_CHART_HEIGHT)} fill="none" stroke="#1f63ff" strokeWidth="2" />
+                <polyline points={buildSparklinePoints(spendSeries, PANEL_CHART_WIDTH, PANEL_CHART_HEIGHT)} fill="none" stroke="#5b4fff" strokeWidth="2" />
+                <polyline points={buildSparklinePoints(healthSeries, PANEL_CHART_WIDTH, PANEL_CHART_HEIGHT)} fill="none" stroke="#0f9d7a" strokeWidth="2" />
+              </svg>
+              <div className="flex flex-wrap gap-2 text-[11px] text-[#5f6e98]">
+                <span><i className="inline-block w-2.5 h-2.5 rounded-full mr-1 align-middle" style={{ background: '#1f63ff' }} />Purchases</span>
+                <span><i className="inline-block w-2.5 h-2.5 rounded-full mr-1 align-middle" style={{ background: '#5b4fff' }} />Spend</span>
+                <span><i className="inline-block w-2.5 h-2.5 rounded-full mr-1 align-middle" style={{ background: '#0f9d7a' }} />Health</span>
+              </div>
+            </section>
 
-                <div className="rounded-xl border border-slate-200 p-3">
-                  <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-500">Scope Trend</div>
-                  <div className="mt-2 text-[11px] text-slate-600">CTR</div>
-                  <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} className="w-full h-16 mt-1">
-                    <polyline points={buildSparklinePoints(ctrSeries)} fill="none" stroke="#2563eb" strokeWidth="2" />
-                  </svg>
+            <section className="rounded-[10px] border p-2" style={{ borderColor: '#e2e7ff', background: '#fff' }}>
+              <div className="text-[12px] font-bold text-[#1b2a61]">CTR ({windowSummary.windowDays}d)</div>
+              <svg viewBox={`0 0 ${PANEL_CHART_WIDTH} ${PANEL_CHART_HEIGHT}`} className="w-full h-[82px] mt-1">
+                <polyline points={buildSparklinePoints(ctrSeries, PANEL_CHART_WIDTH, PANEL_CHART_HEIGHT)} fill="none" stroke="#1f63ff" strokeWidth="2" />
+              </svg>
+              <div className="flex flex-wrap gap-2 text-[11px] text-[#5f6e98]">
+                <span><i className="inline-block w-2.5 h-2.5 rounded-full mr-1 align-middle" style={{ background: '#1f63ff' }} />CTR</span>
+              </div>
 
-                  <div className="mt-2 text-[11px] text-slate-600">Unique Reach</div>
-                  <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} className="w-full h-16 mt-1">
-                    <polyline points={buildSparklinePoints(reachSeries)} fill="none" stroke="#7c3aed" strokeWidth="2" />
-                  </svg>
-                </div>
-              </>
-            )}
+              <div className="text-[12px] font-bold text-[#1b2a61] mt-2">Unique Reach ({windowSummary.windowDays}d)</div>
+              <svg viewBox={`0 0 ${PANEL_CHART_WIDTH} ${PANEL_CHART_HEIGHT}`} className="w-full h-[82px] mt-1">
+                <polyline points={buildSparklinePoints(reachSeries, PANEL_CHART_WIDTH, PANEL_CHART_HEIGHT)} fill="none" stroke="#7c3aed" strokeWidth="2" />
+              </svg>
+              <div className="flex flex-wrap gap-2 text-[11px] text-[#5f6e98]">
+                <span><i className="inline-block w-2.5 h-2.5 rounded-full mr-1 align-middle" style={{ background: '#7c3aed' }} />Unique Reach</span>
+              </div>
+            </section>
+
+            <section className="rounded-xl border p-2.5" style={{ borderColor: '#e4e8ff', background: 'linear-gradient(165deg, #fbfcff, #f6f8ff)' }}>
+              <div className="text-[12px] font-bold text-[#1b2a61]">Immediate Direction</div>
+              <div className="mt-1 text-[12px] text-[#5d6785]">
+                {selectedRow
+                  ? `${titleCaseDirection(selectedRow.direction)} signal on ${selectedRow.type}. Focus on the top drivers above and re-check after one full-day cycle.`
+                  : 'Click any campaign, ad set, or ad to load a concise health narrative.'}
+              </div>
+            </section>
           </aside>
         </section>
       )}
 
-      <section className="rounded-3xl border border-indigo-100 bg-white p-5 md:p-6">
+      <section className="rounded-2xl border border-[#dfe5ff] bg-white p-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h3 className="text-[22px] font-semibold text-slate-900" style={{ fontFamily: TYPOGRAPHY_HEADING }}>Daily Operating Brief</h3>
-          <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
-            {activeBrief ? `${activeBrief.provider} ${activeBrief.model}` : 'Deterministic fallback'}
+          <h3 className="text-[20px] font-semibold text-slate-900" style={{ fontFamily: TYPOGRAPHY_HEADING }}>
+            Daily AI Audit Result
+          </h3>
+          <span className="inline-flex items-center rounded-full border border-[#d5dcff] px-3 py-1 text-xs font-semibold text-[#31407b]" style={{ background: 'linear-gradient(135deg, #f4f6ff, #f6fbff)' }}>
+            {runBadgeText}
           </span>
         </div>
 
-        <p className="mt-1 text-sm text-slate-600">Structured output with clear watch list, action queue, draggers, and creative priorities.</p>
-
-        <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:col-span-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Executive Summary</div>
-            <p className="mt-2 text-sm text-slate-700">{renderedBrief.executiveSummary}</p>
+        <div className="mt-3 grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Executive Summary</h4>
+            <p className="mt-2 text-[13px] leading-relaxed text-[#243463]">{renderedBrief.executiveSummary}</p>
           </article>
 
-          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:col-span-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Top Draggers and Bleeds</div>
-            <table className="mt-2 min-w-full text-xs">
-              <thead>
-                <tr className="text-slate-500 uppercase tracking-wide">
-                  <th className="text-left py-1 pr-3">Scope</th>
-                  <th className="text-left py-1 pr-3">Issue</th>
-                  <th className="text-left py-1 pr-3">Evidence</th>
-                  <th className="text-left py-1">Impact</th>
-                </tr>
-              </thead>
-              <tbody>
-                {draggerRows.map((row, index) => (
-                  <tr key={`dragger-${index}-${row.scope}`} className="border-t border-slate-200">
-                    <td className="py-1.5 pr-3">{row.scope}</td>
-                    <td className="py-1.5 pr-3">{row.issue}</td>
-                    <td className="py-1.5 pr-3">{row.evidence}</td>
-                    <td className="py-1.5 font-semibold text-red-700 uppercase">{row.impact}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </article>
-
-          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:col-span-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Creative Priority Ranking</div>
-            <table className="mt-2 min-w-full text-xs">
-              <thead>
-                <tr className="text-slate-500 uppercase tracking-wide">
-                  <th className="text-left py-1 pr-3">Creative</th>
-                  <th className="text-left py-1 pr-3">Recommendation</th>
-                  <th className="text-left py-1">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {creativeRows.map((row, index) => (
-                  <tr key={`creative-${index}-${row.creative}`} className="border-t border-slate-200">
-                    <td className="py-1.5 pr-3 font-medium">{row.creative}</td>
-                    <td className="py-1.5 pr-3 uppercase font-semibold text-slate-700">{row.recommendation}</td>
-                    <td className="py-1.5">{row.reason}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </article>
-
-          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">To Watch</div>
-            <table className="mt-2 min-w-full text-xs">
-              <thead>
-                <tr className="text-slate-500 uppercase tracking-wide">
-                  <th className="text-left py-1 pr-3">Scope</th>
-                  <th className="text-left py-1 pr-3">Signal</th>
-                  <th className="text-left py-1">Re-check</th>
-                </tr>
-              </thead>
-              <tbody>
-                {watchRows.map((row, index) => (
-                  <tr key={`watch-${index}-${row.scope}`} className="border-t border-slate-200">
-                    <td className="py-1.5 pr-3">{row.scope}</td>
-                    <td className="py-1.5 pr-3">{row.signal}</td>
-                    <td className="py-1.5">{row.recheck}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </article>
-
-          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">To Do</div>
-            <table className="mt-2 min-w-full text-xs">
-              <thead>
-                <tr className="text-slate-500 uppercase tracking-wide">
-                  <th className="text-left py-1 pr-3">Priority</th>
-                  <th className="text-left py-1 pr-3">Action</th>
-                  <th className="text-left py-1">Guardrail</th>
-                </tr>
-              </thead>
-              <tbody>
-                {todoRows.map((row, index) => (
-                  <tr key={`todo-${index}-${row.priority}`} className="border-t border-slate-200">
-                    <td className="py-1.5 pr-3 font-semibold">{row.priority}</td>
-                    <td className="py-1.5 pr-3">{row.action}</td>
-                    <td className="py-1.5">{row.guardrail}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </article>
-        </div>
-
-        {notes.length > 0 && (
-          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-500">Notes</div>
-            <ul className="mt-2 space-y-1 text-xs text-slate-600">
-              {notes.map((line, index) => (
-                <li key={`note-${index}`} className="flex items-start gap-2">
-                  <span className="mt-[5px] h-1.5 w-1.5 rounded-full bg-indigo-500" />
-                  <span>{line}</span>
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Country Regime Changes</h4>
+            <ul className="mt-2 space-y-1.5 text-[12px] text-[#243463]">
+              {countryRegimeRows.map((row) => (
+                <li key={`regime-${row.code}`}>
+                  <b>{row.flag ? `${row.flag} ` : ''}{row.label}:</b> {titleCaseDirection(row.direction)} since <b>{row.sinceDate}</b>, confidence {row.confidence}/100.
                 </li>
               ))}
+              {countryRegimeRows.length === 0 && <li>Insufficient country-level regime evidence in this scope.</li>}
             </ul>
-          </div>
-        )}
-      </section>
+          </article>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-4">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <div className="font-semibold text-slate-800 inline-flex items-center gap-1"><Target className="w-3.5 h-3.5" /> Deterministic Core</div>
-            <div className="mt-1 text-slate-600">Health, cell colors, model scores, and alerts remain deterministic and tenant-scoped.</div>
-          </div>
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <div className="font-semibold text-slate-800 inline-flex items-center gap-1"><ListChecks className="w-3.5 h-3.5" /> LLM Narrative Layer</div>
-            <div className="mt-1 text-slate-600">LLM writes interpretation and action framing only; it does not mutate underlying scores.</div>
-          </div>
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <div className="font-semibold text-slate-800 inline-flex items-center gap-1"><BarChart3 className="w-3.5 h-3.5" /> Transparent Costing</div>
-            <div className="mt-1 text-slate-600">Each brief run shows provider, model, and estimated USD cost directly in the UI.</div>
-          </div>
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3 xl:col-span-2">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Country Health Board</h4>
+            <div className="overflow-auto">
+              <table className="w-full border-collapse text-[12px] mt-1">
+                <thead>
+                  <tr>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Country</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Spend</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">ROAS</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Cost/ATC</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Health</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Direction</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {countryHealthRows.map((row) => (
+                    <tr key={`country-health-${row.code}`}>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.flag ? `${row.flag} ` : ''}{row.label}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{formatUsd(row.spend)}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{formatRatio(row.roas, 2)}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{formatUsd(row.costAtc)}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${resolveDirectionStyle(resolveDirectionFromScore(row.healthScore))}`}>
+                          {row.healthScore}
+                        </span>
+                      </td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${resolveDirectionStyle(row.direction)}`}>
+                          {row.direction}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {countryHealthRows.length === 0 && (
+                    <tr>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff] text-[#5d6785]" colSpan={6}>No country board data available for this scope.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3 xl:col-span-2">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Top Draggers & Bleeds</h4>
+            <div className="overflow-auto">
+              <table className="w-full border-collapse text-[12px] mt-1">
+                <thead>
+                  <tr>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Level</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Entity</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Country</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Class</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Conf.</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Est. Daily Waste</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {draggerDetailRows.map((row) => (
+                    <tr key={row.id}>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.level}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.entity}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.country}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${row.classLabel === 'bleed' ? resolveDirectionStyle('deteriorating') : resolveDirectionStyle('saturating')}`}>
+                          {row.classLabel}
+                        </span>
+                      </td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.confidence}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{formatUsd(row.waste)}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.reason}</td>
+                    </tr>
+                  ))}
+                  {draggerDetailRows.length === 0 && (
+                    <tr>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff] text-[#5d6785]" colSpan={7}>No high-confidence draggers detected in this window.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3 xl:col-span-2">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">To Watch (All Campaigns + Ad Sets Audited)</h4>
+            <div className="overflow-auto">
+              <table className="w-full border-collapse text-[12px] mt-1">
+                <thead>
+                  <tr>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Level</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Entity</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Status</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Primary Risk Signal</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Trigger Threshold</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Re-check</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {toWatchDetailRows.map((row) => (
+                    <tr key={row.id}>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.level}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.entity}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${resolveDirectionStyle(row.status === 'risk' ? 'deteriorating' : 'saturating')}`}>
+                          {row.status}
+                        </span>
+                      </td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.signal}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.threshold}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.recheck}</td>
+                    </tr>
+                  ))}
+                  {toWatchDetailRows.length === 0 && (
+                    <tr>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff] text-[#5d6785]" colSpan={6}>No watchlist entries for this run.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3 xl:col-span-2">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">To Do (Prioritized Actions by Campaign/Ad Set)</h4>
+            <div className="overflow-auto">
+              <table className="w-full border-collapse text-[12px] mt-1">
+                <thead>
+                  <tr>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Priority</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Level</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Entity</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Action</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Expected Impact</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Guardrail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {toDoDetailRows.map((row) => (
+                    <tr key={row.id}>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.priority}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.level}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.entity}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.action}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.expectedImpact}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.guardrail}</td>
+                    </tr>
+                  ))}
+                  {toDoDetailRows.length === 0 && (
+                    <tr>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff] text-[#5d6785]" colSpan={6}>No prioritized action items in this run.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3 xl:col-span-2">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Top Ads - Best for Business (Efficiency + Volume, Rigorous)</h4>
+            <p className="text-[13px] text-[#243463] leading-relaxed mt-1">
+              Score formula: <b>Best for Business = 100 * (0.45*Efficiency + 0.30*Volume + 0.15*Stability + 0.10*Incrementality)</b>.
+              Efficiency and volume are weighted strongest to keep choices commercially grounded.
+            </p>
+            <div className="overflow-auto">
+              <table className="w-full border-collapse text-[12px] mt-1">
+                <thead>
+                  <tr>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Rank</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Ad</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Campaign / Ad Set</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Efficiency</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Volume</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Stability</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Incrementality</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Best for Business</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bestForBusinessRows.map((row, index) => (
+                    <tr key={row.id}>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{index + 1}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.adName}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.campaignName} / {row.adsetName}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{formatNumber(row.efficiency, 1)}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{formatNumber(row.volume, 1)}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{formatNumber(row.stability, 1)}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{formatNumber(row.incrementality, 1)}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${resolveDirectionStyle(row.score >= 75 ? 'improving' : row.score >= 55 ? 'stable' : 'deteriorating')}`}>
+                          {formatNumber(row.score, 1)}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {bestForBusinessRows.length === 0 && (
+                    <tr>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff] text-[#5d6785]" colSpan={8}>No ad-level records available in this scope.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3 xl:col-span-2">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Sharp Cross-Entity Insights (Ad vs Ad, Ad Set vs Ad Set, Cross-Campaign)</h4>
+            <ul className="mt-2 space-y-1.5 text-[12px] text-[#243463]">
+              {crossEntityInsights.map((insight, index) => (
+                <li key={`cross-entity-${index}`}>{insight}</li>
+              ))}
+            </ul>
+          </article>
+
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3 xl:col-span-2">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Underperforming Campaign/Country Root Cause and Fixable Funnel Step</h4>
+            <div className="overflow-auto">
+              <table className="w-full border-collapse text-[12px] mt-1">
+                <thead>
+                  <tr>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Scope</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Root Drag Stage</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Evidence</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Fix Suggestion</th>
+                    <th className="text-left py-2 px-1.5 border-b border-[#ebefff] text-[10px] uppercase tracking-[0.4px] text-[#5d6ca2]">Success Check (24-48h)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rootCauseRows.map((row) => (
+                    <tr key={row.id}>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.scope}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.stage}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.evidence}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.fix}</td>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff]">{row.check}</td>
+                    </tr>
+                  ))}
+                  {rootCauseRows.length === 0 && (
+                    <tr>
+                      <td className="py-2 px-1.5 border-b border-[#ebefff] text-[#5d6785]" colSpan={5}>No root-cause candidates found in this run.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Budget Direction (Next 24h)</h4>
+            <ul className="mt-2 space-y-1.5 text-[12px] text-[#243463]">
+              {budgetDirectionRows.map((line, index) => (
+                <li key={`budget-direction-${index}`}>{line}</li>
+              ))}
+            </ul>
+          </article>
+
+          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3">
+            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Tomorrow Watchlist</h4>
+            <ul className="mt-2 space-y-1.5 text-[12px] text-[#243463]">
+              {tomorrowWatchlistRows.map((line, index) => (
+                <li key={`tomorrow-watch-${index}`}>{line}</li>
+              ))}
+              {notes.map((note, index) => (
+                <li key={`run-note-${index}`}>{note}</li>
+              ))}
+            </ul>
+          </article>
         </div>
       </section>
     </div>

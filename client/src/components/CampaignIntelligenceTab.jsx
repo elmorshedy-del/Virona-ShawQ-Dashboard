@@ -99,6 +99,29 @@ const MODEL_CARD_META = {
   }
 };
 
+const CAMPAIGN_INTEL_VIEW = Object.freeze({
+  modelConsole: 'model_console',
+  unifiedManager: 'unified_manager'
+});
+const ANALYSIS_PARAM_KEYS = Object.freeze(new Set([
+  'level',
+  'entityId',
+  'country',
+  'startDate',
+  'endDate',
+  'anchorDays',
+  'anchorStartDate',
+  'anchorEndDate',
+  'sentinelPreset',
+  'headroomPreset',
+  'launchPreset',
+  'launchMinDays',
+  'launchMaxDays',
+  'targetRoas',
+  'targetCpa',
+  'targetHorizonDays'
+]));
+
 function getDashboardDateString(date = new Date()) {
   const dashboardMs = date.getTime() + (DASHBOARD_DAY_UTC_OFFSET_MINUTES * MS_PER_MINUTE);
   return new Date(dashboardMs).toISOString().split('T')[0];
@@ -528,11 +551,19 @@ export default function CampaignIntelligenceTab({ store }) {
     targetHorizonDays
   } = analysisParams;
 
+  const handleUnifiedAnalysisParamPatch = useCallback((updates = {}) => {
+    for (const [key, value] of Object.entries(updates)) {
+      if (!ANALYSIS_PARAM_KEYS.has(key)) continue;
+      updateAnalysisParam(key, value);
+    }
+  }, [updateAnalysisParam]);
+
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState(null);
   const [selectedModelId, setSelectedModelId] = useState('mature_sentinel');
+  const [activeView, setActiveView] = useState(CAMPAIGN_INTEL_VIEW.modelConsole);
   const requestRef = useRef({ id: 0, controller: null });
 
   const modelCards = useMemo(() => {
@@ -700,6 +731,31 @@ export default function CampaignIntelligenceTab({ store }) {
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
               {loading ? 'Running...' : 'Run Analysis'}
+            </button>
+          </div>
+
+          <div className="inline-flex items-center rounded-xl border border-indigo-100 bg-white p-1 gap-1 w-fit">
+            <button
+              type="button"
+              onClick={() => setActiveView(CAMPAIGN_INTEL_VIEW.modelConsole)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                activeView === CAMPAIGN_INTEL_VIEW.modelConsole
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Model Console
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveView(CAMPAIGN_INTEL_VIEW.unifiedManager)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                activeView === CAMPAIGN_INTEL_VIEW.unifiedManager
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Unified Manager
             </button>
           </div>
 
@@ -967,6 +1023,8 @@ export default function CampaignIntelligenceTab({ store }) {
         </div>
       )}
 
+      {activeView === CAMPAIGN_INTEL_VIEW.modelConsole && (
+      <>
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
         <div className="xl:col-span-2 space-y-4">
           {modelCards.map((model) => {
@@ -1314,14 +1372,19 @@ export default function CampaignIntelligenceTab({ store }) {
           </div>
         </div>
       )}
+      </>
+      )}
 
+      {activeView === CAMPAIGN_INTEL_VIEW.unifiedManager && (
       <CampaignIntelligenceUnifiedSection
         snapshot={snapshot}
         analysisParams={analysisParams}
         targetRoas={targetRoas}
         store={store}
         onSnapshotUpdate={setSnapshot}
+        onAnalysisParamsChange={handleUnifiedAnalysisParamPatch}
       />
+      )}
     </div>
   );
 }

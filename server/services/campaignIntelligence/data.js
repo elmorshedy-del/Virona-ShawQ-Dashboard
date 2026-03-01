@@ -90,6 +90,9 @@ const ASCII_A_CODE = 65;
 const ASCII_Z_CODE = 90;
 const COUNTRY_OPTIONS_RAW_LIMIT_MULTIPLIER = 4;
 const COUNTRY_OPTIONS_MAX_RAW_ROWS = 400;
+const ACTIVE_EFFECTIVE_STATUS = 'ACTIVE';
+const UNKNOWN_EFFECTIVE_STATUS = 'UNKNOWN';
+const TABLE_COLUMNS_CACHE = new Map();
 const HIERARCHY_LEVEL_LIMITS = Object.freeze({
   campaign: 24,
   adset: 72,
@@ -601,6 +604,7 @@ function resolveRangeWindow({
 
 function resolveAnchorWindow({
   analysisStartDate,
+  analysisEndDate,
   anchorWindowDays,
   anchorStartDate,
   anchorEndDate
@@ -624,7 +628,8 @@ function resolveAnchorWindow({
     DEFAULT_SETTINGS.anchorWindowDays
   );
 
-  const defaultAnchorEnd = addDaysIso(analysisStartDate, -1);
+  const anchorReferenceEnd = parseIsoDate(analysisEndDate) || parseIsoDate(analysisStartDate) || analysisStartDate;
+  const defaultAnchorEnd = addDaysIso(anchorReferenceEnd, -1);
   return {
     startDate: addDaysIso(defaultAnchorEnd, -(boundedAnchorDays - 1)),
     endDate: defaultAnchorEnd,
@@ -680,6 +685,7 @@ export function normalizeCampaignIntelligenceRequest(query = {}) {
 
   const anchorRange = resolveAnchorWindow({
     analysisStartDate: analysisRange.startDate,
+    analysisEndDate: analysisRange.endDate,
     anchorWindowDays: query.anchorWindowDays,
     anchorStartDate: query.anchorStartDate,
     anchorEndDate: query.anchorEndDate
@@ -769,7 +775,15 @@ export function fetchCountryOptions(scope) {
 
   const rows = db
     .prepare(`
-      SELECT ${NORMALIZED_COUNTRY_SQL} as rawCountry, SUM(spend) as spend, SUM(conversions) as conversions
+      SELECT
+        ${NORMALIZED_COUNTRY_SQL} as rawCountry,
+        SUM(spend) as spend,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversionValue,
+        SUM(add_to_cart) as addToCart,
+        SUM(checkouts_initiated) as checkoutsInitiated,
+        SUM(clicks) as clicks,
+        SUM(impressions) as impressions
       FROM ${levelConfig.table}
       WHERE ${whereSql}
       AND ${NORMALIZED_COUNTRY_SQL} != ''
@@ -785,9 +799,23 @@ export function fetchCountryOptions(scope) {
     const code = normalizeCountryCode(row?.rawCountry);
     if (!code) continue;
 
-    const current = byCode.get(code) || { code, spend: 0, conversions: 0 };
+    const current = byCode.get(code) || {
+      code,
+      spend: 0,
+      conversions: 0,
+      conversionValue: 0,
+      addToCart: 0,
+      checkoutsInitiated: 0,
+      clicks: 0,
+      impressions: 0
+    };
     current.spend += toNumber(row?.spend);
     current.conversions += toNumber(row?.conversions);
+    current.conversionValue += toNumber(row?.conversionValue);
+    current.addToCart += toNumber(row?.addToCart);
+    current.checkoutsInitiated += toNumber(row?.checkoutsInitiated);
+    current.clicks += toNumber(row?.clicks);
+    current.impressions += toNumber(row?.impressions);
     byCode.set(code, current);
   }
 
@@ -795,7 +823,16 @@ export function fetchCountryOptions(scope) {
     .map((row) => ({
       code: row.code,
       spend: round(row.spend, 2),
-      conversions: Math.round(row.conversions)
+      conversions: Math.round(row.conversions),
+      conversionValue: round(row.conversionValue, 2),
+      addToCart: Math.round(row.addToCart),
+      checkoutsInitiated: Math.round(row.checkoutsInitiated),
+      clicks: Math.round(row.clicks),
+      impressions: Math.round(row.impressions),
+      roas: round(safeDivide(row.conversionValue, row.spend), 4),
+      costAtc: round(safeDivide(row.spend, row.addToCart), 4),
+      purchaseIc: round(safeDivide(row.conversions, row.checkoutsInitiated), 4),
+      cpm: round(safeDivide(row.spend * 1000, row.impressions), 4)
     }))
     .sort((left, right) => right.spend - left.spend)
     .slice(0, selectorLimit);
@@ -1356,7 +1393,8 @@ function buildLevelWindowQueryConfig(level) {
     return {
       levelConfig: LEVEL_CONFIG.campaign,
       extraSelect: '',
-      groupBy: 'campaign_id, campaign_name'
+      groupBy: 'campaign_id, campaign_name',
+      statusColumns: ['effective_status']
     };
   }
 
@@ -1364,15 +1402,34 @@ function buildLevelWindowQueryConfig(level) {
     return {
       levelConfig: LEVEL_CONFIG.adset,
       extraSelect: ', campaign_id as campaignId, campaign_name as campaignName',
-      groupBy: 'adset_id, adset_name, campaign_id, campaign_name'
+      groupBy: 'adset_id, adset_name, campaign_id, campaign_name',
+      statusColumns: ['adset_effective_status', 'effective_status']
     };
   }
 
   return {
     levelConfig: LEVEL_CONFIG.ad,
     extraSelect: ', campaign_id as campaignId, campaign_name as campaignName, adset_id as adsetId, adset_name as adsetName',
-    groupBy: 'ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name'
+    groupBy: 'ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name',
+    statusColumns: ['ad_effective_status', 'effective_status']
   };
+}
+
+function getTableColumns(db, tableName) {
+  if (!db || !tableName) return new Set();
+  const cacheKey = String(tableName);
+  const cached = TABLE_COLUMNS_CACHE.get(cacheKey);
+  if (cached) return cached;
+
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  const columns = new Set(rows.map((row) => String(row?.name || '').trim()).filter(Boolean));
+  TABLE_COLUMNS_CACHE.set(cacheKey, columns);
+  return columns;
+}
+
+function resolveStatusColumn(db, tableName, candidates = []) {
+  const columns = getTableColumns(db, tableName);
+  return candidates.find((columnName) => columns.has(columnName)) || null;
 }
 
 function fetchHierarchyLevelWindowRows({
@@ -1385,6 +1442,10 @@ function fetchHierarchyLevelWindowRows({
   limit
 }) {
   const queryConfig = buildLevelWindowQueryConfig(level);
+  const statusColumn = resolveStatusColumn(db, queryConfig.levelConfig.table, queryConfig.statusColumns);
+  const activeStatusFilterSql = statusColumn
+    ? `UPPER(COALESCE(${statusColumn}, '${UNKNOWN_EFFECTIVE_STATUS}')) = ?`
+    : null;
   const { whereSql, args } = buildScopeWhere(queryConfig.levelConfig, {
     store,
     startDate,
@@ -1409,11 +1470,12 @@ function fetchHierarchyLevelWindowRows({
       SUM(conversion_value) as conversionValue
     FROM ${queryConfig.levelConfig.table}
     WHERE ${whereSql}
+    ${activeStatusFilterSql ? `AND ${activeStatusFilterSql}` : ''}
     GROUP BY ${queryConfig.groupBy}
     HAVING SUM(spend) > 0
     ORDER BY spend DESC
     LIMIT ?
-  `).all(...args, limit);
+  `).all(...args, ...(activeStatusFilterSql ? [ACTIVE_EFFECTIVE_STATUS] : []), limit);
 
   return rows.map((row) => ({
     id: String(row.id || ''),
