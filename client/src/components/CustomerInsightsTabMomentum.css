@@ -435,6 +435,33 @@
   min-width: 0;
 }
 
+.pm-product-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pm-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #ffffff;
+}
+
+.pm-thumb-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f1f5f9;
+  color: #0f172a;
+  font-weight: 800;
+  font-size: 0.75rem;
+}
+
 .pm-card-title {
   margin: 0;
   font-size: 0.98rem;
@@ -443,6 +470,14 @@
   letter-spacing: 0;
   color: var(--text-primary);
   overflow-wrap: anywhere;
+}
+
+.pm-product-row .pm-card-title {
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .pm-card-meta {
