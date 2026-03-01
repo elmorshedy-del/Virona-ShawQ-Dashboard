@@ -49,6 +49,7 @@ import { syncShopifyOrders } from './services/shopifyService.js';
 import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
 import { cleanupSessionIntelligenceRaw } from './services/sessionIntelligenceService.js';
+import { runQueuedInvestigationJobs } from './services/sessionIntelligenceInvestigationService.js';
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
 import { runCampaignIntelligenceDailyTrainer } from './services/campaignIntelligence/trainer.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
@@ -71,6 +72,15 @@ const GMT3_OFFSET_MS = 3 * 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_EXCHANGE_BOOTSTRAP_DAYS = 730;
 const DEFAULT_EXCHANGE_BOOTSTRAP_MAX_DAYS = 3650;
+const SESSION_INVESTIGATION_RUNNER_ENABLED = (process.env.SI_INVESTIGATION_RUNNER_ENABLED || 'true').toLowerCase() === 'true';
+const SESSION_INVESTIGATION_RUNNER_INTERVAL_MS = Math.max(
+  10_000,
+  parseInt(process.env.SI_INVESTIGATION_RUNNER_INTERVAL_MS || '30000', 10) || 30000
+);
+const SESSION_INVESTIGATION_RUNNER_MAX_JOBS = Math.max(
+  1,
+  parseInt(process.env.SI_INVESTIGATION_RUNNER_MAX_JOBS || '8', 10) || 8
+);
 const META_DAYTURN_PULSE_MINUTES = (process.env.META_DAYTURN_PULSE_MINUTES || '5,15')
   .split(',')
   .map((value) => parseInt(value.trim(), 10))
@@ -161,6 +171,33 @@ function scheduleMetaDayTurnPulses(stores, dateStr) {
   });
 }
 
+function startSessionInvestigationRunner() {
+  if (!SESSION_INVESTIGATION_RUNNER_ENABLED) {
+    console.log('[SessionIntelligence] investigation runner disabled');
+    return;
+  }
+
+  let running = false;
+  setInterval(() => {
+    if (running) return;
+    running = true;
+    try {
+      const result = runQueuedInvestigationJobs({ maxJobs: SESSION_INVESTIGATION_RUNNER_MAX_JOBS });
+      const completed = Number(result?.data?.completed) || 0;
+      const failed = Number(result?.data?.failed) || 0;
+      if (completed > 0 || failed > 0) {
+        console.log(`[SessionIntelligence] investigation runner processed ${completed} completed, ${failed} failed`);
+      }
+    } catch (error) {
+      console.warn('[SessionIntelligence] investigation runner error:', error?.message || error);
+    } finally {
+      running = false;
+    }
+  }, SESSION_INVESTIGATION_RUNNER_INTERVAL_MS);
+
+  console.log(`[SessionIntelligence] investigation runner active every ${Math.round(SESSION_INVESTIGATION_RUNNER_INTERVAL_MS / 1000)}s`);
+}
+
 
 // Initialize database
 initDb();
@@ -192,6 +229,7 @@ runConversionUiFixLabMigration();
 
 // Schedule creative funnel summaries (daily/weekly + spend reset checks)
 scheduleCreativeFunnelSummaryJobs();
+startSessionInvestigationRunner();
 
 // One-time Salla cleanup (safe - won't crash if tables don't exist)
 try {
