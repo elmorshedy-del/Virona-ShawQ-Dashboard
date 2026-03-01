@@ -311,16 +311,31 @@ function SignalBadge({ signal }) {
   );
 }
 
+function formatMomentumLabel(value, fallback) {
+  if (!value) return fallback;
+  return String(value)
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
 function MomentumCard({ product, mode }) {
   const hasTrigger = Boolean(product?.trigger);
   const severity = product?.assessment?.severity || null;
   const polarity = getMomentumPolarity(product, mode);
   const severityLabel = getMomentumSeverityLabel(severity, polarity, mode, hasTrigger);
-  const titleKey = String(
-    mode === 'layer1'
-      ? (product?.trigger || 'unknown_trigger')
-      : (product?.exceptionalEvent || 'unknown_event')
-  ).toLowerCase();
+  const titleKey = mode === 'layer1'
+    ? (product?.trigger || 'unknown_trigger')
+    : (product?.exceptionalEvent || 'unknown_event');
+  const titleLabel = formatMomentumLabel(
+    titleKey,
+    mode === 'layer1' ? 'Unknown Trigger' : 'Unknown Event'
+  );
+  const keyBadgeLabel = formatMomentumLabel(
+    titleKey,
+    mode === 'layer1' ? 'unknown trigger' : 'unknown event'
+  );
   const layerLabel = mode === 'layer1' ? 'layer_1' : 'layer_2';
   const signalLabel = product?.statistical?.signal || null;
   const action = product?.assessment?.action || '';
@@ -330,10 +345,10 @@ function MomentumCard({ product, mode }) {
     <article className={`pm-card ${polarity} pm-severity-${severity || 'medium'}`}>
       <div className="pm-card-header">
         <div className="pm-card-title-wrap">
-          <h4 className="pm-card-title">{titleKey}</h4>
+          <h4 className="pm-card-title">{titleLabel}</h4>
           <div className="pm-card-meta">
             <span className="pm-badge pm-badge-layer">{layerLabel}</span>
-            <span className="pm-badge pm-badge-key">{titleKey}</span>
+            <span className="pm-badge pm-badge-key">{keyBadgeLabel}</span>
             <span className={`pm-badge pm-badge-polarity pm-badge-${polarity}`}>{polarity}</span>
             <SignalBadge signal={signalLabel} />
           </div>
