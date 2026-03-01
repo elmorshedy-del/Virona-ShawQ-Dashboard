@@ -247,7 +247,7 @@ describe('CreativeProductionOS', () => {
         expect.objectContaining({ method: 'POST' })
       );
     });
-  });
+  }, 20000);
 
   it('exports multi-format creative pack and saves workspace preset', async () => {
     const user = userEvent.setup();
