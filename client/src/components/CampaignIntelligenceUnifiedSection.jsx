@@ -789,12 +789,11 @@ function coerceBriefReport(briefReport) {
   if (!parsedSummary) return briefReport;
 
   const parsedSummaryText = String(parsedSummary.executiveSummary || '').trim();
-  const sourceSummaryText = String(briefReport.executiveSummary || '').trim();
 
   return {
     ...parsedSummary,
     ...briefReport,
-    executiveSummary: parsedSummaryText || sourceSummaryText,
+    executiveSummary: parsedSummaryText,
     toWatch: Array.isArray(briefReport.toWatch) && briefReport.toWatch.length
       ? briefReport.toWatch
       : parsedSummary.toWatch,
