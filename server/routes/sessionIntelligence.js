@@ -237,7 +237,7 @@ router.get('/investigation/jobs', (req, res) => {
   }
 });
 
-router.post('/investigation/jobs/queue', (req, res) => {
+router.post('/investigation/jobs/queue', async (req, res) => {
   try {
     const store = req.body?.store || 'shawq';
     const date = req.body?.date;
@@ -268,7 +268,7 @@ router.post('/investigation/jobs/queue', (req, res) => {
 
     if (!wait) return res.json(queueResult);
 
-    const runResult = runQueuedInvestigationJobs({
+    const runResult = await runQueuedInvestigationJobs({
       store,
       maxJobs: limit
     });
@@ -286,11 +286,11 @@ router.post('/investigation/jobs/queue', (req, res) => {
   }
 });
 
-router.post('/investigation/jobs/run', (req, res) => {
+router.post('/investigation/jobs/run', async (req, res) => {
   try {
     const store = req.body?.store || 'shawq';
     const maxJobs = parsePositiveInt(req.body?.maxJobs, 8, 1, 200);
-    const result = runQueuedInvestigationJobs({ store, maxJobs });
+    const result = await runQueuedInvestigationJobs({ store, maxJobs });
     if (!result.success) return res.status(400).json(result);
     res.json(result);
   } catch (error) {

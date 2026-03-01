@@ -178,11 +178,11 @@ function startSessionInvestigationRunner() {
   }
 
   let running = false;
-  setInterval(() => {
+  setInterval(async () => {
     if (running) return;
     running = true;
     try {
-      const result = runQueuedInvestigationJobs({ maxJobs: SESSION_INVESTIGATION_RUNNER_MAX_JOBS });
+      const result = await runQueuedInvestigationJobs({ maxJobs: SESSION_INVESTIGATION_RUNNER_MAX_JOBS });
       const completed = Number(result?.data?.completed) || 0;
       const failed = Number(result?.data?.failed) || 0;
       if (completed > 0 || failed > 0) {

@@ -59,6 +59,25 @@ const INVESTIGATION_FALSE_ALERT_RULES = Object.freeze({
   maxEvents: clampInteger(process.env.SI_INVESTIGATION_FALSE_MAX_EVENTS, 3, 0, 20000)
 });
 
+const BROWSER_PROBE_CONFIG = Object.freeze({
+  enabled: safeString(process.env.SI_INVESTIGATION_BROWSER_PROBE_ENABLED).trim().toLowerCase() === 'true',
+  navigationTimeoutMs: clampInteger(process.env.SI_INVESTIGATION_BROWSER_NAV_TIMEOUT_MS, 20000, 3000, 120000),
+  postLoadWaitMs: clampInteger(process.env.SI_INVESTIGATION_BROWSER_POST_LOAD_WAIT_MS, 1200, 0, 10000),
+  clickSettleWaitMs: clampInteger(process.env.SI_INVESTIGATION_BROWSER_CLICK_SETTLE_MS, 1500, 250, 10000),
+  clickAttempts: clampInteger(process.env.SI_INVESTIGATION_BROWSER_CLICK_ATTEMPTS, 3, 1, 10),
+  deadClickConfirmRatio: clampFloat(process.env.SI_INVESTIGATION_BROWSER_DEAD_CLICK_CONFIRM_RATIO, 0.67, 0.34, 1),
+  mutationThreshold: clampInteger(process.env.SI_INVESTIGATION_BROWSER_MUTATION_THRESHOLD, 1, 0, 100),
+  allowNoSandbox: safeString(process.env.SI_INVESTIGATION_BROWSER_ALLOW_NO_SANDBOX).trim().toLowerCase() === 'true',
+  allowPrivateNetworkTargets: safeString(process.env.SI_INVESTIGATION_BROWSER_ALLOW_PRIVATE_NETWORK_TARGETS).trim().toLowerCase() === 'true'
+});
+
+const BROWSER_PROBE_STORE_BASE_URLS_ENV = 'SI_INVESTIGATION_BROWSER_STORE_BASE_URLS';
+const BROWSER_PROBE_DEFAULT_BASE_URL_ENV = 'SI_INVESTIGATION_BROWSER_DEFAULT_BASE_URL';
+const BROWSER_PROBE_METHOD = 'browser_probe_v1';
+const SIGNAL_HISTORY_METHOD = 'signal_history_v1';
+
+let parsedBrowserProbeStoreBaseUrls = null;
+
 const LIFECYCLE_POLICY = Object.freeze({
   minSessionsForInvestigating: clampInteger(process.env.SI_INVESTIGATION_MIN_SESSIONS, 3, 1, 500),
   minEventsForInvestigating: clampInteger(process.env.SI_INVESTIGATION_MIN_EVENTS, 5, 1, 10000),
@@ -68,6 +87,12 @@ const LIFECYCLE_POLICY = Object.freeze({
 
 function clampInteger(value, fallback, min, max) {
   const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function clampFloat(value, fallback, min, max) {
+  const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
 }
@@ -95,6 +120,124 @@ function normalizeStore(store) {
 function normalizeMode(mode) {
   const normalized = safeString(mode).trim();
   return normalized || DEFAULT_ISSUE_MODE;
+}
+
+function isPrivateOrLocalHostname(hostname) {
+  const host = safeString(hostname).toLowerCase().trim();
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (host === '::1' || host === '[::1]' || host === '0.0.0.0') return true;
+
+  const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const octets = ipv4Match.slice(1).map((part) => Number(part));
+    if (octets.some((part) => !Number.isFinite(part) || part < 0 || part > 255)) return true;
+    const [a, b] = octets;
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 169 && b === 254) return true;
+    return false;
+  }
+
+  const ipv6 = host.replace(/^\[/, '').replace(/\]$/, '');
+  if (ipv6.includes(':')) {
+    if (ipv6 === '::1' || ipv6.startsWith('fe80:') || ipv6.startsWith('fc') || ipv6.startsWith('fd')) return true;
+  }
+
+  return false;
+}
+
+function normalizeBaseUrl(value) {
+  const raw = safeString(value).trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    if (!BROWSER_PROBE_CONFIG.allowPrivateNetworkTargets && isPrivateOrLocalHostname(parsed.hostname)) return '';
+    return `${parsed.origin}/`;
+  } catch (_error) {
+    return '';
+  }
+}
+
+function parseBrowserProbeStoreBaseUrlMap() {
+  if (parsedBrowserProbeStoreBaseUrls) return parsedBrowserProbeStoreBaseUrls;
+
+  const parsed = safeJsonParse(process.env[BROWSER_PROBE_STORE_BASE_URLS_ENV]);
+  const map = {};
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    for (const [storeKey, baseUrl] of Object.entries(parsed)) {
+      const normalizedStore = normalizeStore(storeKey).toLowerCase();
+      const normalizedBase = normalizeBaseUrl(baseUrl);
+      if (!normalizedStore || !normalizedBase) continue;
+      map[normalizedStore] = normalizedBase;
+    }
+  }
+  parsedBrowserProbeStoreBaseUrls = map;
+  return parsedBrowserProbeStoreBaseUrls;
+}
+
+function normalizeRelativeProbePath(value) {
+  const normalized = normalizePath(value);
+  if (!normalized || normalized === '/') return '/';
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
+}
+
+function resolveIssueProbeUrl(store, normalizedPage) {
+  const storeMap = parseBrowserProbeStoreBaseUrlMap();
+  const storeKey = normalizeStore(store).toLowerCase();
+  const configuredBaseUrl = storeMap[storeKey] || normalizeBaseUrl(process.env[BROWSER_PROBE_DEFAULT_BASE_URL_ENV]);
+  if (!configuredBaseUrl) return null;
+
+  try {
+    const base = new URL(configuredBaseUrl);
+    const resolved = new URL(normalizeRelativeProbePath(normalizedPage), base);
+    if (resolved.origin !== base.origin) return null;
+    if (!['http:', 'https:'].includes(resolved.protocol)) return null;
+    if (!BROWSER_PROBE_CONFIG.allowPrivateNetworkTargets && isPrivateOrLocalHostname(resolved.hostname)) return null;
+    return resolved.toString();
+  } catch (_error) {
+    return null;
+  }
+}
+
+function normalizeBrowserProbeErrorSignature(value) {
+  return safeString(value)
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[0-9]+/g, '#')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+}
+
+async function loadPuppeteer() {
+  try {
+    const mod = await import('puppeteer');
+    return mod?.default || mod;
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function launchBrowserProbe(puppeteer) {
+  try {
+    return await puppeteer.launch({
+      headless: 'new'
+    });
+  } catch (launchError) {
+    if (!BROWSER_PROBE_CONFIG.allowNoSandbox) throw launchError;
+    return puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+  }
+}
+
+function sleep(ms) {
+  const waitMs = Math.max(0, Number(ms) || 0);
+  return new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
 function normalizeSqliteDateTime(value = new Date()) {
@@ -657,6 +800,258 @@ function evaluateIssueVerification({ snapshot, history }) {
   };
 }
 
+function browserProbeEnabledForIssueType(issueType) {
+  if (!BROWSER_PROBE_CONFIG.enabled) return false;
+  const normalizedType = safeString(issueType).trim().toLowerCase();
+  return AUTO_VERIFIABLE_ISSUE_TYPES.includes(normalizedType);
+}
+
+function resolveBrowserProbeSelector(signature) {
+  const raw = safeString(signature).trim();
+  if (!raw || raw === 'unknown_target' || raw.length > MAX_SIGNATURE_LENGTH) return '';
+  if (raw.includes('{') || raw.includes('}')) return '';
+  if (raw.includes(' ')) return '';
+  return raw;
+}
+
+async function verifyIssueWithBrowserProbe(snapshot, issueUrl) {
+  const issueType = safeString(snapshot?.issue_type).trim().toLowerCase();
+  const puppeteer = await loadPuppeteer();
+  if (!puppeteer) {
+    return {
+      ok: false,
+      reason: 'Puppeteer is not available in this runtime.',
+      method: BROWSER_PROBE_METHOD
+    };
+  }
+
+  let browser = null;
+  try {
+    browser = await launchBrowserProbe(puppeteer);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: safeString(error?.message || error).trim().slice(0, 300) || 'Browser launch failed.',
+      method: BROWSER_PROBE_METHOD
+    };
+  }
+
+  try {
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(BROWSER_PROBE_CONFIG.navigationTimeoutMs);
+
+    if (issueType === 'js_errors') {
+      const observedErrors = [];
+      const onPageError = (error) => {
+        observedErrors.push(safeString(error?.message || error).trim());
+      };
+      const onConsole = (msg) => {
+        const msgType = safeString(msg?.type?.()).trim().toLowerCase();
+        if (msgType !== 'error') return;
+        observedErrors.push(safeString(msg?.text?.() || '').trim());
+      };
+
+      page.on('pageerror', onPageError);
+      page.on('console', onConsole);
+
+      try {
+        await page.goto(issueUrl, {
+          waitUntil: 'networkidle2',
+          timeout: BROWSER_PROBE_CONFIG.navigationTimeoutMs
+        });
+        await sleep(BROWSER_PROBE_CONFIG.postLoadWaitMs);
+      } finally {
+        page.off('pageerror', onPageError);
+        page.off('console', onConsole);
+      }
+
+      const normalizedObserved = observedErrors.map(normalizeBrowserProbeErrorSignature).filter(Boolean);
+      const normalizedExpected = normalizeBrowserProbeErrorSignature(snapshot?.normalized_signature);
+      const matched = normalizedExpected
+        ? normalizedObserved.some((item) => item.includes(normalizedExpected) || normalizedExpected.includes(item))
+        : normalizedObserved.length > 0;
+
+      if (matched) {
+        return {
+          ok: true,
+          status: ISSUE_LIFECYCLE_STATES.CONFIRMED,
+          reason: 'Browser probe reproduced a matching runtime error.',
+          confidence: 0.9,
+          method: BROWSER_PROBE_METHOD,
+          evidence: {
+            url: issueUrl,
+            observed_error_count: normalizedObserved.length,
+            observed_errors: normalizedObserved.slice(0, 8)
+          }
+        };
+      }
+
+      return {
+        ok: true,
+        status: ISSUE_LIFECYCLE_STATES.FALSE_ALERT,
+        reason: normalizedObserved.length
+          ? 'Browser probe observed errors, but not this issue signature.'
+          : 'Browser probe observed no runtime errors on this page.',
+        confidence: normalizedObserved.length ? 0.62 : 0.74,
+        method: BROWSER_PROBE_METHOD,
+        evidence: {
+          url: issueUrl,
+          observed_error_count: normalizedObserved.length,
+          observed_errors: normalizedObserved.slice(0, 8)
+        }
+      };
+    }
+
+    const selector = resolveBrowserProbeSelector(snapshot?.normalized_signature);
+    if (!selector) {
+      return {
+        ok: false,
+        reason: 'Issue signature is not a safe CSS selector for browser probe.',
+        method: BROWSER_PROBE_METHOD
+      };
+    }
+
+    try {
+      await page.goto(issueUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: BROWSER_PROBE_CONFIG.navigationTimeoutMs
+      });
+      await sleep(BROWSER_PROBE_CONFIG.postLoadWaitMs);
+    } catch (navigationError) {
+      return {
+        ok: false,
+        reason: safeString(navigationError?.message || navigationError).trim().slice(0, 260) || 'Navigation failed.',
+        method: BROWSER_PROBE_METHOD
+      };
+    }
+
+    let exists = false;
+    try {
+      exists = Boolean(await page.$(selector));
+    } catch (selectorError) {
+      return {
+        ok: false,
+        reason: `Invalid selector syntax for probe: ${safeString(selectorError?.message || selectorError).slice(0, 220)}`,
+        method: BROWSER_PROBE_METHOD
+      };
+    }
+
+    if (!exists) {
+      return {
+        ok: true,
+        status: ISSUE_LIFECYCLE_STATES.FALSE_ALERT,
+        reason: 'Browser probe could not find this click target on the page.',
+        confidence: 0.72,
+        method: BROWSER_PROBE_METHOD,
+        evidence: {
+          url: issueUrl,
+          selector
+        }
+      };
+    }
+
+    await page.evaluate(() => {
+      try {
+        if (window.__siProbeMutObserver) window.__siProbeMutObserver.disconnect();
+      } catch (_error) {}
+      window.__siProbeMutCount = 0;
+      const target = document.documentElement || document.body;
+      if (!target) return;
+      const observer = new MutationObserver((mutations) => {
+        window.__siProbeMutCount += mutations.length;
+      });
+      observer.observe(target, { childList: true, subtree: true, attributes: true });
+      window.__siProbeMutObserver = observer;
+    });
+
+    const requiredDeadAttempts = Math.max(
+      1,
+      Math.ceil(BROWSER_PROBE_CONFIG.clickAttempts * BROWSER_PROBE_CONFIG.deadClickConfirmRatio)
+    );
+    let deadAttempts = 0;
+    let responsiveAttempts = 0;
+    const attempts = [];
+
+    for (let attempt = 1; attempt <= BROWSER_PROBE_CONFIG.clickAttempts; attempt += 1) {
+      const beforeUrl = page.url();
+      const beforeMut = await page.evaluate(() => Number(window.__siProbeMutCount || 0));
+      let requestCount = 0;
+      const onRequest = () => { requestCount += 1; };
+      page.on('request', onRequest);
+
+      let clickError = null;
+      try {
+        await page.$eval(selector, (el) => {
+          el.scrollIntoView({ block: 'center', inline: 'center' });
+        });
+        await page.click(selector, { delay: 30 });
+      } catch (error) {
+        clickError = safeString(error?.message || error).trim().slice(0, 220);
+      }
+
+      await sleep(BROWSER_PROBE_CONFIG.clickSettleWaitMs);
+      page.off('request', onRequest);
+      const afterUrl = page.url();
+      const afterMut = await page.evaluate(() => Number(window.__siProbeMutCount || 0));
+      const mutationDelta = Math.max(0, (Number(afterMut) || 0) - (Number(beforeMut) || 0));
+      const urlChanged = afterUrl !== beforeUrl;
+      const responsive = !clickError && (urlChanged || requestCount > 0 || mutationDelta >= BROWSER_PROBE_CONFIG.mutationThreshold);
+
+      if (responsive) responsiveAttempts += 1;
+      else deadAttempts += 1;
+
+      attempts.push({
+        attempt,
+        click_error: clickError,
+        request_count: requestCount,
+        mutation_delta: mutationDelta,
+        url_changed: urlChanged,
+        responsive
+      });
+    }
+
+    if (deadAttempts >= requiredDeadAttempts) {
+      return {
+        ok: true,
+        status: ISSUE_LIFECYCLE_STATES.CONFIRMED,
+        reason: 'Browser probe reproduced repeated dead-click behavior on this target.',
+        confidence: 0.88,
+        method: BROWSER_PROBE_METHOD,
+        evidence: {
+          url: issueUrl,
+          selector,
+          dead_attempts: deadAttempts,
+          responsive_attempts: responsiveAttempts,
+          attempts
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      status: ISSUE_LIFECYCLE_STATES.FALSE_ALERT,
+      reason: 'Browser probe showed this target responds to interaction.',
+      confidence: 0.7,
+      method: BROWSER_PROBE_METHOD,
+      evidence: {
+        url: issueUrl,
+        selector,
+        dead_attempts: deadAttempts,
+        responsive_attempts: responsiveAttempts,
+        attempts
+      }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: safeString(error?.message || error).trim().slice(0, 300) || 'Probe execution failed.',
+      method: BROWSER_PROBE_METHOD
+    };
+  } finally {
+    await browser?.close().catch(() => {});
+  }
+}
+
 function fetchLatestVerificationByIssueKeys(db, store, issueKeys) {
   if (!issueKeys.length) return new Map();
   const placeholders = makePlaceholders(issueKeys.length);
@@ -824,7 +1219,40 @@ function applyLifecycleResult(db, { store, issueKey, status, date, mode }) {
   }
 }
 
-function executeVerificationJob(db, jobRow) {
+function buildVerificationEvidence({ snapshot, history, heuristicVerdict, method, browserProbe }) {
+  return {
+    verification_method: method,
+    heuristic_version: SIGNAL_HISTORY_METHOD,
+    snapshot: {
+      date: snapshot.date,
+      mode: snapshot.mode,
+      issue_type: snapshot.issue_type,
+      normalized_page: snapshot.normalized_page,
+      normalized_signature: snapshot.normalized_signature,
+      sessions_affected: snapshot.sessions_affected,
+      events_count: snapshot.events_count,
+      high_intent_rate: snapshot.high_intent_rate,
+      impact_score: snapshot.impact_score,
+      sample_sessions: safeJsonParse(snapshot.sample_sessions_json) || []
+    },
+    history: {
+      lookback_days: LIFECYCLE_POLICY.lookbackDays,
+      presence_days: Number(history?.presence_days) || 0,
+      cumulative_sessions: Number(history?.cumulative_sessions) || 0,
+      cumulative_events: Number(history?.cumulative_events) || 0,
+      peak_sessions: Number(history?.peak_sessions) || 0,
+      peak_events: Number(history?.peak_events) || 0
+    },
+    thresholds: {
+      confirm: INVESTIGATION_CONFIRM_RULES,
+      false_alert: INVESTIGATION_FALSE_ALERT_RULES
+    },
+    heuristic_verdict: heuristicVerdict,
+    browser_probe: browserProbe || null
+  };
+}
+
+async function executeVerificationJob(db, jobRow) {
   const store = normalizeStore(jobRow.store);
   const issueKey = safeString(jobRow.issue_key).trim().toLowerCase();
   const payload = safeJsonParse(jobRow.payload_json) || {};
@@ -866,34 +1294,41 @@ function executeVerificationJob(db, jobRow) {
     anchorDate: requireIsoDate(snapshot.date) || date || normalizeSqliteDateTime().slice(0, 10)
   });
 
-  const verdict = evaluateIssueVerification({ snapshot, history });
-  const evidence = {
-    heuristic_version: 'signal_history_v1',
-    snapshot: {
-      date: snapshot.date,
-      mode: snapshot.mode,
-      issue_type: snapshot.issue_type,
-      normalized_page: snapshot.normalized_page,
-      normalized_signature: snapshot.normalized_signature,
-      sessions_affected: snapshot.sessions_affected,
-      events_count: snapshot.events_count,
-      high_intent_rate: snapshot.high_intent_rate,
-      impact_score: snapshot.impact_score,
-      sample_sessions: safeJsonParse(snapshot.sample_sessions_json) || []
-    },
-    history: {
-      lookback_days: LIFECYCLE_POLICY.lookbackDays,
-      presence_days: Number(history?.presence_days) || 0,
-      cumulative_sessions: Number(history?.cumulative_sessions) || 0,
-      cumulative_events: Number(history?.cumulative_events) || 0,
-      peak_sessions: Number(history?.peak_sessions) || 0,
-      peak_events: Number(history?.peak_events) || 0
-    },
-    thresholds: {
-      confirm: INVESTIGATION_CONFIRM_RULES,
-      false_alert: INVESTIGATION_FALSE_ALERT_RULES
-    }
+  const heuristicVerdict = evaluateIssueVerification({ snapshot, history });
+  let verdict = {
+    ...heuristicVerdict,
+    method: SIGNAL_HISTORY_METHOD
   };
+  let browserProbe = null;
+
+  if (browserProbeEnabledForIssueType(issueType)) {
+    const issueUrl = resolveIssueProbeUrl(store, snapshot.normalized_page);
+    if (!issueUrl) {
+      browserProbe = {
+        ok: false,
+        method: BROWSER_PROBE_METHOD,
+        reason: `Browser probe skipped: missing store base URL config (${BROWSER_PROBE_STORE_BASE_URLS_ENV} or ${BROWSER_PROBE_DEFAULT_BASE_URL_ENV}).`
+      };
+    } else {
+      browserProbe = await verifyIssueWithBrowserProbe(snapshot, issueUrl);
+      if (browserProbe?.ok) {
+        verdict = {
+          status: normalizeIssueState(browserProbe.status),
+          reason: browserProbe.reason,
+          confidence: Number(browserProbe.confidence) || heuristicVerdict.confidence,
+          method: browserProbe.method || BROWSER_PROBE_METHOD
+        };
+      }
+    }
+  }
+
+  const evidence = buildVerificationEvidence({
+    snapshot,
+    history,
+    heuristicVerdict,
+    method: verdict.method,
+    browserProbe
+  });
 
   writeVerificationRecord(db, {
     store,
@@ -901,7 +1336,7 @@ function executeVerificationJob(db, jobRow) {
     status: verdict.status,
     reason: verdict.reason,
     confidence: verdict.confidence,
-    method: 'signal_history_v1',
+    method: verdict.method,
     evidence,
     verifiedBy: requestedBy,
     expiresAt: null
@@ -1140,7 +1575,7 @@ export function listInvestigationJobs({ store, status = '', limit = 50 } = {}) {
   };
 }
 
-export function runQueuedInvestigationJobs({
+export async function runQueuedInvestigationJobs({
   store,
   maxJobs = INVESTIGATION_JOB_RUN_LIMIT_DEFAULT
 } = {}) {
@@ -1225,7 +1660,7 @@ export function runQueuedInvestigationJobs({
     }
 
     try {
-      const execution = executeVerificationJob(db, row);
+      const execution = await executeVerificationJob(db, row);
       const finishedAt = normalizeSqliteDateTime();
       const nextStatus = execution.ok ? 'completed' : 'failed';
       db.prepare(`
