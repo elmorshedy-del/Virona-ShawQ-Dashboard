@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { getDb } from '../db/database.js';
 import { askOpenAIChat } from './openaiService.js';
 import { askDeepSeekChat, normalizeTemperature } from './deepseekService.js';
+import { persistInvestigationIssueSnapshots } from './sessionIntelligenceInvestigationService.js';
 
 const RAW_RETENTION_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_RAW_RETENTION_HOURS || '72', 10);
 const ABANDON_AFTER_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_ABANDON_AFTER_HOURS || '24', 10);
@@ -4993,6 +4994,20 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
   const sessionIds = Array.from(sessionMap.keys()).filter(Boolean);
 
   if (sessionIds.length === 0) {
+    const emptySignals = {
+      rage_clicks: [],
+      dead_clicks: [],
+      js_errors: [],
+      form_invalid: [],
+      scroll_dropoff: []
+    };
+    const emptyInvestigationSnapshot = persistInvestigationIssueSnapshots({
+      store,
+      date: iso,
+      mode: scope,
+      signals: emptySignals
+    });
+
     return {
       success: true,
       data: {
@@ -5003,13 +5018,8 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
           sessions: 0,
           source_sessions: sessions.length
         },
-        signals: {
-          rage_clicks: [],
-          dead_clicks: [],
-          js_errors: [],
-          form_invalid: [],
-          scroll_dropoff: []
-        }
+        signals: emptySignals,
+        investigation: emptyInvestigationSnapshot.success ? emptyInvestigationSnapshot.data : null
       }
     };
   }
@@ -5156,6 +5166,13 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
     };
   };
 
+  const highIntentRateFromSessions = (sessionsAffected) => {
+    const total = selectedSessions.length;
+    if (!Number.isFinite(total) || total <= 0) return null;
+    const safeSessions = Number(sessionsAffected) || 0;
+    return Math.max(0, Math.min(1, safeSessions / total));
+  };
+
   const rage_clicks = asTopList(
     rageCounts,
     (entry) => ({
@@ -5163,6 +5180,7 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       target_key: entry.target_key,
       count: entry.count,
       sessions: entry.sessions.size,
+      high_intent_rate: highIntentRateFromSessions(entry.sessions.size),
       sample_sessions: (entry.sample || []).map(sessionStub)
     })
   );
@@ -5174,6 +5192,7 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       target_key: entry.target_key,
       count: entry.count,
       sessions: entry.sessions.size,
+      high_intent_rate: highIntentRateFromSessions(entry.sessions.size),
       sample_sessions: (entry.sample || []).map(sessionStub)
     })
   );
@@ -5185,6 +5204,7 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       message: entry.message,
       count: entry.count,
       sessions: entry.sessions.size,
+      high_intent_rate: highIntentRateFromSessions(entry.sessions.size),
       sample_sessions: (entry.sample || []).map(sessionStub)
     })
   );
@@ -5197,6 +5217,7 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       field_name: entry.field_name,
       count: entry.count,
       sessions: entry.sessions.size,
+      high_intent_rate: highIntentRateFromSessions(entry.sessions.size),
       sample_sessions: (entry.sample || []).map(sessionStub)
     })
   );
@@ -5230,6 +5251,8 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       return {
         page,
         total_sessions: total,
+        sessions_affected: Math.max(0, total - reached[75]),
+        high_intent_rate: highIntentRateFromSessions(Math.max(0, total - reached[75])),
         reached_25: reached[25],
         reached_50: reached[50],
         reached_75: reached[75],
@@ -5239,6 +5262,21 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
     .filter(Boolean)
     .sort((a, b) => (b.total_sessions || 0) - (a.total_sessions || 0))
     .slice(0, 10);
+
+  const signals = {
+    rage_clicks,
+    dead_clicks,
+    js_errors,
+    form_invalid,
+    scroll_dropoff
+  };
+
+  const investigationSnapshot = persistInvestigationIssueSnapshots({
+    store,
+    date: iso,
+    mode: scope,
+    signals
+  });
 
   return {
     success: true,
@@ -5250,13 +5288,8 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
         sessions: selectedSessions.length,
         source_sessions: sessions.length
       },
-      signals: {
-        rage_clicks,
-        dead_clicks,
-        js_errors,
-        form_invalid,
-        scroll_dropoff
-      }
+      signals,
+      investigation: investigationSnapshot.success ? investigationSnapshot.data : null
     }
   };
 }

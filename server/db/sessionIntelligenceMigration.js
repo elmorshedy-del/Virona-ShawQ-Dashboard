@@ -264,6 +264,117 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS si_issue_clusters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      issue_key TEXT NOT NULL,
+      issue_type TEXT NOT NULL,
+      normalized_page TEXT NOT NULL,
+      normalized_signature TEXT NOT NULL,
+      first_seen_date TEXT NOT NULL,
+      last_seen_date TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL DEFAULT 'observed',
+      lifecycle_updated_at TEXT,
+      last_mode TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, issue_key)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_issue_clusters_store_state
+    ON si_issue_clusters(store, lifecycle_state, last_seen_date)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_issue_clusters_store_last_seen
+    ON si_issue_clusters(store, last_seen_date, last_seen_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_issue_daily_stats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      date TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'high_intent_no_purchase',
+      issue_key TEXT NOT NULL,
+      issue_type TEXT NOT NULL,
+      normalized_page TEXT NOT NULL,
+      normalized_signature TEXT NOT NULL,
+      sessions_affected INTEGER NOT NULL DEFAULT 0,
+      events_count INTEGER NOT NULL DEFAULT 0,
+      high_intent_rate REAL,
+      impact_score REAL,
+      status_at_snapshot TEXT NOT NULL DEFAULT 'observed',
+      sample_sessions_json TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, date, mode, issue_key)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_issue_daily_stats_store_date_mode
+    ON si_issue_daily_stats(store, date, mode)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_issue_daily_stats_store_issue_date
+    ON si_issue_daily_stats(store, issue_key, date)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_issue_verifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      issue_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      method TEXT,
+      reason TEXT,
+      evidence_json TEXT,
+      verified_by TEXT,
+      verified_at TEXT,
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_issue_verifications_store_issue_time
+    ON si_issue_verifications(store, issue_key, verified_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_investigation_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      issue_key TEXT,
+      job_type TEXT NOT NULL DEFAULT 'verify_issue',
+      status TEXT NOT NULL DEFAULT 'queued',
+      priority INTEGER NOT NULL DEFAULT 100,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      requested_by TEXT,
+      payload_json TEXT,
+      result_json TEXT,
+      error_text TEXT,
+      requested_at TEXT DEFAULT (datetime('now')),
+      started_at TEXT,
+      finished_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_investigation_jobs_store_status
+    ON si_investigation_jobs(store, status, requested_at)
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS si_checkout_session_links (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,
