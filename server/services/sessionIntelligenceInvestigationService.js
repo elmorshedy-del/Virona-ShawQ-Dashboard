@@ -16,6 +16,12 @@ const ISSUE_TYPES = Object.freeze([
   'scroll_dropoff'
 ]);
 
+const AUTO_VERIFIABLE_ISSUE_TYPES = Object.freeze([
+  'rage_clicks',
+  'dead_clicks',
+  'js_errors'
+]);
+
 const LIFECYCLE_LOCKED_STATES = new Set([
   ISSUE_LIFECYCLE_STATES.CONFIRMED,
   ISSUE_LIFECYCLE_STATES.FALSE_ALERT
@@ -25,6 +31,33 @@ const MAX_SIGNATURE_LENGTH = 220;
 const MAX_NORMALIZED_PAGE_LENGTH = 180;
 const MAX_SAMPLE_SESSION_ROWS = 8;
 const DEFAULT_STORE_KEY = 'default_store';
+const DEFAULT_ISSUE_MODE = 'high_intent_no_purchase';
+
+const INVESTIGATION_QUEUE_LIMIT_DEFAULT = clampInteger(
+  process.env.SI_INVESTIGATION_QUEUE_LIMIT,
+  24,
+  1,
+  200
+);
+const INVESTIGATION_JOB_RUN_LIMIT_DEFAULT = clampInteger(
+  process.env.SI_INVESTIGATION_JOB_RUN_LIMIT,
+  8,
+  1,
+  200
+);
+
+const INVESTIGATION_CONFIRM_RULES = Object.freeze({
+  minSessions: clampInteger(process.env.SI_INVESTIGATION_CONFIRM_MIN_SESSIONS, 3, 1, 2000),
+  minEvents: clampInteger(process.env.SI_INVESTIGATION_CONFIRM_MIN_EVENTS, 6, 1, 20000),
+  minPresenceDays: clampInteger(process.env.SI_INVESTIGATION_CONFIRM_MIN_PRESENCE_DAYS, 2, 1, 30),
+  minCumulativeSessions: clampInteger(process.env.SI_INVESTIGATION_CONFIRM_MIN_CUMULATIVE_SESSIONS, 5, 1, 5000)
+});
+
+const INVESTIGATION_FALSE_ALERT_RULES = Object.freeze({
+  maxPresenceDays: clampInteger(process.env.SI_INVESTIGATION_FALSE_MAX_PRESENCE_DAYS, 1, 1, 30),
+  maxSessions: clampInteger(process.env.SI_INVESTIGATION_FALSE_MAX_SESSIONS, 2, 0, 2000),
+  maxEvents: clampInteger(process.env.SI_INVESTIGATION_FALSE_MAX_EVENTS, 3, 0, 20000)
+});
 
 const LIFECYCLE_POLICY = Object.freeze({
   minSessionsForInvestigating: clampInteger(process.env.SI_INVESTIGATION_MIN_SESSIONS, 3, 1, 500),
@@ -45,9 +78,23 @@ function safeString(value) {
   return String(value);
 }
 
+function safeJsonParse(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
 function normalizeStore(store) {
   const normalized = safeString(store).trim();
   return normalized || DEFAULT_STORE_KEY;
+}
+
+function normalizeMode(mode) {
+  const normalized = safeString(mode).trim();
+  return normalized || DEFAULT_ISSUE_MODE;
 }
 
 function normalizeSqliteDateTime(value = new Date()) {
@@ -463,6 +510,863 @@ export function persistInvestigationIssueSnapshots({ store, date, mode, signals 
       policy: LIFECYCLE_POLICY,
       summary,
       clusters: persistedRows
+    }
+  };
+}
+
+function makePlaceholders(length) {
+  if (!Number.isFinite(length) || length <= 0) return '';
+  return new Array(length).fill('?').join(',');
+}
+
+function normalizeIssueKeyList(issueKeys) {
+  if (!Array.isArray(issueKeys)) return [];
+  const deduped = new Set();
+  for (const value of issueKeys) {
+    const key = safeString(value).trim().toLowerCase();
+    if (!key) continue;
+    deduped.add(key);
+  }
+  return Array.from(deduped);
+}
+
+function fetchQueuedOrRunningIssueKeySet(db, store, issueKeys) {
+  if (!issueKeys.length) return new Set();
+  const placeholders = makePlaceholders(issueKeys.length);
+  const rows = db.prepare(`
+    SELECT DISTINCT issue_key
+    FROM si_investigation_jobs
+    WHERE store = ?
+      AND status IN ('queued', 'running')
+      AND issue_key IN (${placeholders})
+  `).all(store, ...issueKeys);
+  return new Set(rows.map((row) => safeString(row.issue_key).trim().toLowerCase()).filter(Boolean));
+}
+
+function queueableIssueTypes(includeUnverifiable = false) {
+  if (includeUnverifiable) return ISSUE_TYPES;
+  return AUTO_VERIFIABLE_ISSUE_TYPES;
+}
+
+function buildQueueCandidatesQuery({ issueTypeCount, issueKeyCount, includeObserved }) {
+  const lifecycleFilters = includeObserved
+    ? `AND COALESCE(c.lifecycle_state, '${ISSUE_LIFECYCLE_STATES.OBSERVED}') IN ('${ISSUE_LIFECYCLE_STATES.OBSERVED}', '${ISSUE_LIFECYCLE_STATES.INVESTIGATING}')`
+    : `AND COALESCE(c.lifecycle_state, '${ISSUE_LIFECYCLE_STATES.OBSERVED}') = '${ISSUE_LIFECYCLE_STATES.INVESTIGATING}'`;
+  const issueKeyFilter = issueKeyCount > 0
+    ? `AND d.issue_key IN (${makePlaceholders(issueKeyCount)})`
+    : '';
+
+  return `
+    SELECT
+      d.issue_key,
+      d.issue_type,
+      d.normalized_page,
+      d.normalized_signature,
+      d.sessions_affected,
+      d.events_count,
+      d.high_intent_rate,
+      d.impact_score,
+      d.sample_sessions_json,
+      COALESCE(c.lifecycle_state, '${ISSUE_LIFECYCLE_STATES.OBSERVED}') AS lifecycle_state
+    FROM si_issue_daily_stats d
+    LEFT JOIN si_issue_clusters c
+      ON c.store = d.store
+     AND c.issue_key = d.issue_key
+    WHERE d.store = ?
+      AND d.date = ?
+      AND d.mode = ?
+      AND d.issue_type IN (${makePlaceholders(issueTypeCount)})
+      ${lifecycleFilters}
+      ${issueKeyFilter}
+    ORDER BY COALESCE(d.impact_score, 0) DESC, d.sessions_affected DESC, d.events_count DESC
+    LIMIT ?
+  `;
+}
+
+function normalizeIssueState(value) {
+  const normalized = safeString(value).trim().toLowerCase();
+  if (normalized === ISSUE_LIFECYCLE_STATES.CONFIRMED) return ISSUE_LIFECYCLE_STATES.CONFIRMED;
+  if (normalized === ISSUE_LIFECYCLE_STATES.FALSE_ALERT) return ISSUE_LIFECYCLE_STATES.FALSE_ALERT;
+  if (normalized === ISSUE_LIFECYCLE_STATES.INVESTIGATING) return ISSUE_LIFECYCLE_STATES.INVESTIGATING;
+  return ISSUE_LIFECYCLE_STATES.OBSERVED;
+}
+
+function normalizeJobStatus(value) {
+  const normalized = safeString(value).trim().toLowerCase();
+  if (normalized === 'queued' || normalized === 'running' || normalized === 'completed' || normalized === 'failed') {
+    return normalized;
+  }
+  return '';
+}
+
+function toInvestigationJobPublic(row) {
+  return {
+    id: row.id,
+    store: row.store,
+    issue_key: row.issue_key,
+    job_type: row.job_type,
+    status: row.status,
+    priority: row.priority,
+    attempt_count: row.attempt_count,
+    requested_by: row.requested_by,
+    payload: safeJsonParse(row.payload_json) || null,
+    result: safeJsonParse(row.result_json) || null,
+    error_text: row.error_text || null,
+    requested_at: row.requested_at || null,
+    started_at: row.started_at || null,
+    finished_at: row.finished_at || null
+  };
+}
+
+function evaluateIssueVerification({ snapshot, history }) {
+  const sessionsAffected = Math.max(0, Number(snapshot?.sessions_affected) || 0);
+  const eventsCount = Math.max(0, Number(snapshot?.events_count) || 0);
+  const presenceDays = Math.max(0, Number(history?.presence_days) || 0);
+  const cumulativeSessions = Math.max(0, Number(history?.cumulative_sessions) || 0);
+  const cumulativeEvents = Math.max(0, Number(history?.cumulative_events) || 0);
+
+  const passesVolume = sessionsAffected >= INVESTIGATION_CONFIRM_RULES.minSessions
+    || eventsCount >= INVESTIGATION_CONFIRM_RULES.minEvents;
+  const passesConsistency = presenceDays >= INVESTIGATION_CONFIRM_RULES.minPresenceDays
+    || cumulativeSessions >= INVESTIGATION_CONFIRM_RULES.minCumulativeSessions;
+
+  if (passesVolume && passesConsistency) {
+    return {
+      status: ISSUE_LIFECYCLE_STATES.CONFIRMED,
+      reason: 'Issue has recurring session impact and consistent signal volume across recent days.',
+      confidence: Math.min(1, 0.72 + Math.min(0.24, cumulativeSessions / 200))
+    };
+  }
+
+  const weakNoise = presenceDays <= INVESTIGATION_FALSE_ALERT_RULES.maxPresenceDays
+    && cumulativeSessions <= INVESTIGATION_FALSE_ALERT_RULES.maxSessions
+    && cumulativeEvents <= INVESTIGATION_FALSE_ALERT_RULES.maxEvents;
+
+  if (weakNoise) {
+    return {
+      status: ISSUE_LIFECYCLE_STATES.FALSE_ALERT,
+      reason: 'Signal stayed low-volume and did not recur enough to qualify as a durable issue.',
+      confidence: 0.74
+    };
+  }
+
+  return {
+    status: ISSUE_LIFECYCLE_STATES.FALSE_ALERT,
+    reason: 'Signal did not meet confirmation thresholds after investigation run.',
+    confidence: 0.58
+  };
+}
+
+function fetchLatestVerificationByIssueKeys(db, store, issueKeys) {
+  if (!issueKeys.length) return new Map();
+  const placeholders = makePlaceholders(issueKeys.length);
+  const rows = db.prepare(`
+    SELECT v.issue_key, v.status, v.method, v.reason, v.evidence_json, v.verified_by, v.verified_at, v.expires_at
+    FROM si_issue_verifications v
+    INNER JOIN (
+      SELECT issue_key, MAX(COALESCE(verified_at, created_at)) AS latest_time
+      FROM si_issue_verifications
+      WHERE store = ?
+        AND issue_key IN (${placeholders})
+      GROUP BY issue_key
+    ) latest
+      ON latest.issue_key = v.issue_key
+     AND COALESCE(v.verified_at, v.created_at) = latest.latest_time
+    WHERE v.store = ?
+      AND v.issue_key IN (${placeholders})
+  `).all(store, ...issueKeys, store, ...issueKeys);
+
+  return new Map(rows.map((row) => [safeString(row.issue_key).trim().toLowerCase(), {
+    status: normalizeIssueState(row.status),
+    method: safeString(row.method).trim() || null,
+    reason: safeString(row.reason).trim() || null,
+    evidence: safeJsonParse(row.evidence_json) || null,
+    verified_by: safeString(row.verified_by).trim() || null,
+    verified_at: row.verified_at || null,
+    expires_at: row.expires_at || null
+  }]));
+}
+
+function fetchIssueSnapshotForJob(db, { store, issueKey, date, mode }) {
+  const exact = db.prepare(`
+    SELECT
+      d.store,
+      d.date,
+      d.mode,
+      d.issue_key,
+      d.issue_type,
+      d.normalized_page,
+      d.normalized_signature,
+      d.sessions_affected,
+      d.events_count,
+      d.high_intent_rate,
+      d.impact_score,
+      d.sample_sessions_json,
+      COALESCE(c.lifecycle_state, '${ISSUE_LIFECYCLE_STATES.OBSERVED}') AS lifecycle_state
+    FROM si_issue_daily_stats d
+    LEFT JOIN si_issue_clusters c
+      ON c.store = d.store
+     AND c.issue_key = d.issue_key
+    WHERE d.store = ?
+      AND d.issue_key = ?
+      AND d.date = ?
+      AND d.mode = ?
+    LIMIT 1
+  `).get(store, issueKey, date, mode);
+  if (exact) return exact;
+
+  return db.prepare(`
+    SELECT
+      d.store,
+      d.date,
+      d.mode,
+      d.issue_key,
+      d.issue_type,
+      d.normalized_page,
+      d.normalized_signature,
+      d.sessions_affected,
+      d.events_count,
+      d.high_intent_rate,
+      d.impact_score,
+      d.sample_sessions_json,
+      COALESCE(c.lifecycle_state, '${ISSUE_LIFECYCLE_STATES.OBSERVED}') AS lifecycle_state
+    FROM si_issue_daily_stats d
+    LEFT JOIN si_issue_clusters c
+      ON c.store = d.store
+     AND c.issue_key = d.issue_key
+    WHERE d.store = ?
+      AND d.issue_key = ?
+    ORDER BY d.date DESC
+    LIMIT 1
+  `).get(store, issueKey);
+}
+
+function fetchIssueHistoryStats(db, { store, issueKey, mode, anchorDate }) {
+  const startDate = shiftIsoDate(anchorDate, -(LIFECYCLE_POLICY.lookbackDays - 1));
+  return db.prepare(`
+    SELECT
+      COUNT(DISTINCT date) AS presence_days,
+      COALESCE(SUM(sessions_affected), 0) AS cumulative_sessions,
+      COALESCE(SUM(events_count), 0) AS cumulative_events,
+      COALESCE(MAX(sessions_affected), 0) AS peak_sessions,
+      COALESCE(MAX(events_count), 0) AS peak_events
+    FROM si_issue_daily_stats
+    WHERE store = ?
+      AND issue_key = ?
+      AND mode = ?
+      AND date >= ?
+      AND date <= ?
+  `).get(store, issueKey, mode, startDate, anchorDate);
+}
+
+function writeVerificationRecord(db, {
+  store,
+  issueKey,
+  status,
+  reason,
+  confidence,
+  method,
+  evidence,
+  verifiedBy,
+  expiresAt
+}) {
+  const now = normalizeSqliteDateTime();
+  db.prepare(`
+    INSERT INTO si_issue_verifications (
+      store,
+      issue_key,
+      status,
+      method,
+      reason,
+      evidence_json,
+      verified_by,
+      verified_at,
+      expires_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    store,
+    issueKey,
+    status,
+    method,
+    reason,
+    JSON.stringify({
+      confidence,
+      ...(evidence || {})
+    }),
+    verifiedBy || null,
+    now,
+    expiresAt || null,
+    now
+  );
+}
+
+function applyLifecycleResult(db, { store, issueKey, status, date, mode }) {
+  const normalized = normalizeIssueState(status);
+  const now = normalizeSqliteDateTime();
+  db.prepare(`
+    UPDATE si_issue_clusters
+    SET lifecycle_state = ?, lifecycle_updated_at = ?, updated_at = ?
+    WHERE store = ?
+      AND issue_key = ?
+  `).run(normalized, now, now, store, issueKey);
+
+  if (date && mode) {
+    db.prepare(`
+      UPDATE si_issue_daily_stats
+      SET status_at_snapshot = ?, updated_at = ?
+      WHERE store = ?
+        AND issue_key = ?
+        AND date = ?
+        AND mode = ?
+    `).run(normalized, now, store, issueKey, date, mode);
+  }
+}
+
+function executeVerificationJob(db, jobRow) {
+  const store = normalizeStore(jobRow.store);
+  const issueKey = safeString(jobRow.issue_key).trim().toLowerCase();
+  const payload = safeJsonParse(jobRow.payload_json) || {};
+  const date = requireIsoDate(payload?.date);
+  const mode = normalizeMode(payload?.mode);
+  const requestedBy = safeString(payload?.requested_by || jobRow.requested_by).trim() || 'system';
+
+  if (!issueKey) {
+    return {
+      ok: false,
+      status: ISSUE_LIFECYCLE_STATES.FALSE_ALERT,
+      reason: 'Missing issue key in investigation job payload.'
+    };
+  }
+
+  const snapshot = fetchIssueSnapshotForJob(db, { store, issueKey, date, mode });
+  if (!snapshot) {
+    return {
+      ok: false,
+      status: ISSUE_LIFECYCLE_STATES.FALSE_ALERT,
+      reason: 'No issue snapshot was found for this issue key.'
+    };
+  }
+
+  const issueType = safeString(snapshot.issue_type).trim().toLowerCase();
+  if (!AUTO_VERIFIABLE_ISSUE_TYPES.includes(issueType)) {
+    return {
+      ok: true,
+      status: normalizeIssueState(snapshot.lifecycle_state),
+      reason: 'Issue type is not auto-verifiable in this runner version.',
+      skipped: true
+    };
+  }
+
+  const history = fetchIssueHistoryStats(db, {
+    store,
+    issueKey,
+    mode: normalizeMode(snapshot.mode),
+    anchorDate: requireIsoDate(snapshot.date) || date || normalizeSqliteDateTime().slice(0, 10)
+  });
+
+  const verdict = evaluateIssueVerification({ snapshot, history });
+  const evidence = {
+    heuristic_version: 'signal_history_v1',
+    snapshot: {
+      date: snapshot.date,
+      mode: snapshot.mode,
+      issue_type: snapshot.issue_type,
+      normalized_page: snapshot.normalized_page,
+      normalized_signature: snapshot.normalized_signature,
+      sessions_affected: snapshot.sessions_affected,
+      events_count: snapshot.events_count,
+      high_intent_rate: snapshot.high_intent_rate,
+      impact_score: snapshot.impact_score,
+      sample_sessions: safeJsonParse(snapshot.sample_sessions_json) || []
+    },
+    history: {
+      lookback_days: LIFECYCLE_POLICY.lookbackDays,
+      presence_days: Number(history?.presence_days) || 0,
+      cumulative_sessions: Number(history?.cumulative_sessions) || 0,
+      cumulative_events: Number(history?.cumulative_events) || 0,
+      peak_sessions: Number(history?.peak_sessions) || 0,
+      peak_events: Number(history?.peak_events) || 0
+    },
+    thresholds: {
+      confirm: INVESTIGATION_CONFIRM_RULES,
+      false_alert: INVESTIGATION_FALSE_ALERT_RULES
+    }
+  };
+
+  writeVerificationRecord(db, {
+    store,
+    issueKey,
+    status: verdict.status,
+    reason: verdict.reason,
+    confidence: verdict.confidence,
+    method: 'signal_history_v1',
+    evidence,
+    verifiedBy: requestedBy,
+    expiresAt: null
+  });
+
+  applyLifecycleResult(db, {
+    store,
+    issueKey,
+    status: verdict.status,
+    date: requireIsoDate(snapshot.date),
+    mode: normalizeMode(snapshot.mode)
+  });
+
+  return {
+    ok: true,
+    status: verdict.status,
+    reason: verdict.reason,
+    issue_key: issueKey
+  };
+}
+
+export function queueInvestigationJobs({
+  store,
+  date,
+  mode,
+  issueKeys,
+  limit = INVESTIGATION_QUEUE_LIMIT_DEFAULT,
+  priority = 100,
+  requestedBy = 'api',
+  includeObserved = false,
+  includeUnverifiable = false,
+  force = false
+}) {
+  const normalizedStore = normalizeStore(store);
+  const normalizedDate = requireIsoDate(date);
+  if (!normalizedDate) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+
+  const normalizedMode = normalizeMode(mode);
+  const normalizedIssueKeys = normalizeIssueKeyList(issueKeys);
+  const maxRows = clampInteger(limit, INVESTIGATION_QUEUE_LIMIT_DEFAULT, 1, 200);
+  const normalizedPriority = clampInteger(priority, 100, 1, 1000);
+  const candidateTypes = queueableIssueTypes(includeUnverifiable);
+  const db = getDb();
+
+  const sql = buildQueueCandidatesQuery({
+    issueTypeCount: candidateTypes.length,
+    issueKeyCount: normalizedIssueKeys.length,
+    includeObserved
+  });
+  const queryParams = [
+    normalizedStore,
+    normalizedDate,
+    normalizedMode,
+    ...candidateTypes,
+    ...normalizedIssueKeys,
+    maxRows
+  ];
+  const candidates = db.prepare(sql).all(...queryParams);
+  if (!candidates.length) {
+    return {
+      success: true,
+      data: {
+        store: normalizedStore,
+        date: normalizedDate,
+        mode: normalizedMode,
+        queued: 0,
+        skipped: 0,
+        reason: 'No eligible issues found for investigation.'
+      }
+    };
+  }
+
+  const candidateIssueKeys = candidates.map((row) => safeString(row.issue_key).trim().toLowerCase()).filter(Boolean);
+  const blockedIssueKeys = force ? new Set() : fetchQueuedOrRunningIssueKeySet(db, normalizedStore, candidateIssueKeys);
+  const now = normalizeSqliteDateTime();
+  const queuedRows = [];
+  let skipped = 0;
+
+  const tx = db.transaction(() => {
+    for (const row of candidates) {
+      const issueKey = safeString(row.issue_key).trim().toLowerCase();
+      if (!issueKey) {
+        skipped += 1;
+        continue;
+      }
+      if (blockedIssueKeys.has(issueKey)) {
+        skipped += 1;
+        continue;
+      }
+
+      const payload = {
+        date: normalizedDate,
+        mode: normalizedMode,
+        issue_type: row.issue_type,
+        normalized_page: row.normalized_page,
+        normalized_signature: row.normalized_signature,
+        sessions_affected: Number(row.sessions_affected) || 0,
+        events_count: Number(row.events_count) || 0,
+        requested_by: safeString(requestedBy).trim() || 'api'
+      };
+
+      const insert = db.prepare(`
+        INSERT INTO si_investigation_jobs (
+          store,
+          issue_key,
+          job_type,
+          status,
+          priority,
+          attempt_count,
+          requested_by,
+          payload_json,
+          requested_at,
+          updated_at
+        )
+        VALUES (?, ?, 'verify_issue', 'queued', ?, 0, ?, ?, ?, ?)
+      `).run(
+        normalizedStore,
+        issueKey,
+        normalizedPriority,
+        payload.requested_by,
+        JSON.stringify(payload),
+        now,
+        now
+      );
+
+      db.prepare(`
+        UPDATE si_issue_clusters
+        SET lifecycle_state = CASE
+          WHEN lifecycle_state IN ('${ISSUE_LIFECYCLE_STATES.CONFIRMED}', '${ISSUE_LIFECYCLE_STATES.FALSE_ALERT}') THEN lifecycle_state
+          ELSE '${ISSUE_LIFECYCLE_STATES.INVESTIGATING}'
+        END,
+        lifecycle_updated_at = ?,
+        updated_at = ?
+        WHERE store = ?
+          AND issue_key = ?
+      `).run(now, now, normalizedStore, issueKey);
+
+      db.prepare(`
+        UPDATE si_issue_daily_stats
+        SET status_at_snapshot = CASE
+          WHEN status_at_snapshot IN ('${ISSUE_LIFECYCLE_STATES.CONFIRMED}', '${ISSUE_LIFECYCLE_STATES.FALSE_ALERT}') THEN status_at_snapshot
+          ELSE '${ISSUE_LIFECYCLE_STATES.INVESTIGATING}'
+        END,
+        updated_at = ?
+        WHERE store = ?
+          AND date = ?
+          AND mode = ?
+          AND issue_key = ?
+      `).run(now, normalizedStore, normalizedDate, normalizedMode, issueKey);
+
+      queuedRows.push({
+        id: insert.lastInsertRowid,
+        issue_key: issueKey,
+        issue_type: row.issue_type,
+        normalized_page: row.normalized_page,
+        sessions_affected: Number(row.sessions_affected) || 0
+      });
+    }
+  });
+
+  tx.immediate();
+
+  return {
+    success: true,
+    data: {
+      store: normalizedStore,
+      date: normalizedDate,
+      mode: normalizedMode,
+      queued: queuedRows.length,
+      skipped,
+      jobs: queuedRows
+    }
+  };
+}
+
+export function listInvestigationJobs({ store, status = '', limit = 50 } = {}) {
+  const normalizedStore = normalizeStore(store);
+  const normalizedStatus = normalizeJobStatus(status);
+  const maxRows = clampInteger(limit, 50, 1, 200);
+  const db = getDb();
+
+  const rows = normalizedStatus
+    ? db.prepare(`
+        SELECT
+          id,
+          store,
+          issue_key,
+          job_type,
+          status,
+          priority,
+          attempt_count,
+          requested_by,
+          payload_json,
+          result_json,
+          error_text,
+          requested_at,
+          started_at,
+          finished_at
+        FROM si_investigation_jobs
+        WHERE store = ?
+          AND status = ?
+        ORDER BY requested_at DESC, id DESC
+        LIMIT ?
+      `).all(normalizedStore, normalizedStatus, maxRows)
+    : db.prepare(`
+        SELECT
+          id,
+          store,
+          issue_key,
+          job_type,
+          status,
+          priority,
+          attempt_count,
+          requested_by,
+          payload_json,
+          result_json,
+          error_text,
+          requested_at,
+          started_at,
+          finished_at
+        FROM si_investigation_jobs
+        WHERE store = ?
+        ORDER BY requested_at DESC, id DESC
+        LIMIT ?
+      `).all(normalizedStore, maxRows);
+
+  return {
+    success: true,
+    data: {
+      store: normalizedStore,
+      status: normalizedStatus || null,
+      jobs: rows.map(toInvestigationJobPublic)
+    }
+  };
+}
+
+export function runQueuedInvestigationJobs({
+  store,
+  maxJobs = INVESTIGATION_JOB_RUN_LIMIT_DEFAULT
+} = {}) {
+  const scopedStore = safeString(store).trim();
+  const limit = clampInteger(maxJobs, INVESTIGATION_JOB_RUN_LIMIT_DEFAULT, 1, 200);
+  const db = getDb();
+
+  const queuedRows = scopedStore
+    ? db.prepare(`
+        SELECT
+          id,
+          store,
+          issue_key,
+          job_type,
+          status,
+          priority,
+          attempt_count,
+          requested_by,
+          payload_json,
+          requested_at
+        FROM si_investigation_jobs
+        WHERE store = ?
+          AND status = 'queued'
+          AND job_type = 'verify_issue'
+        ORDER BY priority ASC, requested_at ASC, id ASC
+        LIMIT ?
+      `).all(scopedStore, limit)
+    : db.prepare(`
+        SELECT
+          id,
+          store,
+          issue_key,
+          job_type,
+          status,
+          priority,
+          attempt_count,
+          requested_by,
+          payload_json,
+          requested_at
+        FROM si_investigation_jobs
+        WHERE status = 'queued'
+          AND job_type = 'verify_issue'
+        ORDER BY priority ASC, requested_at ASC, id ASC
+        LIMIT ?
+      `).all(limit);
+
+  if (!queuedRows.length) {
+    return {
+      success: true,
+      data: {
+        store: scopedStore || 'all',
+        attempted: 0,
+        completed: 0,
+        failed: 0,
+        skipped: 0,
+        jobs: []
+      }
+    };
+  }
+
+  const results = [];
+  let completed = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  for (const row of queuedRows) {
+    const startedAt = normalizeSqliteDateTime();
+    const claim = db.prepare(`
+      UPDATE si_investigation_jobs
+      SET
+        status = 'running',
+        attempt_count = attempt_count + 1,
+        started_at = ?,
+        updated_at = ?
+      WHERE id = ?
+        AND status = 'queued'
+    `).run(startedAt, startedAt, row.id);
+
+    if ((claim?.changes || 0) < 1) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      const execution = executeVerificationJob(db, row);
+      const finishedAt = normalizeSqliteDateTime();
+      const nextStatus = execution.ok ? 'completed' : 'failed';
+      db.prepare(`
+        UPDATE si_investigation_jobs
+        SET
+          status = ?,
+          result_json = ?,
+          error_text = ?,
+          finished_at = ?,
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        nextStatus,
+        JSON.stringify(execution),
+        execution.ok ? null : safeString(execution.reason).trim().slice(0, 500),
+        finishedAt,
+        finishedAt,
+        row.id
+      );
+      results.push({ id: row.id, ...execution });
+      if (execution.ok) completed += 1;
+      else failed += 1;
+    } catch (error) {
+      const finishedAt = normalizeSqliteDateTime();
+      const reason = safeString(error?.message || error).trim().slice(0, 500) || 'Unknown execution failure';
+      db.prepare(`
+        UPDATE si_investigation_jobs
+        SET
+          status = 'failed',
+          error_text = ?,
+          finished_at = ?,
+          updated_at = ?
+        WHERE id = ?
+      `).run(reason, finishedAt, finishedAt, row.id);
+      failed += 1;
+      results.push({
+        id: row.id,
+        ok: false,
+        status: ISSUE_LIFECYCLE_STATES.FALSE_ALERT,
+        reason
+      });
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      store: scopedStore || 'all',
+      attempted: queuedRows.length,
+      completed,
+      failed,
+      skipped,
+      jobs: results
+    }
+  };
+}
+
+export function listInvestigationIssuesForDate({
+  store,
+  date,
+  mode,
+  limit = 100
+} = {}) {
+  const normalizedStore = normalizeStore(store);
+  const normalizedDate = requireIsoDate(date);
+  if (!normalizedDate) {
+    return { success: false, error: 'Invalid date. Expected YYYY-MM-DD.' };
+  }
+  const normalizedMode = normalizeMode(mode);
+  const maxRows = clampInteger(limit, 100, 1, 500);
+  const db = getDb();
+
+  const rows = db.prepare(`
+    SELECT
+      d.issue_key,
+      d.issue_type,
+      d.normalized_page,
+      d.normalized_signature,
+      d.sessions_affected,
+      d.events_count,
+      d.high_intent_rate,
+      d.impact_score,
+      d.status_at_snapshot,
+      d.sample_sessions_json,
+      COALESCE(c.lifecycle_state, '${ISSUE_LIFECYCLE_STATES.OBSERVED}') AS lifecycle_state
+    FROM si_issue_daily_stats d
+    LEFT JOIN si_issue_clusters c
+      ON c.store = d.store
+     AND c.issue_key = d.issue_key
+    WHERE d.store = ?
+      AND d.date = ?
+      AND d.mode = ?
+    ORDER BY COALESCE(d.impact_score, 0) DESC, d.sessions_affected DESC, d.events_count DESC
+    LIMIT ?
+  `).all(normalizedStore, normalizedDate, normalizedMode, maxRows);
+
+  const issueKeys = rows.map((row) => safeString(row.issue_key).trim().toLowerCase()).filter(Boolean);
+  const verificationByKey = fetchLatestVerificationByIssueKeys(db, normalizedStore, issueKeys);
+
+  const issues = rows.map((row) => {
+    const issueKey = safeString(row.issue_key).trim().toLowerCase();
+    const verification = verificationByKey.get(issueKey) || null;
+    return {
+      issue_key: issueKey,
+      issue_type: row.issue_type,
+      normalized_page: row.normalized_page,
+      normalized_signature: row.normalized_signature,
+      sessions_affected: Number(row.sessions_affected) || 0,
+      events_count: Number(row.events_count) || 0,
+      high_intent_rate: Number.isFinite(Number(row.high_intent_rate)) ? Number(row.high_intent_rate) : null,
+      impact_score: Number.isFinite(Number(row.impact_score)) ? Number(row.impact_score) : null,
+      lifecycle_state: normalizeIssueState(row.lifecycle_state),
+      status_at_snapshot: normalizeIssueState(row.status_at_snapshot),
+      sample_sessions: safeJsonParse(row.sample_sessions_json) || [],
+      verification
+    };
+  });
+
+  const summary = issues.reduce((acc, issue) => {
+    acc.total += 1;
+    if (issue.lifecycle_state === ISSUE_LIFECYCLE_STATES.CONFIRMED) acc.confirmed += 1;
+    else if (issue.lifecycle_state === ISSUE_LIFECYCLE_STATES.FALSE_ALERT) acc.false_alert += 1;
+    else if (issue.lifecycle_state === ISSUE_LIFECYCLE_STATES.INVESTIGATING) acc.investigating += 1;
+    else acc.observed += 1;
+    return acc;
+  }, {
+    total: 0,
+    observed: 0,
+    investigating: 0,
+    confirmed: 0,
+    false_alert: 0
+  });
+
+  return {
+    success: true,
+    data: {
+      store: normalizedStore,
+      date: normalizedDate,
+      mode: normalizedMode,
+      summary,
+      issues
     }
   };
 }

@@ -24,6 +24,12 @@ import {
   attachCachedClarityVerifications,
   triggerClarityVerificationForSignals
 } from '../services/sessionIntelligenceVerificationService.js';
+import {
+  listInvestigationIssuesForDate,
+  listInvestigationJobs,
+  queueInvestigationJobs,
+  runQueuedInvestigationJobs
+} from '../services/sessionIntelligenceInvestigationService.js';
 
 const router = express.Router();
 
@@ -31,6 +37,20 @@ function normalizeFlag(value) {
   const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (!raw) return false;
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+function parsePositiveInt(value, fallback, min = 1, max = 1000) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeIssueKeysInput(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    return value.split(',').map((part) => part.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 router.get('/overview', (req, res) => {
@@ -183,6 +203,99 @@ router.get('/clarity', async (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] clarity error:', error);
     res.status(500).json({ success: false, error: 'Failed to load clarity signals' });
+  }
+});
+
+router.get('/investigation/issues', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const date = req.query.date;
+    const mode = req.query.mode || 'high_intent_no_purchase';
+    const limit = parsePositiveInt(req.query.limit, 100, 1, 500);
+    if (!date) return res.status(400).json({ success: false, error: 'Missing date (YYYY-MM-DD)' });
+
+    const result = listInvestigationIssuesForDate({ store, date, mode, limit });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] investigation issues error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load investigation issues' });
+  }
+});
+
+router.get('/investigation/jobs', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const status = req.query.status || '';
+    const limit = parsePositiveInt(req.query.limit, 50, 1, 200);
+    const result = listInvestigationJobs({ store, status, limit });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] investigation jobs error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load investigation jobs' });
+  }
+});
+
+router.post('/investigation/jobs/queue', (req, res) => {
+  try {
+    const store = req.body?.store || 'shawq';
+    const date = req.body?.date;
+    const mode = req.body?.mode || 'high_intent_no_purchase';
+    const issueKeys = normalizeIssueKeysInput(req.body?.issueKeys);
+    const limit = parsePositiveInt(req.body?.limit, 24, 1, 200);
+    const priority = parsePositiveInt(req.body?.priority, 100, 1, 1000);
+    const includeObserved = normalizeFlag(req.body?.includeObserved);
+    const includeUnverifiable = normalizeFlag(req.body?.includeUnverifiable);
+    const force = normalizeFlag(req.body?.force);
+    const wait = normalizeFlag(req.body?.wait);
+    const requestedBy = typeof req.body?.requestedBy === 'string' ? req.body.requestedBy.trim() : 'api';
+    if (!date) return res.status(400).json({ success: false, error: 'Missing date (YYYY-MM-DD)' });
+
+    const queueResult = queueInvestigationJobs({
+      store,
+      date,
+      mode,
+      issueKeys,
+      limit,
+      priority,
+      requestedBy,
+      includeObserved,
+      includeUnverifiable,
+      force
+    });
+    if (!queueResult.success) return res.status(400).json(queueResult);
+
+    if (!wait) return res.json(queueResult);
+
+    const runResult = runQueuedInvestigationJobs({
+      store,
+      maxJobs: limit
+    });
+
+    res.json({
+      success: true,
+      data: {
+        queue: queueResult.data,
+        run: runResult.data
+      }
+    });
+  } catch (error) {
+    console.error('[SessionIntelligence] investigation queue error:', error);
+    res.status(500).json({ success: false, error: 'Failed to queue investigation jobs' });
+  }
+});
+
+router.post('/investigation/jobs/run', (req, res) => {
+  try {
+    const store = req.body?.store || 'shawq';
+    const maxJobs = parsePositiveInt(req.body?.maxJobs, 8, 1, 200);
+    const result = runQueuedInvestigationJobs({ store, maxJobs });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] investigation run error:', error);
+    res.status(500).json({ success: false, error: 'Failed to run investigation jobs' });
   }
 });
 
