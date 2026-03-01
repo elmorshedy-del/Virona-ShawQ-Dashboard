@@ -101,8 +101,8 @@ function normalizeDateValue(rawValue) {
 function normalizeAnchorDays(rawValue) {
   const parsed = Number.parseInt(String(rawValue ?? ''), 10);
   if (!Number.isFinite(parsed)) return DEFAULT_SETTINGS.anchorWindowDays;
-  const lowerBound = 7;
-  const upperBound = 120;
+  const lowerBound = QUERY_LIMITS.minAnchorWindowDays;
+  const upperBound = QUERY_LIMITS.maxAnchorWindowDays;
   return Math.min(upperBound, Math.max(lowerBound, parsed));
 }
 
