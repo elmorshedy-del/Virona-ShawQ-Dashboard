@@ -302,11 +302,11 @@ function Sparkline({ points, polarity }) {
 }
 
 function SignalBadge({ signal }) {
-  if (!signal) return null;
-  const key = String(signal).toLowerCase();
+  const label = signal ? String(signal).toLowerCase() : 'unknown';
+  const key = label.replace(/\s+/g, '-');
   return (
     <span className={`pm-signal-badge pm-signal-${key}`}>
-      {signal}
+      {label}
     </span>
   );
 }
@@ -316,19 +316,26 @@ function MomentumCard({ product, mode }) {
   const severity = product?.assessment?.severity || null;
   const polarity = getMomentumPolarity(product, mode);
   const severityLabel = getMomentumSeverityLabel(severity, polarity, mode, hasTrigger);
-  const headline = product?.assessment?.headline || product?.title || 'Product signal';
+  const titleKey = String(
+    mode === 'layer1'
+      ? (product?.trigger || 'unknown_trigger')
+      : (product?.exceptionalEvent || 'unknown_event')
+  ).toLowerCase();
+  const layerLabel = mode === 'layer1' ? 'layer_1' : 'layer_2';
+  const signalLabel = product?.statistical?.signal || null;
   const action = product?.assessment?.action || '';
-  const triggerText = humanizeTrigger(mode === 'layer1' ? product?.trigger : product?.exceptionalEvent);
   const impactClass = polarity === 'risk' ? 'pm-impact-risk' : 'pm-impact-opportunity';
 
   return (
     <article className={`pm-card ${polarity} pm-severity-${severity || 'medium'}`}>
       <div className="pm-card-header">
         <div className="pm-card-title-wrap">
-          <h4 className="pm-card-title">{headline}</h4>
+          <h4 className="pm-card-title">{titleKey}</h4>
           <div className="pm-card-meta">
-            <span className="pm-trigger">{triggerText}</span>
-            <SignalBadge signal={product?.statistical?.signal} />
+            <span className="pm-badge pm-badge-layer">{layerLabel}</span>
+            <span className="pm-badge pm-badge-key">{titleKey}</span>
+            <span className={`pm-badge pm-badge-polarity pm-badge-${polarity}`}>{polarity}</span>
+            <SignalBadge signal={signalLabel} />
           </div>
         </div>
         <span className={`pm-severity-pill ${!hasTrigger ? `binary ${polarity}` : ''}`}>
