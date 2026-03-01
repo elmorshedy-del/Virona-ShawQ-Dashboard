@@ -809,8 +809,9 @@ function browserProbeEnabledForIssueType(issueType) {
 function resolveBrowserProbeSelector(signature) {
   const raw = safeString(signature).trim();
   if (!raw || raw === 'unknown_target' || raw.length > MAX_SIGNATURE_LENGTH) return '';
-  if (raw.includes('{') || raw.includes('}')) return '';
-  if (raw.includes(' ')) return '';
+  // Avoid selectors with characters that are risky or not expected in target keys.
+  // This is a security precaution against selector injection.
+  if (/[{};"']/.test(raw)) return '';
   return raw;
 }
 
