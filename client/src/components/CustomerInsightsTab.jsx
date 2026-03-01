@@ -325,18 +325,19 @@ function MomentumCard({ product, mode }) {
   const severity = product?.assessment?.severity || null;
   const polarity = getMomentumPolarity(product, mode);
   const severityLabel = getMomentumSeverityLabel(severity, polarity, mode, hasTrigger);
-  const titleKey = mode === 'layer1'
+  const isLayer1 = mode === 'layer1';
+  const titleKey = isLayer1
     ? (product?.trigger || 'unknown_trigger')
     : (product?.exceptionalEvent || 'unknown_event');
   const titleLabel = formatMomentumLabel(
     titleKey,
-    mode === 'layer1' ? 'Unknown Trigger' : 'Unknown Event'
+    isLayer1 ? 'Unknown Trigger' : 'Unknown Event'
   );
   const keyBadgeLabel = formatMomentumLabel(
     titleKey,
-    mode === 'layer1' ? 'unknown trigger' : 'unknown event'
+    isLayer1 ? 'unknown trigger' : 'unknown event'
   );
-  const layerLabel = mode === 'layer1' ? 'layer_1' : 'layer_2';
+  const layerLabel = isLayer1 ? 'layer_1' : 'layer_2';
   const signalLabel = product?.statistical?.signal || null;
   const action = product?.assessment?.action || '';
   const impactClass = polarity === 'risk' ? 'pm-impact-risk' : 'pm-impact-opportunity';
