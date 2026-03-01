@@ -114,10 +114,26 @@ const getMomentumSeverityLabel = (severity, polarity, mode, hasTrigger) => {
   return `${prefix} ${polarity === 'risk' ? 'risk' : 'opportunity'}`;
 };
 
+const resolveStoreId = (store) => {
+  if (typeof store === 'string') {
+    const normalized = store.trim().toLowerCase();
+    return normalized || 'shawq';
+  }
+
+  if (store && typeof store === 'object') {
+    const rawId = typeof store.id === 'string' ? store.id : '';
+    const rawStore = typeof store.store === 'string' ? store.store : '';
+    const normalized = (rawId || rawStore).trim().toLowerCase();
+    return normalized || 'shawq';
+  }
+
+  return 'shawq';
+};
+
 const buildInsightsParams = (store, windowId = DEFAULT_MOMENTUM_WINDOW_ID) => {
   const selectedWindow = MOMENTUM_WINDOW_OPTIONS.find((option) => option.id === windowId) || MOMENTUM_WINDOW_OPTIONS[0];
   const params = new URLSearchParams();
-  params.set('store', String(store || 'shawq').trim().toLowerCase());
+  params.set('store', resolveStoreId(store));
   params.set(selectedWindow.type, String(selectedWindow.value));
   return params;
 };
