@@ -51,6 +51,7 @@ const sectionIcons = {
 };
 
 const UPPER_METRIC_SLOT_COUNT = 4;
+const DEFAULT_STORE_ID = 'shawq';
 const MOMENTUM_WINDOW_OPTIONS = [
   { id: '7d', label: '7d', type: 'days', value: 7 },
   { id: '14d', label: '14d', type: 'days', value: 14 },
@@ -117,17 +118,17 @@ const getMomentumSeverityLabel = (severity, polarity, mode, hasTrigger) => {
 const resolveStoreId = (store) => {
   if (typeof store === 'string') {
     const normalized = store.trim().toLowerCase();
-    return normalized || 'shawq';
+    return normalized || DEFAULT_STORE_ID;
   }
 
   if (store && typeof store === 'object') {
     const rawId = typeof store.id === 'string' ? store.id : '';
     const rawStore = typeof store.store === 'string' ? store.store : '';
     const normalized = (rawId || rawStore).trim().toLowerCase();
-    return normalized || 'shawq';
+    return normalized || DEFAULT_STORE_ID;
   }
 
-  return 'shawq';
+  return DEFAULT_STORE_ID;
 };
 
 const buildInsightsParams = (store, windowId = DEFAULT_MOMENTUM_WINDOW_ID) => {
@@ -161,16 +162,7 @@ const resolveUpperMetrics = (kpis = []) => {
     getUpperMetricById(kpis, 'repeat-rate'),
     getUpperMetricById(kpis, 'discount-reliance')
   ];
-
-  const fallback = kpis.filter((row) => !ordered.includes(row));
-  const filled = [...ordered];
-  while (filled.length < UPPER_METRIC_SLOT_COUNT && fallback.length) {
-    filled.push(fallback.shift());
-  }
-  while (filled.length < UPPER_METRIC_SLOT_COUNT) {
-    filled.push(null);
-  }
-  return filled.slice(0, UPPER_METRIC_SLOT_COUNT);
+  return ordered.slice(0, UPPER_METRIC_SLOT_COUNT);
 };
 
 const resolveTopBundle = (sections, kpis = []) => {
@@ -274,11 +266,6 @@ function ProductThumbnail({ src, title }) {
   );
 }
 
-function humanizeTrigger(value) {
-  if (!value) return 'N/A';
-  return String(value).replace(/_/g, ' ');
-}
-
 function Sparkline({ points, polarity }) {
   if (!Array.isArray(points) || points.length < 2) {
     return <div className="pm-sparkline-empty">No trend line yet</div>;
@@ -320,6 +307,17 @@ function formatMomentumLabel(value, fallback) {
     .join(' ');
 }
 
+function dedupeMomentumRows(rows, getKey) {
+  const seen = new Set();
+  return (rows || []).filter((row) => {
+    const key = getKey(row);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function MomentumCard({ product, mode }) {
   const hasTrigger = Boolean(product?.trigger);
   const severity = product?.assessment?.severity || null;
@@ -329,28 +327,45 @@ function MomentumCard({ product, mode }) {
   const titleKey = isLayer1
     ? (product?.trigger || 'unknown_trigger')
     : (product?.exceptionalEvent || 'unknown_event');
-  const titleLabel = formatMomentumLabel(
-    titleKey,
-    isLayer1 ? 'Unknown Trigger' : 'Unknown Event'
-  );
   const keyBadgeLabel = formatMomentumLabel(
     titleKey,
     isLayer1 ? 'unknown trigger' : 'unknown event'
   );
-  const layerLabel = isLayer1 ? 'layer_1' : 'layer_2';
+  const layerLabel = isLayer1 ? 'Layer 1' : 'Layer 2';
   const signalLabel = product?.statistical?.signal || null;
   const action = product?.assessment?.action || '';
   const impactClass = polarity === 'risk' ? 'pm-impact-risk' : 'pm-impact-opportunity';
+  const productTitle = (typeof product?.title === 'string' && product.title.trim())
+    ? product.title.trim()
+    : (product?.key ? `Product ${product.key}` : 'Product');
+  const productImage = typeof product?.image_url === 'string' ? product.image_url : '';
+  const productInitial = productTitle.charAt(0).toUpperCase();
 
   return (
     <article className={`pm-card ${polarity} pm-severity-${severity || 'medium'}`}>
       <div className="pm-card-header">
         <div className="pm-card-title-wrap">
-          <h4 className="pm-card-title">{titleLabel}</h4>
+          <div className="pm-product-row">
+            {productImage ? (
+              <img
+                className="pm-thumb"
+                src={productImage}
+                alt={productTitle}
+                loading="lazy"
+              />
+            ) : (
+              <div className="pm-thumb pm-thumb-fallback" aria-hidden="true">
+                {productInitial || 'P'}
+              </div>
+            )}
+            <h4 className="pm-card-title">{productTitle}</h4>
+          </div>
           <div className="pm-card-meta">
             <span className="pm-badge pm-badge-layer">{layerLabel}</span>
             <span className="pm-badge pm-badge-key">{keyBadgeLabel}</span>
-            <span className={`pm-badge pm-badge-polarity pm-badge-${polarity}`}>{polarity}</span>
+            <span className={`pm-badge pm-badge-polarity pm-badge-${polarity}`}>
+              {polarity === 'risk' ? 'Risk' : 'Opportunity'}
+            </span>
             <SignalBadge signal={signalLabel} />
           </div>
         </div>
@@ -424,8 +439,14 @@ function ProductMomentumSection({ store }) {
   }, [store, windowId]);
 
   const activeSection = windowSection;
-  const layer1 = (activeSection?.products || []).filter((row) => row?.trigger);
-  const layer2 = (activeSection?.products || []).filter((row) => row?.exceptionalEvent);
+  const layer1 = dedupeMomentumRows(
+    (activeSection?.products || []).filter((row) => row?.trigger),
+    (row) => `${row?.key || row?.title || ''}::${row?.trigger || ''}`
+  );
+  const layer2 = dedupeMomentumRows(
+    (activeSection?.products || []).filter((row) => row?.exceptionalEvent),
+    (row) => `${row?.key || row?.title || ''}::${row?.exceptionalEvent || ''}`
+  );
   const thresholds = activeSection?.methodology?.thresholds || {};
   const activeSummary = activeSection?.summary || (windowLoading
     ? 'Loading momentum window...'
@@ -513,7 +534,7 @@ function ProductMomentumSection({ store }) {
             <div className="pm-threshold-grid">
               {Object.entries(thresholds).map(([key, value]) => (
                 <div key={key} className="pm-threshold-row">
-                  <span>{humanizeTrigger(key)}</span>
+                  <span>{formatMomentumLabel(key, 'N/A')}</span>
                   <strong>{typeof value === 'number' ? value.toFixed(2) : String(value)}</strong>
                 </div>
               ))}
