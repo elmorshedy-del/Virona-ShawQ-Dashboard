@@ -1600,6 +1600,7 @@ function buildHierarchyMetricSet(totals = {}) {
   if (!totals) {
     return {
       spend: null,
+      purchases: null,
       ctr: null,
       hookRate: null,
       lpvClick: null,
@@ -1636,6 +1637,7 @@ function buildHierarchyMetricSet(totals = {}) {
 
   return {
     spend: round(spend, HIERARCHY_METRIC_DECIMALS.amount),
+    purchases: Math.round(conversions),
     ctr: ctr == null ? null : round(ctr, HIERARCHY_METRIC_DECIMALS.ratio),
     hookRate: null,
     lpvClick: lpvClick == null ? null : round(lpvClick, HIERARCHY_METRIC_DECIMALS.ratio),

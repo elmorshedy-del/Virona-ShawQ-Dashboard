@@ -1,6 +1,9 @@
 import express from 'express';
 import { getCampaignIntelligenceSnapshot } from '../services/campaignIntelligence/service.js';
-import { getCampaignIntelligenceUnifiedSnapshot } from '../services/campaignIntelligence/unifiedService.js';
+import {
+  getCampaignIntelligenceUnifiedEntityTimeline,
+  getCampaignIntelligenceUnifiedSnapshot
+} from '../services/campaignIntelligence/unifiedService.js';
 import {
   buildCampaignIntelligenceBriefScopeKey,
   campaignIntelligenceBriefSource,
@@ -61,6 +64,22 @@ router.get('/unified-snapshot', async (req, res) => {
     res.status(statusCode).json({
       success: false,
       error: error?.message || 'Failed to generate unified campaign intelligence snapshot'
+    });
+  }
+});
+
+router.get('/unified-timeline', async (req, res) => {
+  try {
+    const data = await getCampaignIntelligenceUnifiedEntityTimeline(req.query || {});
+    res.json(data);
+  } catch (error) {
+    const statusCode = Number.isInteger(error?.status) ? error.status : 500;
+    if (statusCode >= 500) {
+      console.error('[CampaignIntelligence] Unified timeline error:', error);
+    }
+    res.status(statusCode).json({
+      success: false,
+      error: error?.message || 'Failed to load unified entity timeline'
     });
   }
 });

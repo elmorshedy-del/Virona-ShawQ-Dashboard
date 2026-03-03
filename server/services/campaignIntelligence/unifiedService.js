@@ -220,6 +220,23 @@ export async function getCampaignIntelligenceUnifiedSnapshot(query = {}) {
     entityId: null
   });
 
+  const baselineCountries = fetchCountryOptions({
+    ...scope,
+    analysisRange: {
+      startDate: baselineRange.startDate,
+      endDate: baselineRange.endDate
+    },
+    level: 'campaign',
+    levelConfig: LEVEL_CONFIG.campaign,
+    entityId: null
+  });
+
+  const baselineCountryByCode = new Map(baselineCountries.map((row) => [row.code, row]));
+  const mergedCountries = countries.map((row) => ({
+    ...row,
+    baseline: baselineCountryByCode.get(row.code) || null
+  }));
+
   const hierarchyRows = fetchUnifiedHierarchyRows({
     db: scope.db,
     store: scope.store,
@@ -263,7 +280,7 @@ export async function getCampaignIntelligenceUnifiedSnapshot(query = {}) {
       anchorSource: baselineRange.source
     },
     selectors: {
-      countries: [{ code: 'ALL', spend: 0, conversions: 0 }, ...countries]
+      countries: [{ code: 'ALL', spend: 0, conversions: 0, baseline: null }, ...mergedCountries]
     },
     summary: {
       analysis: buildMetaAggregationSummary(analysisSeries),
@@ -287,4 +304,55 @@ export async function getCampaignIntelligenceUnifiedSnapshot(query = {}) {
 
   setCached(cacheKey, snapshot);
   return snapshot;
+}
+
+export async function getCampaignIntelligenceUnifiedEntityTimeline(query = {}) {
+  const scope = normalizeCampaignIntelligenceRequest({
+    store: query.store,
+    level: query.level,
+    entityId: query.entityId,
+    country: query.country,
+    startDate: query.startDate,
+    endDate: query.endDate,
+    analysisWindowDays: query.analysisWindowDays,
+    selectorLimit: 10
+  });
+
+  if (!scope.entityId) {
+    const error = new Error('entityId is required');
+    error.status = 400;
+    throw error;
+  }
+
+  const metaRows = fetchDailyMetaRows({
+    db: scope.db,
+    store: scope.store,
+    levelConfig: scope.levelConfig,
+    startDate: scope.analysisRange.startDate,
+    endDate: scope.analysisRange.endDate,
+    entityId: scope.entityId,
+    country: scope.country
+  });
+
+  const series = buildMetaDailySeries({
+    startDate: scope.analysisRange.startDate,
+    endDate: scope.analysisRange.endDate,
+    metaRows
+  });
+
+  return {
+    success: true,
+    generatedAt: new Date().toISOString(),
+    scope: {
+      store: scope.store,
+      level: scope.level,
+      entityId: scope.entityId,
+      country: scope.country,
+      analysisStartDate: scope.analysisRange.startDate,
+      analysisEndDate: scope.analysisRange.endDate
+    },
+    timeline: {
+      daily: series
+    }
+  };
 }
