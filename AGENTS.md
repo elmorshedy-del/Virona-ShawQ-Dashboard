@@ -8,6 +8,8 @@
 - When a new implementation cycle starts after a time gap (or the previous PR is likely merged), open a fresh `codex/*` branch and create a new PR by default.
 - Do not append new work to an older PR unless the user explicitly asks for that.
 - After each commit/update, always provide the PR link in the user-facing status message.
+- Never push new commits to a branch whose PR is already merged.
+- Enforcement is mandatory: before push, run `.githooks/pre-push` guard (or keep `core.hooksPath=.githooks` enabled) so merged-PR branches are blocked.
 
 ## Product context defaults
 - Treat this codebase as a future SaaS, multi-tenant platform.

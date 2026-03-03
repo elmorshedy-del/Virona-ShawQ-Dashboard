@@ -10,6 +10,8 @@
 
 ## Rules
 - PR freshness is mandatory: if there is a gap since the last implementation cycle and the previous PR may have been merged, create a new `codex/*` branch and open a new PR. Do not continue on an old PR by default.
+- Hard prohibition: never push commits to a branch whose PR is already merged.
+- Enforcement: keep `core.hooksPath=.githooks` enabled so `.githooks/pre-push` blocks pushes on merged-PR branches.
 - Always share the active PR link after each commit/update.
 - After every commit, include the PR link in the status update to the user.
 - No magic numbers for thresholds/heuristics. Use named constants/config objects (e.g., `INSIGHT_THRESHOLDS`) so they’re readable, reviewable, and easy to tune later.

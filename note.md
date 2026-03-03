@@ -3,6 +3,8 @@
 ## Engineering rules
 - Always implement on a clean dedicated `codex/*` branch containing only this task's changes.
 - If any meaningful time has elapsed since the previous coding batch (or prior PR may already be merged), start a fresh `codex/*` branch and open a new PR by default. Do not stack new work on an older PR unless explicitly requested.
+- Hard stop: never push to a branch whose PR is already merged.
+- Enforce the hard stop with the repo pre-push guard in `.githooks/pre-push` (configured via `core.hooksPath=.githooks`).
 - After each coding batch commit, always provide the current PR link in the update.
 - Avoid **magic numbers** (especially thresholds/guardrails used for insights). Extract them into named constants or a config object close to the logic, and name them with units/meaning.
 - Avoid hardcoded thresholds/time windows in business logic. Put tunable values in named constants/config so they can be changed safely later.
