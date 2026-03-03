@@ -520,7 +520,7 @@ function ProductMomentumSection({ section, store, dateRange }) {
 
         <div className="pm-layer">
           <div className="pm-layer-head">
-            <h4>Breaking news</h4>
+            <h4>Exceptional events</h4>
             <span>{layer2CountLabel}</span>
           </div>
           {layer2.length ? (
@@ -536,14 +536,14 @@ function ProductMomentumSection({ section, store, dateRange }) {
           ) : (
             <div className="pm-empty">
               {liveLoading
-                ? 'Loading breaking news...'
+                ? 'Loading exceptional events...'
                 : liveError
-                  ? 'Breaking news could not be loaded right now.'
-                  : 'No breaking news is active right now.'}
+                  ? 'Exceptional events could not be loaded right now.'
+                  : 'No exceptional event is active right now.'}
             </div>
           )}
           {liveError ? (
-            <div className="pm-note">Tip: Breaking news uses the live {MOMENTUM_LIVE_WINDOW_DAYS}d monitor and is independent of the dashboard date range.</div>
+            <div className="pm-note">Tip: Exceptional events use the live {MOMENTUM_LIVE_WINDOW_DAYS}d monitor and are independent of the dashboard date range.</div>
           ) : null}
         </div>
       </section>
