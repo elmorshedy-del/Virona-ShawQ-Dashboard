@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react';
 
-const BRIEF_ENDPOINT_GENERATE = '/api/campaign-intelligence/brief/generate';
+const BRIEF_ENDPOINT_GENERATE = '/api/campaign-intelligence/unified-brief/generate';
 const BRIEF_ENDPOINT_SETTINGS = '/api/campaign-intelligence/brief/settings';
 const TYPOGRAPHY_HEADING = '"Space Grotesk", "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif';
 
@@ -168,11 +168,13 @@ const CROSS_ENTITY_INSIGHT_LIMIT = 5;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function toFiniteNumber(value, fallback = 0) {
+  if (value == null || value === '') return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function parseNullableNumber(value) {
+  if (value == null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -192,7 +194,7 @@ function safeDivide(numerator, denominator) {
   const top = Number(numerator);
   const bottom = Number(denominator);
   if (!Number.isFinite(top) || !Number.isFinite(bottom) || Math.abs(bottom) < CHART_EPSILON) {
-    return 0;
+    return null;
   }
   return top / bottom;
 }
@@ -297,9 +299,8 @@ function metricDeltaRatio(metricKey, current, baseline) {
 
 function resolveCellStatus(metricKey, current, baseline, targetRoas) {
   const now = parseNullableNumber(current);
-  const base = parseNullableNumber(baseline);
-  if (!Number.isFinite(now) || !Number.isFinite(base) || Math.abs(base) < CHART_EPSILON) {
-    return { code: 'insufficient', note: 'Insufficient baseline' };
+  if (!Number.isFinite(now)) {
+    return { code: 'insufficient', note: 'Insufficient data' };
   }
 
   if (metricKey === 'roas') {
@@ -327,6 +328,11 @@ function resolveCellStatus(metricKey, current, baseline, targetRoas) {
     if (now >= floor * 0.9) return { code: 'caution', note: 'Near floor' };
     if (now >= floor * 0.75) return { code: 'bad', note: 'Below floor' };
     return { code: 'critical', note: 'Far below floor' };
+  }
+
+  const base = parseNullableNumber(baseline);
+  if (!Number.isFinite(base) || Math.abs(base) < CHART_EPSILON) {
+    return { code: 'insufficient', note: 'Insufficient baseline' };
   }
 
   const effectiveDeltaRatio = metricDeltaRatio(metricKey, now, base);
@@ -378,33 +384,51 @@ function computeHealthScore(row, targetRoas) {
   const ctrNow = rowMetric(row, 'ctr', 'now');
   const ctrBase = rowMetric(row, 'ctr', 'baseline');
 
-  const roasVsTarget = Number.isFinite(roasNow)
-    ? clamp(roasNow / Math.max(0.1, targetRoas), 0, 1.4)
-    : 0;
-  const roasVsBaseline = Number.isFinite(roasNow) && Number.isFinite(roasBase) && roasBase > 0
-    ? clamp(roasNow / roasBase, 0, 1.4)
-    : 0;
-  const purchaseIcScore = Number.isFinite(purchaseIcNow)
-    ? clamp(purchaseIcNow / KEY_METRIC_BOUNDS.purchaseIcFloorRate, 0, 1.4)
-    : 0;
-  const cpmScore = Number.isFinite(cpmNow) && Number.isFinite(cpmBase) && cpmBase > 0
-    ? clamp(cpmBase / Math.max(cpmNow, CHART_EPSILON), 0, 1.4)
-    : 0;
-  const ctrScore = Number.isFinite(ctrNow) && Number.isFinite(ctrBase) && ctrBase > 0
-    ? clamp(ctrNow / ctrBase, 0, 1.4)
-    : 0;
-
   const weights = HEALTH_RULES.weights;
-  const weighted = (
-    (roasVsTarget * weights.roasVsTarget) +
-    (roasVsBaseline * weights.roasVsBaseline) +
-    (purchaseIcScore * weights.purchaseIc) +
-    (cpmScore * weights.cpmPressure) +
-    (ctrScore * weights.ctrResilience)
-  ) / Math.max(
-    CHART_EPSILON,
-    weights.roasVsTarget + weights.roasVsBaseline + weights.purchaseIc + weights.cpmPressure + weights.ctrResilience
-  );
+  const components = [];
+
+  if (Number.isFinite(roasNow)) {
+    components.push({
+      score: clamp(roasNow / Math.max(0.1, targetRoas), 0, 1.4),
+      weight: weights.roasVsTarget
+    });
+  }
+
+  if (Number.isFinite(roasNow) && Number.isFinite(roasBase) && roasBase > 0) {
+    components.push({
+      score: clamp(roasNow / roasBase, 0, 1.4),
+      weight: weights.roasVsBaseline
+    });
+  }
+
+  if (Number.isFinite(purchaseIcNow)) {
+    components.push({
+      score: clamp(purchaseIcNow / KEY_METRIC_BOUNDS.purchaseIcFloorRate, 0, 1.4),
+      weight: weights.purchaseIc
+    });
+  }
+
+  if (Number.isFinite(cpmNow) && Number.isFinite(cpmBase) && cpmBase > 0) {
+    components.push({
+      score: clamp(cpmBase / Math.max(cpmNow, CHART_EPSILON), 0, 1.4),
+      weight: weights.cpmPressure
+    });
+  }
+
+  if (Number.isFinite(ctrNow) && Number.isFinite(ctrBase) && ctrBase > 0) {
+    components.push({
+      score: clamp(ctrNow / ctrBase, 0, 1.4),
+      weight: weights.ctrResilience
+    });
+  }
+
+  if (!components.length) {
+    return 0;
+  }
+
+  const totalWeight = components.reduce((sum, component) => sum + component.weight, 0);
+  const weighted = components.reduce((sum, component) => sum + (component.score * component.weight), 0)
+    / Math.max(CHART_EPSILON, totalWeight);
 
   return clamp(Math.round(weighted * 100), 0, 100);
 }
@@ -839,37 +863,26 @@ async function readJsonResponse(response) {
 }
 
 function buildBriefScopeFromAnalysis(analysisParams = {}) {
+  const normalizedCountry = String(analysisParams.country || 'ALL').trim().toUpperCase() || 'ALL';
   return {
-    level: analysisParams.level,
-    entityId: analysisParams.entityId || null,
-    country: analysisParams.country || 'ALL',
+    level: 'campaign',
+    entityId: null,
+    country: normalizedCountry,
     startDate: analysisParams.startDate || null,
     endDate: analysisParams.endDate || null,
-    anchorDays: analysisParams.anchorDays,
-    anchorStartDate: analysisParams.anchorStartDate || null,
-    anchorEndDate: analysisParams.anchorEndDate || null
+    analysisWindowDays: analysisParams.analysisWindowDays || null,
+    selectorLimit: analysisParams.selectorLimit || null
   };
 }
 
 function buildGeneratePayload({ storeId, analysisParams, provider, model, reasoningEffort, verbosity }) {
   return {
     store: storeId,
-    level: analysisParams.level,
-    entityId: analysisParams.entityId || undefined,
     country: analysisParams.country,
     startDate: analysisParams.startDate || undefined,
     endDate: analysisParams.endDate || undefined,
-    anchorWindowDays: analysisParams.anchorDays,
-    anchorStartDate: analysisParams.anchorStartDate || undefined,
-    anchorEndDate: analysisParams.anchorEndDate || undefined,
-    sentinelPreset: analysisParams.sentinelPreset,
-    headroomPreset: analysisParams.headroomPreset,
-    launchPreset: analysisParams.launchPreset,
-    launchMinDays: analysisParams.launchMinDays || undefined,
-    launchMaxDays: analysisParams.launchMaxDays || undefined,
-    targetRoas: analysisParams.targetRoas,
-    targetCpa: analysisParams.targetCpa || undefined,
-    targetHorizonDays: analysisParams.targetHorizonDays,
+    analysisWindowDays: analysisParams.analysisWindowDays || undefined,
+    selectorLimit: analysisParams.selectorLimit || undefined,
     provider,
     model,
     reasoningEffort,
@@ -913,6 +926,17 @@ export default function CampaignIntelligenceUnifiedSection({
   onSnapshotUpdate,
   onAnalysisParamsChange
 }) {
+  if (!snapshot || snapshot?.success === false) {
+    return (
+      <div className="rounded-2xl border border-[#dfe5ff] bg-white p-6">
+        <div className="inline-flex items-center gap-2 text-sm text-slate-600">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading Unified Manager…
+        </div>
+      </div>
+    );
+  }
+
   const hierarchyRows = Array.isArray(snapshot?.hierarchy?.rows) ? snapshot.hierarchy.rows : [];
 
   const [expandedIds, setExpandedIds] = useState(() => new Set());
@@ -937,12 +961,23 @@ export default function CampaignIntelligenceUnifiedSection({
   const [manualBrief, setManualBrief] = useState(null);
 
   useEffect(() => {
-    const defaultExpanded = new Set(
-      hierarchyRows
+    if (!hierarchyRows.length) {
+      setExpandedIds(new Set());
+      return;
+    }
+
+    setExpandedIds((previous) => {
+      if (previous && previous.size > 0) return previous;
+
+      const defaultExpanded = hierarchyRows
         .filter((row) => row.level === 'campaign')
-        .map((row) => row.id)
-    );
-    setExpandedIds(defaultExpanded);
+        .slice()
+        .sort((left, right) => toFiniteNumber(right?.metrics?.now?.spend, 0) - toFiniteNumber(left?.metrics?.now?.spend, 0))
+        .slice(0, 3)
+        .map((row) => row.id);
+
+      return new Set(defaultExpanded);
+    });
   }, [hierarchyRows]);
 
   useEffect(() => {
@@ -1069,10 +1104,10 @@ export default function CampaignIntelligenceUnifiedSection({
         checkoutsInitiated: toFiniteNumber(row?.checkoutsInitiated, 0),
         clicks: toFiniteNumber(row?.clicks, 0),
         impressions: toFiniteNumber(row?.impressions, 0),
-        cpm: toFiniteNumber(row?.cpm, 0),
-        costAtc: toFiniteNumber(row?.costAtc, 0),
-        purchaseIc: toFiniteNumber(row?.purchaseIc, 0),
-        roas: toFiniteNumber(row?.roas, 0)
+        cpm: parseNullableNumber(row?.cpm),
+        costAtc: parseNullableNumber(row?.costAtc),
+        purchaseIc: parseNullableNumber(row?.purchaseIc),
+        roas: parseNullableNumber(row?.roas)
       }))
       .filter((row) => row.code);
 
@@ -1098,10 +1133,10 @@ export default function CampaignIntelligenceUnifiedSection({
         checkoutsInitiated: 0,
         clicks: 0,
         impressions: 0,
-        cpm: 0,
-        costAtc: 0,
-        purchaseIc: 0,
-        roas: 0,
+        cpm: null,
+        costAtc: null,
+        purchaseIc: null,
+        roas: null,
         flag: ''
       });
     }
@@ -1198,12 +1233,27 @@ export default function CampaignIntelligenceUnifiedSection({
   }, [snapshot?.scope?.anchorSource]);
 
   const countryHealthRows = useMemo(() => {
+    const anchorTotals = snapshot?.summary?.anchor?.totals || {};
+    const anchorRates = snapshot?.summary?.anchor?.rates || {};
+    const anchorRoas = parseNullableNumber(anchorRates.roas);
+    const anchorCtr = parseNullableNumber(anchorRates.ctr);
+    const anchorCpm = parseNullableNumber(anchorRates.cpm);
+    const anchorSpend = parseNullableNumber(anchorTotals.spend);
+    const anchorAddToCart = parseNullableNumber(anchorTotals.addToCart);
+    const anchorCheckoutsInitiated = parseNullableNumber(anchorTotals.checkoutsInitiated);
+    const anchorConversions = parseNullableNumber(anchorTotals.conversions);
+    const anchorCostAtc = anchorSpend != null && anchorAddToCart != null ? safeDivide(anchorSpend, anchorAddToCart) : null;
+    const anchorPurchaseIc = anchorConversions != null && anchorCheckoutsInitiated != null
+      ? safeDivide(anchorConversions, anchorCheckoutsInitiated)
+      : null;
+
     const rows = countryOptions
       .filter((row) => row.code !== 'ALL')
       .map((row) => {
         const roas = row.roas > 0 ? row.roas : safeDivide(row.conversionValue, row.spend);
         const costAtc = row.costAtc > 0 ? row.costAtc : safeDivide(row.spend, row.addToCart);
         const purchaseIc = row.purchaseIc > 0 ? row.purchaseIc : safeDivide(row.conversions, row.checkoutsInitiated);
+        const ctr = safeDivide(row.clicks, row.impressions);
 
         const pseudoRow = {
           metrics: {
@@ -1211,18 +1261,16 @@ export default function CampaignIntelligenceUnifiedSection({
               roas,
               costAtc,
               purchaseIc,
-              ctr: safeDivide(row.clicks, row.impressions),
+              ctr,
               cpm: row.cpm,
               spend: row.spend
             },
             baseline: {
-              roas: toFiniteNumber(snapshot?.summary?.anchor?.rates?.roas, roas),
-              costAtc: toFiniteNumber(snapshot?.summary?.anchor?.totals?.spend, 0) > 0
-                ? safeDivide(toFiniteNumber(snapshot?.summary?.anchor?.totals?.spend, 0), Math.max(1, toFiniteNumber(snapshot?.summary?.anchor?.totals?.landingPageViews, 0)))
-                : costAtc,
-              purchaseIc: KEY_METRIC_BOUNDS.purchaseIcFloorRate,
-              ctr: toFiniteNumber(snapshot?.summary?.anchor?.rates?.ctr, 0),
-              cpm: toFiniteNumber(snapshot?.summary?.anchor?.rates?.cpm, row.cpm)
+              roas: anchorRoas != null ? anchorRoas : roas,
+              costAtc: anchorCostAtc != null ? anchorCostAtc : costAtc,
+              purchaseIc: anchorPurchaseIc != null ? anchorPurchaseIc : KEY_METRIC_BOUNDS.purchaseIcFloorRate,
+              ctr: anchorCtr != null ? anchorCtr : ctr,
+              cpm: anchorCpm != null ? anchorCpm : row.cpm
             }
           }
         };
@@ -1438,8 +1486,7 @@ export default function CampaignIntelligenceUnifiedSection({
     setToolbarCountryCode(normalizedCode);
     if (typeof onAnalysisParamsChange === 'function') {
       onAnalysisParamsChange({
-        country: normalizedCode,
-        entityId: ''
+        country: normalizedCode
       });
     }
   }, [onAnalysisParamsChange]);

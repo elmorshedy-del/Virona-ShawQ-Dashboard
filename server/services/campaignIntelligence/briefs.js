@@ -19,6 +19,7 @@ const BRIEF_SOURCE_DAILY = 'daily';
 const EMPTY_ENTITY_SCOPE_VALUE = 'all';
 const ALL_COUNTRIES_SCOPE_VALUE = 'ALL';
 const JSON_CODE_BLOCK_PATTERN = /```json\s*([\s\S]*?)```/i;
+const RAW_OUTPUT_SNIPPET_MAX_CHARS = 600;
 
 function hasConfiguredEnvKey(envName) {
   const value = process.env[envName];
@@ -451,8 +452,10 @@ function buildBriefPromptPayload(snapshot) {
   const summary = snapshot?.summary || {};
   const analysis = summary.analysis || {};
   const anchor = summary.anchor || {};
+  const hasModels = Boolean(snapshot?.models);
+  const hasBudgetMonitor = Boolean(snapshot?.budgetMonitor);
 
-  return {
+  const payload = {
     scope: snapshot?.scope || null,
     analysisSummary: {
       totals: analysis.totals || {},
@@ -463,10 +466,14 @@ function buildBriefPromptPayload(snapshot) {
       rates: anchor.rates || {}
     },
     lifecycle: snapshot?.selectors?.lifecycle || null,
-    topDrivers: Array.isArray(snapshot?.models?.topDrivers)
+    hierarchyRows: buildCompactHierarchyRows(snapshot?.hierarchy?.rows || [])
+  };
+
+  if (hasModels) {
+    payload.topDrivers = Array.isArray(snapshot?.models?.topDrivers)
       ? snapshot.models.topDrivers.slice(0, BRIEF_PROMPT_CONFIG.maxTopDrivers)
-      : [],
-    modelReadouts: {
+      : [];
+    payload.modelReadouts = {
       sentinel: {
         status: snapshot?.models?.sentinel?.status || null,
         summary: snapshot?.models?.sentinel?.summary || '',
@@ -488,16 +495,20 @@ function buildBriefPromptPayload(snapshot) {
         hitTargetRoas: toFiniteNumber(snapshot?.models?.launchJudge?.probabilities?.hitTargetRoas),
         hitTargetCpa: toFiniteNumber(snapshot?.models?.launchJudge?.probabilities?.hitTargetCpa)
       }
-    },
-    budgetMonitor: {
+    };
+  }
+
+  if (hasBudgetMonitor) {
+    payload.budgetMonitor = {
       hasEvent: Boolean(snapshot?.budgetMonitor?.hasEvent),
       latest: snapshot?.budgetMonitor?.latest || null,
       metrics: Array.isArray(snapshot?.budgetMonitor?.metrics)
         ? snapshot.budgetMonitor.metrics.slice(0, 8)
         : []
-    },
-    hierarchyRows: buildCompactHierarchyRows(snapshot?.hierarchy?.rows || [])
-  };
+    };
+  }
+
+  return payload;
 }
 
 function buildSystemPrompt() {
@@ -558,15 +569,56 @@ function parseBriefJson(text) {
   }
 }
 
+function coerceSummaryEmbeddedBrief(parsed) {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  const embedded = String(parsed.executiveSummary || '').trim();
+  if (!embedded.startsWith('{') || !embedded.includes('"executiveSummary"')) {
+    return parsed;
+  }
+
+  const parsedEmbedded = parseBriefJson(embedded);
+  if (!parsedEmbedded || typeof parsedEmbedded !== 'object') {
+    return parsed;
+  }
+
+  return {
+    ...parsedEmbedded,
+    ...parsed,
+    executiveSummary: String(parsedEmbedded.executiveSummary || '').trim() || String(parsed.executiveSummary || '').trim(),
+    toWatch: Array.isArray(parsed.toWatch) && parsed.toWatch.length ? parsed.toWatch : parsedEmbedded.toWatch,
+    toDo: Array.isArray(parsed.toDo) && parsed.toDo.length ? parsed.toDo : parsedEmbedded.toDo,
+    draggers: Array.isArray(parsed.draggers) && parsed.draggers.length ? parsed.draggers : parsedEmbedded.draggers,
+    creativePriorities: Array.isArray(parsed.creativePriorities) && parsed.creativePriorities.length
+      ? parsed.creativePriorities
+      : parsedEmbedded.creativePriorities,
+    notes: Array.isArray(parsed.notes) && parsed.notes.length ? parsed.notes : parsedEmbedded.notes
+  };
+}
+
 function normalizeList(input, mapper) {
   if (!Array.isArray(input)) return [];
   return input.map(mapper).filter(Boolean);
 }
 
 function normalizeReportShape(parsed, fallbackText = '') {
-  const report = parsed && typeof parsed === 'object' ? parsed : {};
+  const report = parsed && typeof parsed === 'object' ? parsed : null;
+  if (!report) {
+    const raw = String(fallbackText || '').trim();
+    const snippet = raw
+      ? raw.slice(0, RAW_OUTPUT_SNIPPET_MAX_CHARS) + (raw.length > RAW_OUTPUT_SNIPPET_MAX_CHARS ? '…' : '')
+      : '';
 
-  const executiveSummary = String(report.executiveSummary || '').trim() || fallbackText || 'No summary was produced.';
+    return {
+      executiveSummary: 'LLM returned invalid JSON. Retry generation to get a structured brief.',
+      toWatch: [],
+      toDo: [],
+      draggers: [],
+      creativePriorities: [],
+      notes: snippet ? [`Raw output (truncated): ${snippet}`] : []
+    };
+  }
+
+  const executiveSummary = String(report.executiveSummary || '').trim() || 'No summary was produced.';
 
   return {
     executiveSummary,
@@ -742,7 +794,7 @@ export async function generateCampaignIntelligenceBrief({
     userPrompt
   });
 
-  const parsedReport = parseBriefJson(response.text);
+  const parsedReport = coerceSummaryEmbeddedBrief(parseBriefJson(response.text));
   const normalizedReport = normalizeReportShape(parsedReport, response.text);
   const outputTokens = estimateTokenCount(response.text);
   const estimatedCostUsd = estimateRunCostUsd({
