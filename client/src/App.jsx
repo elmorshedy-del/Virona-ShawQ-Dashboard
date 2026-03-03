@@ -5057,7 +5057,7 @@ function DashboardTab({
   );
 
   const burnSummary = useMemo(() => {
-    if (!hasBudgetPacing || totalBudgetSpend <= 0 || totalHourlyOrders <= 0) {
+    if (!hasBudgetPacing || totalBudgetSpend <= 0) {
       return {
         burnAmount: 0,
         burnRatePercent: 0,
@@ -5065,19 +5065,19 @@ function DashboardTab({
       };
     }
 
-    const burnWindows = hourlyChartData
-      .filter((point) => point?.isBurnWindow && toNumber(point?.burnAmount) > 0)
+    const positiveBurnRows = hourlyChartData
+      .filter((point) => toNumber(point?.burnAmount) > 0)
       .sort((a, b) => toNumber(b?.burnAmount) - toNumber(a?.burnAmount));
 
-    const burnAmount = burnWindows.reduce((sum, point) => sum + toNumber(point?.burnAmount), 0);
+    const burnAmount = positiveBurnRows.reduce((sum, point) => sum + toNumber(point?.burnAmount), 0);
     const burnRatePercent = totalBudgetSpend > 0 ? ((burnAmount / totalBudgetSpend) * 100) : 0;
 
     return {
       burnAmount,
       burnRatePercent,
-      topBurnWindows: burnWindows.slice(0, TIME_OF_DAY_BURN_SUMMARY_LIMIT)
+      topBurnWindows: positiveBurnRows.slice(0, TIME_OF_DAY_BURN_SUMMARY_LIMIT)
     };
-  }, [hasBudgetPacing, totalBudgetSpend, totalHourlyOrders, hourlyChartData]);
+  }, [hasBudgetPacing, totalBudgetSpend, hourlyChartData]);
 
   const currentHourInTimeOfDayTimezone = useMemo(() => {
     try {
@@ -5108,7 +5108,7 @@ function DashboardTab({
       ? Number(point.budgetPacingPercent)
       : null;
     const burnValue = toNumber(point?.burnAmount);
-    const isBurnWindow = Boolean(point?.isBurnWindow && burnValue > 0);
+    const hasBurnValue = burnValue > 0;
 
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm">
@@ -5136,7 +5136,7 @@ function DashboardTab({
               Burn estimate
             </span>
             <span className="font-semibold text-gray-900">
-              {isBurnWindow ? formatCurrency(burnValue) : '—'}
+              {hasBurnValue ? formatCurrency(burnValue) : '—'}
             </span>
           </div>
         </div>
