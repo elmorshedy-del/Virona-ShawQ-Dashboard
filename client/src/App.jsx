@@ -5139,10 +5139,10 @@ function DashboardTab({
       const isSevereDirectionalBurn = isDirectionalBurn && burnToBenefitRatio > 1;
       const directionalSignalScore = isDirectionalBurn
         ? point.burnAmount
-          * Math.max(underperformanceGap || 0, TIME_OF_DAY_DIRECTIONAL_BURN_EFFECT_FLOOR)
+          * underperformanceGap
           * Math.max(
             0,
-            1 - ((adjustedPValue ?? TIME_OF_DAY_DIRECTIONAL_BURN_FDR_ALPHA) / TIME_OF_DAY_DIRECTIONAL_BURN_FDR_ALPHA)
+            1 - (adjustedPValue / TIME_OF_DAY_DIRECTIONAL_BURN_FDR_ALPHA)
           )
         : 0;
 
