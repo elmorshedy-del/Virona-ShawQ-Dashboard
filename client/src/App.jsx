@@ -217,9 +217,14 @@ const DEFAULT_FUNNEL_BASELINE_OPTION = FUNNEL_BASELINE_OPTIONS.find(
   (option) => option.value === DEFAULT_FUNNEL_BASELINE_MODE
 ) || FUNNEL_BASELINE_OPTIONS[0];
 const TIME_OF_DAY_BURN_MARKER_COLOR = '#dc2626';
-const TIME_OF_DAY_BURN_GAP_THRESHOLD_PERCENT = 1.5;
-const TIME_OF_DAY_BURN_MIN_PACING_INCREMENT_PERCENT = 0.75;
+const TIME_OF_DAY_SEVERE_BURN_MARKER_COLOR = '#7f1d1d';
 const TIME_OF_DAY_BURN_SUMMARY_LIMIT = 3;
+const TIME_OF_DAY_DIRECTIONAL_BURN_FDR_ALPHA = 0.1;
+const TIME_OF_DAY_DIRECTIONAL_BURN_MIN_EXPECTED_ORDERS = 2;
+const TIME_OF_DAY_DIRECTIONAL_BURN_MIN_SPEND_SHARE = 0.02;
+const TIME_OF_DAY_DIRECTIONAL_BURN_EFFECT_FLOOR = 0.15;
+const TIME_OF_DAY_MIN_TOTAL_ORDERS_FOR_DIRECTIONAL = 30;
+const TIME_OF_DAY_NORMAL_CDF_SQRT_TWO = Math.sqrt(2);
 
 const toNumber = (value) => {
   if (typeof value === 'number') return value;
@@ -243,6 +248,47 @@ const formatHourOfDayLabel = (hour) => {
   if (normalizedHour < 12) return `${normalizedHour} AM`;
   if (normalizedHour === 12) return '12 PM';
   return `${normalizedHour - 12} PM`;
+};
+
+const approximateErrorFunction = (value) => {
+  const sign = value < 0 ? -1 : 1;
+  const absoluteValue = Math.abs(value);
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+  const t = 1 / (1 + p * absoluteValue);
+  const polynomial = ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t;
+  return sign * (1 - polynomial * Math.exp(-(absoluteValue * absoluteValue)));
+};
+
+const standardNormalSurvival = (zValue) => {
+  if (!Number.isFinite(zValue)) return 1;
+  const cdf = 0.5 * (1 + approximateErrorFunction(zValue / TIME_OF_DAY_NORMAL_CDF_SQRT_TWO));
+  return Math.max(0, Math.min(1, 1 - cdf));
+};
+
+const computeBenjaminiHochbergAdjustedPValues = (entries) => {
+  const sortedEntries = [...entries]
+    .filter((entry) => Number.isFinite(entry?.pValue))
+    .sort((first, second) => first.pValue - second.pValue);
+  const adjustedByKey = new Map();
+  const totalTests = sortedEntries.length;
+  if (totalTests === 0) return adjustedByKey;
+
+  let previousAdjusted = 1;
+  for (let index = totalTests - 1; index >= 0; index -= 1) {
+    const rank = index + 1;
+    const rawAdjusted = (sortedEntries[index].pValue * totalTests) / rank;
+    const boundedAdjusted = Math.max(0, Math.min(1, rawAdjusted));
+    const monotonicAdjusted = Math.min(previousAdjusted, boundedAdjusted);
+    adjustedByKey.set(sortedEntries[index].key, monotonicAdjusted);
+    previousAdjusted = monotonicAdjusted;
+  }
+
+  return adjustedByKey;
 };
 
 const getGmt3ResetHourInTimezone = (timezone, referenceDate = new Date()) => {
@@ -4995,18 +5041,22 @@ function DashboardTab({
       const orders = toNumber(point?.orders);
       const budgetSpend = toNumber(point?.budgetSpend);
       const orderSharePercent = totalOrders > 0 ? ((orders / totalOrders) * 100) : 0;
-      const expectedSpend = totalBudgetSpend > 0
+      const fairSpendForOrders = totalBudgetSpend > 0
         ? totalBudgetSpend * (orderSharePercent / 100)
         : 0;
-      const burnAmount = Math.max(0, budgetSpend - expectedSpend);
+      const burnAmount = Math.max(0, budgetSpend - fairSpendForOrders);
+      const benefitAmount = Math.min(budgetSpend, fairSpendForOrders);
 
       return {
         ...point,
         hour,
         hourLabel: point?.label || formatHourOfDayLabel(hour),
+        orders,
         budgetSpend,
         orderSharePercent,
+        fairSpendForOrders,
         burnAmount,
+        benefitAmount,
         budgetDayOrder: normalizeHourOfDay(hour - gmt3ResetHourInZone)
       };
     });
@@ -5015,6 +5065,29 @@ function DashboardTab({
       ? [...enrichedData].sort((a, b) => a.budgetDayOrder - b.budgetDayOrder)
       : enrichedData;
 
+    const directionalTestEntries = hasBudgetPacing
+      && totalBudgetSpend > 0
+      && totalOrders >= TIME_OF_DAY_MIN_TOTAL_ORDERS_FOR_DIRECTIONAL
+      ? orderedData.map((point) => {
+        const spendShare = point.budgetSpend / totalBudgetSpend;
+        const expectedOrders = totalOrders * spendShare;
+        const zScore = expectedOrders > 0
+          ? (expectedOrders - point.orders) / Math.sqrt(expectedOrders)
+          : null;
+        const pValue = Number.isFinite(zScore)
+          ? standardNormalSurvival(zScore)
+          : null;
+        const isEligibleForTesting = expectedOrders >= TIME_OF_DAY_DIRECTIONAL_BURN_MIN_EXPECTED_ORDERS
+          && spendShare >= TIME_OF_DAY_DIRECTIONAL_BURN_MIN_SPEND_SHARE;
+        return {
+          key: point.hour,
+          pValue,
+          isEligibleForTesting
+        };
+      }).filter((entry) => entry.isEligibleForTesting && Number.isFinite(entry.pValue))
+      : [];
+
+    const adjustedPValuesByHour = computeBenjaminiHochbergAdjustedPValues(directionalTestEntries);
     let cumulativeBudgetSpend = 0;
 
     return orderedData.map((point) => {
@@ -5028,26 +5101,66 @@ function DashboardTab({
         budgetPacingPercent = (cumulativeBudgetSpend / totalBudgetSpend) * 100;
       }
 
-      const pacingGapPercent = Number.isFinite(pacingIncrementPercent)
-        ? (pacingIncrementPercent - point.orderSharePercent)
+      const spendShare = hasBudgetPacing && totalBudgetSpend > 0
+        ? point.budgetSpend / totalBudgetSpend
         : null;
-
-      const isBurnWindow = Boolean(
+      const expectedOrders = hasBudgetPacing && totalBudgetSpend > 0
+        ? totalOrders * (spendShare || 0)
+        : null;
+      const efficiencyRatio = Number.isFinite(expectedOrders) && expectedOrders > 0
+        ? point.orders / expectedOrders
+        : null;
+      const underperformanceGap = Number.isFinite(efficiencyRatio)
+        ? Math.max(0, 1 - efficiencyRatio)
+        : null;
+      const zScore = Number.isFinite(expectedOrders) && expectedOrders > 0
+        ? (expectedOrders - point.orders) / Math.sqrt(expectedOrders)
+        : null;
+      const pValue = Number.isFinite(zScore)
+        ? standardNormalSurvival(zScore)
+        : null;
+      const adjustedPValue = adjustedPValuesByHour.get(point.hour) ?? null;
+      const isDirectionalBurn = Boolean(
         hasBudgetPacing
-        && totalOrders > 0
-        && Number.isFinite(pacingIncrementPercent)
-        && Number.isFinite(pacingGapPercent)
-        && pacingIncrementPercent >= TIME_OF_DAY_BURN_MIN_PACING_INCREMENT_PERCENT
-        && pacingGapPercent >= TIME_OF_DAY_BURN_GAP_THRESHOLD_PERCENT
+        && totalOrders >= TIME_OF_DAY_MIN_TOTAL_ORDERS_FOR_DIRECTIONAL
+        && Number.isFinite(spendShare)
+        && spendShare >= TIME_OF_DAY_DIRECTIONAL_BURN_MIN_SPEND_SHARE
+        && Number.isFinite(expectedOrders)
+        && expectedOrders >= TIME_OF_DAY_DIRECTIONAL_BURN_MIN_EXPECTED_ORDERS
+        && Number.isFinite(efficiencyRatio)
+        && efficiencyRatio <= (1 - TIME_OF_DAY_DIRECTIONAL_BURN_EFFECT_FLOOR)
+        && Number.isFinite(adjustedPValue)
+        && adjustedPValue <= TIME_OF_DAY_DIRECTIONAL_BURN_FDR_ALPHA
         && point.burnAmount > 0
       );
+      const burnToBenefitRatio = point.benefitAmount > EPSILON
+        ? point.burnAmount / point.benefitAmount
+        : (point.burnAmount > 0 ? Number.POSITIVE_INFINITY : 0);
+      const isSevereDirectionalBurn = isDirectionalBurn && burnToBenefitRatio > 1;
+      const directionalSignalScore = isDirectionalBurn
+        ? point.burnAmount
+          * Math.max(underperformanceGap || 0, TIME_OF_DAY_DIRECTIONAL_BURN_EFFECT_FLOOR)
+          * Math.max(
+            0,
+            1 - ((adjustedPValue ?? TIME_OF_DAY_DIRECTIONAL_BURN_FDR_ALPHA) / TIME_OF_DAY_DIRECTIONAL_BURN_FDR_ALPHA)
+          )
+        : 0;
 
       return {
         ...point,
         budgetPacingPercent,
         pacingIncrementPercent,
-        pacingGapPercent,
-        isBurnWindow
+        expectedOrders,
+        efficiencyRatio,
+        underperformanceGap,
+        zScore,
+        pValue,
+        adjustedPValue,
+        burnToBenefitRatio,
+        isDirectionalBurn,
+        isSevereDirectionalBurn,
+        directionalSignalScore,
+        isBurnWindow: isDirectionalBurn
       };
     });
   }, [timeOfDayData, hasBudgetPacing, totalBudgetSpend, gmt3ResetHourInZone, timeOfDayAlignmentMode]);
@@ -5062,6 +5175,10 @@ function DashboardTab({
       return {
         burnAmount: 0,
         burnRatePercent: 0,
+        directionalBurnAmount: 0,
+        directionalBurnRatePercent: 0,
+        severeDirectionalBurnAmount: 0,
+        directionalBurnHours: 0,
         topBurnWindows: []
       };
     }
@@ -5069,14 +5186,33 @@ function DashboardTab({
     const positiveBurnRows = hourlyChartData
       .filter((point) => toNumber(point?.burnAmount) > 0)
       .sort((a, b) => toNumber(b?.burnAmount) - toNumber(a?.burnAmount));
+    const directionalBurnRows = hourlyChartData
+      .filter((point) => point?.isDirectionalBurn && toNumber(point?.burnAmount) > 0)
+      .sort((a, b) => {
+        const scoreDelta = toNumber(b?.directionalSignalScore) - toNumber(a?.directionalSignalScore);
+        if (Math.abs(scoreDelta) > EPSILON) return scoreDelta;
+        return toNumber(b?.burnAmount) - toNumber(a?.burnAmount);
+      });
+    const severeDirectionalBurnRows = directionalBurnRows
+      .filter((point) => point?.isSevereDirectionalBurn);
 
     const burnAmount = positiveBurnRows.reduce((sum, point) => sum + toNumber(point?.burnAmount), 0);
+    const directionalBurnAmount = directionalBurnRows.reduce((sum, point) => sum + toNumber(point?.burnAmount), 0);
+    const severeDirectionalBurnAmount = severeDirectionalBurnRows
+      .reduce((sum, point) => sum + toNumber(point?.burnAmount), 0);
     const burnRatePercent = totalBudgetSpend > 0 ? ((burnAmount / totalBudgetSpend) * 100) : 0;
+    const directionalBurnRatePercent = totalBudgetSpend > 0
+      ? ((directionalBurnAmount / totalBudgetSpend) * 100)
+      : 0;
 
     return {
       burnAmount,
       burnRatePercent,
-      topBurnWindows: positiveBurnRows.slice(0, TIME_OF_DAY_BURN_SUMMARY_LIMIT)
+      directionalBurnAmount,
+      directionalBurnRatePercent,
+      severeDirectionalBurnAmount,
+      directionalBurnHours: directionalBurnRows.length,
+      topBurnWindows: directionalBurnRows.slice(0, TIME_OF_DAY_BURN_SUMMARY_LIMIT)
     };
   }, [hasBudgetPacing, totalBudgetSpend, hourlyChartData]);
 
@@ -5112,6 +5248,18 @@ function DashboardTab({
       : null;
     const burnValue = toNumber(point?.burnAmount);
     const hasBurnValue = burnValue > 0;
+    const efficiencyRatio = Number.isFinite(point?.efficiencyRatio)
+      ? Number(point.efficiencyRatio)
+      : null;
+    const adjustedPValue = Number.isFinite(point?.adjustedPValue)
+      ? Number(point.adjustedPValue)
+      : null;
+    const burnToBenefitRatio = Number.isFinite(point?.burnToBenefitRatio)
+      ? Number(point.burnToBenefitRatio)
+      : null;
+    const signalLabel = point?.isSevereDirectionalBurn
+      ? 'Directional burn (burn > benefit)'
+      : (point?.isDirectionalBurn ? 'Directional burn (stat-significant)' : 'No directional burn signal');
 
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm">
@@ -5151,6 +5299,29 @@ function DashboardTab({
               {hasBurnValue ? formatCurrency(burnValue) : '—'}
             </span>
           </div>
+          <div className="flex items-center justify-between gap-3 text-gray-700">
+            <span>Efficiency vs expected</span>
+            <span className="font-semibold text-gray-900">
+              {Number.isFinite(efficiencyRatio) ? `${(efficiencyRatio * 100).toFixed(0)}%` : '—'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-gray-700">
+            <span>Adj. p-value (BH)</span>
+            <span className="font-semibold text-gray-900">
+              {Number.isFinite(adjustedPValue) ? adjustedPValue.toFixed(3) : '—'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-gray-700">
+            <span>Burn / Benefit</span>
+            <span className="font-semibold text-gray-900">
+              {Number.isFinite(burnToBenefitRatio)
+                ? (burnToBenefitRatio > 99 ? '>99x' : `${burnToBenefitRatio.toFixed(2)}x`)
+                : '—'}
+            </span>
+          </div>
+          <div className={`pt-1 ${point?.isDirectionalBurn ? 'text-rose-700 font-medium' : 'text-gray-500'}`}>
+            {signalLabel}
+          </div>
         </div>
       </div>
     );
@@ -5159,12 +5330,16 @@ function DashboardTab({
   const renderTimeOfDayBurnDot = useCallback(({ cx, cy, payload }) => {
     if (cx == null || cy == null) return null;
     if (!payload?.isBurnWindow) return null;
+    const fillColor = payload?.isSevereDirectionalBurn
+      ? TIME_OF_DAY_SEVERE_BURN_MARKER_COLOR
+      : TIME_OF_DAY_BURN_MARKER_COLOR;
+    const radius = payload?.isSevereDirectionalBurn ? 5 : 4;
     return (
       <circle
         cx={cx}
         cy={cy}
-        r={4}
-        fill={TIME_OF_DAY_BURN_MARKER_COLOR}
+        r={radius}
+        fill={fillColor}
         stroke="#ffffff"
         strokeWidth={1.5}
       />
@@ -6160,7 +6335,7 @@ function DashboardTab({
           <div>
             <h2 className="text-lg font-semibold">Orders by Time of Day (Last {resolvedTimeOfDayWindowDays} Days)</h2>
             <p className="text-sm text-gray-500">
-              Orders grouped by hour with a budget pacing overlay to spot weak pacing windows.
+              Orders grouped by hour with spend pacing and directional burn detection.
             </p>
             {timeOfDaySource && (
               <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
@@ -6244,15 +6419,25 @@ function DashboardTab({
             )}
             {hasBudgetPacing && burnSummary.topBurnWindows.length > 0 && (
               <div className="flex items-center gap-2 mt-2 text-xs text-gray-600 flex-wrap">
-                <span>Top burn hours:</span>
+                <span>Directional burn hours:</span>
                 {burnSummary.topBurnWindows.map((point) => (
                   <span
                     key={`burn-${point.hour}`}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-rose-50 text-rose-700 font-medium"
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-full font-medium ${
+                      point?.isSevereDirectionalBurn
+                        ? 'bg-rose-100 text-rose-800'
+                        : 'bg-rose-50 text-rose-700'
+                    }`}
                   >
                     <span>{point.hourLabel}</span>
                     <span>•</span>
                     <span>{formatCurrency(toNumber(point?.burnAmount))}</span>
+                    {point?.isSevereDirectionalBurn && (
+                      <>
+                        <span>•</span>
+                        <span>Burn &gt; Benefit</span>
+                      </>
+                    )}
                   </span>
                 ))}
               </div>
@@ -6285,6 +6470,20 @@ function DashboardTab({
                     </div>
                     <div className="text-[10px] text-gray-500">
                       {burnSummary.burnRatePercent.toFixed(1)}% of selected budget window
+                    </div>
+                    <div className="text-xs uppercase text-gray-400 mt-2">Directional burn</div>
+                    <div className="text-sm font-semibold" style={{ color: TIME_OF_DAY_BURN_MARKER_COLOR }}>
+                      {formatCurrency(burnSummary.directionalBurnAmount)}
+                    </div>
+                    <div className="text-[10px] text-gray-500">
+                      {burnSummary.directionalBurnRatePercent.toFixed(1)}% · {burnSummary.directionalBurnHours} flagged hours
+                    </div>
+                    <div className="text-xs uppercase text-gray-400 mt-2">Burn &gt; Benefit</div>
+                    <div className="text-sm font-semibold" style={{ color: TIME_OF_DAY_SEVERE_BURN_MARKER_COLOR }}>
+                      {formatCurrency(burnSummary.severeDirectionalBurnAmount)}
+                    </div>
+                    <div className="text-[10px] text-gray-500">
+                      Stat filter: FDR ≤ {(TIME_OF_DAY_DIRECTIONAL_BURN_FDR_ALPHA * 100).toFixed(0)}%, effect gap ≥ {(TIME_OF_DAY_DIRECTIONAL_BURN_EFFECT_FLOOR * 100).toFixed(0)}%
                     </div>
                   </>
                 )}
