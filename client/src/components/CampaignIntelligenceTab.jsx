@@ -339,6 +339,53 @@ async function readJsonResponse(response) {
   }
 }
 
+async function executeApiRequest({
+  requestRef,
+  setLoading,
+  setError,
+  setData,
+  endpoint,
+  params,
+  failureLabel
+}) {
+  requestRef.current.id += 1;
+  const requestId = requestRef.current.id;
+  if (requestRef.current.controller) {
+    requestRef.current.controller.abort();
+  }
+
+  const controller = new AbortController();
+  requestRef.current.controller = controller;
+
+  setLoading(true);
+  setError('');
+
+  try {
+    const response = await fetch(`${endpoint}?${params.toString()}`, {
+      signal: controller.signal
+    });
+    const json = await readJsonResponse(response);
+
+    if (!response.ok || !json?.success) {
+      throw new Error(json?.error || `${failureLabel} (HTTP ${response.status})`);
+    }
+
+    if (requestRef.current.id !== requestId) return;
+    setData(json);
+  } catch (loadError) {
+    if (loadError?.name === 'AbortError') {
+      return;
+    }
+    if (requestRef.current.id !== requestId) return;
+    setData(null);
+    setError(loadError?.message || failureLabel);
+  } finally {
+    if (requestRef.current.id === requestId) {
+      setLoading(false);
+    }
+  }
+}
+
 function MetricChartCard({
   title,
   subtitle,
@@ -618,46 +665,20 @@ export default function CampaignIntelligenceTab({ store }) {
   const runAnalysis = useCallback(async () => {
     if (!store?.id) return;
 
-    requestRef.current.id += 1;
-    const requestId = requestRef.current.id;
-    if (requestRef.current.controller) {
-      requestRef.current.controller.abort();
-    }
-    const controller = new AbortController();
-    requestRef.current.controller = controller;
+    const params = buildQueryParams({
+      store: store.id,
+      ...analysisParams
+    });
 
-    setLoading(true);
-    setError('');
-
-    try {
-      const params = buildQueryParams({
-        store: store.id,
-        ...analysisParams
-      });
-
-      const response = await fetch(`${API_ENDPOINT}?${params.toString()}`, {
-        signal: controller.signal
-      });
-      const json = await readJsonResponse(response);
-
-      if (!response.ok || !json?.success) {
-        throw new Error(json?.error || `Failed to load campaign intelligence (HTTP ${response.status})`);
-      }
-
-      if (requestRef.current.id !== requestId) return;
-      setSnapshot(json);
-    } catch (loadError) {
-      if (loadError?.name === 'AbortError') {
-        return;
-      }
-      if (requestRef.current.id !== requestId) return;
-      setSnapshot(null);
-      setError(loadError?.message || 'Failed to load campaign intelligence');
-    } finally {
-      if (requestRef.current.id === requestId) {
-        setLoading(false);
-      }
-    }
+    await executeApiRequest({
+      requestRef,
+      setLoading,
+      setError,
+      setData: setSnapshot,
+      endpoint: API_ENDPOINT,
+      params,
+      failureLabel: 'Failed to load campaign intelligence'
+    });
   }, [store?.id, analysisParams]);
 
   useEffect(() => {
@@ -672,50 +693,23 @@ export default function CampaignIntelligenceTab({ store }) {
   const runUnifiedAnalysis = useCallback(async () => {
     if (!store?.id) return;
 
-    unifiedRequestRef.current.id += 1;
-    const requestId = unifiedRequestRef.current.id;
-    if (unifiedRequestRef.current.controller) {
-      unifiedRequestRef.current.controller.abort();
-    }
+    const params = new URLSearchParams();
+    params.set('store', String(store.id));
+    if (unifiedParams.country) params.set('country', String(unifiedParams.country));
+    if (unifiedParams.startDate) params.set('startDate', String(unifiedParams.startDate));
+    if (unifiedParams.endDate) params.set('endDate', String(unifiedParams.endDate));
+    if (unifiedParams.analysisWindowDays) params.set('analysisWindowDays', String(unifiedParams.analysisWindowDays));
+    if (unifiedParams.selectorLimit) params.set('selectorLimit', String(unifiedParams.selectorLimit));
 
-    const controller = new AbortController();
-    unifiedRequestRef.current.controller = controller;
-
-    setUnifiedLoading(true);
-    setUnifiedError('');
-
-    try {
-      const params = new URLSearchParams();
-      params.set('store', String(store.id));
-      if (unifiedParams.country) params.set('country', String(unifiedParams.country));
-      if (unifiedParams.startDate) params.set('startDate', String(unifiedParams.startDate));
-      if (unifiedParams.endDate) params.set('endDate', String(unifiedParams.endDate));
-      if (unifiedParams.analysisWindowDays) params.set('analysisWindowDays', String(unifiedParams.analysisWindowDays));
-      if (unifiedParams.selectorLimit) params.set('selectorLimit', String(unifiedParams.selectorLimit));
-
-      const response = await fetch(`${UNIFIED_API_ENDPOINT}?${params.toString()}`, {
-        signal: controller.signal
-      });
-      const json = await readJsonResponse(response);
-
-      if (!response.ok || !json?.success) {
-        throw new Error(json?.error || `Failed to load unified manager (HTTP ${response.status})`);
-      }
-
-      if (unifiedRequestRef.current.id !== requestId) return;
-      setUnifiedSnapshot(json);
-    } catch (loadError) {
-      if (loadError?.name === 'AbortError') {
-        return;
-      }
-      if (unifiedRequestRef.current.id !== requestId) return;
-      setUnifiedSnapshot(null);
-      setUnifiedError(loadError?.message || 'Failed to load unified manager');
-    } finally {
-      if (unifiedRequestRef.current.id === requestId) {
-        setUnifiedLoading(false);
-      }
-    }
+    await executeApiRequest({
+      requestRef: unifiedRequestRef,
+      setLoading: setUnifiedLoading,
+      setError: setUnifiedError,
+      setData: setUnifiedSnapshot,
+      endpoint: UNIFIED_API_ENDPOINT,
+      params,
+      failureLabel: 'Failed to load unified manager'
+    });
   }, [store?.id, unifiedParams]);
 
   useEffect(() => {
