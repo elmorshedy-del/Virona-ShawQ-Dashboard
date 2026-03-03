@@ -47,6 +47,23 @@ SHAWQ_META_ALLOWED_AD_ACCOUNT_IDS=
 
 4. Deploy
 
+### Persistent Database (Required for Session Intelligence)
+
+Session Intelligence (pixels, events, investigations) relies on the SQLite database. If your platform filesystem is ephemeral, data will reset on each deploy unless you mount a persistent disk.
+
+Recommended (Railway):
+
+1. Add a Railway **Volume** and mount it at `/data`
+2. Set one of:
+
+```
+# Option A (recommended)
+PERSISTENT_DATA_DIR=/data
+
+# Option B
+DATABASE_PATH=/data/dashboard.db
+```
+
 ### Local Development
 
 ```bash

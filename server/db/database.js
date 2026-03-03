@@ -7,8 +7,50 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let db = null;
 
+function resolveDatabasePath() {
+  const explicit = process.env.DATABASE_PATH;
+  if (explicit && typeof explicit === 'string' && explicit.trim()) {
+    return explicit.trim();
+  }
+
+  // Prefer a mounted persistent volume when available (Railway/Render/etc.).
+  // This keeps SQLite data across deploys when the platform supports volumes.
+  const candidateDirs = [
+    process.env.PERSISTENT_DATA_DIR,
+    process.env.RAILWAY_VOLUME_MOUNT_PATH,
+    process.env.RENDER_DISK_PATH
+  ]
+    .filter((value) => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  for (const dir of candidateDirs) {
+    const isDbFile = dir.toLowerCase().endsWith('.db');
+    const candidate = isDbFile ? dir : path.join(dir, 'dashboard.db');
+    try {
+      const parent = path.dirname(candidate);
+      fs.mkdirSync(parent, { recursive: true });
+      fs.accessSync(parent, fs.constants.W_OK);
+      return candidate;
+    } catch (_error) {
+      // Try next candidate.
+    }
+  }
+
+  // Common convention: volume mounted at /data.
+  try {
+    fs.mkdirSync('/data', { recursive: true });
+    fs.accessSync('/data', fs.constants.W_OK);
+    return '/data/dashboard.db';
+  } catch (_error) {
+    // Fall through to repo-local path.
+  }
+
+  return path.join(__dirname, '../../data/dashboard.db');
+}
+
 export function initDb() {
-  const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/dashboard.db');
+  const dbPath = resolveDatabasePath();
 
   // Ensure data directory exists
   const dataDir = path.dirname(dbPath);
@@ -18,6 +60,7 @@ export function initDb() {
 
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  console.log(`[DB] Using SQLite database at ${dbPath}`);
 
   // Meta daily metrics - with store column and breakdown fields
   db.exec(`
