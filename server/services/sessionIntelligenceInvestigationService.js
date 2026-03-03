@@ -62,6 +62,7 @@ const INVESTIGATION_FALSE_ALERT_RULES = Object.freeze({
 const BROWSER_PROBE_CONFIG = Object.freeze({
   enabled: safeString(process.env.SI_INVESTIGATION_BROWSER_PROBE_ENABLED).trim().toLowerCase() === 'true',
   navigationTimeoutMs: clampInteger(process.env.SI_INVESTIGATION_BROWSER_NAV_TIMEOUT_MS, 20000, 3000, 120000),
+  navigationAttempts: clampInteger(process.env.SI_INVESTIGATION_BROWSER_NAV_ATTEMPTS, 2, 1, 5),
   postLoadWaitMs: clampInteger(process.env.SI_INVESTIGATION_BROWSER_POST_LOAD_WAIT_MS, 1200, 0, 10000),
   clickSettleWaitMs: clampInteger(process.env.SI_INVESTIGATION_BROWSER_CLICK_SETTLE_MS, 1500, 250, 10000),
   clickAttempts: clampInteger(process.env.SI_INVESTIGATION_BROWSER_CLICK_ATTEMPTS, 3, 1, 10),
@@ -806,13 +807,97 @@ function browserProbeEnabledForIssueType(issueType) {
   return AUTO_VERIFIABLE_ISSUE_TYPES.includes(normalizedType);
 }
 
+function escapeCssIdentifier(identifier) {
+  const raw = safeString(identifier);
+  if (!raw) return '';
+  return raw
+    .split('')
+    .map((char) => {
+      if (/^[a-zA-Z0-9_-]$/.test(char)) return char;
+      return `\\${char}`;
+    })
+    .join('');
+}
+
+function normalizeSelectorForProbe(rawSelector) {
+  const raw = safeString(rawSelector).trim();
+  if (!raw) return '';
+
+  let normalized = '';
+  let cursor = 0;
+
+  while (cursor < raw.length) {
+    const marker = raw[cursor];
+    if (marker !== '.' && marker !== '#') {
+      normalized += marker;
+      cursor += 1;
+      continue;
+    }
+
+    cursor += 1;
+    let token = '';
+    while (cursor < raw.length) {
+      const char = raw[cursor];
+      if (char === '.' || char === '#' || char === '[') break;
+      token += char;
+      cursor += 1;
+    }
+
+    const escapedToken = escapeCssIdentifier(token);
+    if (!escapedToken) return '';
+    normalized += `${marker}${escapedToken}`;
+  }
+
+  return normalized;
+}
+
 function resolveBrowserProbeSelector(signature) {
   const raw = safeString(signature).trim();
   if (!raw || raw === 'unknown_target' || raw.length > MAX_SIGNATURE_LENGTH) return '';
   // Avoid selectors with characters that are risky or not expected in target keys.
   // This is a security precaution against selector injection.
   if (/[{};"']/.test(raw)) return '';
-  return raw;
+  if (/\s/.test(raw)) return '';
+  return normalizeSelectorForProbe(raw);
+}
+
+function shouldRetryProbeNavigation(error) {
+  const message = safeString(error?.message || error).toLowerCase();
+  if (!message) return false;
+  return message.includes('timeout')
+    || message.includes('net::err_')
+    || message.includes('navigation failed');
+}
+
+async function navigateForProbe(page, issueUrl, waitUntil = 'domcontentloaded') {
+  const maxAttempts = Math.max(1, Number(BROWSER_PROBE_CONFIG.navigationAttempts) || 1);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await page.goto(issueUrl, {
+        waitUntil,
+        timeout: BROWSER_PROBE_CONFIG.navigationTimeoutMs
+      });
+      await sleep(BROWSER_PROBE_CONFIG.postLoadWaitMs);
+      return {
+        ok: true,
+        attempt,
+        waitUntil
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !shouldRetryProbeNavigation(error)) break;
+      await sleep(Math.min(1200, attempt * 250));
+    }
+  }
+
+  return {
+    ok: false,
+    reason: safeString(lastError?.message || lastError).trim().slice(0, 260) || 'Navigation failed.',
+    attempts: maxAttempts,
+    waitUntil
+  };
 }
 
 async function verifyIssueWithBrowserProbe(snapshot, issueUrl) {
@@ -856,11 +941,14 @@ async function verifyIssueWithBrowserProbe(snapshot, issueUrl) {
       page.on('console', onConsole);
 
       try {
-        await page.goto(issueUrl, {
-          waitUntil: 'networkidle2',
-          timeout: BROWSER_PROBE_CONFIG.navigationTimeoutMs
-        });
-        await sleep(BROWSER_PROBE_CONFIG.postLoadWaitMs);
+        const navigationResult = await navigateForProbe(page, issueUrl, 'domcontentloaded');
+        if (!navigationResult.ok) {
+          return {
+            ok: false,
+            reason: navigationResult.reason,
+            method: BROWSER_PROBE_METHOD
+          };
+        }
       } finally {
         page.off('pageerror', onPageError);
         page.off('console', onConsole);
@@ -913,11 +1001,14 @@ async function verifyIssueWithBrowserProbe(snapshot, issueUrl) {
     }
 
     try {
-      await page.goto(issueUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: BROWSER_PROBE_CONFIG.navigationTimeoutMs
-      });
-      await sleep(BROWSER_PROBE_CONFIG.postLoadWaitMs);
+      const navigationResult = await navigateForProbe(page, issueUrl, 'domcontentloaded');
+      if (!navigationResult.ok) {
+        return {
+          ok: false,
+          reason: navigationResult.reason,
+          method: BROWSER_PROBE_METHOD
+        };
+      }
     } catch (navigationError) {
       return {
         ok: false,
