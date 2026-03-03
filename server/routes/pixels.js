@@ -12,6 +12,19 @@ const LIVE_STATE_GC_MULTIPLIER = 6; // keep some buffer beyond the visible windo
 const PIXEL_SCRIPT_CACHE_SECONDS = 300; // keep short so we can ship fixes quickly
 const PIXEL_SCRIPT_VERSION = 'virona-pixel-v1';
 
+const LIVE_DB_BOOTSTRAP_TTL_MS = 60 * 1000;
+const liveDbBootstrapByKey = new Map();
+
+function shouldBootstrapLiveFromDb(store, windowSeconds) {
+  const storeKey = typeof store === 'string' && store.trim() ? store.trim() : 'default';
+  const key = `${storeKey}:${Number(windowSeconds) || 0}`;
+  const now = Date.now();
+  const last = liveDbBootstrapByKey.get(key);
+  if (Number.isFinite(last) && (now - last) < LIVE_DB_BOOTSTRAP_TTL_MS) return false;
+  liveDbBootstrapByKey.set(key, now);
+  return true;
+}
+
 function renderUniversalPixelScript() {
   // IMPORTANT:
   // - This script is designed to run on ANY site (Shopify / custom / etc.)
@@ -880,9 +893,9 @@ router.get('/shopify/live', (req, res) => {
     const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';
     let dbDegraded = false;
 
-    // Optional DB-backed reconciliation: if memory has nothing yet (fresh deploy),
-    // try to bootstrap the counter from the last window of DB events.
-    if (mem.count === 0 && wantsDebug) {
+    // DB-backed reconciliation: if memory has nothing yet (fresh deploy),
+    // bootstrap the counter from the last window of DB events so deploys don't reset the UI.
+    if (mem.count === 0 && shouldBootstrapLiveFromDb(store, windowSeconds)) {
       try {
         const db = getDb();
         const rows = db.prepare(`
