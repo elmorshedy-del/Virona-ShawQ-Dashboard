@@ -34,6 +34,8 @@ import {
 const router = express.Router();
 
 function normalizeFlag(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
   const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (!raw) return false;
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
