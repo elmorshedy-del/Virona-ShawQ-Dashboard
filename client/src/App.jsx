@@ -175,6 +175,7 @@ const TIME_OF_DAY_FALLBACK_TIMEZONE_BY_REGION = {
   australia: 'Australia/Sydney'
 };
 const TIME_OF_DAY_ORDERS_LINE_COLOR = '#6366f1';
+const TIME_OF_DAY_SPEND_LINE_COLOR = '#f59e0b';
 const TIME_OF_DAY_PACING_LINE_COLOR = '#0f766e';
 const KPI_MONTH_SUMMARY_THRESHOLDS = {
   strongDirectionalDeltaPct: 15,
@@ -5104,6 +5105,8 @@ function DashboardTab({
     if (!active || !payload?.length) return null;
     const point = payload[0]?.payload || {};
     const ordersValue = toNumber(point?.orders);
+    const spendValue = toNumber(point?.budgetSpend);
+    const hasSpendValue = hasBudgetPacing && totalBudgetSpend > 0;
     const pacingValue = Number.isFinite(point?.budgetPacingPercent)
       ? Number(point.budgetPacingPercent)
       : null;
@@ -5120,6 +5123,15 @@ function DashboardTab({
               Orders
             </span>
             <span className="font-semibold text-gray-900">{formatNumber(ordersValue)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-gray-700">
+            <span className="inline-flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: TIME_OF_DAY_SPEND_LINE_COLOR }} />
+              Spend (est.)
+            </span>
+            <span className="font-semibold text-gray-900">
+              {hasSpendValue ? formatCurrency(spendValue) : '—'}
+            </span>
           </div>
           <div className="flex items-center justify-between gap-3 text-gray-700">
             <span className="inline-flex items-center gap-2">
@@ -5142,7 +5154,7 @@ function DashboardTab({
         </div>
       </div>
     );
-  }, [formatNumber, formatCurrency]);
+  }, [formatNumber, formatCurrency, hasBudgetPacing, totalBudgetSpend]);
 
   const renderTimeOfDayBurnDot = useCallback(({ cx, cy, payload }) => {
     if (cx == null || cy == null) return null;
@@ -6281,19 +6293,25 @@ function DashboardTab({
           </div>
         </div>
 
-        {hourlyChartData.length > 0 && totalHourlyOrders > 0 ? (
+        {hourlyChartData.length > 0 && (totalHourlyOrders > 0 || hasBudgetPacing) ? (
           <div className="h-64 mt-4">
             <ResponsiveContainer>
-              <LineChart data={hourlyChartData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+              <LineChart data={hourlyChartData} margin={{ top: 10, right: 70, bottom: 10, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="hourLabel" tick={{ fontSize: 10 }} />
                 <YAxis yAxisId="orders" allowDecimals={false} tick={{ fontSize: 10 }} />
                 <YAxis
+                  yAxisId="spend"
+                  orientation="right"
+                  tickFormatter={(value) => formatCurrency(value)}
+                  tick={{ fontSize: 10 }}
+                  width={70}
+                />
+                <YAxis
                   yAxisId="pacing"
                   orientation="right"
                   domain={[0, 100]}
-                  tickFormatter={(value) => `${value}%`}
-                  tick={{ fontSize: 10 }}
+                  hide
                 />
                 <Tooltip content={renderTimeOfDayTooltip} />
                 <Line
@@ -6304,6 +6322,15 @@ function DashboardTab({
                   strokeWidth={2.5}
                   dot={false}
                   activeDot={{ r: 4 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="budgetSpend"
+                  yAxisId="spend"
+                  stroke={TIME_OF_DAY_SPEND_LINE_COLOR}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={false}
                 />
                 <Line
                   type="monotone"
