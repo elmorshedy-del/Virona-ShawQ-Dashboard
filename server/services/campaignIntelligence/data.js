@@ -1444,6 +1444,43 @@ function resolveStatusColumn(db, tableName, candidates = []) {
   return candidates.find((columnName) => columns.has(columnName)) || null;
 }
 
+function buildActiveEntitySubqueryFilter({
+  db,
+  tableName,
+  idColumn,
+  statusColumns,
+  store,
+  endDate,
+  country,
+  entityId
+}) {
+  if (!db || !tableName || !idColumn || !store || !endDate) return null;
+
+  const statusColumn = resolveStatusColumn(db, tableName, statusColumns);
+  if (!statusColumn) return null;
+
+  const { whereSql, args } = buildScopeWhere(
+    { table: tableName, idColumn },
+    {
+      store,
+      startDate: endDate,
+      endDate,
+      entityId,
+      country
+    }
+  );
+
+  return {
+    clause: `${idColumn} IN (
+      SELECT DISTINCT ${idColumn}
+      FROM ${tableName}
+      WHERE ${whereSql}
+      AND UPPER(COALESCE(${statusColumn}, '${UNKNOWN_EFFECTIVE_STATUS}')) = ?
+    )`,
+    args: [...args, ACTIVE_EFFECTIVE_STATUS]
+  };
+}
+
 function fetchHierarchyLevelWindowRows({
   db,
   store,
