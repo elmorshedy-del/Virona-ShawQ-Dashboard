@@ -18,7 +18,9 @@ function resolveDatabasePath() {
   const candidateDirs = [
     process.env.PERSISTENT_DATA_DIR,
     process.env.RAILWAY_VOLUME_MOUNT_PATH,
-    process.env.RENDER_DISK_PATH
+    process.env.RENDER_DISK_PATH,
+    // Common convention: volume mounted at /data.
+    '/data'
   ]
     .filter((value) => typeof value === 'string')
     .map((value) => value.trim())
@@ -35,15 +37,6 @@ function resolveDatabasePath() {
     } catch (_error) {
       // Try next candidate.
     }
-  }
-
-  // Common convention: volume mounted at /data.
-  try {
-    fs.mkdirSync('/data', { recursive: true });
-    fs.accessSync('/data', fs.constants.W_OK);
-    return '/data/dashboard.db';
-  } catch (_error) {
-    // Fall through to repo-local path.
   }
 
   return path.join(__dirname, '../../data/dashboard.db');
