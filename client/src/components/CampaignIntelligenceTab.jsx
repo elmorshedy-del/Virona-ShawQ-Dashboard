@@ -27,6 +27,7 @@ import {
 import CampaignIntelligenceUnifiedSection from './CampaignIntelligenceUnifiedSection';
 
 const API_ENDPOINT = '/api/campaign-intelligence/snapshot';
+const UNIFIED_API_ENDPOINT = '/api/campaign-intelligence/unified-snapshot';
 const DEFAULT_ANCHOR_DAYS = 21;
 const DEFAULT_TARGET_ROAS = 4;
 const DEFAULT_TARGET_HORIZON_DAYS = 7;
@@ -120,6 +121,14 @@ const ANALYSIS_PARAM_KEYS = Object.freeze(new Set([
   'targetRoas',
   'targetCpa',
   'targetHorizonDays'
+]));
+
+const UNIFIED_PARAM_KEYS = Object.freeze(new Set([
+  'country',
+  'startDate',
+  'endDate',
+  'analysisWindowDays',
+  'selectorLimit'
 ]));
 
 function getDashboardDateString(date = new Date()) {
@@ -330,6 +339,53 @@ async function readJsonResponse(response) {
   }
 }
 
+async function executeApiRequest({
+  requestRef,
+  setLoading,
+  setError,
+  setData,
+  endpoint,
+  params,
+  failureLabel
+}) {
+  requestRef.current.id += 1;
+  const requestId = requestRef.current.id;
+  if (requestRef.current.controller) {
+    requestRef.current.controller.abort();
+  }
+
+  const controller = new AbortController();
+  requestRef.current.controller = controller;
+
+  setLoading(true);
+  setError('');
+
+  try {
+    const response = await fetch(`${endpoint}?${params.toString()}`, {
+      signal: controller.signal
+    });
+    const json = await readJsonResponse(response);
+
+    if (!response.ok || !json?.success) {
+      throw new Error(json?.error || `${failureLabel} (HTTP ${response.status})`);
+    }
+
+    if (requestRef.current.id !== requestId) return;
+    setData(json);
+  } catch (loadError) {
+    if (loadError?.name === 'AbortError') {
+      return;
+    }
+    if (requestRef.current.id !== requestId) return;
+    setData(null);
+    setError(loadError?.message || failureLabel);
+  } finally {
+    if (requestRef.current.id === requestId) {
+      setLoading(false);
+    }
+  }
+}
+
 function MetricChartCard({
   title,
   subtitle,
@@ -521,8 +577,27 @@ export default function CampaignIntelligenceTab({ store }) {
     targetHorizonDays: DEFAULT_TARGET_HORIZON_DAYS
   }));
 
+  const [unifiedParams, setUnifiedParams] = useState(() => ({
+    country: 'ALL',
+    startDate: '',
+    endDate: '',
+    analysisWindowDays: 14,
+    selectorLimit: 80
+  }));
+
   const updateAnalysisParam = useCallback((key, valueOrUpdater) => {
     setAnalysisParams((prev) => {
+      const currentValue = prev[key];
+      const nextValue = typeof valueOrUpdater === 'function'
+        ? valueOrUpdater(currentValue, prev)
+        : valueOrUpdater;
+      if (Object.is(currentValue, nextValue)) return prev;
+      return { ...prev, [key]: nextValue };
+    });
+  }, []);
+
+  const updateUnifiedParam = useCallback((key, valueOrUpdater) => {
+    setUnifiedParams((prev) => {
       const currentValue = prev[key];
       const nextValue = typeof valueOrUpdater === 'function'
         ? valueOrUpdater(currentValue, prev)
@@ -558,13 +633,24 @@ export default function CampaignIntelligenceTab({ store }) {
     }
   }, [updateAnalysisParam]);
 
+  const handleUnifiedManagerParamPatch = useCallback((updates = {}) => {
+    for (const [key, value] of Object.entries(updates)) {
+      if (!UNIFIED_PARAM_KEYS.has(key)) continue;
+      updateUnifiedParam(key, value);
+    }
+  }, [updateUnifiedParam]);
+
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState(null);
+  const [unifiedLoading, setUnifiedLoading] = useState(false);
+  const [unifiedError, setUnifiedError] = useState('');
+  const [unifiedSnapshot, setUnifiedSnapshot] = useState(null);
   const [selectedModelId, setSelectedModelId] = useState('mature_sentinel');
   const [activeView, setActiveView] = useState(CAMPAIGN_INTEL_VIEW.modelConsole);
   const requestRef = useRef({ id: 0, controller: null });
+  const unifiedRequestRef = useRef({ id: 0, controller: null });
 
   const modelCards = useMemo(() => {
     if (!snapshot?.models) return [];
@@ -579,59 +665,70 @@ export default function CampaignIntelligenceTab({ store }) {
   const runAnalysis = useCallback(async () => {
     if (!store?.id) return;
 
-    requestRef.current.id += 1;
-    const requestId = requestRef.current.id;
-    if (requestRef.current.controller) {
-      requestRef.current.controller.abort();
-    }
-    const controller = new AbortController();
-    requestRef.current.controller = controller;
+    const params = buildQueryParams({
+      store: store.id,
+      ...analysisParams
+    });
 
-    setLoading(true);
-    setError('');
-
-    try {
-      const params = buildQueryParams({
-        store: store.id,
-        ...analysisParams
-      });
-
-      const response = await fetch(`${API_ENDPOINT}?${params.toString()}`, {
-        signal: controller.signal
-      });
-      const json = await readJsonResponse(response);
-
-      if (!response.ok || !json?.success) {
-        throw new Error(json?.error || `Failed to load campaign intelligence (HTTP ${response.status})`);
-      }
-
-      if (requestRef.current.id !== requestId) return;
-      setSnapshot(json);
-    } catch (loadError) {
-      if (loadError?.name === 'AbortError') {
-        return;
-      }
-      if (requestRef.current.id !== requestId) return;
-      setSnapshot(null);
-      setError(loadError?.message || 'Failed to load campaign intelligence');
-    } finally {
-      if (requestRef.current.id === requestId) {
-        setLoading(false);
-      }
-    }
+    await executeApiRequest({
+      requestRef,
+      setLoading,
+      setError,
+      setData: setSnapshot,
+      endpoint: API_ENDPOINT,
+      params,
+      failureLabel: 'Failed to load campaign intelligence'
+    });
   }, [store?.id, analysisParams]);
 
   useEffect(() => {
     if (!store?.id) return undefined;
+    if (activeView !== CAMPAIGN_INTEL_VIEW.modelConsole) return undefined;
     const timerId = setTimeout(() => {
       runAnalysis();
     }, ANALYSIS_REQUEST_DEBOUNCE_MS);
     return () => clearTimeout(timerId);
-  }, [store?.id, runAnalysis]);
+  }, [activeView, store?.id, runAnalysis]);
+
+  const runUnifiedAnalysis = useCallback(async () => {
+    if (!store?.id) return;
+
+    const params = new URLSearchParams();
+    params.set('store', String(store.id));
+    if (unifiedParams.country) params.set('country', String(unifiedParams.country));
+    if (unifiedParams.startDate) params.set('startDate', String(unifiedParams.startDate));
+    if (unifiedParams.endDate) params.set('endDate', String(unifiedParams.endDate));
+    if (unifiedParams.analysisWindowDays) params.set('analysisWindowDays', String(unifiedParams.analysisWindowDays));
+    if (unifiedParams.selectorLimit) params.set('selectorLimit', String(unifiedParams.selectorLimit));
+
+    await executeApiRequest({
+      requestRef: unifiedRequestRef,
+      setLoading: setUnifiedLoading,
+      setError: setUnifiedError,
+      setData: setUnifiedSnapshot,
+      endpoint: UNIFIED_API_ENDPOINT,
+      params,
+      failureLabel: 'Failed to load unified manager'
+    });
+  }, [store?.id, unifiedParams]);
+
+  useEffect(() => {
+    if (!store?.id) return undefined;
+    if (activeView !== CAMPAIGN_INTEL_VIEW.unifiedManager) return undefined;
+
+    const timerId = setTimeout(() => {
+      runUnifiedAnalysis();
+    }, ANALYSIS_REQUEST_DEBOUNCE_MS);
+
+    return () => clearTimeout(timerId);
+  }, [activeView, runUnifiedAnalysis, store?.id]);
 
   useEffect(() => () => {
     if (requestRef.current.controller) {
       requestRef.current.controller.abort();
+    }
+    if (unifiedRequestRef.current.controller) {
+      unifiedRequestRef.current.controller.abort();
     }
   }, []);
 
@@ -725,12 +822,14 @@ export default function CampaignIntelligenceTab({ store }) {
 
             <button
               type="button"
-              onClick={runAnalysis}
-              disabled={loading}
+              onClick={activeView === CAMPAIGN_INTEL_VIEW.unifiedManager ? runUnifiedAnalysis : runAnalysis}
+              disabled={activeView === CAMPAIGN_INTEL_VIEW.unifiedManager ? unifiedLoading : loading}
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition-colors disabled:opacity-60"
             >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              {loading ? 'Running...' : 'Run Analysis'}
+              <RefreshCw className={`w-4 h-4 ${(activeView === CAMPAIGN_INTEL_VIEW.unifiedManager ? unifiedLoading : loading) ? 'animate-spin' : ''}`} />
+              {activeView === CAMPAIGN_INTEL_VIEW.unifiedManager
+                ? (unifiedLoading ? 'Refreshing...' : 'Refresh')
+                : (loading ? 'Running...' : 'Run Analysis')}
             </button>
           </div>
 
@@ -759,6 +858,7 @@ export default function CampaignIntelligenceTab({ store }) {
             </button>
           </div>
 
+          {activeView === CAMPAIGN_INTEL_VIEW.modelConsole && (
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
             <div className="rounded-xl border border-indigo-100 bg-white/90 p-3">
               <div className="text-xs uppercase tracking-wide text-slate-500">Active {level}</div>
@@ -777,7 +877,9 @@ export default function CampaignIntelligenceTab({ store }) {
               <div className="text-xl font-bold text-slate-900 mt-1">{formatNumber(lifecycle.totalTracked || 0)}</div>
             </div>
           </div>
+          )}
 
+          {activeView === CAMPAIGN_INTEL_VIEW.modelConsole && (
           <div className="rounded-2xl border border-indigo-100 bg-white p-4">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <div>
@@ -1013,13 +1115,21 @@ export default function CampaignIntelligenceTab({ store }) {
               )}
             </div>
           </div>
+          )}
         </div>
       </div>
 
-      {error && (
+      {activeView === CAMPAIGN_INTEL_VIEW.modelConsole && error && (
         <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 inline-flex items-center gap-2">
           <AlertTriangle className="w-4 h-4" />
           {error}
+        </div>
+      )}
+
+      {activeView === CAMPAIGN_INTEL_VIEW.unifiedManager && unifiedError && (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 inline-flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4" />
+          {unifiedError}
         </div>
       )}
 
@@ -1377,12 +1487,12 @@ export default function CampaignIntelligenceTab({ store }) {
 
       {activeView === CAMPAIGN_INTEL_VIEW.unifiedManager && (
       <CampaignIntelligenceUnifiedSection
-        snapshot={snapshot}
-        analysisParams={analysisParams}
+        snapshot={unifiedSnapshot}
+        analysisParams={unifiedParams}
         targetRoas={targetRoas}
         store={store}
-        onSnapshotUpdate={setSnapshot}
-        onAnalysisParamsChange={handleUnifiedAnalysisParamPatch}
+        onSnapshotUpdate={setUnifiedSnapshot}
+        onAnalysisParamsChange={handleUnifiedManagerParamPatch}
       />
       )}
     </div>

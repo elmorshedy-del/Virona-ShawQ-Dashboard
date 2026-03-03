@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react';
 
-const BRIEF_ENDPOINT_GENERATE = '/api/campaign-intelligence/brief/generate';
+const BRIEF_ENDPOINT_GENERATE = '/api/campaign-intelligence/unified-brief/generate';
 const BRIEF_ENDPOINT_SETTINGS = '/api/campaign-intelligence/brief/settings';
+const UNIFIED_TIMELINE_ENDPOINT = '/api/campaign-intelligence/unified-timeline';
 const TYPOGRAPHY_HEADING = '"Space Grotesk", "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif';
 
 const METRIC_KEYS = Object.freeze([
@@ -81,6 +82,7 @@ const BRIEF_PRIORITY = Object.freeze({
 const TOP_DRAGGERS_LIMIT = 5;
 const TOP_CREATIVES_LIMIT = 5;
 const BRIEF_NOTES_LIMIT = 4;
+const DEFAULT_VISIBLE_CAMPAIGN_LIMIT = 5;
 const ROW_DEPTH_OFFSET_PX = 14;
 const CHART_WIDTH = 280;
 const CHART_HEIGHT = 64;
@@ -168,11 +170,13 @@ const CROSS_ENTITY_INSIGHT_LIMIT = 5;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function toFiniteNumber(value, fallback = 0) {
+  if (value == null || value === '') return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function parseNullableNumber(value) {
+  if (value == null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -192,7 +196,7 @@ function safeDivide(numerator, denominator) {
   const top = Number(numerator);
   const bottom = Number(denominator);
   if (!Number.isFinite(top) || !Number.isFinite(bottom) || Math.abs(bottom) < CHART_EPSILON) {
-    return 0;
+    return null;
   }
   return top / bottom;
 }
@@ -297,9 +301,8 @@ function metricDeltaRatio(metricKey, current, baseline) {
 
 function resolveCellStatus(metricKey, current, baseline, targetRoas) {
   const now = parseNullableNumber(current);
-  const base = parseNullableNumber(baseline);
-  if (!Number.isFinite(now) || !Number.isFinite(base) || Math.abs(base) < CHART_EPSILON) {
-    return { code: 'insufficient', note: 'Insufficient baseline' };
+  if (!Number.isFinite(now)) {
+    return { code: 'insufficient', note: 'Insufficient data' };
   }
 
   if (metricKey === 'roas') {
@@ -327,6 +330,11 @@ function resolveCellStatus(metricKey, current, baseline, targetRoas) {
     if (now >= floor * 0.9) return { code: 'caution', note: 'Near floor' };
     if (now >= floor * 0.75) return { code: 'bad', note: 'Below floor' };
     return { code: 'critical', note: 'Far below floor' };
+  }
+
+  const base = parseNullableNumber(baseline);
+  if (!Number.isFinite(base) || Math.abs(base) < CHART_EPSILON) {
+    return { code: 'insufficient', note: 'Insufficient baseline' };
   }
 
   const effectiveDeltaRatio = metricDeltaRatio(metricKey, now, base);
@@ -378,33 +386,51 @@ function computeHealthScore(row, targetRoas) {
   const ctrNow = rowMetric(row, 'ctr', 'now');
   const ctrBase = rowMetric(row, 'ctr', 'baseline');
 
-  const roasVsTarget = Number.isFinite(roasNow)
-    ? clamp(roasNow / Math.max(0.1, targetRoas), 0, 1.4)
-    : 0;
-  const roasVsBaseline = Number.isFinite(roasNow) && Number.isFinite(roasBase) && roasBase > 0
-    ? clamp(roasNow / roasBase, 0, 1.4)
-    : 0;
-  const purchaseIcScore = Number.isFinite(purchaseIcNow)
-    ? clamp(purchaseIcNow / KEY_METRIC_BOUNDS.purchaseIcFloorRate, 0, 1.4)
-    : 0;
-  const cpmScore = Number.isFinite(cpmNow) && Number.isFinite(cpmBase) && cpmBase > 0
-    ? clamp(cpmBase / Math.max(cpmNow, CHART_EPSILON), 0, 1.4)
-    : 0;
-  const ctrScore = Number.isFinite(ctrNow) && Number.isFinite(ctrBase) && ctrBase > 0
-    ? clamp(ctrNow / ctrBase, 0, 1.4)
-    : 0;
-
   const weights = HEALTH_RULES.weights;
-  const weighted = (
-    (roasVsTarget * weights.roasVsTarget) +
-    (roasVsBaseline * weights.roasVsBaseline) +
-    (purchaseIcScore * weights.purchaseIc) +
-    (cpmScore * weights.cpmPressure) +
-    (ctrScore * weights.ctrResilience)
-  ) / Math.max(
-    CHART_EPSILON,
-    weights.roasVsTarget + weights.roasVsBaseline + weights.purchaseIc + weights.cpmPressure + weights.ctrResilience
-  );
+  const components = [];
+
+  if (Number.isFinite(roasNow)) {
+    components.push({
+      score: clamp(roasNow / Math.max(0.1, targetRoas), 0, 1.4),
+      weight: weights.roasVsTarget
+    });
+  }
+
+  if (Number.isFinite(roasNow) && Number.isFinite(roasBase) && roasBase > 0) {
+    components.push({
+      score: clamp(roasNow / roasBase, 0, 1.4),
+      weight: weights.roasVsBaseline
+    });
+  }
+
+  if (Number.isFinite(purchaseIcNow)) {
+    components.push({
+      score: clamp(purchaseIcNow / KEY_METRIC_BOUNDS.purchaseIcFloorRate, 0, 1.4),
+      weight: weights.purchaseIc
+    });
+  }
+
+  if (Number.isFinite(cpmNow) && Number.isFinite(cpmBase) && cpmBase > 0) {
+    components.push({
+      score: clamp(cpmBase / Math.max(cpmNow, CHART_EPSILON), 0, 1.4),
+      weight: weights.cpmPressure
+    });
+  }
+
+  if (Number.isFinite(ctrNow) && Number.isFinite(ctrBase) && ctrBase > 0) {
+    components.push({
+      score: clamp(ctrNow / ctrBase, 0, 1.4),
+      weight: weights.ctrResilience
+    });
+  }
+
+  if (!components.length) {
+    return 0;
+  }
+
+  const totalWeight = components.reduce((sum, component) => sum + component.weight, 0);
+  const weighted = components.reduce((sum, component) => sum + (component.score * component.weight), 0)
+    / Math.max(CHART_EPSILON, totalWeight);
 
   return clamp(Math.round(weighted * 100), 0, 100);
 }
@@ -839,37 +865,26 @@ async function readJsonResponse(response) {
 }
 
 function buildBriefScopeFromAnalysis(analysisParams = {}) {
+  const normalizedCountry = String(analysisParams.country || 'ALL').trim().toUpperCase() || 'ALL';
   return {
-    level: analysisParams.level,
-    entityId: analysisParams.entityId || null,
-    country: analysisParams.country || 'ALL',
+    level: 'campaign',
+    entityId: null,
+    country: normalizedCountry,
     startDate: analysisParams.startDate || null,
     endDate: analysisParams.endDate || null,
-    anchorDays: analysisParams.anchorDays,
-    anchorStartDate: analysisParams.anchorStartDate || null,
-    anchorEndDate: analysisParams.anchorEndDate || null
+    analysisWindowDays: analysisParams.analysisWindowDays || null,
+    selectorLimit: analysisParams.selectorLimit || null
   };
 }
 
 function buildGeneratePayload({ storeId, analysisParams, provider, model, reasoningEffort, verbosity }) {
   return {
     store: storeId,
-    level: analysisParams.level,
-    entityId: analysisParams.entityId || undefined,
     country: analysisParams.country,
     startDate: analysisParams.startDate || undefined,
     endDate: analysisParams.endDate || undefined,
-    anchorWindowDays: analysisParams.anchorDays,
-    anchorStartDate: analysisParams.anchorStartDate || undefined,
-    anchorEndDate: analysisParams.anchorEndDate || undefined,
-    sentinelPreset: analysisParams.sentinelPreset,
-    headroomPreset: analysisParams.headroomPreset,
-    launchPreset: analysisParams.launchPreset,
-    launchMinDays: analysisParams.launchMinDays || undefined,
-    launchMaxDays: analysisParams.launchMaxDays || undefined,
-    targetRoas: analysisParams.targetRoas,
-    targetCpa: analysisParams.targetCpa || undefined,
-    targetHorizonDays: analysisParams.targetHorizonDays,
+    analysisWindowDays: analysisParams.analysisWindowDays || undefined,
+    selectorLimit: analysisParams.selectorLimit || undefined,
     provider,
     model,
     reasoningEffort,
@@ -913,10 +928,22 @@ export default function CampaignIntelligenceUnifiedSection({
   onSnapshotUpdate,
   onAnalysisParamsChange
 }) {
+  if (!snapshot || snapshot?.success === false) {
+    return (
+      <div className="rounded-2xl border border-[#dfe5ff] bg-white p-6">
+        <div className="inline-flex items-center gap-2 text-sm text-slate-600">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading Unified Manager…
+        </div>
+      </div>
+    );
+  }
+
   const hierarchyRows = Array.isArray(snapshot?.hierarchy?.rows) ? snapshot.hierarchy.rows : [];
 
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [selectedRowId, setSelectedRowId] = useState('');
+  const [showAllCampaigns, setShowAllCampaigns] = useState(false);
   const [viewMode, setViewMode] = useState(MOCK_VIEW_OPTIONS[0].value);
   const [windowMode, setWindowMode] = useState(MOCK_WINDOW_OPTIONS[0].value);
   const [triageMode, setTriageMode] = useState(MOCK_TRIAGE_OPTIONS[0].value);
@@ -936,26 +963,27 @@ export default function CampaignIntelligenceUnifiedSection({
   const [statusMessage, setStatusMessage] = useState('');
   const [manualBrief, setManualBrief] = useState(null);
 
-  useEffect(() => {
-    const defaultExpanded = new Set(
-      hierarchyRows
-        .filter((row) => row.level === 'campaign')
-        .map((row) => row.id)
-    );
-    setExpandedIds(defaultExpanded);
-  }, [hierarchyRows]);
+  const timelineCacheRef = useRef(new Map());
+  const timelineRequestRef = useRef({ id: 0, controller: null });
+  const [entityTimeline, setEntityTimeline] = useState(null);
+  const [timelineBusy, setTimelineBusy] = useState(false);
+  const [timelineError, setTimelineError] = useState('');
 
   useEffect(() => {
-    if (!hierarchyRows.length) {
+    setExpandedIds(new Set());
+  }, [snapshot?.generatedAt]);
+
+  useEffect(() => {
+    if (!displayRows.length) {
       setSelectedRowId('');
       return;
     }
 
-    const exists = hierarchyRows.some((row) => row.id === selectedRowId);
+    const exists = displayRows.some((row) => row.id === selectedRowId);
     if (!exists) {
-      setSelectedRowId(hierarchyRows[0].id);
+      setSelectedRowId(displayRows[0].id);
     }
-  }, [hierarchyRows, selectedRowId]);
+  }, [displayRows, selectedRowId]);
 
   useEffect(() => {
     const settings = briefMeta?.settings;
@@ -1023,15 +1051,15 @@ export default function CampaignIntelligenceUnifiedSection({
     return hierarchyRows
       .filter((row) => isActiveEntityRow(row))
       .map((row) => {
-      const healthScore = computeHealthScore(row, targetRoas);
-      const direction = resolveDirection(row, targetRoas, healthScore);
-      return {
-        ...row,
-        depth: getRowDepth(row),
-        type: getRowType(row),
-        healthScore,
-        direction
-      };
+        const healthScore = computeHealthScore(row, targetRoas);
+        const direction = resolveDirection(row, targetRoas, healthScore);
+        return {
+          ...row,
+          depth: getRowDepth(row),
+          type: getRowType(row),
+          healthScore,
+          direction
+        };
       });
   }, [hierarchyRows, targetRoas]);
 
@@ -1040,10 +1068,40 @@ export default function CampaignIntelligenceUnifiedSection({
     return rowsWithComputed.filter((row) => rowNeedsAttention(row, targetRoas));
   }, [rowsWithComputed, triageMode, targetRoas]);
 
+  const rankedCampaignRows = useMemo(() => {
+    return triageFilteredRows
+      .filter((row) => row.level === 'campaign')
+      .slice()
+      .sort((left, right) => {
+        const rightPurchases = toFiniteNumber(right?.metrics?.now?.purchases, 0);
+        const leftPurchases = toFiniteNumber(left?.metrics?.now?.purchases, 0);
+        if (rightPurchases !== leftPurchases) return rightPurchases - leftPurchases;
+        return toFiniteNumber(right?.metrics?.now?.spend, 0) - toFiniteNumber(left?.metrics?.now?.spend, 0);
+      });
+  }, [triageFilteredRows]);
+
+  const campaignLimitedRows = useMemo(() => {
+    if (showAllCampaigns) return triageFilteredRows;
+
+    const campaignIdSet = new Set(
+      rankedCampaignRows
+        .slice(0, DEFAULT_VISIBLE_CAMPAIGN_LIMIT)
+        .map((row) => String(row?.campaignId || row?.entityId || '').trim())
+        .filter(Boolean)
+    );
+
+    return triageFilteredRows.filter((row) => {
+      const campaignId = String(row?.campaignId || '').trim() || (row.level === 'campaign' ? String(row?.entityId || '').trim() : '');
+      if (!campaignId) return false;
+      return campaignIdSet.has(campaignId);
+    });
+  }, [rankedCampaignRows, showAllCampaigns, triageFilteredRows]);
+
   const displayRows = useMemo(() => {
-    if (viewMode !== 'geo_split') return triageFilteredRows;
-    return triageFilteredRows.filter((row) => row.level === 'campaign');
-  }, [triageFilteredRows, viewMode]);
+    const baseRows = campaignLimitedRows;
+    if (viewMode !== 'geo_split') return baseRows;
+    return baseRows.filter((row) => row.level === 'campaign');
+  }, [campaignLimitedRows, viewMode]);
 
   const visibleRows = useMemo(() => getVisibleRows(displayRows, expandedIds), [displayRows, expandedIds]);
 
@@ -1054,26 +1112,131 @@ export default function CampaignIntelligenceUnifiedSection({
     return displayRows.find((row) => row.id === selectedRowId) || displayRows[0];
   }, [displayRows, selectedRowId]);
 
-  const timelineDaily = useMemo(() => (Array.isArray(snapshot?.timeline?.daily) ? snapshot.timeline.daily : []), [snapshot]);
+  const analysisScope = snapshot?.scope || {};
+  const scopeTimelineDaily = useMemo(() => (Array.isArray(snapshot?.timeline?.daily) ? snapshot.timeline.daily : []), [snapshot]);
   const analysisEndDate = snapshot?.scope?.analysisEndDate || analysisParams?.endDate || toIsoDateString();
+
+	  const timelineCacheKey = useMemo(() => {
+	    if (!selectedRow?.entityId) return '';
+	    return [
+	      String(store?.id || analysisScope.store || '').trim(),
+	      String(toolbarCountryCode || analysisScope.country || 'ALL').trim(),
+	      String(analysisScope.analysisStartDate || '').trim(),
+	      String(analysisScope.analysisEndDate || '').trim(),
+	      String(selectedRow.level || '').trim(),
+	      String(selectedRow.entityId || '').trim()
+	    ].join('|');
+	  }, [
+	    analysisScope.analysisEndDate,
+	    analysisScope.analysisStartDate,
+	    analysisScope.store,
+	    selectedRow?.entityId,
+	    selectedRow?.level,
+	    store?.id,
+	    toolbarCountryCode
+	  ]);
+
+  useEffect(() => {
+    if (!timelineCacheKey || !store?.id || !selectedRow?.entityId || !selectedRow?.level) {
+      setEntityTimeline(null);
+      setTimelineError('');
+      return;
+    }
+
+    const cached = timelineCacheRef.current.get(timelineCacheKey);
+    if (cached) {
+      setEntityTimeline(cached);
+      setTimelineError('');
+      return;
+    }
+
+    timelineRequestRef.current.id += 1;
+    const requestId = timelineRequestRef.current.id;
+    if (timelineRequestRef.current.controller) {
+      timelineRequestRef.current.controller.abort();
+    }
+    const controller = new AbortController();
+    timelineRequestRef.current.controller = controller;
+
+    setTimelineBusy(true);
+    setTimelineError('');
+    setEntityTimeline(null);
+
+	    const params = new URLSearchParams();
+	    params.set('store', String(store.id));
+	    params.set('level', String(selectedRow.level));
+	    params.set('entityId', String(selectedRow.entityId));
+	    params.set('country', String(toolbarCountryCode || analysisScope.country || 'ALL'));
+	    if (analysisScope.analysisStartDate) params.set('startDate', String(analysisScope.analysisStartDate));
+	    if (analysisScope.analysisEndDate) params.set('endDate', String(analysisScope.analysisEndDate));
+
+    fetch(`${UNIFIED_TIMELINE_ENDPOINT}?${params.toString()}`, { signal: controller.signal })
+      .then((response) => readJsonResponse(response).then((json) => ({ response, json })))
+      .then(({ response, json }) => {
+        if (timelineRequestRef.current.id !== requestId) return;
+        if (!response.ok || !json?.success) {
+          throw new Error(json?.error || `Unified timeline fetch failed (HTTP ${response.status})`);
+        }
+
+        timelineCacheRef.current.set(timelineCacheKey, json);
+        setEntityTimeline(json);
+      })
+      .catch((error) => {
+        if (error?.name === 'AbortError') return;
+        if (timelineRequestRef.current.id !== requestId) return;
+        setEntityTimeline(null);
+        setTimelineError(error?.message || 'Unified timeline fetch failed');
+      })
+      .finally(() => {
+        if (timelineRequestRef.current.id === requestId) {
+          setTimelineBusy(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [
+    analysisScope.analysisEndDate,
+    analysisScope.analysisStartDate,
+    analysisScope.country,
+    selectedRow?.entityId,
+    selectedRow?.level,
+    store?.id,
+    timelineCacheKey,
+    toolbarCountryCode
+  ]);
+
+  const timelineDaily = useMemo(() => {
+    const daily = entityTimeline?.timeline?.daily;
+    if (Array.isArray(daily) && daily.length) return daily;
+    if (timelineBusy) return [];
+    return scopeTimelineDaily;
+  }, [entityTimeline?.timeline?.daily, scopeTimelineDaily, timelineBusy]);
 
   const countryOptions = useMemo(() => {
     const selectorRows = Array.isArray(snapshot?.selectors?.countries) ? snapshot.selectors.countries : [];
+    const normalizeCountryRow = (row) => ({
+      spend: toFiniteNumber(row?.spend, 0),
+      conversions: toFiniteNumber(row?.conversions, 0),
+      conversionValue: toFiniteNumber(row?.conversionValue, 0),
+      addToCart: toFiniteNumber(row?.addToCart, 0),
+      checkoutsInitiated: toFiniteNumber(row?.checkoutsInitiated, 0),
+      clicks: toFiniteNumber(row?.clicks, 0),
+      impressions: toFiniteNumber(row?.impressions, 0),
+      cpm: parseNullableNumber(row?.cpm),
+      costAtc: parseNullableNumber(row?.costAtc),
+      purchaseIc: parseNullableNumber(row?.purchaseIc),
+      roas: parseNullableNumber(row?.roas)
+    });
+
     const normalizedRows = selectorRows
-      .map((row) => ({
-        code: String(row?.code || '').trim().toUpperCase() || 'ALL',
-        spend: toFiniteNumber(row?.spend, 0),
-        conversions: toFiniteNumber(row?.conversions, 0),
-        conversionValue: toFiniteNumber(row?.conversionValue, 0),
-        addToCart: toFiniteNumber(row?.addToCart, 0),
-        checkoutsInitiated: toFiniteNumber(row?.checkoutsInitiated, 0),
-        clicks: toFiniteNumber(row?.clicks, 0),
-        impressions: toFiniteNumber(row?.impressions, 0),
-        cpm: toFiniteNumber(row?.cpm, 0),
-        costAtc: toFiniteNumber(row?.costAtc, 0),
-        purchaseIc: toFiniteNumber(row?.purchaseIc, 0),
-        roas: toFiniteNumber(row?.roas, 0)
-      }))
+      .map((row) => {
+        const baseline = row?.baseline || null;
+        return {
+          code: String(row?.code || '').trim().toUpperCase() || 'ALL',
+          ...normalizeCountryRow(row),
+          baseline: baseline ? normalizeCountryRow(baseline) : null
+        };
+      })
       .filter((row) => row.code);
 
     const uniqueRows = [];
@@ -1098,10 +1261,11 @@ export default function CampaignIntelligenceUnifiedSection({
         checkoutsInitiated: 0,
         clicks: 0,
         impressions: 0,
-        cpm: 0,
-        costAtc: 0,
-        purchaseIc: 0,
-        roas: 0,
+        cpm: null,
+        costAtc: null,
+        purchaseIc: null,
+        roas: null,
+        baseline: null,
         flag: ''
       });
     }
@@ -1197,78 +1361,120 @@ export default function CampaignIntelligenceUnifiedSection({
     };
   }, [snapshot?.scope?.anchorSource]);
 
-  const countryHealthRows = useMemo(() => {
-    const rows = countryOptions
-      .filter((row) => row.code !== 'ALL')
-      .map((row) => {
-        const roas = row.roas > 0 ? row.roas : safeDivide(row.conversionValue, row.spend);
-        const costAtc = row.costAtc > 0 ? row.costAtc : safeDivide(row.spend, row.addToCart);
-        const purchaseIc = row.purchaseIc > 0 ? row.purchaseIc : safeDivide(row.conversions, row.checkoutsInitiated);
+	  const countryHealthRows = useMemo(() => {
+	    const rows = countryOptions
+	      .filter((row) => row.code !== 'ALL')
+	      .map((row) => {
+	        const roas = row.roas ?? safeDivide(row.conversionValue, row.spend);
+	        const costAtc = row.costAtc ?? safeDivide(row.spend, row.addToCart);
+	        const purchaseIc = row.purchaseIc ?? safeDivide(row.conversions, row.checkoutsInitiated);
+	        const ctr = safeDivide(row.clicks, row.impressions);
 
-        const pseudoRow = {
-          metrics: {
-            now: {
-              roas,
-              costAtc,
-              purchaseIc,
-              ctr: safeDivide(row.clicks, row.impressions),
-              cpm: row.cpm,
-              spend: row.spend
-            },
-            baseline: {
-              roas: toFiniteNumber(snapshot?.summary?.anchor?.rates?.roas, roas),
-              costAtc: toFiniteNumber(snapshot?.summary?.anchor?.totals?.spend, 0) > 0
-                ? safeDivide(toFiniteNumber(snapshot?.summary?.anchor?.totals?.spend, 0), Math.max(1, toFiniteNumber(snapshot?.summary?.anchor?.totals?.landingPageViews, 0)))
-                : costAtc,
-              purchaseIc: KEY_METRIC_BOUNDS.purchaseIcFloorRate,
-              ctr: toFiniteNumber(snapshot?.summary?.anchor?.rates?.ctr, 0),
-              cpm: toFiniteNumber(snapshot?.summary?.anchor?.rates?.cpm, row.cpm)
-            }
-          }
-        };
+	        const baseline = row.baseline || null;
+	        const baselineRoas = baseline ? (baseline.roas ?? safeDivide(baseline.conversionValue, baseline.spend)) : null;
+	        const baselineCostAtc = baseline ? (baseline.costAtc ?? safeDivide(baseline.spend, baseline.addToCart)) : null;
+	        const baselinePurchaseIc = baseline ? (baseline.purchaseIc ?? safeDivide(baseline.conversions, baseline.checkoutsInitiated)) : null;
+	        const baselineCtr = baseline ? safeDivide(baseline.clicks, baseline.impressions) : null;
+	        const baselineCpm = baseline ? (baseline.cpm ?? safeDivide(baseline.spend * 1000, baseline.impressions)) : null;
 
-        const healthScore = computeHealthScore(pseudoRow, targetRoas);
-        const direction = resolveDirectionFromScore(healthScore);
+	        const pseudoRow = {
+	          metrics: {
+	            now: {
+	              roas,
+	              costAtc,
+	              purchaseIc,
+	              ctr,
+	              cpm: row.cpm,
+	              spend: row.spend
+	            },
+	            baseline: {
+	              roas: baselineRoas,
+	              costAtc: baselineCostAtc,
+	              purchaseIc: baselinePurchaseIc,
+	              ctr: baselineCtr,
+	              cpm: baselineCpm
+	            }
+	          }
+	        };
 
-        return {
-          ...row,
-          roas,
-          costAtc,
-          purchaseIc,
-          healthScore,
-          direction
-        };
-      })
-      .sort((left, right) => right.spend - left.spend);
+	        const healthScore = computeHealthScore(pseudoRow, targetRoas);
+	        const baselineHealthScore = baselineRoas == null && baselineCostAtc == null && baselinePurchaseIc == null && baselineCtr == null && baselineCpm == null
+	          ? null
+	          : computeHealthScore({
+	            metrics: {
+	              now: {
+	                roas: baselineRoas,
+	                costAtc: baselineCostAtc,
+	                purchaseIc: baselinePurchaseIc,
+	                ctr: baselineCtr,
+	                cpm: baselineCpm,
+	                spend: baseline?.spend
+	              },
+	              baseline: {}
+	            }
+	          }, targetRoas);
+	        const direction = resolveDirectionFromScore(healthScore);
 
-    return rows.slice(0, MAX_COUNTRY_BOARD_ROWS);
-  }, [countryOptions, snapshot?.summary?.anchor, targetRoas]);
+	        return {
+	          ...row,
+	          roas,
+	          costAtc,
+	          purchaseIc,
+	          healthScore,
+	          baselineHealthScore,
+	          direction
+	        };
+	      })
+	      .sort((left, right) => right.spend - left.spend);
 
-  const countryRegimeRows = useMemo(() => {
-    const analysisStartDate = snapshot?.scope?.analysisStartDate || windowSummary.startDate;
-    return countryHealthRows
-      .slice(0, MAX_REGIME_ROWS)
-      .map((row) => {
-        const direction = row.direction || 'stable';
-        const confidence = clamp(
-          Math.round(
-            42
-              + Math.min(30, Math.log10(Math.max(1, row.spend + 1)) * 16)
-              + Math.min(22, Math.log10(Math.max(1, row.conversions + 1)) * 18)
-          ),
-          0,
-          100
-        );
-        return {
-          code: row.code,
-          label: row.label,
-          flag: row.flag,
-          direction,
-          confidence,
-          sinceDate: analysisStartDate
-        };
-      });
-  }, [countryHealthRows, snapshot?.scope?.analysisStartDate, windowSummary.startDate]);
+	    return rows.slice(0, MAX_COUNTRY_BOARD_ROWS);
+	  }, [countryOptions, targetRoas]);
+
+	  const countryRegimeRows = useMemo(() => {
+	    const baselineStartDate = String(snapshot?.scope?.anchorStartDate || '').trim();
+	    const baselineEndDate = String(snapshot?.scope?.anchorEndDate || '').trim();
+	    const analysisStartDate = String(snapshot?.scope?.analysisStartDate || windowSummary.startDate || '').trim();
+	    const analysisEndDate = String(snapshot?.scope?.analysisEndDate || windowSummary.endDate || '').trim();
+
+	    const tierFromScore = (score) => {
+	      if (!Number.isFinite(score)) return null;
+	      if (score >= HEALTH_RULES.statusCutoffs.strong) return 4;
+	      if (score >= HEALTH_RULES.statusCutoffs.healthy) return 3;
+	      if (score >= HEALTH_RULES.statusCutoffs.watch) return 2;
+	      if (score >= HEALTH_RULES.statusCutoffs.weak) return 1;
+	      return 0;
+	    };
+
+	    return countryHealthRows
+	      .filter((row) => Number.isFinite(row.baselineHealthScore))
+	      .slice(0, MAX_REGIME_ROWS)
+	      .map((row) => {
+	        const nowTier = tierFromScore(row.healthScore);
+	        const baselineTier = tierFromScore(row.baselineHealthScore);
+	        const direction = nowTier != null && baselineTier != null
+	          ? (nowTier > baselineTier ? 'improving' : nowTier < baselineTier ? 'deteriorating' : 'stable')
+	          : 'stable';
+
+	        return {
+	          code: row.code,
+	          label: row.label,
+	          flag: row.flag,
+	          direction,
+	          baselineHealthScore: row.baselineHealthScore,
+	          healthScore: row.healthScore,
+	          baselineWindow: baselineStartDate && baselineEndDate ? `${baselineStartDate} → ${baselineEndDate}` : '',
+	          analysisWindow: analysisStartDate && analysisEndDate ? `${analysisStartDate} → ${analysisEndDate}` : ''
+	        };
+	      });
+	  }, [
+	    countryHealthRows,
+	    snapshot?.scope?.anchorEndDate,
+	    snapshot?.scope?.anchorStartDate,
+	    snapshot?.scope?.analysisEndDate,
+	    snapshot?.scope?.analysisStartDate,
+	    windowSummary.endDate,
+	    windowSummary.startDate
+	  ]);
 
   const draggerDetailRows = useMemo(() => {
     const rowIndex = new Map(triageFilteredRows.map((row) => [String(row.name || '').toLowerCase(), row]));
@@ -1438,8 +1644,7 @@ export default function CampaignIntelligenceUnifiedSection({
     setToolbarCountryCode(normalizedCode);
     if (typeof onAnalysisParamsChange === 'function') {
       onAnalysisParamsChange({
-        country: normalizedCode,
-        entityId: ''
+        country: normalizedCode
       });
     }
   }, [onAnalysisParamsChange]);
@@ -1547,6 +1752,9 @@ export default function CampaignIntelligenceUnifiedSection({
   }, [briefBusy, runBriefGeneration, saveBriefSettings, settingsBusy, store?.id]);
 
   const scopeHasRows = displayRows.length > 0;
+  const campaignCount = rankedCampaignRows.length;
+  const campaignsAreLimited = !showAllCampaigns && campaignCount > DEFAULT_VISIBLE_CAMPAIGN_LIMIT;
+  const visibleCampaignCount = showAllCampaigns ? campaignCount : Math.min(DEFAULT_VISIBLE_CAMPAIGN_LIMIT, campaignCount);
 
   return (
     <div className="space-y-3">
@@ -1683,6 +1891,27 @@ export default function CampaignIntelligenceUnifiedSection({
       {scopeHasRows && (
         <section className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_360px] gap-3.5">
           <div className="rounded-2xl border bg-white overflow-hidden" style={{ borderColor: UI_SURFACE_STYLE.cardBorder }}>
+            <div
+              className="flex items-center justify-between gap-2 px-3 py-2 border-b"
+              style={{ borderColor: '#eef1ff', background: 'linear-gradient(135deg, #f7f9ff, #fbfcff)' }}
+            >
+              <div className="text-[12px] font-semibold text-[#1a2754]">
+                {showAllCampaigns
+                  ? `Showing ${visibleCampaignCount} campaign${visibleCampaignCount === 1 ? '' : 's'}`
+                  : `Showing top ${visibleCampaignCount} campaign${visibleCampaignCount === 1 ? '' : 's'} by purchases`}
+                {campaignCount ? ` (of ${campaignCount})` : ''}
+              </div>
+              {(campaignsAreLimited || showAllCampaigns) && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllCampaigns((previous) => !previous)}
+                  className="text-[11px] font-bold rounded-full border px-3 py-1"
+                  style={{ borderColor: '#d5dcff', color: '#31407b', background: '#fff' }}
+	                >
+	                  {showAllCampaigns ? `Show top ${DEFAULT_VISIBLE_CAMPAIGN_LIMIT}` : 'Show all'}
+	                </button>
+	              )}
+	            </div>
             <div className="overflow-auto">
               <table className="w-full border-collapse" style={{ minWidth: `${TABLE_MIN_WIDTH_PX}px` }}>
                 <thead>
@@ -1789,10 +2018,21 @@ export default function CampaignIntelligenceUnifiedSection({
               <h4 className="text-[18px] font-semibold text-[#0f172a]" style={{ fontFamily: TYPOGRAPHY_HEADING }}>
                 {selectedRow ? selectedRow.name : 'Select a row'}
               </h4>
-              <p className="mt-0.5 text-[12px] text-[#5d6785]">
-                {selectedRow ? `${selectedRow.type} | Health ${selectedRow.healthScore}` : 'Right panel explains exactly what changed first.'}
-              </p>
-            </div>
+	              <p className="mt-0.5 text-[12px] text-[#5d6785]">
+	                {selectedRow ? `${selectedRow.type} | Health ${selectedRow.healthScore}` : 'Right panel explains exactly what changed first.'}
+	              </p>
+	              {timelineBusy && (
+	                <div className="mt-1 text-[11px] text-[#5d6785] inline-flex items-center gap-2">
+	                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+	                  Loading row timeline…
+	                </div>
+	              )}
+	              {!timelineBusy && timelineError && (
+	                <div className="mt-1 text-[11px] text-[#b42828]">
+	                  {timelineError}. Showing scope timeline as fallback.
+	                </div>
+	              )}
+	            </div>
 
             <section className="rounded-xl border p-2.5" style={{ borderColor: '#e4e8ff', background: 'linear-gradient(165deg, #fbfcff, #f6f8ff)' }}>
               <div className="flex items-center justify-between gap-2 mb-2">
@@ -1821,17 +2061,20 @@ export default function CampaignIntelligenceUnifiedSection({
             </section>
 
             <section className="rounded-[10px] border p-2" style={{ borderColor: '#e2e7ff', background: '#fff' }}>
-              <div className="text-[12px] font-bold text-[#1b2a61]">Funnel Trend ({windowSummary.windowDays}d)</div>
+              <div className="text-[12px] font-bold text-[#1b2a61]">Purchases ({windowSummary.windowDays}d)</div>
               <svg viewBox={`0 0 ${PANEL_CHART_WIDTH} ${PANEL_CHART_HEIGHT}`} className="w-full h-[82px] mt-1">
                 <polyline points={buildSparklinePoints(purchasesSeries, PANEL_CHART_WIDTH, PANEL_CHART_HEIGHT)} fill="none" stroke="#1f63ff" strokeWidth="2" />
+              </svg>
+
+              <div className="text-[12px] font-bold text-[#1b2a61] mt-2">Spend ({windowSummary.windowDays}d)</div>
+              <svg viewBox={`0 0 ${PANEL_CHART_WIDTH} ${PANEL_CHART_HEIGHT}`} className="w-full h-[82px] mt-1">
                 <polyline points={buildSparklinePoints(spendSeries, PANEL_CHART_WIDTH, PANEL_CHART_HEIGHT)} fill="none" stroke="#5b4fff" strokeWidth="2" />
+              </svg>
+
+              <div className="text-[12px] font-bold text-[#1b2a61] mt-2">Health ({windowSummary.windowDays}d)</div>
+              <svg viewBox={`0 0 ${PANEL_CHART_WIDTH} ${PANEL_CHART_HEIGHT}`} className="w-full h-[82px] mt-1">
                 <polyline points={buildSparklinePoints(healthSeries, PANEL_CHART_WIDTH, PANEL_CHART_HEIGHT)} fill="none" stroke="#0f9d7a" strokeWidth="2" />
               </svg>
-              <div className="flex flex-wrap gap-2 text-[11px] text-[#5f6e98]">
-                <span><i className="inline-block w-2.5 h-2.5 rounded-full mr-1 align-middle" style={{ background: '#1f63ff' }} />Purchases</span>
-                <span><i className="inline-block w-2.5 h-2.5 rounded-full mr-1 align-middle" style={{ background: '#5b4fff' }} />Spend</span>
-                <span><i className="inline-block w-2.5 h-2.5 rounded-full mr-1 align-middle" style={{ background: '#0f9d7a' }} />Health</span>
-              </div>
             </section>
 
             <section className="rounded-[10px] border p-2" style={{ borderColor: '#e2e7ff', background: '#fff' }}>
@@ -1880,17 +2123,18 @@ export default function CampaignIntelligenceUnifiedSection({
             <p className="mt-2 text-[13px] leading-relaxed text-[#243463]">{renderedBrief.executiveSummary}</p>
           </article>
 
-          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3">
-            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Country Regime Changes</h4>
-            <ul className="mt-2 space-y-1.5 text-[12px] text-[#243463]">
-              {countryRegimeRows.map((row) => (
-                <li key={`regime-${row.code}`}>
-                  <b>{row.flag ? `${row.flag} ` : ''}{row.label}:</b> {titleCaseDirection(row.direction)} since <b>{row.sinceDate}</b>, confidence {row.confidence}/100.
-                </li>
-              ))}
-              {countryRegimeRows.length === 0 && <li>Insufficient country-level regime evidence in this scope.</li>}
-            </ul>
-          </article>
+	          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3">
+	            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Country Shifts (vs baseline window)</h4>
+	            <ul className="mt-2 space-y-1.5 text-[12px] text-[#243463]">
+	              {countryRegimeRows.map((row) => (
+	                <li key={`regime-${row.code}`}>
+	                  <b>{row.flag ? `${row.flag} ` : ''}{row.label}:</b> {titleCaseDirection(row.direction)} ({row.baselineHealthScore} → {row.healthScore})
+	                  {(row.baselineWindow && row.analysisWindow) ? ` · ${row.baselineWindow} vs ${row.analysisWindow}` : ''}
+	                </li>
+	              ))}
+	              {countryRegimeRows.length === 0 && <li>Insufficient country-level regime evidence in this scope.</li>}
+	            </ul>
+	          </article>
 
           <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3 xl:col-span-2">
             <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Country Health Board</h4>

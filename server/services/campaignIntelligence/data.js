@@ -829,10 +829,22 @@ export function fetchCountryOptions(scope) {
       checkoutsInitiated: Math.round(row.checkoutsInitiated),
       clicks: Math.round(row.clicks),
       impressions: Math.round(row.impressions),
-      roas: round(safeDivide(row.conversionValue, row.spend), 4),
-      costAtc: round(safeDivide(row.spend, row.addToCart), 4),
-      purchaseIc: round(safeDivide(row.conversions, row.checkoutsInitiated), 4),
-      cpm: round(safeDivide(row.spend * 1000, row.impressions), 4)
+      roas: (() => {
+        const value = safeDivide(row.conversionValue, row.spend, null);
+        return value == null ? null : round(value, 4);
+      })(),
+      costAtc: (() => {
+        const value = safeDivide(row.spend, row.addToCart, null);
+        return value == null ? null : round(value, 4);
+      })(),
+      purchaseIc: (() => {
+        const value = safeDivide(row.conversions, row.checkoutsInitiated, null);
+        return value == null ? null : round(value, 4);
+      })(),
+      cpm: (() => {
+        const value = safeDivide(row.spend * 1000, row.impressions, null);
+        return value == null ? null : round(value, 4);
+      })()
     }))
     .sort((left, right) => right.spend - left.spend)
     .slice(0, selectorLimit);
@@ -1498,7 +1510,111 @@ function fetchHierarchyLevelWindowRows({
   }));
 }
 
+function fetchHierarchyLevelWindowRowsForIds({
+  db,
+  store,
+  level,
+  startDate,
+  endDate,
+  country,
+  ids,
+  activeEndDate
+}) {
+  const idList = Array.isArray(ids)
+    ? ids.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  if (!idList.length) return [];
+
+  const queryConfig = buildLevelWindowQueryConfig(level);
+  const { whereSql, args } = buildScopeWhere(queryConfig.levelConfig, {
+    store,
+    startDate,
+    endDate,
+    entityId: null,
+    country
+  });
+  const whereParts = [whereSql];
+  const queryArgs = [...args];
+
+  const activeFilter = buildActiveEntitySubqueryFilter({
+    db,
+    tableName: queryConfig.levelConfig.table,
+    idColumn: queryConfig.levelConfig.idColumn,
+    statusColumns: queryConfig.statusColumns,
+    store,
+    endDate: activeEndDate || endDate,
+    country,
+    entityId: null
+  });
+  if (activeFilter) {
+    whereParts.push(activeFilter.clause);
+    queryArgs.push(...activeFilter.args);
+  }
+
+  const placeholders = idList.map(() => '?').join(', ');
+  whereParts.push(`${queryConfig.levelConfig.idColumn} IN (${placeholders})`);
+  queryArgs.push(...idList);
+
+  const rows = db.prepare(`
+    SELECT
+      ${queryConfig.levelConfig.idColumn} as id,
+      ${queryConfig.levelConfig.nameColumn} as name
+      ${queryConfig.extraSelect},
+      SUM(spend) as spend,
+      SUM(impressions) as impressions,
+      SUM(reach) as reach,
+      SUM(clicks) as clicks,
+      SUM(landing_page_views) as landingPageViews,
+      SUM(add_to_cart) as addToCart,
+      SUM(checkouts_initiated) as checkoutsInitiated,
+      SUM(conversions) as conversions,
+      SUM(conversion_value) as conversionValue
+    FROM ${queryConfig.levelConfig.table}
+    WHERE ${whereParts.join(' AND ')}
+    GROUP BY ${queryConfig.groupBy}
+    HAVING SUM(spend) > 0
+  `).all(...queryArgs);
+
+  return rows.map((row) => ({
+    id: String(row.id || ''),
+    name: formatEntityNameFallback(row, queryConfig.levelConfig.label),
+    campaignId: row?.campaignId ? String(row.campaignId) : null,
+    campaignName: row?.campaignName ? String(row.campaignName) : null,
+    adsetId: row?.adsetId ? String(row.adsetId) : null,
+    adsetName: row?.adsetName ? String(row.adsetName) : null,
+    totals: {
+      spend: toNumber(row.spend),
+      impressions: toNumber(row.impressions),
+      reach: toNumber(row.reach),
+      clicks: toNumber(row.clicks),
+      landingPageViews: toNumber(row.landingPageViews),
+      addToCart: toNumber(row.addToCart),
+      checkoutsInitiated: toNumber(row.checkoutsInitiated),
+      conversions: toNumber(row.conversions),
+      conversionValue: toNumber(row.conversionValue)
+    }
+  }));
+}
+
 function buildHierarchyMetricSet(totals = {}) {
+  if (!totals) {
+    return {
+      spend: null,
+      purchases: null,
+      ctr: null,
+      hookRate: null,
+      lpvClick: null,
+      atcLpv: null,
+      costAtc: null,
+      icAtc: null,
+      purchaseIc: null,
+      roas: null,
+      frequency: null,
+      cpm: null,
+      concentration: null
+    };
+  }
+
   const spend = toNumber(totals.spend);
   const impressions = toNumber(totals.impressions);
   const reach = toNumber(totals.reach);
@@ -1509,18 +1625,29 @@ function buildHierarchyMetricSet(totals = {}) {
   const conversions = toNumber(totals.conversions);
   const conversionValue = toNumber(totals.conversionValue);
 
+  const ctr = safeDivide(clicks, impressions, null);
+  const lpvClick = safeDivide(landingPageViews, clicks, null);
+  const atcLpv = safeDivide(addToCart, landingPageViews, null);
+  const costAtc = safeDivide(spend, addToCart, null);
+  const icAtc = safeDivide(checkoutsInitiated, addToCart, null);
+  const purchaseIc = safeDivide(conversions, checkoutsInitiated, null);
+  const roas = safeDivide(conversionValue, spend, null);
+  const frequency = safeDivide(impressions, reach, null);
+  const cpm = safeDivide(spend * 1000, impressions, null);
+
   return {
     spend: round(spend, HIERARCHY_METRIC_DECIMALS.amount),
-    ctr: round(safeDivide(clicks, impressions), HIERARCHY_METRIC_DECIMALS.ratio),
+    purchases: Math.round(conversions),
+    ctr: ctr == null ? null : round(ctr, HIERARCHY_METRIC_DECIMALS.ratio),
     hookRate: null,
-    lpvClick: round(safeDivide(landingPageViews, clicks), HIERARCHY_METRIC_DECIMALS.ratio),
-    atcLpv: round(safeDivide(addToCart, landingPageViews), HIERARCHY_METRIC_DECIMALS.ratio),
-    costAtc: round(safeDivide(spend, addToCart), HIERARCHY_METRIC_DECIMALS.amount),
-    icAtc: round(safeDivide(checkoutsInitiated, addToCart), HIERARCHY_METRIC_DECIMALS.ratio),
-    purchaseIc: round(safeDivide(conversions, checkoutsInitiated), HIERARCHY_METRIC_DECIMALS.ratio),
-    roas: round(safeDivide(conversionValue, spend), HIERARCHY_METRIC_DECIMALS.ratio),
-    frequency: round(safeDivide(impressions, reach), HIERARCHY_METRIC_DECIMALS.ratio),
-    cpm: round(safeDivide(spend * 1000, impressions), HIERARCHY_METRIC_DECIMALS.amount),
+    lpvClick: lpvClick == null ? null : round(lpvClick, HIERARCHY_METRIC_DECIMALS.ratio),
+    atcLpv: atcLpv == null ? null : round(atcLpv, HIERARCHY_METRIC_DECIMALS.ratio),
+    costAtc: costAtc == null ? null : round(costAtc, HIERARCHY_METRIC_DECIMALS.amount),
+    icAtc: icAtc == null ? null : round(icAtc, HIERARCHY_METRIC_DECIMALS.ratio),
+    purchaseIc: purchaseIc == null ? null : round(purchaseIc, HIERARCHY_METRIC_DECIMALS.ratio),
+    roas: roas == null ? null : round(roas, HIERARCHY_METRIC_DECIMALS.ratio),
+    frequency: frequency == null ? null : round(frequency, HIERARCHY_METRIC_DECIMALS.ratio),
+    cpm: cpm == null ? null : round(cpm, HIERARCHY_METRIC_DECIMALS.amount),
     concentration: null
   };
 }
@@ -1550,7 +1677,7 @@ function buildHierarchyLevelRows({ level, analysisRows = [], anchorRows = [] }) 
       adsetName: analysisRow.adsetName || (level === 'adset' ? analysisRow.name : null),
       metrics: {
         now: buildHierarchyMetricSet(analysisRow.totals),
-        baseline: buildHierarchyMetricSet(anchorRow?.totals || {})
+        baseline: buildHierarchyMetricSet(anchorRow?.totals ?? null)
       }
     };
   });
@@ -1637,32 +1764,16 @@ export function fetchUnifiedHierarchyRows({
     limit: adLimit
   });
 
-  const anchorCampaignRows = fetchHierarchyLevelWindowRows({
+  const analysisCampaignIds = analysisCampaignRows.map((row) => row.id);
+  const anchorCampaignRows = fetchHierarchyLevelWindowRowsForIds({
     db,
     store,
     level: 'campaign',
     startDate: anchorRange.startDate,
     endDate: anchorRange.endDate,
     country,
-    limit: campaignLimit
-  });
-  const anchorAdsetRows = fetchHierarchyLevelWindowRows({
-    db,
-    store,
-    level: 'adset',
-    startDate: anchorRange.startDate,
-    endDate: anchorRange.endDate,
-    country,
-    limit: adsetLimit
-  });
-  const anchorAdRows = fetchHierarchyLevelWindowRows({
-    db,
-    store,
-    level: 'ad',
-    startDate: anchorRange.startDate,
-    endDate: anchorRange.endDate,
-    country,
-    limit: adLimit
+    ids: analysisCampaignIds,
+    activeEndDate: analysisRange.endDate
   });
 
   const campaignRows = buildHierarchyLevelRows({
@@ -1672,20 +1783,42 @@ export function fetchUnifiedHierarchyRows({
   });
   const campaignIdSet = new Set(campaignRows.map((row) => row.entityId));
 
-  const adsetRowsAll = buildHierarchyLevelRows({
+  const analysisAdsetRowsFiltered = analysisAdsetRows.filter((row) => row.campaignId && campaignIdSet.has(row.campaignId));
+  const anchorAdsetRows = fetchHierarchyLevelWindowRowsForIds({
+    db,
+    store,
     level: 'adset',
-    analysisRows: analysisAdsetRows,
+    startDate: anchorRange.startDate,
+    endDate: anchorRange.endDate,
+    country,
+    ids: analysisAdsetRowsFiltered.map((row) => row.id),
+    activeEndDate: analysisRange.endDate
+  });
+
+  const adsetRows = buildHierarchyLevelRows({
+    level: 'adset',
+    analysisRows: analysisAdsetRowsFiltered,
     anchorRows: anchorAdsetRows
   });
-  const adsetRows = adsetRowsAll.filter((row) => row.campaignId && campaignIdSet.has(row.campaignId));
   const adsetIdSet = new Set(adsetRows.map((row) => row.entityId));
 
-  const adRowsAll = buildHierarchyLevelRows({
+  const analysisAdRowsFiltered = analysisAdRows.filter((row) => row.adsetId && adsetIdSet.has(row.adsetId));
+  const anchorAdRows = fetchHierarchyLevelWindowRowsForIds({
+    db,
+    store,
     level: 'ad',
-    analysisRows: analysisAdRows,
+    startDate: anchorRange.startDate,
+    endDate: anchorRange.endDate,
+    country,
+    ids: analysisAdRowsFiltered.map((row) => row.id),
+    activeEndDate: analysisRange.endDate
+  });
+
+  const adRows = buildHierarchyLevelRows({
+    level: 'ad',
+    analysisRows: analysisAdRowsFiltered,
     anchorRows: anchorAdRows
   });
-  const adRows = adRowsAll.filter((row) => row.adsetId && adsetIdSet.has(row.adsetId));
 
   const adsetsByCampaign = new Map();
   for (const row of adsetRows) {
