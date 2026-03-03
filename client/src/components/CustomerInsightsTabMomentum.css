@@ -530,6 +530,10 @@
   overflow-wrap: anywhere;
 }
 
+.pm-trigger.pm-lookback {
+  text-transform: none;
+}
+
 .pm-severity-pill {
   font-size: 0.7rem;
   font-weight: 700;

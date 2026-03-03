@@ -118,6 +118,65 @@ const formatSharePoints = (value) => {
   return `${prefix}${Math.abs(points).toFixed(1)}pp`;
 };
 
+const ISO_MONTH_SHORT = Object.freeze([
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec'
+]);
+
+const normalizeIsoDate = (value) => {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  return text.length >= 10 ? text.slice(0, 10) : text;
+};
+
+const formatIsoDateShort = (isoDate) => {
+  const normalized = normalizeIsoDate(isoDate);
+  if (!normalized) return null;
+  const parts = normalized.split('-');
+  if (parts.length !== 3) return normalized;
+  const monthIndex = Number(parts[1]) - 1;
+  const day = Number(parts[2]);
+  const monthLabel = ISO_MONTH_SHORT[monthIndex];
+  if (!monthLabel || !Number.isFinite(day) || day <= 0) return normalized;
+  return `${monthLabel} ${day}`;
+};
+
+const resolveSparklineWindow = (sparkline) => {
+  if (!Array.isArray(sparkline) || !sparkline.length) return null;
+  let minDate = null;
+  let maxDate = null;
+
+  sparkline.forEach((point) => {
+    const isoDate = normalizeIsoDate(point?.date);
+    if (!isoDate) return;
+    if (!minDate || isoDate < minDate) minDate = isoDate;
+    if (!maxDate || isoDate > maxDate) maxDate = isoDate;
+  });
+
+  if (!minDate && !maxDate) return null;
+  return { startDate: minDate, endDate: maxDate };
+};
+
+const formatSparklineLookback = (sparkline) => {
+  const window = resolveSparklineWindow(sparkline);
+  if (!window?.startDate) return null;
+  const startLabel = formatIsoDateShort(window.startDate) || window.startDate;
+  const endLabel = window.endDate ? (formatIsoDateShort(window.endDate) || window.endDate) : null;
+  if (!endLabel || window.startDate === window.endDate) return startLabel;
+  return `${startLabel} → ${endLabel}`;
+};
+
 const getUpperMetricById = (kpis, id) => (kpis || []).find((row) => row?.id === id) || null;
 
 const resolveUpperMetrics = (kpis = []) => {
@@ -291,6 +350,7 @@ function MomentumCard({ product, mode }) {
   const impactClass = polarity === 'risk' ? 'pm-impact-risk' : 'pm-impact-opportunity';
   const polarityLabel = polarity === 'risk' ? 'Risk' : 'Opportunity';
   const signal = product?.statistical?.signal || null;
+  const lookbackLabel = formatSparklineLookback(product?.sparkline);
   const thumbnailSrc = typeof product?.image_url === 'string'
     ? product.image_url
     : typeof product?.imageUrl === 'string'
@@ -313,6 +373,11 @@ function MomentumCard({ product, mode }) {
           </div>
           <div className="pm-card-news">{headline}</div>
           {subline ? <div className="pm-card-news-subline">{subline}</div> : null}
+          {lookbackLabel ? (
+            <div className="pm-card-meta">
+              <span className="pm-trigger pm-lookback">Lookback: {lookbackLabel}</span>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -390,12 +455,14 @@ function ProductMomentumSection({ section, store, dateRange }) {
   const layer1Selected = (section?.products || []).filter((row) => row?.trigger);
   const layer1Live = (liveSection?.products || []).filter((row) => row?.trigger);
   const layer1 = layer1Mode === MOMENTUM_MODE_LIVE && layer1Live.length ? layer1Live : layer1Selected;
-  const layer2 = (section?.products || []).filter((row) => row?.exceptionalEvent);
+  const layer2Live = (liveSection?.products || []).filter((row) => row?.exceptionalEvent);
+  const layer2 = layer2Live;
   const thresholds = (layer1Mode === MOMENTUM_MODE_LIVE ? liveSection?.methodology : section?.methodology)?.thresholds
     || section?.methodology?.thresholds
     || {};
   const activeSummary = layer1Mode === MOMENTUM_MODE_LIVE ? (liveSection?.summary || section?.summary) : section?.summary;
   const selectedLabel = dateRange?.type === 'custom' ? 'Selected range' : 'Selected range';
+  const layer2CountLabel = liveLoading ? 'Loading...' : liveError ? 'Unavailable' : `${layer2.length} detected`;
 
   return (
     <div className="pm-root">
@@ -453,8 +520,8 @@ function ProductMomentumSection({ section, store, dateRange }) {
 
         <div className="pm-layer">
           <div className="pm-layer-head">
-            <h4>Exceptional events</h4>
-            <span>{`${layer2.length} detected`}</span>
+            <h4>Breaking news</h4>
+            <span>{layer2CountLabel}</span>
           </div>
           {layer2.length ? (
             <div className="pm-list">
@@ -467,8 +534,17 @@ function ProductMomentumSection({ section, store, dateRange }) {
               ))}
             </div>
           ) : (
-            <div className="pm-empty">No exceptional event is active in this window.</div>
+            <div className="pm-empty">
+              {liveLoading
+                ? 'Loading breaking news...'
+                : liveError
+                  ? 'Breaking news could not be loaded right now.'
+                  : 'No breaking news is active right now.'}
+            </div>
           )}
+          {liveError ? (
+            <div className="pm-note">Tip: Breaking news uses the live {MOMENTUM_LIVE_WINDOW_DAYS}d monitor and is independent of the dashboard date range.</div>
+          ) : null}
         </div>
       </section>
 
