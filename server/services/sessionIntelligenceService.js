@@ -36,7 +36,34 @@ const CLARITY_SIGNAL_EVENT_NAMES = [
 const THEME_SIGNAL_SOURCES = ['theme_pixel', 'virona-pixel-v1'];
 
 const SHOPPER_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
+const REALTIME_FOCUS_GEO_LIMIT = 12;
+const REALTIME_GEO_FALLBACK_SAMPLE_LIMIT = 1500;
+const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
+const JOURNEY_DEFAULT_DAYS = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_JOURNEY_DEFAULT_DAYS || '7', 10) || 7, 1),
+  90
+);
+const JOURNEY_TABLE_MAX_LIMIT = 200;
+const JOURNEY_TABLE_DEFAULT_LIMIT = 25;
+const JOURNEY_SESSION_QUERY_CHUNK = 250;
+const JOURNEY_SESSION_QUERY_LIMIT = 5000;
+const JOURNEY_PRODUCT_ID_PREVIEW_CHARS = 14;
+const JOURNEY_COUNTRY_UNKNOWN_KEY = 'UNKNOWN';
+const JOURNEY_EXCLUDED_PATH_SEGMENTS = new Set([
+  'policies',
+  'policy',
+  'privacy',
+  'terms'
+]);
+const JOURNEY_EXCLUDED_PATH_SUBSTRINGS = [
+  'care-guide',
+  'guide-care',
+  '/pages/care',
+  '/pages/privacy',
+  '/pages/terms'
+];
 const lastShopperBackfillByStore = new Map();
+const realtimeFocusGeoFallbackCache = new Map();
 
 function normalizeSqliteDateTime(value) {
   const date = value ? new Date(value) : new Date();
@@ -60,6 +87,159 @@ function safeTruncate(value, max = 240) {
   const str = safeString(value);
   if (!str) return null;
   return str.length > max ? str.slice(0, max) : str;
+}
+
+function safeDecodeUriComponent(value) {
+  const raw = safeString(value);
+  if (!raw) return raw;
+  try {
+    return decodeURIComponent(raw);
+  } catch (_error) {
+    return raw;
+  }
+}
+
+function normalizePathFromAny(value) {
+  const raw = safeString(value).trim();
+  if (!raw) return null;
+
+  if (raw.startsWith('/')) {
+    const pathOnly = raw.split('?')[0].split('#')[0];
+    return pathOnly || '/';
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const pathOnly = safeString(parsed.pathname).split('?')[0].split('#')[0];
+    return pathOnly || '/';
+  } catch (_error) {
+    return null;
+  }
+}
+
+function isLocalePathSegment(segment) {
+  const raw = safeString(segment).trim().toLowerCase();
+  if (!raw) return false;
+  return /^[a-z]{2}([-_][a-z]{2})?$/.test(raw);
+}
+
+function stripLocalePrefixFromPath(pathname) {
+  const rawPath = normalizePathFromAny(pathname);
+  if (!rawPath || !rawPath.startsWith('/')) return rawPath;
+
+  const parts = rawPath.split('/').filter(Boolean);
+  if (!parts.length) return '/';
+  if (isLocalePathSegment(parts[0])) {
+    const rest = parts.slice(1).join('/');
+    return rest ? `/${rest}` : '/';
+  }
+  return `/${parts.join('/')}`;
+}
+
+function normalizeJourneyPath(pathname) {
+  const normalized = stripLocalePrefixFromPath(pathname);
+  if (!normalized) return null;
+  if (normalized === '/') return '/';
+  return normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+}
+
+function isJourneyCheckoutPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  return Boolean(normalized && normalized.startsWith('/checkouts/'));
+}
+
+function isJourneyExcludedPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  if (!normalized) return false;
+
+  const lowered = normalized.toLowerCase();
+  const parts = lowered.split('/').filter(Boolean);
+  if (parts.some((part) => JOURNEY_EXCLUDED_PATH_SEGMENTS.has(part))) return true;
+  return JOURNEY_EXCLUDED_PATH_SUBSTRINGS.some((needle) => lowered.includes(needle));
+}
+
+function isJourneyLandingPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  if (!normalized) return false;
+  if (isJourneyCheckoutPath(normalized)) return false;
+  if (isJourneyExcludedPath(normalized)) return false;
+  return true;
+}
+
+function titleCaseFromHandle(handle) {
+  const decoded = safeDecodeUriComponent(handle).replace(/[-_]+/g, ' ').trim();
+  if (!decoded) return null;
+  return decoded
+    .split(/\s+/)
+    .slice(0, 12)
+    .map((word) => (/^[a-z]/.test(word) ? `${word[0].toUpperCase()}${word.slice(1)}` : word))
+    .join(' ');
+}
+
+function classifyJourneyLandingLabel(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  if (!normalized) return null;
+
+  if (normalized === '/') return 'Home';
+  if (normalized === '/cart') return 'Cart';
+  if (normalized.startsWith('/search')) return 'Search';
+
+  const segments = normalized.split('/').filter(Boolean);
+  if (!segments.length) return 'Home';
+
+  if (segments[0] === 'products' && segments[1]) {
+    const title = titleCaseFromHandle(segments[1]);
+    return title ? `Product: ${title}` : 'Product';
+  }
+  if (segments[0] === 'collections' && segments[1]) {
+    const title = titleCaseFromHandle(segments[1]);
+    return title ? `Collection: ${title}` : 'Collection';
+  }
+  if (segments[0] === 'pages' && segments[1]) {
+    const title = titleCaseFromHandle(segments[1]);
+    return title ? `Page: ${title}` : 'Page';
+  }
+
+  const title = titleCaseFromHandle(segments[0]);
+  return title || normalized;
+}
+
+function extractJourneyProductLabelFromPath(pathname) {
+  const normalized = normalizeJourneyPath(pathname);
+  if (!normalized) return null;
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments[0] !== 'products' || !segments[1]) return null;
+  return titleCaseFromHandle(segments[1]);
+}
+
+function formatJourneyProductLabel({ title, productId }) {
+  const titleLabel = safeString(title).trim();
+  if (titleLabel) return safeTruncate(titleLabel, 180);
+
+  const rawId = safeString(productId).trim();
+  if (!rawId) return 'Unknown product';
+
+  const preview = rawId.length > JOURNEY_PRODUCT_ID_PREVIEW_CHARS
+    ? rawId.slice(-JOURNEY_PRODUCT_ID_PREVIEW_CHARS)
+    : rawId;
+  return `Product ${preview}`;
+}
+
+function normalizeJourneyDeviceSegment(deviceTypeRaw) {
+  const raw = safeString(deviceTypeRaw).trim().toLowerCase();
+  if (!raw) return 'unknown';
+  if (raw.includes('desktop')) return 'desktop';
+  if (raw.includes('ipad') || raw.includes('tablet')) return 'tablet';
+  if (raw.includes('ios') || raw.includes('iphone')) return 'ios';
+  if (raw.includes('android')) return 'android';
+  if (raw.includes('mobile')) return 'mobile';
+  return 'unknown';
+}
+
+function normalizeJourneyCountrySegment(countryCodeRaw) {
+  const code = safeString(countryCodeRaw).trim().toUpperCase();
+  if (/^[A-Z]{2}$/.test(code)) return code;
+  return JOURNEY_COUNTRY_UNKNOWN_KEY;
 }
 
 function getOrCreateShopperNumber(store, clientId, eventTs) {
@@ -460,23 +640,165 @@ function inferDeviceType(payload) {
 
 function extractCountryCode(payload) {
   const envelope = getEventEnvelope(payload);
+  const eventData = getEventData(payload);
   const candidates = [
     payload?.geoipCountryCode,
     payload?.countryCode,
     payload?.country_code,
     payload?.data?.checkout?.shippingAddress?.countryCode,
     payload?.data?.checkout?.billingAddress?.countryCode,
+    payload?.checkout?.shippingAddress?.countryCode,
+    payload?.checkout?.billingAddress?.countryCode,
     envelope?.geoipCountryCode,
     envelope?.countryCode,
     envelope?.country_code,
     envelope?.data?.checkout?.shippingAddress?.countryCode,
-    envelope?.data?.checkout?.billingAddress?.countryCode
+    envelope?.data?.checkout?.billingAddress?.countryCode,
+    envelope?.checkout?.shippingAddress?.countryCode,
+    envelope?.checkout?.billingAddress?.countryCode,
+    eventData?.checkout?.shippingAddress?.countryCode,
+    eventData?.checkout?.billingAddress?.countryCode
   ];
   for (const value of candidates) {
     if (typeof value === 'string' && /^[A-Za-z]{2}$/.test(value.trim())) {
       return value.trim().toUpperCase();
     }
   }
+  return null;
+}
+
+function normalizeGeoLabel(value, { uppercase = false, maxLength = 64 } = {}) {
+  const raw = safeString(value).replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  const normalized = uppercase ? raw.toUpperCase() : raw;
+  const lowered = normalized.toLowerCase();
+
+  if (
+    lowered === '[redacted]' ||
+    lowered === 'redacted' ||
+    lowered === 'unknown' ||
+    lowered === 'n/a' ||
+    lowered === 'na' ||
+    lowered === 'null'
+  ) {
+    return null;
+  }
+
+  return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+}
+
+function extractRegionLabel(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const envelope = getEventEnvelope(payload);
+  const eventData = getEventData(payload);
+
+  const candidates = [
+    payload?.regionCode,
+    payload?.region_code,
+    payload?.region,
+    payload?.stateCode,
+    payload?.state_code,
+    payload?.state,
+    payload?.provinceCode,
+    payload?.province_code,
+    payload?.province,
+    payload?.geoipRegionCode,
+    payload?.geoipRegion,
+    payload?.context?.location?.regionCode,
+    payload?.context?.location?.region,
+    payload?.checkout?.shippingAddress?.provinceCode,
+    payload?.checkout?.shippingAddress?.province,
+    payload?.checkout?.shippingAddress?.state,
+    payload?.checkout?.billingAddress?.provinceCode,
+    payload?.checkout?.billingAddress?.province,
+    payload?.checkout?.billingAddress?.state,
+    payload?.data?.checkout?.shippingAddress?.provinceCode,
+    payload?.data?.checkout?.shippingAddress?.province,
+    payload?.data?.checkout?.shippingAddress?.state,
+    payload?.data?.checkout?.billingAddress?.provinceCode,
+    payload?.data?.checkout?.billingAddress?.province,
+    payload?.data?.checkout?.billingAddress?.state,
+    envelope?.regionCode,
+    envelope?.region_code,
+    envelope?.region,
+    envelope?.stateCode,
+    envelope?.state_code,
+    envelope?.state,
+    envelope?.provinceCode,
+    envelope?.province_code,
+    envelope?.province,
+    envelope?.geoipRegionCode,
+    envelope?.geoipRegion,
+    envelope?.context?.location?.regionCode,
+    envelope?.context?.location?.region,
+    envelope?.checkout?.shippingAddress?.provinceCode,
+    envelope?.checkout?.shippingAddress?.province,
+    envelope?.checkout?.shippingAddress?.state,
+    envelope?.checkout?.billingAddress?.provinceCode,
+    envelope?.checkout?.billingAddress?.province,
+    envelope?.checkout?.billingAddress?.state,
+    envelope?.data?.checkout?.shippingAddress?.provinceCode,
+    envelope?.data?.checkout?.shippingAddress?.province,
+    envelope?.data?.checkout?.shippingAddress?.state,
+    envelope?.data?.checkout?.billingAddress?.provinceCode,
+    envelope?.data?.checkout?.billingAddress?.province,
+    envelope?.data?.checkout?.billingAddress?.state,
+    eventData?.checkout?.shippingAddress?.provinceCode,
+    eventData?.checkout?.shippingAddress?.province,
+    eventData?.checkout?.shippingAddress?.state,
+    eventData?.checkout?.billingAddress?.provinceCode,
+    eventData?.checkout?.billingAddress?.province,
+    eventData?.checkout?.billingAddress?.state
+  ];
+
+  for (const value of candidates) {
+    const label = normalizeGeoLabel(value, { maxLength: 48 });
+    if (!label) continue;
+
+    // Keep short region/state codes normalized to uppercase.
+    if (/^[A-Za-z0-9_-]{2,12}$/.test(label)) {
+      return label.toUpperCase();
+    }
+    return label;
+  }
+
+  return null;
+}
+
+function extractCityLabel(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const envelope = getEventEnvelope(payload);
+  const eventData = getEventData(payload);
+
+  const candidates = [
+    payload?.city,
+    payload?.town,
+    payload?.locality,
+    payload?.geoipCity,
+    payload?.context?.location?.city,
+    payload?.checkout?.shippingAddress?.city,
+    payload?.checkout?.billingAddress?.city,
+    payload?.data?.checkout?.shippingAddress?.city,
+    payload?.data?.checkout?.billingAddress?.city,
+    envelope?.city,
+    envelope?.town,
+    envelope?.locality,
+    envelope?.geoipCity,
+    envelope?.context?.location?.city,
+    envelope?.checkout?.shippingAddress?.city,
+    envelope?.checkout?.billingAddress?.city,
+    envelope?.data?.checkout?.shippingAddress?.city,
+    envelope?.data?.checkout?.billingAddress?.city,
+    eventData?.checkout?.shippingAddress?.city,
+    eventData?.checkout?.billingAddress?.city
+  ];
+
+  for (const value of candidates) {
+    const label = normalizeGeoLabel(value, { maxLength: 80 });
+    if (!label) continue;
+    return label;
+  }
+
   return null;
 }
 
@@ -1505,6 +1827,87 @@ function topCountsFromMap(map, limit = 10) {
     .map(([value, count]) => ({ value, count }));
 }
 
+function incrementMapCount(map, key, amount = 1) {
+  if (!map || key == null) return;
+  const label = safeString(key).trim();
+  if (!label) return;
+  map.set(label, (map.get(label) || 0) + amount);
+}
+
+function incrementNestedMapCount(outerMap, parentKey, childKey, amount = 1) {
+  if (!outerMap || parentKey == null || childKey == null) return;
+  const parent = safeString(parentKey).trim();
+  const child = safeString(childKey).trim();
+  if (!parent || !child) return;
+
+  let innerMap = outerMap.get(parent);
+  if (!innerMap) {
+    innerMap = new Map();
+    outerMap.set(parent, innerMap);
+  }
+
+  incrementMapCount(innerMap, child, amount);
+}
+
+function getRealtimeFocusGeoFallback(db, normalizedStore, windowExpr, focusCountry) {
+  if (!focusCountry) return { regions: [], cities: [] };
+
+  const cacheKey = `${normalizedStore}|${windowExpr}|${focusCountry}`;
+  const nowMs = Date.now();
+  const cached = realtimeFocusGeoFallbackCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return {
+      regions: Array.isArray(cached.regions) ? cached.regions : [],
+      cities: Array.isArray(cached.cities) ? cached.cities : []
+    };
+  }
+
+  try {
+    const rows = db.prepare(`
+      SELECT payload_json
+      FROM shopify_pixel_events
+      WHERE store = ?
+        AND created_at >= datetime('now', ?)
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(normalizedStore, windowExpr, REALTIME_GEO_FALLBACK_SAMPLE_LIMIT);
+
+    const regionCounts = new Map();
+    const cityCounts = new Map();
+    const countryCode = safeString(focusCountry).trim().toUpperCase();
+
+    for (const row of rows) {
+      const payload = safeJsonParse(row?.payload_json);
+      if (!payload || typeof payload !== 'object') continue;
+
+      const rowCountry = extractCountryCode(payload);
+      if (!rowCountry || rowCountry !== countryCode) continue;
+
+      const region = extractRegionLabel(payload);
+      const city = extractCityLabel(payload);
+
+      if (region) incrementMapCount(regionCounts, region);
+      if (city) incrementMapCount(cityCounts, city);
+    }
+
+    const result = {
+      regions: topCountsFromMap(regionCounts, REALTIME_FOCUS_GEO_LIMIT),
+      cities: topCountsFromMap(cityCounts, REALTIME_FOCUS_GEO_LIMIT)
+    };
+    realtimeFocusGeoFallbackCache.set(cacheKey, {
+      ...result,
+      expiresAtMs: nowMs + REALTIME_GEO_CACHE_TTL_MS
+    });
+    return result;
+  } catch (error) {
+    console.warn(
+      `[SessionIntelligence] realtime focus geo fallback failed for store=${normalizedStore}, country=${focusCountry}:`,
+      error?.message || error
+    );
+    return { regions: [], cities: [] };
+  }
+}
+
 export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 30, limit = 10 } = {}) {
   const db = getDb();
   const normalizedStore = safeString(store).trim() || 'shawq';
@@ -1553,6 +1956,7 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       e.checkout_step,
       e.device_type,
       e.country_code,
+      e.data_json,
       e.utm_source,
       e.utm_campaign
     FROM si_events e
@@ -1574,6 +1978,8 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
   const campaignCounts = new Map();
   const deviceCounts = new Map();
   const countryCounts = new Map();
+  const regionCountsByCountry = new Map();
+  const cityCountsByCountry = new Map();
 
   for (const row of latest) {
     const shopperNumber = Number(row?.shopper_number);
@@ -1607,6 +2013,14 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
 
     const country = safeString(row?.country_code).trim().toUpperCase();
     if (country) countryCounts.set(country, (countryCounts.get(country) || 0) + 1);
+
+    const eventData = safeJsonParse(row?.data_json);
+    if (country && eventData && typeof eventData === 'object') {
+      const region = extractRegionLabel(eventData);
+      const city = extractCityLabel(eventData);
+      if (region) incrementNestedMapCount(regionCountsByCountry, country, region);
+      if (city) incrementNestedMapCount(cityCountsByCountry, country, city);
+    }
   }
 
   const eventCounts = db.prepare(`
@@ -1637,6 +2051,21 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
     purchase: sumWhere(isPurchase)
   };
 
+  const countries = topCountsFromMap(countryCounts, 30);
+  const focusCountry = countries[0]?.value || null;
+  let focusRegions = focusCountry
+    ? topCountsFromMap(regionCountsByCountry.get(focusCountry) || new Map(), REALTIME_FOCUS_GEO_LIMIT)
+    : [];
+  let focusCities = focusCountry
+    ? topCountsFromMap(cityCountsByCountry.get(focusCountry) || new Map(), REALTIME_FOCUS_GEO_LIMIT)
+    : [];
+
+  if (focusCountry && focusRegions.length === 0 && focusCities.length === 0) {
+    const fallback = getRealtimeFocusGeoFallback(db, normalizedStore, windowExpr, focusCountry);
+    focusRegions = fallback.regions;
+    focusCities = fallback.cities;
+  }
+
   return {
     store: normalizedStore,
     windowMinutes: window,
@@ -1651,7 +2080,12 @@ export function getSessionIntelligenceRealtimeOverview(store, { windowMinutes = 
       sources: topCountsFromMap(sourceCounts, max),
       campaigns: topCountsFromMap(campaignCounts, max),
       devices: topCountsFromMap(deviceCounts, max),
-      countries: topCountsFromMap(countryCounts, 30)
+      countries,
+      focus: {
+        country: focusCountry,
+        regions: focusRegions,
+        cities: focusCities
+      }
     },
     topEvents,
     keyEvents
@@ -2087,6 +2521,148 @@ function rangeUtcFromStartEnd(startDay, endDay) {
   return { start, end, startIso, endIso };
 }
 
+function normalizeJourneyLimit(limit, fallback = JOURNEY_TABLE_DEFAULT_LIMIT) {
+  const base = Number.isFinite(Number(limit)) ? Number(limit) : fallback;
+  return Math.min(Math.max(parseInt(base, 10) || fallback, 1), JOURNEY_TABLE_MAX_LIMIT);
+}
+
+function defaultJourneyRangeUtc(days = JOURNEY_DEFAULT_DAYS) {
+  const normalizedDays = Math.max(1, parseInt(days, 10) || JOURNEY_DEFAULT_DAYS);
+  const end = new Date();
+  const endIso = end.toISOString().slice(0, 10);
+  const startMs = Date.parse(`${endIso}T00:00:00Z`) - ((normalizedDays - 1) * 24 * 60 * 60 * 1000);
+  const startIso = new Date(startMs).toISOString().slice(0, 10);
+  return rangeUtcFromStartEnd(startIso, endIso);
+}
+
+function resolveJourneyRange(startDate, endDate) {
+  const explicit = startDate && endDate ? rangeUtcFromStartEnd(startDate, endDate) : null;
+  if (explicit) return explicit;
+  return defaultJourneyRangeUtc(JOURNEY_DEFAULT_DAYS);
+}
+
+function summarizeJourneyUnattributedReason({ entryPagePath, checkoutToken }) {
+  const entryPath = safeString(entryPagePath).trim();
+  if (!entryPath && safeString(checkoutToken).trim()) return 'checkout_only_capture';
+  if (!entryPath) return 'missing_entry_context';
+  if (isJourneyCheckoutPath(entryPath)) return 'checkout_only_capture';
+  if (isJourneyExcludedPath(entryPath)) return 'excluded_content_page';
+  return 'unclassified_path';
+}
+
+function collectJourneySessionContextById(db, store, sessions, range) {
+  const contextBySession = new Map();
+  const sessionIds = Array.from(new Set(
+    (sessions || [])
+      .map((row) => safeString(row?.session_id).trim())
+      .filter(Boolean)
+  )).slice(0, JOURNEY_SESSION_QUERY_LIMIT);
+
+  if (!sessionIds.length) return contextBySession;
+
+  for (const chunk of chunkArray(sessionIds, JOURNEY_SESSION_QUERY_CHUNK)) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT
+        id,
+        session_id,
+        event_ts,
+        created_at,
+        event_name,
+        page_url,
+        page_path,
+        product_id,
+        utm_source,
+        utm_campaign
+      FROM si_events
+      WHERE store = ?
+        AND session_id IN (${placeholders})
+        AND created_at >= ?
+        AND created_at < ?
+      ORDER BY session_id ASC, COALESCE(event_ts, created_at) ASC, id ASC
+    `).all(store, ...chunk, range.start, range.end);
+
+    for (const row of rows) {
+      const sessionId = safeString(row?.session_id).trim();
+      if (!sessionId) continue;
+
+      const entry = contextBySession.get(sessionId) || {
+        entryPath: null,
+        entrySource: null,
+        entryCampaign: null,
+        latestProductLabel: null
+      };
+
+      if (!entry.entryPath) {
+        const pathCandidate = normalizeJourneyPath(row?.page_path || row?.page_url);
+        if (pathCandidate && isJourneyLandingPath(pathCandidate)) {
+          entry.entryPath = pathCandidate;
+        }
+      }
+
+      if (!entry.entrySource) {
+        const source = safeString(row?.utm_source).trim();
+        if (source) entry.entrySource = safeTruncate(source, 240);
+      }
+
+      if (!entry.entryCampaign) {
+        const campaign = safeString(row?.utm_campaign).trim();
+        if (campaign) entry.entryCampaign = safeTruncate(campaign, 240);
+      }
+
+      const productLabel = extractJourneyProductLabelFromPath(row?.page_path || row?.page_url);
+      if (productLabel) {
+        entry.latestProductLabel = safeTruncate(productLabel, 180);
+      } else if (!entry.latestProductLabel && row?.product_id) {
+        entry.latestProductLabel = formatJourneyProductLabel({
+          title: null,
+          productId: row.product_id
+        });
+      }
+
+      contextBySession.set(sessionId, entry);
+    }
+  }
+
+  return contextBySession;
+}
+
+function classifyJourneyAbandonAreaFromSession(row, productLabelFallback = null, entryPath = null) {
+  const step = normalizeCheckoutStep(row?.last_checkout_step);
+  if (step === 'payment') return { area: 'Checkout Payment', product: productLabelFallback || '—' };
+  if (step === 'thank_you') return { area: 'Checkout Payment', product: productLabelFallback || '—' };
+  if (step) return { area: 'Checkout', product: productLabelFallback || '—' };
+
+  if (safeString(row?.checkout_started_at).trim()) return { area: 'Checkout', product: productLabelFallback || '—' };
+  if (safeString(row?.atc_at).trim()) return { area: 'Cart', product: productLabelFallback || '—' };
+
+  const normalizedEntryPath = safeString(entryPath).trim();
+  if (normalizedEntryPath && isJourneyLandingPath(normalizedEntryPath)) {
+    const landingLabel = classifyJourneyLandingLabel(normalizedEntryPath) || 'Other';
+    const product = extractJourneyProductLabelFromPath(normalizedEntryPath) || productLabelFallback || '—';
+
+    if (landingLabel.startsWith('Product:')) return { area: 'Product Page', product };
+    if (landingLabel.startsWith('Collection:')) return { area: 'Collection', product: '—' };
+    if (landingLabel === 'Search') return { area: 'Search', product: '—' };
+    if (landingLabel === 'Cart') return { area: 'Cart', product };
+    if (landingLabel === 'Home') return { area: 'Home', product: '—' };
+    if (landingLabel.startsWith('Page:')) return { area: 'Content Page', product: '—' };
+    return { area: 'Other', product: '—' };
+  }
+
+  return null;
+}
+
+function sessionHasJourneyAbandonSignal(row, entryPath = null) {
+  if (!row || typeof row !== 'object') return false;
+  if (safeString(row.checkout_started_at).trim()) return true;
+  if (safeString(row.atc_at).trim()) return true;
+  if (safeString(entryPath).trim()) return true;
+  if (safeString(row.last_checkout_token).trim()) return true;
+  if (safeString(row.last_product_id).trim()) return true;
+  return false;
+}
+
 function safeParseJson(value) {
   if (!value || typeof value !== 'string') return null;
   try {
@@ -2148,6 +2724,498 @@ export function getSessionIntelligencePurchasesByCampaign(store, { startDate, en
     period: { start: range.startIso, end: range.endIso },
     totalPurchases: sessions.length,
     rows
+  };
+}
+
+export function getSessionIntelligenceLandingToPurchase(store, {
+  startDate,
+  endDate,
+  limit = JOURNEY_TABLE_DEFAULT_LIMIT
+} = {}) {
+  const db = getDb();
+  const normalizedStore = safeString(store).trim() || 'shawq';
+  ensureRecentShopperNumbers(normalizedStore);
+
+  const range = resolveJourneyRange(startDate, endDate);
+  if (!range) {
+    return {
+      store: normalizedStore,
+      period: null,
+      totalPurchases: 0,
+      attributedPurchases: 0,
+      unattributedPurchases: 0,
+      unattributedBreakdown: {},
+      rows: []
+    };
+  }
+
+  const max = normalizeJourneyLimit(limit);
+  const sessions = db.prepare(`
+    SELECT
+      session_id,
+      session_number,
+      purchase_at,
+      last_country_code,
+      last_product_id,
+      last_checkout_token,
+      last_campaign_json
+    FROM si_sessions
+    WHERE store = ?
+      AND purchase_at IS NOT NULL
+      AND purchase_at >= ?
+      AND purchase_at < ?
+    ORDER BY purchase_at DESC
+  `).all(normalizedStore, range.start, range.end);
+
+  const contextBySession = collectJourneySessionContextById(db, normalizedStore, sessions, range);
+  const landingMap = new Map();
+  const unattributedBreakdown = new Map();
+  let attributedPurchases = 0;
+
+  for (const row of sessions) {
+    const sessionId = safeString(row?.session_id).trim();
+    if (!sessionId) continue;
+
+    const context = contextBySession.get(sessionId) || {};
+    const entryPath = safeString(context.entryPath).trim();
+    const landingPathValid = Boolean(entryPath && isJourneyLandingPath(entryPath));
+    if (!landingPathValid) {
+      const reason = summarizeJourneyUnattributedReason({
+        entryPagePath: entryPath || null,
+        checkoutToken: row?.last_checkout_token
+      });
+      unattributedBreakdown.set(reason, (unattributedBreakdown.get(reason) || 0) + 1);
+      continue;
+    }
+
+    const landingLabel = classifyJourneyLandingLabel(entryPath) || 'Other';
+    const key = landingLabel;
+    const entry = landingMap.get(key) || {
+      landing: landingLabel,
+      purchases: 0,
+      sessions: new Set(),
+      countries: new Map(),
+      sources: new Map(),
+      campaigns: new Map(),
+      products: new Map(),
+      sample_sessions: []
+    };
+
+    entry.purchases += 1;
+    entry.sessions.add(sessionId);
+    if (entry.sample_sessions.length < 5) {
+      entry.sample_sessions.push({
+        session_id: sessionId,
+        session_number: row?.session_number || null,
+        purchase_at: row?.purchase_at || null
+      });
+    }
+
+    const country = safeString(row?.last_country_code).trim().toUpperCase();
+    if (country) entry.countries.set(country, (entry.countries.get(country) || 0) + 1);
+
+    const source = safeString(context.entrySource).trim();
+    if (source) entry.sources.set(source, (entry.sources.get(source) || 0) + 1);
+
+    const campaign = safeString(context.entryCampaign).trim() || campaignLabelFromJson(row?.last_campaign_json) || '';
+    if (campaign) entry.campaigns.set(campaign, (entry.campaigns.get(campaign) || 0) + 1);
+
+    const productLabel = formatJourneyProductLabel({
+      title: context.latestProductLabel || null,
+      productId: row?.last_product_id
+    });
+    entry.products.set(productLabel, (entry.products.get(productLabel) || 0) + 1);
+
+    landingMap.set(key, entry);
+    attributedPurchases += 1;
+  }
+
+  const rows = Array.from(landingMap.values())
+    .sort((a, b) => (b.purchases || 0) - (a.purchases || 0))
+    .slice(0, max)
+    .map((entry, index) => ({
+      rank: index + 1,
+      landing: entry.landing,
+      purchases: entry.purchases,
+      sessions: entry.sessions.size,
+      share: sessions.length > 0 ? entry.purchases / sessions.length : 0,
+      top_countries: Array.from(entry.countries.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([code, count]) => ({ code, count })),
+      top_sources: Array.from(entry.sources.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([value, count]) => ({ value, count })),
+      top_campaigns: Array.from(entry.campaigns.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([value, count]) => ({ value, count })),
+      top_products: Array.from(entry.products.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([value, count]) => ({ value, count })),
+      sample_sessions: entry.sample_sessions
+    }));
+
+  return {
+    store: normalizedStore,
+    period: { start: range.startIso, end: range.endIso },
+    totalPurchases: sessions.length,
+    attributedPurchases,
+    unattributedPurchases: Math.max(0, sessions.length - attributedPurchases),
+    unattributedBreakdown: Object.fromEntries(unattributedBreakdown.entries()),
+    rows
+  };
+}
+
+export function getSessionIntelligenceAbandonmentByLocation(store, {
+  startDate,
+  endDate,
+  limit = JOURNEY_TABLE_DEFAULT_LIMIT
+} = {}) {
+  const db = getDb();
+  const normalizedStore = safeString(store).trim() || 'shawq';
+  ensureRecentShopperNumbers(normalizedStore);
+
+  const range = resolveJourneyRange(startDate, endDate);
+  if (!range) {
+    return {
+      store: normalizedStore,
+      period: null,
+      totalAbandonSessions: 0,
+      classifiedAbandonSessions: 0,
+      unclassifiedSessions: 0,
+      coverageRatio: 0,
+      reconciliation: { deviceMinusRoot: 0 },
+      unclassifiedBreakdown: {},
+      rows: [],
+      deviceSegments: {
+        totalSessions: 0,
+        totalHighIntentSessions: 0,
+        totalAbandonSessions: 0,
+        baselineAbandonRate: 0,
+        rows: []
+      },
+      countrySegments: {
+        totalSessions: 0,
+        totalHighIntentSessions: 0,
+        totalAbandonSessions: 0,
+        baselineAbandonRate: 0,
+        rows: []
+      }
+    };
+  }
+
+  const max = normalizeJourneyLimit(limit);
+  const sessions = db.prepare(`
+    SELECT
+      session_id,
+      session_number,
+      started_at,
+      last_event_at,
+      atc_at,
+      checkout_started_at,
+      purchase_at,
+      last_checkout_token,
+      last_checkout_step,
+      last_country_code,
+      last_product_id,
+      last_device_type
+    FROM si_sessions
+    WHERE store = ?
+      AND started_at IS NOT NULL
+      AND started_at >= ?
+      AND started_at < ?
+      AND purchase_at IS NULL
+      AND (
+        NULLIF(atc_at, '') IS NOT NULL
+        OR NULLIF(checkout_started_at, '') IS NOT NULL
+        OR NULLIF(last_checkout_step, '') IS NOT NULL
+      )
+    ORDER BY started_at DESC
+  `).all(normalizedStore, range.start, range.end);
+
+  const contextBySession = collectJourneySessionContextById(db, normalizedStore, sessions, range);
+  const grouped = new Map();
+  const unclassifiedBreakdown = new Map();
+  const abandonAreaBySession = new Map();
+  let totalAbandonSessions = 0;
+  let classifiedAbandonSessions = 0;
+
+  for (const row of sessions) {
+    const sessionId = safeString(row?.session_id).trim();
+    if (!sessionId) continue;
+
+    totalAbandonSessions += 1;
+
+    const context = contextBySession.get(sessionId) || {};
+    const entryPath = safeString(context.entryPath).trim();
+
+    const productLabel = formatJourneyProductLabel({
+      title: context.latestProductLabel || null,
+      productId: row?.last_product_id
+    });
+    const classification = classifyJourneyAbandonAreaFromSession(row, productLabel, entryPath);
+    if (!classification) {
+      const reason = summarizeJourneyUnattributedReason({
+        entryPagePath: entryPath || null,
+        checkoutToken: row?.last_checkout_token
+      });
+      unclassifiedBreakdown.set(reason, (unclassifiedBreakdown.get(reason) || 0) + 1);
+      continue;
+    }
+
+    classifiedAbandonSessions += 1;
+    abandonAreaBySession.set(sessionId, classification.area);
+
+    const areaKey = `${classification.area}||${classification.product || '—'}`;
+    const entry = grouped.get(areaKey) || {
+      abandoned_part: classification.area,
+      product: classification.product || '—',
+      sessions: 0,
+      countries: new Map(),
+      sample_sessions: []
+    };
+    entry.sessions += 1;
+    if (entry.sample_sessions.length < 5) {
+      entry.sample_sessions.push({
+        session_id: sessionId,
+        session_number: row?.session_number || null,
+        last_event_at: row?.last_event_at || null
+      });
+    }
+    const country = safeString(row?.last_country_code).trim().toUpperCase();
+    if (country) entry.countries.set(country, (entry.countries.get(country) || 0) + 1);
+    grouped.set(areaKey, entry);
+  }
+
+  const rows = Array.from(grouped.values())
+    .sort((a, b) => (b.sessions || 0) - (a.sessions || 0))
+    .slice(0, max)
+    .map((entry, index) => ({
+      rank: index + 1,
+      abandoned_part: entry.abandoned_part,
+      product: entry.product,
+      sessions: entry.sessions,
+      share: totalAbandonSessions > 0 ? entry.sessions / totalAbandonSessions : 0,
+      top_countries: Array.from(entry.countries.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+        .slice(0, 3)
+        .map(([code, count]) => ({ code, count })),
+      sample_sessions: entry.sample_sessions
+    }));
+
+  const deviceLabelByKey = {
+    desktop: 'Desktop',
+    mobile: 'Mobile',
+    ios: 'iOS',
+    android: 'Android',
+    tablet: 'Tablet',
+    unknown: 'Unknown'
+  };
+  const deviceBuckets = new Map(Object.keys(deviceLabelByKey).map((key) => ([
+    key,
+    {
+      key,
+      label: deviceLabelByKey[key],
+      totalSessions: 0,
+      highIntentSessions: 0,
+      abandonSessions: 0,
+      purchaseSessions: 0,
+      sectionCounts: new Map()
+    }
+  ])));
+  const countryBuckets = new Map();
+
+  const allSessions = db.prepare(`
+    SELECT
+      session_id,
+      atc_at,
+      checkout_started_at,
+      purchase_at,
+      last_checkout_step,
+      last_device_type,
+      last_country_code
+    FROM si_sessions
+    WHERE store = ?
+      AND started_at IS NOT NULL
+      AND started_at >= ?
+      AND started_at < ?
+  `).all(normalizedStore, range.start, range.end);
+
+  for (const session of allSessions) {
+    const countrySegment = normalizeJourneyCountrySegment(session?.last_country_code);
+    if (!countryBuckets.has(countrySegment)) {
+      countryBuckets.set(countrySegment, {
+        key: countrySegment,
+        label: countrySegment === JOURNEY_COUNTRY_UNKNOWN_KEY ? 'Unknown' : countrySegment,
+        totalSessions: 0,
+        highIntentSessions: 0,
+        abandonSessions: 0,
+        purchaseSessions: 0,
+        sectionCounts: new Map()
+      });
+    }
+
+    const segmentKey = normalizeJourneyDeviceSegment(session?.last_device_type);
+    const bucket = deviceBuckets.get(segmentKey) || deviceBuckets.get('unknown');
+    const countryBucket = countryBuckets.get(countrySegment);
+    if (!bucket) continue;
+
+    bucket.totalSessions += 1;
+    if (countryBucket) countryBucket.totalSessions += 1;
+    const checkoutStep = normalizeCheckoutStep(session?.last_checkout_step);
+    const hasPurchase = Boolean(safeString(session?.purchase_at).trim());
+    const isHighIntent = Boolean(
+      hasPurchase
+      || safeString(session?.atc_at).trim()
+      || safeString(session?.checkout_started_at).trim()
+      || checkoutStep
+    );
+    if (!isHighIntent) continue;
+
+    bucket.highIntentSessions += 1;
+    if (countryBucket) countryBucket.highIntentSessions += 1;
+    if (hasPurchase) {
+      bucket.purchaseSessions += 1;
+      if (countryBucket) countryBucket.purchaseSessions += 1;
+      continue;
+    }
+
+    bucket.abandonSessions += 1;
+    if (countryBucket) countryBucket.abandonSessions += 1;
+    const sessionId = safeString(session?.session_id).trim();
+    const fallbackSection = checkoutStep === 'payment'
+      ? 'Checkout Payment'
+      : (checkoutStep === 'shipping' || checkoutStep === 'contact' || safeString(session?.checkout_started_at).trim())
+        ? 'Checkout'
+        : safeString(session?.atc_at).trim()
+          ? 'Cart'
+          : 'Landing';
+    const section = abandonAreaBySession.get(sessionId) || fallbackSection;
+    bucket.sectionCounts.set(section, (bucket.sectionCounts.get(section) || 0) + 1);
+    if (countryBucket) {
+      countryBucket.sectionCounts.set(section, (countryBucket.sectionCounts.get(section) || 0) + 1);
+    }
+  }
+
+  const bucketRows = Array.from(deviceBuckets.values()).filter((bucket) => bucket.totalSessions > 0);
+  const totalClassifiedSessions = bucketRows.reduce((sum, bucket) => sum + bucket.totalSessions, 0);
+  const totalHighIntentSessions = bucketRows.reduce((sum, bucket) => sum + bucket.highIntentSessions, 0);
+  const totalSegmentAbandonSessions = bucketRows.reduce((sum, bucket) => sum + bucket.abandonSessions, 0);
+  const baselineAbandonRate = totalHighIntentSessions > 0
+    ? totalSegmentAbandonSessions / totalHighIntentSessions
+    : 0;
+  const unclassifiedSessions = Array.from(unclassifiedBreakdown.values()).reduce((sum, count) => sum + (Number(count) || 0), 0);
+  const coverageRatio = totalAbandonSessions > 0 ? classifiedAbandonSessions / totalAbandonSessions : 0;
+
+  const deviceRows = bucketRows
+    .map((bucket) => {
+      const topSectionEntry = Array.from(bucket.sectionCounts.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))[0] || null;
+      const topSectionLabel = topSectionEntry ? topSectionEntry[0] : '—';
+      const topSectionCount = topSectionEntry ? Number(topSectionEntry[1]) || 0 : 0;
+      const topSectionShare = bucket.abandonSessions > 0 ? topSectionCount / bucket.abandonSessions : 0;
+      const abandonRate = bucket.highIntentSessions > 0 ? bucket.abandonSessions / bucket.highIntentSessions : null;
+      const purchaseRate = bucket.highIntentSessions > 0 ? bucket.purchaseSessions / bucket.highIntentSessions : null;
+      const expectedAbandon = bucket.highIntentSessions * baselineAbandonRate;
+      const excessAbandon = bucket.abandonSessions - expectedAbandon;
+      return {
+        key: bucket.key,
+        label: bucket.label,
+        totalSessions: bucket.totalSessions,
+        highIntentSessions: bucket.highIntentSessions,
+        abandonSessions: bucket.abandonSessions,
+        purchaseSessions: bucket.purchaseSessions,
+        trafficShare: totalClassifiedSessions > 0 ? bucket.totalSessions / totalClassifiedSessions : 0,
+        abandonShare: totalSegmentAbandonSessions > 0 ? bucket.abandonSessions / totalSegmentAbandonSessions : 0,
+        abandonRate,
+        purchaseRate,
+        expectedAbandon,
+        excessAbandon,
+        overIndex: baselineAbandonRate > 0 && abandonRate != null ? abandonRate / baselineAbandonRate : null,
+        topSectionLabel,
+        topSectionShare,
+        sectionCounts: Object.fromEntries(bucket.sectionCounts.entries())
+      };
+    })
+    .sort((a, b) => {
+      if ((b.excessAbandon || 0) !== (a.excessAbandon || 0)) return (b.excessAbandon || 0) - (a.excessAbandon || 0);
+      return (b.abandonRate || 0) - (a.abandonRate || 0);
+    });
+  const countryBucketRows = Array.from(countryBuckets.values()).filter((bucket) => bucket.totalSessions > 0);
+  const totalCountrySessions = countryBucketRows.reduce((sum, bucket) => sum + bucket.totalSessions, 0);
+  const totalCountryHighIntentSessions = countryBucketRows.reduce((sum, bucket) => sum + bucket.highIntentSessions, 0);
+  const totalCountryAbandonSessions = countryBucketRows.reduce((sum, bucket) => sum + bucket.abandonSessions, 0);
+  const countryBaselineAbandonRate = totalCountryHighIntentSessions > 0
+    ? totalCountryAbandonSessions / totalCountryHighIntentSessions
+    : 0;
+
+  const countryRows = countryBucketRows
+    .map((bucket) => {
+      const topSectionEntry = Array.from(bucket.sectionCounts.entries())
+        .sort((a, b) => (b[1] || 0) - (a[1] || 0))[0] || null;
+      const topSectionLabel = topSectionEntry ? topSectionEntry[0] : '—';
+      const topSectionCount = topSectionEntry ? Number(topSectionEntry[1]) || 0 : 0;
+      const topSectionShare = bucket.abandonSessions > 0 ? topSectionCount / bucket.abandonSessions : 0;
+      const abandonRate = bucket.highIntentSessions > 0 ? bucket.abandonSessions / bucket.highIntentSessions : null;
+      const purchaseRate = bucket.highIntentSessions > 0 ? bucket.purchaseSessions / bucket.highIntentSessions : null;
+      const expectedAbandon = bucket.highIntentSessions * countryBaselineAbandonRate;
+      const excessAbandon = bucket.abandonSessions - expectedAbandon;
+      return {
+        key: bucket.key,
+        label: bucket.label,
+        totalSessions: bucket.totalSessions,
+        highIntentSessions: bucket.highIntentSessions,
+        abandonSessions: bucket.abandonSessions,
+        purchaseSessions: bucket.purchaseSessions,
+        trafficShare: totalCountrySessions > 0 ? bucket.totalSessions / totalCountrySessions : 0,
+        abandonShare: totalCountryAbandonSessions > 0 ? bucket.abandonSessions / totalCountryAbandonSessions : 0,
+        abandonRate,
+        purchaseRate,
+        expectedAbandon,
+        excessAbandon,
+        overIndex: countryBaselineAbandonRate > 0 && abandonRate != null ? abandonRate / countryBaselineAbandonRate : null,
+        topSectionLabel,
+        topSectionShare,
+        sectionCounts: Object.fromEntries(bucket.sectionCounts.entries())
+      };
+    })
+    .sort((a, b) => {
+      if ((b.excessAbandon || 0) !== (a.excessAbandon || 0)) return (b.excessAbandon || 0) - (a.excessAbandon || 0);
+      return (b.abandonRate || 0) - (a.abandonRate || 0);
+    });
+
+  return {
+    store: normalizedStore,
+    period: { start: range.startIso, end: range.endIso },
+    totalAbandonSessions,
+    classifiedAbandonSessions,
+    attributedAbandonSessions: classifiedAbandonSessions,
+    unclassifiedSessions,
+    coverageRatio,
+    reconciliation: {
+      deviceMinusRoot: totalSegmentAbandonSessions - totalAbandonSessions,
+      deviceSegmentTotal: totalSegmentAbandonSessions,
+      rootQueryTotal: totalAbandonSessions
+    },
+    unclassifiedBreakdown: Object.fromEntries(unclassifiedBreakdown.entries()),
+    rows,
+    deviceSegments: {
+      totalSessions: totalClassifiedSessions,
+      totalHighIntentSessions,
+      totalAbandonSessions: totalSegmentAbandonSessions,
+      baselineAbandonRate,
+      rows: deviceRows
+    },
+    countrySegments: {
+      totalSessions: totalCountrySessions,
+      totalHighIntentSessions: totalCountryHighIntentSessions,
+      totalAbandonSessions: totalCountryAbandonSessions,
+      baselineAbandonRate: countryBaselineAbandonRate,
+      rows: countryRows
+    }
   };
 }
 
@@ -2363,6 +3431,14 @@ function inferDropoffStageFromSessionSummary(session) {
   return 'landing';
 }
 
+function isHighIntentNoPurchaseSession(session) {
+  if (!session || typeof session !== 'object') return false;
+  const atcEvents = Number(session.atc_events) || 0;
+  const checkoutStartedEvents = Number(session.checkout_started_events) || 0;
+  const purchaseEvents = Number(session.purchase_events) || 0;
+  return (atcEvents > 0 || checkoutStartedEvents > 0) && purchaseEvents === 0;
+}
+
 export function getSessionIntelligenceFlowForDay(store, dateStr, { mode = 'all', limitSessions = 5000 } = {}) {
   const db = getDb();
   ensureRecentShopperNumbers(store);
@@ -2379,8 +3455,9 @@ export function getSessionIntelligenceFlowForDay(store, dateStr, { mode = 'all',
   }
 
   const sessions = getSessionIntelligenceSessionsForDay(store, iso, limitSessions);
+  const highIntentNoPurchaseSessions = sessions.filter(isHighIntentNoPurchaseSession);
   const selectedSessions = scope === 'high_intent_no_purchase'
-    ? sessions.filter((s) => ((s.atc_events || 0) > 0 || (s.checkout_started_events || 0) > 0) && (s.purchase_events || 0) === 0)
+    ? highIntentNoPurchaseSessions
     : sessions;
 
   const sessionMap = new Map(selectedSessions.map((s) => [s.session_id, s]));
@@ -2408,7 +3485,11 @@ export function getSessionIntelligenceFlowForDay(store, dateStr, { mode = 'all',
         store,
         date: iso,
         mode: scope,
-        totals: { sessions: 0 },
+        totals: {
+          sessions: 0,
+          all_sessions: sessions.length,
+          high_intent_no_purchase_sessions: highIntentNoPurchaseSessions.length
+        },
         stages,
         clusters: []
       }
@@ -2580,7 +3661,11 @@ export function getSessionIntelligenceFlowForDay(store, dateStr, { mode = 'all',
       store,
       date: iso,
       mode: scope,
-      totals: { sessions: selectedSessions.length },
+      totals: {
+        sessions: selectedSessions.length,
+        all_sessions: sessions.length,
+        high_intent_no_purchase_sessions: highIntentNoPurchaseSessions.length
+      },
       stages,
       clusters
     }
@@ -2603,8 +3688,9 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
   }
 
   const sessions = getSessionIntelligenceSessionsForDay(store, iso, limitSessions);
+  const highIntentNoPurchaseSessions = sessions.filter(isHighIntentNoPurchaseSession);
   const selectedSessions = scope === 'high_intent_no_purchase'
-    ? sessions.filter((s) => ((s.atc_events || 0) > 0 || (s.checkout_started_events || 0) > 0) && (s.purchase_events || 0) === 0)
+    ? highIntentNoPurchaseSessions
     : sessions;
 
   const sessionMap = new Map(selectedSessions.map((s) => [s.session_id, s]));
@@ -2617,7 +3703,11 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
         store,
         date: iso,
         mode: scope,
-        totals: { sessions: 0 },
+        totals: {
+          sessions: 0,
+          all_sessions: sessions.length,
+          high_intent_no_purchase_sessions: highIntentNoPurchaseSessions.length
+        },
         signals: {
           rage_clicks: [],
           dead_clicks: [],
@@ -2860,7 +3950,11 @@ export function getSessionIntelligenceClaritySignalsForDay(store, dateStr, { mod
       store,
       date: iso,
       mode: scope,
-      totals: { sessions: selectedSessions.length },
+      totals: {
+        sessions: selectedSessions.length,
+        all_sessions: sessions.length,
+        high_intent_no_purchase_sessions: highIntentNoPurchaseSessions.length
+      },
       signals: {
         rage_clicks,
         dead_clicks,
