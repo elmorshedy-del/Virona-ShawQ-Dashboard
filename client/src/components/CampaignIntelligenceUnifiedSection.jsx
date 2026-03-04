@@ -1010,18 +1010,6 @@ export default function CampaignIntelligenceUnifiedSection({
   }, [snapshot?.generatedAt]);
 
   useEffect(() => {
-    if (!displayRows.length) {
-      setSelectedRowId('');
-      return;
-    }
-
-    const exists = displayRows.some((row) => row.id === selectedRowId);
-    if (!exists) {
-      setSelectedRowId(displayRows[0].id);
-    }
-  }, [displayRows, selectedRowId]);
-
-  useEffect(() => {
     const settings = briefMeta?.settings;
     if (!settings) return;
 
@@ -1146,6 +1134,18 @@ export default function CampaignIntelligenceUnifiedSection({
   const selectedRow = useMemo(() => {
     if (!displayRows.length) return null;
     return displayRows.find((row) => row.id === selectedRowId) || displayRows[0];
+  }, [displayRows, selectedRowId]);
+
+  useEffect(() => {
+    if (!displayRows.length) {
+      setSelectedRowId('');
+      return;
+    }
+
+    const exists = displayRows.some((row) => row.id === selectedRowId);
+    if (!exists) {
+      setSelectedRowId(displayRows[0].id);
+    }
   }, [displayRows, selectedRowId]);
 
   const analysisScope = snapshot?.scope || {};
