@@ -1142,7 +1142,7 @@ export default function CampaignIntelligenceUnifiedSection({
         return '';
       }
       const exists = displayRows.some((row) => row.id === currentId);
-      return exists ? currentId : displayRows[0].id;
+      return exists ? currentId : displayRows[0]?.id || '';
     });
   }, [displayRows]);
 
