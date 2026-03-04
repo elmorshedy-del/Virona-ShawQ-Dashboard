@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/database.js';
 import { askDeepSeekChat, normalizeTemperature, streamDeepSeekChat } from './deepseekService.js';
+import { askFireworksChat, isFireworksConfigured, streamFireworksChat } from './fireworksService.js';
 
 // Import Meta Awareness feature module for reactivation data
 import {
@@ -14,6 +15,7 @@ import {
 // OpenAI Service - GPT-5 + GPT-4 fallback
 const OPENAI_API_KEY_ENV = 'OPENAI_API_KEY';
 const DEEPSEEK_API_KEY_ENV = 'DEEPSEEK_API_KEY';
+const FIREWORKS_API_KEY_ENV = 'FIREWORKS_API_KEY';
 let openAiClient = null;
 
 function hasConfiguredEnvKey(envName) {
@@ -44,8 +46,13 @@ function getOpenAiClient() {
 }
 
 if (!isOpenAiConfigured()) {
+  const alternatives = [];
+  if (isDeepSeekConfigured()) alternatives.push(`provider=deepseek with ${DEEPSEEK_API_KEY_ENV}`);
+  if (isFireworksConfigured()) alternatives.push(`provider=fireworks with ${FIREWORKS_API_KEY_ENV}`);
+  const alternativesHint = alternatives.length > 0 ? `; set ${alternatives.join(' or ')}` : '';
+
   console.warn(
-    `[OpenAI] ${OPENAI_API_KEY_ENV} is not configured. OpenAI calls are disabled; set provider=deepseek with ${DEEPSEEK_API_KEY_ENV} if available.`
+    `[OpenAI] ${OPENAI_API_KEY_ENV} is not configured. OpenAI calls are disabled${alternativesHint}.`
   );
 }
 
@@ -162,13 +169,36 @@ const DEPTH_TO_EFFORT = {
 };
 
 const DEEPSEEK_MODELS = new Set(['deepseek-chat', 'deepseek-reasoner']);
+const FIREWORKS_PROVIDER_ALIASES = new Set(['fireworks', 'glm', 'glm5', 'glm-5']);
+
+function normalizeProviderName(provider) {
+  if (typeof provider !== 'string') return '';
+  const normalized = provider.trim().toLowerCase();
+  if (!normalized) return '';
+  if (FIREWORKS_PROVIDER_ALIASES.has(normalized)) return 'fireworks';
+  return normalized;
+}
+
+function isFireworksModel(model) {
+  if (typeof model !== 'string' || !model.trim()) return false;
+  const normalized = model.trim().toLowerCase();
+  return normalized === 'glm-5'
+    || normalized === 'glm'
+    || normalized.includes('/glm-5')
+    || normalized.startsWith('accounts/fireworks/models/');
+}
 
 function resolveAiProvider(options = {}) {
-  if (typeof options?.provider === 'string' && options.provider.trim()) {
-    return options.provider.trim().toLowerCase();
+  const requestedProvider = normalizeProviderName(options?.provider);
+  if (requestedProvider) {
+    return requestedProvider;
   }
   if (typeof options?.model === 'string' && options.model.startsWith('deepseek-')) return 'deepseek';
-  if (!isOpenAiConfigured() && isDeepSeekConfigured()) return 'deepseek';
+  if (isFireworksModel(options?.model)) return 'fireworks';
+  if (!isOpenAiConfigured()) {
+    if (isDeepSeekConfigured()) return 'deepseek';
+    if (isFireworksConfigured()) return 'fireworks';
+  }
   return 'openai';
 }
 
@@ -180,6 +210,19 @@ function resolveDeepSeekModel({ requestedModel, mode }) {
 
 function resolveDeepSeekTemperature({ requestedTemperature, fallback = 1.0 }) {
   return normalizeTemperature(requestedTemperature, fallback);
+}
+
+function mapFireworksReasoningEffort(reasoningEffort, fallback = 'medium') {
+  if (typeof reasoningEffort !== 'string' || !reasoningEffort.trim()) return fallback;
+  const normalized = reasoningEffort.trim().toLowerCase();
+  const effortMap = {
+    none: 'low',
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+    xhigh: 'high',
+  };
+  return effortMap[normalized] || fallback;
 }
 
 // ============================================================================
@@ -1393,6 +1436,19 @@ export async function analyzeQuestion(question, store, history = [], startDate =
     return result;
   }
 
+  if (provider === 'fireworks') {
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    return await askFireworksChat({
+      model: options?.model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: TOKEN_LIMITS.nano,
+      temperature,
+      verbosity: 'low',
+      reasoningEffort: 'low'
+    });
+  }
+
   // Use GPT-4o directly for Ask mode - faster and more reliable
   const text = await callChatCompletionsAPI(MODELS.ASK, systemPrompt, question, TOKEN_LIMITS.nano, MODE_TEMPERATURES.analyze);
   return { text, model: MODELS.ASK };
@@ -1412,6 +1468,19 @@ export async function summarizeData(question, store, history = [], startDate = n
       messages: [{ role: 'user', content: question }],
       maxOutputTokens: TOKEN_LIMITS.mini,
       temperature
+    });
+  }
+
+  if (provider === 'fireworks') {
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    return await askFireworksChat({
+      model: options?.model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: TOKEN_LIMITS.mini,
+      temperature,
+      verbosity: 'low',
+      reasoningEffort: 'medium'
     });
   }
 
@@ -1439,6 +1508,21 @@ export async function decideQuestion(question, store, depth = 'balanced', histor
     return { ...result, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
   }
 
+  if (provider === 'fireworks') {
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    const reasoningEffort = mapFireworksReasoningEffort(effort, 'medium');
+    const result = await askFireworksChat({
+      model: options?.model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: maxTokens,
+      temperature,
+      verbosity: 'medium',
+      reasoningEffort
+    });
+    return { ...result, reasoning: reasoningEffort };
+  }
+
   const result = await callWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, MODE_TEMPERATURES.decide);
   return { ...result, reasoning: effort };
 }
@@ -1462,6 +1546,22 @@ export async function decideQuestionStream(question, store, depth = 'balanced', 
       onDelta
     });
     return { model, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
+  }
+
+  if (provider === 'fireworks') {
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    const reasoningEffort = mapFireworksReasoningEffort(effort, 'medium');
+    const { model } = await streamFireworksChat({
+      model: options?.model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: maxTokens,
+      temperature,
+      verbosity: 'medium',
+      reasoningEffort,
+      onDelta
+    });
+    return { model, reasoning: reasoningEffort };
   }
 
   return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, question, maxTokens, effort, onDelta, MODE_TEMPERATURES.decide);
@@ -1508,6 +1608,36 @@ export async function generateCreativeFunnelSummary({
     return { ...result, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
   }
 
+  if (provider === 'fireworks') {
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: llm?.temperature, fallback: 1.0 });
+    const reasoningEffort = mode === 'analyze' ? 'low' : 'medium';
+
+    if (onDelta) {
+      const { model } = await streamFireworksChat({
+        model: llm?.model,
+        systemPrompt,
+        messages,
+        maxOutputTokens: TOKEN_LIMITS.fast,
+        temperature,
+        verbosity,
+        reasoningEffort,
+        onDelta
+      });
+      return { model, reasoning: reasoningEffort };
+    }
+
+    const result = await askFireworksChat({
+      model: llm?.model,
+      systemPrompt,
+      messages,
+      maxOutputTokens: TOKEN_LIMITS.fast,
+      temperature,
+      verbosity,
+      reasoningEffort
+    });
+    return { ...result, reasoning: reasoningEffort };
+  }
+
   if (onDelta) {
     await streamOpenAIChat({
       model: MODELS.STRATEGIST,
@@ -1551,6 +1681,21 @@ export async function analyzeQuestionStream(question, store, onDelta, history = 
     });
     return { model, reasoning: null };
   }
+
+  if (provider === 'fireworks') {
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    const { model } = await streamFireworksChat({
+      model: options?.model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: TOKEN_LIMITS.nano,
+      temperature,
+      verbosity: 'low',
+      reasoningEffort: 'low',
+      onDelta
+    });
+    return { model, reasoning: null };
+  }
   
   // Use GPT-4o directly for Ask mode - faster streaming
   console.log(`[OpenAI] Streaming ${MODELS.ASK} for Ask mode`);
@@ -1587,6 +1732,21 @@ export async function summarizeDataStream(question, store, onDelta, history = []
       messages: [{ role: 'user', content: question }],
       maxOutputTokens: TOKEN_LIMITS.mini,
       temperature,
+      onDelta
+    });
+    return { model, reasoning: null };
+  }
+
+  if (provider === 'fireworks') {
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    const { model } = await streamFireworksChat({
+      model: options?.model,
+      systemPrompt,
+      messages: [{ role: 'user', content: question }],
+      maxOutputTokens: TOKEN_LIMITS.mini,
+      temperature,
+      verbosity: 'low',
+      reasoningEffort: 'medium',
       onDelta
     });
     return { model, reasoning: null };
@@ -1675,6 +1835,22 @@ If there are promising reactivation candidates, include a "Reactivation Opportun
       onDelta
     });
     return { model, reasoning: model === 'deepseek-reasoner' ? 'thinking' : null };
+  }
+
+  if (provider === 'fireworks') {
+    const temperature = resolveDeepSeekTemperature({ requestedTemperature: options?.temperature, fallback: 1.0 });
+    const reasoningEffort = mapFireworksReasoningEffort('high', 'high');
+    const { model } = await streamFireworksChat({
+      model: options?.model,
+      systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+      maxOutputTokens: TOKEN_LIMITS.deep,
+      temperature,
+      verbosity: 'medium',
+      reasoningEffort,
+      onDelta
+    });
+    return { model, reasoning: reasoningEffort };
   }
 
   return await streamWithFallback(MODELS.STRATEGIST, FALLBACK_MODELS.STRATEGIST, systemPrompt, userPrompt, TOKEN_LIMITS.deep, 'high', onDelta);

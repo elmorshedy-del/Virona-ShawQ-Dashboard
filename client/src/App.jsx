@@ -401,6 +401,42 @@ const CREATIVE_FUNNEL_SUMMARY_PROMPTS = {
   analyze: 'Without ad-hoc reasoning and rigorous thinking analyze these ads numbers and provide rigorous insights. Interpret the funnel numbers → diagnose what changed + why → give prioritized actions/tests. Keep verbosity low.',
   summarize: 'Show what changed and organize data in a readable meaningful way, to be comprehended at a glance. Keep verbosity low.'
 };
+const CREATIVE_INSIGHT_FIREWORKS_GLM5_MODEL = 'accounts/fireworks/models/glm-5';
+const CREATIVE_INSIGHT_TEMPERATURE_OPTIONS = [
+  { value: '0', label: '0.0' },
+  { value: '1', label: '1.0' },
+  { value: '1.3', label: '1.3' },
+  { value: '1.5', label: '1.5' }
+];
+const CREATIVE_INSIGHT_VERBOSITY_OPTIONS = [
+  { value: 'low', label: 'Non-verbose' },
+  { value: 'medium', label: 'Verbose' }
+];
+const CREATIVE_INSIGHT_PROVIDER_FIREWORKS_ALIASES = new Set(['fireworks', 'glm', 'glm5', 'glm-5']);
+
+const normalizeCreativeInsightProvider = (provider, model = '') => {
+  const normalizedProvider = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+  const normalizedModel = typeof model === 'string' ? model.trim().toLowerCase() : '';
+
+  if (CREATIVE_INSIGHT_PROVIDER_FIREWORKS_ALIASES.has(normalizedProvider)) return 'fireworks';
+  if ((!normalizedProvider || normalizedProvider === 'openai') && normalizedModel.startsWith('deepseek-')) return 'deepseek';
+  if (normalizedProvider === 'openai' && normalizedModel.includes('glm-5')) return 'fireworks';
+  if (!normalizedProvider && normalizedModel.includes('glm-5')) return 'fireworks';
+  if (normalizedProvider === 'deepseek') return 'deepseek';
+  if (normalizedProvider === 'openai') return 'openai';
+  return 'openai';
+};
+
+const normalizeCreativeInsightModel = (provider, model = '') => {
+  const normalizedModel = typeof model === 'string' ? model.trim() : '';
+  if (provider === 'fireworks') {
+    if (!normalizedModel) return CREATIVE_INSIGHT_FIREWORKS_GLM5_MODEL;
+    const lower = normalizedModel.toLowerCase();
+    if (lower === 'glm' || lower === 'glm-5') return CREATIVE_INSIGHT_FIREWORKS_GLM5_MODEL;
+    return normalizedModel;
+  }
+  return normalizedModel;
+};
 
 const hashStringToSeed = (value) => {
   const str = String(value ?? '');
@@ -2401,15 +2437,30 @@ function DashboardTab({
       if (!raw) return DEFAULT_CREATIVE_INSIGHT_LLM;
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object') return DEFAULT_CREATIVE_INSIGHT_LLM;
+      const provider = normalizeCreativeInsightProvider(parsed.provider, parsed.model);
+      const model = normalizeCreativeInsightModel(provider, parsed.model);
       return {
-        provider: typeof parsed.provider === 'string' ? parsed.provider : DEFAULT_CREATIVE_INSIGHT_LLM.provider,
-        model: typeof parsed.model === 'string' ? parsed.model : DEFAULT_CREATIVE_INSIGHT_LLM.model,
+        provider,
+        model,
         temperature: Number.isFinite(Number(parsed.temperature)) ? Number(parsed.temperature) : DEFAULT_CREATIVE_INSIGHT_LLM.temperature
       };
     } catch (e) {
       return DEFAULT_CREATIVE_INSIGHT_LLM;
     }
   });
+  const creativeInsightModelSummaryLabel = useMemo(() => {
+    if (creativeInsightLlm.provider === 'deepseek') {
+      return creativeInsightLlm.model === 'deepseek-reasoner'
+        ? 'DeepSeek Reasoner (Thinking)'
+        : 'DeepSeek Chat (Non-thinking)';
+    }
+    if (creativeInsightLlm.provider === 'fireworks') {
+      const model = (creativeInsightLlm.model || '').toLowerCase();
+      if (!model || model.includes('glm-5')) return 'GLM-5 (Fireworks)';
+      return `Fireworks (${creativeInsightLlm.model})`;
+    }
+    return 'OpenAI (auto)';
+  }, [creativeInsightLlm.model, creativeInsightLlm.provider]);
   const [showCreativeSummaryTable, setShowCreativeSummaryTable] = useState(true);
   const [showCreativeFunnelSummary, setShowCreativeFunnelSummary] = useState(true);
   const [ctrTrendRangeMode, setCtrTrendRangeMode] = useState('dashboard'); // 'dashboard' | 'local'
@@ -7823,11 +7874,7 @@ function DashboardTab({
                         Creative funnel AI summary
                       </div>
                       <div className="text-xs text-gray-500">
-                        {creativeInsightLlm.provider === 'deepseek'
-                          ? (creativeInsightLlm.model === 'deepseek-reasoner'
-                            ? 'DeepSeek Reasoner (Thinking)'
-                            : 'DeepSeek Chat (Non-thinking)')
-                          : 'OpenAI (auto)'} • auto end of day/week or manual
+                        {creativeInsightModelSummaryLabel} • auto end of day/week or manual
                       </div>
                     </div>
                     <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${creativeInsightPanelOpen ? 'rotate-180' : ''}`} />
@@ -7869,6 +7916,14 @@ function DashboardTab({
                             }
                             if (value === 'deepseek:deepseek-reasoner') {
                               setCreativeInsightLlm((prev) => ({ ...prev, provider: 'deepseek', model: 'deepseek-reasoner' }));
+                              return;
+                            }
+                            if (value === `fireworks:${CREATIVE_INSIGHT_FIREWORKS_GLM5_MODEL}`) {
+                              setCreativeInsightLlm((prev) => ({
+                                ...prev,
+                                provider: 'fireworks',
+                                model: CREATIVE_INSIGHT_FIREWORKS_GLM5_MODEL
+                              }));
                             }
                           }}
                           className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
@@ -7877,19 +7932,19 @@ function DashboardTab({
                           <option value="openai:auto">OpenAI (auto)</option>
                           <option value="deepseek:deepseek-chat">DeepSeek Chat (Non-thinking)</option>
                           <option value="deepseek:deepseek-reasoner">DeepSeek Reasoner (Thinking)</option>
+                          <option value={`fireworks:${CREATIVE_INSIGHT_FIREWORKS_GLM5_MODEL}`}>GLM-5 (Fireworks)</option>
                         </select>
 
-                        {creativeInsightLlm.provider === 'deepseek' && (
+                        {(creativeInsightLlm.provider === 'deepseek' || creativeInsightLlm.provider === 'fireworks') && (
                           <select
                             value={String(creativeInsightLlm.temperature ?? 1.0)}
                             onChange={(event) => setCreativeInsightLlm((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
                             className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
                             title="Temperature"
                           >
-                            <option value="0">0.0</option>
-                            <option value="1">1.0</option>
-                            <option value="1.3">1.3</option>
-                            <option value="1.5">1.5</option>
+                            {CREATIVE_INSIGHT_TEMPERATURE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
                           </select>
                         )}
                       </div>
@@ -7911,21 +7966,21 @@ function DashboardTab({
 
                       <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
                         <span className="font-semibold text-gray-500">Verbosity:</span>
-                        {['low', 'medium'].map((level) => (
+                        {CREATIVE_INSIGHT_VERBOSITY_OPTIONS.map((level) => (
                           <button
-                            key={level}
+                            key={level.value}
                             type="button"
                             onClick={() => setCreativeInsightVerbosity(prev => ({
                               ...prev,
-                              [creativeInsightMode]: level
+                              [creativeInsightMode]: level.value
                             }))}
                             className={`px-3 py-1.5 rounded-lg border transition-colors ${
-                              creativeInsightVerbosity[creativeInsightMode] === level
+                              creativeInsightVerbosity[creativeInsightMode] === level.value
                                 ? 'bg-gray-900 text-white border-gray-900'
                                 : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                             }`}
                           >
-                            {level}
+                            {level.label}
                           </button>
                         ))}
                         <div className="flex items-center gap-2">

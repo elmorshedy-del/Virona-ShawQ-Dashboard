@@ -43,6 +43,21 @@ META_CAMPAIGN_LAUNCHER_API_KEY=replace-with-strong-secret
 META_ALLOWED_AD_ACCOUNT_IDS=
 VIRONAX_META_ALLOWED_AD_ACCOUNT_IDS=
 SHAWQ_META_ALLOWED_AD_ACCOUNT_IDS=
+
+# Creative Funnel AI Summary provider options
+# OpenAI (default)
+OPENAI_API_KEY=...
+
+# DeepSeek (optional)
+DEEPSEEK_API_KEY=...
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MAX_OUTPUT_TOKENS=4096
+
+# Fireworks (optional, enables GLM-5 in UI)
+FIREWORKS_API_KEY=...
+FIREWORKS_BASE_URL=https://api.fireworks.ai/inference/v1
+FIREWORKS_DEFAULT_MODEL=accounts/fireworks/models/glm-5
+FIREWORKS_MAX_OUTPUT_TOKENS=4096
 ```
 
 4. Deploy
@@ -76,6 +91,8 @@ For the Neo campaign launcher UI, set a client env var in `client/.env.local`:
 ```bash
 VITE_META_CAMPAIGN_LAUNCHER_API_KEY=replace-with-the-same-secret
 ```
+
+Creative Funnel AI summary model choice is controlled in-app (OpenAI, DeepSeek, GLM-5 via Fireworks). No extra client env var is required for model selection.
 
 ## Demo Mode
 
