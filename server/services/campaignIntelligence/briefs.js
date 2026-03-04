@@ -7,7 +7,6 @@ import {
   BRIEF_PROMPT_CONFIG,
   BRIEF_SCHEDULE_MODES,
   DEFAULT_SETTINGS,
-  QUERY_LIMITS,
   SUPPORTED_LEVELS,
   SUPPORTED_STORES
 } from './constants.js';
@@ -21,14 +20,6 @@ const EMPTY_ENTITY_SCOPE_VALUE = 'all';
 const ALL_COUNTRIES_SCOPE_VALUE = 'ALL';
 const JSON_CODE_BLOCK_PATTERN = /```json\s*([\s\S]*?)```/i;
 const RAW_OUTPUT_SNIPPET_MAX_CHARS = 600;
-const BRIEF_REPORT_KEYS = Object.freeze([
-  'executiveSummary',
-  'toWatch',
-  'toDo',
-  'draggers',
-  'creativePriorities',
-  'notes'
-]);
 
 function hasConfiguredEnvKey(envName) {
   const value = process.env[envName];
@@ -442,22 +433,18 @@ function buildCompactHierarchyRows(rows = []) {
     }));
 }
 
-function buildCompactTimelineRows(rows = []) {
-  return rows
-    .slice(-BRIEF_PROMPT_CONFIG.maxTimelineRows)
-    .map((row) => ({
-      date: row?.date || null,
-      spend: toFiniteNumber(row?.spend),
-      metaPurchases: toFiniteNumber(row?.conversions),
-      shopifyOrders: toFiniteNumber(row?.orders),
-      reach: toFiniteNumber(row?.reach),
-      ctrPercent: toFiniteNumber(row?.ctrPercent ?? (toFiniteNumber(row?.ctr) * 100)),
-      cvrPercent: toFiniteNumber(row?.cvrPercent ?? (toFiniteNumber(row?.cvr) * 100)),
-      roas: toFiniteNumber(row?.roas),
-      costAtc: toFiniteNumber(row?.costAtc),
-      purchaseIcPercent: toFiniteNumber(row?.purchaseIc ?? row?.purchaseIcRate) * 100,
-      metaOrdersPerSpend: toFiniteNumber(row?.metaOrdersPerSpend),
-      shopifyOrdersPerSpend: toFiniteNumber(row?.shopifyOrdersPerSpend)
+function buildModelSignals(model = null) {
+  if (!model || !Array.isArray(model.signals)) return [];
+  return model.signals
+    .slice(0, BRIEF_PROMPT_CONFIG.maxSignalRowsPerModel)
+    .map((signal) => ({
+      label: signal.label,
+      baselineValue: toFiniteNumber(signal.baselineValue),
+      currentValue: toFiniteNumber(signal.currentValue),
+      deltaPercent: toFiniteNumber(signal.deltaPercent),
+      thresholdPercent: toFiniteNumber(signal.thresholdPercent),
+      source: signal.source || 'unknown',
+      weightedImpact: toFiniteNumber(signal.weightedImpact)
     }));
 }
 
@@ -465,8 +452,10 @@ function buildBriefPromptPayload(snapshot) {
   const summary = snapshot?.summary || {};
   const analysis = summary.analysis || {};
   const anchor = summary.anchor || {};
+  const hasModels = Boolean(snapshot?.models);
+  const hasBudgetMonitor = Boolean(snapshot?.budgetMonitor);
 
-  return {
+  const payload = {
     scope: snapshot?.scope || null,
     analysisSummary: {
       totals: analysis.totals || {},
@@ -477,16 +466,49 @@ function buildBriefPromptPayload(snapshot) {
       rates: anchor.rates || {}
     },
     lifecycle: snapshot?.selectors?.lifecycle || null,
-    timelineRows: buildCompactTimelineRows(snapshot?.timeline?.daily || []),
-    budgetMonitor: {
+    hierarchyRows: buildCompactHierarchyRows(snapshot?.hierarchy?.rows || [])
+  };
+
+  if (hasModels) {
+    payload.topDrivers = Array.isArray(snapshot?.models?.topDrivers)
+      ? snapshot.models.topDrivers.slice(0, BRIEF_PROMPT_CONFIG.maxTopDrivers)
+      : [];
+    payload.modelReadouts = {
+      sentinel: {
+        status: snapshot?.models?.sentinel?.status || null,
+        summary: snapshot?.models?.sentinel?.summary || '',
+        riskScore: toFiniteNumber(snapshot?.models?.sentinel?.riskScore),
+        confidence: toFiniteNumber(snapshot?.models?.sentinel?.confidence),
+        signals: buildModelSignals(snapshot?.models?.sentinel)
+      },
+      headroom: {
+        status: snapshot?.models?.headroom?.status || null,
+        summary: snapshot?.models?.headroom?.summary || '',
+        headroomScore: toFiniteNumber(snapshot?.models?.headroom?.headroomScore),
+        suggestedPercent: toFiniteNumber(snapshot?.models?.headroom?.recommendation?.suggestedPercent),
+        confidence: toFiniteNumber(snapshot?.models?.headroom?.confidence)
+      },
+      launchJudge: {
+        status: snapshot?.models?.launchJudge?.status || null,
+        summary: snapshot?.models?.launchJudge?.summary || '',
+        confidence: toFiniteNumber(snapshot?.models?.launchJudge?.confidence),
+        hitTargetRoas: toFiniteNumber(snapshot?.models?.launchJudge?.probabilities?.hitTargetRoas),
+        hitTargetCpa: toFiniteNumber(snapshot?.models?.launchJudge?.probabilities?.hitTargetCpa)
+      }
+    };
+  }
+
+  if (hasBudgetMonitor) {
+    payload.budgetMonitor = {
       hasEvent: Boolean(snapshot?.budgetMonitor?.hasEvent),
       latest: snapshot?.budgetMonitor?.latest || null,
       metrics: Array.isArray(snapshot?.budgetMonitor?.metrics)
         ? snapshot.budgetMonitor.metrics.slice(0, 8)
         : []
-    },
-    hierarchyRows: buildCompactHierarchyRows(snapshot?.hierarchy?.rows || [])
-  };
+    };
+  }
+
+  return payload;
 }
 
 function buildSystemPrompt() {
@@ -530,46 +552,21 @@ function stripCodeFence(text) {
 
 function parseBriefJson(text) {
   const normalized = stripCodeFence(text);
-
-  const parseCandidate = (candidate) => {
-    try {
-      return JSON.parse(candidate);
-    } catch (_error) {
-      return null;
-    }
-  };
-
-  const tryParseObjectSlice = (candidate) => {
-    const firstBrace = candidate.indexOf('{');
-    const lastBrace = candidate.lastIndexOf('}');
+  try {
+    return JSON.parse(normalized);
+  } catch (_error) {
+    const firstBrace = normalized.indexOf('{');
+    const lastBrace = normalized.lastIndexOf('}');
     if (firstBrace >= 0 && lastBrace > firstBrace) {
-      const slice = candidate.slice(firstBrace, lastBrace + 1);
-      return parseCandidate(slice);
-    }
-    return null;
-  };
-
-  const coerceParsedObject = (value) => {
-    let current = value;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (current && typeof current === 'object' && !Array.isArray(current)) {
-        return current;
-      }
-      if (typeof current !== 'string') {
+      const slice = normalized.slice(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(slice);
+      } catch (_innerError) {
         return null;
       }
-      const trimmed = stripCodeFence(current);
-      const parsed = parseCandidate(trimmed) || tryParseObjectSlice(trimmed);
-      if (!parsed) {
-        return null;
-      }
-      current = parsed;
     }
     return null;
-  };
-
-  const parsed = parseCandidate(normalized) || tryParseObjectSlice(normalized);
-  return coerceParsedObject(parsed);
+  }
 }
 
 function coerceSummaryEmbeddedBrief(parsed) {
@@ -603,25 +600,6 @@ function normalizeList(input, mapper) {
   return input.map(mapper).filter(Boolean);
 }
 
-function looksLikeStructuredBlob(value) {
-  const normalized = String(value || '').trim();
-  if (!normalized) return false;
-  if ((normalized.startsWith('{') && normalized.endsWith('}')) || (normalized.startsWith('[') && normalized.endsWith(']'))) {
-    return true;
-  }
-  return BRIEF_REPORT_KEYS.some((key) => normalized.includes(`"${key}"`));
-}
-
-function sanitizeSummaryText(value, fallback = 'No summary was produced.') {
-  const normalized = String(value || '').trim();
-  if (!normalized) return fallback;
-  if (looksLikeStructuredBlob(normalized)) return fallback;
-  if (normalized.length > RAW_OUTPUT_SNIPPET_MAX_CHARS) {
-    return `${normalized.slice(0, RAW_OUTPUT_SNIPPET_MAX_CHARS - 1).trim()}…`;
-  }
-  return normalized;
-}
-
 function normalizeReportShape(parsed, fallbackText = '') {
   const report = parsed && typeof parsed === 'object' ? parsed : null;
   if (!report) {
@@ -640,7 +618,7 @@ function normalizeReportShape(parsed, fallbackText = '') {
     };
   }
 
-  const executiveSummary = sanitizeSummaryText(report.executiveSummary, 'No summary was produced.');
+  const executiveSummary = String(report.executiveSummary || '').trim() || 'No summary was produced.';
 
   return {
     executiveSummary,

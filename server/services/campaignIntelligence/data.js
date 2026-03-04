@@ -720,7 +720,7 @@ export function normalizeCampaignIntelligenceRequest(query = {}) {
 }
 
 export function fetchEntityOptions(scope) {
-  const { db, store, level, levelConfig, analysisRange, country, selectorLimit } = scope;
+  const { db, store, levelConfig, analysisRange, country, selectorLimit } = scope;
   const whereParts = ['store = ?', 'date BETWEEN ? AND ?'];
   const args = [store, analysisRange.startDate, analysisRange.endDate];
 
@@ -728,22 +728,6 @@ export function fetchEntityOptions(scope) {
     const countryFilter = buildCountryWhereClause(country);
     whereParts.push(countryFilter.clause);
     args.push(...countryFilter.args);
-  }
-
-  const queryConfig = buildLevelWindowQueryConfig(level);
-  const activeFilter = buildActiveEntitySubqueryFilter({
-    db,
-    tableName: levelConfig.table,
-    idColumn: levelConfig.idColumn,
-    statusColumns: queryConfig.statusColumns,
-    store,
-    endDate: analysisRange.endDate,
-    country
-  });
-
-  if (activeFilter) {
-    whereParts.push(activeFilter.clause);
-    args.push(...activeFilter.args);
   }
 
   const rows = db
@@ -775,134 +759,93 @@ export function fetchEntityOptions(scope) {
 }
 
 export function fetchCountryOptions(scope) {
-  const { db, store, level, levelConfig, analysisRange, anchorRange, entityId, selectorLimit } = scope;
-  const queryConfig = buildLevelWindowQueryConfig(level);
+  const { db, store, levelConfig, analysisRange, entityId, selectorLimit } = scope;
+  const { whereSql, args } = buildScopeWhere(levelConfig, {
+    store,
+    startDate: analysisRange.startDate,
+    endDate: analysisRange.endDate,
+    entityId,
+    country: 'ALL'
+  });
+
   const rawCountryRowLimit = Math.min(
     COUNTRY_OPTIONS_MAX_RAW_ROWS,
     Math.max(selectorLimit, selectorLimit * COUNTRY_OPTIONS_RAW_LIMIT_MULTIPLIER)
   );
 
-  const queryCountryAggregates = ({ startDate, endDate }) => {
-    const scopeFilter = buildScopeWhere(levelConfig, {
-      store,
-      startDate,
-      endDate,
-      entityId,
-      country: 'ALL'
-    });
-    const whereParts = [scopeFilter.whereSql];
-    const args = [...scopeFilter.args];
-    const activeFilter = buildActiveEntitySubqueryFilter({
-      db,
-      tableName: levelConfig.table,
-      idColumn: levelConfig.idColumn,
-      statusColumns: queryConfig.statusColumns,
-      store,
-      endDate: analysisRange.endDate,
-      country: 'ALL',
-      entityId
-    });
-    if (activeFilter) {
-      whereParts.push(activeFilter.clause);
-      args.push(...activeFilter.args);
-    }
+  const rows = db
+    .prepare(`
+      SELECT
+        ${NORMALIZED_COUNTRY_SQL} as rawCountry,
+        SUM(spend) as spend,
+        SUM(conversions) as conversions,
+        SUM(conversion_value) as conversionValue,
+        SUM(add_to_cart) as addToCart,
+        SUM(checkouts_initiated) as checkoutsInitiated,
+        SUM(clicks) as clicks,
+        SUM(impressions) as impressions
+      FROM ${levelConfig.table}
+      WHERE ${whereSql}
+      AND ${NORMALIZED_COUNTRY_SQL} != ''
+      GROUP BY ${NORMALIZED_COUNTRY_SQL}
+      HAVING SUM(spend) > 0
+      ORDER BY spend DESC
+      LIMIT ?
+    `)
+    .all(...args, rawCountryRowLimit);
 
-    const rows = db
-      .prepare(`
-        SELECT
-          ${NORMALIZED_COUNTRY_SQL} as rawCountry,
-          SUM(spend) as spend,
-          SUM(conversions) as conversions,
-          SUM(conversion_value) as conversionValue,
-          SUM(add_to_cart) as addToCart,
-          SUM(checkouts_initiated) as checkoutsInitiated,
-          SUM(clicks) as clicks,
-          SUM(impressions) as impressions
-        FROM ${levelConfig.table}
-        WHERE ${whereParts.join(' AND ')}
-        AND ${NORMALIZED_COUNTRY_SQL} != ''
-        GROUP BY ${NORMALIZED_COUNTRY_SQL}
-        HAVING SUM(spend) > 0
-        ORDER BY spend DESC
-        LIMIT ?
-      `)
-      .all(...args, rawCountryRowLimit);
+  const byCode = new Map();
+  for (const row of rows) {
+    const code = normalizeCountryCode(row?.rawCountry);
+    if (!code) continue;
 
-    const byCode = new Map();
-    for (const row of rows) {
-      const code = normalizeCountryCode(row?.rawCountry);
-      if (!code) continue;
-
-      const current = byCode.get(code) || {
-        code,
-        spend: 0,
-        conversions: 0,
-        conversionValue: 0,
-        addToCart: 0,
-        checkoutsInitiated: 0,
-        clicks: 0,
-        impressions: 0
-      };
-      current.spend += toNumber(row?.spend);
-      current.conversions += toNumber(row?.conversions);
-      current.conversionValue += toNumber(row?.conversionValue);
-      current.addToCart += toNumber(row?.addToCart);
-      current.checkoutsInitiated += toNumber(row?.checkoutsInitiated);
-      current.clicks += toNumber(row?.clicks);
-      current.impressions += toNumber(row?.impressions);
-      byCode.set(code, current);
-    }
-
-    return byCode;
-  };
-
-  const resolvedAnchorRange = anchorRange || analysisRange;
-  const analysisByCountry = queryCountryAggregates({
-    startDate: analysisRange.startDate,
-    endDate: analysisRange.endDate
-  });
-  const anchorByCountry = queryCountryAggregates({
-    startDate: resolvedAnchorRange.startDate,
-    endDate: resolvedAnchorRange.endDate
-  });
-
-  const mapToMetrics = (raw = null) => {
-    if (!raw) return null;
-    const spend = toNumber(raw.spend);
-    const conversions = toNumber(raw.conversions);
-    const conversionValue = toNumber(raw.conversionValue);
-    const addToCart = toNumber(raw.addToCart);
-    const checkoutsInitiated = toNumber(raw.checkoutsInitiated);
-    const clicks = toNumber(raw.clicks);
-    const impressions = toNumber(raw.impressions);
-
-    return {
-      spend: round(spend, 2),
-      conversions: Math.round(conversions),
-      conversionValue: round(conversionValue, 2),
-      addToCart: Math.round(addToCart),
-      checkoutsInitiated: Math.round(checkoutsInitiated),
-      clicks: Math.round(clicks),
-      impressions: Math.round(impressions),
-      roas: spend > 0 ? round(safeDivide(conversionValue, spend), 4) : null,
-      costAtc: addToCart > 0 ? round(safeDivide(spend, addToCart), 4) : null,
-      purchaseIc: checkoutsInitiated > 0 ? round(safeDivide(conversions, checkoutsInitiated), 4) : null,
-      cpm: impressions > 0 ? round(safeDivide(spend * 1000, impressions), 4) : null,
-      ctr: impressions > 0 ? round(safeDivide(clicks, impressions), 4) : null
+    const current = byCode.get(code) || {
+      code,
+      spend: 0,
+      conversions: 0,
+      conversionValue: 0,
+      addToCart: 0,
+      checkoutsInitiated: 0,
+      clicks: 0,
+      impressions: 0
     };
-  };
+    current.spend += toNumber(row?.spend);
+    current.conversions += toNumber(row?.conversions);
+    current.conversionValue += toNumber(row?.conversionValue);
+    current.addToCart += toNumber(row?.addToCart);
+    current.checkoutsInitiated += toNumber(row?.checkoutsInitiated);
+    current.clicks += toNumber(row?.clicks);
+    current.impressions += toNumber(row?.impressions);
+    byCode.set(code, current);
+  }
 
-  return Array.from(analysisByCountry.values())
-    .map((analysisRow) => {
-      const current = mapToMetrics(analysisRow);
-      const baseline = mapToMetrics(anchorByCountry.get(analysisRow.code));
-
-      return {
-        code: analysisRow.code,
-        ...current,
-        baseline
-      };
-    })
+  return Array.from(byCode.values())
+    .map((row) => ({
+      code: row.code,
+      spend: round(row.spend, 2),
+      conversions: Math.round(row.conversions),
+      conversionValue: round(row.conversionValue, 2),
+      addToCart: Math.round(row.addToCart),
+      checkoutsInitiated: Math.round(row.checkoutsInitiated),
+      clicks: Math.round(row.clicks),
+      impressions: Math.round(row.impressions),
+      roas: (() => {
+        const value = safeDivide(row.conversionValue, row.spend, null);
+        return value == null ? null : round(value, 4);
+      })(),
+      costAtc: (() => {
+        const value = safeDivide(row.spend, row.addToCart, null);
+        return value == null ? null : round(value, 4);
+      })(),
+      purchaseIc: (() => {
+        const value = safeDivide(row.conversions, row.checkoutsInitiated, null);
+        return value == null ? null : round(value, 4);
+      })(),
+      cpm: (() => {
+        const value = safeDivide(row.spend * 1000, row.impressions, null);
+        return value == null ? null : round(value, 4);
+      })()
+    }))
     .sort((left, right) => right.spend - left.spend)
     .slice(0, selectorLimit);
 }
@@ -1339,8 +1282,7 @@ export function mergeDailySeries({ dateRange, metaRows, orderRows }) {
     };
     const orders = ordersByDate.get(date) || { orders: 0, revenue: 0 };
 
-    const metaOrdersPerSpend = safeDivide(meta.conversions, meta.spend);
-    const shopifyOrdersPerSpend = safeDivide(orders.orders, meta.spend);
+    const combinedOrdersPerSpend = safeDivide(orders.orders, meta.spend);
 
     return {
       date,
@@ -1360,9 +1302,7 @@ export function mergeDailySeries({ dateRange, metaRows, orderRows }) {
       frequency: meta.frequency,
       orders: Math.round(orders.orders),
       revenue: round(orders.revenue, 2),
-      ordersPerSpend: shopifyOrdersPerSpend,
-      metaOrdersPerSpend,
-      shopifyOrdersPerSpend
+      ordersPerSpend: combinedOrdersPerSpend
     };
   });
 }

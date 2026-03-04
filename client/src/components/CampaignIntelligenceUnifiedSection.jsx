@@ -168,14 +168,6 @@ const MAX_COUNTRY_BOARD_ROWS = 8;
 const MAX_REGIME_ROWS = 6;
 const CROSS_ENTITY_INSIGHT_LIMIT = 5;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
-const BRIEF_SUMMARY_MAX_CHARS = 560;
-const COUNTRY_REGIME_CONFIG = Object.freeze({
-  roasWeight: 0.45,
-  cpmWeight: 0.3,
-  purchaseIcWeight: 0.25,
-  directionEdgeRatio: 1.05,
-  materialDeltaRatio: 0.08
-});
 
 function toFiniteNumber(value, fallback = 0) {
   if (value == null || value === '') return fallback;
@@ -184,8 +176,7 @@ function toFiniteNumber(value, fallback = 0) {
 }
 
 function parseNullableNumber(value) {
-  if (value == null) return null;
-  if (typeof value === 'string' && value.trim() === '') return null;
+  if (value == null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -383,7 +374,7 @@ function getRowType(row) {
 }
 
 function rowMetric(row, metricKey, side = 'now') {
-  return parseNullableNumber(row?.metrics?.[side]?.[metricKey]);
+  return toFiniteNumber(row?.metrics?.[side]?.[metricKey], NaN);
 }
 
 function computeHealthScore(row, targetRoas) {
@@ -824,12 +815,11 @@ function coerceBriefReport(briefReport) {
   if (!parsedSummary) return briefReport;
 
   const parsedSummaryText = String(parsedSummary.executiveSummary || '').trim();
-  const sourceSummaryText = String(briefReport.executiveSummary || '').trim();
 
   return {
     ...parsedSummary,
     ...briefReport,
-    executiveSummary: parsedSummaryText || sourceSummaryText,
+    executiveSummary: parsedSummaryText,
     toWatch: Array.isArray(briefReport.toWatch) && briefReport.toWatch.length
       ? briefReport.toWatch
       : parsedSummary.toWatch,
@@ -848,31 +838,12 @@ function coerceBriefReport(briefReport) {
   };
 }
 
-function isLikelyStructuredBlob(value) {
-  const normalized = String(value || '').trim();
-  if (!normalized) return false;
-  if ((normalized.startsWith('{') && normalized.endsWith('}')) || (normalized.startsWith('[') && normalized.endsWith(']'))) {
-    return true;
-  }
-  return normalized.includes('"executiveSummary"') || normalized.includes('"toWatch"') || normalized.includes('"toDo"');
-}
-
-function sanitizeBriefSummary(value, fallback) {
-  const normalized = String(value || '').trim();
-  if (!normalized) return String(fallback || '').trim();
-  if (isLikelyStructuredBlob(normalized)) return String(fallback || '').trim();
-  if (normalized.length > BRIEF_SUMMARY_MAX_CHARS) {
-    return `${normalized.slice(0, BRIEF_SUMMARY_MAX_CHARS - 3).trim()}...`;
-  }
-  return normalized;
-}
-
 function normalizeBriefForRender(briefReport, fallbackBrief) {
   const resolvedBrief = coerceBriefReport(briefReport);
   if (!resolvedBrief) return fallbackBrief;
 
   return {
-    executiveSummary: sanitizeBriefSummary(resolvedBrief.executiveSummary, fallbackBrief.executiveSummary) || fallbackBrief.executiveSummary,
+    executiveSummary: String(resolvedBrief.executiveSummary || fallbackBrief.executiveSummary || '').trim() || fallbackBrief.executiveSummary,
     draggers: Array.isArray(resolvedBrief.draggers) && resolvedBrief.draggers.length ? resolvedBrief.draggers : fallbackBrief.draggers,
     creativePriorities: Array.isArray(resolvedBrief.creativePriorities) && resolvedBrief.creativePriorities.length
       ? resolvedBrief.creativePriorities
@@ -881,13 +852,6 @@ function normalizeBriefForRender(briefReport, fallbackBrief) {
     toDo: Array.isArray(resolvedBrief.toDo) && resolvedBrief.toDo.length ? resolvedBrief.toDo : fallbackBrief.toDo,
     notes: Array.isArray(resolvedBrief.notes) && resolvedBrief.notes.length ? resolvedBrief.notes : fallbackBrief.notes
   };
-}
-
-function isBriefAlignedWithScope(brief, scope) {
-  const briefDate = String(brief?.briefDate || '').trim();
-  const scopeEndDate = String(scope?.analysisEndDate || '').trim();
-  if (!briefDate || !scopeEndDate) return false;
-  return briefDate === scopeEndDate;
 }
 
 async function readJsonResponse(response) {
@@ -1316,7 +1280,7 @@ export default function CampaignIntelligenceUnifiedSection({
 
   const ctrSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.ctr) * 100), [windowedTimeline]);
   const reachSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.reach)), [windowedTimeline]);
-  const purchasesSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.conversions)), [windowedTimeline]);
+  const purchasesSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.orders ?? row.conversions)), [windowedTimeline]);
   const spendSeries = useMemo(() => windowedTimeline.map((row) => toFiniteNumber(row.spend)), [windowedTimeline]);
   const healthSeries = useMemo(() => {
     const config = TREND_HEALTH_PROXY_CONFIG;
@@ -1336,14 +1300,13 @@ export default function CampaignIntelligenceUnifiedSection({
   const deterministicBrief = useMemo(() => buildDeterministicBriefFallback(snapshot, rowsWithComputed, targetRoas), [snapshot, rowsWithComputed, targetRoas]);
 
   const activeBrief = useMemo(() => {
-    const latestBrief = isBriefAlignedWithScope(snapshot?.brief?.latest, snapshot?.scope) ? snapshot?.brief?.latest : null;
-    if (manualBrief && latestBrief) {
+    if (manualBrief && snapshot?.brief?.latest) {
       const manualCreated = new Date(manualBrief.createdAt || 0).getTime();
-      const latestCreated = new Date(latestBrief.createdAt || 0).getTime();
-      return manualCreated >= latestCreated ? manualBrief : latestBrief;
+      const latestCreated = new Date(snapshot.brief.latest.createdAt || 0).getTime();
+      return manualCreated >= latestCreated ? manualBrief : snapshot.brief.latest;
     }
-    return manualBrief || latestBrief || null;
-  }, [manualBrief, snapshot?.brief?.latest, snapshot?.scope]);
+    return manualBrief || snapshot?.brief?.latest || null;
+  }, [manualBrief, snapshot]);
 
   const renderedBrief = useMemo(() => {
     return normalizeBriefForRender(activeBrief?.report || null, deterministicBrief);
@@ -1467,63 +1430,41 @@ export default function CampaignIntelligenceUnifiedSection({
 	    return rows.slice(0, MAX_COUNTRY_BOARD_ROWS);
 	  }, [countryOptions, targetRoas]);
 
-  const countryRegimeRows = useMemo(() => {
-    const baselineStartDate = String(snapshot?.scope?.anchorStartDate || '').trim();
-    const baselineEndDate = String(snapshot?.scope?.anchorEndDate || '').trim();
-    const analysisStartDate = String(snapshot?.scope?.analysisStartDate || windowSummary.startDate || '').trim();
-    const analysisEndDate = String(snapshot?.scope?.analysisEndDate || windowSummary.endDate || '').trim();
+	  const countryRegimeRows = useMemo(() => {
+	    const baselineStartDate = String(snapshot?.scope?.anchorStartDate || '').trim();
+	    const baselineEndDate = String(snapshot?.scope?.anchorEndDate || '').trim();
+	    const analysisStartDate = String(snapshot?.scope?.analysisStartDate || windowSummary.startDate || '').trim();
+	    const analysisEndDate = String(snapshot?.scope?.analysisEndDate || windowSummary.endDate || '').trim();
 
-    return countryHealthRows
-      .filter((row) => row.baseline)
-      .slice(0, MAX_REGIME_ROWS)
-      .map((row) => {
-        const config = COUNTRY_REGIME_CONFIG;
-        const baseline = row.baseline;
-        const baselineRoas = parseNullableNumber(baseline?.roas);
-        const baselineCpm = parseNullableNumber(baseline?.cpm);
-        const baselinePurchaseIc = parseNullableNumber(baseline?.purchaseIc);
-        const roasDelta = metricDeltaRatio('roas', row.roas, baselineRoas);
-        const cpmDelta = metricDeltaRatio('cpm', row.cpm, baselineCpm);
-        const purchaseIcDelta = metricDeltaRatio('purchaseIc', row.purchaseIc, baselinePurchaseIc);
-        const riskScore = (
-          (Number.isFinite(roasDelta) ? Math.max(0, -roasDelta) : 0) * config.roasWeight
-          + (Number.isFinite(cpmDelta) ? Math.max(0, -cpmDelta) : 0) * config.cpmWeight
-          + (Number.isFinite(purchaseIcDelta) ? Math.max(0, -purchaseIcDelta) : 0) * config.purchaseIcWeight
-        );
-        const upliftScore = (
-          (Number.isFinite(roasDelta) ? Math.max(0, roasDelta) : 0) * config.roasWeight
-          + (Number.isFinite(cpmDelta) ? Math.max(0, cpmDelta) : 0) * config.cpmWeight
-          + (Number.isFinite(purchaseIcDelta) ? Math.max(0, purchaseIcDelta) : 0) * config.purchaseIcWeight
-        );
-        const direction = riskScore > upliftScore * config.directionEdgeRatio
-          ? 'deteriorating'
-          : upliftScore > riskScore * config.directionEdgeRatio
-            ? 'improving'
-            : 'stable';
+	    const tierFromScore = (score) => {
+	      if (!Number.isFinite(score)) return null;
+	      if (score >= HEALTH_RULES.statusCutoffs.strong) return 4;
+	      if (score >= HEALTH_RULES.statusCutoffs.healthy) return 3;
+	      if (score >= HEALTH_RULES.statusCutoffs.watch) return 2;
+	      if (score >= HEALTH_RULES.statusCutoffs.weak) return 1;
+	      return 0;
+	    };
 
-        const reasonParts = [];
-        if (Number.isFinite(roasDelta) && Math.abs(roasDelta) >= config.materialDeltaRatio) {
-          reasonParts.push(`ROAS ${roasDelta >= 0 ? 'up' : 'down'} ${Math.abs(roasDelta * 100).toFixed(1)}%`);
-        }
-        if (Number.isFinite(cpmDelta) && Math.abs(cpmDelta) >= config.materialDeltaRatio) {
-          reasonParts.push(`CPM ${cpmDelta >= 0 ? 'eased' : 'inflated'} ${Math.abs(cpmDelta * 100).toFixed(1)}%`);
-        }
-        if (Number.isFinite(purchaseIcDelta) && Math.abs(purchaseIcDelta) >= config.materialDeltaRatio) {
-          reasonParts.push(`Purchase/IC ${purchaseIcDelta >= 0 ? 'up' : 'down'} ${Math.abs(purchaseIcDelta * 100).toFixed(1)}%`);
-        }
-        const reason = reasonParts.length ? reasonParts.join('; ') : 'No material shift vs baseline.';
+	    return countryHealthRows
+	      .filter((row) => Number.isFinite(row.baselineHealthScore))
+	      .slice(0, MAX_REGIME_ROWS)
+	      .map((row) => {
+	        const nowTier = tierFromScore(row.healthScore);
+	        const baselineTier = tierFromScore(row.baselineHealthScore);
+	        const direction = nowTier != null && baselineTier != null
+	          ? (nowTier > baselineTier ? 'improving' : nowTier < baselineTier ? 'deteriorating' : 'stable')
+	          : 'stable';
 
-        return {
-          code: row.code,
-          label: row.label,
-          flag: row.flag,
-          direction,
-          baselineHealthScore: row.baselineHealthScore,
-          healthScore: row.healthScore,
-          reason,
-          baselineWindow: baselineStartDate && baselineEndDate ? `${baselineStartDate} → ${baselineEndDate}` : '',
-          analysisWindow: analysisStartDate && analysisEndDate ? `${analysisStartDate} → ${analysisEndDate}` : ''
-        };
+	        return {
+	          code: row.code,
+	          label: row.label,
+	          flag: row.flag,
+	          direction,
+	          baselineHealthScore: row.baselineHealthScore,
+	          healthScore: row.healthScore,
+	          baselineWindow: baselineStartDate && baselineEndDate ? `${baselineStartDate} → ${baselineEndDate}` : '',
+	          analysisWindow: analysisStartDate && analysisEndDate ? `${analysisStartDate} → ${analysisEndDate}` : ''
+	        };
 	      });
 	  }, [
 	    countryHealthRows,
@@ -2185,13 +2126,12 @@ export default function CampaignIntelligenceUnifiedSection({
 	          <article className="rounded-xl border border-[#e3e8ff] bg-[linear-gradient(160deg,#fcfdff,#f8faff)] p-3">
 	            <h4 className="text-[13px] uppercase tracking-[0.4px] text-[#5e6da2] font-semibold">Country Shifts (vs baseline window)</h4>
 	            <ul className="mt-2 space-y-1.5 text-[12px] text-[#243463]">
-		              {countryRegimeRows.map((row) => (
-		                <li key={`regime-${row.code}`}>
-		                  <b>{row.flag ? `${row.flag} ` : ''}{row.label}:</b> {titleCaseDirection(row.direction)} ({row.baselineHealthScore} → {row.healthScore})
-		                  {(row.baselineWindow && row.analysisWindow) ? ` · ${row.baselineWindow} vs ${row.analysisWindow}` : ''}
-		                  {row.reason ? ` · ${row.reason}` : ''}
-		                </li>
-		              ))}
+	              {countryRegimeRows.map((row) => (
+	                <li key={`regime-${row.code}`}>
+	                  <b>{row.flag ? `${row.flag} ` : ''}{row.label}:</b> {titleCaseDirection(row.direction)} ({row.baselineHealthScore} → {row.healthScore})
+	                  {(row.baselineWindow && row.analysisWindow) ? ` · ${row.baselineWindow} vs ${row.analysisWindow}` : ''}
+	                </li>
+	              ))}
 	              {countryRegimeRows.length === 0 && <li>Insufficient country-level regime evidence in this scope.</li>}
 	            </ul>
 	          </article>
