@@ -813,80 +813,22 @@
   height: 100%;
 }
 
-.si-journey-hero-cart {
-  background: rgba(79, 70, 229, 0.55);
-}
-
-.si-journey-hero-checkout {
-  background: rgba(79, 70, 229, 0.35);
-}
-
-.si-journey-hero-payment {
-  background: rgba(79, 70, 229, 0.22);
-}
-
-.si-journey-hero-other {
-  background: rgba(15, 23, 42, 0.12);
-}
-
-.si-journey-hero-actions {
-  margin-top: 10px;
-}
-
-.si-metric-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 0;
-}
-
-.si-text-warn {
-  color: #92400e;
-}
-
-.si-breakdown-mini {
-  margin-top: 10px;
-  border-top: 1px solid rgba(15, 23, 42, 0.08);
-  padding-top: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.si-breakdown-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.si-device-mix-bar {
-  width: 88px;
-  height: 8px;
-  border-radius: 999px;
-  overflow: hidden;
-  background: rgba(15, 23, 42, 0.08);
-  display: flex;
-}
-
-.si-device-mix-segment {
-  height: 100%;
-}
-
+.si-journey-hero-cart,
 .si-device-mix-cart {
   background: rgba(79, 70, 229, 0.55);
 }
 
+.si-journey-hero-checkout,
 .si-device-mix-checkout {
   background: rgba(79, 70, 229, 0.35);
 }
 
+.si-journey-hero-payment,
 .si-device-mix-payment {
   background: rgba(79, 70, 229, 0.22);
 }
 
+.si-journey-hero-other,
 .si-device-mix-other {
   background: rgba(15, 23, 42, 0.12);
 }
