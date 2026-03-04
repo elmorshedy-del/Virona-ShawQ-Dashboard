@@ -1137,16 +1137,14 @@ export default function CampaignIntelligenceUnifiedSection({
   }, [displayRows, selectedRowId]);
 
   useEffect(() => {
-    if (!displayRows.length) {
-      setSelectedRowId('');
-      return;
-    }
-
-    const exists = displayRows.some((row) => row.id === selectedRowId);
-    if (!exists) {
-      setSelectedRowId(displayRows[0].id);
-    }
-  }, [displayRows, selectedRowId]);
+    setSelectedRowId((currentId) => {
+      if (!displayRows.length) {
+        return '';
+      }
+      const exists = displayRows.some((row) => row.id === currentId);
+      return exists ? currentId : displayRows[0]?.id || '';
+    });
+  }, [displayRows]);
 
   const analysisScope = snapshot?.scope || {};
   const scopeTimelineDaily = useMemo(() => (Array.isArray(snapshot?.timeline?.daily) ? snapshot.timeline.daily : []), [snapshot]);
