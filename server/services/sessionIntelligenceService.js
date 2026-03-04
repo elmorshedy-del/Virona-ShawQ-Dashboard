@@ -39,7 +39,9 @@ const SHOPPER_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 const REALTIME_FOCUS_GEO_LIMIT = 12;
 const REALTIME_GEO_FALLBACK_SAMPLE_LIMIT = 1500;
 const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
-const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+const MILLISECONDS_PER_MINUTE = 60 * 1000;
+const MILLISECONDS_PER_HOUR = 60 * MILLISECONDS_PER_MINUTE;
+const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
 const MILLISECONDS_PER_WEEK = 7 * MILLISECONDS_PER_DAY;
 const DAY_PULSE_FIRST_WINDOW_HOURS = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_DAY_PULSE_FIRST_WINDOW_HOURS || '4', 10) || 4, 1),
@@ -1694,9 +1696,9 @@ export function getSessionIntelligenceDayPulse(store) {
   const nowMs = Date.now();
   const dayStartMs = startOfUtcDayMs(nowMs);
   const elapsedMs = Math.max(0, nowMs - dayStartMs);
-  const firstWindowMs = DAY_PULSE_FIRST_WINDOW_HOURS * 60 * 60 * 1000;
+  const firstWindowMs = DAY_PULSE_FIRST_WINDOW_HOURS * MILLISECONDS_PER_HOUR;
   const firstWindowEndMs = Math.min(dayStartMs + firstWindowMs, nowMs);
-  const minPaceElapsedMs = DAY_PULSE_MIN_PACE_ELAPSED_MINUTES * 60 * 1000;
+  const minPaceElapsedMs = DAY_PULSE_MIN_PACE_ELAPSED_MINUTES * MILLISECONDS_PER_MINUTE;
   const yesterdayStartMs = dayStartMs - MILLISECONDS_PER_DAY;
   const lastWeekStartMs = dayStartMs - MILLISECONDS_PER_WEEK;
 
