@@ -215,10 +215,14 @@ function resolveDeepSeekTemperature({ requestedTemperature, fallback = 1.0 }) {
 function mapFireworksReasoningEffort(reasoningEffort, fallback = 'medium') {
   if (typeof reasoningEffort !== 'string' || !reasoningEffort.trim()) return fallback;
   const normalized = reasoningEffort.trim().toLowerCase();
-  if (normalized === 'none' || normalized === 'low') return 'low';
-  if (normalized === 'high' || normalized === 'xhigh') return 'high';
-  if (normalized === 'medium') return 'medium';
-  return fallback;
+  const effortMap = {
+    none: 'low',
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+    xhigh: 'high',
+  };
+  return effortMap[normalized] || fallback;
 }
 
 // ============================================================================
