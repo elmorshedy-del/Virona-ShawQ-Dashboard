@@ -72,6 +72,7 @@ export function initDb() {
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
+      video_views INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
@@ -224,6 +225,7 @@ export function initDb() {
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
+      video_views INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
@@ -773,6 +775,7 @@ export function initDb() {
       impressions INTEGER DEFAULT 0,
       reach INTEGER DEFAULT 0,
       clicks INTEGER DEFAULT 0,
+      video_views INTEGER DEFAULT 0,
       landing_page_views INTEGER DEFAULT 0,
       add_to_cart INTEGER DEFAULT 0,
       checkouts_initiated INTEGER DEFAULT 0,
@@ -1003,6 +1006,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_daily_metrics ADD COLUMN video_views INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Add original currency columns to meta_daily_metrics
   try {
@@ -1051,6 +1057,9 @@ export function initDb() {
   try {
     db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
   } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_adset_metrics ADD COLUMN video_views INTEGER DEFAULT 0`);
+  } catch (e) { /* column exists */ }
 
   // Add original currency columns to meta_adset_metrics
   try {
@@ -1098,6 +1107,9 @@ export function initDb() {
   } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN unique_outbound_clicks_ctr REAL DEFAULT 0`);
+  } catch (e) { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE meta_ad_metrics ADD COLUMN video_views INTEGER DEFAULT 0`);
   } catch (e) { /* column exists */ }
 
   // Add original currency columns to meta_ad_metrics
