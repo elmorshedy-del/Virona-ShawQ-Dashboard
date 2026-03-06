@@ -514,8 +514,8 @@ function TopProductsSection({ store, fallbackSection, fallbackWindow, formatCurr
       </div>
 
       <div className="ci-top-products-commentary">
-        {commentary.map((note) => (
-          <div key={`${note.label}-${note.text}`} className={`ci-commentary-card ${note.tone}`}>
+        {commentary.map((note, index) => (
+          <div key={`${note.label}-${index}`} className={`ci-commentary-card ${note.tone}`}>
             <div className="ci-commentary-label">{note.label}</div>
             <div className="ci-commentary-text">{note.text}</div>
           </div>
