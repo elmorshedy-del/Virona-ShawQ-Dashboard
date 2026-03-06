@@ -1764,9 +1764,11 @@ function buildHierarchyMetricSupport(totals = {}, extras = {}) {
     addToCart: Math.round(toNumber(totals.addToCart)),
     checkoutsInitiated: Math.round(toNumber(totals.checkoutsInitiated)),
     conversions: Math.round(toNumber(totals.conversions)),
-    childCount: Number.isFinite(Number(extras?.childCount)) ? Math.round(Number(extras.childCount)) : null,
-    childSpendTotal: Number.isFinite(Number(extras?.childSpendTotal))
-      ? round(Number(extras.childSpendTotal), HIERARCHY_METRIC_DECIMALS.amount)
+    childCount: extras?.childCount != null && Number.isFinite(extras.childCount)
+      ? Math.round(extras.childCount)
+      : null,
+    childSpendTotal: extras?.childSpendTotal != null && Number.isFinite(extras.childSpendTotal)
+      ? round(extras.childSpendTotal, HIERARCHY_METRIC_DECIMALS.amount)
       : null,
     hookRateEligible: Boolean(extras?.hookRateEligible)
   };
@@ -1826,8 +1828,8 @@ function buildHierarchyMetricSet(totals = {}, options = {}) {
     roas: roas == null ? null : round(roas, HIERARCHY_METRIC_DECIMALS.ratio),
     frequency: frequency == null ? null : round(frequency, HIERARCHY_METRIC_DECIMALS.ratio),
     cpm: cpm == null ? null : round(cpm, HIERARCHY_METRIC_DECIMALS.amount),
-    concentration: Number.isFinite(Number(options?.concentration))
-      ? round(Number(options.concentration), HIERARCHY_METRIC_DECIMALS.ratio)
+    concentration: options?.concentration != null && Number.isFinite(options.concentration)
+      ? round(options.concentration, HIERARCHY_METRIC_DECIMALS.ratio)
       : null
   };
 }
