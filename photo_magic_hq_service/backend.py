@@ -60,6 +60,16 @@ MODEL_ID = os.environ.get("SDXL_INPAINT_MODEL_ID", "diffusers/stable-diffusion-x
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+ASPECT_RATIO_PRESETS: dict[str, tuple[int, int]] = {
+    "1:1": (1, 1),
+    "4:5": (4, 5),
+    "5:4": (5, 4),
+    "16:9": (16, 9),
+    "9:16": (9, 16),
+    "3:2": (3, 2),
+    "2:3": (2, 3),
+}
+
 
 def strip_data_prefix(b64: str) -> str:
     text = str(b64 or "").strip()
@@ -207,6 +217,101 @@ def composite_with_alpha(base_rgb: np.ndarray, overlay_rgb: np.ndarray, alpha_u8
     )
 
 
+def parse_aspect_ratio(value: Any, fallback: float) -> float:
+    text = str(value or "").strip().lower()
+    if not text or text == "original":
+        return float(fallback)
+
+    if text in ASPECT_RATIO_PRESETS:
+        num, den = ASPECT_RATIO_PRESETS[text]
+        return float(num) / float(den)
+
+    if ":" in text:
+        try:
+            raw_num, raw_den = text.split(":", 1)
+            num = max(1.0, float(raw_num))
+            den = max(1.0, float(raw_den))
+            return float(np.clip(num / den, 0.25, 4.0))
+        except Exception:
+            return float(fallback)
+
+    return float(fallback)
+
+
+def resolve_expand_canvas_size(width: int, height: int, aspect_ratio: Any) -> tuple[int, int]:
+    current_ratio = float(width) / float(max(1, height))
+    target_ratio = parse_aspect_ratio(aspect_ratio, current_ratio)
+
+    if abs(current_ratio - target_ratio) < 0.02:
+        next_width = int(round(width * 1.14))
+        next_height = int(round(height * 1.14))
+    elif current_ratio > target_ratio:
+        next_width = width
+        next_height = int(round(width / target_ratio))
+    else:
+        next_width = int(round(height * target_ratio))
+        next_height = height
+
+    next_width = max(width, to_multiple_of(next_width, 8, minimum=64))
+    next_height = max(height, to_multiple_of(next_height, 8, minimum=64))
+    return next_width, next_height
+
+
+def resize_cover(pil: Image.Image, target_w: int, target_h: int) -> Image.Image:
+    src_w, src_h = pil.size
+    scale = max(float(target_w) / float(max(1, src_w)), float(target_h) / float(max(1, src_h)))
+    resized_w = max(1, int(round(src_w * scale)))
+    resized_h = max(1, int(round(src_h * scale)))
+    resized = pil.resize((resized_w, resized_h), resample=Image.LANCZOS)
+    left = max(0, (resized_w - target_w) // 2)
+    top = max(0, (resized_h - target_h) // 2)
+    return resized.crop((left, top, left + target_w, top + target_h))
+
+
+def compute_anchor_offsets(anchor: str, canvas_w: int, canvas_h: int, image_w: int, image_h: int) -> tuple[int, int]:
+    resolved = str(anchor or "center").strip().lower()
+
+    if resolved in {"left", "top_left", "bottom_left"}:
+        x = 0
+    elif resolved in {"right", "top_right", "bottom_right"}:
+        x = canvas_w - image_w
+    else:
+        x = (canvas_w - image_w) // 2
+
+    if resolved in {"top", "top_left", "top_right"}:
+        y = 0
+    elif resolved in {"bottom", "bottom_left", "bottom_right"}:
+        y = canvas_h - image_h
+    else:
+        y = (canvas_h - image_h) // 2
+
+    return max(0, x), max(0, y)
+
+
+def build_expand_canvas(pil: Image.Image, *, aspect_ratio: Any, anchor: str, feather_px: int) -> tuple[Image.Image, Image.Image]:
+    target_w, target_h = resolve_expand_canvas_size(pil.size[0], pil.size[1], aspect_ratio)
+    fill = resize_cover(pil, target_w, target_h)
+
+    fill_np = np.array(fill.convert("RGB"))
+    fill_np = cv2.GaussianBlur(fill_np, (0, 0), sigmaX=16.0, sigmaY=16.0)
+    fill_np = np.clip(fill_np.astype(np.float32) * 0.97, 0, 255).astype(np.uint8)
+
+    canvas = Image.fromarray(fill_np, mode="RGB")
+    offset_x, offset_y = compute_anchor_offsets(anchor, target_w, target_h, pil.size[0], pil.size[1])
+    canvas.paste(pil, (offset_x, offset_y))
+
+    mask = np.full((target_h, target_w), 255, dtype=np.uint8)
+    mask[offset_y : offset_y + pil.size[1], offset_x : offset_x + pil.size[0]] = 0
+
+    blur = max(0, int(round(feather_px)))
+    if blur > 0:
+        kernel = max(3, blur * 2 + 1)
+        mask = cv2.GaussianBlur(mask, (kernel, kernel), 0)
+        mask[offset_y : offset_y + pil.size[1], offset_x : offset_x + pil.size[0]] = 0
+
+    return canvas, Image.fromarray(mask, mode="L")
+
+
 SDXL_AVAILABLE = False
 SDXL_ERROR = None
 pipe = None
@@ -264,9 +369,9 @@ def health():
         "strict": STRICT_MODE,
         "device": DEVICE,
         "cuda_available": bool(torch.cuda.is_available()),
-        "models": {"sdxl_inpaint": ok},
-        "errors": {"sdxl_inpaint": SDXL_ERROR},
-        "config": {"model_id": MODEL_ID, "allow_cpu": ALLOW_CPU},
+        "models": {"sdxl_inpaint": ok, "sdxl_expand": ok},
+        "errors": {"sdxl_inpaint": SDXL_ERROR, "sdxl_expand": SDXL_ERROR},
+        "config": {"model_id": MODEL_ID, "allow_cpu": ALLOW_CPU, "expand_aspect_ratios": sorted(ASPECT_RATIO_PRESETS.keys())},
     }
     if STRICT_MODE and not ok:
         return jsonify(payload), 503
@@ -364,6 +469,69 @@ def erase_sdxl():
         return jsonify({"result_png": pil_to_png_b64(out_pil), "width": pil.size[0], "height": pil.size[1]})
     except Exception as e:
         logger.exception("erase/sdxl failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/expand/sdxl", methods=["POST"])
+def expand_sdxl():
+    try:
+        if STRICT_MODE and not SDXL_AVAILABLE:
+            return jsonify({"error": "SDXL not ready (strict mode)", "details": SDXL_ERROR}), 503
+
+        data = request.json or {}
+        image_b64 = data.get("image") or ""
+        if not image_b64:
+            return jsonify({"error": "image is required"}), 400
+
+        prompt = str(data.get("prompt") or "").strip() or "extend the scene naturally, premium studio environment, photorealistic background"
+        negative_prompt = str(data.get("negative_prompt") or "").strip() or "text, watermark, duplicate subject, extra limbs, distorted product, blur, artifacts"
+        aspect_ratio = str(data.get("aspect_ratio") or "4:5").strip() or "4:5"
+        anchor = str(data.get("anchor") or "center").strip().lower()
+        num_inference_steps = clamp_int(data.get("num_inference_steps", 24), 5, 80)
+        guidance_scale = clamp_float(data.get("guidance_scale", 7.5), 0.0, 20.0, 7.5)
+        strength = clamp_float(data.get("strength", 0.96), 0.0, 1.0, 0.96)
+        seed = clamp_int(data.get("seed", 0), 0, 2**63 - 1)
+        feather_px = clamp_int(data.get("feather_px", 24), 0, 128)
+
+        pil = decode_b64_to_pil_rgb(image_b64)
+        canvas, mask_image = build_expand_canvas(pil, aspect_ratio=aspect_ratio, anchor=anchor, feather_px=feather_px)
+
+        canvas_resized, (orig_w, orig_h) = resize_to_longest_side(canvas, 1024)
+        mask_resized = mask_image.resize(canvas_resized.size, resample=Image.BILINEAR)
+        alpha_resized = np.array(mask_resized, dtype=np.uint8)
+
+        generator = torch.Generator(device=DEVICE).manual_seed(int(seed))
+
+        with torch.inference_mode():
+            result = pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=canvas_resized,
+                mask_image=mask_resized,
+                guidance_scale=float(guidance_scale),
+                num_inference_steps=int(num_inference_steps),
+                strength=float(strength),
+                generator=generator,
+            ).images[0]
+
+        result_back = result.resize((orig_w, orig_h), resample=Image.LANCZOS) if result.size != (orig_w, orig_h) else result
+        base_np = np.array(canvas.convert("RGB"))
+        over_np = np.array(result_back.convert("RGB"))
+        alpha_back = cv2.resize(alpha_resized, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+        blended = composite_with_alpha(base_np, over_np, alpha_back)
+
+        return jsonify(
+            {
+                "width": orig_w,
+                "height": orig_h,
+                "aspect_ratio": aspect_ratio,
+                "anchor": anchor,
+                "mask_png": pil_to_png_b64(mask_image),
+                "result_png": pil_to_png_b64(Image.fromarray(blended, mode="RGB")),
+            }
+        )
+    except Exception as e:
+        logger.exception("expand/sdxl failed")
         return jsonify({"error": str(e)}), 500
 
 

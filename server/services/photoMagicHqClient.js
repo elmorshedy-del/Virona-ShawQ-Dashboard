@@ -113,3 +113,36 @@ export async function eraseSdxl({
     timeoutMs: PHOTO_MAGIC_HQ_TIMEOUT_MS
   });
 }
+
+export async function expandPhotoCanvas({
+  imageBase64,
+  prompt = '',
+  negativePrompt = '',
+  aspectRatio = '4:5',
+  anchor = 'center',
+  numInferenceSteps = 24,
+  guidanceScale = 7.5,
+  strength = 0.96,
+  seed = 0,
+  featherPx = 24
+} = {}) {
+  if (!isPhotoMagicHqConfigured()) return null;
+  if (!imageBase64) return null;
+  return fetchJson(`${PHOTO_MAGIC_HQ_AI_URL}/expand/sdxl`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      image: imageBase64,
+      prompt,
+      negative_prompt: negativePrompt,
+      aspect_ratio: aspectRatio,
+      anchor,
+      num_inference_steps: numInferenceSteps,
+      guidance_scale: guidanceScale,
+      strength,
+      seed,
+      feather_px: featherPx
+    }),
+    timeoutMs: PHOTO_MAGIC_HQ_TIMEOUT_MS
+  });
+}

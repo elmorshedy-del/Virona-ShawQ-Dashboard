@@ -162,3 +162,39 @@ export async function enhancePhoto({
     })
   });
 }
+
+export async function relightPhoto({
+  imageBase64,
+  maskBase64 = null,
+  preset = 'studio',
+  subjectBoost = 0.22,
+  backgroundExposure = -0.08,
+  warmth = 0.08,
+  shadowOpacity = 0.28,
+  shadowBlurPx = 42,
+  shadowOffsetX = 0,
+  shadowOffsetY = 34,
+  shadowScaleX = 1.12,
+  shadowScaleY = 0.24
+} = {}) {
+  if (!isPhotoMagicAiConfigured()) return null;
+  if (!imageBase64) return null;
+  return fetchJson(`${PHOTO_MAGIC_AI_URL}/relight`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      image: imageBase64,
+      mask: maskBase64,
+      preset,
+      subject_boost: subjectBoost,
+      background_exposure: backgroundExposure,
+      warmth,
+      shadow_opacity: shadowOpacity,
+      shadow_blur_px: shadowBlurPx,
+      shadow_offset_x: shadowOffsetX,
+      shadow_offset_y: shadowOffsetY,
+      shadow_scale_x: shadowScaleX,
+      shadow_scale_y: shadowScaleY
+    })
+  });
+}

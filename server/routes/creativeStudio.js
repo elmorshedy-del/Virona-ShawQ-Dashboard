@@ -28,10 +28,11 @@ import {
   eraseLama,
   getPhotoMagicAiHealth,
   isPhotoMagicAiConfigured,
+  relightPhoto,
   refineBgSam2,
   removeBgRmbg2
 } from '../services/photoMagicAiClient.js';
-import { eraseSdxl, getPhotoMagicHqHealth, isPhotoMagicHqConfigured } from '../services/photoMagicHqClient.js';
+import { eraseSdxl, expandPhotoCanvas, getPhotoMagicHqHealth, isPhotoMagicHqConfigured } from '../services/photoMagicHqClient.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -283,6 +284,117 @@ function parseHexColor(hex) {
   const g = parseInt(normalized.slice(2, 4), 16);
   const b = parseInt(normalized.slice(4, 6), 16);
   return { r, g, b, hex: `#${normalized.toLowerCase()}` };
+}
+
+function getPhotoMagicSelectionModelName() {
+  return String(process.env.PHOTO_MAGIC_SELECTION_MODEL || process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash').trim();
+}
+
+async function detectPhotoMagicSelectionWithGemini({ imageBase64, prompt, width, height }) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
+  }
+
+  const resolvedPrompt = String(prompt || '').trim();
+  if (!resolvedPrompt) {
+    throw new Error('Selection prompt is required.');
+  }
+
+  const resolvedModelName = getPhotoMagicSelectionModelName();
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const responseSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+      found: { type: SchemaType.BOOLEAN },
+      label: { type: SchemaType.STRING, nullable: true },
+      confidence: { type: SchemaType.NUMBER },
+      notes: { type: SchemaType.STRING, nullable: true },
+      box_2d: {
+        type: SchemaType.ARRAY,
+        items: { type: SchemaType.NUMBER }
+      }
+    },
+    required: ['found', 'confidence', 'box_2d']
+  };
+
+  const model = genAI.getGenerativeModel({
+    model: resolvedModelName,
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 768,
+      responseMimeType: 'application/json',
+      responseSchema
+    }
+  });
+
+  const detectionPrompt = `Find the main region that best matches this user request inside the image: "${resolvedPrompt}".
+
+Return:
+- found: true or false
+- label: short resolved label
+- confidence: number from 0 to 1
+- notes: short note if relevant
+- box_2d: [y0, x0, y1, x1] normalized to 0-1000 scale
+
+Rules:
+- Return exactly one best match only.
+- Prefer the full visual extent of the requested object or text region.
+- If the request refers to visible text, logo, badge, price tag, or label, box the text region tightly.
+- If nothing clearly matches, return found=false and box_2d=[0,0,0,0].
+- The source image resolution is ${Math.max(1, Math.round(safeParseNumber(width, 1)))}x${Math.max(1, Math.round(safeParseNumber(height, 1)))} pixels.
+- Return JSON only.`;
+
+  const result = await model.generateContent([
+    { text: detectionPrompt },
+    { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }
+  ]);
+
+  const rawText = String(result?.response?.text?.() ?? '')
+    .replace(/```json|```/g, '')
+    .trim();
+  const parsed = JSON.parse(rawText || '{}');
+
+  if (!parsed?.found) return null;
+
+  const box = Array.isArray(parsed?.box_2d) ? parsed.box_2d : null;
+  if (!box || box.length !== 4) {
+    throw new Error('Gemini selection response did not include a usable box.');
+  }
+
+  const y0Norm = clampNumber(box[0], 0, 1000);
+  const x0Norm = clampNumber(box[1], 0, 1000);
+  const y1Norm = clampNumber(box[2], 0, 1000);
+  const x1Norm = clampNumber(box[3], 0, 1000);
+
+  const yMinNorm = Math.min(y0Norm, y1Norm);
+  const yMaxNorm = Math.max(y0Norm, y1Norm);
+  const xMinNorm = Math.min(x0Norm, x1Norm);
+  const xMaxNorm = Math.max(x0Norm, x1Norm);
+
+  const resolvedWidth = Math.max(1, Math.round(safeParseNumber(width, 1)));
+  const resolvedHeight = Math.max(1, Math.round(safeParseNumber(height, 1)));
+
+  const x1 = Math.max(0, Math.min(resolvedWidth - 1, Math.round((xMinNorm / 1000) * resolvedWidth)));
+  const y1 = Math.max(0, Math.min(resolvedHeight - 1, Math.round((yMinNorm / 1000) * resolvedHeight)));
+  const x2 = Math.max(x1 + 1, Math.min(resolvedWidth, Math.round((xMaxNorm / 1000) * resolvedWidth)));
+  const y2 = Math.max(y1 + 1, Math.min(resolvedHeight, Math.round((yMaxNorm / 1000) * resolvedHeight)));
+
+  return {
+    model: resolvedModelName,
+    label: String(parsed?.label || resolvedPrompt).trim() || resolvedPrompt,
+    notes: String(parsed?.notes || '').trim() || null,
+    confidence: clampNumber(parsed?.confidence ?? 0.72, 0, 1),
+    box_xyxy: [x1, y1, x2, y2],
+    normalized_box: [yMinNorm, xMinNorm, yMaxNorm, xMaxNorm],
+    points: [
+      {
+        x_norm: clampNumber((xMinNorm + xMaxNorm) / 2000, 0, 1),
+        y_norm: clampNumber((yMinNorm + yMaxNorm) / 2000, 0, 1),
+        label: 1
+      }
+    ]
+  };
 }
 
 const CREATIVE_OS_DEFAULT_STORE = 'vironax';
@@ -4126,6 +4238,12 @@ router.get('/photo-magic/health', async (req, res) => {
             default: Number(process.env.PHOTO_MAGIC_HQ_TIMEOUT_MS || 600000),
             health: Number(process.env.PHOTO_MAGIC_HQ_HEALTH_TIMEOUT_MS || 10000)
           }
+        },
+        guidance: {
+          gemini: {
+            configured: Boolean(String(process.env.GEMINI_API_KEY || '').trim()),
+            model: getPhotoMagicSelectionModelName()
+          }
         }
       }
     });
@@ -4334,6 +4452,110 @@ router.post('/photo-magic/remove-bg/refine', async (req, res) => {
   }
 });
 
+router.post('/photo-magic/select', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!isPhotoMagicAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+      });
+    }
+    if (!String(process.env.GEMINI_API_KEY || '').trim()) {
+      return res.status(503).json({
+        success: false,
+        error: 'GEMINI_API_KEY is not configured. Prompt selection requires Gemini Vision.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    const prompt = String(req.body?.prompt || '').trim();
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.maxSide ?? 2048, 256, 8192);
+    const maskDilatePx = clampNumber(req.body?.mask_dilate_px ?? req.body?.maskDilatePx ?? 4, 0, 64);
+    const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 8, 0, 64);
+
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+    if (!prompt) {
+      return res.status(400).json({ success: false, error: 'prompt is required' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const buf = await fs.promises.readFile(imagePath);
+    const imageBase64 = buf.toString('base64');
+    const meta = await sharp(buf).metadata().catch(() => null);
+    const imageWidth = Math.max(1, Math.round(safeParseNumber(meta?.width, 1)));
+    const imageHeight = Math.max(1, Math.round(safeParseNumber(meta?.height, 1)));
+
+    const previewBuffer = await sharp(buf)
+      .rotate()
+      .resize({ width: 1536, height: 1536, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 92 })
+      .toBuffer()
+      .catch(() => buf);
+
+    const selection = await detectPhotoMagicSelectionWithGemini({
+      imageBase64: previewBuffer.toString('base64'),
+      prompt,
+      width: imageWidth,
+      height: imageHeight
+    });
+
+    if (!selection) {
+      return res.status(404).json({ success: false, error: `No visible target matched "${prompt}"` });
+    }
+
+    const result = await refineBgSam2({
+      imageBase64,
+      points: selection.points,
+      boxXyxy: selection.box_xyxy,
+      maxSide,
+      maskDilatePx,
+      maskFeatherPx
+    });
+
+    const cutoutId = crypto.randomUUID();
+    const maskId = crypto.randomUUID();
+    const cutoutPath = getPhotoMagicOutputPath(store, cutoutId, 'png');
+    const maskPath = getPhotoMagicOutputPath(store, maskId, 'png');
+
+    await fs.promises.writeFile(cutoutPath, Buffer.from(String(result?.cutout_png || ''), 'base64'));
+    await fs.promises.writeFile(maskPath, Buffer.from(String(result?.mask_png || ''), 'base64'));
+
+    return res.json({
+      success: true,
+      selection,
+      width: result?.width ?? imageWidth,
+      height: result?.height ?? imageHeight,
+      cutout: {
+        output_id: cutoutId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(cutoutId)}&filename=${encodeURIComponent('selection.png')}`,
+          store
+        )
+      },
+      mask: {
+        output_id: maskId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(maskId)}&filename=${encodeURIComponent('selection-mask.png')}`,
+          store
+        )
+      }
+    });
+  } catch (error) {
+    console.error('Photo magic selection error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.statusCode)) ? Number(error.statusCode) : (Number.isFinite(Number(error?.status)) ? Number(error.status) : 500);
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
 router.post('/photo-magic/erase', photoMagicSingle('mask'), async (req, res) => {
   try {
     const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
@@ -4509,6 +4731,182 @@ router.post('/photo-magic/enhance', async (req, res) => {
     });
   } catch (error) {
     console.error('Photo magic enhance error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/relight', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!isPhotoMagicAiConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    let maskBase64 = String(req.body?.mask_png_base64 || req.body?.mask_png || req.body?.mask || '').trim() || null;
+    const maskOutputId = String(req.body?.mask_output_id || '').trim();
+    if (!maskBase64 && maskOutputId) {
+      if (!isSafeTmpId(maskOutputId)) {
+        return res.status(400).json({ success: false, error: 'Invalid mask_output_id' });
+      }
+      const maskPath = getPhotoMagicOutputPath(store, maskOutputId, 'png');
+      if (!fs.existsSync(maskPath)) {
+        return res.status(404).json({ success: false, error: 'Mask artifact not found (run selection or cutout again)' });
+      }
+      const maskBuffer = await fs.promises.readFile(maskPath);
+      maskBase64 = maskBuffer.toString('base64');
+    }
+
+    const imageBuffer = await fs.promises.readFile(imagePath);
+    const imageBase64 = imageBuffer.toString('base64');
+
+    const result = await relightPhoto({
+      imageBase64,
+      maskBase64,
+      preset: String(req.body?.preset || 'studio').trim().toLowerCase(),
+      subjectBoost: clampNumber(req.body?.subject_boost ?? req.body?.subjectBoost ?? 0.22, -0.2, 0.8),
+      backgroundExposure: clampNumber(req.body?.background_exposure ?? req.body?.backgroundExposure ?? -0.08, -0.6, 0.35),
+      warmth: clampNumber(req.body?.warmth ?? 0.08, -0.35, 0.35),
+      shadowOpacity: clampNumber(req.body?.shadow_opacity ?? req.body?.shadowOpacity ?? 0.28, 0, 1),
+      shadowBlurPx: clampNumber(req.body?.shadow_blur_px ?? req.body?.shadowBlurPx ?? 42, 0, 240),
+      shadowOffsetX: clampNumber(req.body?.shadow_offset_x ?? req.body?.shadowOffsetX ?? 0, -256, 256),
+      shadowOffsetY: clampNumber(req.body?.shadow_offset_y ?? req.body?.shadowOffsetY ?? 34, -256, 256),
+      shadowScaleX: clampNumber(req.body?.shadow_scale_x ?? req.body?.shadowScaleX ?? 1.12, 0.5, 2.0),
+      shadowScaleY: clampNumber(req.body?.shadow_scale_y ?? req.body?.shadowScaleY ?? 0.24, 0.05, 1.0)
+    });
+
+    const outId = crypto.randomUUID();
+    const outPath = getPhotoMagicOutputPath(store, outId, 'png');
+    await fs.promises.writeFile(outPath, Buffer.from(String(result?.result_png || ''), 'base64'));
+
+    let mask = null;
+    if (result?.mask_png) {
+      const maskId = crypto.randomUUID();
+      const maskPath = getPhotoMagicOutputPath(store, maskId, 'png');
+      await fs.promises.writeFile(maskPath, Buffer.from(String(result.mask_png), 'base64'));
+      mask = {
+        output_id: maskId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(maskId)}&filename=${encodeURIComponent('relight-mask.png')}`,
+          store
+        )
+      };
+    }
+
+    return res.json({
+      success: true,
+      preset: result?.preset || req.body?.preset || 'studio',
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      output_id: outId,
+      mask,
+      url: withStoreParam(
+        `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(outId)}&filename=${encodeURIComponent('relight.png')}`,
+        store
+      )
+    });
+  } catch (error) {
+    console.error('Photo magic relight error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/expand', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!isPhotoMagicHqConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'PHOTO_MAGIC_HQ_AI_URL is not configured. Deploy the HQ service and set PHOTO_MAGIC_HQ_AI_URL.'
+      });
+    }
+
+    const health = await getPhotoMagicHqHealth().catch(() => null);
+    if (!health?.ok) {
+      return res.status(503).json({
+        success: false,
+        error: 'Photo Magic HQ service is not ready (check /photo-magic/health)',
+        details: health
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+
+    const imageBuffer = await fs.promises.readFile(imagePath);
+    const imageBase64 = imageBuffer.toString('base64');
+
+    const result = await expandPhotoCanvas({
+      imageBase64,
+      prompt: String(req.body?.prompt || '').trim(),
+      negativePrompt: String(req.body?.negative_prompt ?? req.body?.negativePrompt ?? '').trim(),
+      aspectRatio: String(req.body?.aspect_ratio ?? req.body?.aspectRatio ?? '4:5').trim() || '4:5',
+      anchor: String(req.body?.anchor || 'center').trim().toLowerCase(),
+      numInferenceSteps: clampNumber(req.body?.num_inference_steps ?? req.body?.numInferenceSteps ?? 24, 5, 80),
+      guidanceScale: clampNumber(req.body?.guidance_scale ?? req.body?.guidanceScale ?? 7.5, 0, 20),
+      strength: clampNumber(req.body?.strength ?? 0.96, 0, 1),
+      seed: clampNumber(req.body?.seed ?? 0, 0, Number.MAX_SAFE_INTEGER),
+      featherPx: clampNumber(req.body?.feather_px ?? req.body?.featherPx ?? 24, 0, 128)
+    });
+
+    const outId = crypto.randomUUID();
+    const outPath = getPhotoMagicOutputPath(store, outId, 'png');
+    await fs.promises.writeFile(outPath, Buffer.from(String(result?.result_png || ''), 'base64'));
+
+    let mask = null;
+    if (result?.mask_png) {
+      const maskId = crypto.randomUUID();
+      const maskPath = getPhotoMagicOutputPath(store, maskId, 'png');
+      await fs.promises.writeFile(maskPath, Buffer.from(String(result.mask_png), 'base64'));
+      mask = {
+        output_id: maskId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(maskId)}&filename=${encodeURIComponent('expand-mask.png')}`,
+          store
+        )
+      };
+    }
+
+    return res.json({
+      success: true,
+      width: result?.width ?? null,
+      height: result?.height ?? null,
+      aspect_ratio: result?.aspect_ratio ?? req.body?.aspect_ratio ?? req.body?.aspectRatio ?? '4:5',
+      anchor: result?.anchor ?? req.body?.anchor ?? 'center',
+      output_id: outId,
+      mask,
+      url: withStoreParam(
+        `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(outId)}&filename=${encodeURIComponent('expand.png')}`,
+        store
+      )
+    });
+  } catch (error) {
+    console.error('Photo magic expand error:', error?.payload || error);
     const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
     res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
   }
