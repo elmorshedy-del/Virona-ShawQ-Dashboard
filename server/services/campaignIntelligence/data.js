@@ -102,6 +102,10 @@ const HIERARCHY_METRIC_DECIMALS = Object.freeze({
   ratio: 6,
   amount: 4
 });
+const HIERARCHY_CONCENTRATION_RULES = Object.freeze({
+  minSpendUsd: 25,
+  minChildCount: 2
+});
 const COUNTRY_ALIAS_OVERRIDES = Object.freeze({
   UK: 'GB',
   UAE: 'AE',
@@ -1272,6 +1276,7 @@ export function fetchDailyMetaRows({
         SUM(impressions) as impressions,
         SUM(reach) as reach,
         SUM(clicks) as clicks,
+        SUM(video_views) as videoViews,
         SUM(landing_page_views) as landingPageViews,
         SUM(add_to_cart) as addToCart,
         SUM(checkouts_initiated) as checkoutsInitiated,
@@ -1286,6 +1291,7 @@ export function fetchDailyMetaRows({
     .map((row) => {
       const impressions = toNumber(row.impressions);
       const clicks = toNumber(row.clicks);
+      const videoViews = toNumber(row.videoViews);
       const landingPageViews = toNumber(row.landingPageViews);
       const spend = toNumber(row.spend);
       const conversions = toNumber(row.conversions);
@@ -1297,6 +1303,7 @@ export function fetchDailyMetaRows({
         impressions,
         reach,
         clicks,
+        videoViews,
         landingPageViews,
         addToCart: toNumber(row.addToCart),
         checkoutsInitiated: toNumber(row.checkoutsInitiated),
@@ -1568,12 +1575,13 @@ function fetchHierarchyLevelWindowRows({
       ${queryConfig.levelConfig.idColumn} as id,
       ${queryConfig.levelConfig.nameColumn} as name
       ${queryConfig.extraSelect},
-      SUM(spend) as spend,
-      SUM(impressions) as impressions,
-      SUM(reach) as reach,
-      SUM(clicks) as clicks,
-      SUM(landing_page_views) as landingPageViews,
-      SUM(add_to_cart) as addToCart,
+        SUM(spend) as spend,
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(video_views) as videoViews,
+        SUM(landing_page_views) as landingPageViews,
+        SUM(add_to_cart) as addToCart,
       SUM(checkouts_initiated) as checkoutsInitiated,
       SUM(conversions) as conversions,
       SUM(conversion_value) as conversionValue
@@ -1598,6 +1606,7 @@ function fetchHierarchyLevelWindowRows({
       impressions: toNumber(row.impressions),
       reach: toNumber(row.reach),
       clicks: toNumber(row.clicks),
+      videoViews: toNumber(row.videoViews),
       landingPageViews: toNumber(row.landingPageViews),
       addToCart: toNumber(row.addToCart),
       checkoutsInitiated: toNumber(row.checkoutsInitiated),
@@ -1661,6 +1670,7 @@ function fetchHierarchyLevelWindowRowsForIds({
       SUM(impressions) as impressions,
       SUM(reach) as reach,
       SUM(clicks) as clicks,
+      SUM(video_views) as videoViews,
       SUM(landing_page_views) as landingPageViews,
       SUM(add_to_cart) as addToCart,
       SUM(checkouts_initiated) as checkoutsInitiated,
@@ -1684,6 +1694,7 @@ function fetchHierarchyLevelWindowRowsForIds({
       impressions: toNumber(row.impressions),
       reach: toNumber(row.reach),
       clicks: toNumber(row.clicks),
+      videoViews: toNumber(row.videoViews),
       landingPageViews: toNumber(row.landingPageViews),
       addToCart: toNumber(row.addToCart),
       checkoutsInitiated: toNumber(row.checkoutsInitiated),
@@ -1693,7 +1704,75 @@ function fetchHierarchyLevelWindowRowsForIds({
   }));
 }
 
-function buildHierarchyMetricSet(totals = {}) {
+function buildChildConcentrationLookup(rows = [], parentField) {
+  const groups = new Map();
+
+  for (const row of rows) {
+    const parentId = String(row?.[parentField] || '').trim();
+    if (!parentId) continue;
+    const current = groups.get(parentId) || [];
+    current.push(row);
+    groups.set(parentId, current);
+  }
+
+  const lookup = new Map();
+  for (const [parentId, childRows] of groups.entries()) {
+    const spendValues = childRows.map((row) => toNumber(row?.totals?.spend));
+    const totalSpend = spendValues.reduce((sum, value) => sum + value, 0);
+    const childCount = childRows.length;
+    const maxChildSpend = spendValues.length ? Math.max(...spendValues) : 0;
+    const concentration = childCount >= HIERARCHY_CONCENTRATION_RULES.minChildCount
+      && totalSpend >= HIERARCHY_CONCENTRATION_RULES.minSpendUsd
+      ? safeDivide(maxChildSpend, totalSpend, null)
+      : null;
+
+    lookup.set(parentId, {
+      concentration,
+      childCount,
+      childSpendTotal: totalSpend
+    });
+  }
+
+  return lookup;
+}
+
+function buildHierarchyMetricSupport(totals = {}, extras = {}) {
+  if (!totals) {
+    return {
+      spend: null,
+      impressions: null,
+      reach: null,
+      clicks: null,
+      videoViews: null,
+      landingPageViews: null,
+      addToCart: null,
+      checkoutsInitiated: null,
+      conversions: null,
+      childCount: extras?.childCount ?? null,
+      childSpendTotal: extras?.childSpendTotal ?? null,
+      hookRateEligible: Boolean(extras?.hookRateEligible)
+    };
+  }
+
+  return {
+    spend: round(toNumber(totals.spend), HIERARCHY_METRIC_DECIMALS.amount),
+    impressions: Math.round(toNumber(totals.impressions)),
+    reach: Math.round(toNumber(totals.reach)),
+    clicks: Math.round(toNumber(totals.clicks)),
+    videoViews: Math.round(toNumber(totals.videoViews)),
+    landingPageViews: Math.round(toNumber(totals.landingPageViews)),
+    addToCart: Math.round(toNumber(totals.addToCart)),
+    checkoutsInitiated: Math.round(toNumber(totals.checkoutsInitiated)),
+    conversions: Math.round(toNumber(totals.conversions)),
+    childCount: Number.isFinite(Number(extras?.childCount)) ? Math.round(Number(extras.childCount)) : null,
+    childSpendTotal: Number.isFinite(Number(extras?.childSpendTotal))
+      ? round(Number(extras.childSpendTotal), HIERARCHY_METRIC_DECIMALS.amount)
+      : null,
+    hookRateEligible: Boolean(extras?.hookRateEligible)
+  };
+}
+
+function buildHierarchyMetricSet(totals = {}, options = {}) {
   if (!totals) {
     return {
       spend: null,
@@ -1716,6 +1795,7 @@ function buildHierarchyMetricSet(totals = {}) {
   const impressions = toNumber(totals.impressions);
   const reach = toNumber(totals.reach);
   const clicks = toNumber(totals.clicks);
+  const videoViews = toNumber(totals.videoViews);
   const landingPageViews = toNumber(totals.landingPageViews);
   const addToCart = toNumber(totals.addToCart);
   const checkoutsInitiated = toNumber(totals.checkoutsInitiated);
@@ -1723,6 +1803,7 @@ function buildHierarchyMetricSet(totals = {}) {
   const conversionValue = toNumber(totals.conversionValue);
 
   const ctr = safeDivide(clicks, impressions, null);
+  const hookRate = videoViews > 0 ? safeDivide(videoViews, impressions, null) : null;
   const lpvClick = safeDivide(landingPageViews, clicks, null);
   const atcLpv = safeDivide(addToCart, landingPageViews, null);
   const costAtc = safeDivide(spend, addToCart, null);
@@ -1736,7 +1817,7 @@ function buildHierarchyMetricSet(totals = {}) {
     spend: round(spend, HIERARCHY_METRIC_DECIMALS.amount),
     purchases: Math.round(conversions),
     ctr: ctr == null ? null : round(ctr, HIERARCHY_METRIC_DECIMALS.ratio),
-    hookRate: null,
+    hookRate: hookRate == null ? null : round(hookRate, HIERARCHY_METRIC_DECIMALS.ratio),
     lpvClick: lpvClick == null ? null : round(lpvClick, HIERARCHY_METRIC_DECIMALS.ratio),
     atcLpv: atcLpv == null ? null : round(atcLpv, HIERARCHY_METRIC_DECIMALS.ratio),
     costAtc: costAtc == null ? null : round(costAtc, HIERARCHY_METRIC_DECIMALS.amount),
@@ -1745,15 +1826,25 @@ function buildHierarchyMetricSet(totals = {}) {
     roas: roas == null ? null : round(roas, HIERARCHY_METRIC_DECIMALS.ratio),
     frequency: frequency == null ? null : round(frequency, HIERARCHY_METRIC_DECIMALS.ratio),
     cpm: cpm == null ? null : round(cpm, HIERARCHY_METRIC_DECIMALS.amount),
-    concentration: null
+    concentration: Number.isFinite(Number(options?.concentration))
+      ? round(Number(options.concentration), HIERARCHY_METRIC_DECIMALS.ratio)
+      : null
   };
 }
 
-function buildHierarchyLevelRows({ level, analysisRows = [], anchorRows = [] }) {
+function buildHierarchyLevelRows({
+  level,
+  analysisRows = [],
+  anchorRows = [],
+  concentrationNowByEntityId = new Map(),
+  concentrationBaselineByEntityId = new Map()
+}) {
   const anchorById = new Map(anchorRows.map((row) => [row.id, row]));
 
   return analysisRows.map((analysisRow) => {
     const anchorRow = anchorById.get(analysisRow.id);
+    const concentrationNow = concentrationNowByEntityId.get(analysisRow.id) || null;
+    const concentrationBaseline = concentrationBaselineByEntityId.get(analysisRow.id) || null;
     const levelLabel = level === 'adset' ? 'Ad Set' : level === 'ad' ? 'Ad' : 'Campaign';
     const prefixedId = `${level}:${analysisRow.id}`;
 
@@ -1773,8 +1864,20 @@ function buildHierarchyLevelRows({ level, analysisRows = [], anchorRows = [] }) 
       adsetId: analysisRow.adsetId || (level === 'adset' ? analysisRow.id : null),
       adsetName: analysisRow.adsetName || (level === 'adset' ? analysisRow.name : null),
       metrics: {
-        now: buildHierarchyMetricSet(analysisRow.totals),
-        baseline: buildHierarchyMetricSet(anchorRow?.totals ?? null)
+        now: buildHierarchyMetricSet(analysisRow.totals, { concentration: concentrationNow?.concentration }),
+        baseline: buildHierarchyMetricSet(anchorRow?.totals ?? null, { concentration: concentrationBaseline?.concentration ?? null })
+      },
+      support: {
+        now: buildHierarchyMetricSupport(analysisRow.totals, {
+          childCount: concentrationNow?.childCount ?? null,
+          childSpendTotal: concentrationNow?.childSpendTotal ?? null,
+          hookRateEligible: toNumber(analysisRow?.totals?.videoViews) > 0
+        }),
+        baseline: buildHierarchyMetricSupport(anchorRow?.totals ?? null, {
+          childCount: concentrationBaseline?.childCount ?? null,
+          childSpendTotal: concentrationBaseline?.childSpendTotal ?? null,
+          hookRateEligible: toNumber(anchorRow?.totals?.videoViews) > 0
+        })
       }
     };
   });
@@ -1873,12 +1976,7 @@ export function fetchUnifiedHierarchyRows({
     activeEndDate: analysisRange.endDate
   });
 
-  const campaignRows = buildHierarchyLevelRows({
-    level: 'campaign',
-    analysisRows: analysisCampaignRows,
-    anchorRows: anchorCampaignRows
-  });
-  const campaignIdSet = new Set(campaignRows.map((row) => row.entityId));
+  const campaignIdSet = new Set(analysisCampaignIds);
 
   const analysisAdsetRowsFiltered = analysisAdsetRows.filter((row) => row.campaignId && campaignIdSet.has(row.campaignId));
   const anchorAdsetRows = fetchHierarchyLevelWindowRowsForIds({
@@ -1892,12 +1990,8 @@ export function fetchUnifiedHierarchyRows({
     activeEndDate: analysisRange.endDate
   });
 
-  const adsetRows = buildHierarchyLevelRows({
-    level: 'adset',
-    analysisRows: analysisAdsetRowsFiltered,
-    anchorRows: anchorAdsetRows
-  });
-  const adsetIdSet = new Set(adsetRows.map((row) => row.entityId));
+  const analysisAdsetIds = analysisAdsetRowsFiltered.map((row) => row.id);
+  const adsetIdSet = new Set(analysisAdsetIds);
 
   const analysisAdRowsFiltered = analysisAdRows.filter((row) => row.adsetId && adsetIdSet.has(row.adsetId));
   const anchorAdRows = fetchHierarchyLevelWindowRowsForIds({
@@ -1909,6 +2003,27 @@ export function fetchUnifiedHierarchyRows({
     country,
     ids: analysisAdRowsFiltered.map((row) => row.id),
     activeEndDate: analysisRange.endDate
+  });
+
+  const campaignConcentrationNowByEntityId = buildChildConcentrationLookup(analysisAdsetRowsFiltered, 'campaignId');
+  const campaignConcentrationBaselineByEntityId = buildChildConcentrationLookup(anchorAdsetRows, 'campaignId');
+  const adsetConcentrationNowByEntityId = buildChildConcentrationLookup(analysisAdRowsFiltered, 'adsetId');
+  const adsetConcentrationBaselineByEntityId = buildChildConcentrationLookup(anchorAdRows, 'adsetId');
+
+  const campaignRows = buildHierarchyLevelRows({
+    level: 'campaign',
+    analysisRows: analysisCampaignRows,
+    anchorRows: anchorCampaignRows,
+    concentrationNowByEntityId: campaignConcentrationNowByEntityId,
+    concentrationBaselineByEntityId: campaignConcentrationBaselineByEntityId
+  });
+
+  const adsetRows = buildHierarchyLevelRows({
+    level: 'adset',
+    analysisRows: analysisAdsetRowsFiltered,
+    anchorRows: anchorAdsetRows,
+    concentrationNowByEntityId: adsetConcentrationNowByEntityId,
+    concentrationBaselineByEntityId: adsetConcentrationBaselineByEntityId
   });
 
   const adRows = buildHierarchyLevelRows({

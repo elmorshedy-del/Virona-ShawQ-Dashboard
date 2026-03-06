@@ -486,7 +486,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
 
   // Define fields based on level
   // Include inline_link_clicks and cost_per_inline_link_click for proper Link Clicks and CPC metrics
-  const baseFields = 'spend,impressions,clicks,reach,actions,action_values,inline_link_clicks,cost_per_inline_link_click,outbound_clicks,unique_outbound_clicks,outbound_clicks_ctr,unique_outbound_clicks_ctr';
+  const baseFields = 'spend,impressions,clicks,reach,actions,action_values,video_play_actions,inline_link_clicks,cost_per_inline_link_click,outbound_clicks,unique_outbound_clicks,outbound_clicks_ctr,unique_outbound_clicks_ctr';
   let fields = baseFields;
   if (level === 'campaign') {
     fields = `campaign_name,campaign_id,${baseFields}`;
@@ -556,7 +556,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
     insertStmt = db.prepare(`
       INSERT OR REPLACE INTO meta_daily_metrics (
         store, date, campaign_id, campaign_name, country,
-        spend, spend_original, impressions, clicks, reach,
+        spend, spend_original, impressions, clicks, reach, video_views,
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value, conversion_value_original,
         inline_link_clicks, cost_per_inline_link_click, cost_per_inline_link_click_original,
@@ -564,7 +564,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         original_currency, status, effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @country,
-        @spend, @spend_original, @impressions, @clicks, @reach,
+        @spend, @spend_original, @impressions, @clicks, @reach, @video_views,
         @lpv, @atc, @checkout,
         @conversions, @conversion_value, @conversion_value_original,
         @inline_link_clicks, @cost_per_inline_link_click, @cost_per_inline_link_click_original,
@@ -576,7 +576,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
     insertStmt = db.prepare(`
       INSERT OR REPLACE INTO meta_adset_metrics (
         store, date, campaign_id, campaign_name, adset_id, adset_name, country,
-        spend, spend_original, impressions, clicks, reach,
+        spend, spend_original, impressions, clicks, reach, video_views,
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value, conversion_value_original,
         inline_link_clicks, cost_per_inline_link_click, cost_per_inline_link_click_original,
@@ -584,7 +584,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         original_currency, status, effective_status, adset_status, adset_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @country,
-        @spend, @spend_original, @impressions, @clicks, @reach,
+        @spend, @spend_original, @impressions, @clicks, @reach, @video_views,
         @lpv, @atc, @checkout,
         @conversions, @conversion_value, @conversion_value_original,
         @inline_link_clicks, @cost_per_inline_link_click, @cost_per_inline_link_click_original,
@@ -596,7 +596,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
     insertStmt = db.prepare(`
       INSERT OR REPLACE INTO meta_ad_metrics (
         store, date, campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name, country,
-        spend, spend_original, impressions, clicks, reach,
+        spend, spend_original, impressions, clicks, reach, video_views,
         landing_page_views, add_to_cart, checkouts_initiated,
         conversions, conversion_value, conversion_value_original,
         inline_link_clicks, cost_per_inline_link_click, cost_per_inline_link_click_original,
@@ -604,7 +604,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         original_currency, status, effective_status, ad_status, ad_effective_status
       ) VALUES (
         @store, @date, @campaign_id, @campaign_name, @adset_id, @adset_name, @ad_id, @ad_name, @country,
-        @spend, @spend_original, @impressions, @clicks, @reach,
+        @spend, @spend_original, @impressions, @clicks, @reach, @video_views,
         @lpv, @atc, @checkout,
         @conversions, @conversion_value, @conversion_value_original,
         @inline_link_clicks, @cost_per_inline_link_click, @cost_per_inline_link_click_original,
@@ -656,6 +656,9 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
       const lpv = getActionValue(row.actions, 'landing_page_view');
       const atc = getActionValue(row.actions, 'add_to_cart');
       const checkout = getActionValue(row.actions, 'initiate_checkout');
+      const videoViews =
+        getActionValue(row.video_play_actions, 'video_view') ||
+        getActionValue(row.actions, 'video_view');
 
       // Get status from status maps
       let campaignStatus = 'UNKNOWN';
@@ -708,6 +711,7 @@ async function syncMetaLevel(store, level, accountId, accessToken, startDate, en
         impressions: parseInt(row.impressions || 0),
         clicks: parseInt(row.clicks || 0),
         reach: parseInt(row.reach || 0),
+        video_views: parseInt(videoViews || 0),
         lpv: parseInt(lpv),
         atc: parseInt(atc),
         checkout: parseInt(checkout),
