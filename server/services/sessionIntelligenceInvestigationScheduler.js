@@ -13,7 +13,7 @@ const AUTO_QUEUE_CONFIG = Object.freeze({
   limitSessions: clampInteger(process.env.SI_INVESTIGATION_AUTO_QUEUE_LIMIT_SESSIONS, 5000, 100, 20000),
   activeStoreLookbackDays: clampInteger(process.env.SI_INVESTIGATION_AUTO_QUEUE_ACTIVE_STORE_LOOKBACK_DAYS, 2, 1, 30),
   includeObserved: normalizeBooleanEnv(process.env.SI_INVESTIGATION_AUTO_QUEUE_INCLUDE_OBSERVED, false),
-  includeUnverifiable: normalizeBooleanEnv(process.env.SI_INVESTIGATION_AUTO_QUEUE_INCLUDE_UNVERIFIABLE, false)
+  includeUnverifiable: normalizeBooleanEnv(process.env.SI_INVESTIGATION_AUTO_QUEUE_INCLUDE_UNVERIFIABLE, true)
 });
 
 function clampInteger(value, fallback, min, max) {
