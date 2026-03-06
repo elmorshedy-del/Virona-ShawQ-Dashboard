@@ -50,6 +50,7 @@ import { syncSallaOrders } from './services/sallaService.js';
 import { cleanupOldNotifications } from './services/notificationService.js';
 import { cleanupSessionIntelligenceRaw } from './services/sessionIntelligenceService.js';
 import { runQueuedInvestigationJobs } from './services/sessionIntelligenceInvestigationService.js';
+import { runSessionIntelligenceInvestigationAutoQueueCycle } from './services/sessionIntelligenceInvestigationScheduler.js';
 import { scheduleCreativeFunnelSummaryJobs } from './services/creativeFunnelSummaryService.js';
 import { runCampaignIntelligenceDailyTrainer } from './services/campaignIntelligence/trainer.js';
 import { runCampaignIntelligenceDailyBriefs } from './services/campaignIntelligence/briefScheduler.js';
@@ -68,6 +69,9 @@ const clientPublic = path.join(__dirname, '../client/public');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const ONE_MINUTE_MS = 60 * 1000;
+const ONE_HOUR_MS = 60 * ONE_MINUTE_MS;
+const TEN_SECONDS_MS = 10 * 1000;
 const SHOPIFY_SYNC_INTERVAL = parseInt(process.env.SHOPIFY_SYNC_INTERVAL_MS || '60000', 10);
 const GMT3_OFFSET_MS = 3 * 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -75,12 +79,17 @@ const DEFAULT_EXCHANGE_BOOTSTRAP_DAYS = 730;
 const DEFAULT_EXCHANGE_BOOTSTRAP_MAX_DAYS = 3650;
 const SESSION_INVESTIGATION_RUNNER_ENABLED = (process.env.SI_INVESTIGATION_RUNNER_ENABLED || 'true').toLowerCase() === 'true';
 const SESSION_INVESTIGATION_RUNNER_INTERVAL_MS = Math.max(
-  10_000,
+  TEN_SECONDS_MS,
   parseInt(process.env.SI_INVESTIGATION_RUNNER_INTERVAL_MS || '30000', 10) || 30000
 );
 const SESSION_INVESTIGATION_RUNNER_MAX_JOBS = Math.max(
   1,
   parseInt(process.env.SI_INVESTIGATION_RUNNER_MAX_JOBS || '8', 10) || 8
+);
+const SESSION_INVESTIGATION_AUTO_QUEUE_ENABLED = (process.env.SI_INVESTIGATION_AUTO_QUEUE_ENABLED || 'true').toLowerCase() === 'true';
+const SESSION_INVESTIGATION_AUTO_QUEUE_INTERVAL_MS = Math.max(
+  ONE_MINUTE_MS,
+  parseInt(process.env.SI_INVESTIGATION_AUTO_QUEUE_INTERVAL_MS || String(ONE_HOUR_MS), 10) || ONE_HOUR_MS
 );
 const META_DAYTURN_PULSE_MINUTES = (process.env.META_DAYTURN_PULSE_MINUTES || '5,15')
   .split(',')
@@ -199,6 +208,49 @@ function startSessionInvestigationRunner() {
   console.log(`[SessionIntelligence] investigation runner active every ${Math.round(SESSION_INVESTIGATION_RUNNER_INTERVAL_MS / 1000)}s`);
 }
 
+function startSessionInvestigationAutoQueue() {
+  if (!SESSION_INVESTIGATION_AUTO_QUEUE_ENABLED) {
+    console.log('[SessionIntelligence] investigation auto-queue disabled');
+    return;
+  }
+
+  let running = false;
+  const runCycle = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const result = await runSessionIntelligenceInvestigationAutoQueueCycle();
+      const queued = Number(result?.data?.queued) || 0;
+      const skipped = Number(result?.data?.skipped) || 0;
+      const failedStores = Array.isArray(result?.data?.stores)
+        ? result.data.stores.filter((row) => row?.error)
+        : [];
+
+      if (queued > 0 || skipped > 0 || failedStores.length > 0) {
+        console.log(
+          `[SessionIntelligence] investigation auto-queue queued ${queued}, skipped ${skipped}, stores ${result?.data?.stores?.length || 0}`
+        );
+      }
+
+      if (failedStores.length > 0) {
+        failedStores.forEach((row) => {
+          console.warn(`[SessionIntelligence] investigation auto-queue store ${row.store} failed: ${row.error}`);
+        });
+      }
+    } catch (error) {
+      console.warn('[SessionIntelligence] investigation auto-queue error:', error?.message || error);
+    } finally {
+      running = false;
+    }
+  };
+
+  void runCycle();
+  setInterval(runCycle, SESSION_INVESTIGATION_AUTO_QUEUE_INTERVAL_MS);
+  console.log(
+    `[SessionIntelligence] investigation auto-queue active every ${Math.round(SESSION_INVESTIGATION_AUTO_QUEUE_INTERVAL_MS / ONE_MINUTE_MS)}m`
+  );
+}
+
 
 // Initialize database
 initDb();
@@ -230,6 +282,7 @@ runConversionUiFixLabMigration();
 
 // Schedule creative funnel summaries (daily/weekly + spend reset checks)
 scheduleCreativeFunnelSummaryJobs();
+startSessionInvestigationAutoQueue();
 startSessionInvestigationRunner();
 
 // One-time Salla cleanup (safe - won't crash if tables don't exist)
