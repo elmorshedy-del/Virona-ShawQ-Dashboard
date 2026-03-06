@@ -40,21 +40,86 @@ const CELL_STATUS_STYLE = Object.freeze({
   caution: 'bg-[#fffbeb] border-[#fde68a] text-[#92400e]',
   bad: 'bg-[#fff7ed] border-[#fdba74] text-[#9a3412]',
   critical: 'bg-[#fef2f2] border-[#fca5a5] text-[#991b1b]',
-  insufficient: 'bg-[#f8fafc] border-[#cbd5e1] text-[#64748b]'
-});
-
-const METRIC_STATUS_THRESHOLDS = Object.freeze({
-  // Relative movement vs baseline for non-floor metrics.
-  strongImprovementRatio: 0.1,
-  improvementRatio: 0,
-  mildDeclineRatio: -0.1,
-  declineRatio: -0.25,
-  severeDeclineRatio: -0.4
+  insufficient: 'bg-[#f8fafc] border-[#cbd5e1] text-[#64748b]',
+  not_applicable: 'bg-[#fbfcff] border-[#e2e8f0] text-[#94a3b8]'
 });
 
 const KEY_METRIC_BOUNDS = Object.freeze({
   purchaseIcFloorRate: 0.3,
   costAtcCapUsd: 18
+});
+const CELL_STATUS_ORDER = Object.freeze(['critical', 'bad', 'caution', 'good', 'strong_good']);
+const METRIC_BASELINE_DELTA_THRESHOLDS = Object.freeze({
+  strongImprovementRatio: 0.12,
+  improvementRatio: 0,
+  mildDeclineRatio: -0.1,
+  declineRatio: -0.22,
+  severeDeclineRatio: -0.38
+});
+const METRIC_SUPPORT_GATES = Object.freeze({
+  roas: Object.freeze({
+    minSpendUsd: 15,
+    minPurchases: 1
+  }),
+  costAtc: Object.freeze({
+    minSpendUsd: 12,
+    minAddToCart: 1
+  }),
+  purchaseIc: Object.freeze({
+    minCheckoutsInitiated: 3
+  }),
+  ctr: Object.freeze({
+    minImpressions: 1000
+  }),
+  cpm: Object.freeze({
+    minImpressions: 1000
+  }),
+  hookRate: Object.freeze({
+    minImpressions: 1000,
+    minVideoViews: 25
+  }),
+  frequency: Object.freeze({
+    minImpressions: 800,
+    minReach: 300
+  }),
+  lpvClick: Object.freeze({
+    minClicks: 12
+  }),
+  atcLpv: Object.freeze({
+    minLandingPageViews: 8
+  }),
+  icAtc: Object.freeze({
+    minAddToCart: 5
+  }),
+  concentration: Object.freeze({
+    minSpendUsd: 25,
+    minChildCount: 2
+  })
+});
+const CTR_STATUS_BANDS = Object.freeze({
+  strong: 0.03,
+  good: 0.02,
+  caution: 0.015,
+  bad: 0.01
+});
+const CPM_STATUS_BANDS = Object.freeze({
+  strong: 4.5,
+  good: 6.5,
+  caution: 8.5,
+  bad: 11.5
+});
+const HOOK_RATE_STATUS_BANDS = Object.freeze({
+  strong: 0.35,
+  good: 0.25,
+  caution: 0.18,
+  bad: 0.12
+});
+const FREQUENCY_STATUS_BANDS = Object.freeze({
+  fresh: 1,
+  strong: 1.6,
+  good: 2.2,
+  caution: 2.8,
+  bad: 3.5
 });
 
 const HEALTH_RULES = Object.freeze({
@@ -136,7 +201,6 @@ const WINDOW_DAY_LOOKUP = Object.freeze({
   '14d': 14,
   '7d': 7
 });
-const KEY_COLORED_METRICS = Object.freeze(new Set(['roas', 'costAtc', 'purchaseIc']));
 const DIRECTION_DISPLAY_STYLE = Object.freeze({
   improving: 'bg-[#e9fbf3] text-[#12855f]',
   stable: 'bg-[#eef2ff] text-[#5f6b93]',
@@ -308,65 +372,274 @@ function metricDeltaRatio(metricKey, current, baseline) {
   return rawDeltaRatio;
 }
 
-function resolveCellStatus(metricKey, current, baseline, targetRoas) {
-  const now = parseNullableNumber(current);
-  if (!Number.isFinite(now)) {
-    return { code: 'insufficient', note: 'Insufficient data' };
+function createCellState(code, note) {
+  return { code, note };
+}
+
+function getCellStatusRank(code) {
+  const index = CELL_STATUS_ORDER.indexOf(code);
+  return index >= 0 ? index : -1;
+}
+
+function statusCodeFromRank(rank) {
+  if (!Number.isFinite(rank)) return 'insufficient';
+  const clamped = clamp(Math.round(rank), 0, CELL_STATUS_ORDER.length - 1);
+  return CELL_STATUS_ORDER[clamped];
+}
+
+function supportValue(support, key) {
+  return toFiniteNumber(support?.[key], 0);
+}
+
+function classifyHigherBetterBands(value, bands, notes) {
+  if (value >= bands.strong) return createCellState('strong_good', notes.strong);
+  if (value >= bands.good) return createCellState('good', notes.good);
+  if (value >= bands.caution) return createCellState('caution', notes.caution);
+  if (value >= bands.bad) return createCellState('bad', notes.bad);
+  return createCellState('critical', notes.critical);
+}
+
+function classifyLowerBetterBands(value, bands, notes) {
+  if (value <= bands.strong) return createCellState('strong_good', notes.strong);
+  if (value <= bands.good) return createCellState('good', notes.good);
+  if (value <= bands.caution) return createCellState('caution', notes.caution);
+  if (value <= bands.bad) return createCellState('bad', notes.bad);
+  return createCellState('critical', notes.critical);
+}
+
+function resolveBaselineDeltaState(metricKey, current, baseline) {
+  const effectiveDeltaRatio = metricDeltaRatio(metricKey, current, baseline);
+  if (effectiveDeltaRatio == null) {
+    return createCellState('insufficient', 'Insufficient anchor');
   }
 
+  if (effectiveDeltaRatio >= METRIC_BASELINE_DELTA_THRESHOLDS.strongImprovementRatio) {
+    return createCellState('strong_good', 'Ahead of anchor');
+  }
+  if (effectiveDeltaRatio >= METRIC_BASELINE_DELTA_THRESHOLDS.improvementRatio) {
+    return createCellState('good', 'Holding anchor');
+  }
+  if (effectiveDeltaRatio >= METRIC_BASELINE_DELTA_THRESHOLDS.mildDeclineRatio) {
+    return createCellState('caution', 'Near anchor');
+  }
+  if (effectiveDeltaRatio >= METRIC_BASELINE_DELTA_THRESHOLDS.declineRatio) {
+    return createCellState('bad', 'Soft vs anchor');
+  }
+  if (effectiveDeltaRatio < METRIC_BASELINE_DELTA_THRESHOLDS.severeDeclineRatio) {
+    return createCellState('critical', 'Far off anchor');
+  }
+  return createCellState('critical', 'Deep anchor miss');
+}
+
+function hasAbsoluteEvidence(metricKey, support) {
+  const gates = METRIC_SUPPORT_GATES[metricKey];
+  if (!gates) return true;
+
   if (metricKey === 'roas') {
+    return supportValue(support, 'spend') >= gates.minSpendUsd || supportValue(support, 'conversions') >= gates.minPurchases;
+  }
+  if (metricKey === 'costAtc') {
+    return supportValue(support, 'addToCart') >= gates.minAddToCart || supportValue(support, 'spend') >= gates.minSpendUsd;
+  }
+  if (metricKey === 'purchaseIc') {
+    return supportValue(support, 'checkoutsInitiated') >= gates.minCheckoutsInitiated;
+  }
+  if (metricKey === 'ctr' || metricKey === 'cpm') {
+    return supportValue(support, 'impressions') >= gates.minImpressions;
+  }
+  if (metricKey === 'hookRate') {
+    if (!support?.hookRateEligible) return false;
+    return supportValue(support, 'impressions') >= gates.minImpressions
+      && supportValue(support, 'videoViews') >= gates.minVideoViews;
+  }
+  if (metricKey === 'frequency') {
+    return supportValue(support, 'impressions') >= gates.minImpressions
+      && supportValue(support, 'reach') >= gates.minReach;
+  }
+  return true;
+}
+
+function hasBaselineEvidence(metricKey, support) {
+  const gates = METRIC_SUPPORT_GATES[metricKey];
+  if (!gates) return true;
+  if (metricKey === 'lpvClick') return supportValue(support, 'clicks') >= gates.minClicks;
+  if (metricKey === 'atcLpv') return supportValue(support, 'landingPageViews') >= gates.minLandingPageViews;
+  if (metricKey === 'icAtc') return supportValue(support, 'addToCart') >= gates.minAddToCart;
+  if (metricKey === 'concentration') {
+    return supportValue(support, 'childCount') >= gates.minChildCount
+      && supportValue(support, 'childSpendTotal') >= gates.minSpendUsd;
+  }
+  return hasAbsoluteEvidence(metricKey, support);
+}
+
+function resolveAbsoluteBusinessState(metricKey, now, targetRoas, support) {
+  if (metricKey === 'roas') {
+    if (!hasAbsoluteEvidence(metricKey, support)) {
+      return createCellState('insufficient', 'Need more spend');
+    }
+
     const floor = Math.max(0.1, toFiniteNumber(targetRoas, 4));
-    if (now >= floor * 1.1) return { code: 'strong_good', note: 'Above target floor' };
-    if (now >= floor) return { code: 'good', note: 'At target floor' };
-    if (now >= floor * 0.9) return { code: 'caution', note: 'Slightly below floor' };
-    if (now >= floor * 0.75) return { code: 'bad', note: 'Below floor' };
-    return { code: 'critical', note: 'Far below floor' };
+    if (now >= floor * 1.1) return createCellState('strong_good', 'Above target floor');
+    if (now >= floor) return createCellState('good', 'At target floor');
+    if (now >= floor * 0.9) return createCellState('caution', 'Near target floor');
+    if (now >= floor * 0.75) return createCellState('bad', 'Below target floor');
+    return createCellState('critical', 'Far below target');
   }
 
   if (metricKey === 'costAtc') {
+    if (supportValue(support, 'addToCart') <= 0 && supportValue(support, 'spend') >= METRIC_SUPPORT_GATES.costAtc.minSpendUsd) {
+      return createCellState('critical', 'Spend without ATC');
+    }
+    if (!hasAbsoluteEvidence(metricKey, support)) {
+      return createCellState('insufficient', 'Need ATC volume');
+    }
+
     const cap = KEY_METRIC_BOUNDS.costAtcCapUsd;
-    if (now <= cap * 0.8) return { code: 'strong_good', note: 'Well below cap' };
-    if (now <= cap) return { code: 'good', note: 'Within cap' };
-    if (now <= cap * 1.15) return { code: 'caution', note: 'Near cap' };
-    if (now <= cap * 1.35) return { code: 'bad', note: 'Above cap' };
-    return { code: 'critical', note: 'Far above cap' };
+    if (now <= cap * 0.8) return createCellState('strong_good', 'Well below cap');
+    if (now <= cap) return createCellState('good', 'Within cap');
+    if (now <= cap * 1.15) return createCellState('caution', 'Near cap');
+    if (now <= cap * 1.35) return createCellState('bad', 'Above cap');
+    return createCellState('critical', 'Far above cap');
   }
 
-  if (metricKey === 'purchaseIc') {
-    const floor = KEY_METRIC_BOUNDS.purchaseIcFloorRate;
-    if (now >= floor * 1.15) return { code: 'strong_good', note: 'Strong close rate' };
-    if (now >= floor) return { code: 'good', note: 'At floor' };
-    if (now >= floor * 0.9) return { code: 'caution', note: 'Near floor' };
-    if (now >= floor * 0.75) return { code: 'bad', note: 'Below floor' };
-    return { code: 'critical', note: 'Far below floor' };
+  if (!hasAbsoluteEvidence(metricKey, support)) {
+    return createCellState('insufficient', 'Need checkout volume');
   }
 
-  const base = parseNullableNumber(baseline);
-  if (!Number.isFinite(base) || Math.abs(base) < CHART_EPSILON) {
-    return { code: 'insufficient', note: 'Insufficient baseline' };
+  const floor = KEY_METRIC_BOUNDS.purchaseIcFloorRate;
+  if (now >= floor * 1.15) return createCellState('strong_good', 'Strong close rate');
+  if (now >= floor) return createCellState('good', 'At close-rate floor');
+  if (now >= floor * 0.9) return createCellState('caution', 'Near close-rate floor');
+  if (now >= floor * 0.75) return createCellState('bad', 'Below close-rate floor');
+  return createCellState('critical', 'Far below close-rate floor');
+}
+
+function resolveFrequencyState(now, support) {
+  if (!hasAbsoluteEvidence('frequency', support)) {
+    return createCellState('insufficient', 'Need reach volume');
   }
 
-  const effectiveDeltaRatio = metricDeltaRatio(metricKey, now, base);
-  if (effectiveDeltaRatio == null) {
-    return { code: 'insufficient', note: 'Insufficient baseline' };
+  if (now <= FREQUENCY_STATUS_BANDS.fresh) {
+    return createCellState('good', 'Fresh reach');
+  }
+  return classifyLowerBetterBands(now, FREQUENCY_STATUS_BANDS, {
+    strong: 'Low repetition',
+    good: 'Healthy repetition',
+    caution: 'Rising repetition',
+    bad: 'Fatigue risk',
+    critical: 'High fatigue risk'
+  });
+}
+
+function resolveProtectiveHybridState(metricKey, now, baseline, support) {
+  if (!hasAbsoluteEvidence(metricKey, support)) {
+    return createCellState('insufficient', metricKey === 'hookRate' ? 'Need video sample' : 'Need delivery volume');
   }
 
-  if (effectiveDeltaRatio >= METRIC_STATUS_THRESHOLDS.strongImprovementRatio) {
-    return { code: 'strong_good', note: 'Improving vs baseline' };
+  const absoluteState = metricKey === 'ctr'
+    ? classifyHigherBetterBands(now, CTR_STATUS_BANDS, {
+      strong: 'Strong click band',
+      good: 'Healthy click band',
+      caution: 'Watch click band',
+      bad: 'Weak click band',
+      critical: 'Very low click band'
+    })
+    : classifyHigherBetterBands(now, HOOK_RATE_STATUS_BANDS, {
+      strong: 'Strong hook band',
+      good: 'Healthy hook band',
+      caution: 'Watch hook band',
+      bad: 'Weak hook band',
+      critical: 'Very low hook band'
+    });
+
+  const deltaState = resolveBaselineDeltaState(metricKey, now, baseline);
+  if (deltaState.code === 'insufficient') {
+    return absoluteState;
   }
-  if (effectiveDeltaRatio >= METRIC_STATUS_THRESHOLDS.improvementRatio) {
-    return { code: 'good', note: 'At baseline' };
+
+  const absoluteRank = getCellStatusRank(absoluteState.code);
+  const deltaRank = getCellStatusRank(deltaState.code);
+  const mergedRank = Math.min(absoluteRank, Math.round((absoluteRank + deltaRank) / 2));
+  const mergedCode = statusCodeFromRank(mergedRank);
+  const note = mergedCode === absoluteState.code
+    ? absoluteState.note
+    : `${absoluteState.note}; ${deltaState.note.toLowerCase()}`;
+
+  return createCellState(mergedCode, note);
+}
+
+function resolveCpmState(now, baseline, support) {
+  if (!hasAbsoluteEvidence('cpm', support)) {
+    return createCellState('insufficient', 'Need impression volume');
   }
-  if (effectiveDeltaRatio >= METRIC_STATUS_THRESHOLDS.mildDeclineRatio) {
-    return { code: 'caution', note: 'Slight softening' };
+
+  const absoluteState = classifyLowerBetterBands(now, CPM_STATUS_BANDS, {
+    strong: 'Efficient auction band',
+    good: 'Normal auction band',
+    caution: 'Elevated auction band',
+    bad: 'Costly auction band',
+    critical: 'Severe auction pressure'
+  });
+  const absoluteRank = getCellStatusRank(absoluteState.code);
+  if (absoluteRank <= getCellStatusRank('bad')) {
+    return absoluteState;
   }
-  if (effectiveDeltaRatio >= METRIC_STATUS_THRESHOLDS.declineRatio) {
-    return { code: 'bad', note: 'Meaningful decline' };
+
+  const deltaState = resolveBaselineDeltaState('cpm', now, baseline);
+  if (deltaState.code === 'insufficient') {
+    return absoluteState;
   }
-  if (effectiveDeltaRatio < METRIC_STATUS_THRESHOLDS.severeDeclineRatio) {
-    return { code: 'critical', note: 'Severe decline' };
+
+  const deltaRank = getCellStatusRank(deltaState.code);
+  const mergedRank = Math.round((absoluteRank + (deltaRank * 2)) / 3);
+  const mergedCode = statusCodeFromRank(mergedRank);
+  const note = mergedCode === absoluteState.code
+    ? absoluteState.note
+    : `${deltaState.note}; normal for this scope`;
+
+  return createCellState(mergedCode, note);
+}
+
+function resolveBaselineMetricState(metricKey, now, baseline, support, baselineSupport) {
+  if (metricKey === 'concentration' && supportValue(support, 'childCount') < METRIC_SUPPORT_GATES.concentration.minChildCount) {
+    return createCellState('not_applicable', 'No child mix yet');
   }
-  return { code: 'critical', note: 'Deep decline' };
+  if (!hasBaselineEvidence(metricKey, support)) {
+    return createCellState('insufficient', 'Need current sample');
+  }
+  if (!hasBaselineEvidence(metricKey, baselineSupport)) {
+    return createCellState('insufficient', 'Need anchor sample');
+  }
+  return resolveBaselineDeltaState(metricKey, now, baseline);
+}
+
+function resolveCellStatus(metricKey, current, baseline, targetRoas, support = null, baselineSupport = null) {
+  const now = parseNullableNumber(current);
+  if (metricKey === 'hookRate' && !support?.hookRateEligible && !baselineSupport?.hookRateEligible) {
+    return createCellState('not_applicable', 'Non-video / unavailable');
+  }
+
+  if (!Number.isFinite(now)) {
+    return createCellState('insufficient', 'Insufficient data');
+  }
+
+  if (metricKey === 'roas' || metricKey === 'costAtc' || metricKey === 'purchaseIc') {
+    return resolveAbsoluteBusinessState(metricKey, now, targetRoas, support);
+  }
+
+  if (metricKey === 'frequency') {
+    return resolveFrequencyState(now, support);
+  }
+
+  if (metricKey === 'ctr' || metricKey === 'hookRate') {
+    return resolveProtectiveHybridState(metricKey, now, baseline, support);
+  }
+
+  if (metricKey === 'cpm') {
+    return resolveCpmState(now, baseline, support);
+  }
+
+  return resolveBaselineMetricState(metricKey, now, baseline, support, baselineSupport);
 }
 
 function getRowDepth(row) {
@@ -384,6 +657,10 @@ function getRowType(row) {
 
 function rowMetric(row, metricKey, side = 'now') {
   return parseNullableNumber(row?.metrics?.[side]?.[metricKey]);
+}
+
+function rowSupport(row, side = 'now') {
+  return row?.support?.[side] || null;
 }
 
 function computeHealthScore(row, targetRoas) {
@@ -483,7 +760,7 @@ function rowNeedsAttention(row, targetRoas) {
   return riskMetrics.some((metricKey) => {
     const now = row?.metrics?.now?.[metricKey];
     const baseline = row?.metrics?.baseline?.[metricKey];
-    const status = resolveCellStatus(metricKey, now, baseline, targetRoas);
+    const status = resolveCellStatus(metricKey, now, baseline, targetRoas, rowSupport(row, 'now'), rowSupport(row, 'baseline'));
     return status.code === 'bad' || status.code === 'critical';
   });
 }
@@ -672,6 +949,8 @@ function getMetricDeltaDetails(row, targetRoas) {
   return keys.map((metricKey) => {
     const now = row?.metrics?.now?.[metricKey];
     const baseline = row?.metrics?.baseline?.[metricKey];
+    const currentSupport = rowSupport(row, 'now');
+    const baselineSupport = rowSupport(row, 'baseline');
 
     return {
       metricKey,
@@ -679,7 +958,7 @@ function getMetricDeltaDetails(row, targetRoas) {
       now,
       baseline,
       delta: formatDeltaPercent(now, baseline),
-      status: resolveCellStatus(metricKey, now, baseline, targetRoas)
+      status: resolveCellStatus(metricKey, now, baseline, targetRoas, currentSupport, baselineSupport)
     };
   });
 }
@@ -964,17 +1243,7 @@ export default function CampaignIntelligenceUnifiedSection({
   onSnapshotUpdate,
   onAnalysisParamsChange
 }) {
-  if (!snapshot || snapshot?.success === false) {
-    return (
-      <div className="rounded-2xl border border-[#dfe5ff] bg-white p-6">
-        <div className="inline-flex items-center gap-2 text-sm text-slate-600">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          Loading Unified Manager…
-        </div>
-      </div>
-    );
-  }
-
+  const snapshotReady = Boolean(snapshot) && snapshot?.success !== false;
   const hierarchyRows = Array.isArray(snapshot?.hierarchy?.rows) ? snapshot.hierarchy.rows : [];
 
   const [expandedIds, setExpandedIds] = useState(() => new Set());
@@ -1813,6 +2082,17 @@ export default function CampaignIntelligenceUnifiedSection({
   const campaignsAreLimited = !showAllCampaigns && campaignCount > DEFAULT_VISIBLE_CAMPAIGN_LIMIT;
   const visibleCampaignCount = showAllCampaigns ? campaignCount : Math.min(DEFAULT_VISIBLE_CAMPAIGN_LIMIT, campaignCount);
 
+  if (!snapshotReady) {
+    return (
+      <div className="rounded-2xl border border-[#dfe5ff] bg-white p-6">
+        <div className="inline-flex items-center gap-2 text-sm text-slate-600">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading Unified Manager…
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
       <section
@@ -2035,14 +2315,19 @@ export default function CampaignIntelligenceUnifiedSection({
                         {METRIC_KEYS.map((metricKey) => {
                           const now = row?.metrics?.now?.[metricKey];
                           const baseline = row?.metrics?.baseline?.[metricKey];
-                          const computedState = resolveCellStatus(metricKey, now, baseline, targetRoas);
-                          const visibleStateCode = KEY_COLORED_METRICS.has(metricKey) ? computedState.code : 'insufficient';
-                          const visibleNote = KEY_COLORED_METRICS.has(metricKey) ? computedState.note : 'Current';
+                          const computedState = resolveCellStatus(
+                            metricKey,
+                            now,
+                            baseline,
+                            targetRoas,
+                            rowSupport(row, 'now'),
+                            rowSupport(row, 'baseline')
+                          );
                           return (
                             <td key={`${row.id}-${metricKey}`} className="py-1.5 px-2">
-                              <div className={`min-w-[96px] rounded-[10px] border px-2 py-1.5 ${CELL_STATUS_STYLE[visibleStateCode]}`}>
+                              <div className={`min-w-[96px] rounded-[10px] border px-2 py-1.5 ${CELL_STATUS_STYLE[computedState.code] || CELL_STATUS_STYLE.insufficient}`}>
                                 <div className="text-[12px] font-bold leading-4">{formatMetricValue(metricKey, now)}</div>
-                                <div className="text-[10px] mt-0.5 font-semibold opacity-90">{visibleNote}</div>
+                                <div className="text-[10px] mt-0.5 font-semibold opacity-90">{computedState.note}</div>
                               </div>
                             </td>
                           );
