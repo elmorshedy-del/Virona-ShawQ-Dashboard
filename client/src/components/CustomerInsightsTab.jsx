@@ -51,6 +51,36 @@ const sectionIcons = {
 };
 
 const UPPER_METRIC_SLOT_COUNT = 4;
+const DEFAULT_TOP_PRODUCTS_WINDOW_ID = '30d';
+const TOP_PRODUCTS_WINDOW_OPTIONS = Object.freeze([
+  {
+    id: '7d',
+    label: '7d',
+    description: 'Fast read on near-term leaderboard movement.',
+    range: { type: 'days', value: 7 }
+  },
+  {
+    id: '14d',
+    label: '14d',
+    description: 'Two-week rotation without too much noise.',
+    range: { type: 'days', value: 14 }
+  },
+  {
+    id: DEFAULT_TOP_PRODUCTS_WINDOW_ID,
+    label: 'Month',
+    description: 'Default view anchored to the last 30 days.',
+    range: { type: 'days', value: 30 }
+  },
+  {
+    id: '3m',
+    label: '3m',
+    description: 'Structural winners across a longer horizon.',
+    range: { type: 'months', value: 3 }
+  }
+]);
+const TOP_PRODUCTS_COMMENTARY_LIMIT = 5;
+const TOP_PRODUCTS_DISPLAY_LIMIT = 5;
+const TOP_PRODUCTS_LABEL_PREVIEW_LIMIT = 2;
 const MOMENTUM_LIVE_WINDOW_DAYS = 7;
 const MOMENTUM_MODE_LIVE = 'live';
 const MOMENTUM_MODE_SELECTED = 'selected';
@@ -98,7 +128,10 @@ const buildInsightsParams = (store, range) => {
   if (store) {
     params.set('store', String(store).trim().toLowerCase());
   }
-  if (range?.type && range.value != null) {
+  if (range?.startDate && range?.endDate) {
+    params.set('startDate', String(range.startDate));
+    params.set('endDate', String(range.endDate));
+  } else if (range?.type && range.value != null) {
     params.set(range.type, String(range.value));
   }
   return params;
@@ -177,6 +210,124 @@ const formatSparklineLookback = (sparkline) => {
   return `${startLabel} → ${endLabel}`;
 };
 
+const getTopProductsWindowOption = (windowId) => (
+  TOP_PRODUCTS_WINDOW_OPTIONS.find((option) => option.id === windowId)
+  || TOP_PRODUCTS_WINDOW_OPTIONS.find((option) => option.id === DEFAULT_TOP_PRODUCTS_WINDOW_ID)
+  || TOP_PRODUCTS_WINDOW_OPTIONS[0]
+);
+
+const shiftIsoDate = (isoDate, deltaDays) => {
+  const normalized = normalizeIsoDate(isoDate);
+  if (!normalized) return null;
+  const date = new Date(`${normalized}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setUTCDate(date.getUTCDate() + deltaDays);
+  return date.toISOString().slice(0, 10);
+};
+
+const buildPreviousEqualRange = (window) => {
+  const startDate = normalizeIsoDate(window?.startDate);
+  const endDate = normalizeIsoDate(window?.endDate);
+  const days = Number(window?.days);
+
+  if (!startDate || !endDate || !Number.isFinite(days) || days <= 0) {
+    return null;
+  }
+
+  return {
+    startDate: shiftIsoDate(startDate, -days),
+    endDate: shiftIsoDate(endDate, -days)
+  };
+};
+
+const getProductRowKey = (row, index = 0) => (
+  row?.key
+  || row?.product_id
+  || row?.variant_id
+  || row?.sku
+  || row?.title
+  || `product-row-${index}`
+);
+
+const getProductRowTitle = (row) => (
+  row?.title
+  || row?.cache_title
+  || row?.sku
+  || 'Untitled product'
+);
+
+const formatTitlePreview = (titles) => {
+  const cleanTitles = (titles || []).filter(Boolean);
+  if (!cleanTitles.length) return 'None';
+  if (cleanTitles.length <= TOP_PRODUCTS_LABEL_PREVIEW_LIMIT) {
+    return cleanTitles.join(' + ');
+  }
+  const visible = cleanTitles.slice(0, TOP_PRODUCTS_LABEL_PREVIEW_LIMIT);
+  return `${visible.join(' + ')} +${cleanTitles.length - visible.length}`;
+};
+
+const buildTopProductsCommentary = (currentProducts, previousProducts) => {
+  const currentTop = Array.isArray(currentProducts) ? currentProducts.slice(0, TOP_PRODUCTS_COMMENTARY_LIMIT) : [];
+  const previousTop = Array.isArray(previousProducts) ? previousProducts.slice(0, TOP_PRODUCTS_COMMENTARY_LIMIT) : [];
+  const currentKeys = new Set(currentTop.map((row, index) => getProductRowKey(row, index)));
+  const previousKeys = new Set(previousTop.map((row, index) => getProductRowKey(row, index)));
+  const currentLeader = currentTop[0] || null;
+  const previousLeader = previousTop[0] || null;
+  const entered = currentTop
+    .filter((row, index) => !previousKeys.has(getProductRowKey(row, index)))
+    .map((row) => getProductRowTitle(row));
+  const dropped = previousTop
+    .filter((row, index) => !currentKeys.has(getProductRowKey(row, index)))
+    .map((row) => getProductRowTitle(row));
+
+  const notes = [];
+  if (currentLeader) {
+    const currentLeaderKey = getProductRowKey(currentLeader, 0);
+    const previousLeaderKey = previousLeader ? getProductRowKey(previousLeader, 0) : null;
+    notes.push(
+      currentLeaderKey === previousLeaderKey
+        ? {
+          tone: 'steady',
+          label: 'Leader held',
+          text: `${getProductRowTitle(currentLeader)} kept the top slot.`
+        }
+        : {
+          tone: 'fresh',
+          label: 'New leader',
+          text: previousLeader
+            ? `${getProductRowTitle(currentLeader)} replaced ${getProductRowTitle(previousLeader)} at #1.`
+            : `${getProductRowTitle(currentLeader)} now leads the leaderboard.`
+        }
+    );
+  }
+
+  if (entered.length) {
+    notes.push({
+      tone: 'fresh',
+      label: 'Entered top five',
+      text: formatTitlePreview(entered)
+    });
+  }
+
+  if (dropped.length) {
+    notes.push({
+      tone: 'fade',
+      label: 'Dropped out',
+      text: formatTitlePreview(dropped)
+    });
+  }
+
+  if (!notes.length) {
+    notes.push({
+      tone: 'steady',
+      label: 'Stable top five',
+      text: 'No rotation versus the prior equal window.'
+    });
+  }
+
+  return notes.slice(0, 3);
+};
+
 const getUpperMetricById = (kpis, id) => (kpis || []).find((row) => row?.id === id) || null;
 
 const resolveUpperMetrics = (kpis = []) => {
@@ -224,11 +375,182 @@ const formatUpperMetricValue = (metric, formatCurrency) => {
 
 function UpperMetricCard({ metric, formatCurrency }) {
   const value = formatUpperMetricValue(metric, formatCurrency);
+  const isTextMetric = metric?.format === 'text';
   return (
-    <div className="card ci-card-metric">
+    <div className={`card ci-card-metric ${isTextMetric ? 'is-text' : ''}`.trim()}>
       <div className="card-label">{metric?.label || 'Metric'}</div>
       <div className="metric-huge-value">{value}</div>
       {metric?.hint ? <div className="metric-subtitle">{metric.hint}</div> : null}
+    </div>
+  );
+}
+
+function TopProductsSection({ store, fallbackSection, fallbackWindow, formatCurrency }) {
+  const [windowId, setWindowId] = useState(DEFAULT_TOP_PRODUCTS_WINDOW_ID);
+  const [panelState, setPanelState] = useState({
+    currentSection: store ? null : (fallbackSection || null),
+    previousSection: null,
+    currentWindow: store ? null : (fallbackWindow || null),
+    loading: Boolean(store),
+    error: false
+  });
+
+  useEffect(() => {
+    if (!store) {
+      setPanelState({
+        currentSection: fallbackSection || null,
+        previousSection: null,
+        currentWindow: fallbackWindow || null,
+        loading: false,
+        error: false
+      });
+      return undefined;
+    }
+
+    const selectedOption = getTopProductsWindowOption(windowId);
+    const controller = new AbortController();
+    let active = true;
+
+    const loadTopProducts = async () => {
+      setPanelState((prev) => ({
+        ...prev,
+        loading: true,
+        error: false
+      }));
+
+      try {
+        const currentResponse = await fetch(
+          `/api/customer-insights?${buildInsightsParams(store, selectedOption.range).toString()}`,
+          { signal: controller.signal }
+        );
+        if (!currentResponse.ok) {
+          throw new Error(`HTTP ${currentResponse.status}`);
+        }
+        const currentPayload = await currentResponse.json();
+        if (!active) return;
+
+        const currentSection = currentPayload?.data?.sections?.topProducts || null;
+        const currentWindow = currentPayload?.data?.window || null;
+        let previousSection = null;
+        const previousRange = buildPreviousEqualRange(currentWindow);
+
+        if (previousRange) {
+          try {
+            const previousResponse = await fetch(
+              `/api/customer-insights?${buildInsightsParams(store, previousRange).toString()}`,
+              { signal: controller.signal }
+            );
+            if (previousResponse.ok) {
+              const previousPayload = await previousResponse.json();
+              if (!active) return;
+              previousSection = previousPayload?.data?.sections?.topProducts || null;
+            }
+          } catch (previousError) {
+            if (!active || previousError?.name === 'AbortError') return;
+          }
+        }
+
+        setPanelState({
+          currentSection: currentSection || fallbackSection || null,
+          previousSection,
+          currentWindow: currentWindow || fallbackWindow || null,
+          loading: false,
+          error: false
+        });
+      } catch (error) {
+        if (!active || error?.name === 'AbortError') return;
+        setPanelState((prev) => ({
+          currentSection: prev.currentSection || fallbackSection || null,
+          previousSection: prev.previousSection,
+          currentWindow: prev.currentWindow || fallbackWindow || null,
+          loading: false,
+          error: true
+        }));
+      }
+    };
+
+    loadTopProducts();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [store, windowId, fallbackSection, fallbackWindow]);
+
+  const selectedOption = getTopProductsWindowOption(windowId);
+  const currentSection = panelState.currentSection || fallbackSection || null;
+  const products = currentSection?.products || [];
+  const topProducts = products.slice(0, TOP_PRODUCTS_DISPLAY_LIMIT);
+  const commentary = buildTopProductsCommentary(products, panelState.previousSection?.products || []);
+  const windowLabel = panelState.currentWindow?.label || selectedOption.description;
+
+  return (
+    <div className="ci-top-products-shell">
+      <div className="ci-top-products-head">
+        <div>
+          <div className="ci-top-products-kicker">Pinned leaderboard</div>
+          <div className="ci-top-products-title">Top five products, defaulted to the last 30 days</div>
+          <div className="ci-top-products-subtitle">{selectedOption.description}</div>
+        </div>
+        <div className="ci-range-toggle" role="tablist" aria-label="Top products range">
+          {TOP_PRODUCTS_WINDOW_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`ci-range-toggle-btn ${windowId === option.id ? 'active' : ''}`}
+              onClick={() => setWindowId(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="ci-top-products-meta">
+        <span className="ci-soft-pill strong">{windowLabel}</span>
+        <span className="ci-soft-pill">
+          {panelState.loading ? 'Refreshing leaderboard...' : `${topProducts.length} products in focus`}
+        </span>
+      </div>
+
+      <div className="ci-top-products-commentary">
+        {commentary.map((note) => (
+          <div key={`${note.label}-${note.text}`} className={`ci-commentary-card ${note.tone}`}>
+            <div className="ci-commentary-label">{note.label}</div>
+            <div className="ci-commentary-text">{note.text}</div>
+          </div>
+        ))}
+      </div>
+
+      {topProducts.length ? (
+        <div className="ci-top-products-list">
+          {topProducts.map((row, index) => (
+            <div key={getProductRowKey(row, index)} className="ci-top-product-row">
+              <div className="ci-top-product-rank">#{index + 1}</div>
+              <ProductThumbnail src={row.image_url} title={row.title} />
+              <div className="ci-top-product-copy">
+                <div className="ci-top-product-title">{getProductRowTitle(row)}</div>
+                <div className="ci-top-product-meta-line">
+                  {formatNumber(row.orders)} orders · {formatNumber(row.quantity)} units
+                </div>
+              </div>
+              <div className="ci-top-product-revenue">{formatCurrency(row.revenue, 0)}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="ci-top-products-empty">
+          {panelState.loading
+            ? 'Loading leaderboard...'
+            : 'Product ranking will appear once line-item data is synced.'}
+        </div>
+      )}
+
+      {panelState.error ? (
+        <div className="ci-top-products-note">
+          This window could not be refreshed right now. The latest available leaderboard is still shown.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -590,6 +912,19 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
     if (hero.metricFormat === 'currency') return formatCurrency(hero.metricValue, 0);
     return hero.metricValue ?? '—';
   }, [hero, formatCurrency]);
+  const bestLocationValue = getUpperMetricById(kpis, 'best-segment')?.value || 'Location signal building';
+  const peakDemandValue = sections.segments?.timing?.topDay && sections.segments?.timing?.topHour != null
+    ? `${sections.segments.timing.topDay} · ${sections.segments.timing.topHour}:00`
+    : sections.segments?.timing?.topDay || 'Peak demand still forming';
+  const heroWindowLabel = data?.window?.label || 'Current window';
+  const heroQuickHits = [
+    { label: 'Top location', value: String(bestLocationValue) },
+    { label: 'Peak demand', value: peakDemandValue },
+    {
+      label: 'Top bundle',
+      value: topBundle ? `${topBundle.from} → ${topBundle.to}` : 'Bundle signal still building'
+    }
+  ];
 
   const showToast = (message) => {
     setToast(message);
@@ -620,42 +955,47 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
 
       <section className="ci-upper">
         <div className="dashboard-container">
-          <div className="row-1">
-            <div className="card card-hero">
-              <div className="hero-left">
+          <div className="ci-hero-grid">
+            <div className="card card-hero ci-hero-brief-card">
+              <div className="ci-hero-chip-row">
                 <div className="card-label">Customer Brief</div>
-                <div className="hero-title">{hero?.title || 'Customer brief will appear once enough data is available.'}</div>
-                <div className="hero-subtitle">{hero?.subtitle || 'Insights update when line-item and customer data are synced.'}</div>
-              </div>
-              <div className="hero-right">
-                <div className="card-label">{hero?.metricLabel || 'Revenue Share'}</div>
-                <div className="metric-huge-value">{heroMetricValue}</div>
-                <div className="confidence-text">
-                  {confidenceLabel(hero?.confidence || 0)} · Sample: {formatNumber(hero?.sampleSize || 0)}
+                <div className="ci-hero-pills">
+                  <span className="ci-soft-pill strong">{heroWindowLabel}</span>
+                  <span className="ci-soft-pill">
+                    {confidenceLabel(hero?.confidence || 0)} signal · Sample {formatNumber(hero?.sampleSize || 0)}
+                  </span>
                 </div>
+              </div>
+
+              <div className="ci-hero-main">
+                <div className="hero-left">
+                  <div className="hero-title">{hero?.title || 'Customer brief will appear once enough data is available.'}</div>
+                  <div className="hero-subtitle">{hero?.subtitle || 'Insights update when line-item and customer data are synced.'}</div>
+                </div>
+                <div className="hero-right">
+                  <div className="card-label">{hero?.metricLabel || 'Revenue Share'}</div>
+                  <div className="metric-huge-value">{heroMetricValue}</div>
+                  <div className="confidence-text">
+                    {confidenceLabel(hero?.confidence || 0)} · Sample: {formatNumber(hero?.sampleSize || 0)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="ci-hero-quick-grid">
+                {heroQuickHits.map((item) => (
+                  <div key={item.label} className="ci-hero-quick-card">
+                    <div className="ci-hero-quick-label">{item.label}</div>
+                    <div className="ci-hero-quick-value">{item.value}</div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
 
-          <div className="row-2">
+          <div className="ci-upper-metric-grid">
             {upperMetrics.map((metric, index) => (
               <UpperMetricCard key={metric?.id || `upper-metric-${index}`} metric={metric} formatCurrency={formatCurrency} />
             ))}
-          </div>
-
-          <div className="row-3">
-            <div className="card card-bundle">
-              <div className="card-label">Top Bundle</div>
-              <div className="bundle-text">
-                {topBundle ? (
-                  <>
-                    {topBundle.from} <span className="arrow-icon">→</span> {topBundle.to}
-                  </>
-                ) : (
-                  'Bundle signal will appear once enough pair evidence is detected.'
-                )}
-              </div>
-            </div>
           </div>
         </div>
       </section>
@@ -686,33 +1026,18 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
         <SectionCard
           id="ci-topProducts"
           title="Top Products"
-          subtitle={sections.topProducts?.summary || 'Best products by revenue and order count'}
+          subtitle="Pinned to the last 30 days by default, with quiet overrides for shorter or longer reads."
           icon={sectionIcons.topProducts}
         >
-          {(sections.topProducts?.products || []).length ? (
-            <div className="space-y-5">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {(sections.topProducts?.products || []).map((row) => (
-                  <div key={row.key} className="flex items-center gap-3 rounded-xl border border-gray-100 bg-white px-3 py-3 shadow-sm">
-                    <ProductThumbnail src={row.image_url} title={row.title} />
-                    <div className="min-w-0 flex-1">
-                      <div className="line-clamp-2 text-sm font-semibold text-gray-900 whitespace-normal break-words">{row.title}</div>
-                      <div className="mt-1 text-xs text-gray-500">{formatNumber(row.orders)} orders · {formatNumber(row.quantity)} units</div>
-                    </div>
-                    <div className="text-right text-sm font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</div>
-                  </div>
-                ))}
-              </div>
-              <CustomerActionPlanner data={data} onOpenSection={scrollToSection} embedded />
-            </div>
-          ) : (
-            <div className="space-y-5">
-              <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
-                Product ranking will appear once line-item data is synced.
-              </div>
-              <CustomerActionPlanner data={data} onOpenSection={scrollToSection} embedded />
-            </div>
-          )}
+          <div className="space-y-5">
+            <TopProductsSection
+              store={store}
+              fallbackSection={sections.topProducts || null}
+              fallbackWindow={data?.window || null}
+              formatCurrency={formatCurrency}
+            />
+            <CustomerActionPlanner data={data} onOpenSection={scrollToSection} embedded />
+          </div>
         </SectionCard>
 
         <SectionCard
