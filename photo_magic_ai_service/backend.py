@@ -295,22 +295,17 @@ RMBG2_ERROR = None
 rmbg2_model = None
 rmbg2_transform = None
 RMBG2_MODEL_ID = os.environ.get("RMBG2_MODEL_ID", "briaai/RMBG-2.0")
+RMBG2_INPUT_SIZE = clamp_int(os.environ.get("RMBG2_INPUT_SIZE", "1024"), 256, 2048)
+RMBG2_NORMALIZE_MEAN = (0.485, 0.456, 0.406)
+RMBG2_NORMALIZE_STD = (0.229, 0.224, 0.225)
 
 try:
     from transformers import AutoModelForImageSegmentation
-    from torchvision import transforms
 
     rmbg2_model = AutoModelForImageSegmentation.from_pretrained(RMBG2_MODEL_ID, trust_remote_code=True)
     rmbg2_model.to(DEVICE)
     rmbg2_model.eval()
-
-    rmbg2_transform = transforms.Compose(
-        [
-            transforms.Resize((1024, 1024)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
+    rmbg2_transform = True
 
     RMBG2_AVAILABLE = True
     logger.info("✓ RMBG2 loaded")
@@ -450,12 +445,22 @@ def require_ready(models: dict[str, bool]) -> tuple[bool, Any]:
     )
 
 
+def preprocess_rmbg_image(pil_image: Image.Image) -> torch.Tensor:
+    resized = pil_image.convert("RGB").resize((RMBG2_INPUT_SIZE, RMBG2_INPUT_SIZE), resample=Image.BILINEAR)
+    h, w = resized.size[1], resized.size[0]
+    byte_tensor = torch.tensor(bytearray(resized.tobytes()), dtype=torch.uint8)
+    image_tensor = byte_tensor.view(h, w, 3).permute(2, 0, 1).contiguous().float().div(255.0)
+    mean = torch.tensor(RMBG2_NORMALIZE_MEAN, dtype=image_tensor.dtype).view(3, 1, 1)
+    std = torch.tensor(RMBG2_NORMALIZE_STD, dtype=image_tensor.dtype).view(3, 1, 1)
+    return (image_tensor - mean) / std
+
+
 def rmbg2_predict_mask(pil_image: Image.Image) -> Image.Image:
-    if not RMBG2_AVAILABLE or rmbg2_model is None or rmbg2_transform is None:
+    if not RMBG2_AVAILABLE or rmbg2_model is None:
         raise RuntimeError("RMBG2 not available")
 
     orig_w, orig_h = pil_image.size
-    image_tensor = rmbg2_transform(pil_image).unsqueeze(0).to(DEVICE)
+    image_tensor = preprocess_rmbg_image(pil_image).unsqueeze(0).to(DEVICE)
 
     with torch.inference_mode():
         out = rmbg2_model(image_tensor)
