@@ -52,6 +52,71 @@ DEVICE = os.environ.get("PHOTO_MAGIC_DEVICE", DEFAULT_DEVICE)
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+RELIGHT_PRESETS: dict[str, dict[str, float]] = {
+    "studio": {
+        "dx": 0.0,
+        "dy": -0.35,
+        "subject_boost": 0.22,
+        "background_exposure": -0.08,
+        "warmth": 0.02,
+        "shadow_offset_x": 0.0,
+        "shadow_offset_y": 32.0,
+        "shadow_scale_x": 1.14,
+        "shadow_scale_y": 0.24,
+    },
+    "window_left": {
+        "dx": -0.72,
+        "dy": -0.22,
+        "subject_boost": 0.28,
+        "background_exposure": -0.12,
+        "warmth": 0.06,
+        "shadow_offset_x": 22.0,
+        "shadow_offset_y": 34.0,
+        "shadow_scale_x": 1.18,
+        "shadow_scale_y": 0.22,
+    },
+    "window_right": {
+        "dx": 0.72,
+        "dy": -0.22,
+        "subject_boost": 0.28,
+        "background_exposure": -0.12,
+        "warmth": 0.06,
+        "shadow_offset_x": -22.0,
+        "shadow_offset_y": 34.0,
+        "shadow_scale_x": 1.18,
+        "shadow_scale_y": 0.22,
+    },
+    "golden_hour": {
+        "dx": -0.55,
+        "dy": -0.15,
+        "subject_boost": 0.3,
+        "background_exposure": -0.06,
+        "warmth": 0.16,
+        "shadow_offset_x": 18.0,
+        "shadow_offset_y": 36.0,
+        "shadow_scale_x": 1.2,
+        "shadow_scale_y": 0.2,
+    },
+    "rim": {
+        "dx": 0.88,
+        "dy": -0.04,
+        "subject_boost": 0.18,
+        "background_exposure": -0.14,
+        "warmth": 0.01,
+        "shadow_offset_x": -12.0,
+        "shadow_offset_y": 30.0,
+        "shadow_scale_x": 1.12,
+        "shadow_scale_y": 0.19,
+    },
+}
+
+RELIGHT_BACKGROUND_BASE = 0.78
+RELIGHT_BACKGROUND_FALLOFF = 0.22
+RELIGHT_BACKGROUND_WARMTH_RATIO = 0.6
+RELIGHT_SUBJECT_BASE = 0.42
+RELIGHT_SUBJECT_FALLOFF = 0.58
+RELIGHT_HIGHLIGHT_GAIN = 0.18
+
 
 def strip_data_prefix(b64: str) -> str:
     text = str(b64 or "").strip()
@@ -407,6 +472,138 @@ def make_cutout_rgba(pil_rgb: Image.Image, mask_l: Image.Image) -> Image.Image:
     return rgba
 
 
+def ensure_subject_mask(pil_rgb: Image.Image, mask_b64: str | None = None, *, max_side: int = 1600) -> Image.Image:
+    if mask_b64:
+        mask = decode_b64_to_pil_l(mask_b64)
+        if mask.size != pil_rgb.size:
+            mask = mask.resize(pil_rgb.size, resample=Image.BILINEAR)
+        return mask
+
+    pil_small, scale = resize_pil_to_max_side(pil_rgb, max_side)
+    mask_small = rmbg2_predict_mask(pil_small)
+    if scale != 1.0:
+        return mask_small.resize(pil_rgb.size, resample=Image.BILINEAR)
+    return mask_small
+
+
+def build_relight_map(height: int, width: int, dx: float, dy: float) -> np.ndarray:
+    xs = np.linspace(-1.0, 1.0, max(2, width), dtype=np.float32)
+    ys = np.linspace(-1.0, 1.0, max(2, height), dtype=np.float32)
+    xx, yy = np.meshgrid(xs, ys)
+
+    direction = np.clip(0.5 + 0.5 * (-(xx * float(dx) + yy * float(dy))), 0.0, 1.0)
+    spotlight = np.clip(1.0 - np.sqrt(((xx - (dx * 0.18)) ** 2) + (((yy + 0.08) - (dy * 0.12)) ** 2)), 0.0, 1.0)
+    return np.clip((direction * 0.65) + (spotlight * 0.35), 0.0, 1.0).astype(np.float32)
+
+
+def apply_warmth(np_rgb: np.ndarray, warmth: float) -> np.ndarray:
+    w = float(np.clip(warmth, -0.5, 0.5))
+    if abs(w) < 1e-4:
+        return np_rgb
+
+    warmed = np_rgb.copy()
+    warmed[..., 0] = np.clip(warmed[..., 0] * (1.0 + 0.1 * w) + (0.045 * w), 0.0, 1.0)
+    warmed[..., 1] = np.clip(warmed[..., 1] * (1.0 + 0.025 * w), 0.0, 1.0)
+    warmed[..., 2] = np.clip(warmed[..., 2] * (1.0 - 0.1 * w), 0.0, 1.0)
+    return warmed
+
+
+def build_projected_shadow(
+    mask_u8: np.ndarray,
+    *,
+    offset_x: float,
+    offset_y: float,
+    blur_px: int,
+    scale_x: float,
+    scale_y: float,
+) -> np.ndarray:
+    bbox = mask_bbox(mask_u8)
+    if bbox is None:
+        return np.zeros_like(mask_u8, dtype=np.uint8)
+
+    x1, y1, x2, y2 = bbox
+    crop = mask_u8[y1:y2, x1:x2]
+    if crop.size == 0:
+        return np.zeros_like(mask_u8, dtype=np.uint8)
+
+    scaled_w = max(1, int(round(crop.shape[1] * max(0.2, float(scale_x)))))
+    scaled_h = max(1, int(round(crop.shape[0] * max(0.05, float(scale_y)))))
+    shadow_crop = cv2.resize(crop, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
+
+    dest_x = int(round(x1 + ((crop.shape[1] - scaled_w) / 2.0) + float(offset_x)))
+    dest_y = int(round(y2 - (scaled_h * 0.35) + float(offset_y)))
+
+    shadow = np.zeros_like(mask_u8, dtype=np.uint8)
+    src_x1 = max(0, -dest_x)
+    src_y1 = max(0, -dest_y)
+    src_x2 = min(scaled_w, shadow.shape[1] - dest_x)
+    src_y2 = min(scaled_h, shadow.shape[0] - dest_y)
+
+    if src_x1 >= src_x2 or src_y1 >= src_y2:
+        return shadow
+
+    dst_x1 = max(0, dest_x)
+    dst_y1 = max(0, dest_y)
+    dst_x2 = dst_x1 + (src_x2 - src_x1)
+    dst_y2 = dst_y1 + (src_y2 - src_y1)
+    shadow[dst_y1:dst_y2, dst_x1:dst_x2] = shadow_crop[src_y1:src_y2, src_x1:src_x2]
+
+    blur = max(0, int(round(blur_px)))
+    if blur > 0:
+        kernel = max(3, blur * 2 + 1)
+        shadow = cv2.GaussianBlur(shadow, (kernel, kernel), 0)
+    return shadow
+
+
+def relight_subject_with_shadow(
+    pil_rgb: Image.Image,
+    mask_l: Image.Image,
+    *,
+    preset: str,
+    subject_boost: float,
+    background_exposure: float,
+    warmth: float,
+    shadow_opacity: float,
+    shadow_blur_px: int,
+    shadow_offset_x: float,
+    shadow_offset_y: float,
+    shadow_scale_x: float,
+    shadow_scale_y: float,
+) -> Image.Image:
+    preset_config = RELIGHT_PRESETS.get(preset, RELIGHT_PRESETS["studio"])
+    rgb = np.array(pil_rgb.convert("RGB")).astype(np.float32) / 255.0
+    alpha = (np.array(mask_l.resize(pil_rgb.size, resample=Image.BILINEAR)).astype(np.float32) / 255.0).clip(0.0, 1.0)
+
+    light_map = build_relight_map(rgb.shape[0], rgb.shape[1], preset_config["dx"], preset_config["dy"])
+
+    background = rgb.copy()
+    background_gain = 1.0 + (background_exposure * (RELIGHT_BACKGROUND_BASE + (RELIGHT_BACKGROUND_FALLOFF * (1.0 - light_map))))
+    background = np.clip(background * background_gain[..., None], 0.0, 1.0)
+    background = apply_warmth(background, warmth * RELIGHT_BACKGROUND_WARMTH_RATIO)
+
+    shadow_mask = build_projected_shadow(
+        (alpha * 255.0).astype(np.uint8),
+        offset_x=shadow_offset_x,
+        offset_y=shadow_offset_y,
+        blur_px=shadow_blur_px,
+        scale_x=shadow_scale_x,
+        scale_y=shadow_scale_y,
+    ).astype(np.float32) / 255.0
+    shadow_strength = np.clip(shadow_opacity, 0.0, 1.0) * shadow_mask
+    background = np.clip(background * (1.0 - shadow_strength[..., None]), 0.0, 1.0)
+
+    subject = rgb.copy()
+    subject_gain = 1.0 + (subject_boost * (RELIGHT_SUBJECT_BASE + (RELIGHT_SUBJECT_FALLOFF * light_map)))
+    subject = np.clip(subject * subject_gain[..., None], 0.0, 1.0)
+    subject = apply_warmth(subject, warmth)
+
+    highlight = alpha[..., None] * light_map[..., None] * max(0.0, subject_boost) * RELIGHT_HIGHLIGHT_GAIN
+    subject = np.clip(subject + highlight, 0.0, 1.0)
+
+    composite = (background * (1.0 - alpha[..., None])) + (subject * alpha[..., None])
+    return Image.fromarray((np.clip(composite, 0.0, 1.0) * 255.0).astype(np.uint8), mode="RGB")
+
+
 def sam2_predict_mask_from_points(
     bgr_image: np.ndarray,
     points: list[dict[str, Any]],
@@ -515,12 +712,14 @@ def health():
             "sam2": SAM2_AVAILABLE,
             "lama": LAMA_AVAILABLE,
             "realesrgan": REALESRGAN_AVAILABLE,
+            "relight": RMBG2_AVAILABLE,
         },
         "errors": {
             "rmbg2": RMBG2_ERROR,
             "sam2": SAM2_ERROR,
             "lama": LAMA_ERROR,
             "realesrgan": REALESRGAN_ERROR,
+            "relight": RMBG2_ERROR,
         },
         "config": {
             "rmbg2_model_id": RMBG2_MODEL_ID,
@@ -528,6 +727,7 @@ def health():
             "sam2_weights": SAM2_WEIGHTS_PATH,
             "realesrgan_weights_path": REALESRGAN_WEIGHTS_PATH,
             "realesrgan_enabled": REALESRGAN_ENABLED,
+            "relight_presets": sorted(RELIGHT_PRESETS.keys()),
         },
     }
     if STRICT_MODE and not (RMBG2_AVAILABLE and SAM2_AVAILABLE and LAMA_AVAILABLE):
@@ -753,6 +953,68 @@ def enhance():
         )
     except (ValueError, RuntimeError) as e:
         logger.exception("enhance failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/relight", methods=["POST"])
+def relight():
+    try:
+        ok, err = require_ready({"rmbg2": RMBG2_AVAILABLE})
+        if not ok:
+            return err, 503
+
+        data = request.json or {}
+        image_b64 = data.get("image") or ""
+        if not image_b64:
+            return jsonify({"error": "image is required"}), 400
+
+        preset = str(data.get("preset") or "studio").strip().lower()
+        preset_config = RELIGHT_PRESETS.get(preset, RELIGHT_PRESETS["studio"])
+
+        subject_boost = clamp_float(data.get("subject_boost", preset_config["subject_boost"]), -0.2, 0.8, preset_config["subject_boost"])
+        background_exposure = clamp_float(
+            data.get("background_exposure", preset_config["background_exposure"]), -0.6, 0.35, preset_config["background_exposure"]
+        )
+        warmth = clamp_float(data.get("warmth", preset_config["warmth"]), -0.35, 0.35, preset_config["warmth"])
+        shadow_opacity = clamp_float(data.get("shadow_opacity", 0.28), 0.0, 1.0, 0.28)
+        shadow_blur_px = clamp_int(data.get("shadow_blur_px", 42), 0, 240)
+        shadow_offset_x = clamp_float(
+            data.get("shadow_offset_x", preset_config["shadow_offset_x"]), -256.0, 256.0, preset_config["shadow_offset_x"]
+        )
+        shadow_offset_y = clamp_float(
+            data.get("shadow_offset_y", preset_config["shadow_offset_y"]), -256.0, 256.0, preset_config["shadow_offset_y"]
+        )
+        shadow_scale_x = clamp_float(data.get("shadow_scale_x", preset_config["shadow_scale_x"]), 0.5, 2.0, preset_config["shadow_scale_x"])
+        shadow_scale_y = clamp_float(data.get("shadow_scale_y", preset_config["shadow_scale_y"]), 0.05, 1.0, preset_config["shadow_scale_y"])
+
+        pil = decode_b64_to_pil(image_b64)
+        mask_l = ensure_subject_mask(pil, data.get("mask"))
+        out_pil = relight_subject_with_shadow(
+            pil,
+            mask_l,
+            preset=preset,
+            subject_boost=subject_boost,
+            background_exposure=background_exposure,
+            warmth=warmth,
+            shadow_opacity=shadow_opacity,
+            shadow_blur_px=shadow_blur_px,
+            shadow_offset_x=shadow_offset_x,
+            shadow_offset_y=shadow_offset_y,
+            shadow_scale_x=shadow_scale_x,
+            shadow_scale_y=shadow_scale_y,
+        )
+
+        return jsonify(
+            {
+                "preset": preset,
+                "width": out_pil.size[0],
+                "height": out_pil.size[1],
+                "mask_png": pil_to_png_b64(mask_l),
+                "result_png": pil_to_png_b64(out_pil),
+            }
+        )
+    except (ValueError, RuntimeError) as e:
+        logger.exception("relight failed")
         return jsonify({"error": str(e)}), 500
 
 
