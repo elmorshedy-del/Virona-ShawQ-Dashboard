@@ -1,53 +1,64 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Activity, ChevronDown, RefreshCw } from 'lucide-react';
 import GeoHotspotsMap from './GeoHotspotsMap';
 import './SessionIntelligenceTab.css';
 
 const POLL_EVENTS_MS = 1000;
 const POLL_REALTIME_MS = 5000;
-const POLL_DAY_PULSE_MS = 10000;
 const POLL_OVERVIEW_MS = 20000;
-const POLL_JOURNEY_MS = 60000;
 const REALTIME_WINDOW_MINUTES = 30;
-const REQUEST_TIMEOUT_MS = 15000;
-const REALTIME_GEO_ROWS_LIMIT = 8;
-const REALTIME_KPI_SPARKLINE_WIDTH = 120;
-const REALTIME_KPI_SPARKLINE_HEIGHT = 30;
-const REALTIME_KPI_SPARKLINE_PADDING = 4;
-const REALTIME_KPI_SPARKLINE_CURVE_FACTOR = 0.18;
-const REALTIME_DELTA_EPSILON = 1e-9;
-const REALTIME_METRIC_CARD_CONFIG = [
-  { key: 'sessions', label: 'Sessions today' },
-  { key: 'shoppers', label: 'Shoppers today' },
-  { key: 'events', label: 'Events today' }
-];
-const REALTIME_METRIC_COMPARISON_KEYS = ['yesterday', 'lastWeek'];
-const CLARITY_SIGNAL_EVENT_NAMES = new Set([
-  'rage_click',
-  'dead_click',
-  'js_error',
-  'unhandled_rejection',
-  'form_invalid',
-  'scroll_depth',
-  'scroll_max'
+const PRODUCT_ABANDONMENT_STRIP_PREVIEW_COUNT = 2;
+const JOURNEY_DEFAULT_DAYS = 30;
+const JOURNEY_REPORT_LIMIT = 12;
+const REALTIME_SPARKLINE_WIDTH = 132;
+const REALTIME_SPARKLINE_HEIGHT = 36;
+const REALTIME_SPARKLINE_PADDING = 4;
+const REALTIME_DELTA_FLAT_THRESHOLD = 0.005;
+
+const REALTIME_KPI_META = Object.freeze([
+  {
+    key: 'activeSessions',
+    label: 'Active sessions',
+    accent: '#4f46e5',
+    fill: 'rgba(79, 70, 229, 0.18)',
+    surface: 'rgba(79, 70, 229, 0.06)'
+  },
+  {
+    key: 'activeShoppers',
+    label: 'Active shoppers',
+    accent: '#2563eb',
+    fill: 'rgba(37, 99, 235, 0.16)',
+    surface: 'rgba(37, 99, 235, 0.05)'
+  },
+  {
+    key: 'events',
+    label: 'Events',
+    accent: '#64748b',
+    fill: 'rgba(100, 116, 139, 0.18)',
+    surface: 'rgba(100, 116, 139, 0.06)'
+  },
+  {
+    key: 'atc',
+    label: 'ATC',
+    accent: '#d97706',
+    fill: 'rgba(217, 119, 6, 0.18)',
+    surface: 'rgba(217, 119, 6, 0.06)'
+  },
+  {
+    key: 'checkoutStarted',
+    label: 'Checkout',
+    accent: '#7c3aed',
+    fill: 'rgba(124, 58, 237, 0.17)',
+    surface: 'rgba(124, 58, 237, 0.06)'
+  },
+  {
+    key: 'purchase',
+    label: 'Purchase',
+    accent: '#0f766e',
+    fill: 'rgba(15, 118, 110, 0.18)',
+    surface: 'rgba(15, 118, 110, 0.06)'
+  }
 ]);
-const ACTION_PLAN_ROW_LIMIT = 6;
-const ACTION_PLAN_EMERGING_MIN_SESSIONS = 40;
-const ACTION_PLAN_ESTABLISHED_MIN_SESSIONS = 80;
-const DEVICE_ABANDONMENT_FULL_CIRCLE_DEGREES = 360;
-const JOURNEY_TABLE_LIMIT = 25;
-const JOURNEY_UI_ROW_LIMIT = 8;
-const JOURNEY_STAGE_DISPLAY_ORDER = ['Home', 'Product', 'Cart', 'Checkout', 'Payment submitted', 'Other'];
-const JOURNEY_DEFAULT_RANGE_DAYS = 7;
-const JOURNEY_SIGNIFICANT_DELTA_RATE = 0.25;
-const JOURNEY_SIGNIFICANT_DELTA_COUNT = 3;
-const ISSUE_TABLE_ROW_LIMIT = 8;
-const ISSUE_PROOF_SESSION_LIMIT = 5;
-const ISSUE_SCOPE_MODE = 'all';
-const ISSUE_SCOPE_LABEL = 'All sessions';
-const ISSUE_AUTO_INVESTIGATE_MIN_AFFECTED_SESSIONS = 3;
-const ISSUE_OBSERVED_STATUS_HINT = 'Spotted and monitored closely. Automatic investigation starts when the pattern consistently affects more sessions.';
-const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -91,15 +102,6 @@ const FLOW_STAGE_LABELS = {
   purchase: 'Purchase'
 };
 
-const DEVICE_ABANDONMENT_SEGMENTS = [
-  { key: 'ios', label: 'iOS', color: '#6366f1' },
-  { key: 'android', label: 'Android', color: '#0ea5e9' },
-  { key: 'desktop', label: 'Desktop', color: '#14b8a6' },
-  { key: 'unknown', label: 'Unknown', color: '#94a3b8' }
-];
-
-const DEVICE_ABANDON_SECTION_ORDER = ['Payment', 'Checkout', 'Cart', 'Product', 'Landing'];
-
 function parseSqliteTimestamp(ts) {
   if (!ts || typeof ts !== 'string') return null;
   if (ts.includes('T')) {
@@ -125,17 +127,6 @@ function timeAgo(ts) {
   return `${diffDay}d ago`;
 }
 
-function formatClockTime(ts) {
-  const date = parseSqliteTimestamp(ts);
-  if (!date) return '—';
-  return date.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  });
-}
-
 function isoDayUtc(date) {
   if (!(date instanceof Date)) return '';
   return date.toISOString().slice(0, 10);
@@ -156,38 +147,10 @@ function safeJsonParse(value) {
   }
 }
 
-async function fetchJson(url, options = {}) {
-  const { timeoutMs, ...fetchOptions } = options || {};
-  const effectiveTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
-    ? Number(timeoutMs)
-    : REQUEST_TIMEOUT_MS;
-
-  const requestOptions = { cache: 'no-store', ...fetchOptions };
-  let timeoutId = null;
-  let controller = null;
-  if (!requestOptions.signal && effectiveTimeoutMs > 0) {
-    controller = new AbortController();
-    requestOptions.signal = controller.signal;
-    timeoutId = setTimeout(() => {
-      controller.abort();
-    }, effectiveTimeoutMs);
-  }
-
-  let res;
-  let raw;
-  try {
-    res = await fetch(url, requestOptions);
-    raw = await res.text();
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error(`Request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s`);
-    }
-    throw error;
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-
+async function fetchJson(url, options) {
+  const res = await fetch(url, { cache: 'no-store', ...options });
   const contentType = res.headers.get('content-type') || '';
+  const raw = await res.text();
 
   if (!contentType.includes('application/json')) {
     const snippet = raw.slice(0, 200);
@@ -219,11 +182,10 @@ function normalizeCheckoutStepKey(step) {
 
 function inferDropoffStageFromSummary(session) {
   if (!session || typeof session !== 'object') return 'landing';
-  if (hasPurchase(session)) return 'purchase';
+  if (Number(session.purchase_events || 0) > 0) return 'purchase';
 
-  const step = normalizeCheckoutStepKey(session.last_checkout_step);
-  if (Number(session.checkout_started_events || 0) > 0 || step) {
-    if (step === 'thank_you') return 'purchase';
+  if (Number(session.checkout_started_events || 0) > 0) {
+    const step = normalizeCheckoutStepKey(session.last_checkout_step);
     if (step === 'payment') return 'checkout_payment';
     if (step === 'shipping') return 'checkout_shipping';
     return 'checkout_contact';
@@ -241,133 +203,26 @@ function formatPercent(value, digits = 0) {
   return `${(n * 100).toFixed(digits)}%`;
 }
 
-function formatSignedPercent(value, digits = 0) {
-  if (value === null || value === undefined) return '—';
+function formatPercentagePoints(value, digits = 1) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
-  const absolute = Math.abs(n);
-  const formatted = `${(absolute * 100).toFixed(digits)}%`;
-  if (n > 0) return `+${formatted}`;
-  if (n < 0) return `-${formatted}`;
-  return formatted;
+  return `${(n * 100).toFixed(digits)}pp`;
 }
 
-function formatComparisonDeltaLabel({ delta, current, baseline }) {
-  const baseLabel = formatSignedPercent(delta, 0);
-  if (baseLabel !== '—') return baseLabel;
-
-  const currentValue = Number(current);
-  const baselineValue = Number(baseline);
-  const safeCurrent = Number.isFinite(currentValue) ? currentValue : 0;
-  const safeBaseline = Number.isFinite(baselineValue) ? baselineValue : 0;
-
-  if (safeBaseline <= 0 && safeCurrent > 0) return 'New';
-  if (safeBaseline <= 0 && safeCurrent <= 0) return '0%';
-  return '—';
+function formatSignedPercentagePoints(value, digits = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) < 0.0005) return '0.0pp';
+  const sign = n > 0 ? '+' : '−';
+  return `${sign}${Math.abs(n * 100).toFixed(digits)}pp`;
 }
 
-function normalizeDeltaDirection(direction, delta) {
-  const normalized = (direction || '').toString().trim().toLowerCase();
-  if (normalized === 'up' || normalized === 'down' || normalized === 'flat') return normalized;
-
-  const deltaValue = Number(delta);
-  if (!Number.isFinite(deltaValue)) return 'na';
-  if (deltaValue > REALTIME_DELTA_EPSILON) return 'up';
-  if (deltaValue < -REALTIME_DELTA_EPSILON) return 'down';
-  return 'flat';
-}
-
-function deltaArrow(direction) {
-  if (direction === 'up') return '↑';
-  if (direction === 'down') return '↓';
-  return '→';
-}
-
-function resolveComparisonDirection({ direction, delta, current, baseline }) {
-  const normalized = normalizeDeltaDirection(direction, delta);
-  if (normalized !== 'na') return normalized;
-
-  const currentValue = Number(current);
-  const baselineValue = Number(baseline);
-  const safeCurrent = Number.isFinite(currentValue) ? currentValue : 0;
-  const safeBaseline = Number.isFinite(baselineValue) ? baselineValue : 0;
-
-  if (safeBaseline <= 0 && safeCurrent > 0) return 'up';
-  if (safeBaseline <= 0 && safeCurrent <= 0) return 'flat';
-  return 'na';
-}
-
-function buildRealtimeSparklineGeometry(trendRows, {
-  width = REALTIME_KPI_SPARKLINE_WIDTH,
-  height = REALTIME_KPI_SPARKLINE_HEIGHT,
-  padding = REALTIME_KPI_SPARKLINE_PADDING
-} = {}) {
-  const rows = Array.isArray(trendRows) ? trendRows : [];
-  if (rows.length < 2) return null;
-
-  const values = rows.map((row) => {
-    const value = Number(row?.value);
-    return Number.isFinite(value) ? value : 0;
-  });
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min;
-  const innerWidth = Math.max(width - (padding * 2), 1);
-  const innerHeight = Math.max(height - (padding * 2), 1);
-  const stepX = rows.length > 1 ? innerWidth / (rows.length - 1) : 0;
-  const points = values.map((value, index) => {
-    const x = padding + (index * stepX);
-    const normalized = range > 0 ? (value - min) / range : 0.5;
-    const y = padding + ((1 - normalized) * innerHeight);
-    return { x, y };
-  });
-
-  if (points.length < 2) return null;
-
-  const lineParts = [`M${points[0].x.toFixed(2)},${points[0].y.toFixed(2)}`];
-  for (let idx = 0; idx < points.length - 1; idx += 1) {
-    const p0 = idx > 0 ? points[idx - 1] : points[idx];
-    const p1 = points[idx];
-    const p2 = points[idx + 1];
-    const p3 = idx !== points.length - 2 ? points[idx + 2] : p2;
-
-    const c1x = p1.x + ((p2.x - p0.x) * REALTIME_KPI_SPARKLINE_CURVE_FACTOR);
-    const c1y = p1.y + ((p2.y - p0.y) * REALTIME_KPI_SPARKLINE_CURVE_FACTOR);
-    const c2x = p2.x - ((p3.x - p1.x) * REALTIME_KPI_SPARKLINE_CURVE_FACTOR);
-    const c2y = p2.y - ((p3.y - p1.y) * REALTIME_KPI_SPARKLINE_CURVE_FACTOR);
-
-    lineParts.push(
-      `C${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)}`
-    );
-  }
-
-  const linePath = lineParts.join(' ');
-  const baselineY = (height - padding).toFixed(2);
-  const first = points[0];
-  const last = points[points.length - 1];
-  const areaPath = `${linePath} L${last.x.toFixed(2)},${baselineY} L${first.x.toFixed(2)},${baselineY} Z`;
-
-  return {
-    linePath,
-    areaPath,
-    firstPoint: first,
-    lastPoint: last
-  };
-}
-
-function realtimeSparklineDirection(trendRows) {
-  const values = (Array.isArray(trendRows) ? trendRows : [])
-    .map((row) => {
-      const value = Number(row?.value);
-      return Number.isFinite(value) ? value : null;
-    })
-    .filter((value) => value !== null);
-
-  if (values.length < 2) return 'flat';
-  const delta = values[values.length - 1] - values[0];
-  if (delta > REALTIME_DELTA_EPSILON) return 'up';
-  if (delta < -REALTIME_DELTA_EPSILON) return 'down';
-  return 'flat';
+function formatSignedPercent(value, digits = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) < 0.0005) return '0%';
+  const sign = n > 0 ? '+' : '−';
+  return `${sign}${Math.abs(n * 100).toFixed(digits)}%`;
 }
 
 function formatDurationSeconds(value) {
@@ -381,6 +236,125 @@ function formatDurationSeconds(value) {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   return mins ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
+function buildSparklinePath(values, width = REALTIME_SPARKLINE_WIDTH, height = REALTIME_SPARKLINE_HEIGHT, padding = REALTIME_SPARKLINE_PADDING) {
+  const points = Array.isArray(values)
+    ? values
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+    : [];
+
+  if (points.length < 2) return null;
+
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const innerWidth = Math.max(width - padding * 2, 1);
+  const innerHeight = Math.max(height - padding * 2, 1);
+  const baselineY = height - padding;
+
+  const coords = points.map((value, index) => {
+    const ratioX = points.length === 1 ? 0 : index / (points.length - 1);
+    const normalized = max === min ? 0.5 : (value - min) / (max - min);
+    return {
+      x: padding + ratioX * innerWidth,
+      y: padding + (1 - normalized) * innerHeight
+    };
+  });
+
+  const linePath = coords.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ');
+  const areaPath = `${linePath} L ${coords[coords.length - 1].x.toFixed(2)} ${baselineY.toFixed(2)} L ${coords[0].x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
+  return { linePath, areaPath };
+}
+
+function describeRealtimeDelta(metric, comparisonWindowMinutes) {
+  const current = Number(metric?.current) || 0;
+  const previous = Number(metric?.previous) || 0;
+  const deltaRate = Number(metric?.deltaRate);
+  const comparisonLabel = `vs prior ${comparisonWindowMinutes}m`;
+
+  if (Number.isFinite(deltaRate)) {
+    if (Math.abs(deltaRate) < REALTIME_DELTA_FLAT_THRESHOLD) {
+      return {
+        badge: 'Flat',
+        tone: 'neutral',
+        detail: `${comparisonLabel} • ${formatNumber(previous)}`
+      };
+    }
+
+    return {
+      badge: formatSignedPercent(deltaRate, Math.abs(deltaRate) >= 0.1 ? 0 : 1),
+      tone: deltaRate > 0 ? 'up' : 'down',
+      detail: `${comparisonLabel} • ${formatNumber(previous)}`
+    };
+  }
+
+  if (current > 0 && previous === 0) {
+    return {
+      badge: 'New',
+      tone: 'up',
+      detail: `No activity in prior ${comparisonWindowMinutes}m`
+    };
+  }
+
+  return {
+    badge: '—',
+    tone: 'neutral',
+    detail: `${comparisonLabel} • ${formatNumber(previous)}`
+  };
+}
+
+function formatSessionPulseComparison(metric, labels = {}) {
+  if (!metric || typeof metric !== 'object') return labels.current || 'Today so far';
+
+  const previousDayLabel = labels.previousDay || 'At this time yesterday';
+  const previousWeekLabel = labels.previousWeek || 'Same weekday last week';
+  const comparisons = [
+    `${previousDayLabel}: ${formatNumber(metric.atThisTimeYesterday)}`,
+    `${previousWeekLabel}: ${formatNumber(metric.sameWeekdayLastWeek)}`
+  ];
+
+  return comparisons.join(' • ');
+}
+
+function RealtimeKpiSparkline({ data, accent, fill, label }) {
+  const gradientId = useId().replace(/:/g, '');
+  const paths = useMemo(() => buildSparklinePath(data), [data]);
+
+  if (!paths) {
+    return (
+      <div className="si-realtime-sparkline-empty" aria-hidden="true">
+        No recent trend
+      </div>
+    );
+  }
+
+  return (
+    <svg
+      className="si-realtime-sparkline"
+      viewBox={`0 0 ${REALTIME_SPARKLINE_WIDTH} ${REALTIME_SPARKLINE_HEIGHT}`}
+      role="img"
+      aria-label={label}
+    >
+      <defs>
+        <linearGradient id={`${gradientId}-fill`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={fill} />
+          <stop offset="100%" stopColor="rgba(255,255,255,0)" />
+        </linearGradient>
+      </defs>
+      <path className="si-realtime-sparkline-area" d={paths.areaPath} fill={`url(#${gradientId}-fill)`} />
+      <path
+        className="si-realtime-sparkline-path"
+        d={paths.linePath}
+        fill="none"
+        stroke={accent}
+        strokeWidth="2.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        pathLength="100"
+      />
+    </svg>
+  );
 }
 
 let regionDisplayNames = null;
@@ -398,223 +372,6 @@ function countryNameFromCode(value) {
   } catch (_error) {
     return code;
   }
-}
-
-const JOURNEY_UNATTRIBUTED_REASON_LABELS = {
-  checkout_only_capture: 'Checkout captured without storefront entry page',
-  missing_entry_context: 'Missing landing page context',
-  excluded_content_page: 'Entry page excluded (policy/care/terms)',
-  unclassified_path: 'Unclassified landing path',
-  low_signal_missing_context: 'Low-signal sessions with missing context'
-};
-
-function formatJourneyReasonLabel(reason) {
-  const key = (reason || '').toString().trim();
-  if (!key) return 'Unknown reason';
-  if (JOURNEY_UNATTRIBUTED_REASON_LABELS[key]) return JOURNEY_UNATTRIBUTED_REASON_LABELS[key];
-  return key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
-}
-
-function formatJourneyBreakdownSummary(breakdown) {
-  const entries = Object.entries(breakdown || {})
-    .map(([key, value]) => ({ key, count: Number(value) || 0 }))
-    .filter((item) => item.count > 0)
-    .sort((a, b) => b.count - a.count);
-
-  if (entries.length === 0) return '—';
-  return entries
-    .map((item) => `${formatJourneyReasonLabel(item.key)}: ${formatNumber(item.count)}`)
-    .join(' • ');
-}
-
-function errorMessageFromSettledResult(result, fallbackMessage) {
-  if (!result || result.status !== 'rejected') return '';
-  const reason = result.reason;
-  if (reason && typeof reason === 'object' && typeof reason.message === 'string' && reason.message.trim()) {
-    return reason.message.trim();
-  }
-  const raw = (reason || '').toString().trim();
-  return raw || fallbackMessage;
-}
-
-function formatJourneyPurchaseRecord(list) {
-  if (!Array.isArray(list) || list.length === 0) return 'Unknown product';
-  const normalized = list
-    .map((item) => ({
-      value: (item?.value || '').toString().trim(),
-      count: Number(item?.count) || 0
-    }))
-    .filter((item) => item.value)
-    .sort((a, b) => b.count - a.count);
-
-  if (!normalized.length) return 'Unknown product';
-  const [top, ...rest] = normalized;
-  const topLabel = `${top.value} (${formatNumber(top.count)})`;
-  if (!rest.length) return topLabel;
-  return `${topLabel} +${formatNumber(rest.length)} more`;
-}
-
-function parseIsoDayToUtcMs(value) {
-  const iso = (value || '').toString().trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
-  const ms = Date.parse(`${iso}T00:00:00Z`);
-  return Number.isFinite(ms) ? ms : null;
-}
-
-function isoDayFromUtcMs(ms) {
-  const value = Number(ms);
-  if (!Number.isFinite(value)) return '';
-  return new Date(value).toISOString().slice(0, 10);
-}
-
-function resolveJourneyComparisonRanges(dateRange) {
-  const startMs = parseIsoDayToUtcMs(dateRange?.startDate);
-  const endMs = parseIsoDayToUtcMs(dateRange?.endDate);
-
-  let currentStartMs;
-  let currentEndMs;
-
-  if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs) {
-    currentStartMs = startMs;
-    currentEndMs = endMs;
-  } else {
-    const now = new Date();
-    const todayMs = parseIsoDayToUtcMs(now.toISOString().slice(0, 10));
-    const fallbackEndMs = Number.isFinite(todayMs) ? todayMs : Date.now();
-    const daySpan = JOURNEY_DEFAULT_RANGE_DAYS - 1;
-    currentEndMs = fallbackEndMs;
-    currentStartMs = fallbackEndMs - (daySpan * MILLISECONDS_PER_DAY);
-  }
-
-  const spanDays = Math.max(1, Math.round((currentEndMs - currentStartMs) / MILLISECONDS_PER_DAY) + 1);
-  const previousEndMs = currentStartMs - MILLISECONDS_PER_DAY;
-  const previousStartMs = previousEndMs - ((spanDays - 1) * MILLISECONDS_PER_DAY);
-
-  return {
-    current: {
-      startDate: isoDayFromUtcMs(currentStartMs),
-      endDate: isoDayFromUtcMs(currentEndMs)
-    },
-    previous: {
-      startDate: isoDayFromUtcMs(previousStartMs),
-      endDate: isoDayFromUtcMs(previousEndMs)
-    }
-  };
-}
-
-function journeyStageFromLandingLabel(landingLabel) {
-  const label = (landingLabel || '').toString().toLowerCase().trim();
-  if (!label) return 'Other';
-  if (label === 'home') return 'Home';
-  if (label === 'cart') return 'Cart';
-  if (label.startsWith('product:')) return 'Product';
-  if (label.startsWith('checkout')) return 'Checkout';
-  return 'Other';
-}
-
-function journeyStageFromAbandonArea(areaLabel) {
-  const label = (areaLabel || '').toString().toLowerCase().trim();
-  if (!label) return 'Other';
-  if (label === 'home') return 'Home';
-  if (label.startsWith('product')) return 'Product';
-  if (label.startsWith('cart')) return 'Cart';
-  if (label.includes('payment')) return 'Payment submitted';
-  if (label.startsWith('checkout')) return 'Checkout';
-  return 'Other';
-}
-
-function journeyStageKey(stageLabel) {
-  const label = (stageLabel || '').toString().toLowerCase().trim();
-  if (label === 'home') return 'home';
-  if (label === 'product') return 'product';
-  if (label === 'cart') return 'cart';
-  if (label === 'checkout') return 'checkout';
-  if (label === 'payment submitted') return 'payment-submitted';
-  return 'other';
-}
-
-function buildJourneyStageBreakdown(rows, { getStage, getCount }) {
-  const totals = new Map(JOURNEY_STAGE_DISPLAY_ORDER.map((stage) => [stage, 0]));
-  for (const row of rows || []) {
-    const stage = getStage(row);
-    const count = Number(getCount(row)) || 0;
-    if (!totals.has(stage)) totals.set(stage, 0);
-    totals.set(stage, (totals.get(stage) || 0) + count);
-  }
-  return JOURNEY_STAGE_DISPLAY_ORDER
-    .map((stage) => ({ stage, count: totals.get(stage) || 0 }))
-    .filter((item) => item.count > 0);
-}
-
-function breakdownRowsToStageCountMap(breakdownRows) {
-  const out = new Map();
-  for (const item of breakdownRows || []) {
-    const stage = (item?.stage || '').toString().trim();
-    if (!stage) continue;
-    out.set(stage, Number(item?.count) || 0);
-  }
-  return out;
-}
-
-function formatStageTrendLabel(trend) {
-  const deltaRatePct = Math.round((Number(trend?.deltaRate) || 0) * 100);
-  if ((trend?.direction || 'flat') === 'up') return `↑ ${deltaRatePct}%`;
-  if ((trend?.direction || 'flat') === 'down') return `↓ ${Math.abs(deltaRatePct)}%`;
-  return '→ 0%';
-}
-
-function buildJourneyStageTrends(currentBreakdownRows, previousBreakdownRows) {
-  const currentMap = breakdownRowsToStageCountMap(currentBreakdownRows);
-  const previousMap = breakdownRowsToStageCountMap(previousBreakdownRows);
-  const stageSet = new Set([
-    ...JOURNEY_STAGE_DISPLAY_ORDER,
-    ...currentMap.keys(),
-    ...previousMap.keys()
-  ]);
-
-  const raw = Array.from(stageSet).map((stage) => {
-    const currentCount = Number(currentMap.get(stage) || 0);
-    const previousCount = Number(previousMap.get(stage) || 0);
-    const deltaCount = currentCount - previousCount;
-    const deltaRate = previousCount > 0
-      ? (deltaCount / previousCount)
-      : currentCount > 0
-        ? 1
-        : 0;
-    const direction = deltaCount > 0 ? 'up' : deltaCount < 0 ? 'down' : 'flat';
-    const significant = (
-      Math.abs(deltaCount) >= JOURNEY_SIGNIFICANT_DELTA_COUNT &&
-      Math.abs(deltaRate) >= JOURNEY_SIGNIFICANT_DELTA_RATE
-    );
-    return {
-      stage,
-      currentCount,
-      previousCount,
-      deltaCount,
-      deltaRate,
-      direction,
-      significant,
-      trendLabel: formatStageTrendLabel({ deltaRate, direction })
-    };
-  });
-
-  const topSignificant = raw
-    .filter((item) => item.significant)
-    .sort((a, b) => Math.abs(b.deltaCount) - Math.abs(a.deltaCount))[0] || null;
-
-  return raw
-    .filter((item) => item.currentCount > 0 || item.previousCount > 0)
-    .sort((a, b) => {
-      const aIdx = JOURNEY_STAGE_DISPLAY_ORDER.indexOf(a.stage);
-      const bIdx = JOURNEY_STAGE_DISPLAY_ORDER.indexOf(b.stage);
-      const safeA = aIdx >= 0 ? aIdx : JOURNEY_STAGE_DISPLAY_ORDER.length;
-      const safeB = bIdx >= 0 ? bIdx : JOURNEY_STAGE_DISPLAY_ORDER.length;
-      return safeA - safeB;
-    })
-    .map((item) => ({
-      ...item,
-      isTopSignificant: Boolean(topSignificant && topSignificant.stage === item.stage)
-    }));
 }
 
 const EVENT_LABEL_OVERRIDES = {
@@ -671,8 +428,7 @@ function normalizeTrafficSourceLabel(value) {
   if (key === 'fb' || key.includes('facebook') || key.includes('meta')) return 'Facebook';
   if (key === 'tt' || key.includes('tiktok')) return 'TikTok';
   if (key === 'snap' || key.includes('snapchat')) return 'Snapchat';
-  if (key === 'google_ads' || key === 'googleads' || key.includes('google ads') || key.includes('adwords') || key.includes('gads')) return 'Google Ads';
-  if (key.includes('google')) return 'Google';
+  if (key.includes('google') || key.includes('adwords') || key.includes('gads')) return 'Google';
 
   const cleaned = lower
     .replace(/^https?:\/\//, '')
@@ -708,37 +464,14 @@ function normalizeDeviceLabel(value) {
   const raw = (value || '').toString().trim();
   if (!raw) return '—';
   const key = raw.toLowerCase().trim();
-  if (key === 'ios') return 'iOS';
-  if (key === 'android') return 'Android';
-  if (key === 'ipados') return 'iPadOS';
   if (key === 'mobile') return 'Mobile';
   if (key === 'desktop') return 'Desktop';
   if (key === 'tablet') return 'Tablet';
-  if (key === 'android tablet') return 'Android Tablet';
   return raw;
 }
 
 function normalizeLooseKey(value) {
   return (value || '').toString().toLowerCase().trim();
-}
-
-function normalizeVerificationStatus(status, issueType) {
-  if (!VERIFIABLE_ISSUE_TYPES.has(issueType)) return 'not_applicable';
-  const normalized = normalizeLooseKey(status);
-  if (normalized === 'confirmed') return 'confirmed';
-  if (normalized === 'false_positive') return 'false_positive';
-  return 'unverified';
-}
-
-function verificationUi(status, issue = null) {
-  const sessionsAffected = Number(issue?.sessionsAffected) || 0;
-  if (status === 'confirmed') return { label: 'Confirmed', className: 'si-verify-confirmed' };
-  if (status === 'false_positive') return { label: 'False alert', className: 'si-verify-false-positive' };
-  if (status === 'not_applicable') return { label: 'Observed', className: 'si-verify-observed', hint: ISSUE_OBSERVED_STATUS_HINT };
-  if (sessionsAffected < ISSUE_AUTO_INVESTIGATE_MIN_AFFECTED_SESSIONS) {
-    return { label: 'Observed', className: 'si-verify-observed', hint: ISSUE_OBSERVED_STATUS_HINT };
-  }
-  return { label: 'Investigating', className: 'si-verify-pending', hint: 'Actively verifying this issue cluster now.' };
 }
 
 function pluralize(value, singular, plural) {
@@ -801,27 +534,6 @@ const ISSUE_META = {
   }
 };
 
-const VERIFIABLE_ISSUE_TYPES = new Set(['js_errors', 'dead_clicks', 'rage_clicks']);
-
-const ISSUE_VERIFICATION_VIEW = {
-  INVESTIGATING: 'investigating',
-  CONFIRMED: 'confirmed'
-};
-
-const TECHNICAL_ISSUE_TYPES = new Set(['js_errors', 'form_invalid', 'scroll_dropoff']);
-const INTERACTION_FRICTION_ISSUE_TYPES = new Set(['dead_clicks', 'rage_clicks']);
-const ISSUE_TYPE_BADGE_META = {
-  js_errors: { label: 'Runtime', tone: 'runtime' },
-  form_invalid: { label: 'Form', tone: 'form' },
-  scroll_dropoff: { label: 'Scroll', tone: 'scroll' },
-  dead_clicks: { label: 'Dead click', tone: 'dead' },
-  rage_clicks: { label: 'Rage click', tone: 'rage' }
-};
-
-function issueTypeBadgeMeta(type) {
-  return ISSUE_TYPE_BADGE_META[type] || { label: 'Signal', tone: 'neutral' };
-}
-
 const TARGET_KEY_RULES = [
   { key: 'summary.accordion__summary', label: 'Accordion toggle' },
   { key: 'product-card__media', label: 'Product card image' },
@@ -833,12 +545,12 @@ const TARGET_KEY_RULES = [
 const ERROR_SIGNATURE_RULES = [
   {
     keywords: ['mutationobserver', 'observe'],
-    label: 'Script conflict on page',
+    label: 'MutationObserver target invalid',
     match: 'all'
   },
   {
     keywords: ['_autofillcallbackhandler'],
-    label: 'Autofill script conflict',
+    label: 'Autofill callback missing',
     match: 'any'
   },
   {
@@ -857,71 +569,6 @@ const ERROR_SIGNATURE_RULES = [
     match: 'any'
   }
 ];
-
-const DEVELOPER_FIX_PLAYBOOK = {
-  js_errors: {
-    default: [
-      'Open the affected page in browser devtools and reproduce the issue in Console + Network.',
-      'Identify the failing app/script, then disable or patch that integration in theme code.',
-      'Redeploy and verify the same page shows zero repeated JS errors for 24 hours.'
-    ],
-    bySignature: {
-      'Script conflict on page': [
-        'Find duplicated DOM observers or scripts attaching to removed elements.',
-        'Guard observer setup with element existence checks before calling observe().',
-        'Deploy and confirm this error group stops growing on the affected page.'
-      ],
-      'Autofill script conflict': [
-        'Search installed apps/theme scripts for `_AutofillCallbackHandler` references.',
-        'Load the required script earlier or remove the stale callback dependency.',
-        'Retest checkout and product pages in Safari and Chrome.'
-      ],
-      'External script failed to load': [
-        'Open Network tab and locate the failing third-party script URL and status.',
-        'Fix CSP, domain allowlist, or script URL/version mismatch in theme/app settings.',
-        'Verify retries are not flooding errors after deployment.'
-      ],
-      'Network request failed': [
-        'Inspect failing endpoint calls and confirm CORS/auth headers are valid.',
-        'Add retry/backoff only for transient failures; avoid infinite retry loops.',
-        'Verify affected action succeeds for both mobile and desktop sessions.'
-      ],
-      'JSON response truncated': [
-        'Inspect endpoint payloads and ensure they return valid JSON on all branches.',
-        'Handle empty/partial payloads defensively before `response.json()` parsing.',
-        'Deploy and verify parsing errors no longer occur in recent sessions.'
-      ]
-    }
-  },
-  dead_clicks: {
-    default: [
-      'Confirm the clicked element is truly interactive (button/link) and has a bound action.',
-      'If it is decorative only, remove pointer cursor/click handlers to avoid false affordance.',
-      'Retest the element and confirm clicks lead to visible UI change or navigation.'
-    ]
-  },
-  rage_clicks: {
-    default: [
-      'Measure interaction latency on the target and identify slow script/network paths.',
-      'Provide immediate visual feedback on click and prevent duplicate blocked clicks.',
-      'Retest under mobile throttling to confirm frustration pattern disappears.'
-    ]
-  },
-  form_invalid: {
-    default: [
-      'Log invalid field names/types and identify the highest-frequency failing inputs.',
-      'Add inline validation hints before submit, not only after submit failure.',
-      'Relax strict rules where possible and confirm conversion improves next day.'
-    ]
-  },
-  scroll_dropoff: {
-    default: [
-      'Move key product value, trust, and CTA blocks above the first major fold break.',
-      'Reduce heavy media before CTA and improve mobile rendering speed.',
-      'Compare 75% reach rate day-over-day after layout update.'
-    ]
-  }
-};
 
 function normalizeTargetKey(rawValue) {
   const raw = (rawValue || '').toString().trim();
@@ -981,468 +628,18 @@ function buildIssueWhereLabel(type, issue) {
   return page;
 }
 
-function buildDeveloperFixSteps(row) {
-  const entry = DEVELOPER_FIX_PLAYBOOK[row?.type];
-  if (!entry) return [];
-  if (row?.type === 'js_errors') {
-    const signature = row?.errorLabel || '';
-    if (signature && entry.bySignature?.[signature]) {
-      return entry.bySignature[signature];
-    }
-  }
-  return entry.default || [];
-}
-
-function hasPurchase(session) {
-  if (!session || typeof session !== 'object') return false;
-  if ((Number(session?.purchase_events) || 0) > 0) return true;
-
-  const step = normalizeCheckoutStepKey(session?.last_checkout_step);
-  if (step === 'thank_you') return true;
-
-  const status = normalizeLooseKey(session?.status);
-  if (status === 'purchased') return true;
-
-  return false;
-}
-
-function hasCheckout(session) {
-  return (Number(session?.checkout_started_events) || 0) > 0
-    || normalizeCheckoutStepKey(session?.last_checkout_step) !== null;
-}
-
-function hasCart(session) {
-  return (Number(session?.cart_events) || 0) > 0 || (Number(session?.atc_events) || 0) > 0;
-}
-
-function noPurchase(session) {
-  return !hasPurchase(session);
-}
-
-function deviceSegmentKeyFromSession(session) {
-  const rawType = normalizeLooseKey(session?.device_type);
-  const rawOs = normalizeLooseKey(session?.device_os);
-
-  if (rawType === 'desktop' || rawType.includes('desktop')) return 'desktop';
-  if (rawOs === 'ios' || rawType === 'ios' || rawType === 'ipados' || rawType.includes('ios') || rawType.includes('ipad')) return 'ios';
-  if (rawOs === 'android' || rawType === 'android' || rawType === 'android tablet' || rawType.includes('android')) return 'android';
-  return 'unknown';
-}
-
-function abandonSectionLabelFromSession(session) {
-  const stage = inferDropoffStageFromSummary(session);
-  if (stage === 'checkout_payment') return 'Payment';
-  if (stage === 'checkout_contact' || stage === 'checkout_shipping') return 'Checkout';
-  if (stage === 'cart' || stage === 'atc') return 'Cart';
-  if (stage === 'product') return 'Product';
-  return 'Landing';
-}
-
-function compareAbandonSectionEntries(a, b) {
-  if (b[1] !== a[1]) return b[1] - a[1];
-  const aOrder = DEVICE_ABANDON_SECTION_ORDER.indexOf(a[0]);
-  const bOrder = DEVICE_ABANDON_SECTION_ORDER.indexOf(b[0]);
-  const safeA = aOrder >= 0 ? aOrder : DEVICE_ABANDON_SECTION_ORDER.length;
-  const safeB = bOrder >= 0 ? bOrder : DEVICE_ABANDON_SECTION_ORDER.length;
-  return safeA - safeB;
-}
-
-function buildTrafficAdjustedPieGradient(rows) {
-  const list = Array.isArray(rows) ? rows : [];
-  let cursorDegrees = 0;
-  const segments = [];
-
-  list.forEach((row) => {
-    const share = clamp01(row?.adjustedShare || 0);
-    if (share <= 0) return;
-    const start = cursorDegrees;
-    const end = start + (share * DEVICE_ABANDONMENT_FULL_CIRCLE_DEGREES);
-    segments.push(`${row.color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`);
-    cursorDegrees = end;
-  });
-
-  if (!segments.length) {
-    return 'conic-gradient(rgba(148, 163, 184, 0.30) 0deg 360deg)';
-  }
-  return `conic-gradient(${segments.join(', ')})`;
-}
-
-function buildDeviceAbandonmentModel({ librarySessions }) {
-  const sessions = Array.isArray(librarySessions) ? librarySessions : [];
-  const buckets = new Map(
-    DEVICE_ABANDONMENT_SEGMENTS.map((segment) => [
-      segment.key,
-      {
-        ...segment,
-        totalSessions: 0,
-        abandonSessions: 0,
-        sectionCounts: new Map()
-      }
-    ])
-  );
-
-  sessions.forEach((session) => {
-    const segmentKey = deviceSegmentKeyFromSession(session);
-    const isAbandon = noPurchase(session);
-
-    const bucket = buckets.get(segmentKey);
-    if (!bucket) return;
-
-    bucket.totalSessions += 1;
-    if (!isAbandon) return;
-
-    bucket.abandonSessions += 1;
-    const section = abandonSectionLabelFromSession(session);
-    bucket.sectionCounts.set(section, (bucket.sectionCounts.get(section) || 0) + 1);
-  });
-
-  const rows = DEVICE_ABANDONMENT_SEGMENTS.map((segment) => {
-    const bucket = buckets.get(segment.key);
-    const totalSessions = Number(bucket?.totalSessions) || 0;
-    const abandonSessions = Number(bucket?.abandonSessions) || 0;
-    const abandonRate = totalSessions > 0 ? (abandonSessions / totalSessions) : 0;
-    const topSectionEntry = Array.from(bucket?.sectionCounts?.entries?.() || [])
-      .sort(compareAbandonSectionEntries)[0] || null;
-    const topSectionLabel = topSectionEntry ? topSectionEntry[0] : '—';
-    const topSectionCount = topSectionEntry ? Number(topSectionEntry[1]) || 0 : 0;
-    const topSectionShare = abandonSessions > 0 ? (topSectionCount / abandonSessions) : 0;
-
-    return {
-      ...segment,
-      totalSessions,
-      abandonSessions,
-      abandonRate,
-      topSectionLabel,
-      topSectionCount,
-      topSectionShare
-    };
-  });
-
-  const totalClassifiedSessions = rows.reduce((sum, row) => sum + row.totalSessions, 0);
-  const totalClassifiedAbandon = rows.reduce((sum, row) => sum + row.abandonSessions, 0);
-  const baselineAbandonRate = totalClassifiedSessions > 0 ? (totalClassifiedAbandon / totalClassifiedSessions) : 0;
-
-  const withNormalization = rows.map((row) => {
-    const trafficShare = totalClassifiedSessions > 0 ? (row.totalSessions / totalClassifiedSessions) : 0;
-    const abandonShare = totalClassifiedAbandon > 0 ? (row.abandonSessions / totalClassifiedAbandon) : 0;
-    const expectedAbandon = row.totalSessions * baselineAbandonRate;
-    const excessAbandon = row.abandonSessions - expectedAbandon;
-    const adjustedIndex = trafficShare > 0 ? (abandonShare / trafficShare) : 0;
-    return {
-      ...row,
-      trafficShare,
-      abandonShare,
-      expectedAbandon,
-      excessAbandon,
-      adjustedIndex
-    };
-  });
-
-  const adjustedIndexTotal = withNormalization.reduce((sum, row) => sum + row.adjustedIndex, 0);
-  const rowsWithAdjustedShare = withNormalization.map((row) => ({
-    ...row,
-    adjustedShare: adjustedIndexTotal > 0 ? (row.adjustedIndex / adjustedIndexTotal) : 0
-  }));
-
-  const topOverIndexed = rowsWithAdjustedShare
-    .filter((row) => row.excessAbandon > 0)
-    .sort((a, b) => {
-      if (b.adjustedIndex !== a.adjustedIndex) return b.adjustedIndex - a.adjustedIndex;
-      return b.excessAbandon - a.excessAbandon;
-    })[0] || null;
-
-  const unknownRow = rowsWithAdjustedShare.find((row) => row.key === 'unknown') || null;
-
-  return {
-    rows: rowsWithAdjustedShare,
-    totalSessions: totalClassifiedSessions,
-    totalAbandonSessions: totalClassifiedAbandon,
-    baselineAbandonRate,
-    unknownSessions: unknownRow?.totalSessions || 0,
-    pieGradient: buildTrafficAdjustedPieGradient(rowsWithAdjustedShare),
-    topOverIndexed
-  };
-}
-
-function actionPlanStatusForCount(count) {
-  const sessions = Math.max(0, Number(count) || 0);
-  if (sessions >= ACTION_PLAN_ESTABLISHED_MIN_SESSIONS) return 'Established';
-  if (sessions >= ACTION_PLAN_EMERGING_MIN_SESSIONS) return 'Emerging';
-  return null;
-}
-
-function buildPatternRow({
-  id,
-  patternLabel,
-  whereLabel,
-  eligibleCount,
-  affectedSessions,
-  affectedCount,
-  baselineRate,
-  segmentRate,
-  overIndex,
-  excessSessions,
-  score,
-  observation,
-  suggests,
-  nextCheck,
-  fixFirst
-}) {
-  const eligibleSessions = Math.max(0, Number(eligibleCount) || 0);
-  const affectedList = Array.isArray(affectedSessions) ? affectedSessions : [];
-  const affectedSessionsCount = Math.max(
-    0,
-    Number.isFinite(Number(affectedCount))
-      ? Number(affectedCount)
-      : affectedList.length
-  );
-
-  const status = actionPlanStatusForCount(eligibleSessions);
-  if (!status) return null;
-
-  const safeRate = eligibleSessions > 0 ? affectedSessionsCount / eligibleSessions : 0;
-  const baseline = Number.isFinite(Number(baselineRate)) ? Number(baselineRate) : null;
-  const statusLineParts = [
-    `${status} · ${formatNumber(affectedSessionsCount)}/${formatNumber(eligibleSessions)} sessions (${formatPercent(safeRate, 0)})`
-  ];
-  if (baseline != null) {
-    statusLineParts.push(`baseline ${formatPercent(baseline, 0)}`);
-  }
-
-  return {
-    id,
-    patternLabel,
-    whereLabel,
-    status,
-    eligibleCount: eligibleSessions,
-    sessionsCount: affectedSessionsCount,
-    segmentRate: Number.isFinite(Number(segmentRate)) ? Number(segmentRate) : safeRate,
-    baselineRate: baseline,
-    overIndex: Number.isFinite(Number(overIndex)) ? Number(overIndex) : null,
-    excessSessions: Number.isFinite(Number(excessSessions)) ? Number(excessSessions) : null,
-    score: Number.isFinite(Number(score)) ? Number(score) : null,
-    statusLine: statusLineParts.join(' · '),
-    observation,
-    suggests,
-    nextCheck,
-    fixFirst,
-    sampleSession: affectedList[0] || null
-  };
-}
-
-function buildBehaviorPatternRows({ librarySessions }) {
-  const sessions = Array.isArray(librarySessions) ? librarySessions : [];
-  if (!sessions.length) return [];
-
-  const sentenceCase = (value) => {
-    const raw = (value || '').toString();
-    if (!raw) return '';
-    return raw.charAt(0).toUpperCase() + raw.slice(1);
-  };
-
-  const SEGMENT_DIMENSIONS = [
-    {
-      key: 'campaign',
-      label: 'Campaign',
-      getKey: (session) => (session?.utm_campaign || '').toString().trim() || '(not set)',
-      format: (value) => (value || '').toString().trim() || '(not set)'
-    },
-    {
-      key: 'country',
-      label: 'Country',
-      getKey: (session) => (session?.country_code || '').toString().trim().toUpperCase(),
-      format: (value) => countryNameFromCode(value)
-    }
-  ];
-
-  const reachedPayment = (session) => {
-    const step = normalizeCheckoutStepKey(session?.last_checkout_step);
-    return step === 'payment' || step === 'thank_you' || hasPurchase(session);
-  };
-
-  const PATTERNS = [
-    {
-      id: 'payment-step-exit',
-      label: 'Payment-step exit before purchase',
-      eligibilityLabel: 'payment-step sessions',
-      badLabel: 'payment-step exits',
-      eligible: reachedPayment,
-      bad: (session) => noPurchase(session) && normalizeCheckoutStepKey(session?.last_checkout_step) === 'payment',
-      suggests: 'Final-step confidence, payment method clarity, or gateway flow may be blocking completion.',
-      nextCheck: 'Validate payment method availability and final-step messaging on desktop and mobile.',
-      fixFirst: 'Audit payment-step UX first and keep fallback payment options clearly visible.'
-    },
-    {
-      id: 'checkout-exit-before-payment',
-      label: 'Checkout exit before payment',
-      eligibilityLabel: 'checkout sessions',
-      badLabel: 'checkout exits before payment',
-      eligible: (session) => hasCheckout(session),
-      bad: (session) => {
-        if (hasPurchase(session)) return false;
-        if (!hasCheckout(session)) return false;
-        const step = normalizeCheckoutStepKey(session?.last_checkout_step);
-        return step !== 'payment' && step !== 'thank_you';
-      },
-      suggests: 'Early checkout friction in contact/shipping steps may be slowing progression.',
-      nextCheck: 'Trace contact and shipping step completion flows across device types.',
-      fixFirst: 'Reduce form friction and clarify shipping expectations before payment.'
-    },
-    {
-      id: 'cart-hesitation',
-      label: 'Cart hesitation before checkout',
-      eligibilityLabel: 'cart sessions',
-      badLabel: 'cart exits before checkout',
-      eligible: (session) => hasCart(session),
-      bad: (session) => noPurchase(session) && hasCart(session) && !hasCheckout(session),
-      suggests: 'Cost expectations, shipping clarity, or weak next-step guidance may be causing hesitation.',
-      nextCheck: 'Review cart totals, shipping estimate visibility, and checkout CTA prominence.',
-      fixFirst: 'Make total cost expectations explicit in cart and highlight the checkout path.'
-    },
-    {
-      id: 'reconsider-without-cart',
-      label: 'Repeat product consideration without cart',
-      eligibilityLabel: 'sessions with 2+ product views',
-      badLabel: 'exits without cart/checkout',
-      eligible: (session) => (Number(session?.product_views) || 0) >= 2,
-      bad: (session) => (
-        noPurchase(session)
-        && (Number(session?.product_views) || 0) >= 2
-        && !hasCart(session)
-        && !hasCheckout(session)
-      ),
-      suggests: 'Decision clarity may be missing around fit, value, or selection confidence.',
-      nextCheck: 'Review product detail hierarchy and variant guidance on the first view.',
-      fixFirst: 'Strengthen product-page decision support near the variant and add-to-cart zone.'
-    },
-    {
-      id: 'product-view-no-progress',
-      label: 'Exit after product view (no cart/checkout)',
-      eligibilityLabel: 'sessions that reached a product page',
-      badLabel: 'exits before cart/checkout',
-      eligible: (session) => (Number(session?.product_views) || 0) > 0,
-      bad: (session) => noPurchase(session) && !hasCart(session) && !hasCheckout(session),
-      suggests: 'Traffic expectation may be misaligned with the first product/offer experience.',
-      nextCheck: 'Compare traffic promise against the first product view and offer framing.',
-      fixFirst: 'Align the first product view with the traffic promise and make the primary CTA unmissable.'
-    }
-  ];
-
-  const candidates = [];
-
-  PATTERNS.forEach((pattern) => {
-    const eligibleSessions = sessions.filter(pattern.eligible);
-    const totalEligible = eligibleSessions.length;
-    if (totalEligible <= 0) return;
-
-    const affectedAll = eligibleSessions.filter(pattern.bad);
-    const totalAffected = affectedAll.length;
-    if (totalAffected <= 0) return;
-
-    const baselineRate = totalAffected / totalEligible;
-
-    SEGMENT_DIMENSIONS.forEach((dimension) => {
-      const buckets = new Map();
-
-      eligibleSessions.forEach((session) => {
-        const key = dimension.getKey(session);
-        if (!key) return;
-        const bucket = buckets.get(key) || {
-          key,
-          eligibleCount: 0,
-          affectedCount: 0,
-          otherCounts: new Map(),
-          sampleAffected: []
-        };
-        bucket.eligibleCount += 1;
-        if (pattern.bad(session)) {
-          bucket.affectedCount += 1;
-          const otherKey = dimension.key === 'campaign'
-            ? (session?.country_code || '').toString().trim().toUpperCase()
-            : (session?.utm_campaign || '').toString().trim();
-          if (otherKey) bucket.otherCounts.set(otherKey, (bucket.otherCounts.get(otherKey) || 0) + 1);
-          if (bucket.sampleAffected.length < 6) bucket.sampleAffected.push(session);
-        }
-        buckets.set(key, bucket);
-      });
-
-      Array.from(buckets.values()).forEach((bucket) => {
-        const eligibleCount = bucket.eligibleCount;
-        const affectedCount = bucket.affectedCount;
-        if (eligibleCount <= 0 || affectedCount <= 0) return;
-
-        const segmentRate = affectedCount / eligibleCount;
-        const expected = eligibleCount * baselineRate;
-        const excess = affectedCount - expected;
-        if (!(excess >= 1)) return;
-
-        const trafficShare = eligibleCount / totalEligible;
-        const affectedShare = totalAffected > 0 ? affectedCount / totalAffected : 0;
-        const overIndex = baselineRate > 0 ? (segmentRate / baselineRate) : 0;
-        if (!(overIndex > 1)) return;
-
-        const score = excess * Math.max(0, overIndex - 1);
-        const excessRounded = Math.max(1, Math.round(excess));
-
-        const crossContext = (() => {
-          const topOther = Array.from(bucket.otherCounts.entries()).sort((a, b) => b[1] - a[1])[0] || null;
-          if (!topOther) return '';
-
-          if (dimension.key === 'campaign') {
-            return `Top country: ${countryNameFromCode(topOther[0])}.`;
-          }
-          return `Top campaign: ${topOther[0]}.`;
-        })();
-
-        const observationParts = [
-          `This ${dimension.label.toLowerCase()} is ${formatPercent(trafficShare, 0)} of ${pattern.eligibilityLabel} but ${formatPercent(affectedShare, 0)} of ${pattern.badLabel} (${overIndex.toFixed(2)}x baseline).`,
-          `${sentenceCase(pattern.badLabel)} rate: ${formatPercent(segmentRate, 0)} vs baseline ${formatPercent(baselineRate, 0)} (+${formatNumber(excessRounded)} sessions vs expected).`
-        ];
-        if (crossContext) observationParts.push(crossContext);
-
-        candidates.push(buildPatternRow({
-          id: `${pattern.id}-${dimension.key}-${bucket.key}`,
-          patternLabel: pattern.label,
-          whereLabel: `${dimension.label} • ${dimension.format(bucket.key)}`,
-          eligibleCount,
-          affectedSessions: bucket.sampleAffected,
-          affectedCount,
-          baselineRate,
-          segmentRate,
-          overIndex,
-          excessSessions: excess,
-          score,
-          observation: observationParts.join(' '),
-          suggests: pattern.suggests,
-          nextCheck: pattern.nextCheck,
-          fixFirst: pattern.fixFirst
-        }));
-      });
-    });
-  });
-
-  return candidates
-    .filter(Boolean)
-    .sort((a, b) => (b.score || 0) - (a.score || 0))
-    .slice(0, ACTION_PLAN_ROW_LIMIT);
-}
-
 function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay }) {
   const sessions = Array.isArray(librarySessions) ? librarySessions : [];
-  const claritySelectedSessions = Math.max(0, Number(claritySignals?.totals?.sessions) || 0);
-  const claritySourceSessions = Math.max(0, Number(claritySignals?.totals?.source_sessions) || 0);
-  const totalSessionUniverse = Math.max(sessions.length, claritySourceSessions, claritySelectedSessions);
-  const highIntentNoPurchaseSessions = sessions.filter((s) => (
-    noPurchase(s) && ((Number(s?.atc_events) || 0) > 0 || hasCheckout(s))
-  ));
+  const highIntentNoPurchaseSessions = sessions.filter((s) => {
+    const atc = Number(s?.atc_events) || 0;
+    const checkout = Number(s?.checkout_started_events) || 0;
+    const purchase = Number(s?.purchase_events) || 0;
+    return (atc > 0 || checkout > 0) && purchase === 0;
+  });
 
-  const highIntentFromLibrary = highIntentNoPurchaseSessions.length;
-  const highIntentFromClarity = claritySignals?.mode === 'high_intent_no_purchase'
-    ? claritySelectedSessions
-    : 0;
-  const eligibleHighIntent = Math.min(
-    totalSessionUniverse,
-    Math.max(highIntentFromLibrary, highIntentFromClarity)
+  const eligibleHighIntent = Math.max(
+    highIntentNoPurchaseSessions.length,
+    Number(claritySignals?.totals?.sessions) || 0
   );
 
   const dayRecencyWeight = (() => {
@@ -1466,9 +663,6 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
       const affectedHighIntent = eligibleHighIntent > 0
         ? Math.min(sessionsAffected, eligibleHighIntent)
         : sessionsAffected;
-      const verificationStatus = normalizeVerificationStatus(issue?.verification?.status, type);
-      const verificationReason = (issue?.verification?.reason || '').toString().trim() || null;
-      const isVerifiable = VERIFIABLE_ISSUE_TYPES.has(type);
 
       const priorAlpha = 1;
       const priorBeta = 1;
@@ -1481,10 +675,6 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
         id: `${type}-${index}`,
         type,
         issueLabel: meta.label,
-        pagePath: issue?.page || '',
-        pageLabel: formatPathLabel(issue?.page || ''),
-        targetLabel: type === 'dead_clicks' || type === 'rage_clicks' ? normalizeTargetKey(issue?.target_key) : '',
-        errorLabel: type === 'js_errors' ? normalizeErrorSignature(issue?.message) : '',
         whereLabel: buildIssueWhereLabel(type, issue),
         action: meta.action,
         severityWeight: meta.severityWeight,
@@ -1495,11 +685,7 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
         observations,
         confidenceRaw: posteriorMean * evidenceStrength,
         recencyWeight: dayRecencyWeight,
-        rawErrorMessage: type === 'js_errors' ? (issue?.message || '') : '',
-        sampleSessions: Array.isArray(issue?.sample_sessions) ? issue.sample_sessions : [],
-        isVerifiable,
-        verificationStatus,
-        verificationReason
+        sampleSessions: Array.isArray(issue?.sample_sessions) ? issue.sample_sessions : []
       });
     });
   });
@@ -1508,9 +694,8 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
     return {
       rows: [],
       eligibleHighIntent,
-      highIntentSessions: eligibleHighIntent,
-      totalSessions: totalSessionUniverse,
-      purchases: sessions.filter((s) => hasPurchase(s)).length
+      totalSessions: sessions.length,
+      purchases: sessions.filter((s) => (Number(s?.purchase_events) || 0) > 0).length
     };
   }
 
@@ -1538,12 +723,11 @@ function buildClarityIssueRows({ claritySignals, librarySessions, selectedDay })
           : 'Low'
     }));
 
-  const purchases = sessions.filter((s) => hasPurchase(s)).length;
+  const purchases = sessions.filter((s) => (Number(s?.purchase_events) || 0) > 0).length;
   return {
     rows,
     eligibleHighIntent,
-    highIntentSessions: eligibleHighIntent,
-    totalSessions: totalSessionUniverse,
+    totalSessions: sessions.length,
     purchases
   };
 }
@@ -1677,14 +861,11 @@ function userLabel(row) {
   return sessionId ? toCode('Session', sessionId, 6) : '—';
 }
 
-export default function SessionIntelligenceTab({ store, dashboardDateRange = null }) {
+export default function SessionIntelligenceTab({ store }) {
   const storeId = store?.id || 'shawq';
 
   const [overview, setOverview] = useState(null);
   const [brief, setBrief] = useState(null);
-  const [dayPulse, setDayPulse] = useState(null);
-  const [dayPulseLoading, setDayPulseLoading] = useState(false);
-  const [dayPulseError, setDayPulseError] = useState('');
   const [realtime, setRealtime] = useState(null);
   const [realtimeLoading, setRealtimeLoading] = useState(false);
   const [realtimeError, setRealtimeError] = useState('');
@@ -1700,6 +881,14 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const [claritySignals, setClaritySignals] = useState(null);
   const [clarityLoading, setClarityLoading] = useState(false);
   const [clarityError, setClarityError] = useState('');
+  const [productAbandonment, setProductAbandonment] = useState(null);
+  const [productAbandonmentLoading, setProductAbandonmentLoading] = useState(false);
+  const [productAbandonmentOpen, setProductAbandonmentOpen] = useState(false);
+  const [selectedAbandonmentProductId, setSelectedAbandonmentProductId] = useState('');
+  const [journeyAbandonmentReport, setJourneyAbandonmentReport] = useState(null);
+  const [journeyAbandonmentLoading, setJourneyAbandonmentLoading] = useState(false);
+  const [journeyAbandonmentError, setJourneyAbandonmentError] = useState('');
+  const [journeySegmentView, setJourneySegmentView] = useState('device');
 
   const [storyOpen, setStoryOpen] = useState(false);
   const [storySession, setStorySession] = useState(null);
@@ -1712,7 +901,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const [eventsStatus, setEventsStatus] = useState('idle');
   const [sanityOpen, setSanityOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [issueVerificationView, setIssueVerificationView] = useState(ISSUE_VERIFICATION_VIEW.INVESTIGATING);
+  const [showAllIssues, setShowAllIssues] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
   const [libraryDays, setLibraryDays] = useState([]);
@@ -1729,37 +918,13 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   ));
   const [briefGenerating, setBriefGenerating] = useState(false);
   const [briefGenerateError, setBriefGenerateError] = useState('');
-  const [landingPurchaseReport, setLandingPurchaseReport] = useState(null);
-  const [landingPurchasePreviousReport, setLandingPurchasePreviousReport] = useState(null);
-  const [landingPurchaseLoading, setLandingPurchaseLoading] = useState(false);
-  const [landingPurchaseError, setLandingPurchaseError] = useState('');
-  const [abandonmentReport, setAbandonmentReport] = useState(null);
-  const [abandonmentPreviousReport, setAbandonmentPreviousReport] = useState(null);
-  const [abandonmentLoading, setAbandonmentLoading] = useState(false);
-  const [abandonmentError, setAbandonmentError] = useState('');
 
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
-  const journeyRequestIdRef = useRef(0);
-  const dayPulseDataRef = useRef(null);
-  const realtimeDataRef = useRef(null);
 
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
   }, [analysisLlm]);
-
-  useEffect(() => {
-    dayPulseDataRef.current = dayPulse;
-  }, [dayPulse]);
-
-  useEffect(() => {
-    realtimeDataRef.current = realtime;
-  }, [realtime]);
-
-  const journeyComparisonRanges = useMemo(
-    () => resolveJourneyComparisonRanges(dashboardDateRange),
-    [dashboardDateRange]
-  );
 
   const openStory = useCallback(async (sessionId, stub = null) => {
     if (!libraryDay || !sessionId) return;
@@ -1799,29 +964,8 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     setStoryError('');
   }, []);
 
-  useEffect(() => {
-    if (!storyOpen) return undefined;
-
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeStory();
-      }
-    };
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    window.addEventListener('keydown', onKeyDown);
-
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [closeStory, storyOpen]);
-
-  const loadRealtime = useCallback(async (options = {}) => {
-    const showLoading = options.showLoading !== false || !realtimeDataRef.current;
-    if (showLoading) setRealtimeLoading(true);
+  const loadRealtime = useCallback(async () => {
+    setRealtimeLoading(true);
     setRealtimeError('');
     try {
       const params = new URLSearchParams({
@@ -1834,9 +978,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } catch (error) {
       console.error('[SessionIntelligenceTab] realtime load failed:', error);
       setRealtimeError(error?.message || 'Failed to load realtime overview');
-      if (!realtimeDataRef.current) setRealtime(null);
+      setRealtime(null);
     } finally {
-      if (showLoading) setRealtimeLoading(false);
+      setRealtimeLoading(false);
     }
   }, [storeId]);
 
@@ -1884,103 +1028,49 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     }
   }, [storeId]);
 
-  const loadJourneyReports = useCallback(async () => {
-    const requestId = journeyRequestIdRef.current + 1;
-    journeyRequestIdRef.current = requestId;
-
-    const currentParams = new URLSearchParams({
-      store: storeId,
-      limit: String(JOURNEY_TABLE_LIMIT),
-      startDate: journeyComparisonRanges.current.startDate,
-      endDate: journeyComparisonRanges.current.endDate
-    });
-    const previousParams = new URLSearchParams({
-      store: storeId,
-      limit: String(JOURNEY_TABLE_LIMIT),
-      startDate: journeyComparisonRanges.previous.startDate,
-      endDate: journeyComparisonRanges.previous.endDate
-    });
-
-    setLandingPurchaseLoading(true);
-    setLandingPurchaseError('');
-    setAbandonmentLoading(true);
-    setAbandonmentError('');
-
-    const [
-      landingCurrentResult,
-      abandonmentCurrentResult,
-      landingPreviousResult,
-      abandonmentPreviousResult
-    ] = await Promise.allSettled([
-        fetchJson(`/api/session-intelligence/journey/landing-purchases?${currentParams.toString()}`),
-        fetchJson(`/api/session-intelligence/journey/abandonment?${currentParams.toString()}`),
-        fetchJson(`/api/session-intelligence/journey/landing-purchases?${previousParams.toString()}`),
-        fetchJson(`/api/session-intelligence/journey/abandonment?${previousParams.toString()}`)
-      ]);
-
-    if (requestId !== journeyRequestIdRef.current) return;
-
-    if (landingCurrentResult.status === 'fulfilled') {
-      setLandingPurchaseReport(landingCurrentResult.value || null);
-      setLandingPurchaseError('');
-    } else {
-      const message = errorMessageFromSettledResult(landingCurrentResult, 'Failed to load landing-to-purchase report');
-      console.error('[SessionIntelligenceTab] landing journey load failed:', landingCurrentResult.reason || message);
-      setLandingPurchaseReport(null);
-      setLandingPurchaseError(message);
+  const loadProductAbandonment = useCallback(async (day) => {
+    if (!day) return;
+    setProductAbandonmentLoading(true);
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        date: day,
+        limit: '6'
+      });
+      const payload = await fetchJson(`/api/session-intelligence/product-abandonment?${params.toString()}`);
+      setProductAbandonment(payload?.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] product abandonment load failed:', error);
+      setProductAbandonment(null);
+    } finally {
+      setProductAbandonmentLoading(false);
     }
+  }, [storeId]);
 
-    if (abandonmentCurrentResult.status === 'fulfilled') {
-      setAbandonmentReport(abandonmentCurrentResult.value || null);
-      setAbandonmentError('');
-    } else {
-      const message = errorMessageFromSettledResult(abandonmentCurrentResult, 'Failed to load abandonment report');
-      console.error('[SessionIntelligenceTab] abandonment journey load failed:', abandonmentCurrentResult.reason || message);
-      setAbandonmentReport(null);
-      setAbandonmentError(message);
+  const loadJourneyAbandonmentReport = useCallback(async () => {
+    setJourneyAbandonmentLoading(true);
+    setJourneyAbandonmentError('');
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        days: String(JOURNEY_DEFAULT_DAYS),
+        limit: String(JOURNEY_REPORT_LIMIT)
+      });
+      const payload = await fetchJson(`/api/session-intelligence/journey/abandonment?${params.toString()}`);
+      setJourneyAbandonmentReport(payload?.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] journey abandonment load failed:', error);
+      setJourneyAbandonmentError(error?.message || 'Failed to load abandonment by device');
+      setJourneyAbandonmentReport(null);
+    } finally {
+      setJourneyAbandonmentLoading(false);
     }
-
-    if (landingPreviousResult.status === 'fulfilled') {
-      setLandingPurchasePreviousReport(landingPreviousResult.value || null);
-    } else {
-      console.warn('[SessionIntelligenceTab] previous landing journey load failed:', landingPreviousResult.reason || 'unknown error');
-      setLandingPurchasePreviousReport(null);
-    }
-
-    if (abandonmentPreviousResult.status === 'fulfilled') {
-      setAbandonmentPreviousReport(abandonmentPreviousResult.value || null);
-    } else {
-      console.warn('[SessionIntelligenceTab] previous abandonment journey load failed:', abandonmentPreviousResult.reason || 'unknown error');
-      setAbandonmentPreviousReport(null);
-    }
-
-    if (requestId === journeyRequestIdRef.current) {
-      setLandingPurchaseLoading(false);
-      setAbandonmentLoading(false);
-    }
-  }, [journeyComparisonRanges.current.endDate, journeyComparisonRanges.current.startDate, journeyComparisonRanges.previous.endDate, journeyComparisonRanges.previous.startDate, storeId]);
+  }, [storeId]);
 
   const loadOverview = useCallback(async () => {
     const url = `/api/session-intelligence/overview?store=${encodeURIComponent(storeId)}`;
     const data = await fetchJson(url);
     setOverview(data.data);
-  }, [storeId]);
-
-  const loadDayPulse = useCallback(async (options = {}) => {
-    const showLoading = options.showLoading !== false || !dayPulseDataRef.current;
-    if (showLoading) setDayPulseLoading(true);
-    setDayPulseError('');
-    try {
-      const url = `/api/session-intelligence/day-pulse?store=${encodeURIComponent(storeId)}`;
-      const data = await fetchJson(url);
-      setDayPulse(data.data || null);
-    } catch (error) {
-      console.error('[SessionIntelligenceTab] day pulse load failed:', error);
-      setDayPulseError(error?.message || 'Failed to load day pulse');
-      if (!dayPulseDataRef.current) setDayPulse(null);
-    } finally {
-      if (showLoading) setDayPulseLoading(false);
-    }
   }, [storeId]);
 
   const loadBrief = useCallback(async (day = null) => {
@@ -2039,18 +1129,26 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 
   useEffect(() => {
     if (!libraryDay) return;
-    loadClarity(libraryDay, ISSUE_SCOPE_MODE);
-  }, [libraryDay, loadClarity]);
+    loadClarity(libraryDay, flowMode);
+  }, [libraryDay, flowMode, loadClarity]);
+
+  useEffect(() => {
+    setProductAbandonment(null);
+    setProductAbandonmentOpen(false);
+    setSelectedAbandonmentProductId('');
+    if (!libraryDay) return;
+    loadProductAbandonment(libraryDay);
+  }, [libraryDay, loadProductAbandonment]);
 
   const filteredLibrarySessions = useMemo(() => {
     let list = librarySessions;
 
     if (highIntentOnly) {
-      list = list.filter((s) => (
+      list = list.filter((s) =>
         Number(s.atc_events) > 0 ||
-        hasCheckout(s) ||
-        hasPurchase(s)
-      ));
+        Number(s.checkout_started_events) > 0 ||
+        Number(s.purchase_events) > 0
+      );
     }
 
     if (dropoffStageFilter) {
@@ -2105,13 +1203,11 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     setLoading(true);
     try {
       await Promise.all([
-        loadDayPulse(),
         loadRealtime(),
         loadOverview(),
         loadBrief(),
-        loadFlow(libraryDay, flowMode),
-        loadClarity(libraryDay, ISSUE_SCOPE_MODE),
-        loadJourneyReports(),
+        loadJourneyAbandonmentReport(),
+        ...(libraryDay ? [loadFlow(libraryDay, flowMode), loadClarity(libraryDay, flowMode), loadProductAbandonment(libraryDay)] : []),
         loadSessions(),
         loadEvents(),
         loadLibraryDays()
@@ -2119,14 +1215,14 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadClarity, loadDayPulse, loadEvents, loadFlow, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadClarity, loadEvents, loadFlow, loadJourneyAbandonmentReport, loadLibraryDays, loadOverview, loadProductAbandonment, loadRealtime, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadDayPulse(), loadRealtime(), loadOverview(), loadBrief(), loadJourneyReports(), loadSessions(), loadEvents(), loadLibraryDays()])
+    Promise.all([loadRealtime(), loadOverview(), loadBrief(), loadJourneyAbandonmentReport(), loadSessions(), loadEvents(), loadLibraryDays()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -2138,18 +1234,11 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       });
 
     const realtimeTimer = setInterval(() => {
-      loadRealtime({ showLoading: false }).catch((error) => {
+      loadRealtime().catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] realtime poll failed:', error);
       });
     }, POLL_REALTIME_MS);
-
-    const dayPulseTimer = setInterval(() => {
-      loadDayPulse({ showLoading: false }).catch((error) => {
-        if (!active) return;
-        console.error('[SessionIntelligenceTab] day pulse poll failed:', error);
-      });
-    }, POLL_DAY_PULSE_MS);
 
     const eventsTimer = setInterval(() => {
       loadEvents().catch((error) => {
@@ -2170,22 +1259,13 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       });
     }, POLL_OVERVIEW_MS);
 
-    const journeyTimer = setInterval(() => {
-      loadJourneyReports().catch((error) => {
-        if (!active) return;
-        console.error('[SessionIntelligenceTab] journey poll failed:', error);
-      });
-    }, POLL_JOURNEY_MS);
-
     return () => {
       active = false;
       clearInterval(realtimeTimer);
-      clearInterval(dayPulseTimer);
       clearInterval(eventsTimer);
       clearInterval(overviewTimer);
-      clearInterval(journeyTimer);
     };
-  }, [loadBrief, loadDayPulse, loadEvents, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [loadBrief, loadEvents, loadJourneyAbandonmentReport, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     setLibraryError('');
@@ -2231,6 +1311,38 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const abandonAfterHours = overview?.abandonAfterHours ?? 24;
   const checkoutDropMinutes = overview?.checkoutDropMinutes ?? 30;
   const abandonCutoffMs = Date.now() - abandonAfterHours * 60 * 60 * 1000;
+  const sessionPulseMetrics = overview?.sessionPulse?.metrics || {};
+  const sessionPulseLabels = overview?.sessionPulse?.labels || {};
+  const overviewPrimaryCards = useMemo(() => {
+    const currentLabel = (sessionPulseLabels.current || 'Today so far').toLowerCase();
+
+    return [
+      {
+        key: 'sessions',
+        label: `Sessions ${currentLabel}`,
+        value: sessionPulseMetrics?.sessions?.current ?? overview?.kpis?.sessions24h ?? null,
+        sub: formatSessionPulseComparison(sessionPulseMetrics?.sessions, sessionPulseLabels)
+      },
+      {
+        key: 'atc',
+        label: `Add to cart ${currentLabel}`,
+        value: sessionPulseMetrics?.atc?.current ?? overview?.kpis?.atc24h ?? null,
+        sub: formatSessionPulseComparison(sessionPulseMetrics?.atc, sessionPulseLabels)
+      },
+      {
+        key: 'checkoutStarted',
+        label: `Checkout started ${currentLabel}`,
+        value: sessionPulseMetrics?.checkoutStarted?.current ?? overview?.kpis?.checkoutStarted24h ?? null,
+        sub: formatSessionPulseComparison(sessionPulseMetrics?.checkoutStarted, sessionPulseLabels)
+      },
+      {
+        key: 'purchase',
+        label: `Purchases ${currentLabel}`,
+        value: sessionPulseMetrics?.purchase?.current ?? overview?.kpis?.purchases24h ?? null,
+        sub: formatSessionPulseComparison(sessionPulseMetrics?.purchase, sessionPulseLabels)
+      }
+    ];
+  }, [overview?.kpis?.atc24h, overview?.kpis?.checkoutStarted24h, overview?.kpis?.purchases24h, overview?.kpis?.sessions24h, sessionPulseLabels, sessionPulseMetrics]);
 
   const selectedLibrarySession = useMemo(() => {
     if (!librarySessionId) return null;
@@ -2372,155 +1484,37 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const briefReasons = Array.isArray(brief?.top_reasons) ? brief.top_reasons : [];
 
   const realtimeCountries = realtime?.breakdowns?.countries || [];
-  const realtimeFocusCountry = realtime?.breakdowns?.focus?.country || realtimeCountries?.[0]?.value || null;
+  const realtimeFocusCountry = realtimeCountries?.[0]?.value || null;
   const realtimeFocusCountryName = realtimeFocusCountry ? countryNameFromCode(realtimeFocusCountry) : null;
   const realtimeMapRegion = realtimeMapMode === 'focus' && realtimeFocusCountry ? realtimeFocusCountry : 'WORLD';
-  const realtimeFocusRegions = Array.isArray(realtime?.breakdowns?.focus?.regions)
-    ? realtime.breakdowns.focus.regions
-    : [];
-  const realtimeFocusCities = Array.isArray(realtime?.breakdowns?.focus?.cities)
-    ? realtime.breakdowns.focus.cities
-    : [];
-  const hasRealtimeFocusGeo = realtimeFocusRegions.length > 0 || realtimeFocusCities.length > 0;
-  const realtimeFocusRows = realtimeFocusCities.length > 0 ? realtimeFocusCities : realtimeFocusRegions;
-  const realtimeFocusRowsLabel = realtimeFocusCities.length > 0 ? 'cities' : 'regions';
-  const realtimeMiniRows = realtimeMapMode === 'focus' ? realtimeFocusRows : realtimeCountries;
-  const realtimeMapTitle = realtimeMapMode === 'focus' && realtimeFocusCountryName
-    ? `Focused: ${realtimeFocusCountryName}`
-    : 'Active sessions by country';
-  const realtimeMapSubtitle = (() => {
-    if (realtimeMapMode !== 'focus') return 'Hotspots';
-    if (hasRealtimeFocusGeo) return `Top ${realtimeFocusRowsLabel}`;
-    return 'Cities / regions';
-  })();
-  const realtimeGeoEmptyMessage = realtimeMapMode === 'focus'
-    ? realtimeFocusCountryName
-      ? `No city/region detail yet for ${realtimeFocusCountryName}.`
-      : 'No geo data yet.'
-    : 'No geo data yet.';
-  const realtimeMetricCards = useMemo(() => (
-    REALTIME_METRIC_CARD_CONFIG.map((config) => {
-      const metric = realtime?.metrics?.[config.key] || null;
-      const fallbackValue = config.key === 'sessions'
-        ? realtime?.activeSessions
-        : config.key === 'shoppers'
-          ? realtime?.activeShoppers
-          : realtime?.events;
-      const currentValue = metric?.current ?? fallbackValue ?? 0;
-      const trend = Array.isArray(metric?.trend) ? metric.trend : [];
-      const sparkline = buildRealtimeSparklineGeometry(trend);
-      const sparklineDirection = realtimeSparklineDirection(trend);
-      const comparisons = REALTIME_METRIC_COMPARISON_KEYS
-        .map((comparisonKey) => metric?.[comparisonKey])
-        .filter((comparison) => comparison && typeof comparison === 'object')
-        .map((comparison) => {
-          const baseline = Number(comparison.value);
-          const safeBaseline = Number.isFinite(baseline) ? baseline : 0;
-          const direction = resolveComparisonDirection({
-            direction: comparison.direction,
-            delta: comparison.delta,
-            current: currentValue,
-            baseline: safeBaseline
-          });
-          return {
-            ...comparison,
-            value: safeBaseline,
-            direction,
-            arrow: deltaArrow(direction),
-            deltaLabel: formatComparisonDeltaLabel({
-              delta: comparison.delta,
-              current: currentValue,
-              baseline: safeBaseline
-            })
-          };
-        });
+  const realtimeComparisonWindowMinutes = Number(realtime?.kpiMetrics?.comparisonWindowMinutes) || REALTIME_WINDOW_MINUTES;
+  const realtimeKpis = useMemo(() => REALTIME_KPI_META.map((meta) => {
+    const metric = realtime?.kpiMetrics?.metrics?.[meta.key] || null;
+    const fallbackValue = meta.key === 'activeSessions'
+      ? realtime?.activeSessions
+      : meta.key === 'activeShoppers'
+        ? realtime?.activeShoppers
+        : meta.key === 'events'
+          ? realtime?.events
+          : meta.key === 'checkoutStarted'
+            ? realtime?.keyEvents?.checkout_started
+            : realtime?.keyEvents?.[meta.key];
 
-      return {
-        key: config.key,
-        label: config.label,
-        value: currentValue,
-        sparkline,
-        sparklineDirection,
-        comparisons
-      };
-    })
-  ), [realtime]);
-  const realtimeKeyEventCards = useMemo(() => ([
-    { key: 'atc', label: 'ATC', value: realtime?.keyEvents?.atc },
-    { key: 'checkout_started', label: 'Checkout', value: realtime?.keyEvents?.checkout_started },
-    { key: 'purchase', label: 'Purchase', value: realtime?.keyEvents?.purchase }
-  ]), [realtime?.keyEvents?.atc, realtime?.keyEvents?.checkout_started, realtime?.keyEvents?.purchase]);
-  const dayPulseComparisons = useMemo(() => {
-    const yesterday = dayPulse?.comparisons?.yesterday || null;
-    const lastWeek = dayPulse?.comparisons?.lastWeek || null;
-    return [yesterday, lastWeek]
-      .filter(Boolean)
-      .map((comparison) => {
-        const baseline = Number(comparison.sessions);
-        const safeBaseline = Number.isFinite(baseline) ? baseline : 0;
-        const current = Number(dayPulse?.sessionsSoFar) || 0;
-        const direction = resolveComparisonDirection({
-          direction: comparison.direction,
-          delta: comparison.delta,
-          current,
-          baseline: safeBaseline
-        });
-        return {
-          ...comparison,
-          sessions: safeBaseline,
-          direction,
-          arrow: deltaArrow(direction),
-          deltaLabel: formatComparisonDeltaLabel({
-            delta: comparison.delta,
-            current,
-            baseline: safeBaseline
-          })
-        };
-      });
-  }, [dayPulse]);
-  const dayPulseProjectionClass = useMemo(() => {
-    const key = (dayPulse?.projectionLabel || '').toString().toLowerCase().trim();
-    if (key === 'heavy') return 'si-day-pulse-projection-heavy';
-    if (key === 'light') return 'si-day-pulse-projection-light';
-    return 'si-day-pulse-projection-mid';
-  }, [dayPulse?.projectionLabel]);
+    const history = Array.isArray(metric?.history)
+      ? metric.history
+      : Array.from({ length: 2 }, () => Number(fallbackValue) || 0);
+    const summary = describeRealtimeDelta(metric || { current: fallbackValue, previous: null, deltaRate: null }, realtimeComparisonWindowMinutes);
+
+    return {
+      ...meta,
+      value: Number(metric?.current ?? fallbackValue) || 0,
+      history,
+      badge: summary.badge,
+      badgeTone: summary.tone,
+      detail: summary.detail
+    };
+  }), [realtime, realtimeComparisonWindowMinutes]);
   const hasDayFilters = Boolean(dropoffStageFilter || dropoffDeviceFilter || dropoffCountryFilter || dropoffCampaignFilter);
-  const storefrontPixelInstallUrl = useMemo(() => {
-    const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '';
-    const encodedStore = encodeURIComponent(storeId);
-    return origin ? `${origin}/pixel.js?store=${encodedStore}` : `/pixel.js?store=${encodedStore}`;
-  }, [storeId]);
-  const hasRecentStorefrontSignals = useMemo(() => {
-    return events.some((event) => {
-      const eventName = normalizeLooseKey(event?.event_name);
-      const eventSource = normalizeLooseKey(event?.source);
-      return eventSource === 'theme_pixel' || CLARITY_SIGNAL_EVENT_NAMES.has(eventName);
-    });
-  }, [events]);
-  const clarityEmptyMessage = useMemo(() => {
-    if (clarityLoading || clarityError || claritySignals) return '';
-    if (!libraryDay && libraryDays.length > 0) {
-      return 'Select a day to load clarity signals for that day.';
-    }
-    if (hasRecentStorefrontSignals) {
-      return `No clarity signals found for ${libraryDay || 'the selected day'} in ${ISSUE_SCOPE_LABEL}. Try another day.`;
-    }
-    return 'No clarity signals yet. Install the storefront script:';
-  }, [
-    clarityError,
-    clarityLoading,
-    claritySignals,
-    hasRecentStorefrontSignals,
-    libraryDay,
-    libraryDays.length
-  ]);
-  const shouldShowClarityInstallHint = useMemo(() => (
-    !clarityLoading
-    && !clarityError
-    && !claritySignals
-    && !hasRecentStorefrontSignals
-    && !(libraryDays.length > 0 && !libraryDay)
-  ), [clarityError, clarityLoading, claritySignals, hasRecentStorefrontSignals, libraryDay, libraryDays.length]);
 
   const clearDayFilters = useCallback(() => {
     setDropoffStageFilter('');
@@ -2538,122 +1532,57 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   ), [claritySignals, libraryDay, librarySessions]);
 
   const issueRows = issueModel.rows || [];
-  const verificationSummary = claritySignals?.verification || null;
-  const hasConfirmedIssues = issueRows.some((row) => row.verificationStatus === 'confirmed');
-  const investigatingIssueRows = useMemo(() => (
-    issueRows.filter((row) => row.verificationStatus !== 'confirmed' && row.verificationStatus !== 'false_positive')
-  ), [issueRows]);
-  const confirmedIssueRows = useMemo(() => (
-    issueRows.filter((row) => row.verificationStatus === 'confirmed')
-  ), [issueRows]);
-  const filteredIssueRows = useMemo(() => {
-    if (issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED) return confirmedIssueRows;
-    return investigatingIssueRows;
-  }, [confirmedIssueRows, investigatingIssueRows, issueVerificationView]);
-  const technicalIssueRows = useMemo(() => (
-    filteredIssueRows.filter((row) => TECHNICAL_ISSUE_TYPES.has(row.type))
-  ), [filteredIssueRows]);
-  const interactionFrictionRows = useMemo(() => (
-    filteredIssueRows.filter((row) => INTERACTION_FRICTION_ISSUE_TYPES.has(row.type))
-  ), [filteredIssueRows]);
-  const visibleTechnicalIssueRows = technicalIssueRows.slice(0, ISSUE_TABLE_ROW_LIMIT);
-  const visibleInteractionFrictionRows = interactionFrictionRows.slice(0, ISSUE_TABLE_ROW_LIMIT);
-  const issueTableSections = useMemo(() => ([
-    {
-      key: 'technical',
-      title: 'Technical issues',
-      subtitle: 'JS/runtime/form/scroll clusters',
-      emptyMessage: issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED
-        ? 'No confirmed technical issues in this range yet.'
-        : 'No technical issues under review in this range.',
-      rows: visibleTechnicalIssueRows
-    },
-    {
-      key: 'interaction',
-      title: 'Interaction friction',
-      subtitle: 'Dead and rage clicks only',
-      emptyMessage: issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED
-        ? 'No confirmed interaction friction in this range yet.'
-        : 'No interaction friction under review in this range.',
-      rows: visibleInteractionFrictionRows
-    }
-  ]), [issueVerificationView, visibleInteractionFrictionRows, visibleTechnicalIssueRows]);
-  const topIssue = filteredIssueRows[0] || issueRows[0] || null;
-  const developerGuideRows = technicalIssueRows.slice(0, 3);
-  const actionPlanRows = useMemo(() => (
-    buildBehaviorPatternRows({ librarySessions })
-  ), [librarySessions]);
-  const deviceAbandonmentModel = useMemo(() => (
-    buildDeviceAbandonmentModel({ librarySessions })
-  ), [librarySessions]);
-
-  useEffect(() => {
-    if (hasConfirmedIssues) return;
-    if (issueVerificationView !== ISSUE_VERIFICATION_VIEW.CONFIRMED) return;
-    setIssueVerificationView(ISSUE_VERIFICATION_VIEW.INVESTIGATING);
-  }, [hasConfirmedIssues, issueVerificationView]);
+  const visibleIssueRows = showAllIssues ? issueRows : issueRows.slice(0, 8);
+  const topIssue = issueRows[0] || null;
 
   const summaryTotals = useMemo(() => {
-    const sessionsCandidate = Number(issueModel.totalSessions) || 0;
-    const highIntentRaw = Number(issueModel.highIntentSessions ?? issueModel.eligibleHighIntent) || 0;
-    const sessionsTotal = Math.max(sessionsCandidate, highIntentRaw);
-    const highIntent = Math.min(highIntentRaw, sessionsTotal);
+    const sessionsTotal = Number(issueModel.totalSessions) || 0;
+    const highIntent = Number(issueModel.eligibleHighIntent) || 0;
     const purchases = Number(issueModel.purchases) || 0;
     const estimatedAtRisk = Math.min(
       highIntent,
-      filteredIssueRows.reduce((sum, row) => sum + (Number(row.affectedHighIntent) || 0), 0)
+      issueRows.reduce((sum, row) => sum + (Number(row.affectedHighIntent) || 0), 0)
     );
     return { sessionsTotal, highIntent, purchases, estimatedAtRisk };
-  }, [filteredIssueRows, issueModel.eligibleHighIntent, issueModel.highIntentSessions, issueModel.purchases, issueModel.totalSessions]);
+  }, [issueModel.eligibleHighIntent, issueModel.purchases, issueModel.totalSessions, issueRows]);
 
   const summaryLine = topIssue
     ? `Today: ${formatNumber(summaryTotals.sessionsTotal)} sessions, ${formatNumber(summaryTotals.highIntent)} high-intent, ${formatNumber(summaryTotals.purchases)} purchases, biggest leak = ${topIssue.issueLabel} (${pluralize(topIssue.affectedHighIntent, 'session', 'sessions')}).`
     : `Today: ${formatNumber(summaryTotals.sessionsTotal)} sessions, ${formatNumber(summaryTotals.highIntent)} high-intent, ${formatNumber(summaryTotals.purchases)} purchases. No major issue surfaced yet.`;
 
-  const landingRows = Array.isArray(landingPurchaseReport?.rows) ? landingPurchaseReport.rows : [];
-  const abandonmentRows = Array.isArray(abandonmentReport?.rows) ? abandonmentReport.rows : [];
-  const previousLandingRows = Array.isArray(landingPurchasePreviousReport?.rows) ? landingPurchasePreviousReport.rows : [];
-  const previousAbandonmentRows = Array.isArray(abandonmentPreviousReport?.rows) ? abandonmentPreviousReport.rows : [];
-  const visibleLandingRows = landingRows.slice(0, JOURNEY_UI_ROW_LIMIT);
-  const visibleAbandonmentRows = abandonmentRows.slice(0, JOURNEY_UI_ROW_LIMIT);
-  const landingStageBreakdown = useMemo(() => (
-    buildJourneyStageBreakdown(landingRows, {
-      getStage: (row) => journeyStageFromLandingLabel(row?.landing),
-      getCount: (row) => row?.purchases
-    })
-  ), [landingRows]);
-  const previousLandingStageBreakdown = useMemo(() => (
-    buildJourneyStageBreakdown(previousLandingRows, {
-      getStage: (row) => journeyStageFromLandingLabel(row?.landing),
-      getCount: (row) => row?.purchases
-    })
-  ), [previousLandingRows]);
-  const abandonmentStageBreakdown = useMemo(() => (
-    buildJourneyStageBreakdown(abandonmentRows, {
-      getStage: (row) => journeyStageFromAbandonArea(row?.abandoned_part),
-      getCount: (row) => row?.sessions
-    })
-  ), [abandonmentRows]);
-  const previousAbandonmentStageBreakdown = useMemo(() => (
-    buildJourneyStageBreakdown(previousAbandonmentRows, {
-      getStage: (row) => journeyStageFromAbandonArea(row?.abandoned_part),
-      getCount: (row) => row?.sessions
-    })
-  ), [previousAbandonmentRows]);
-  const landingStageTrends = useMemo(
-    () => buildJourneyStageTrends(landingStageBreakdown, previousLandingStageBreakdown),
-    [landingStageBreakdown, previousLandingStageBreakdown]
-  );
-  const abandonmentStageTrends = useMemo(
-    () => buildJourneyStageTrends(abandonmentStageBreakdown, previousAbandonmentStageBreakdown),
-    [abandonmentStageBreakdown, previousAbandonmentStageBreakdown]
-  );
-  const landingPeriodLabel = landingPurchaseReport?.period?.start && landingPurchaseReport?.period?.end
-    ? `${landingPurchaseReport.period.start} to ${landingPurchaseReport.period.end} (UTC)`
-    : 'Last 7 days (UTC)';
-  const abandonmentPeriodLabel = abandonmentReport?.period?.start && abandonmentReport?.period?.end
-    ? `${abandonmentReport.period.start} to ${abandonmentReport.period.end} (UTC)`
-    : 'Last 7 days (UTC)';
+  const abandonmentProducts = Array.isArray(productAbandonment?.products) ? productAbandonment.products : [];
+  const abandonmentPreviewProducts = abandonmentProducts.slice(0, PRODUCT_ABANDONMENT_STRIP_PREVIEW_COUNT);
+  const abandonmentOverflowCount = Math.max(0, abandonmentProducts.length - abandonmentPreviewProducts.length);
+  const abandonmentBaselineRate = Number(productAbandonment?.totals?.global_abandon_rate) || 0;
+  const abandonmentThresholdSessions = Number(productAbandonment?.thresholds?.min_product_sessions) || 500;
+  const journeyDeviceRows = Array.isArray(journeyAbandonmentReport?.deviceSegments?.rows) ? journeyAbandonmentReport.deviceSegments.rows : [];
+  const journeyCountryRows = Array.isArray(journeyAbandonmentReport?.countrySegments?.rows) ? journeyAbandonmentReport.countrySegments.rows : [];
+  const journeyRows = journeySegmentView === 'country' ? journeyCountryRows : journeyDeviceRows;
+  const journeyBaselineRate = Number(
+    journeySegmentView === 'country'
+      ? journeyAbandonmentReport?.countrySegments?.baselineAbandonRate
+      : journeyAbandonmentReport?.deviceSegments?.baselineAbandonRate
+  ) || 0;
+  const journeyPeriodLabel = journeyAbandonmentReport?.period?.start && journeyAbandonmentReport?.period?.end
+    ? `${journeyAbandonmentReport.period.start} to ${journeyAbandonmentReport.period.end}`
+    : `Last ${JOURNEY_DEFAULT_DAYS} days`;
+  const journeyCoverageRate = Number(journeyAbandonmentReport?.totals?.attributionCoverageRate) || 0;
+  const journeyRootAbandons = Number(journeyAbandonmentReport?.totals?.rootAbandonSessions) || 0;
+  const journeyUnclassifiedAbandons = Number(journeyAbandonmentReport?.totals?.unclassifiedAbandonSessions) || 0;
+  const journeyDeviceReconciliation = Number(journeyAbandonmentReport?.reconciliation?.segmentedDeviceMinusRoot) || 0;
+  const selectedAbandonmentProduct = useMemo(() => (
+    abandonmentProducts.find((entry) => entry.product_id === selectedAbandonmentProductId) || abandonmentProducts[0] || null
+  ), [abandonmentProducts, selectedAbandonmentProductId]);
+
+  useEffect(() => {
+    if (!abandonmentProducts.length) {
+      setSelectedAbandonmentProductId('');
+      return;
+    }
+    if (!abandonmentProducts.some((entry) => entry.product_id === selectedAbandonmentProductId)) {
+      setSelectedAbandonmentProductId(abandonmentProducts[0].product_id);
+    }
+  }, [abandonmentProducts, selectedAbandonmentProductId]);
 
   return (
 	    <div className="si-root">
@@ -2679,64 +1608,11 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         </div>
 	      </div>
 
-      <div className="si-card si-day-pulse-card" style={{ marginBottom: 12 }}>
-        <div className="si-card-title">
-          <h3>Today&apos;s Session Pulse</h3>
-          <span className="si-muted">
-            {dayPulse?.updatedAt
-              ? `Live • updated ${formatClockTime(dayPulse.updatedAt)}`
-              : dayPulseLoading
-                ? 'Live • updating...'
-                : 'Live'}
-          </span>
-        </div>
-
-        {dayPulseError ? (
-          <div className="si-empty" style={{ paddingTop: 6, color: '#b42318' }}>
-            {dayPulseError}
-          </div>
-        ) : (
-          <>
-            <div className="si-day-pulse-main-row">
-              <div className="si-day-pulse-value">{formatNumber(dayPulse?.sessionsSoFar || 0)}</div>
-              <div className="si-day-pulse-side">
-                <span className={`si-chip si-day-pulse-projection ${dayPulseProjectionClass}`}>
-                  {dayPulse?.projectionLabel || 'Mid'} day
-                </span>
-                <span className="si-day-pulse-projected">
-                  Projected: {formatNumber(dayPulse?.projectedSessions || 0)}
-                </span>
-              </div>
-            </div>
-
-            <div className="si-day-pulse-sub">Sessions recorded so far today</div>
-
-            <div className="si-day-pulse-comparisons">
-              {dayPulseComparisons.map((comparison, index) => {
-                const direction = (comparison?.direction || 'na').toString().toLowerCase();
-                return (
-                  <div
-                    key={`${comparison.label || 'comparison'}-${index}`}
-                    className={`si-day-pulse-delta si-day-pulse-delta-${direction}`}
-                    title={`${comparison.label}: ${comparison.deltaLabel} (baseline ${formatNumber(comparison.sessions)} sessions)`}
-                  >
-                    <span className="si-day-pulse-arrow">{comparison.arrow}</span>
-                    <span className="si-day-pulse-delta-value">{comparison.deltaLabel}</span>
-                    <span className="si-day-pulse-delta-label">{comparison.label}</span>
-                    <span className="si-day-pulse-delta-baseline">{formatNumber(comparison.sessions)} sessions</span>
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        )}
-      </div>
-
       <div className="si-card si-realtime-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
           <h3>Realtime overview</h3>
           <span className="si-muted">
-            KPI cards: today so far • Map/events: last {REALTIME_WINDOW_MINUTES}m • {realtime?.lastEventAt ? `Last event ${timeAgo(realtime.lastEventAt)}` : '—'}
+            Last {REALTIME_WINDOW_MINUTES}m • {realtime?.lastEventAt ? `Last event ${timeAgo(realtime.lastEventAt)}` : '—'}
           </span>
         </div>
 
@@ -2745,7 +1621,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
             {realtimeLoading ? 'Refreshing…' : 'Refresh'}
           </button>
           {realtime?.updatedAt ? (
-            <span className="si-muted">Last refreshed at {formatClockTime(realtime.updatedAt)}</span>
+            <span className="si-muted">Last refreshed {timeAgo(realtime.updatedAt)}</span>
           ) : null}
           <span className="si-spacer" />
           <span className="si-muted">Map</span>
@@ -2773,74 +1649,31 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           </div>
         ) : null}
 
-        <div className="si-realtime-kpis si-realtime-kpis-primary">
-          {realtimeMetricCards.map((card) => (
-            <div key={card.key} className="si-realtime-kpi si-realtime-kpi-primary">
-              <div className="si-realtime-kpi-head">
-                <div className="si-realtime-kpi-label">{card.label}</div>
-                <div className="si-realtime-kpi-sparkline" aria-hidden="true">
-                  {card.sparkline?.linePath ? (
-                    <svg
-                      viewBox={`0 0 ${REALTIME_KPI_SPARKLINE_WIDTH} ${REALTIME_KPI_SPARKLINE_HEIGHT}`}
-                      role="presentation"
-                    >
-                      <defs>
-                        <linearGradient id={`si-sparkline-gradient-${card.key}`} x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="currentColor" stopOpacity="0.26" />
-                          <stop offset="100%" stopColor="currentColor" stopOpacity="0.02" />
-                        </linearGradient>
-                      </defs>
-                      <path
-                        d={card.sparkline.areaPath}
-                        className={`si-realtime-kpi-sparkline-area si-realtime-kpi-sparkline-area-${card.sparklineDirection}`}
-                        fill={`url(#si-sparkline-gradient-${card.key})`}
-                      />
-                      <path
-                        d={card.sparkline.linePath}
-                        className={`si-realtime-kpi-sparkline-path si-realtime-kpi-sparkline-path-${card.sparklineDirection}`}
-                      />
-                      <circle
-                        cx={card.sparkline.firstPoint?.x ?? 0}
-                        cy={card.sparkline.firstPoint?.y ?? 0}
-                        r="2"
-                        className={`si-realtime-kpi-sparkline-dot si-realtime-kpi-sparkline-dot-${card.sparklineDirection}`}
-                      />
-                      <circle
-                        cx={card.sparkline.lastPoint?.x ?? 0}
-                        cy={card.sparkline.lastPoint?.y ?? 0}
-                        r="2.4"
-                        className={`si-realtime-kpi-sparkline-dot si-realtime-kpi-sparkline-dot-${card.sparklineDirection}`}
-                      />
-                    </svg>
-                  ) : (
-                    <span className="si-realtime-kpi-sparkline-empty">No trend yet</span>
-                  )}
-                </div>
+        <div className="si-realtime-kpis">
+          {realtimeKpis.map((metric) => (
+            <div
+              key={metric.key}
+              className="si-realtime-kpi"
+              style={{
+                '--si-kpi-accent': metric.accent,
+                '--si-kpi-fill': metric.fill,
+                '--si-kpi-surface': metric.surface
+              }}
+            >
+              <div className="si-realtime-kpi-topline">
+                <div className="si-realtime-kpi-label">{metric.label}</div>
+                <span className={`si-realtime-kpi-badge si-realtime-kpi-badge-${metric.badgeTone}`}>
+                  {metric.badge}
+                </span>
               </div>
-              <div className="si-realtime-kpi-value">{formatNumber(card.value)}</div>
-              <div className="si-realtime-kpi-deltas">
-                {card.comparisons.map((comparison) => (
-                  <div
-                    key={`${card.key}-${comparison.label || 'comparison'}`}
-                    className={`si-realtime-kpi-delta si-realtime-kpi-delta-${comparison.direction}`}
-                    title={`${comparison.label || ''}: ${comparison.deltaLabel} (baseline ${formatNumber(comparison.value)})`}
-                  >
-                    <span className="si-realtime-kpi-delta-arrow">{comparison.arrow}</span>
-                    <span className="si-realtime-kpi-delta-value">{comparison.deltaLabel}</span>
-                    <span className="si-realtime-kpi-delta-label">{comparison.label || 'comparison'}</span>
-                    <span className="si-realtime-kpi-delta-baseline">{formatNumber(comparison.value)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="si-realtime-kpis si-realtime-kpis-secondary">
-          {realtimeKeyEventCards.map((card) => (
-            <div key={card.key} className="si-realtime-kpi si-realtime-kpi-secondary">
-              <div className="si-realtime-kpi-label">{card.label}</div>
-              <div className="si-realtime-kpi-value">{formatNumber(card.value)}</div>
+              <div className="si-realtime-kpi-value">{formatNumber(metric.value)}</div>
+              <div className="si-realtime-kpi-meta">{metric.detail}</div>
+              <RealtimeKpiSparkline
+                data={metric.history}
+                accent={metric.accent}
+                fill={metric.fill}
+                label={`${metric.label} trend over the last ${realtimeComparisonWindowMinutes} minutes`}
+              />
             </div>
           ))}
         </div>
@@ -2848,21 +1681,15 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         <div className="si-realtime-grid">
           <div className="si-realtime-panel si-realtime-panel-map">
             <div className="si-realtime-panel-title">
-              <span>{realtimeMapTitle}</span>
-              <span className="si-muted">{realtimeMapSubtitle}</span>
+              <span>Active sessions by country</span>
+              <span className="si-muted">Hotspots</span>
             </div>
             <GeoHotspotsMap countries={realtimeCountries} focusRegion={realtimeMapRegion} height={260} />
             <div className="si-realtime-mini-list">
-              {(realtimeMiniRows || []).slice(0, REALTIME_GEO_ROWS_LIMIT).map((row, idx) => {
-                const raw = (row?.value || '').toString().trim();
-                const code = raw.toUpperCase();
-                const isFocusedGeoRow = realtimeMapMode === 'focus' && hasRealtimeFocusGeo;
-                const label = isFocusedGeoRow ? (raw || '—') : countryNameFromCode(raw);
-                const title = isFocusedGeoRow
-                  ? label
-                  : code && label
-                    ? `${label} (${code})`
-                    : label || code || '—';
+              {(realtimeCountries || []).slice(0, 8).map((row, idx) => {
+                const label = countryNameFromCode(row.value);
+                const code = (row.value || '').toString().trim().toUpperCase();
+                const title = code && label ? `${label} (${code})` : label || code || '—';
                 return (
                   <div key={`${code || '—'}-${idx}`} className="si-realtime-mini-row" title={title}>
                     <span>{label}</span>
@@ -2870,8 +1697,8 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
                   </div>
                 );
               })}
-              {(realtimeMiniRows || []).length === 0 ? (
-                <div className="si-empty" style={{ padding: 10 }}>{realtimeGeoEmptyMessage}</div>
+              {(realtimeCountries || []).length === 0 ? (
+                <div className="si-empty" style={{ padding: 10 }}>No geo data yet.</div>
               ) : null}
             </div>
           </div>
@@ -2993,184 +1820,241 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         </div>
       </div>
 
-      <div className="si-journey-grid" style={{ marginBottom: 12 }}>
-        <div className="si-card si-journey-card">
-          <div className="si-card-title">
-            <h3>Abandonment map</h3>
-            <span className="si-muted">{abandonmentPeriodLabel}</span>
+      {(productAbandonmentLoading || abandonmentProducts.length > 0) ? (
+        <div className="si-abandonment-shell" style={{ marginBottom: 12 }}>
+          <div className="si-abandonment-strip">
+            <div className="si-abandonment-strip-meta">
+              <div className="si-abandonment-strip-label">Abandonment risk</div>
+              {!productAbandonmentLoading ? (
+                <div className="si-abandonment-strip-baseline">
+                  Baseline {formatPercent(abandonmentBaselineRate, 1)}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="si-abandonment-strip-track">
+              {productAbandonmentLoading ? (
+                <>
+                  <div className="si-abandonment-pill si-abandonment-pill-skeleton" />
+                  <div className="si-abandonment-pill si-abandonment-pill-skeleton" />
+                </>
+              ) : (
+                <>
+                  {abandonmentPreviewProducts.map((item) => {
+                    const selected = item.product_id === selectedAbandonmentProduct?.product_id;
+                    return (
+                      <button
+                        key={item.product_id}
+                        className={`si-abandonment-pill ${selected ? 'si-abandonment-pill-selected' : ''}`}
+                        type="button"
+                        onClick={() => {
+                          setSelectedAbandonmentProductId(item.product_id);
+                          setProductAbandonmentOpen(true);
+                        }}
+                        title={`${item.product_label} • ${formatPercentagePoints(item.gap_rate)} above baseline`}
+                      >
+                        <span className="si-abandonment-pill-name">{item.product_label}</span>
+                        <span className="si-abandonment-pill-gap">+{formatPercentagePoints(item.gap_rate)}</span>
+                      </button>
+                    );
+                  })}
+                  {abandonmentOverflowCount > 0 ? (
+                    <span className="si-abandonment-strip-more">+{abandonmentOverflowCount} more</span>
+                  ) : null}
+                </>
+              )}
+            </div>
+
+            {!productAbandonmentLoading && abandonmentProducts.length > 0 ? (
+              <button
+                className={`si-abandonment-strip-action ${productAbandonmentOpen ? 'si-abandonment-strip-action-open' : ''}`}
+                type="button"
+                onClick={() => setProductAbandonmentOpen((prev) => !prev)}
+              >
+                <span>{productAbandonmentOpen ? 'Hide' : 'View'}</span>
+                <ChevronDown size={14} />
+              </button>
+            ) : null}
           </div>
-          {abandonmentStageTrends.length > 0 ? (
-            <div className="si-journey-stage-row">
-              {abandonmentStageTrends.map((trend) => (
-                <span
-                  key={`abandon-stage-${trend.stage}`}
-                  className={`si-stage-pill si-stage-${journeyStageKey(trend.stage)} ${trend.isTopSignificant ? 'si-stage-pill-significant' : ''}`}
-                  title={`Previous: ${formatNumber(trend.previousCount)} • Delta: ${trend.deltaCount >= 0 ? '+' : ''}${formatNumber(trend.deltaCount)}`}
-                >
-                  <span>{trend.stage}</span>
-                  <span className="si-stage-pill-count">{formatNumber(trend.currentCount)}</span>
-                  <span className={`si-stage-trend si-stage-trend-${trend.direction}`}>{trend.trendLabel}</span>
-                </span>
-              ))}
+
+          {productAbandonmentOpen && selectedAbandonmentProduct ? (
+            <div className="si-abandonment-panel">
+              <div className="si-abandonment-panel-hero">
+                <div className="si-abandonment-panel-copy">
+                  <div className="si-abandonment-panel-label">Most abandoned products</div>
+                  <div className="si-abandonment-panel-title" title={selectedAbandonmentProduct.product_label}>
+                    {selectedAbandonmentProduct.product_label}
+                  </div>
+                  <div className="si-abandonment-panel-subtitle">
+                    {selectedAbandonmentProduct.signal_label} • {formatNumber(abandonmentProducts.length)} flagged above baseline
+                  </div>
+                </div>
+
+                <div className="si-abandonment-panel-metrics">
+                  <div className="si-abandonment-metric">
+                    <div className="si-abandonment-metric-label">Sessions</div>
+                    <div className="si-abandonment-metric-value">{formatNumber(selectedAbandonmentProduct.sessions)}</div>
+                  </div>
+                  <div className="si-abandonment-metric">
+                    <div className="si-abandonment-metric-label">Abandon rate</div>
+                    <div className="si-abandonment-metric-value">{formatPercent(selectedAbandonmentProduct.abandon_rate, 1)}</div>
+                  </div>
+                  <div className="si-abandonment-metric">
+                    <div className="si-abandonment-metric-label">Baseline</div>
+                    <div className="si-abandonment-metric-value">{formatPercent(abandonmentBaselineRate, 1)}</div>
+                  </div>
+                  <div className="si-abandonment-metric">
+                    <div className="si-abandonment-metric-label">Above baseline</div>
+                    <div className="si-abandonment-metric-value si-abandonment-metric-value-accent">
+                      +{formatPercentagePoints(selectedAbandonmentProduct.gap_rate)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="si-abandonment-list" role="list" aria-label="Most abandoned products">
+                {abandonmentProducts.map((item) => {
+                  const selected = item.product_id === selectedAbandonmentProduct.product_id;
+                  return (
+                    <button
+                      key={item.product_id}
+                      className={`si-abandonment-row ${selected ? 'si-abandonment-row-selected' : ''}`}
+                      type="button"
+                      onClick={() => setSelectedAbandonmentProductId(item.product_id)}
+                    >
+                      <div className="si-abandonment-row-main">
+                        <div className="si-abandonment-row-name" title={item.product_label}>{item.product_label}</div>
+                        <div className="si-abandonment-row-sub">
+                          {formatNumber(item.sessions)} sessions • min {formatNumber(abandonmentThresholdSessions)} required
+                        </div>
+                      </div>
+
+                      <div className="si-abandonment-row-metrics">
+                        <span>{formatPercent(item.abandon_rate, 1)}</span>
+                        <span className="si-abandonment-row-gap">+{formatPercentagePoints(item.gap_rate)}</span>
+                        <span className="si-badge">{item.signal_label}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           ) : null}
-
-          {abandonmentLoading && !abandonmentReport ? (
-            <div className="si-empty">Loading abandonment report…</div>
-          ) : null}
-
-          {!abandonmentLoading && abandonmentError ? (
-            <div className="si-empty" style={{ color: '#b42318' }}>{abandonmentError}</div>
-          ) : null}
-
-          {!abandonmentLoading && !abandonmentError && abandonmentRows.length === 0 ? (
-            <div className="si-empty">No ranked abandonment clusters yet in this range.</div>
-          ) : null}
-
-          {!abandonmentLoading && !abandonmentError && abandonmentRows.length > 0 ? (
-            <>
-              <div className="si-journey-table-wrap">
-                <table className="si-event-table si-journey-table">
-                  <thead>
-                    <tr>
-                      <th>Rank</th>
-                      <th>Section</th>
-                      <th>Drop-off area</th>
-                      <th>Product context</th>
-                      <th>Sessions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleAbandonmentRows.map((row) => {
-                      const stage = journeyStageFromAbandonArea(row?.abandoned_part);
-                      return (
-                      <tr key={`abandon-row-${row.rank}-${row.abandoned_part}-${row.product}`}>
-                        <td><strong>{row.rank}</strong></td>
-                        <td>
-                          <span className={`si-stage-pill si-stage-pill-inline si-stage-${journeyStageKey(stage)}`}>{stage}</span>
-                        </td>
-                        <td>{row.abandoned_part || '—'}</td>
-                        <td>{row.product || '—'}</td>
-                        <td>{formatNumber(row.sessions)}</td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="si-muted" style={{ marginTop: 10 }}>
-                Classified sessions: {formatNumber(abandonmentReport.totalAbandonSessions)}.
-                {' '}Unclassified: {formatNumber(abandonmentReport.unclassifiedSessions)}.
-                {' '}Breakdown: {formatJourneyBreakdownSummary(abandonmentReport.unclassifiedBreakdown)}.
-              </div>
-            </>
-          ) : null}
         </div>
+      ) : null}
 
-        <div className="si-card si-journey-card">
-          <div className="si-card-title">
-            <h3>Landing pages that lead to purchases</h3>
-            <span className="si-muted">{landingPeriodLabel}</span>
-          </div>
-          {landingStageTrends.length > 0 ? (
-            <div className="si-journey-stage-row">
-              {landingStageTrends.map((trend) => (
-                <span
-                  key={`landing-stage-${trend.stage}`}
-                  className={`si-stage-pill si-stage-${journeyStageKey(trend.stage)} ${trend.isTopSignificant ? 'si-stage-pill-significant' : ''}`}
-                  title={`Previous: ${formatNumber(trend.previousCount)} • Delta: ${trend.deltaCount >= 0 ? '+' : ''}${formatNumber(trend.deltaCount)}`}
-                >
-                  <span>{trend.stage}</span>
-                  <span className="si-stage-pill-count">{formatNumber(trend.currentCount)}</span>
-                  <span className={`si-stage-trend si-stage-trend-${trend.direction}`}>{trend.trendLabel}</span>
-                </span>
-              ))}
-            </div>
-          ) : null}
-
-          {landingPurchaseLoading && !landingPurchaseReport ? (
-            <div className="si-empty">Loading landing-to-purchase report…</div>
-          ) : null}
-
-          {!landingPurchaseLoading && landingPurchaseError ? (
-            <div className="si-empty" style={{ color: '#b42318' }}>{landingPurchaseError}</div>
-          ) : null}
-
-          {!landingPurchaseLoading && !landingPurchaseError && landingRows.length === 0 ? (
-            <div className="si-empty">No attributed purchases yet in this range.</div>
-          ) : null}
-
-          {!landingPurchaseLoading && !landingPurchaseError && landingRows.length > 0 ? (
-            <>
-              <div className="si-journey-table-wrap">
-                <table className="si-event-table si-journey-table">
-                  <thead>
-                    <tr>
-                      <th>Rank</th>
-                      <th>Section</th>
-                      <th>Landing page</th>
-                      <th>Purchases</th>
-                      <th>Purchase record</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleLandingRows.map((row) => {
-                      const stage = journeyStageFromLandingLabel(row?.landing);
-                      return (
-                      <tr key={`landing-row-${row.rank}-${row.landing}`}>
-                        <td><strong>{row.rank}</strong></td>
-                        <td>
-                          <span className={`si-stage-pill si-stage-pill-inline si-stage-${journeyStageKey(stage)}`}>{stage}</span>
-                        </td>
-                        <td>{row.landing || '—'}</td>
-                        <td>{formatNumber(row.purchases)}</td>
-                        <td>{formatJourneyPurchaseRecord(row.top_products)}</td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="si-muted" style={{ marginTop: 10 }}>
-                Attributed purchases: {formatNumber(landingPurchaseReport.attributedPurchases)} / {formatNumber(landingPurchaseReport.totalPurchases)}.
-                {' '}Unattributed: {formatNumber(landingPurchaseReport.unattributedPurchases)}.
-                {' '}Breakdown: {formatJourneyBreakdownSummary(landingPurchaseReport.unattributedBreakdown)}.
-              </div>
-            </>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="si-card si-issues-layout-card" style={{ marginBottom: 12 }}>
+      <div className="si-card si-journey-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
-          <h3>Top issues</h3>
+          <h3>Abandonment by {journeySegmentView === 'country' ? 'country' : 'device'}</h3>
+          <span className="si-muted">{journeyPeriodLabel}</span>
+        </div>
+
+        <div className="si-row si-journey-controls" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <span className="si-muted">View</span>
+          <button
+            className={`si-button si-button-small ${journeySegmentView === 'device' ? 'si-button-active' : ''}`}
+            type="button"
+            onClick={() => setJourneySegmentView('device')}
+            aria-pressed={journeySegmentView === 'device'}
+          >
+            Devices
+          </button>
+          <button
+            className={`si-button si-button-small ${journeySegmentView === 'country' ? 'si-button-active' : ''}`}
+            type="button"
+            onClick={() => setJourneySegmentView('country')}
+            aria-pressed={journeySegmentView === 'country'}
+          >
+            Countries
+          </button>
+          <span className="si-spacer" />
           <span className="si-muted">
-            Ranked by high-intent impact • {issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED ? 'Confirmed' : 'Investigating'}
+            Segmented denominator: <strong>abandon sessions ÷ high-intent sessions</strong>
           </span>
         </div>
 
-        <div className="si-row si-issues-toolbar" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-          <button
-            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.INVESTIGATING ? 'si-chip-active' : ''}`}
-            type="button"
-            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.INVESTIGATING)}
-          >
-            Investigating
-          </button>
-          <button
-            className={`si-chip si-chip-button ${issueVerificationView === ISSUE_VERIFICATION_VIEW.CONFIRMED ? 'si-chip-active' : ''}`}
-            type="button"
-            onClick={() => setIssueVerificationView(ISSUE_VERIFICATION_VIEW.CONFIRMED)}
-            disabled={!hasConfirmedIssues}
-            title={hasConfirmedIssues ? 'Show confirmed issues only.' : 'No confirmed issues yet.'}
-          >
-            Confirmed
-          </button>
-          {verificationSummary?.total > 0 ? (
-            <span className="si-muted">
-              Verifier: {formatNumber(verificationSummary.confirmed)} confirmed, {formatNumber(verificationSummary.false_positive)} false alerts, {formatNumber(verificationSummary.unverified)} under review
-            </span>
-          ) : null}
+        <div className="si-journey-note">
+          Baseline {formatPercent(journeyBaselineRate, 1)}
+          {' '}• Coverage {formatPercent(journeyCoverageRate, 0)}
+          {' '}• Root abandons {formatNumber(journeyRootAbandons)}
+          {journeyUnclassifiedAbandons > 0 ? <> • Needs review {formatNumber(journeyUnclassifiedAbandons)}</> : null}
+          {journeyDeviceReconciliation !== 0 ? <> • Reconciliation {formatNumber(journeyDeviceReconciliation)}</> : null}
+        </div>
+
+        {journeyAbandonmentError ? (
+          <div className="si-empty" style={{ color: '#b42318' }}>{journeyAbandonmentError}</div>
+        ) : null}
+
+        {!journeyAbandonmentError && journeyAbandonmentLoading ? (
+          <div className="si-empty">Loading abandonment segments…</div>
+        ) : null}
+
+        {!journeyAbandonmentError && !journeyAbandonmentLoading && journeyRows.length === 0 ? (
+          <div className="si-empty">No abandonment segments available for this range.</div>
+        ) : null}
+
+        {!journeyAbandonmentError && !journeyAbandonmentLoading && journeyRows.length > 0 ? (
+          <div className="si-journey-table-wrap">
+            <table className="si-event-table si-journey-table">
+              <thead>
+                <tr>
+                  <th>{journeySegmentView === 'country' ? 'Country' : 'Device'}</th>
+                  <th>Traffic share</th>
+                  <th>High-intent</th>
+                  <th>Abandon</th>
+                  <th>Purchase</th>
+                  <th>Abandon rate</th>
+                  <th>Vs baseline</th>
+                  <th>Likely abandon area</th>
+                </tr>
+              </thead>
+              <tbody>
+                {journeyRows.map((row) => {
+                  const segmentLabel = journeySegmentView === 'country'
+                    ? countryNameFromCode(row.label || row.key)
+                    : normalizeDeviceLabel(row.label || row.key);
+                  const likelyAreaDetail = row.topSectionShare != null
+                    ? `${row.topSectionLabel} (${formatPercent(row.topSectionShare, 0)})`
+                    : row.topSectionLabel || '—';
+                  return (
+                    <tr key={`journey-${journeySegmentView}-${row.key}`}>
+                      <td className="si-journey-segment-cell">
+                        <div className="si-journey-segment-label">{segmentLabel}</div>
+                        {(Number(row.unclassifiedAbandonSessions) || 0) > 0 ? (
+                          <div className="si-journey-segment-sub">
+                            {formatNumber(row.unclassifiedAbandonSessions)} unclassified
+                          </div>
+                        ) : null}
+                      </td>
+                      <td>{formatPercent(row.trafficShare, 1)}</td>
+                      <td>{formatNumber(row.highIntentSessions)}</td>
+                      <td>{formatNumber(row.abandonSessions)}</td>
+                      <td>{formatNumber(row.purchaseSessions)}</td>
+                      <td>{row.abandonRate == null ? '—' : formatPercent(row.abandonRate, 1)}</td>
+                      <td className={row.excessRate > 0 ? 'si-journey-rate-up' : row.excessRate < 0 ? 'si-journey-rate-down' : ''}>
+                        {row.excessRate == null ? '—' : formatSignedPercentagePoints(row.excessRate, 1)}
+                      </td>
+                      <td className="si-journey-segment-cell">
+                        <div className="si-journey-segment-label">{likelyAreaDetail}</div>
+                        {row.classificationCoverage != null && row.classificationCoverage < 1 ? (
+                          <div className="si-journey-segment-sub">
+                            {formatPercent(row.classificationCoverage, 0)} classified
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="si-card si-issues-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Top issues</h3>
+          <span className="si-muted">Top {Math.min(issueRows.length, 8)} visible • Mid strictness</span>
         </div>
 
         {clarityLoading ? (
@@ -3187,221 +2071,77 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           </div>
         ) : null}
 
-        {!clarityLoading && !clarityError && issueRows.length > 0 && filteredIssueRows.length === 0 ? (
-          <div className="si-empty">
-            No rows match this status filter yet.
-          </div>
-        ) : null}
-
-        {!clarityLoading && !clarityError && filteredIssueRows.length > 0 ? (
-          <div className="si-journey-grid si-issues-split-grid">
-            {issueTableSections.map((section) => (
-              <div key={section.key} className="si-card si-journey-card si-issues-panel-card">
-                <div className="si-card-title si-table-panel-header">
-                  <h3>{section.title}</h3>
-                  <span className="si-muted">{section.subtitle}</span>
-                </div>
-                {section.rows.length === 0 ? (
-                  <div className="si-empty">{section.emptyMessage}</div>
-                ) : (
-                  <div className="si-journey-table-wrap si-issues-table-wrap">
-                    <table className="si-event-table si-issues-compact-table">
-                      <thead>
-                        <tr>
-                          <th>Rank</th>
-                          <th>Issue</th>
-                          <th>Where</th>
-                          <th>Sessions</th>
-                          <th>% high-intent</th>
-                          <th>Status</th>
-                          <th>Proof</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {section.rows.map((row, rowIndex) => {
-                          const verificationState = verificationUi(row.verificationStatus, row);
-                          const sampleList = Array.isArray(row.sampleSessions) ? row.sampleSessions : [];
-                          const proofSession = sampleList[0];
-                          const proofCount = Math.min(sampleList.length, ISSUE_PROOF_SESSION_LIMIT);
-                          const issueBadge = issueTypeBadgeMeta(row.type);
-                          return (
-                            <tr key={row.id} className={`si-issue-row si-issue-${row.type}`}>
-                              <td><strong>{rowIndex + 1}</strong></td>
-                              <td>
-                                <div className="si-issue-cell">
-                                  <span className="si-issue-name">{row.issueLabel}</span>
-                                  <span className={`si-issue-type-badge si-issue-type-${issueBadge.tone}`}>{issueBadge.label}</span>
-                                </div>
-                              </td>
-                              <td title={row.whereLabel}>
-                                <span className="si-issue-where-text">{row.whereLabel}</span>
-                              </td>
-                              <td>{pluralize(row.sessionsAffected, 'session', 'sessions')}</td>
-                              <td>{formatPercent(row.highIntentRate, 0)}</td>
-                              <td title={verificationState.hint || row.verificationReason || ''}>
-                                <span className={`si-chip ${verificationState.className}`}>{verificationState.label}</span>
-                              </td>
-                              <td>
-                                {proofSession?.session_id ? (
-                                  <button
-                                    className="si-button si-button-small"
-                                    type="button"
-                                    onClick={() => openStory(proofSession.session_id, proofSession)}
-                                    title={`View ${pluralize(proofCount, 'session', 'sessions')}`}
-                                  >
-                                    View {proofCount || 1}
-                                  </button>
-                                ) : (
-                                  <span className="si-muted">No sample</span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="si-card si-device-abandon-card" style={{ marginBottom: 12 }}>
-        <div className="si-card-title">
-          <h3>Abandonment by device</h3>
-          <span className="si-muted">Traffic-adjusted view • {libraryDay || 'Today'}</span>
-        </div>
-        {deviceAbandonmentModel.totalSessions === 0 ? (
-          <div className="si-empty">
-            No classified iOS/Android/Desktop sessions yet for this day.
-          </div>
-        ) : (
+        {!clarityLoading && !clarityError && issueRows.length > 0 ? (
           <>
-            <div className="si-device-abandon-layout">
-              <div className="si-device-pie-wrap">
-                <div className="si-device-pie" style={{ background: deviceAbandonmentModel.pieGradient }}>
-                  <div className="si-device-pie-center">
-                    <div className="si-device-pie-value">{formatPercent(deviceAbandonmentModel.baselineAbandonRate, 0)}</div>
-                    <div className="si-device-pie-label">Baseline abandon rate</div>
-                  </div>
-                </div>
-              </div>
-              <div className="si-device-legend">
-                {deviceAbandonmentModel.rows.map((row) => {
-                  const excessRounded = Math.round(row.excessAbandon);
-                  const excessLabel = `${excessRounded > 0 ? '+' : ''}${formatNumber(excessRounded)} vs expected`;
-                  return (
-                    <div key={`device-legend-${row.key}`} className="si-device-legend-row">
-                      <span className="si-device-dot" style={{ background: row.color }} />
-                      <span className="si-device-legend-name">{row.label}</span>
-                      <span className="si-device-legend-share">{formatPercent(row.adjustedShare, 0)}</span>
-                      <span className={`si-device-legend-excess ${row.excessAbandon > 0 ? 'si-device-legend-excess-positive' : 'si-device-legend-excess-neutral'}`}>
-                        {excessLabel}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="si-device-note">
-              This chart adjusts abandonment by each device&apos;s share of total sessions, so high-volume traffic does not dominate by default.
-            </div>
-            <div className="si-device-note si-device-note-fine">
-              Math note: adjusted share is proportional to (device abandon share ÷ device traffic share), then normalized to 100%.
-            </div>
-            {deviceAbandonmentModel.unknownSessions > 0 ? (
-              <div className="si-muted" style={{ marginTop: 6 }}>
-                {pluralize(deviceAbandonmentModel.unknownSessions, 'session', 'sessions')} could not be classified as iOS/Android/Desktop and are shown as <strong>Unknown</strong>.
-              </div>
-            ) : null}
-            {deviceAbandonmentModel.topOverIndexed ? (
-              <div className="si-device-callout">
-                Strongest over-index today: <strong>{deviceAbandonmentModel.topOverIndexed.label}</strong> ({formatPercent(deviceAbandonmentModel.topOverIndexed.abandonRate, 1)} abandon rate), most commonly at <strong>{deviceAbandonmentModel.topOverIndexed.topSectionLabel}</strong>.
-              </div>
-            ) : null}
-
-            <table className="si-event-table si-device-abandon-table">
+            <table className="si-event-table si-issues-table">
               <thead>
                 <tr>
-                  <th>Device</th>
-                  <th>Sessions</th>
-                  <th>Abandon rate</th>
-                  <th>Traffic-adjusted index</th>
-                  <th>Likely abandon section</th>
+                  <th>Rank</th>
+                  <th>Issue</th>
+                  <th>Where</th>
+                  <th>Sessions affected</th>
+                  <th>% high-intent affected</th>
+                  <th>Confidence</th>
+                  <th>Action</th>
+                  <th>Proof</th>
                 </tr>
               </thead>
               <tbody>
-                {deviceAbandonmentModel.rows.map((row) => (
-                  <tr key={`device-row-${row.key}`}>
-                    <td>
-                      <span className="si-device-table-device">
-                        <span className="si-device-dot" style={{ background: row.color }} />
-                        {row.label}
-                      </span>
-                    </td>
-                    <td>{pluralize(row.totalSessions, 'session', 'sessions')}</td>
-                    <td>{formatPercent(row.abandonRate, 1)}</td>
-                    <td>{row.adjustedIndex.toFixed(2)}x</td>
-                    <td>
-                      {row.topSectionLabel === '—'
-                        ? '—'
-                        : `${row.topSectionLabel} (${formatPercent(row.topSectionShare, 0)} of abandons)`}
-                    </td>
-                  </tr>
-                ))}
+                {visibleIssueRows.map((row) => {
+                  const confidenceClass = row.confidenceLabel === 'High'
+                    ? 'si-confidence-high'
+                    : row.confidenceLabel === 'Med'
+                      ? 'si-confidence-med'
+                      : 'si-confidence-low';
+                  const sampleList = Array.isArray(row.sampleSessions) ? row.sampleSessions : [];
+                  const proofSession = sampleList[0];
+                  const proofCount = Math.min(sampleList.length, 5);
+                  return (
+                    <tr key={row.id} className={`si-issue-row si-issue-${row.type}`}>
+                      <td><strong>{row.rank}</strong></td>
+                      <td>{row.issueLabel}</td>
+                      <td title={row.whereLabel}>{row.whereLabel}</td>
+                      <td>{pluralize(row.sessionsAffected, 'session', 'sessions')}</td>
+                      <td>{formatPercent(row.highIntentRate, 0)}</td>
+                      <td>
+                        <span className={`si-chip ${confidenceClass}`}>{row.confidenceLabel}</span>
+                      </td>
+                      <td title={row.action}>{row.action}</td>
+                      <td>
+                        {proofSession?.session_id ? (
+                          <button
+                            className="si-button si-button-small"
+                            type="button"
+                            onClick={() => openStory(proofSession.session_id, proofSession)}
+                          >
+                            View {proofCount || 1} sessions
+                          </button>
+                        ) : (
+                          <span className="si-muted">No sample</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
-          </>
-        )}
-      </div>
 
-      <div className="si-card si-action-plan-card" style={{ marginBottom: 12 }}>
-        <div className="si-card-title">
-          <h3>Behavior patterns</h3>
-          <span className="si-muted">Campaign/country segments that over-index vs the day baseline</span>
-        </div>
-        {actionPlanRows.length === 0 ? (
-          <div className="si-empty">
-            No campaign/country segments reached the emerging threshold yet.
-          </div>
-        ) : (
-          <div className="si-action-plan-list">
-            {actionPlanRows.map((row, idx) => {
-              const proofSession = row.sampleSession;
-              return (
-                <div key={`pattern-${row.id}`} className="si-action-plan-row">
-                  <div className="si-action-plan-rank">{idx + 1}</div>
-                  <div className="si-action-plan-body">
-                    <div className="si-action-plan-title">{row.patternLabel}</div>
-                    <div className="si-action-plan-where">{row.whereLabel}</div>
-                    <div className="si-action-plan-evidence"><strong>Observation:</strong> {row.observation}</div>
-                    <div className="si-action-plan-evidence"><strong>What it suggests:</strong> {row.suggests}</div>
-                    <div className="si-action-plan-evidence"><strong>Next check:</strong> {row.nextCheck}</div>
-                    <div className="si-action-plan-evidence"><strong>Fix first:</strong> {row.fixFirst}</div>
-                  </div>
-                  <div className="si-action-plan-meta">
-                    <span className={`si-chip ${row.status === 'Established' ? 'si-pattern-established' : 'si-pattern-emerging'}`}>{row.status}</span>
-                    <div className="si-action-plan-impact">{row.statusLine}</div>
-                    {proofSession?.session_id ? (
-                      <button
-                        className="si-button si-button-small"
-                        type="button"
-                        onClick={() => openStory(proofSession.session_id, proofSession)}
-                      >
-                        View evidence
-                      </button>
-                    ) : (
-                      <span className="si-muted">No sample</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+            {issueRows.length > 8 ? (
+              <div className="si-row" style={{ justifyContent: 'space-between', marginTop: 10 }}>
+                <span className="si-muted">
+                  Showing {visibleIssueRows.length} of {issueRows.length} issue rows
+                </span>
+                <button
+                  className="si-button si-button-small"
+                  type="button"
+                  onClick={() => setShowAllIssues((prev) => !prev)}
+                >
+                  {showAllIssues ? 'Show top 8' : 'Show more'}
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : null}
       </div>
 
       <div className="si-row" style={{ marginBottom: 12, justifyContent: 'space-between', gap: 10 }}>
@@ -3444,82 +2184,17 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 	        </ul>
 	      </div>
 
-        {developerGuideRows.length > 0 ? (
-          <div className="si-card si-dev-guide-card" style={{ marginBottom: 12 }}>
-            <div className="si-card-title">
-              <h3>Developer fix instructions</h3>
-              <span className="si-muted">How to resolve each top technical issue</span>
-            </div>
-            <div className="si-fix-grid">
-              {developerGuideRows.map((row) => {
-                const steps = buildDeveloperFixSteps(row);
-                const technical = row.rawErrorMessage
-                  ? (row.rawErrorMessage.length > 140 ? `${row.rawErrorMessage.slice(0, 140)}...` : row.rawErrorMessage)
-                  : '';
-                return (
-                  <div key={`fix-${row.id}`} className="si-fix-card">
-                    <div className="si-fix-title">{row.issueLabel}</div>
-                    <div className="si-fix-where">{row.whereLabel}</div>
-                    <ol className="si-fix-list">
-                      {steps.map((step, idx) => (
-                        <li key={`${row.id}-step-${idx}`}>{step}</li>
-                      ))}
-                    </ol>
-                    {technical ? (
-                      <div className="si-fix-tech">
-                        <span className="si-muted">Technical signature</span>
-                        <code className="si-code">{technical}</code>
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-
 	      <div className="si-grid">
-	        <div className="si-card">
-	          <div className="si-metric-label">
-	            <div className="si-icon" />
-	            Sessions (24h)
+        {overviewPrimaryCards.map((card) => (
+          <div key={card.key} className="si-card">
+            <div className="si-metric-label">
+              <div className="si-icon" />
+              {card.label}
+            </div>
+            <div className="si-metric-value">{card.value ?? '—'}</div>
+            <div className="si-metric-sub">{card.sub}</div>
           </div>
-          <div className="si-metric-value">{overview?.kpis?.sessions24h ?? '—'}</div>
-          <div className="si-metric-sub">Store: {store?.name || storeId}</div>
-        </div>
-
-        <div className="si-card">
-          <div className="si-metric-label">
-            <div className="si-icon" />
-            Add to cart (24h)
-          </div>
-          <div className="si-metric-value">{overview?.kpis?.atc24h ?? '—'}</div>
-          <div className="si-metric-sub">
-            Sessions • Events: {overview?.kpis?.atcEvents24h ?? '—'}
-          </div>
-        </div>
-
-        <div className="si-card">
-          <div className="si-metric-label">
-            <div className="si-icon" />
-            Checkout started (24h)
-          </div>
-          <div className="si-metric-value">{overview?.kpis?.checkoutStarted24h ?? '—'}</div>
-          <div className="si-metric-sub">
-            Sessions • Events: {overview?.kpis?.checkoutStartedEvents24h ?? '—'}
-          </div>
-        </div>
-
-        <div className="si-card">
-          <div className="si-metric-label">
-            <div className="si-icon" />
-            Purchases (24h)
-          </div>
-          <div className="si-metric-value">{overview?.kpis?.purchases24h ?? '—'}</div>
-          <div className="si-metric-sub">
-            Sessions • Events: {overview?.kpis?.purchasesEvents24h ?? '—'}
-          </div>
-        </div>
+        ))}
 
         <div className="si-card">
           <div className="si-metric-label">
@@ -3900,7 +2575,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           <span className="si-muted">
             {libraryDay || claritySignals?.date || '—'}
             {' • '}
-            {ISSUE_SCOPE_LABEL}
+            {flowMode === 'high_intent_no_purchase' ? 'High intent (no purchase)' : 'All sessions'}
           </span>
         </div>
 
@@ -3920,12 +2595,9 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
           </div>
         ) : null}
 
-        {!clarityLoading && !clarityError && !claritySignals && clarityEmptyMessage ? (
+        {!clarityLoading && !clarityError && !claritySignals ? (
           <div className="si-empty" style={{ marginTop: 10 }}>
-            {clarityEmptyMessage}{' '}
-            {shouldShowClarityInstallHint ? (
-              <span className="si-code">{storefrontPixelInstallUrl}</span>
-            ) : null}
+            No clarity signals yet. Install the storefront script: <span className="si-code">/pixel.js?store={storeId}</span>
           </div>
         ) : null}
 
@@ -4303,7 +2975,6 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
                   <tr>
                     <th>Shopper</th>
                     <th>Last seen</th>
-                    <th>Entry page</th>
                     <th>Flow</th>
                     <th>Signals</th>
                     <th>Checkout</th>
@@ -4331,11 +3002,6 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
                   <tr key={s.session_id} className={selected ? 'si-row-selected' : ''}>
                     <td title={s.session_id}>{userLabel(s)}</td>
                     <td>{timeAgo(s.last_seen)}</td>
-                    <td title={s.entry_page_path || s.entry_page_url || ''}>
-                      <span className="si-path-label">
-                        {formatPathLabel(s.entry_page_path || s.entry_page_url || '')}
-                      </span>
-                    </td>
                     <td>
                       <span className={`si-badge ${inferredStage === 'purchase' ? 'si-badge-success' : ''}`}>
                         {FLOW_STAGE_LABELS[inferredStage] || inferredStage}
