@@ -3,7 +3,7 @@ flask>=3.0.0
 flask-cors>=4.0.0
 
 # Image processing
-numpy>=1.24.0
+numpy>=1.24.0,<2
 Pillow>=10.0.0
 opencv-python-headless>=4.8.0
 
