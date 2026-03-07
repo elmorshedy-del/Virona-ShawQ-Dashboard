@@ -220,6 +220,7 @@ const GEMINI_COORDINATE_SCALE = 1000;
 const DEFAULT_SELECTION_CONFIDENCE = 0.72;
 const PHOTO_MAGIC_SELECTION_PREVIEW_MAX_SIDE = 2048;
 const PHOTO_MAGIC_SELECTION_MAX_VARIANTS = 4;
+const PHOTO_MAGIC_SELECTION_PARSE_RETRIES = 2;
 const PHOTO_MAGIC_SELECTION_VARIANT_RULES = [
   {
     pattern: /\b(logo|brand|wordmark|badge|emblem|mark|crest|symbol)\b/i,
@@ -409,15 +410,27 @@ Rules:
 - The source image resolution is ${Math.max(1, Math.round(safeParseNumber(width, 1)))}x${Math.max(1, Math.round(safeParseNumber(height, 1)))} pixels.
 - Return JSON only.`;
 
-  const result = await model.generateContent([
-    { text: detectionPrompt },
-    { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }
-  ]);
+  let parsed = null;
+  let lastParseError = null;
 
-  const rawText = String(result?.response?.text?.() ?? '')
-    .replace(/```json|```/g, '')
-    .trim();
-  const parsed = JSON.parse(rawText || '{}');
+  for (let attempt = 0; attempt <= PHOTO_MAGIC_SELECTION_PARSE_RETRIES; attempt += 1) {
+    const result = await model.generateContent([
+      { text: detectionPrompt },
+      { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }
+    ]);
+
+    try {
+      parsed = parseModelJsonObject(result?.response?.text?.() ?? '');
+      lastParseError = null;
+      break;
+    } catch (error) {
+      lastParseError = error;
+    }
+  }
+
+  if (!parsed) {
+    throw lastParseError || new Error('Gemini selection did not return usable JSON.');
+  }
 
   if (!parsed?.found) return null;
 
