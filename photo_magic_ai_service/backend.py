@@ -25,7 +25,7 @@ import numpy as np
 import torch
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from PIL import Image
+from PIL import Image, ImageFilter
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
@@ -555,43 +555,46 @@ def build_projected_shadow(
     scale_x: float,
     scale_y: float,
 ) -> np.ndarray:
-    mask_u8 = np.ascontiguousarray(mask_u8, dtype=np.uint8)
-    bbox = mask_bbox(mask_u8)
+    mask_u8 = np.asarray(mask_u8, dtype=np.uint8)
+    if mask_u8.ndim != 2:
+        raise RuntimeError(f"Unexpected shadow mask shape: {tuple(mask_u8.shape)}")
+
+    mask_image = Image.fromarray(mask_u8, mode="L")
+    bbox = mask_image.getbbox()
     if bbox is None:
         return np.zeros_like(mask_u8, dtype=np.uint8)
 
     x1, y1, x2, y2 = bbox
-    crop = np.ascontiguousarray(mask_u8[y1:y2, x1:x2], dtype=np.uint8)
-    if crop.size == 0:
+    crop = mask_image.crop((x1, y1, x2, y2))
+    crop_w, crop_h = crop.size
+    if crop_w == 0 or crop_h == 0:
         return np.zeros_like(mask_u8, dtype=np.uint8)
 
-    scaled_w = max(1, int(round(crop.shape[1] * max(0.2, float(scale_x)))))
-    scaled_h = max(1, int(round(crop.shape[0] * max(0.05, float(scale_y)))))
-    shadow_crop = np.ascontiguousarray(cv2.resize(crop, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR), dtype=np.uint8)
+    scaled_w = max(1, int(round(crop_w * max(0.2, float(scale_x)))))
+    scaled_h = max(1, int(round(crop_h * max(0.05, float(scale_y)))))
+    shadow_crop = crop.resize((scaled_w, scaled_h), resample=Image.BILINEAR)
 
-    dest_x = int(round(x1 + ((crop.shape[1] - scaled_w) / 2.0) + float(offset_x)))
+    dest_x = int(round(x1 + ((crop_w - scaled_w) / 2.0) + float(offset_x)))
     dest_y = int(round(y2 - (scaled_h * 0.35) + float(offset_y)))
 
-    shadow = np.zeros_like(mask_u8, dtype=np.uint8)
+    shadow = Image.new("L", mask_image.size, 0)
     src_x1 = max(0, -dest_x)
     src_y1 = max(0, -dest_y)
-    src_x2 = min(scaled_w, shadow.shape[1] - dest_x)
-    src_y2 = min(scaled_h, shadow.shape[0] - dest_y)
+    src_x2 = min(scaled_w, shadow.size[0] - dest_x)
+    src_y2 = min(scaled_h, shadow.size[1] - dest_y)
 
     if src_x1 >= src_x2 or src_y1 >= src_y2:
-        return shadow
+        return np.zeros_like(mask_u8, dtype=np.uint8)
 
     dst_x1 = max(0, dest_x)
     dst_y1 = max(0, dest_y)
-    dst_x2 = dst_x1 + (src_x2 - src_x1)
-    dst_y2 = dst_y1 + (src_y2 - src_y1)
-    shadow[dst_y1:dst_y2, dst_x1:dst_x2] = shadow_crop[src_y1:src_y2, src_x1:src_x2]
+    clipped_crop = shadow_crop.crop((src_x1, src_y1, src_x2, src_y2))
+    shadow.paste(clipped_crop, (dst_x1, dst_y1))
 
     blur = max(0, int(round(blur_px)))
     if blur > 0:
-        kernel = max(3, blur * 2 + 1)
-        shadow = cv2.GaussianBlur(shadow, (kernel, kernel), 0)
-    return shadow
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=max(0.5, blur / 2.0)))
+    return np.asarray(shadow, dtype=np.uint8)
 
 
 def relight_subject_with_shadow(
