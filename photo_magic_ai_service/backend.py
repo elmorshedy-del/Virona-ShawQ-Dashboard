@@ -555,18 +555,19 @@ def build_projected_shadow(
     scale_x: float,
     scale_y: float,
 ) -> np.ndarray:
+    mask_u8 = np.ascontiguousarray(mask_u8, dtype=np.uint8)
     bbox = mask_bbox(mask_u8)
     if bbox is None:
         return np.zeros_like(mask_u8, dtype=np.uint8)
 
     x1, y1, x2, y2 = bbox
-    crop = mask_u8[y1:y2, x1:x2]
+    crop = np.ascontiguousarray(mask_u8[y1:y2, x1:x2], dtype=np.uint8)
     if crop.size == 0:
         return np.zeros_like(mask_u8, dtype=np.uint8)
 
     scaled_w = max(1, int(round(crop.shape[1] * max(0.2, float(scale_x)))))
     scaled_h = max(1, int(round(crop.shape[0] * max(0.05, float(scale_y)))))
-    shadow_crop = cv2.resize(crop, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
+    shadow_crop = np.ascontiguousarray(cv2.resize(crop, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR), dtype=np.uint8)
 
     dest_x = int(round(x1 + ((crop.shape[1] - scaled_w) / 2.0) + float(offset_x)))
     dest_y = int(round(y2 - (scaled_h * 0.35) + float(offset_y)))
