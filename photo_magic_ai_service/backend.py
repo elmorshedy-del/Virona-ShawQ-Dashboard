@@ -455,6 +455,25 @@ def preprocess_rmbg_image(pil_image: Image.Image) -> torch.Tensor:
     return (image_tensor - mean) / std
 
 
+def extract_rmbg_prediction(output) -> torch.Tensor:
+    if torch.is_tensor(output):
+        return output
+
+    if isinstance(output, dict):
+        for key in ("preds", "pred", "mask", "masks", "out", "output", "outputs"):
+            if key in output:
+                return extract_rmbg_prediction(output[key])
+
+    if isinstance(output, (list, tuple)):
+        for item in output:
+            try:
+                return extract_rmbg_prediction(item)
+            except TypeError:
+                continue
+
+    raise TypeError(f"Unsupported RMBG output type: {type(output).__name__}")
+
+
 def rmbg2_predict_mask(pil_image: Image.Image) -> Image.Image:
     if not RMBG2_AVAILABLE or rmbg2_model is None:
         raise RuntimeError("RMBG2 not available")
@@ -464,8 +483,11 @@ def rmbg2_predict_mask(pil_image: Image.Image) -> Image.Image:
 
     with torch.inference_mode():
         out = rmbg2_model(image_tensor)
-        pred = out[-1] if isinstance(out, (list, tuple)) else out
-        pred = torch.sigmoid(pred)
+        pred = extract_rmbg_prediction(out).detach().float()
+        pred_min = float(pred.min().item())
+        pred_max = float(pred.max().item())
+        if pred_min < 0.0 or pred_max > 1.0:
+            pred = torch.sigmoid(pred)
         pred = pred.squeeze().detach().float().cpu().numpy()
 
     pred_u8 = np.clip(pred * 255.0, 0, 255).astype(np.uint8)
