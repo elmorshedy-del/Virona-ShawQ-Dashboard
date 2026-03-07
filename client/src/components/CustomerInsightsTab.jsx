@@ -51,6 +51,11 @@ const sectionIcons = {
 };
 
 const UPPER_METRIC_SLOT_COUNT = 4;
+const TOP_PRODUCTS_VISIBLE_COUNT = 9;
+const TOP_PRODUCTS_COMMENTARY_COUNT = 5;
+const TOP_PRODUCTS_NAME_PREVIEW_LIMIT = 2;
+const TOP_PRODUCTS_DEFAULT_WINDOW_LABEL = 'Rolling last 30 days';
+const TOP_PRODUCTS_DEFAULT_COMPARISON_LABEL = 'Previous 30 days';
 const MOMENTUM_LIVE_WINDOW_DAYS = 7;
 const MOMENTUM_MODE_LIVE = 'live';
 const MOMENTUM_MODE_SELECTED = 'selected';
@@ -98,7 +103,10 @@ const buildInsightsParams = (store, range) => {
   if (store) {
     params.set('store', String(store).trim().toLowerCase());
   }
-  if (range?.type && range.value != null) {
+  if (range?.startDate && range?.endDate) {
+    params.set('startDate', String(range.startDate));
+    params.set('endDate', String(range.endDate));
+  } else if (range?.type && range.value != null) {
     params.set(range.type, String(range.value));
   }
   return params;
@@ -177,15 +185,155 @@ const formatSparklineLookback = (sparkline) => {
   return `${startLabel} → ${endLabel}`;
 };
 
+const getProductRowKey = (row, index = 0) => (
+  row?.key
+  || row?.product_id
+  || row?.variant_id
+  || row?.sku
+  || row?.title
+  || `product-row-${index}`
+);
+
+const getProductRowTitle = (row) => (
+  row?.title
+  || row?.cache_title
+  || row?.sku
+  || 'Untitled product'
+);
+
+const parseHeroTitle = (title, fallbackHeadline) => {
+  const fallback = fallbackHeadline && fallbackHeadline !== 'Location signal building'
+    ? String(fallbackHeadline)
+    : 'Customer insight signal';
+  const text = typeof title === 'string' ? title.trim() : '';
+  if (!text) {
+    return {
+      kicker: 'Revenue-leading customer pocket',
+      headline: fallback
+    };
+  }
+
+  const separatorIndex = text.indexOf(':');
+  if (separatorIndex > 0 && separatorIndex < text.length - 1) {
+    return {
+      kicker: text.slice(0, separatorIndex).trim(),
+      headline: text.slice(separatorIndex + 1).trim()
+    };
+  }
+
+  return {
+    kicker: 'Customer brief',
+    headline: text
+  };
+};
+
+const buildHeroStory = (subtitle, fallbackHeadline) => {
+  const text = typeof subtitle === 'string' ? subtitle.trim() : '';
+  if (text) return text;
+  if (fallbackHeadline && fallbackHeadline !== 'Location signal building') {
+    return `${fallbackHeadline} is leading this window based on current customer revenue distribution.`;
+  }
+  return 'Insights update once customer, location, and product data are fully synced.';
+};
+
+const formatTitlePreview = (titles) => {
+  const cleanTitles = (titles || []).filter(Boolean);
+  if (!cleanTitles.length) return 'No products';
+  if (cleanTitles.length <= TOP_PRODUCTS_NAME_PREVIEW_LIMIT) {
+    return cleanTitles.join(' + ');
+  }
+  const visible = cleanTitles.slice(0, TOP_PRODUCTS_NAME_PREVIEW_LIMIT);
+  return `${visible.join(' + ')} +${cleanTitles.length - visible.length}`;
+};
+
+const formatTopProductMetricSnippet = (row, formatCurrency) => {
+  const orders = formatNumber(row?.orders);
+  const revenue = formatCurrency ? formatCurrency(row?.revenue || 0, 0) : formatNumber(row?.revenue || 0);
+  return `${orders} orders · ${revenue}`;
+};
+
+const buildTopProductsCommentary = (currentProducts, previousProducts, formatCurrency) => {
+  const currentTop = Array.isArray(currentProducts) ? currentProducts.slice(0, TOP_PRODUCTS_COMMENTARY_COUNT) : [];
+  const previousTop = Array.isArray(previousProducts) ? previousProducts.slice(0, TOP_PRODUCTS_COMMENTARY_COUNT) : [];
+  const currentKeys = new Set(currentTop.map((row, index) => getProductRowKey(row, index)));
+  const previousKeys = new Set(previousTop.map((row, index) => getProductRowKey(row, index)));
+  const currentLeader = currentTop[0] || null;
+  const previousLeader = previousTop[0] || null;
+  const entered = currentTop.filter((row, index) => !previousKeys.has(getProductRowKey(row, index)));
+  const exited = previousTop.filter((row, index) => !currentKeys.has(getProductRowKey(row, index)));
+  const retained = currentTop.filter((row, index) => previousKeys.has(getProductRowKey(row, index)));
+  const notes = [];
+
+  if (currentLeader) {
+    const currentLeaderKey = getProductRowKey(currentLeader, 0);
+    const previousLeaderKey = previousLeader ? getProductRowKey(previousLeader, 0) : null;
+    notes.push(
+      currentLeaderKey === previousLeaderKey
+        ? {
+          tone: 'steady',
+          label: 'Leader held',
+          title: getProductRowTitle(currentLeader),
+          text: `${formatTopProductMetricSnippet(currentLeader, formatCurrency)}. Still leading the rolling leaderboard.`
+        }
+        : {
+          tone: 'fresh',
+          label: 'New #1',
+          title: getProductRowTitle(currentLeader),
+          text: previousLeader
+            ? `${formatTopProductMetricSnippet(currentLeader, formatCurrency)}. Overtook ${getProductRowTitle(previousLeader)}.`
+            : `${formatTopProductMetricSnippet(currentLeader, formatCurrency)}.`
+        }
+    );
+  }
+
+  if (entered.length) {
+    notes.push({
+      tone: 'fresh',
+      label: `${entered.length} entered top 5`,
+      title: formatTitlePreview(entered.map((row) => getProductRowTitle(row))),
+      text: 'New arrivals inside the current rolling 30-day top five.'
+    });
+  }
+
+  if (retained.length) {
+    notes.push({
+      tone: 'steady',
+      label: `${retained.length} still holding`,
+      title: formatTitlePreview(retained.map((row) => getProductRowTitle(row))),
+      text: retained.length === TOP_PRODUCTS_COMMENTARY_COUNT
+        ? 'Every product from the prior top five kept its place in the current rolling window.'
+        : 'These products kept a top-five position from the prior rolling window.'
+    });
+  } else if (exited.length) {
+    notes.push({
+      tone: 'fade',
+      label: `${exited.length} exited top 5`,
+      title: formatTitlePreview(exited.map((row) => getProductRowTitle(row))),
+      text: 'These products were in the previous rolling window but not the current one.'
+    });
+  }
+
+  if (!notes.length) {
+    notes.push({
+      tone: 'steady',
+      label: 'Stable top 5',
+      title: 'No leaderboard reshuffle',
+      text: 'The same products are holding the rolling top five versus the prior window.'
+    });
+  }
+
+  return notes.slice(0, 3);
+};
+
 const getUpperMetricById = (kpis, id) => (kpis || []).find((row) => row?.id === id) || null;
 
 const resolveUpperMetrics = (kpis = []) => {
   const ordered = [
-    getUpperMetricById(kpis, 'best-segment'),
     getUpperMetricById(kpis, 'ltv90'),
     getUpperMetricById(kpis, 'repeat-rate'),
-    getUpperMetricById(kpis, 'discount-reliance')
-  ];
+    getUpperMetricById(kpis, 'discount-reliance'),
+    getUpperMetricById(kpis, 'top-repeat') || getUpperMetricById(kpis, 'best-segment')
+  ].filter(Boolean);
 
   const fallback = kpis.filter((row) => !ordered.includes(row));
   const filled = [...ordered];
@@ -222,13 +370,202 @@ const formatUpperMetricValue = (metric, formatCurrency) => {
   return String(metric.value);
 };
 
-function UpperMetricCard({ metric, formatCurrency }) {
+function HeroSpotlightMetric({ metric, formatCurrency }) {
   const value = formatUpperMetricValue(metric, formatCurrency);
   return (
-    <div className="card ci-card-metric">
-      <div className="card-label">{metric?.label || 'Metric'}</div>
-      <div className="metric-huge-value">{value}</div>
-      {metric?.hint ? <div className="metric-subtitle">{metric.hint}</div> : null}
+    <div className={`ci-hero-kpi-item ${metric?.format === 'text' ? 'is-text-item' : ''}`.trim()}>
+      <div className="ci-hero-kpi-label">{metric?.label || 'Metric'}</div>
+      <div className={`ci-hero-kpi-value ${metric?.format === 'text' ? 'is-text' : ''}`.trim()}>{value}</div>
+      {metric?.hint ? <div className="ci-hero-kpi-hint">{metric.hint}</div> : null}
+    </div>
+  );
+}
+
+function HeroHighlightItem({ label, value, detail, tone = '' }) {
+  return (
+    <div className={`ci-hero-highlight-item ${tone}`.trim()}>
+      <div className="ci-hero-highlight-label">{label}</div>
+      <div className="ci-hero-highlight-value">{value}</div>
+      <div className="ci-hero-highlight-detail">{detail}</div>
+    </div>
+  );
+}
+
+function TopProductsCommentaryCard({ note }) {
+  return (
+    <div className={`ci-top-products-commentary-card ${note.tone}`.trim()}>
+      <div className="ci-top-products-commentary-label">{note.label}</div>
+      <div className="ci-top-products-commentary-copy">
+        <div className="ci-top-products-commentary-title">{note.title}</div>
+        <div className="ci-top-products-commentary-text">{note.text}</div>
+      </div>
+    </div>
+  );
+}
+
+function CustomerBriefHero({
+  hero,
+  heroMetricValue,
+  heroWindowLabel,
+  upperMetrics,
+  formatCurrency,
+  bestLocationValue,
+  bestLocationHint,
+  peakDemandValue,
+  topBundleValue
+}) {
+  const heroSummary = parseHeroTitle(hero?.title, bestLocationValue);
+  const story = buildHeroStory(hero?.subtitle, bestLocationValue);
+  const sampleLabel = `${confidenceLabel(hero?.confidence || 0)} signal · Sample ${formatNumber(hero?.sampleSize || 0)}`;
+  const spotlightCaption = bestLocationValue && bestLocationValue !== 'Location signal building'
+    ? `Share of current-window revenue attributed to ${bestLocationValue}.`
+    : 'Share of current-window revenue attributed to the strongest detected customer pocket.';
+  const inlineRead = bestLocationValue && bestLocationValue !== 'Location signal building'
+    ? `${bestLocationValue} leading`
+    : 'Signal building';
+  const highlights = [
+    {
+      label: 'Top location',
+      value: String(bestLocationValue),
+      detail: bestLocationHint || 'Location signal is still forming.',
+      tone: 'is-compact'
+    },
+    {
+      label: 'Peak demand',
+      value: peakDemandValue,
+      detail: 'Strongest order timing in the active window.',
+      tone: 'is-compact'
+    },
+    {
+      label: 'Top bundle',
+      value: topBundleValue,
+      detail: 'Highest-signal co-purchase pair.',
+      tone: 'is-wide'
+    }
+  ];
+
+  return (
+    <div className="ci-hero-stage">
+      <div className="card ci-hero-brief-card">
+        <div className="ci-hero-head">
+          <div className="ci-hero-head-copy">
+            <div className="card-label">Customer Brief</div>
+            <div className="ci-hero-kicker">{heroSummary.kicker}</div>
+          </div>
+          <div className="ci-hero-pills">
+            <span className="ci-soft-pill strong">{heroWindowLabel}</span>
+            <span className="ci-soft-pill">{sampleLabel}</span>
+            <span className="ci-inline-note">{inlineRead}</span>
+          </div>
+        </div>
+
+        <div className="ci-hero-copy">
+          <h2 className="ci-hero-headline">{heroSummary.headline}</h2>
+          <p className="ci-hero-story">{story}</p>
+        </div>
+
+        <div className="ci-hero-highlights">
+          {highlights.map((item) => (
+            <HeroHighlightItem
+              key={item.label}
+              label={item.label}
+              value={item.value}
+              detail={item.detail}
+              tone={item.tone}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="card ci-hero-spotlight-card">
+        <div className="ci-hero-spotlight-top">
+          <div className="ci-hero-spotlight-label">{hero?.metricLabel || 'Revenue share'}</div>
+          <span className="ci-hero-spotlight-badge">{heroWindowLabel}</span>
+        </div>
+        <div className="ci-hero-spotlight-value">{heroMetricValue}</div>
+        <div className="ci-hero-spotlight-caption">{spotlightCaption}</div>
+        <div className="ci-hero-spotlight-meta">Confidence · {sampleLabel}</div>
+        <div className="ci-hero-kpi-grid">
+          {upperMetrics.map((metric, index) => (
+            <HeroSpotlightMetric
+              key={metric?.id || `spotlight-metric-${index}`}
+              metric={metric}
+              formatCurrency={formatCurrency}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TopProductsGrid({ section, formatCurrency }) {
+  const products = (section?.products || []).slice(0, TOP_PRODUCTS_VISIBLE_COUNT);
+  const windowLabel = section?.window?.label || TOP_PRODUCTS_DEFAULT_WINDOW_LABEL;
+  const comparisonLabel = section?.comparisonWindow?.label || TOP_PRODUCTS_DEFAULT_COMPARISON_LABEL;
+  const commentary = buildTopProductsCommentary(section?.products || [], section?.comparisonProducts || [], formatCurrency);
+
+  if (!products.length) {
+    return (
+      <div className="ci-top-products-panel">
+        <div className="ci-top-products-meta">
+          <span className="ci-soft-pill strong">{windowLabel}</span>
+          <span className="ci-soft-pill">{comparisonLabel}</span>
+          <span className="ci-soft-pill">Pinned to rolling 30d</span>
+        </div>
+        <div className="ci-top-products-empty">
+          Product ranking will appear once line-item data is synced.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ci-top-products-panel">
+      <div className="ci-top-products-summary">
+        <div className="ci-top-products-summary-copy">
+          <div className="ci-top-products-summary-title">Rolling top-products read</div>
+          <div className="ci-top-products-summary-text">
+            Notes below explain who took the lead, who entered the top five, and which products held their place versus the prior 30 days.
+          </div>
+        </div>
+        <div className="ci-top-products-meta">
+          <span className="ci-soft-pill strong">{windowLabel}</span>
+          <span className="ci-soft-pill">{comparisonLabel}</span>
+        </div>
+      </div>
+
+      <div className="ci-top-products-commentary">
+        {commentary.map((note) => (
+          <TopProductsCommentaryCard key={`${note.label}-${note.title}`} note={note} />
+        ))}
+      </div>
+
+      <div className="ci-top-products-grid">
+        {products.map((row, index) => (
+          <article key={getProductRowKey(row, index)} className="ci-top-products-card">
+            <div className="ci-top-products-card-body">
+              <ProductThumbnail src={row.image_url} title={getProductRowTitle(row)} />
+              <div className="ci-top-products-card-copy">
+                <div className="ci-top-products-card-title">{getProductRowTitle(row)}</div>
+                <div className="ci-top-products-card-meta">
+                  {formatNumber(row.orders)} orders · {formatNumber(row.quantity)} units
+                </div>
+                <div className="ci-top-products-card-stats">
+                  <div className="ci-top-products-stat">
+                    <span className="ci-top-products-stat-value">{formatCurrency(row.revenue, 0)}</span>
+                    <span className="ci-top-products-stat-label">Revenue</span>
+                  </div>
+                  <div className="ci-top-products-stat">
+                    <span className="ci-top-products-stat-value">{formatNumber(row.orders)}</span>
+                    <span className="ci-top-products-stat-label">Orders</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
     </div>
   );
 }
@@ -285,7 +622,7 @@ function ProductThumbnail({ src, title }) {
       <img
         src={src}
         alt={title || 'Product image'}
-        className="h-14 w-14 rounded-xl border border-gray-200 object-cover"
+        className="ci-top-products-thumb"
         loading="lazy"
       />
     );
@@ -293,7 +630,7 @@ function ProductThumbnail({ src, title }) {
 
   const initial = title ? title.trim().charAt(0).toUpperCase() : 'P';
   return (
-    <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-gray-200 bg-gradient-to-br from-indigo-50 to-violet-50 text-sm font-semibold text-indigo-700">
+    <div className="ci-top-products-thumb ci-top-products-thumb-fallback">
       {initial}
     </div>
   );
@@ -578,18 +915,26 @@ function ProductMomentumSection({ section, store, dateRange }) {
 export default function CustomerInsightsTab({ data, loading, formatCurrency, store, dateRange }) {
   const kpis = data?.kpis || [];
   const sections = data?.sections || {};
-  const dataQuality = data?.dataQuality || {};
   const hero = data?.hero || null;
+  const dataQuality = data?.dataQuality || { orders: 0, notes: [] };
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
   const upperMetrics = useMemo(() => resolveUpperMetrics(kpis), [kpis]);
   const topBundle = useMemo(() => resolveTopBundle(sections, kpis), [sections, kpis]);
+  const bestSegmentMetric = useMemo(() => getUpperMetricById(kpis, 'best-segment'), [kpis]);
   const heroMetricValue = useMemo(() => {
     if (!hero) return '—';
     if (hero.metricFormat === 'percent') return formatPercent(hero.metricValue);
     if (hero.metricFormat === 'currency') return formatCurrency(hero.metricValue, 0);
     return hero.metricValue ?? '—';
   }, [hero, formatCurrency]);
+  const bestLocationValue = bestSegmentMetric?.value || 'Location signal building';
+  const bestLocationHint = bestSegmentMetric?.hint || 'Customer segment signal is still forming.';
+  const peakDemandValue = sections.segments?.timing?.topDay && sections.segments?.timing?.topHour != null
+    ? `${sections.segments.timing.topDay} · ${sections.segments.timing.topHour}:00`
+    : sections.segments?.timing?.topDay || 'Peak demand still forming';
+  const heroWindowLabel = data?.window?.label || 'Current window';
+  const topBundleValue = topBundle ? `${topBundle.from} → ${topBundle.to}` : 'Bundle signal still building';
 
   const showToast = (message) => {
     setToast(message);
@@ -620,43 +965,17 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
 
       <section className="ci-upper">
         <div className="dashboard-container">
-          <div className="row-1">
-            <div className="card card-hero">
-              <div className="hero-left">
-                <div className="card-label">Customer Brief</div>
-                <div className="hero-title">{hero?.title || 'Customer brief will appear once enough data is available.'}</div>
-                <div className="hero-subtitle">{hero?.subtitle || 'Insights update when line-item and customer data are synced.'}</div>
-              </div>
-              <div className="hero-right">
-                <div className="card-label">{hero?.metricLabel || 'Revenue Share'}</div>
-                <div className="metric-huge-value">{heroMetricValue}</div>
-                <div className="confidence-text">
-                  {confidenceLabel(hero?.confidence || 0)} · Sample: {formatNumber(hero?.sampleSize || 0)}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="row-2">
-            {upperMetrics.map((metric, index) => (
-              <UpperMetricCard key={metric?.id || `upper-metric-${index}`} metric={metric} formatCurrency={formatCurrency} />
-            ))}
-          </div>
-
-          <div className="row-3">
-            <div className="card card-bundle">
-              <div className="card-label">Top Bundle</div>
-              <div className="bundle-text">
-                {topBundle ? (
-                  <>
-                    {topBundle.from} <span className="arrow-icon">→</span> {topBundle.to}
-                  </>
-                ) : (
-                  'Bundle signal will appear once enough pair evidence is detected.'
-                )}
-              </div>
-            </div>
-          </div>
+          <CustomerBriefHero
+            hero={hero}
+            heroMetricValue={heroMetricValue}
+            heroWindowLabel={heroWindowLabel}
+            upperMetrics={upperMetrics}
+            formatCurrency={formatCurrency}
+            bestLocationValue={bestLocationValue}
+            bestLocationHint={bestLocationHint}
+            peakDemandValue={peakDemandValue}
+            topBundleValue={topBundleValue}
+          />
         </div>
       </section>
 
@@ -689,30 +1008,10 @@ export default function CustomerInsightsTab({ data, loading, formatCurrency, sto
           subtitle={sections.topProducts?.summary || 'Best products by revenue and order count'}
           icon={sectionIcons.topProducts}
         >
-          {(sections.topProducts?.products || []).length ? (
-            <div className="space-y-5">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {(sections.topProducts?.products || []).map((row) => (
-                  <div key={row.key} className="flex items-center gap-3 rounded-xl border border-gray-100 bg-white px-3 py-3 shadow-sm">
-                    <ProductThumbnail src={row.image_url} title={row.title} />
-                    <div className="min-w-0 flex-1">
-                      <div className="line-clamp-2 text-sm font-semibold text-gray-900 whitespace-normal break-words">{row.title}</div>
-                      <div className="mt-1 text-xs text-gray-500">{formatNumber(row.orders)} orders · {formatNumber(row.quantity)} units</div>
-                    </div>
-                    <div className="text-right text-sm font-semibold text-gray-900">{formatCurrency(row.revenue, 0)}</div>
-                  </div>
-                ))}
-              </div>
-              <CustomerActionPlanner data={data} onOpenSection={scrollToSection} embedded />
-            </div>
-          ) : (
-            <div className="space-y-5">
-              <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-sm text-gray-500">
-                Product ranking will appear once line-item data is synced.
-              </div>
-              <CustomerActionPlanner data={data} onOpenSection={scrollToSection} embedded />
-            </div>
-          )}
+          <div className="space-y-5">
+            <TopProductsGrid section={sections.topProducts || null} formatCurrency={formatCurrency} />
+            <CustomerActionPlanner data={data} onOpenSection={scrollToSection} embedded />
+          </div>
         </SectionCard>
 
         <SectionCard
