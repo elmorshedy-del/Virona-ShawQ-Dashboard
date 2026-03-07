@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Activity, ChevronDown, RefreshCw } from 'lucide-react';
 import GeoHotspotsMap from './GeoHotspotsMap';
 import './SessionIntelligenceTab.css';
@@ -7,6 +7,58 @@ const POLL_EVENTS_MS = 1000;
 const POLL_REALTIME_MS = 5000;
 const POLL_OVERVIEW_MS = 20000;
 const REALTIME_WINDOW_MINUTES = 30;
+const PRODUCT_ABANDONMENT_STRIP_PREVIEW_COUNT = 2;
+const JOURNEY_DEFAULT_DAYS = 30;
+const JOURNEY_REPORT_LIMIT = 12;
+const REALTIME_SPARKLINE_WIDTH = 132;
+const REALTIME_SPARKLINE_HEIGHT = 36;
+const REALTIME_SPARKLINE_PADDING = 4;
+const REALTIME_DELTA_FLAT_THRESHOLD = 0.005;
+
+const REALTIME_KPI_META = Object.freeze([
+  {
+    key: 'activeSessions',
+    label: 'Active sessions',
+    accent: '#4f46e5',
+    fill: 'rgba(79, 70, 229, 0.18)',
+    surface: 'rgba(79, 70, 229, 0.06)'
+  },
+  {
+    key: 'activeShoppers',
+    label: 'Active shoppers',
+    accent: '#2563eb',
+    fill: 'rgba(37, 99, 235, 0.16)',
+    surface: 'rgba(37, 99, 235, 0.05)'
+  },
+  {
+    key: 'events',
+    label: 'Events',
+    accent: '#64748b',
+    fill: 'rgba(100, 116, 139, 0.18)',
+    surface: 'rgba(100, 116, 139, 0.06)'
+  },
+  {
+    key: 'atc',
+    label: 'ATC',
+    accent: '#d97706',
+    fill: 'rgba(217, 119, 6, 0.18)',
+    surface: 'rgba(217, 119, 6, 0.06)'
+  },
+  {
+    key: 'checkoutStarted',
+    label: 'Checkout',
+    accent: '#7c3aed',
+    fill: 'rgba(124, 58, 237, 0.17)',
+    surface: 'rgba(124, 58, 237, 0.06)'
+  },
+  {
+    key: 'purchase',
+    label: 'Purchase',
+    accent: '#0f766e',
+    fill: 'rgba(15, 118, 110, 0.18)',
+    surface: 'rgba(15, 118, 110, 0.06)'
+  }
+]);
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
 
@@ -151,6 +203,28 @@ function formatPercent(value, digits = 0) {
   return `${(n * 100).toFixed(digits)}%`;
 }
 
+function formatPercentagePoints(value, digits = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return `${(n * 100).toFixed(digits)}pp`;
+}
+
+function formatSignedPercentagePoints(value, digits = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) < 0.0005) return '0.0pp';
+  const sign = n > 0 ? '+' : '−';
+  return `${sign}${Math.abs(n * 100).toFixed(digits)}pp`;
+}
+
+function formatSignedPercent(value, digits = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) < 0.0005) return '0%';
+  const sign = n > 0 ? '+' : '−';
+  return `${sign}${Math.abs(n * 100).toFixed(digits)}%`;
+}
+
 function formatDurationSeconds(value) {
   const sec = Number(value);
   if (!Number.isFinite(sec)) return '—';
@@ -162,6 +236,125 @@ function formatDurationSeconds(value) {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   return mins ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
+function buildSparklinePath(values, width = REALTIME_SPARKLINE_WIDTH, height = REALTIME_SPARKLINE_HEIGHT, padding = REALTIME_SPARKLINE_PADDING) {
+  const points = Array.isArray(values)
+    ? values
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+    : [];
+
+  if (points.length < 2) return null;
+
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const innerWidth = Math.max(width - padding * 2, 1);
+  const innerHeight = Math.max(height - padding * 2, 1);
+  const baselineY = height - padding;
+
+  const coords = points.map((value, index) => {
+    const ratioX = points.length === 1 ? 0 : index / (points.length - 1);
+    const normalized = max === min ? 0.5 : (value - min) / (max - min);
+    return {
+      x: padding + ratioX * innerWidth,
+      y: padding + (1 - normalized) * innerHeight
+    };
+  });
+
+  const linePath = coords.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ');
+  const areaPath = `${linePath} L ${coords[coords.length - 1].x.toFixed(2)} ${baselineY.toFixed(2)} L ${coords[0].x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
+  return { linePath, areaPath };
+}
+
+function describeRealtimeDelta(metric, comparisonWindowMinutes) {
+  const current = Number(metric?.current) || 0;
+  const previous = Number(metric?.previous) || 0;
+  const deltaRate = Number(metric?.deltaRate);
+  const comparisonLabel = `vs prior ${comparisonWindowMinutes}m`;
+
+  if (Number.isFinite(deltaRate)) {
+    if (Math.abs(deltaRate) < REALTIME_DELTA_FLAT_THRESHOLD) {
+      return {
+        badge: 'Flat',
+        tone: 'neutral',
+        detail: `${comparisonLabel} • ${formatNumber(previous)}`
+      };
+    }
+
+    return {
+      badge: formatSignedPercent(deltaRate, Math.abs(deltaRate) >= 0.1 ? 0 : 1),
+      tone: deltaRate > 0 ? 'up' : 'down',
+      detail: `${comparisonLabel} • ${formatNumber(previous)}`
+    };
+  }
+
+  if (current > 0 && previous === 0) {
+    return {
+      badge: 'New',
+      tone: 'up',
+      detail: `No activity in prior ${comparisonWindowMinutes}m`
+    };
+  }
+
+  return {
+    badge: '—',
+    tone: 'neutral',
+    detail: `${comparisonLabel} • ${formatNumber(previous)}`
+  };
+}
+
+function formatSessionPulseComparison(metric, labels = {}) {
+  if (!metric || typeof metric !== 'object') return labels.current || 'Today so far';
+
+  const previousDayLabel = labels.previousDay || 'At this time yesterday';
+  const previousWeekLabel = labels.previousWeek || 'Same weekday last week';
+  const comparisons = [
+    `${previousDayLabel}: ${formatNumber(metric.atThisTimeYesterday)}`,
+    `${previousWeekLabel}: ${formatNumber(metric.sameWeekdayLastWeek)}`
+  ];
+
+  return comparisons.join(' • ');
+}
+
+function RealtimeKpiSparkline({ data, accent, fill, label }) {
+  const gradientId = useId().replace(/:/g, '');
+  const paths = useMemo(() => buildSparklinePath(data), [data]);
+
+  if (!paths) {
+    return (
+      <div className="si-realtime-sparkline-empty" aria-hidden="true">
+        No recent trend
+      </div>
+    );
+  }
+
+  return (
+    <svg
+      className="si-realtime-sparkline"
+      viewBox={`0 0 ${REALTIME_SPARKLINE_WIDTH} ${REALTIME_SPARKLINE_HEIGHT}`}
+      role="img"
+      aria-label={label}
+    >
+      <defs>
+        <linearGradient id={`${gradientId}-fill`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={fill} />
+          <stop offset="100%" stopColor="rgba(255,255,255,0)" />
+        </linearGradient>
+      </defs>
+      <path className="si-realtime-sparkline-area" d={paths.areaPath} fill={`url(#${gradientId}-fill)`} />
+      <path
+        className="si-realtime-sparkline-path"
+        d={paths.linePath}
+        fill="none"
+        stroke={accent}
+        strokeWidth="2.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        pathLength="100"
+      />
+    </svg>
+  );
 }
 
 let regionDisplayNames = null;
@@ -688,6 +881,14 @@ export default function SessionIntelligenceTab({ store }) {
   const [claritySignals, setClaritySignals] = useState(null);
   const [clarityLoading, setClarityLoading] = useState(false);
   const [clarityError, setClarityError] = useState('');
+  const [productAbandonment, setProductAbandonment] = useState(null);
+  const [productAbandonmentLoading, setProductAbandonmentLoading] = useState(false);
+  const [productAbandonmentOpen, setProductAbandonmentOpen] = useState(false);
+  const [selectedAbandonmentProductId, setSelectedAbandonmentProductId] = useState('');
+  const [journeyAbandonmentReport, setJourneyAbandonmentReport] = useState(null);
+  const [journeyAbandonmentLoading, setJourneyAbandonmentLoading] = useState(false);
+  const [journeyAbandonmentError, setJourneyAbandonmentError] = useState('');
+  const [journeySegmentView, setJourneySegmentView] = useState('device');
 
   const [storyOpen, setStoryOpen] = useState(false);
   const [storySession, setStorySession] = useState(null);
@@ -827,6 +1028,45 @@ export default function SessionIntelligenceTab({ store }) {
     }
   }, [storeId]);
 
+  const loadProductAbandonment = useCallback(async (day) => {
+    if (!day) return;
+    setProductAbandonmentLoading(true);
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        date: day,
+        limit: '6'
+      });
+      const payload = await fetchJson(`/api/session-intelligence/product-abandonment?${params.toString()}`);
+      setProductAbandonment(payload?.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] product abandonment load failed:', error);
+      setProductAbandonment(null);
+    } finally {
+      setProductAbandonmentLoading(false);
+    }
+  }, [storeId]);
+
+  const loadJourneyAbandonmentReport = useCallback(async () => {
+    setJourneyAbandonmentLoading(true);
+    setJourneyAbandonmentError('');
+    try {
+      const params = new URLSearchParams({
+        store: storeId,
+        days: String(JOURNEY_DEFAULT_DAYS),
+        limit: String(JOURNEY_REPORT_LIMIT)
+      });
+      const payload = await fetchJson(`/api/session-intelligence/journey/abandonment?${params.toString()}`);
+      setJourneyAbandonmentReport(payload?.data || null);
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] journey abandonment load failed:', error);
+      setJourneyAbandonmentError(error?.message || 'Failed to load abandonment by device');
+      setJourneyAbandonmentReport(null);
+    } finally {
+      setJourneyAbandonmentLoading(false);
+    }
+  }, [storeId]);
+
   const loadOverview = useCallback(async () => {
     const url = `/api/session-intelligence/overview?store=${encodeURIComponent(storeId)}`;
     const data = await fetchJson(url);
@@ -891,6 +1131,14 @@ export default function SessionIntelligenceTab({ store }) {
     if (!libraryDay) return;
     loadClarity(libraryDay, flowMode);
   }, [libraryDay, flowMode, loadClarity]);
+
+  useEffect(() => {
+    setProductAbandonment(null);
+    setProductAbandonmentOpen(false);
+    setSelectedAbandonmentProductId('');
+    if (!libraryDay) return;
+    loadProductAbandonment(libraryDay);
+  }, [libraryDay, loadProductAbandonment]);
 
   const filteredLibrarySessions = useMemo(() => {
     let list = librarySessions;
@@ -958,8 +1206,8 @@ export default function SessionIntelligenceTab({ store }) {
         loadRealtime(),
         loadOverview(),
         loadBrief(),
-        loadFlow(libraryDay, flowMode),
-        loadClarity(libraryDay, flowMode),
+        loadJourneyAbandonmentReport(),
+        ...(libraryDay ? [loadFlow(libraryDay, flowMode), loadClarity(libraryDay, flowMode), loadProductAbandonment(libraryDay)] : []),
         loadSessions(),
         loadEvents(),
         loadLibraryDays()
@@ -967,14 +1215,14 @@ export default function SessionIntelligenceTab({ store }) {
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadClarity, loadEvents, loadFlow, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadClarity, loadEvents, loadFlow, loadJourneyAbandonmentReport, loadLibraryDays, loadOverview, loadProductAbandonment, loadRealtime, loadSessions]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadRealtime(), loadOverview(), loadBrief(), loadSessions(), loadEvents(), loadLibraryDays()])
+    Promise.all([loadRealtime(), loadOverview(), loadBrief(), loadJourneyAbandonmentReport(), loadSessions(), loadEvents(), loadLibraryDays()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -1017,7 +1265,7 @@ export default function SessionIntelligenceTab({ store }) {
       clearInterval(eventsTimer);
       clearInterval(overviewTimer);
     };
-  }, [loadBrief, loadEvents, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [loadBrief, loadEvents, loadJourneyAbandonmentReport, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
 
   useEffect(() => {
     setLibraryError('');
@@ -1063,6 +1311,38 @@ export default function SessionIntelligenceTab({ store }) {
   const abandonAfterHours = overview?.abandonAfterHours ?? 24;
   const checkoutDropMinutes = overview?.checkoutDropMinutes ?? 30;
   const abandonCutoffMs = Date.now() - abandonAfterHours * 60 * 60 * 1000;
+  const sessionPulseMetrics = overview?.sessionPulse?.metrics || {};
+  const sessionPulseLabels = overview?.sessionPulse?.labels || {};
+  const overviewPrimaryCards = useMemo(() => {
+    const currentLabel = (sessionPulseLabels.current || 'Today so far').toLowerCase();
+
+    return [
+      {
+        key: 'sessions',
+        label: `Sessions ${currentLabel}`,
+        value: sessionPulseMetrics?.sessions?.current ?? overview?.kpis?.sessions24h ?? null,
+        sub: formatSessionPulseComparison(sessionPulseMetrics?.sessions, sessionPulseLabels)
+      },
+      {
+        key: 'atc',
+        label: `Add to cart ${currentLabel}`,
+        value: sessionPulseMetrics?.atc?.current ?? overview?.kpis?.atc24h ?? null,
+        sub: formatSessionPulseComparison(sessionPulseMetrics?.atc, sessionPulseLabels)
+      },
+      {
+        key: 'checkoutStarted',
+        label: `Checkout started ${currentLabel}`,
+        value: sessionPulseMetrics?.checkoutStarted?.current ?? overview?.kpis?.checkoutStarted24h ?? null,
+        sub: formatSessionPulseComparison(sessionPulseMetrics?.checkoutStarted, sessionPulseLabels)
+      },
+      {
+        key: 'purchase',
+        label: `Purchases ${currentLabel}`,
+        value: sessionPulseMetrics?.purchase?.current ?? overview?.kpis?.purchases24h ?? null,
+        sub: formatSessionPulseComparison(sessionPulseMetrics?.purchase, sessionPulseLabels)
+      }
+    ];
+  }, [overview?.kpis?.atc24h, overview?.kpis?.checkoutStarted24h, overview?.kpis?.purchases24h, overview?.kpis?.sessions24h, sessionPulseLabels, sessionPulseMetrics]);
 
   const selectedLibrarySession = useMemo(() => {
     if (!librarySessionId) return null;
@@ -1207,6 +1487,33 @@ export default function SessionIntelligenceTab({ store }) {
   const realtimeFocusCountry = realtimeCountries?.[0]?.value || null;
   const realtimeFocusCountryName = realtimeFocusCountry ? countryNameFromCode(realtimeFocusCountry) : null;
   const realtimeMapRegion = realtimeMapMode === 'focus' && realtimeFocusCountry ? realtimeFocusCountry : 'WORLD';
+  const realtimeComparisonWindowMinutes = Number(realtime?.kpiMetrics?.comparisonWindowMinutes) || REALTIME_WINDOW_MINUTES;
+  const realtimeKpis = useMemo(() => REALTIME_KPI_META.map((meta) => {
+    const metric = realtime?.kpiMetrics?.metrics?.[meta.key] || null;
+    const fallbackValue = meta.key === 'activeSessions'
+      ? realtime?.activeSessions
+      : meta.key === 'activeShoppers'
+        ? realtime?.activeShoppers
+        : meta.key === 'events'
+          ? realtime?.events
+          : meta.key === 'checkoutStarted'
+            ? realtime?.keyEvents?.checkout_started
+            : realtime?.keyEvents?.[meta.key];
+
+    const history = Array.isArray(metric?.history)
+      ? metric.history
+      : Array.from({ length: 2 }, () => Number(fallbackValue) || 0);
+    const summary = describeRealtimeDelta(metric || { current: fallbackValue, previous: null, deltaRate: null }, realtimeComparisonWindowMinutes);
+
+    return {
+      ...meta,
+      value: Number(metric?.current ?? fallbackValue) || 0,
+      history,
+      badge: summary.badge,
+      badgeTone: summary.tone,
+      detail: summary.detail
+    };
+  }), [realtime, realtimeComparisonWindowMinutes]);
   const hasDayFilters = Boolean(dropoffStageFilter || dropoffDeviceFilter || dropoffCountryFilter || dropoffCampaignFilter);
 
   const clearDayFilters = useCallback(() => {
@@ -1242,6 +1549,40 @@ export default function SessionIntelligenceTab({ store }) {
   const summaryLine = topIssue
     ? `Today: ${formatNumber(summaryTotals.sessionsTotal)} sessions, ${formatNumber(summaryTotals.highIntent)} high-intent, ${formatNumber(summaryTotals.purchases)} purchases, biggest leak = ${topIssue.issueLabel} (${pluralize(topIssue.affectedHighIntent, 'session', 'sessions')}).`
     : `Today: ${formatNumber(summaryTotals.sessionsTotal)} sessions, ${formatNumber(summaryTotals.highIntent)} high-intent, ${formatNumber(summaryTotals.purchases)} purchases. No major issue surfaced yet.`;
+
+  const abandonmentProducts = Array.isArray(productAbandonment?.products) ? productAbandonment.products : [];
+  const abandonmentPreviewProducts = abandonmentProducts.slice(0, PRODUCT_ABANDONMENT_STRIP_PREVIEW_COUNT);
+  const abandonmentOverflowCount = Math.max(0, abandonmentProducts.length - abandonmentPreviewProducts.length);
+  const abandonmentBaselineRate = Number(productAbandonment?.totals?.global_abandon_rate) || 0;
+  const abandonmentThresholdSessions = Number(productAbandonment?.thresholds?.min_product_sessions) || 500;
+  const journeyDeviceRows = Array.isArray(journeyAbandonmentReport?.deviceSegments?.rows) ? journeyAbandonmentReport.deviceSegments.rows : [];
+  const journeyCountryRows = Array.isArray(journeyAbandonmentReport?.countrySegments?.rows) ? journeyAbandonmentReport.countrySegments.rows : [];
+  const journeyRows = journeySegmentView === 'country' ? journeyCountryRows : journeyDeviceRows;
+  const journeyBaselineRate = Number(
+    journeySegmentView === 'country'
+      ? journeyAbandonmentReport?.countrySegments?.baselineAbandonRate
+      : journeyAbandonmentReport?.deviceSegments?.baselineAbandonRate
+  ) || 0;
+  const journeyPeriodLabel = journeyAbandonmentReport?.period?.start && journeyAbandonmentReport?.period?.end
+    ? `${journeyAbandonmentReport.period.start} to ${journeyAbandonmentReport.period.end}`
+    : `Last ${JOURNEY_DEFAULT_DAYS} days`;
+  const journeyCoverageRate = Number(journeyAbandonmentReport?.totals?.attributionCoverageRate) || 0;
+  const journeyRootAbandons = Number(journeyAbandonmentReport?.totals?.rootAbandonSessions) || 0;
+  const journeyUnclassifiedAbandons = Number(journeyAbandonmentReport?.totals?.unclassifiedAbandonSessions) || 0;
+  const journeyDeviceReconciliation = Number(journeyAbandonmentReport?.reconciliation?.segmentedDeviceMinusRoot) || 0;
+  const selectedAbandonmentProduct = useMemo(() => (
+    abandonmentProducts.find((entry) => entry.product_id === selectedAbandonmentProductId) || abandonmentProducts[0] || null
+  ), [abandonmentProducts, selectedAbandonmentProductId]);
+
+  useEffect(() => {
+    if (!abandonmentProducts.length) {
+      setSelectedAbandonmentProductId('');
+      return;
+    }
+    if (!abandonmentProducts.some((entry) => entry.product_id === selectedAbandonmentProductId)) {
+      setSelectedAbandonmentProductId(abandonmentProducts[0].product_id);
+    }
+  }, [abandonmentProducts, selectedAbandonmentProductId]);
 
   return (
 	    <div className="si-root">
@@ -1309,30 +1650,32 @@ export default function SessionIntelligenceTab({ store }) {
         ) : null}
 
         <div className="si-realtime-kpis">
-          <div className="si-realtime-kpi">
-            <div className="si-realtime-kpi-label">Active sessions</div>
-            <div className="si-realtime-kpi-value">{formatNumber(realtime?.activeSessions)}</div>
-          </div>
-          <div className="si-realtime-kpi">
-            <div className="si-realtime-kpi-label">Active shoppers</div>
-            <div className="si-realtime-kpi-value">{formatNumber(realtime?.activeShoppers)}</div>
-          </div>
-          <div className="si-realtime-kpi">
-            <div className="si-realtime-kpi-label">Events</div>
-            <div className="si-realtime-kpi-value">{formatNumber(realtime?.events)}</div>
-          </div>
-          <div className="si-realtime-kpi">
-            <div className="si-realtime-kpi-label">ATC</div>
-            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.atc)}</div>
-          </div>
-          <div className="si-realtime-kpi">
-            <div className="si-realtime-kpi-label">Checkout</div>
-            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.checkout_started)}</div>
-          </div>
-          <div className="si-realtime-kpi">
-            <div className="si-realtime-kpi-label">Purchase</div>
-            <div className="si-realtime-kpi-value">{formatNumber(realtime?.keyEvents?.purchase)}</div>
-          </div>
+          {realtimeKpis.map((metric) => (
+            <div
+              key={metric.key}
+              className="si-realtime-kpi"
+              style={{
+                '--si-kpi-accent': metric.accent,
+                '--si-kpi-fill': metric.fill,
+                '--si-kpi-surface': metric.surface
+              }}
+            >
+              <div className="si-realtime-kpi-topline">
+                <div className="si-realtime-kpi-label">{metric.label}</div>
+                <span className={`si-realtime-kpi-badge si-realtime-kpi-badge-${metric.badgeTone}`}>
+                  {metric.badge}
+                </span>
+              </div>
+              <div className="si-realtime-kpi-value">{formatNumber(metric.value)}</div>
+              <div className="si-realtime-kpi-meta">{metric.detail}</div>
+              <RealtimeKpiSparkline
+                data={metric.history}
+                accent={metric.accent}
+                fill={metric.fill}
+                label={`${metric.label} trend over the last ${realtimeComparisonWindowMinutes} minutes`}
+              />
+            </div>
+          ))}
         </div>
 
         <div className="si-realtime-grid">
@@ -1477,6 +1820,237 @@ export default function SessionIntelligenceTab({ store }) {
         </div>
       </div>
 
+      {(productAbandonmentLoading || abandonmentProducts.length > 0) ? (
+        <div className="si-abandonment-shell" style={{ marginBottom: 12 }}>
+          <div className="si-abandonment-strip">
+            <div className="si-abandonment-strip-meta">
+              <div className="si-abandonment-strip-label">Abandonment risk</div>
+              {!productAbandonmentLoading ? (
+                <div className="si-abandonment-strip-baseline">
+                  Baseline {formatPercent(abandonmentBaselineRate, 1)}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="si-abandonment-strip-track">
+              {productAbandonmentLoading ? (
+                <>
+                  <div className="si-abandonment-pill si-abandonment-pill-skeleton" />
+                  <div className="si-abandonment-pill si-abandonment-pill-skeleton" />
+                </>
+              ) : (
+                <>
+                  {abandonmentPreviewProducts.map((item) => {
+                    const selected = item.product_id === selectedAbandonmentProduct?.product_id;
+                    return (
+                      <button
+                        key={item.product_id}
+                        className={`si-abandonment-pill ${selected ? 'si-abandonment-pill-selected' : ''}`}
+                        type="button"
+                        onClick={() => {
+                          setSelectedAbandonmentProductId(item.product_id);
+                          setProductAbandonmentOpen(true);
+                        }}
+                        title={`${item.product_label} • ${formatPercentagePoints(item.gap_rate)} above baseline`}
+                      >
+                        <span className="si-abandonment-pill-name">{item.product_label}</span>
+                        <span className="si-abandonment-pill-gap">+{formatPercentagePoints(item.gap_rate)}</span>
+                      </button>
+                    );
+                  })}
+                  {abandonmentOverflowCount > 0 ? (
+                    <span className="si-abandonment-strip-more">+{abandonmentOverflowCount} more</span>
+                  ) : null}
+                </>
+              )}
+            </div>
+
+            {!productAbandonmentLoading && abandonmentProducts.length > 0 ? (
+              <button
+                className={`si-abandonment-strip-action ${productAbandonmentOpen ? 'si-abandonment-strip-action-open' : ''}`}
+                type="button"
+                onClick={() => setProductAbandonmentOpen((prev) => !prev)}
+              >
+                <span>{productAbandonmentOpen ? 'Hide' : 'View'}</span>
+                <ChevronDown size={14} />
+              </button>
+            ) : null}
+          </div>
+
+          {productAbandonmentOpen && selectedAbandonmentProduct ? (
+            <div className="si-abandonment-panel">
+              <div className="si-abandonment-panel-hero">
+                <div className="si-abandonment-panel-copy">
+                  <div className="si-abandonment-panel-label">Most abandoned products</div>
+                  <div className="si-abandonment-panel-title" title={selectedAbandonmentProduct.product_label}>
+                    {selectedAbandonmentProduct.product_label}
+                  </div>
+                  <div className="si-abandonment-panel-subtitle">
+                    {selectedAbandonmentProduct.signal_label} • {formatNumber(abandonmentProducts.length)} flagged above baseline
+                  </div>
+                </div>
+
+                <div className="si-abandonment-panel-metrics">
+                  <div className="si-abandonment-metric">
+                    <div className="si-abandonment-metric-label">Sessions</div>
+                    <div className="si-abandonment-metric-value">{formatNumber(selectedAbandonmentProduct.sessions)}</div>
+                  </div>
+                  <div className="si-abandonment-metric">
+                    <div className="si-abandonment-metric-label">Abandon rate</div>
+                    <div className="si-abandonment-metric-value">{formatPercent(selectedAbandonmentProduct.abandon_rate, 1)}</div>
+                  </div>
+                  <div className="si-abandonment-metric">
+                    <div className="si-abandonment-metric-label">Baseline</div>
+                    <div className="si-abandonment-metric-value">{formatPercent(abandonmentBaselineRate, 1)}</div>
+                  </div>
+                  <div className="si-abandonment-metric">
+                    <div className="si-abandonment-metric-label">Above baseline</div>
+                    <div className="si-abandonment-metric-value si-abandonment-metric-value-accent">
+                      +{formatPercentagePoints(selectedAbandonmentProduct.gap_rate)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="si-abandonment-list" role="list" aria-label="Most abandoned products">
+                {abandonmentProducts.map((item) => {
+                  const selected = item.product_id === selectedAbandonmentProduct.product_id;
+                  return (
+                    <button
+                      key={item.product_id}
+                      className={`si-abandonment-row ${selected ? 'si-abandonment-row-selected' : ''}`}
+                      type="button"
+                      onClick={() => setSelectedAbandonmentProductId(item.product_id)}
+                    >
+                      <div className="si-abandonment-row-main">
+                        <div className="si-abandonment-row-name" title={item.product_label}>{item.product_label}</div>
+                        <div className="si-abandonment-row-sub">
+                          {formatNumber(item.sessions)} sessions • min {formatNumber(abandonmentThresholdSessions)} required
+                        </div>
+                      </div>
+
+                      <div className="si-abandonment-row-metrics">
+                        <span>{formatPercent(item.abandon_rate, 1)}</span>
+                        <span className="si-abandonment-row-gap">+{formatPercentagePoints(item.gap_rate)}</span>
+                        <span className="si-badge">{item.signal_label}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="si-card si-journey-card" style={{ marginBottom: 12 }}>
+        <div className="si-card-title">
+          <h3>Abandonment by {journeySegmentView === 'country' ? 'country' : 'device'}</h3>
+          <span className="si-muted">{journeyPeriodLabel}</span>
+        </div>
+
+        <div className="si-row si-journey-controls" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <span className="si-muted">View</span>
+          <button
+            className={`si-button si-button-small ${journeySegmentView === 'device' ? 'si-button-active' : ''}`}
+            type="button"
+            onClick={() => setJourneySegmentView('device')}
+            aria-pressed={journeySegmentView === 'device'}
+          >
+            Devices
+          </button>
+          <button
+            className={`si-button si-button-small ${journeySegmentView === 'country' ? 'si-button-active' : ''}`}
+            type="button"
+            onClick={() => setJourneySegmentView('country')}
+            aria-pressed={journeySegmentView === 'country'}
+          >
+            Countries
+          </button>
+          <span className="si-spacer" />
+          <span className="si-muted">
+            Segmented denominator: <strong>abandon sessions ÷ high-intent sessions</strong>
+          </span>
+        </div>
+
+        <div className="si-journey-note">
+          Baseline {formatPercent(journeyBaselineRate, 1)}
+          {' '}• Coverage {formatPercent(journeyCoverageRate, 0)}
+          {' '}• Root abandons {formatNumber(journeyRootAbandons)}
+          {journeyUnclassifiedAbandons > 0 ? <> • Needs review {formatNumber(journeyUnclassifiedAbandons)}</> : null}
+          {journeyDeviceReconciliation !== 0 ? <> • Reconciliation {formatNumber(journeyDeviceReconciliation)}</> : null}
+        </div>
+
+        {journeyAbandonmentError ? (
+          <div className="si-empty" style={{ color: '#b42318' }}>{journeyAbandonmentError}</div>
+        ) : null}
+
+        {!journeyAbandonmentError && journeyAbandonmentLoading ? (
+          <div className="si-empty">Loading abandonment segments…</div>
+        ) : null}
+
+        {!journeyAbandonmentError && !journeyAbandonmentLoading && journeyRows.length === 0 ? (
+          <div className="si-empty">No abandonment segments available for this range.</div>
+        ) : null}
+
+        {!journeyAbandonmentError && !journeyAbandonmentLoading && journeyRows.length > 0 ? (
+          <div className="si-journey-table-wrap">
+            <table className="si-event-table si-journey-table">
+              <thead>
+                <tr>
+                  <th>{journeySegmentView === 'country' ? 'Country' : 'Device'}</th>
+                  <th>Traffic share</th>
+                  <th>High-intent</th>
+                  <th>Abandon</th>
+                  <th>Purchase</th>
+                  <th>Abandon rate</th>
+                  <th>Vs baseline</th>
+                  <th>Likely abandon area</th>
+                </tr>
+              </thead>
+              <tbody>
+                {journeyRows.map((row) => {
+                  const segmentLabel = journeySegmentView === 'country'
+                    ? countryNameFromCode(row.label || row.key)
+                    : normalizeDeviceLabel(row.label || row.key);
+                  const likelyAreaDetail = row.topSectionShare != null
+                    ? `${row.topSectionLabel} (${formatPercent(row.topSectionShare, 0)})`
+                    : row.topSectionLabel || '—';
+                  return (
+                    <tr key={`journey-${journeySegmentView}-${row.key}`}>
+                      <td className="si-journey-segment-cell">
+                        <div className="si-journey-segment-label">{segmentLabel}</div>
+                        {(Number(row.unclassifiedAbandonSessions) || 0) > 0 ? (
+                          <div className="si-journey-segment-sub">
+                            {formatNumber(row.unclassifiedAbandonSessions)} unclassified
+                          </div>
+                        ) : null}
+                      </td>
+                      <td>{formatPercent(row.trafficShare, 1)}</td>
+                      <td>{formatNumber(row.highIntentSessions)}</td>
+                      <td>{formatNumber(row.abandonSessions)}</td>
+                      <td>{formatNumber(row.purchaseSessions)}</td>
+                      <td>{row.abandonRate == null ? '—' : formatPercent(row.abandonRate, 1)}</td>
+                      <td className={row.excessRate > 0 ? 'si-journey-rate-up' : row.excessRate < 0 ? 'si-journey-rate-down' : ''}>
+                        {row.excessRate == null ? '—' : formatSignedPercentagePoints(row.excessRate, 1)}
+                      </td>
+                      <td className="si-journey-segment-cell">
+                        <div className="si-journey-segment-label">{likelyAreaDetail}</div>
+                        {row.classificationCoverage != null && row.classificationCoverage < 1 ? (
+                          <div className="si-journey-segment-sub">
+                            {formatPercent(row.classificationCoverage, 0)} classified
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </div>
+
       <div className="si-card si-issues-card" style={{ marginBottom: 12 }}>
         <div className="si-card-title">
           <h3>Top issues</h3>
@@ -1611,47 +2185,16 @@ export default function SessionIntelligenceTab({ store }) {
 	      </div>
 
 	      <div className="si-grid">
-	        <div className="si-card">
-	          <div className="si-metric-label">
-	            <div className="si-icon" />
-	            Sessions (24h)
+        {overviewPrimaryCards.map((card) => (
+          <div key={card.key} className="si-card">
+            <div className="si-metric-label">
+              <div className="si-icon" />
+              {card.label}
+            </div>
+            <div className="si-metric-value">{card.value ?? '—'}</div>
+            <div className="si-metric-sub">{card.sub}</div>
           </div>
-          <div className="si-metric-value">{overview?.kpis?.sessions24h ?? '—'}</div>
-          <div className="si-metric-sub">Store: {store?.name || storeId}</div>
-        </div>
-
-        <div className="si-card">
-          <div className="si-metric-label">
-            <div className="si-icon" />
-            Add to cart (24h)
-          </div>
-          <div className="si-metric-value">{overview?.kpis?.atc24h ?? '—'}</div>
-          <div className="si-metric-sub">
-            Sessions • Events: {overview?.kpis?.atcEvents24h ?? '—'}
-          </div>
-        </div>
-
-        <div className="si-card">
-          <div className="si-metric-label">
-            <div className="si-icon" />
-            Checkout started (24h)
-          </div>
-          <div className="si-metric-value">{overview?.kpis?.checkoutStarted24h ?? '—'}</div>
-          <div className="si-metric-sub">
-            Sessions • Events: {overview?.kpis?.checkoutStartedEvents24h ?? '—'}
-          </div>
-        </div>
-
-        <div className="si-card">
-          <div className="si-metric-label">
-            <div className="si-icon" />
-            Purchases (24h)
-          </div>
-          <div className="si-metric-value">{overview?.kpis?.purchases24h ?? '—'}</div>
-          <div className="si-metric-sub">
-            Sessions • Events: {overview?.kpis?.purchasesEvents24h ?? '—'}
-          </div>
-        </div>
+        ))}
 
         <div className="si-card">
           <div className="si-metric-label">

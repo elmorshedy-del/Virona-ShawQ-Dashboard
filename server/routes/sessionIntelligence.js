@@ -7,9 +7,11 @@ import {
   getSessionIntelligenceSessionsForDay,
   getSessionIntelligenceBriefForDay,
   getSessionIntelligenceClaritySignalsForDay,
+  getSessionIntelligenceAbandonmentJourneyReport,
   getSessionIntelligenceFlowForDay,
   getSessionIntelligenceLatestBrief,
   getSessionIntelligenceOverview,
+  getSessionIntelligenceProductAbandonmentForDay,
   getSessionIntelligenceRealtimeOverview,
   getSessionIntelligencePurchasesByCampaign,
   getSessionIntelligenceRecentEvents,
@@ -111,6 +113,44 @@ router.get('/clarity', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] clarity error:', error);
     res.status(500).json({ success: false, error: 'Failed to load clarity signals' });
+  }
+});
+
+router.get('/product-abandonment', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const date = req.query.date;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    if (!date) return res.status(400).json({ success: false, error: 'Missing date (YYYY-MM-DD)' });
+
+    const result = getSessionIntelligenceProductAbandonmentForDay(store, date, { limit });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] product-abandonment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load product abandonment insight' });
+  }
+});
+
+router.get('/journey/abandonment', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const days = req.query.days ? Number(req.query.days) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+
+    const result = getSessionIntelligenceAbandonmentJourneyReport(store, {
+      startDate,
+      endDate,
+      days,
+      limit
+    });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] journey abandonment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load journey abandonment report' });
   }
 });
 
