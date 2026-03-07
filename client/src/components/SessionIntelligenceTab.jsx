@@ -47,6 +47,8 @@ const ISSUE_SCOPE_MODE = 'all';
 const ISSUE_SCOPE_LABEL = 'All sessions';
 const ISSUE_AUTO_INVESTIGATE_MIN_AFFECTED_SESSIONS = 3;
 const ISSUE_OBSERVED_STATUS_HINT = 'Spotted and monitored closely. Automatic investigation starts when the pattern consistently affects more sessions.';
+const SURVEY_TEMPLATE_ROW_LIMIT = 6;
+const SURVEY_RECENT_RESPONSE_ROW_LIMIT = 6;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const SESSION_INTELLIGENCE_LLM_KEY = 'virona.sessionIntelligence.llm.v1';
@@ -1677,6 +1679,43 @@ function userLabel(row) {
   return sessionId ? toCode('Session', sessionId, 6) : '—';
 }
 
+function surveyStatusLabel(status) {
+  const key = (status || '').toString().toLowerCase().trim();
+  if (key === 'active') return 'Active';
+  if (key === 'paused') return 'Paused';
+  return 'Ready';
+}
+
+function surveyStatusClassName(status) {
+  const key = (status || '').toString().toLowerCase().trim();
+  if (key === 'active') return 'si-survey-status-active';
+  if (key === 'paused') return 'si-survey-status-paused';
+  return 'si-survey-status-ready';
+}
+
+function surveyDeliveryLabel(deliveryType, fallbackLabel) {
+  const key = (deliveryType || '').toString().toLowerCase().trim();
+  if (key === 'return_visit') return 'Return visit';
+  if (key === 'recovery') return 'Recovery';
+  if (key === 'checkout_plus') return 'Checkout Plus';
+  if (key === 'storefront') return 'Storefront';
+  return fallbackLabel || 'Storefront';
+}
+
+function surveyConsentLabel(consentMode) {
+  const key = (consentMode || '').toString().toLowerCase().trim();
+  if (key === 'ask_consent') return 'Ask consent';
+  if (key === 'response_only') return 'Response only';
+  return 'Auto-link';
+}
+
+function formatSurveyResponseSnippet(text) {
+  const raw = (text || '').toString().trim();
+  if (!raw) return '—';
+  if (raw.length <= 120) return raw;
+  return `${raw.slice(0, 117)}…`;
+}
+
 export default function SessionIntelligenceTab({ store, dashboardDateRange = null }) {
   const storeId = store?.id || 'shawq';
 
@@ -1737,12 +1776,20 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const [abandonmentPreviousReport, setAbandonmentPreviousReport] = useState(null);
   const [abandonmentLoading, setAbandonmentLoading] = useState(false);
   const [abandonmentError, setAbandonmentError] = useState('');
+  const [surveyTemplates, setSurveyTemplates] = useState([]);
+  const [surveySummary, setSurveySummary] = useState(null);
+  const [surveyLoading, setSurveyLoading] = useState(false);
+  const [surveyError, setSurveyError] = useState('');
+  const [surveySavingKey, setSurveySavingKey] = useState('');
 
   const latestEventIdRef = useRef(null);
   const libraryTimelineRef = useRef(null);
   const journeyRequestIdRef = useRef(0);
+  const surveyRequestIdRef = useRef(0);
   const dayPulseDataRef = useRef(null);
   const realtimeDataRef = useRef(null);
+  const surveyTemplatesRef = useRef([]);
+  const surveySummaryRef = useRef(null);
 
   useEffect(() => {
     persistSessionIntelligenceLlmSettings(analysisLlm);
@@ -1755,6 +1802,14 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   useEffect(() => {
     realtimeDataRef.current = realtime;
   }, [realtime]);
+
+  useEffect(() => {
+    surveyTemplatesRef.current = surveyTemplates;
+  }, [surveyTemplates]);
+
+  useEffect(() => {
+    surveySummaryRef.current = surveySummary;
+  }, [surveySummary]);
 
   const journeyComparisonRanges = useMemo(
     () => resolveJourneyComparisonRanges(dashboardDateRange),
@@ -1960,6 +2015,77 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     }
   }, [journeyComparisonRanges.current.endDate, journeyComparisonRanges.current.startDate, journeyComparisonRanges.previous.endDate, journeyComparisonRanges.previous.startDate, storeId]);
 
+  const loadSurveyData = useCallback(async (options = {}) => {
+    const requestId = surveyRequestIdRef.current + 1;
+    surveyRequestIdRef.current = requestId;
+    const showLoading = options.showLoading !== false
+      || ((surveyTemplatesRef.current?.length || 0) === 0 && !surveySummaryRef.current);
+
+    const params = new URLSearchParams({
+      store: storeId,
+      startDate: journeyComparisonRanges.current.startDate,
+      endDate: journeyComparisonRanges.current.endDate,
+      limit: String(SURVEY_TEMPLATE_ROW_LIMIT)
+    });
+
+    if (showLoading) setSurveyLoading(true);
+    setSurveyError('');
+
+    const [templatesResult, summaryResult] = await Promise.allSettled([
+      fetchJson(`/api/session-intelligence/survey/templates?${params.toString()}`),
+      fetchJson(`/api/session-intelligence/survey/summary?${params.toString()}`)
+    ]);
+
+    if (requestId !== surveyRequestIdRef.current) return;
+
+    if (templatesResult.status === 'fulfilled') {
+      setSurveyTemplates(Array.isArray(templatesResult.value?.data?.templates) ? templatesResult.value.data.templates : []);
+    } else {
+      console.error('[SessionIntelligenceTab] survey templates load failed:', templatesResult.reason || templatesResult);
+      setSurveyTemplates([]);
+    }
+
+    if (summaryResult.status === 'fulfilled') {
+      setSurveySummary(summaryResult.value?.data || null);
+    } else {
+      console.error('[SessionIntelligenceTab] survey summary load failed:', summaryResult.reason || summaryResult);
+      setSurveySummary(null);
+    }
+
+    if (templatesResult.status !== 'fulfilled' && summaryResult.status !== 'fulfilled') {
+      setSurveyError('Failed to load survey templates and responses');
+    } else {
+      setSurveyError('');
+    }
+
+    if (requestId === surveyRequestIdRef.current && showLoading) {
+      setSurveyLoading(false);
+    }
+  }, [journeyComparisonRanges.current.endDate, journeyComparisonRanges.current.startDate, storeId]);
+
+  const toggleSurveyTemplate = useCallback(async (template) => {
+    if (!template?.key) return;
+    const nextStatus = template.status === 'active' ? 'paused' : 'active';
+    setSurveySavingKey(template.key);
+    try {
+      await fetchJson('/api/session-intelligence/survey/templates/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          store: storeId,
+          templateKey: template.key,
+          status: nextStatus
+        })
+      });
+      await loadSurveyData();
+    } catch (error) {
+      console.error('[SessionIntelligenceTab] survey template save failed:', error);
+      setSurveyError(error?.message || 'Failed to update survey template');
+    } finally {
+      setSurveySavingKey('');
+    }
+  }, [loadSurveyData, storeId]);
+
   const loadOverview = useCallback(async () => {
     const url = `/api/session-intelligence/overview?store=${encodeURIComponent(storeId)}`;
     const data = await fetchJson(url);
@@ -2112,6 +2238,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         loadFlow(libraryDay, flowMode),
         loadClarity(libraryDay, ISSUE_SCOPE_MODE),
         loadJourneyReports(),
+        loadSurveyData(),
         loadSessions(),
         loadEvents(),
         loadLibraryDays()
@@ -2119,14 +2246,14 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } finally {
       setLoading(false);
     }
-  }, [flowMode, libraryDay, loadBrief, loadClarity, loadDayPulse, loadEvents, loadFlow, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [flowMode, libraryDay, loadBrief, loadClarity, loadDayPulse, loadEvents, loadFlow, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions, loadSurveyData]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setEventsStatus('loading');
 
-    Promise.all([loadDayPulse(), loadRealtime(), loadOverview(), loadBrief(), loadJourneyReports(), loadSessions(), loadEvents(), loadLibraryDays()])
+    Promise.all([loadDayPulse(), loadRealtime(), loadOverview(), loadBrief(), loadJourneyReports(), loadSurveyData(), loadSessions(), loadEvents(), loadLibraryDays()])
       .catch((error) => {
         if (!active) return;
         console.error('[SessionIntelligenceTab] initial load failed:', error);
@@ -2175,6 +2302,10 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
         if (!active) return;
         console.error('[SessionIntelligenceTab] journey poll failed:', error);
       });
+      loadSurveyData({ showLoading: false }).catch((error) => {
+        if (!active) return;
+        console.error('[SessionIntelligenceTab] survey poll failed:', error);
+      });
     }, POLL_JOURNEY_MS);
 
     return () => {
@@ -2185,7 +2316,7 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
       clearInterval(overviewTimer);
       clearInterval(journeyTimer);
     };
-  }, [loadBrief, loadDayPulse, loadEvents, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions]);
+  }, [loadBrief, loadDayPulse, loadEvents, loadJourneyReports, loadLibraryDays, loadOverview, loadRealtime, loadSessions, loadSurveyData]);
 
   useEffect(() => {
     setLibraryError('');
@@ -2586,6 +2717,16 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
   const deviceAbandonmentModel = useMemo(() => (
     buildDeviceAbandonmentModel({ librarySessions })
   ), [librarySessions]);
+  const visibleSurveyTemplates = useMemo(() => (
+    (Array.isArray(surveyTemplates) ? surveyTemplates : []).slice(0, SURVEY_TEMPLATE_ROW_LIMIT)
+  ), [surveyTemplates]);
+  const surveySummaryRows = useMemo(() => (
+    (Array.isArray(surveySummary?.rows) ? surveySummary.rows : []).slice(0, SURVEY_TEMPLATE_ROW_LIMIT)
+  ), [surveySummary?.rows]);
+  const recentSurveyResponses = useMemo(() => (
+    (Array.isArray(surveySummary?.recentResponses) ? surveySummary.recentResponses : []).slice(0, SURVEY_RECENT_RESPONSE_ROW_LIMIT)
+  ), [surveySummary?.recentResponses]);
+  const surveyRangeLabel = `${journeyComparisonRanges.current.startDate} to ${journeyComparisonRanges.current.endDate} (UTC)`;
 
   useEffect(() => {
     if (hasConfirmedIssues) return;
@@ -3402,6 +3543,161 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
             })}
           </div>
         )}
+      </div>
+
+      <div className="si-journey-grid" style={{ marginBottom: 12 }}>
+        <div className="si-card si-journey-card">
+          <div className="si-card-title">
+            <h3>Survey templates</h3>
+            <span className="si-muted">{surveyRangeLabel}</span>
+          </div>
+
+          {surveyLoading && visibleSurveyTemplates.length === 0 ? (
+            <div className="si-empty">Loading survey templates…</div>
+          ) : null}
+
+          {!surveyLoading && surveyError ? (
+            <div className="si-empty" style={{ color: '#b42318' }}>{surveyError}</div>
+          ) : null}
+
+          {!surveyLoading && !surveyError && visibleSurveyTemplates.length === 0 ? (
+            <div className="si-empty">No survey templates are registered yet.</div>
+          ) : null}
+
+          {!surveyLoading && !surveyError && visibleSurveyTemplates.length > 0 ? (
+            <div className="si-journey-table-wrap">
+              <table className="si-event-table si-survey-table">
+                <thead>
+                  <tr>
+                    <th>Template</th>
+                    <th>Trigger</th>
+                    <th>Delivery</th>
+                    <th>Status</th>
+                    <th>Usage</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleSurveyTemplates.map((template) => {
+                    const recommendation = template.recommendation || {};
+                    const actionLabel = template.status === 'active' ? 'Pause' : 'Enable';
+                    return (
+                      <tr key={template.key}>
+                        <td>
+                          <div className="si-survey-template-cell">
+                            <div className="si-survey-template-name">{template.name}</div>
+                            <div className="si-survey-template-goal">{template.goal}</div>
+                            {recommendation.recommended ? (
+                              <div className="si-survey-template-note">
+                                Recommended now • {pluralize(recommendation.affectedSessions, 'session', 'sessions')} in scope
+                              </div>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td>{template.triggerLabel}</td>
+                        <td>
+                          <div className="si-survey-chip-stack">
+                            <span className="si-badge si-survey-badge-delivery">{surveyDeliveryLabel(template.deliveryType, template.deliveryLabel)}</span>
+                            <span className="si-badge si-survey-badge-consent">{surveyConsentLabel(template.consentMode)}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className={`si-chip ${surveyStatusClassName(template.status)}`}>{surveyStatusLabel(template.status)}</span>
+                        </td>
+                        <td>
+                          {template.responseCount > 0 ? (
+                            <div className="si-survey-usage">
+                              <strong>{pluralize(template.responseCount, 'response', 'responses')}</strong>
+                              <span className="si-muted">{pluralize(template.linkedSessions, 'linked session', 'linked sessions')}</span>
+                            </div>
+                          ) : (
+                            <span className="si-muted">No responses yet</span>
+                          )}
+                        </td>
+                        <td>
+                          <button
+                            className="si-button si-button-small"
+                            type="button"
+                            disabled={surveySavingKey === template.key}
+                            onClick={() => toggleSurveyTemplate(template)}
+                          >
+                            {surveySavingKey === template.key ? 'Saving…' : actionLabel}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="si-card si-journey-card">
+          <div className="si-card-title">
+            <h3>Survey evidence</h3>
+            <span className="si-muted">{surveyRangeLabel}</span>
+          </div>
+
+          {surveyLoading && !surveySummary ? (
+            <div className="si-empty">Loading linked survey responses…</div>
+          ) : null}
+
+          {!surveyLoading && !surveyError && surveySummaryRows.length === 0 ? (
+            <div className="si-empty">
+              No linked survey responses yet. Once a live survey is enabled and shoppers respond, the strongest reasons will show here.
+            </div>
+          ) : null}
+
+          {!surveyLoading && surveySummaryRows.length > 0 ? (
+            <>
+              <div className="si-journey-table-wrap">
+                <table className="si-event-table si-survey-table">
+                  <thead>
+                    <tr>
+                      <th>Template</th>
+                      <th>Responses</th>
+                      <th>Top reason</th>
+                      <th>Linked sessions</th>
+                      <th>Last response</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {surveySummaryRows.map((row) => (
+                      <tr key={`survey-summary-${row.templateKey}`}>
+                        <td>{row.templateName}</td>
+                        <td>{pluralize(row.responseCount, 'response', 'responses')}</td>
+                        <td>{row.topChoice?.label ? `${row.topChoice.label} (${formatNumber(row.topChoice.responses)})` : '—'}</td>
+                        <td>{pluralize(row.linkedSessions, 'session', 'sessions')}</td>
+                        <td>{timeAgo(row.lastResponseAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {recentSurveyResponses.length > 0 ? (
+                <div className="si-survey-recent-list">
+                  {recentSurveyResponses.map((row, idx) => (
+                    <div key={`survey-recent-${row.templateKey}-${row.submittedAt}-${idx}`} className="si-survey-recent-item">
+                      <div className="si-survey-recent-top">
+                        <span className="si-survey-recent-template">{row.templateName}</span>
+                        <span className="si-muted">{timeAgo(row.submittedAt)}</span>
+                      </div>
+                      <div className="si-survey-recent-body">
+                        <span className="si-badge si-survey-badge-reason">{row.responseChoiceLabel || 'Open text'}</span>
+                        <span>{formatSurveyResponseSnippet(row.responseText)}</span>
+                      </div>
+                      <div className="si-muted">
+                        {row.pagePath ? `${formatPathLabel(row.pagePath)} • ` : ''}{row.shopperNumber ? formatShopperNumber(row.shopperNumber) : 'Unlinked'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
 
       <div className="si-row" style={{ marginBottom: 12, justifyContent: 'space-between', gap: 10 }}>

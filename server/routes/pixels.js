@@ -114,6 +114,12 @@ function renderUniversalPixelScript() {
   var store = (parsedScriptUrl && parsedScriptUrl.searchParams && parsedScriptUrl.searchParams.get('store')) || 'shawq';
   var endpointOverride = parsedScriptUrl && parsedScriptUrl.searchParams ? parsedScriptUrl.searchParams.get('endpoint') : null;
   var endpoint = endpointOverride || (scriptOrigin ? (scriptOrigin + '/api/pixels/shopify') : '/api/pixels/shopify');
+  var surveyTemplatesEndpoint = scriptOrigin
+    ? (scriptOrigin + '/api/session-intelligence/survey/templates')
+    : '/api/session-intelligence/survey/templates';
+  var surveyRespondEndpoint = scriptOrigin
+    ? (scriptOrigin + '/api/session-intelligence/survey/respond')
+    : '/api/session-intelligence/survey/respond';
 
   function storageKey(base) {
     return base + ':' + store;
@@ -217,6 +223,104 @@ function renderUniversalPixelScript() {
       }).catch(function () {});
     } catch (_e) {}
   }
+
+  function currentPageUrl() {
+    try {
+      return safeString(window.location.href, 1200);
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function currentPagePath() {
+    try {
+      return safeString(window.location.pathname || '', 500);
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function readSurveyContext() {
+    return {
+      version: VERSION,
+      store: store,
+      clientId: clientId,
+      sessionId: getOrCreateSessionId(),
+      pageUrl: currentPageUrl(),
+      pagePath: currentPagePath()
+    };
+  }
+
+  function fetchSurveyTemplates(options) {
+    var opts = options || {};
+    var params = new URLSearchParams();
+    params.set('store', store);
+    if (opts.activeOnly !== false) params.set('activeOnly', 'true');
+    if (opts.startDate) params.set('startDate', safeString(opts.startDate, 20));
+    if (opts.endDate) params.set('endDate', safeString(opts.endDate, 20));
+    return fetch(surveyTemplatesEndpoint + '?' + params.toString(), {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store'
+    }).then(function (response) {
+      return response.text().then(function (raw) {
+        var data = raw ? JSON.parse(raw) : null;
+        if (!response.ok || !data || data.success === false) {
+          throw new Error((data && (data.error || data.message)) || ('Template request failed (' + response.status + ')'));
+        }
+        return data;
+      });
+    });
+  }
+
+  function submitSurveyResponse(input) {
+    var payload = input && typeof input === 'object' ? input : {};
+    var context = readSurveyContext();
+    return fetch(surveyRespondEndpoint, {
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'omit',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: store,
+        source: 'virona_pixel_sdk',
+        templateKey: safeString(payload.templateKey || payload.template_key, 80),
+        responseChoiceKey: safeString(payload.responseChoiceKey || payload.response_choice_key, 80),
+        responseChoiceLabel: safeString(payload.responseChoiceLabel || payload.response_choice_label, 160),
+        responseText: safeString(payload.responseText || payload.response_text, 1000),
+        linkConsent: typeof payload.linkConsent === 'boolean' ? payload.linkConsent : true,
+        issueKey: safeString(payload.issueKey || payload.issue_key, 160),
+        userId: safeString(payload.userId || payload.user_id, 120),
+        metadata: payload.metadata || null,
+        pageUrl: safeString(payload.pageUrl || payload.page_url, 1200) || context.pageUrl,
+        pagePath: safeString(payload.pagePath || payload.page_path, 500) || context.pagePath,
+        clientId: safeString(payload.clientId || payload.client_id, 160) || context.clientId,
+        sessionId: safeString(payload.sessionId || payload.session_id, 160) || context.sessionId,
+        submittedAt: new Date().toISOString()
+      })
+    }).then(function (response) {
+      return response.text().then(function (raw) {
+        var data = raw ? JSON.parse(raw) : null;
+        if (!response.ok || !data || data.success === false) {
+          throw new Error((data && (data.error || data.message)) || ('Survey submit failed (' + response.status + ')'));
+        }
+        return data;
+      });
+    });
+  }
+
+  var surveyApi = {
+    version: VERSION,
+    getContext: readSurveyContext,
+    listTemplates: fetchSurveyTemplates,
+    submitResponse: submitSurveyResponse
+  };
+
+  try {
+    window.VironaSurvey = surveyApi;
+    window.__VIRONA_SURVEY__ = surveyApi;
+  } catch (_e) {}
 
   function elementSummary(el) {
     if (!el) return { key: 'unknown' };

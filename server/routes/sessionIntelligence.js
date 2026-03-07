@@ -30,6 +30,12 @@ import {
   queueInvestigationJobs,
   runQueuedInvestigationJobs
 } from '../services/sessionIntelligenceInvestigationService.js';
+import {
+  getSessionIntelligenceSurveySummary,
+  listSessionIntelligenceSurveyTemplates,
+  recordSessionIntelligenceSurveyResponse,
+  upsertSessionIntelligenceSurveyTemplateConfig
+} from '../services/sessionIntelligenceSurveyService.js';
 
 const router = express.Router();
 
@@ -298,6 +304,79 @@ router.post('/investigation/jobs/run', async (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] investigation run error:', error);
     res.status(500).json({ success: false, error: 'Failed to run investigation jobs' });
+  }
+});
+
+router.get('/survey/templates', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const activeOnly = normalizeFlag(req.query.activeOnly);
+    const result = listSessionIntelligenceSurveyTemplates({ store, startDate, endDate, activeOnly });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] survey templates error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load survey templates' });
+  }
+});
+
+router.post('/survey/templates/config', (req, res) => {
+  try {
+    const store = req.body?.store || 'shawq';
+    const templateKey = req.body?.templateKey || req.body?.template_key;
+    const status = req.body?.status;
+    const consentMode = req.body?.consentMode || req.body?.consent_mode;
+    const deliveryType = req.body?.deliveryType || req.body?.delivery_type;
+    const questionText = req.body?.questionText || req.body?.question_text;
+    const choices = Array.isArray(req.body?.choices) ? req.body.choices : undefined;
+
+    const result = upsertSessionIntelligenceSurveyTemplateConfig({
+      store,
+      templateKey,
+      status,
+      consentMode,
+      deliveryType,
+      questionText,
+      choices
+    });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] survey config error:', error);
+    res.status(500).json({ success: false, error: 'Failed to save survey template config' });
+  }
+});
+
+router.get('/survey/summary', (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const limit = parsePositiveInt(req.query.limit, 8, 1, 20);
+    const result = getSessionIntelligenceSurveySummary({ store, startDate, endDate, limit });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] survey summary error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load survey summary' });
+  }
+});
+
+router.post('/survey/respond', (req, res) => {
+  try {
+    const store = req.body?.store || 'shawq';
+    const result = recordSessionIntelligenceSurveyResponse({
+      store,
+      payload: req.body || {},
+      source: req.body?.source || 'storefront'
+    });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] survey respond error:', error);
+    res.status(500).json({ success: false, error: 'Failed to record survey response' });
   }
 });
 

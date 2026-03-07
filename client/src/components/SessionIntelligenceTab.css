@@ -406,6 +406,135 @@
   color: #334155;
 }
 
+.si-survey-table th,
+.si-survey-table td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.si-survey-table td:nth-child(1) {
+  min-width: 220px;
+}
+
+.si-survey-table td:nth-child(2) {
+  min-width: 190px;
+}
+
+.si-survey-table td:nth-child(3) {
+  min-width: 170px;
+}
+
+.si-survey-template-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.si-survey-template-name {
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--si-text);
+}
+
+.si-survey-template-goal {
+  font-size: 11px;
+  color: var(--si-muted);
+  line-height: 1.45;
+}
+
+.si-survey-template-note {
+  font-size: 11px;
+  font-weight: 700;
+  color: #4338ca;
+}
+
+.si-survey-chip-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.si-survey-badge-delivery {
+  border-color: rgba(79, 70, 229, 0.20);
+  background: rgba(238, 242, 255, 0.82);
+  color: #4338ca;
+}
+
+.si-survey-badge-consent {
+  border-color: rgba(14, 165, 233, 0.22);
+  background: rgba(224, 242, 254, 0.82);
+  color: #0c4a6e;
+}
+
+.si-survey-badge-reason {
+  border-color: rgba(34, 197, 94, 0.20);
+  background: rgba(240, 253, 244, 0.84);
+  color: #166534;
+}
+
+.si-survey-status-active {
+  border-color: rgba(34, 197, 94, 0.28);
+  background: rgba(240, 253, 244, 0.84);
+  color: #166534;
+}
+
+.si-survey-status-paused {
+  border-color: rgba(245, 158, 11, 0.30);
+  background: rgba(255, 247, 237, 0.88);
+  color: #9a3412;
+}
+
+.si-survey-status-ready {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(248, 250, 252, 0.9);
+  color: #475569;
+}
+
+.si-survey-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.si-survey-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.si-survey-recent-item {
+  border: 1px solid rgba(79, 70, 229, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 12px;
+}
+
+.si-survey-recent-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.si-survey-recent-template {
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--si-text);
+}
+
+.si-survey-recent-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  color: var(--si-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .si-metric-label {
   display: flex;
   align-items: center;

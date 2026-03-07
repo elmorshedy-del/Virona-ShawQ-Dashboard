@@ -421,6 +421,82 @@ export function runSessionIntelligenceMigration() {
     ON si_clarity_issue_verifications(store, date, status, expires_at)
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_survey_template_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      template_key TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ready',
+      consent_mode TEXT NOT NULL DEFAULT 'auto_link',
+      delivery_type TEXT,
+      question_text_override TEXT,
+      choices_override_json TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, template_key)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_survey_template_configs_store_status
+    ON si_survey_template_configs(store, status, updated_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_survey_responses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      template_key TEXT NOT NULL,
+      template_version INTEGER NOT NULL DEFAULT 1,
+      source TEXT,
+      delivery_type TEXT,
+      consent_mode TEXT,
+      link_consent INTEGER NOT NULL DEFAULT 1,
+      session_id TEXT,
+      shopper_number INTEGER,
+      client_id TEXT,
+      user_id TEXT,
+      issue_key TEXT,
+      page_url TEXT,
+      page_path TEXT,
+      checkout_token TEXT,
+      device_type TEXT,
+      device_os TEXT,
+      country_code TEXT,
+      utm_source TEXT,
+      utm_medium TEXT,
+      utm_campaign TEXT,
+      utm_content TEXT,
+      utm_term TEXT,
+      response_choice_key TEXT,
+      response_choice_label TEXT,
+      response_text TEXT,
+      metadata_json TEXT,
+      submitted_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_survey_responses_store_submitted
+    ON si_survey_responses(store, submitted_at)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_survey_responses_store_template_submitted
+    ON si_survey_responses(store, template_key, submitted_at)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_survey_responses_store_session_submitted
+    ON si_survey_responses(store, session_id, submitted_at)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_survey_responses_store_issue_submitted
+    ON si_survey_responses(store, issue_key, submitted_at)
+  `);
+
   // Backfill session_number for existing sessions (per-store sequential IDs).
   // Also initialize/update store counters so new sessions keep incrementing correctly.
   try {
