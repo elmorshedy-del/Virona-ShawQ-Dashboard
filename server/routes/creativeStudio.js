@@ -22,6 +22,7 @@ import * as apifyService from '../services/apifyService.js';
 import { isBrandCacheValid, getBrandCacheExpiry } from '../db/competitorSpyMigration.js';
 import { getOrCreateStoreProfile } from '../services/storeProfileService.js';
 import { detectVideoOverlays, getVideoOverlayAiHealth, isVideoOverlayAiConfigured } from '../services/videoOverlayAiClient.js';
+import { renderVideoOverlayPng } from '../services/videoOverlayRenderService.js';
 import sharp from 'sharp';
 import {
   enhancePhoto,
@@ -113,12 +114,22 @@ function createBoundedUploadSingle({ fieldName, maxBytes, typeLabel }) {
 const VIDEO_OVERLAY_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'video-overlay');
 const VIDEO_OVERLAY_UPLOADS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'uploads');
 const VIDEO_OVERLAY_OUTPUTS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'outputs');
-const VIDEO_OVERLAY_TEXTS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'texts');
+const VIDEO_OVERLAY_RENDER_ASSETS_DIR = path.join(VIDEO_OVERLAY_TMP_DIR, 'render-assets');
+const VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX = 8;
+const VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT = 1.2;
+const VIDEO_OVERLAY_EXPORT_OVERCOVER_PX = 2;
+const VIDEO_OVERLAY_REFINEMENT_PADDING_RATIO = 0.3;
+const VIDEO_OVERLAY_REFINEMENT_MIN_CROP_WIDTH_PX = 20;
+const VIDEO_OVERLAY_REFINEMENT_MIN_CROP_HEIGHT_PX = 10;
+const VIDEO_OVERLAY_REFINEMENT_MIN_BOX_SCALE_RATIO = 0.5;
+const VIDEO_OVERLAY_REFINEMENT_MAX_BOX_SCALE_RATIO = 2;
+const VIDEO_OVERLAY_REFINEMENT_MAX_TEXT_CHARS = 240;
+const VIDEO_OVERLAY_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function ensureVideoOverlayDirs() {
   await fs.promises.mkdir(VIDEO_OVERLAY_UPLOADS_DIR, { recursive: true });
   await fs.promises.mkdir(VIDEO_OVERLAY_OUTPUTS_DIR, { recursive: true });
-  await fs.promises.mkdir(VIDEO_OVERLAY_TEXTS_DIR, { recursive: true });
+  await fs.promises.mkdir(VIDEO_OVERLAY_RENDER_ASSETS_DIR, { recursive: true });
 }
 
 function getUploadedVideoPath(videoId) {
@@ -129,8 +140,12 @@ function getExportedVideoPath(exportId) {
   return path.join(VIDEO_OVERLAY_OUTPUTS_DIR, `${exportId}.mp4`);
 }
 
-function getOverlayTextFilePath(exportId, index) {
-  return path.join(VIDEO_OVERLAY_TEXTS_DIR, `${exportId}-${index}.txt`);
+function getOverlayRenderAssetPath(exportId, index) {
+  return path.join(VIDEO_OVERLAY_RENDER_ASSETS_DIR, `${exportId}-${index}.png`);
+}
+
+function isVideoOverlayAssetId(value) {
+  return VIDEO_OVERLAY_ID_REGEX.test(String(value || '').trim());
 }
 
 const VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS = [
@@ -139,7 +154,7 @@ const VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite'
 ];
-const VIDEO_OVERLAY_DEFAULT_SCAN_MODEL = 'gemini-2.5-flash-lite';
+const VIDEO_OVERLAY_DEFAULT_SCAN_MODEL = 'gemini-2.5-pro';
 const VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP = {
   'gemini-3-pro': 'gemini-3-pro-preview',
   'gemini-2.0-flash-lite': VIDEO_OVERLAY_DEFAULT_SCAN_MODEL
@@ -1774,6 +1789,8 @@ function toOverlayBox(det, { startTime, endTime, videoWidth: maxVideoWidth = 0, 
     fontWeight: font?.weight || 'normal',
     fontStyle: font?.style || 'normal',
     fontFamily: (font?.suggested_fonts && font.suggested_fonts[0]) || 'Inter',
+    textPaddingX: VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX,
+    lineHeight: VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT,
     isGradient: Boolean(colors?.is_gradient),
     gradient: colors?.gradient || null,
     confidence: det?.confidence ?? 0.9,
@@ -1877,6 +1894,8 @@ function buildPlaceholderOverlay({ seg, videoWidth, videoHeight } = {}) {
     fontWeight: 'bold',
     fontStyle: 'normal',
     fontFamily: 'Inter',
+    textPaddingX: VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX,
+    lineHeight: VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT,
     isGradient: false,
     gradient: null,
     confidence: 0,
@@ -3116,7 +3135,9 @@ async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
   const configuredChunkSize = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_CHUNK_SIZE ?? 8, 1, 16));
   const chunkSize = resolvedModelName === 'gemini-3-pro-preview'
     ? Math.min(configuredChunkSize, 4)
-    : configuredChunkSize;
+    : resolvedModelName === 'gemini-2.5-pro'
+      ? Math.min(configuredChunkSize, 6)
+      : configuredChunkSize;
   const parseRetries = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_PARSE_RETRIES ?? 2, 0, 5));
   const maxRetries = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_RETRIES ?? 6, 0, 10));
   const minDelayMs = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_MIN_DELAY_MS ?? 250, 0, 5000));
@@ -3238,12 +3259,15 @@ async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
   };
 
   const buildChunkParts = (chunk) => {
-    const prompt = `You analyze video frames to find when a burnt-in text overlay changes.
+    const prompt = `You analyze sampled video frames to detect when the prominent burnt-in editable overlay changes.
 
-For each frame, read ONLY the prominent burnt-in text overlay (lower-third/subtitle/caption) that appears as a boxed/overlayed text element.
-If there is no such overlay, return null.
-If there are multiple overlays, pick the most prominent editable overlay.
-If the text is unreadable, return "UNREADABLE" (do not guess).
+For each frame:
+- Read ONLY the most prominent editable burnt-in overlay (lower-third, subtitle, caption, or banner with a visible background).
+- Ignore natural scene text, product packaging text, clothing text, signage, and UI chrome.
+- If the overlay has multiple visible lines, join them with " | " in top-to-bottom order.
+- If there is no editable overlay, return null.
+- If the overlay exists but a character is unclear, use "?" only for that character.
+- Return the same overlay_text string for frames that show the same overlay, even if position or color shifts slightly.
 
 Return ONLY valid JSON with this exact shape:
 {"frames":[{"t":0.0,"overlay_text":null}]}`;
@@ -3356,6 +3380,116 @@ async function detectOverlayKeysWithDetector({ videoPath, times } = {}) {
   return frames;
 }
 
+function extractFirstJsonFragment(rawText, openingChar, closingChar) {
+  const text = String(rawText || '');
+  const start = text.indexOf(openingChar);
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let isEscaped = false;
+
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+
+    if (inString) {
+      if (isEscaped) {
+        isEscaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        isEscaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === openingChar) {
+      depth += 1;
+      continue;
+    }
+    if (ch === closingChar) {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function cleanModelJsonText(rawText) {
+  return String(rawText || '')
+    .replace(/```json|```/g, '')
+    .trim();
+}
+
+function parseModelJsonArray(rawText, arrayKey = 'overlays') {
+  const cleaned = cleanModelJsonText(rawText);
+  if (!cleaned) return [];
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed?.[arrayKey])) return parsed[arrayKey];
+  } catch { }
+
+  const extracted = extractFirstJsonFragment(cleaned, '[', ']');
+  if (!extracted) {
+    throw new Error(`Gemini returned invalid JSON array. Preview: ${cleaned.slice(0, 200)}`);
+  }
+
+  const parsed = JSON.parse(extracted);
+  if (Array.isArray(parsed)) return parsed;
+  throw new Error(`Gemini returned invalid JSON array. Preview: ${cleaned.slice(0, 200)}`);
+}
+
+function parseModelJsonObject(rawText) {
+  const cleaned = cleanModelJsonText(rawText);
+  if (!cleaned) {
+    throw new Error('Gemini returned an empty JSON object response.');
+  }
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch { }
+
+  const extracted = extractFirstJsonFragment(cleaned, '{', '}');
+  if (!extracted) {
+    throw new Error(`Gemini returned invalid JSON object. Preview: ${cleaned.slice(0, 200)}`);
+  }
+
+  const parsed = JSON.parse(extracted);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  throw new Error(`Gemini returned invalid JSON object. Preview: ${cleaned.slice(0, 200)}`);
+}
+
+function normalizeOverlayTextLines(rawLines, fallbackText = '') {
+  if (Array.isArray(rawLines)) {
+    const lines = rawLines
+      .map((line) => String(line || '').replace(/\r\n?/g, '\n').trim())
+      .filter(Boolean);
+    if (lines.length) return lines;
+  }
+
+  const fallback = String(fallbackText || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return fallback.length ? fallback : [];
+}
+
 async function detectSegmentOverlaysWithGeminiVision({
   frameBase64,
   videoWidth,
@@ -3381,97 +3515,25 @@ async function detectSegmentOverlaysWithGeminiVision({
     model: resolvedModelName,
     generationConfig: {
       temperature: 0,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 4096,
       responseMimeType: 'application/json'
     }
   });
 
-  const prompt = `Analyze this video frame (original resolution: ${safeParseNumber(videoWidth, 1080)}x${safeParseNumber(videoHeight, 1920)} pixels) and detect all text overlay boxes (banners, captions, labels with colored backgrounds and text on top).
+  const prompt = `Analyze this full-resolution video frame (original resolution: ${safeParseNumber(videoWidth, 1080)}x${safeParseNumber(videoHeight, 1920)} pixels) and detect every editable burnt-in overlay box.
 
 For each overlay found, return a JSON array where each item has:
 - "box_2d": [y0, x0, y1, x1] — bounding box coordinates normalized to 0-1000 scale
-- "text_lines": array of strings, one per visual line as displayed (e.g. ["First Ever Palestine", "Inspired Denim Jeans"]). If the text is on a single line, return a single-element array.
-- "bg_color": the EXACT background color of the overlay box as a hex string (e.g. "#E91E8C"). Be very precise — sample from the solid background area, not from text or edges.
-- "text_color": the EXACT text color as a hex string (e.g. "#FFFFFF"). Sample from the text itself.
-- "font_size_px": estimated font size in pixels relative to the original frame dimensions (${safeParseNumber(videoWidth, 1080)}x${safeParseNumber(videoHeight, 1920)}), not relative to the provided image.
-- "font_weight": "normal" or "bold"
-- "font_style": "normal" or "italic"
-- "font_family": the closest matching common web font name (e.g. "Inter", "Arial", "Roboto", "Montserrat", "Open Sans", "Helvetica", "Poppins", "Oswald")
-- "border_radius_px": estimated corner radius in pixels (0 for sharp corners, e.g. 8, 12, 16 for rounded)
+- "text_lines": array of strings, one per visual line as displayed, in exact top-to-bottom order. If the overlay is single-line, return a single-element array.
 
-Only detect overlays that are clearly added/burned-in text boxes with solid or gradient backgrounds — NOT text that is naturally part of the scene (signs, clothing, etc).
+Rules:
+- Detect only added overlay boxes with a visible solid or gradient background.
+- Ignore natural scene text, signs, packaging text, clothing text, and UI chrome.
+- Preserve visual line breaks exactly as shown.
+- If one character is unclear, use "?" only for that character. Do not paraphrase.
+- Do not guess colors, font family, border radius, or pixel font size in this pass.
 
 Return ONLY a JSON array. No explanation, no markdown.`;
-
-  const extractFirstJsonArray = (rawText) => {
-    const text = String(rawText || '');
-    const start = text.indexOf('[');
-    if (start < 0) return null;
-
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-
-    for (let i = start; i < text.length; i += 1) {
-      const ch = text[i];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (ch === '\\') {
-          escaped = true;
-          continue;
-        }
-        if (ch === '"') {
-          inString = false;
-        }
-        continue;
-      }
-      if (ch === '"') {
-        inString = true;
-        continue;
-      }
-      if (ch === '[') {
-        depth += 1;
-        continue;
-      }
-      if (ch === ']') {
-        depth -= 1;
-        if (depth === 0) {
-          return text.slice(start, i + 1);
-        }
-      }
-    }
-
-    return null;
-  };
-
-  const parseGeminiArray = (rawText) => {
-    const cleaned = String(rawText || '')
-      .replace(/```json|```/g, '')
-      .trim();
-
-    if (!cleaned) return [];
-
-    try {
-      const parsed = JSON.parse(cleaned);
-      if (Array.isArray(parsed)) return parsed;
-      if (Array.isArray(parsed?.overlays)) return parsed.overlays;
-    } catch { }
-
-    const extracted = extractFirstJsonArray(cleaned);
-    if (!extracted) {
-      throw new Error(`Gemini returned invalid JSON array. Preview: ${cleaned.slice(0, 200)}`);
-    }
-
-    try {
-      const parsed = JSON.parse(extracted);
-      if (Array.isArray(parsed)) return parsed;
-    } catch { }
-
-    throw new Error(`Gemini returned invalid JSON array. Preview: ${cleaned.slice(0, 200)}`);
-  };
 
   const result = await model.generateContent([
     { text: prompt },
@@ -3479,7 +3541,7 @@ Return ONLY a JSON array. No explanation, no markdown.`;
   ]);
 
   const rawText = String(result?.response?.text?.() ?? '').trim();
-  const geminiRows = parseGeminiArray(rawText);
+  const geminiRows = parseModelJsonArray(rawText);
   const safeVideoWidth = Math.max(1, Math.round(safeParseNumber(videoWidth, 1)));
   const safeVideoHeight = Math.max(1, Math.round(safeParseNumber(videoHeight, 1)));
 
@@ -3508,31 +3570,9 @@ Return ONLY a JSON array. No explanation, no markdown.`;
     const clampedW = Math.max(1, Math.min(width, safeVideoWidth - clampedX));
     const clampedH = Math.max(1, Math.min(height, safeVideoHeight - clampedY));
 
-    // Multi-line text: prefer text_lines array, fall back to legacy text field
-    const textLines = Array.isArray(item?.text_lines) && item.text_lines.length
-      ? item.text_lines.map(l => String(l || '').trim()).filter(Boolean)
-      : null;
-    const text = textLines
-      ? textLines.join('\n')
-      : (String(item?.text || '').trim() || 'Detected');
-
-    const bgHex = parseHexColor(item?.bg_color)?.hex || '#000000';
-    const textHex = parseHexColor(item?.text_color)?.hex || '#ffffff';
-
-    // Font size: prefer font_size_px (pixel-based), fall back to font_size_ratio
-    let fontSize;
-    const fontSizePx = safeParseNumber(item?.font_size_px, null);
-    if (fontSizePx !== null && fontSizePx > 0) {
-      fontSize = Math.max(8, Math.round(fontSizePx));
-    } else {
-      const fontSizeRatio = clampNumber(item?.font_size_ratio ?? 0.5, 0, 1);
-      fontSize = Math.max(8, Math.round(fontSizeRatio * clampedH));
-    }
-
-    const fontWeight = String(item?.font_weight || '').trim().toLowerCase() === 'bold' ? 'bold' : 'normal';
-    const fontStyle = String(item?.font_style || '').trim().toLowerCase() === 'italic' ? 'italic' : 'normal';
-    const fontFamily = String(item?.font_family || '').trim() || 'Inter';
-    const borderRadius = Math.max(0, Math.round(safeParseNumber(item?.border_radius_px, 0)));
+    const textLines = normalizeOverlayTextLines(item?.text_lines, item?.text);
+    const text = textLines.length ? textLines.join('\n') : 'Detected';
+    const roughFontSize = Math.max(8, Math.round(clampedH * 0.42));
 
     overlays.push({
       id: crypto.randomUUID(),
@@ -3541,13 +3581,15 @@ Return ONLY a JSON array. No explanation, no markdown.`;
       width: clampedW,
       height: clampedH,
       text,
-      backgroundColor: bgHex,
-      textColor: textHex,
-      fontSize,
-      fontWeight,
-      fontStyle,
-      fontFamily,
-      borderRadius,
+      backgroundColor: '#333333',
+      textColor: '#ffffff',
+      fontSize: roughFontSize,
+      fontWeight: 'normal',
+      fontStyle: 'normal',
+      fontFamily: 'Inter',
+      borderRadius: 0,
+      textPaddingX: VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX,
+      lineHeight: VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT,
       isGradient: false,
       gradient: null,
       confidence: 0.9,
@@ -3578,7 +3620,7 @@ async function refineOverlayPositions({ overlays, videoPath, sampleTime, videoWi
     model: resolvedModelName,
     generationConfig: {
       temperature: 0,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 2048,
       responseMimeType: 'application/json'
     }
   });
@@ -3595,15 +3637,14 @@ async function refineOverlayPositions({ overlays, videoPath, sampleTime, videoWi
   const refined = [];
   for (const ov of overlays) {
     try {
-      const padding = 0.3;
-      const padX = Math.round(ov.width * padding);
-      const padY = Math.round(ov.height * padding);
+      const padX = Math.round(ov.width * VIDEO_OVERLAY_REFINEMENT_PADDING_RATIO);
+      const padY = Math.round(ov.height * VIDEO_OVERLAY_REFINEMENT_PADDING_RATIO);
       const cropX = Math.max(0, ov.x - padX);
       const cropY = Math.max(0, ov.y - padY);
       const cropW = Math.min(videoWidth - cropX, ov.width + 2 * padX);
       const cropH = Math.min(videoHeight - cropY, ov.height + 2 * padY);
 
-      if (cropW < 20 || cropH < 10) {
+      if (cropW < VIDEO_OVERLAY_REFINEMENT_MIN_CROP_WIDTH_PX || cropH < VIDEO_OVERLAY_REFINEMENT_MIN_CROP_HEIGHT_PX) {
         refined.push(ov);
         continue;
       }
@@ -3614,14 +3655,37 @@ async function refineOverlayPositions({ overlays, videoPath, sampleTime, videoWi
         continue;
       }
 
-      const refinePrompt = `This is a cropped region (${cropW}x${cropH} pixels) from a video frame. It contains a text overlay box with a colored background.
+      const roughTextHint = String(ov.text || '')
+        .replace(/\r\n?/g, '\n')
+        .slice(0, VIDEO_OVERLAY_REFINEMENT_MAX_TEXT_CHARS);
+      const refinePrompt = `This crop (${cropW}x${cropH} pixels) contains exactly one burnt-in editable overlay box.
 
-Return the EXACT bounding box of the overlay within this crop as a JSON object:
-{"x": <pixels from left edge>, "y": <pixels from top edge>, "width": <pixels wide>, "height": <pixels tall>}
+Existing rough text hint:
+${roughTextHint || '[none]'}
 
-Be pixel-precise: the box should tightly wrap the colored background rectangle of the overlay, including any padding around the text but NOT any area outside the colored background.
+Return ONLY valid JSON with this exact shape:
+{
+  "box": { "x": 0, "y": 0, "width": 0, "height": 0 },
+  "text_lines": ["line 1", "line 2"],
+  "text_color": "#ffffff",
+  "background_style": "solid|vertical_gradient|horizontal_gradient",
+  "background_color": "#111111",
+  "gradient_from": "#111111",
+  "gradient_to": "#333333",
+  "font_size_px": 24,
+  "font_weight": "normal|bold",
+  "font_style": "normal|italic",
+  "border_radius_px": 0
+}
 
-Return ONLY the JSON object. No explanation.`;
+Rules:
+- The box must tightly wrap the colored overlay background, not the whole crop.
+- Preserve visual line breaks exactly as shown.
+- Use the rough text only as a hint; correct it if the crop clearly shows better text.
+- If one character is unclear, use "?" only for that character.
+- Pick the dominant visible text color.
+- If the background is not clearly gradient, use "solid".
+- Return JSON only. No markdown. No explanation.`;
 
       const result = await model.generateContent([
         { text: refinePrompt },
@@ -3631,30 +3695,76 @@ Return ONLY the JSON object. No explanation.`;
       const rawText = String(result?.response?.text?.() ?? '').trim();
       let parsed = null;
       try {
-        parsed = JSON.parse(rawText.replace(/```json|```/g, '').trim());
+        parsed = parseModelJsonObject(rawText);
       } catch (error) {
         console.warn('Failed to parse refinement JSON from Gemini. Raw text:', rawText, 'Error:', error);
         refined.push(ov);
         continue;
       }
 
-      if (parsed && typeof parsed.x === 'number' && typeof parsed.y === 'number' &&
-        typeof parsed.width === 'number' && typeof parsed.height === 'number') {
-        const newX = Math.max(0, Math.min(videoWidth - 1, cropX + Math.round(parsed.x)));
-        const newY = Math.max(0, Math.min(videoHeight - 1, cropY + Math.round(parsed.y)));
-        const newW = Math.max(1, Math.min(videoWidth - newX, Math.round(parsed.width)));
-        const newH = Math.max(1, Math.min(videoHeight - newY, Math.round(parsed.height)));
+      const parsedBox = parsed?.box && typeof parsed.box === 'object'
+        ? parsed.box
+        : parsed;
+      const textLines = normalizeOverlayTextLines(parsed?.text_lines, ov.text);
+      const text = textLines.length ? textLines.join('\n') : ov.text;
+      const textColor = parseHexColor(parsed?.text_color)?.hex || ov.textColor || '#ffffff';
+      const backgroundColor = parseHexColor(parsed?.background_color)?.hex || ov.backgroundColor || '#333333';
+      const backgroundStyle = String(parsed?.background_style || '').trim().toLowerCase();
+      const gradientDirection = backgroundStyle === 'horizontal_gradient' ? 'horizontal' : 'vertical';
+      const gradientFrom = parseHexColor(parsed?.gradient_from)?.hex || backgroundColor;
+      const gradientTo = parseHexColor(parsed?.gradient_to)?.hex || backgroundColor;
+      const isGradient = backgroundStyle === 'horizontal_gradient' || backgroundStyle === 'vertical_gradient';
+      const fontSize = Math.max(8, Math.round(safeParseNumber(parsed?.font_size_px, ov.fontSize || 24) || 24));
+      const fontWeight = String(parsed?.font_weight || '').trim().toLowerCase() === 'bold' ? 'bold' : (ov.fontWeight || 'normal');
+      const fontStyle = String(parsed?.font_style || '').trim().toLowerCase() === 'italic' ? 'italic' : 'normal';
+      const borderRadius = Math.max(0, Math.round(safeParseNumber(parsed?.border_radius_px, ov.borderRadius || 0) || 0));
+      const refinedOverlay = {
+        ...ov,
+        text,
+        textColor,
+        backgroundColor,
+        fontSize,
+        fontWeight,
+        fontStyle,
+        borderRadius,
+        textPaddingX: VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX,
+        lineHeight: VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT,
+        isGradient,
+        gradient: isGradient
+          ? {
+            direction: gradientDirection,
+            from: { hex: gradientFrom },
+            to: { hex: gradientTo }
+          }
+          : null
+      };
+      const hasBox = parsedBox
+        && typeof parsedBox.x === 'number'
+        && typeof parsedBox.y === 'number'
+        && typeof parsedBox.width === 'number'
+        && typeof parsedBox.height === 'number';
+
+      if (hasBox) {
+        const newX = Math.max(0, Math.min(videoWidth - 1, cropX + Math.round(parsedBox.x)));
+        const newY = Math.max(0, Math.min(videoHeight - 1, cropY + Math.round(parsedBox.y)));
+        const newW = Math.max(1, Math.min(videoWidth - newX, Math.round(parsedBox.width)));
+        const newH = Math.max(1, Math.min(videoHeight - newY, Math.round(parsedBox.height)));
 
         const wRatio = newW / Math.max(1, ov.width);
         const hRatio = newH / Math.max(1, ov.height);
-        if (wRatio > 0.5 && wRatio < 2.0 && hRatio > 0.5 && hRatio < 2.0) {
-          refined.push({ ...ov, x: newX, y: newY, width: newW, height: newH });
-        } else {
-          refined.push(ov);
+        if (
+          wRatio > VIDEO_OVERLAY_REFINEMENT_MIN_BOX_SCALE_RATIO
+          && wRatio < VIDEO_OVERLAY_REFINEMENT_MAX_BOX_SCALE_RATIO
+          && hRatio > VIDEO_OVERLAY_REFINEMENT_MIN_BOX_SCALE_RATIO
+          && hRatio < VIDEO_OVERLAY_REFINEMENT_MAX_BOX_SCALE_RATIO
+        ) {
+          refinedOverlay.x = newX;
+          refinedOverlay.y = newY;
+          refinedOverlay.width = newW;
+          refinedOverlay.height = newH;
         }
-      } else {
-        refined.push(ov);
       }
+      refined.push(refinedOverlay);
     } catch {
       refined.push(ov);
     }
@@ -3681,8 +3791,7 @@ router.post('/video-overlay/scan', async (req, res) => {
     await ensureVideoOverlayDirs();
 
     const videoId = String(req.body?.video_id || '').trim();
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(videoId)) {
+    if (!isVideoOverlayAssetId(videoId)) {
       return res.status(400).json({ success: false, error: 'Invalid video_id format' });
     }
     const videoPath = getUploadedVideoPath(videoId);
@@ -3706,7 +3815,7 @@ router.post('/video-overlay/scan', async (req, res) => {
     }
 
     let intervalSec = clampNumber(req.body?.interval_sec ?? 1, 0.25, 10);
-    const maxFrames = Math.round(clampNumber(req.body?.max_frames ?? 30, 5, 120));
+    const maxFrames = Math.round(clampNumber(req.body?.max_frames ?? 60, 5, 120));
 
     // Keep within maxFrames by increasing interval automatically.
     if (durationSec / intervalSec > maxFrames) {
@@ -4007,18 +4116,10 @@ function escapeDrawtextPath(filePath) {
     .replace(/'/g, "\\'");
 }
 
-function buildOverlayFiltergraph({ durationSec, segments, fontPath, textFileResolver, videoWidth = 0, videoHeight = 0 } = {}) {
-  const filters = [];
-  let label = '[0:v]';
-  let step = 0;
+function buildOverlayRenderJobs({ durationSec, segments, videoWidth = 0, videoHeight = 0, assetPathResolver } = {}) {
+  const jobs = [];
   const maxVideoWidth = Math.max(1, Math.round(safeParseNumber(videoWidth, 1)));
   const maxVideoHeight = Math.max(1, Math.round(safeParseNumber(videoHeight, 1)));
-
-  // Make sure we always have a working font file path.
-  const fallbackFont = fontPath || path.join(__dirname, '..', 'assets', 'fonts', 'Inter-Regular.ttf');
-  const resolvedFontPath = fs.existsSync(fallbackFont)
-    ? fallbackFont
-    : path.join(__dirname, '..', '..', 'Inter-Regular.ttf');
 
   for (const seg of segments || []) {
     const start = clampNumber(seg?.start, 0, durationSec);
@@ -4026,63 +4127,55 @@ function buildOverlayFiltergraph({ durationSec, segments, fontPath, textFileReso
     const overlays = Array.isArray(seg?.overlays) ? seg.overlays : [];
 
     for (const ov of overlays) {
-      const w = clampNumber(Math.round(safeParseNumber(ov?.width, 1)), 1, maxVideoWidth);
-      const h = clampNumber(Math.round(safeParseNumber(ov?.height, 1)), 1, maxVideoHeight);
-      const x = clampNumber(Math.round(safeParseNumber(ov?.x, 0)), 0, Math.max(0, maxVideoWidth - w));
-      const y = clampNumber(Math.round(safeParseNumber(ov?.y, 0)), 0, Math.max(0, maxVideoHeight - h));
+      const rawWidth = clampNumber(Math.round(safeParseNumber(ov?.width, 1)), 1, maxVideoWidth);
+      const rawHeight = clampNumber(Math.round(safeParseNumber(ov?.height, 1)), 1, maxVideoHeight);
+      const rawX = clampNumber(Math.round(safeParseNumber(ov?.x, 0)), 0, Math.max(0, maxVideoWidth - rawWidth));
+      const rawY = clampNumber(Math.round(safeParseNumber(ov?.y, 0)), 0, Math.max(0, maxVideoHeight - rawHeight));
+      const overcoverPx = clampNumber(VIDEO_OVERLAY_EXPORT_OVERCOVER_PX, 0, 16);
+      const x = Math.max(0, rawX - overcoverPx);
+      const y = Math.max(0, rawY - overcoverPx);
+      const width = Math.max(1, Math.min(maxVideoWidth - x, rawWidth + overcoverPx * 2));
+      const height = Math.max(1, Math.min(maxVideoHeight - y, rawHeight + overcoverPx * 2));
+      const assetPath = typeof assetPathResolver === 'function' ? assetPathResolver(jobs.length, ov) : '';
+      if (!assetPath) continue;
 
-      const enable = `between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})`;
-
-      const bgHex = parseHexColor(ov?.backgroundColor)?.hex || '#333333';
-      const textHex = parseHexColor(ov?.textColor)?.hex || '#ffffff';
-      const fontsize = Math.max(8, Math.round(safeParseNumber(ov?.fontSize, 24)));
-      const textFilePath = typeof textFileResolver === 'function' ? textFileResolver(ov?.text || '') : '';
-      if (!textFilePath) continue;
-      const textfile = escapeDrawtextPath(textFilePath);
-
-      // Background: prefer gradient when provided; fall back to solid color.
-      let bgStream = `[bg${step}]`;
-      if (ov?.isGradient && ov?.gradient?.from?.hex && ov?.gradient?.to?.hex) {
-        const from = parseHexColor(ov.gradient.from.hex);
-        const to = parseHexColor(ov.gradient.to.hex);
-        const dir = ov.gradient.direction === 'horizontal' ? 'horizontal' : 'vertical';
-
-        if (from && to) {
-          // This uses geq; if ffmpeg lacks it or parsing fails, the export route will fall back to solid.
-          const axis = dir === 'horizontal' ? 'X' : 'Y';
-          const denom = dir === 'horizontal' ? 'W' : 'H';
-          filters.push(
-            `color=c=black:s=${w}x${h}:d=${durationSec.toFixed(3)},format=rgba,geq=` +
-            `r='${from.r}+(${to.r}-${from.r})*${axis}/${denom}':` +
-            `g='${from.g}+(${to.g}-${from.g})*${axis}/${denom}':` +
-            `b='${from.b}+(${to.b}-${from.b})*${axis}/${denom}':` +
-            `a=255${bgStream}`
-          );
-        } else {
-          filters.push(`color=c=${bgHex}:s=${w}x${h}:d=${durationSec.toFixed(3)}${bgStream}`);
+      jobs.push({
+        assetPath,
+        start,
+        end,
+        x,
+        y,
+        overlay: {
+          ...ov,
+          width,
+          height,
+          textPaddingX: Math.max(0, Math.round(safeParseNumber(ov?.textPaddingX, VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX))),
+          lineHeight: clampNumber(ov?.lineHeight ?? VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT, 1, 2)
         }
-      } else {
-        filters.push(`color=c=${bgHex}:s=${w}x${h}:d=${durationSec.toFixed(3)}${bgStream}`);
-      }
-
-      const out1 = `[v${++step}]`;
-      filters.push(`${label}${bgStream}overlay=${x}:${y}:enable='${enable}'${out1}`);
-      label = out1;
-
-      const out2 = `[v${++step}]`;
-      const draw = `drawtext=fontfile='${resolvedFontPath}':textfile='${textfile}':` +
-        `x=${x}+((${w}-text_w)/2):y=${y}+((${h}-text_h)/2):` +
-        `fontsize=${fontsize}:fontcolor=${textHex}:` +
-        `expansion=none:enable='${enable}'`;
-      filters.push(`${label}${draw}${out2}`);
-      label = out2;
+      });
     }
   }
 
+  return jobs;
+}
+
+function buildOverlayFiltergraph({ overlayJobs = [] } = {}) {
+  const filters = [];
+  let label = '[0:v]';
+  let step = 0;
+
+  overlayJobs.forEach((job, index) => {
+    const enable = `between(t\\,${job.start.toFixed(3)}\\,${job.end.toFixed(3)})`;
+    const out = `[v${++step}]`;
+    filters.push(
+      `${label}[${index + 1}:v]overlay=${job.x}:${job.y}:enable='${enable}':eof_action=pass:repeatlast=1${out}`
+    );
+    label = out;
+  });
+
   return {
     filterComplex: filters.join(';'),
-    finalLabel: label,
-    resolvedFontPath
+    finalLabel: label
   };
 }
 
@@ -4095,6 +4188,9 @@ router.post('/video-overlay/export', async (req, res) => {
 
     if (!videoId) {
       return res.status(400).json({ success: false, error: 'video_id is required' });
+    }
+    if (!isVideoOverlayAssetId(videoId)) {
+      return res.status(400).json({ success: false, error: 'Invalid video_id format' });
     }
     if (!segments.length) {
       return res.status(400).json({ success: false, error: 'segments are required' });
@@ -4117,32 +4213,35 @@ router.post('/video-overlay/export', async (req, res) => {
 
     const exportId = crypto.randomUUID();
     const outPath = getExportedVideoPath(exportId);
-    const textFiles = [];
+    const renderAssetPaths = [];
 
     try {
-      const writeOverlayTextFile = (text) => {
-        const filePath = getOverlayTextFilePath(exportId, textFiles.length);
-        fs.writeFileSync(filePath, String(text ?? ''), 'utf8');
-        textFiles.push(filePath);
-        return filePath;
-      };
-
-      // Build filtergraph (includes gradients when provided). No fallback mode.
-      const fontPath = path.join(__dirname, '..', 'assets', 'fonts', 'Inter-Regular.ttf');
-      const graph = buildOverlayFiltergraph({
+      const overlayJobs = buildOverlayRenderJobs({
         durationSec: info.duration,
         segments,
-        fontPath,
-        textFileResolver: writeOverlayTextFile,
         videoWidth: info.width,
-        videoHeight: info.height
+        videoHeight: info.height,
+        assetPathResolver: (index) => getOverlayRenderAssetPath(exportId, index)
       });
-      if (!graph.filterComplex) {
+      if (!overlayJobs.length) {
         return res.status(400).json({ success: false, error: 'No overlays found in segments (nothing to export)' });
       }
 
+      for (const job of overlayJobs) {
+        await renderVideoOverlayPng({ overlay: job.overlay, outputPath: job.assetPath });
+        renderAssetPaths.push(job.assetPath);
+      }
+
+      const graph = buildOverlayFiltergraph({ overlayJobs });
       const baseArgs = [
         '-i', videoPath,
+      ];
+
+      for (const job of overlayJobs) {
+        baseArgs.push('-loop', '1', '-i', job.assetPath);
+      }
+
+      baseArgs.push(
         '-filter_complex', graph.filterComplex,
         '-map', graph.finalLabel,
         '-map', '0:a?',
@@ -4153,7 +4252,7 @@ router.post('/video-overlay/export', async (req, res) => {
         '-movflags', '+faststart',
         '-y',
         outPath
-      ];
+      );
 
       await execFileAsync('ffmpeg', baseArgs);
 
@@ -4166,7 +4265,7 @@ router.post('/video-overlay/export', async (req, res) => {
         url: downloadUrl
       });
     } finally {
-      await Promise.all(textFiles.map((filePath) => fs.promises.unlink(filePath).catch(() => null)));
+      await Promise.all(renderAssetPaths.map((filePath) => fs.promises.unlink(filePath).catch(() => null)));
     }
   } catch (error) {
     console.error('Video overlay export error:', error);

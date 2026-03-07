@@ -18,6 +18,8 @@ import {
 
 const API_BASE = '/api';
 const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
+const DEFAULT_OVERLAY_TEXT_PADDING_X_PX = 8;
+const DEFAULT_OVERLAY_LINE_HEIGHT = 1.2;
 
 const cn = (...classes) => classes.filter(Boolean).join(' ');
 
@@ -161,7 +163,7 @@ export default function VideoOverlayEditor({ store }) {
   const [error, setError] = useState(null);
   const [scanConfig, setScanConfig] = useState({
     intervalSec: 1,
-    maxFrames: 30,
+    maxFrames: 60,
     detectionMode: 'gemini',
     scanModel: ''
   });
@@ -447,6 +449,8 @@ export default function VideoOverlayEditor({ store }) {
       fontWeight: 'bold',
       fontStyle: 'normal',
       fontFamily: 'Inter',
+      textPaddingX: DEFAULT_OVERLAY_TEXT_PADDING_X_PX,
+      lineHeight: DEFAULT_OVERLAY_LINE_HEIGHT,
       isGradient: false,
       gradient: null,
       confidence: 1
@@ -1109,6 +1113,8 @@ export default function VideoOverlayEditor({ store }) {
                     const top = (ov.y || 0) * scale.y;
                     const width = (ov.width || 0) * scale.x;
                     const height = (ov.height || 0) * scale.y;
+                    const textPaddingX = toNumber(ov.textPaddingX, DEFAULT_OVERLAY_TEXT_PADDING_X_PX) * (scale.x || 1);
+                    const lineHeight = toNumber(ov.lineHeight, DEFAULT_OVERLAY_LINE_HEIGHT);
 
                     const background = ov.isGradient && ov.gradient
                       ? `linear-gradient(${ov.gradient.direction === 'vertical' ? 'to bottom' : 'to right'}, ${ov.gradient.from.hex}, ${ov.gradient.to.hex})`
@@ -1127,7 +1133,10 @@ export default function VideoOverlayEditor({ store }) {
                       >
                         <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: ov.borderRadius ? `${ov.borderRadius * Math.min(scale.x, scale.y)}px` : undefined }}>
                           <div className="absolute inset-0" style={{ background }} />
-                          <div className="relative w-full h-full flex items-center justify-center px-2">
+                          <div
+                            className="relative w-full h-full flex items-center justify-center"
+                            style={{ paddingLeft: textPaddingX, paddingRight: textPaddingX }}
+                          >
                             <div
                               style={{
                                 color: ov.textColor || '#fff',
@@ -1137,7 +1146,7 @@ export default function VideoOverlayEditor({ store }) {
                                 fontStyle: ov.fontStyle || 'normal',
                                 whiteSpace: 'pre-line',
                                 textAlign: 'center',
-                                lineHeight: 1.2,
+                                lineHeight,
                                 overflow: 'hidden',
                                 maxHeight: '100%',
                                 maxWidth: '100%'
