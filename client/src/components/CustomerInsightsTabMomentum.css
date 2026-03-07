@@ -241,7 +241,7 @@
 .ci-upper .ci-hero-highlight-value {
   margin-top: 4px;
   font-size: 0.86rem;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.28;
   color: var(--ci-text-primary);
   overflow-wrap: anywhere;
