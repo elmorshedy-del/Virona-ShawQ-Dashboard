@@ -150,6 +150,10 @@ const MOMENTUM_NEW_TRACTION_MIN_ORDERS = Math.max(
   1,
   Number.parseInt(process.env.CUSTOMER_INSIGHTS_MOMENTUM_NEW_TRACTION_MIN_ORDERS || '5', 10) || 5
 );
+const TOP_PRODUCTS_PINNED_WINDOW_DAYS = Math.max(
+  7,
+  Number.parseInt(process.env.CUSTOMER_INSIGHTS_TOP_PRODUCTS_WINDOW_DAYS || '30', 10) || 30
+);
 
 const normalizeStoreEnvKey = (store) =>
   String(store || '')
@@ -1412,6 +1416,25 @@ function computeTopProducts(items) {
     .slice(0, 12);
 }
 
+function buildPinnedTopProductsWindow(days) {
+  const range = getDateRange({ days });
+  return {
+    startDate: range.startDate,
+    endDate: range.endDate,
+    days: range.days,
+    label: `Rolling last ${range.days} days`
+  };
+}
+
+function buildPreviousWindow(window) {
+  return {
+    startDate: shiftDate(window.startDate, -window.days),
+    endDate: shiftDate(window.endDate, -window.days),
+    days: window.days,
+    label: `Previous ${window.days} days`
+  };
+}
+
 function computeProductMetrics(items) {
   const byProduct = new Map();
 
@@ -2199,6 +2222,22 @@ export async function getCustomerInsightsPayload(store, params = {}) {
 
   const orders = getOrderRows(db, ordersTable, resolvedStore, startDate, endDate);
   let items = getOrderItems(db, ordersTable, resolvedStore, startDate, endDate);
+  const pinnedTopProductsWindow = buildPinnedTopProductsWindow(TOP_PRODUCTS_PINNED_WINDOW_DAYS);
+  const pinnedTopProductsComparisonWindow = buildPreviousWindow(pinnedTopProductsWindow);
+  let pinnedTopProductItems = getOrderItems(
+    db,
+    ordersTable,
+    resolvedStore,
+    pinnedTopProductsWindow.startDate,
+    pinnedTopProductsWindow.endDate
+  );
+  let pinnedTopProductComparisonItems = getOrderItems(
+    db,
+    ordersTable,
+    resolvedStore,
+    pinnedTopProductsComparisonWindow.startDate,
+    pinnedTopProductsComparisonWindow.endDate
+  );
 
   const prevStartDate = shiftDate(startDate, -days);
   const prevEndDate = shiftDate(endDate, -days);
@@ -2209,9 +2248,12 @@ export async function getCustomerInsightsPayload(store, params = {}) {
   const prevPrevEndDate = shiftDate(endDate, -days * 2);
   let prevPrevItems = getOrderItems(db, ordersTable, resolvedStore, prevPrevStartDate, prevPrevEndDate);
 
-  if (ordersTable === ORDERS_TABLE_SHOPIFY && (items.length || previousItems.length || prevPrevItems.length)) {
+  if (
+    ordersTable === ORDERS_TABLE_SHOPIFY
+    && (items.length || previousItems.length || prevPrevItems.length || pinnedTopProductItems.length || pinnedTopProductComparisonItems.length)
+  ) {
     const productIds = Array.from(new Set(
-      items.concat(previousItems, prevPrevItems)
+      items.concat(previousItems, prevPrevItems, pinnedTopProductItems, pinnedTopProductComparisonItems)
         .map((row) => row.product_id)
         .filter(Boolean)
         .map((id) => String(id))
@@ -2222,6 +2264,20 @@ export async function getCustomerInsightsPayload(store, params = {}) {
         items = getOrderItems(db, ordersTable, resolvedStore, startDate, endDate);
         previousItems = getOrderItems(db, ordersTable, resolvedStore, prevStartDate, prevEndDate);
         prevPrevItems = getOrderItems(db, ordersTable, resolvedStore, prevPrevStartDate, prevPrevEndDate);
+        pinnedTopProductItems = getOrderItems(
+          db,
+          ordersTable,
+          resolvedStore,
+          pinnedTopProductsWindow.startDate,
+          pinnedTopProductsWindow.endDate
+        );
+        pinnedTopProductComparisonItems = getOrderItems(
+          db,
+          ordersTable,
+          resolvedStore,
+          pinnedTopProductsComparisonWindow.startDate,
+          pinnedTopProductsComparisonWindow.endDate
+        );
       } catch (cacheError) {
         console.warn('[CustomerInsights] Product cache refresh skipped:', cacheError?.message || cacheError);
       }
@@ -2245,7 +2301,8 @@ export async function getCustomerInsightsPayload(store, params = {}) {
     ? buildBundleKeyInsights(bundles, Math.max(BUNDLE_INSIGHT_MAX_COUNT, bundles.length))
     : [];
   const repeatPaths = computeRepeatPaths(items);
-  const topProducts = computeTopProducts(items);
+  const topProducts = computeTopProducts(pinnedTopProductItems);
+  const previousTopProducts = computeTopProducts(pinnedTopProductComparisonItems);
   const discountSkus = computeDiscountSkus(items);
   // Build discount share lookup for momentum engine (current + previous period)
   const discountSkuMap = new Map();
@@ -2432,8 +2489,14 @@ export async function getCustomerInsightsPayload(store, params = {}) {
         }
       },
       topProducts: {
-        summary: topProducts.length ? 'Top products by revenue and order count.' : 'Top products will appear once line-item data is synced.',
-        products: topProducts
+        summary: topProducts.length
+          ? `Top products over the rolling last ${pinnedTopProductsWindow.days} days.`
+          : 'Top products will appear once line-item data is synced.',
+        pinned: true,
+        window: pinnedTopProductsWindow,
+        comparisonWindow: pinnedTopProductsComparisonWindow,
+        products: topProducts,
+        comparisonProducts: previousTopProducts
       },
       productMomentum: {
         summary: momentumSummary,
