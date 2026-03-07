@@ -201,6 +201,8 @@ function getVideoOverlayScanModelWarning(configuredModel) {
 
 const PHOTO_MAGIC_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'photo-magic');
 const PHOTO_MAGIC_DEFAULT_STORE = 'vironax';
+const GEMINI_COORDINATE_SCALE = 1000;
+const DEFAULT_SELECTION_CONFIDENCE = 0.72;
 
 function toSafePathSegment(value, { fallback = 'unknown', maxLen = 64 } = {}) {
   const raw = String(value || '').trim();
@@ -362,10 +364,10 @@ Rules:
     throw new Error('Gemini selection response did not include a usable box.');
   }
 
-  const y0Norm = clampNumber(box[0], 0, 1000);
-  const x0Norm = clampNumber(box[1], 0, 1000);
-  const y1Norm = clampNumber(box[2], 0, 1000);
-  const x1Norm = clampNumber(box[3], 0, 1000);
+  const y0Norm = clampNumber(box[0], 0, GEMINI_COORDINATE_SCALE);
+  const x0Norm = clampNumber(box[1], 0, GEMINI_COORDINATE_SCALE);
+  const y1Norm = clampNumber(box[2], 0, GEMINI_COORDINATE_SCALE);
+  const x1Norm = clampNumber(box[3], 0, GEMINI_COORDINATE_SCALE);
 
   const yMinNorm = Math.min(y0Norm, y1Norm);
   const yMaxNorm = Math.max(y0Norm, y1Norm);
@@ -375,16 +377,16 @@ Rules:
   const resolvedWidth = Math.max(1, Math.round(safeParseNumber(width, 1)));
   const resolvedHeight = Math.max(1, Math.round(safeParseNumber(height, 1)));
 
-  const x1 = Math.max(0, Math.min(resolvedWidth - 1, Math.round((xMinNorm / 1000) * resolvedWidth)));
-  const y1 = Math.max(0, Math.min(resolvedHeight - 1, Math.round((yMinNorm / 1000) * resolvedHeight)));
-  const x2 = Math.max(x1 + 1, Math.min(resolvedWidth, Math.round((xMaxNorm / 1000) * resolvedWidth)));
-  const y2 = Math.max(y1 + 1, Math.min(resolvedHeight, Math.round((yMaxNorm / 1000) * resolvedHeight)));
+  const x1 = Math.max(0, Math.min(resolvedWidth - 1, Math.round((xMinNorm / GEMINI_COORDINATE_SCALE) * resolvedWidth)));
+  const y1 = Math.max(0, Math.min(resolvedHeight - 1, Math.round((yMinNorm / GEMINI_COORDINATE_SCALE) * resolvedHeight)));
+  const x2 = Math.max(x1 + 1, Math.min(resolvedWidth, Math.round((xMaxNorm / GEMINI_COORDINATE_SCALE) * resolvedWidth)));
+  const y2 = Math.max(y1 + 1, Math.min(resolvedHeight, Math.round((yMaxNorm / GEMINI_COORDINATE_SCALE) * resolvedHeight)));
 
   return {
     model: resolvedModelName,
     label: String(parsed?.label || resolvedPrompt).trim() || resolvedPrompt,
     notes: String(parsed?.notes || '').trim() || null,
-    confidence: clampNumber(parsed?.confidence ?? 0.72, 0, 1),
+    confidence: clampNumber(parsed?.confidence ?? DEFAULT_SELECTION_CONFIDENCE, 0, 1),
     box_xyxy: [x1, y1, x2, y2],
     normalized_box: [yMinNorm, xMinNorm, yMaxNorm, xMaxNorm],
     points: [

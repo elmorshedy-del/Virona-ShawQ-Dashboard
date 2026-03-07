@@ -110,6 +110,13 @@ RELIGHT_PRESETS: dict[str, dict[str, float]] = {
     },
 }
 
+RELIGHT_BACKGROUND_BASE = 0.78
+RELIGHT_BACKGROUND_FALLOFF = 0.22
+RELIGHT_BACKGROUND_WARMTH_RATIO = 0.6
+RELIGHT_SUBJECT_BASE = 0.42
+RELIGHT_SUBJECT_FALLOFF = 0.58
+RELIGHT_HIGHLIGHT_GAIN = 0.18
+
 
 def strip_data_prefix(b64: str) -> str:
     text = str(b64 or "").strip()
@@ -570,9 +577,9 @@ def relight_subject_with_shadow(
     light_map = build_relight_map(rgb.shape[0], rgb.shape[1], preset_config["dx"], preset_config["dy"])
 
     background = rgb.copy()
-    background_gain = 1.0 + (float(background_exposure) * (0.78 + (0.22 * (1.0 - light_map))))
+    background_gain = 1.0 + (background_exposure * (RELIGHT_BACKGROUND_BASE + (RELIGHT_BACKGROUND_FALLOFF * (1.0 - light_map))))
     background = np.clip(background * background_gain[..., None], 0.0, 1.0)
-    background = apply_warmth(background, float(warmth) * 0.6)
+    background = apply_warmth(background, warmth * RELIGHT_BACKGROUND_WARMTH_RATIO)
 
     shadow_mask = build_projected_shadow(
         (alpha * 255.0).astype(np.uint8),
@@ -582,15 +589,15 @@ def relight_subject_with_shadow(
         scale_x=shadow_scale_x,
         scale_y=shadow_scale_y,
     ).astype(np.float32) / 255.0
-    shadow_strength = np.clip(float(shadow_opacity), 0.0, 1.0) * shadow_mask
+    shadow_strength = np.clip(shadow_opacity, 0.0, 1.0) * shadow_mask
     background = np.clip(background * (1.0 - shadow_strength[..., None]), 0.0, 1.0)
 
     subject = rgb.copy()
-    subject_gain = 1.0 + (float(subject_boost) * (0.42 + (0.58 * light_map)))
+    subject_gain = 1.0 + (subject_boost * (RELIGHT_SUBJECT_BASE + (RELIGHT_SUBJECT_FALLOFF * light_map)))
     subject = np.clip(subject * subject_gain[..., None], 0.0, 1.0)
-    subject = apply_warmth(subject, float(warmth))
+    subject = apply_warmth(subject, warmth)
 
-    highlight = alpha[..., None] * light_map[..., None] * max(0.0, float(subject_boost)) * 0.18
+    highlight = alpha[..., None] * light_map[..., None] * max(0.0, subject_boost) * RELIGHT_HIGHLIGHT_GAIN
     subject = np.clip(subject + highlight, 0.0, 1.0)
 
     composite = (background * (1.0 - alpha[..., None])) + (subject * alpha[..., None])

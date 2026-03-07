@@ -70,6 +70,9 @@ ASPECT_RATIO_PRESETS: dict[str, tuple[int, int]] = {
     "2:3": (2, 3),
 }
 
+DEFAULT_EXPAND_PROMPT = "extend the scene naturally, premium studio environment, photorealistic background"
+DEFAULT_EXPAND_NEGATIVE_PROMPT = "text, watermark, duplicate subject, extra limbs, distorted product, blur, artifacts"
+
 
 def strip_data_prefix(b64: str) -> str:
     text = str(b64 or "").strip()
@@ -483,8 +486,8 @@ def expand_sdxl():
         if not image_b64:
             return jsonify({"error": "image is required"}), 400
 
-        prompt = str(data.get("prompt") or "").strip() or "extend the scene naturally, premium studio environment, photorealistic background"
-        negative_prompt = str(data.get("negative_prompt") or "").strip() or "text, watermark, duplicate subject, extra limbs, distorted product, blur, artifacts"
+        prompt = str(data.get("prompt") or "").strip() or DEFAULT_EXPAND_PROMPT
+        negative_prompt = str(data.get("negative_prompt") or "").strip() or DEFAULT_EXPAND_NEGATIVE_PROMPT
         aspect_ratio = str(data.get("aspect_ratio") or "4:5").strip() or "4:5"
         anchor = str(data.get("anchor") or "center").strip().lower()
         num_inference_steps = clamp_int(data.get("num_inference_steps", 24), 5, 80)
