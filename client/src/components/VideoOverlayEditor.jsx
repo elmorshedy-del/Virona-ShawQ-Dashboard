@@ -173,6 +173,7 @@ export default function VideoOverlayEditor({ store }) {
 
   const interactionRef = useRef(null);
   const [isInteracting, setIsInteracting] = useState(false);
+  const detectionModeAutoRef = useRef(false);
 
   // Clean up blob URLs (avoid memory leaks).
   useEffect(() => {
@@ -220,6 +221,17 @@ export default function VideoOverlayEditor({ store }) {
     if (!serverModel) return;
     setScanConfig((prev) => (prev.scanModel ? prev : { ...prev, scanModel: serverModel }));
   }, [health?.gemini?.model]);
+
+  useEffect(() => {
+    const dinoReady = Boolean(health?.overlay_ai?.configured && health?.overlay_ai?.health?.ok);
+    if (!dinoReady) {
+      setScanConfig((prev) => (prev.detectionMode === 'dino' ? { ...prev, detectionMode: 'gemini' } : prev));
+      return;
+    }
+    if (detectionModeAutoRef.current) return;
+    detectionModeAutoRef.current = true;
+    setScanConfig((prev) => (prev.detectionMode === 'dino' ? prev : { ...prev, detectionMode: 'dino' }));
+  }, [health?.overlay_ai?.configured, health?.overlay_ai?.health?.ok]);
 
   // Keep overlay alignment correct when the <video> is scaled.
   useEffect(() => {
@@ -785,7 +797,7 @@ export default function VideoOverlayEditor({ store }) {
         <div className="flex flex-wrap items-center gap-2">
           <StatusPill
             ok={overlayAiOk}
-            label={overlayAiOk ? 'Detector ready' : 'Detector not ready'}
+            label={overlayAiOk ? 'DINO+SAM ready' : 'DINO+SAM offline'}
             title={health?.overlay_ai?.health?.payload?.errors ? JSON.stringify(health.overlay_ai.health.payload.errors) : undefined}
           />
           <StatusPill ok={geminiConfigured} label={geminiConfigured ? 'Gemini ready' : 'Gemini missing'} />
@@ -1012,7 +1024,10 @@ export default function VideoOverlayEditor({ store }) {
                       <button
                         key={mode.id}
                         type="button"
-                        onClick={() => setScanConfig((p) => ({ ...p, detectionMode: mode.id }))}
+                        onClick={() => {
+                          detectionModeAutoRef.current = true;
+                          setScanConfig((p) => ({ ...p, detectionMode: mode.id }));
+                        }}
                         className={cn(
                           'rounded-xl border px-3 py-2 text-sm font-semibold transition',
                           scanConfig.detectionMode === mode.id

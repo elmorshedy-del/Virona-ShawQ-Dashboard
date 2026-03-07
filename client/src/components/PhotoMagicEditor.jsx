@@ -154,7 +154,7 @@ function makeCheckerBg() {
 const TOOL_DEFINITIONS = {
   remove_bg: {
     label: 'Foreground Isolation',
-    engine: 'RMBG2 + SAM2',
+    engine: 'BiRefNet + SAM2',
     description: 'Cut the subject fast, then refine the edge mask with guided points.'
   },
   select: {
@@ -184,18 +184,40 @@ const TOOL_DEFINITIONS = {
   }
 };
 
+const DEBUG_TRACE_LIMIT = 80;
+const MASK_PIXEL_THRESHOLD = 18;
+const MASK_MIN_PAINTED_PIXELS = 64;
+
+const formatDebugTimestamp = (value) =>
+  new Date(value).toLocaleTimeString([], {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+
+const readJsonSafe = async (response) => {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+};
+
 const RELIGHT_PRESET_DEFAULTS = {
-  studio: { subjectBoost: 0.22, backgroundExposure: -0.08, warmth: 0.08, shadowOpacity: 0.28, shadowBlurPx: 42, shadowOffsetX: 0, shadowOffsetY: 34 },
-  window_left: { subjectBoost: 0.28, backgroundExposure: -0.12, warmth: 0.12, shadowOpacity: 0.32, shadowBlurPx: 46, shadowOffsetX: 22, shadowOffsetY: 34 },
-  window_right: { subjectBoost: 0.28, backgroundExposure: -0.12, warmth: 0.12, shadowOpacity: 0.32, shadowBlurPx: 46, shadowOffsetX: -22, shadowOffsetY: 34 },
-  golden_hour: { subjectBoost: 0.3, backgroundExposure: -0.06, warmth: 0.2, shadowOpacity: 0.26, shadowBlurPx: 48, shadowOffsetX: 18, shadowOffsetY: 36 },
-  rim: { subjectBoost: 0.18, backgroundExposure: -0.14, warmth: 0.05, shadowOpacity: 0.24, shadowBlurPx: 38, shadowOffsetX: -12, shadowOffsetY: 30 }
+  studio: { subjectBoost: 0.34, backgroundExposure: -0.16, warmth: 0.1, shadowOpacity: 0.42, shadowBlurPx: 48, shadowOffsetX: 0, shadowOffsetY: 40 },
+  window_left: { subjectBoost: 0.42, backgroundExposure: -0.2, warmth: 0.16, shadowOpacity: 0.46, shadowBlurPx: 52, shadowOffsetX: 28, shadowOffsetY: 40 },
+  window_right: { subjectBoost: 0.42, backgroundExposure: -0.2, warmth: 0.16, shadowOpacity: 0.46, shadowBlurPx: 52, shadowOffsetX: -28, shadowOffsetY: 40 },
+  golden_hour: { subjectBoost: 0.44, backgroundExposure: -0.12, warmth: 0.24, shadowOpacity: 0.38, shadowBlurPx: 56, shadowOffsetX: 22, shadowOffsetY: 42 },
+  rim: { subjectBoost: 0.3, backgroundExposure: -0.22, warmth: 0.06, shadowOpacity: 0.34, shadowBlurPx: 42, shadowOffsetX: -16, shadowOffsetY: 34 }
 };
 
 export default function PhotoMagicEditor({ store }) {
   const [health, setHealth] = useState(null);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showDebugPanel, setShowDebugPanel] = useState(true);
+  const [debugTrace, setDebugTrace] = useState([]);
 
   const [tool, setTool] = useState('remove_bg');
   const [error, setError] = useState(null);
@@ -278,6 +300,8 @@ export default function PhotoMagicEditor({ store }) {
   const maskCanvasRef = useRef(null);
   const paintStateRef = useRef({ painting: false, lastX: 0, lastY: 0 });
   const undoStackRef = useRef([]);
+  const debugRunIdRef = useRef(0);
+  const [maskMetrics, setMaskMetrics] = useState({ hasMask: false, paintedPixels: 0, coverage: 0 });
 
   const aiConfigured = Boolean(health?.photo_magic?.ai?.configured);
   const aiHealthPayload = health?.photo_magic?.ai?.health?.payload || {};
@@ -296,12 +320,120 @@ export default function PhotoMagicEditor({ store }) {
   const expandReady = Boolean(hqConfigured && hqOk && hqModels?.sdxl_expand);
 
   const currentMaskOutputId = selectionMaskOutputId || maskOutputId || relightMaskOutputId || expandMaskOutputId || null;
+  const latestMaskForErase = selectionMaskUrl || maskUrl || relightMaskUrl || expandMaskUrl || null;
+  const latestMaskSourceLabel = selectionMaskUrl
+    ? 'Prompt selection'
+    : maskUrl
+      ? 'Foreground isolation'
+      : relightMaskUrl
+        ? 'Lighting stage'
+        : expandMaskUrl
+          ? 'Canvas expand'
+          : null;
 
   const hqOption = useMemo(() => {
     if (!hqConfigured) return { disabled: true, title: 'HQ service not configured. Set PHOTO_MAGIC_HQ_AI_URL.' };
     if (!hqOk) return { disabled: true, title: hqReason || 'HQ service is not ready.' };
     return { disabled: false, title: 'SDXL inpaint for final cleanup renders.' };
   }, [hqConfigured, hqOk, hqReason]);
+
+  const pushDebugEvent = useCallback((entry) => {
+    setDebugTrace((prev) => {
+      const next = [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          at: Date.now(),
+          ...entry
+        }
+      ];
+      return next.slice(-DEBUG_TRACE_LIMIT);
+    });
+  }, []);
+
+  const startDebugRun = useCallback(
+    (scope, message, details = null) => {
+      const runId = debugRunIdRef.current + 1;
+      debugRunIdRef.current = runId;
+      pushDebugEvent({ runId, scope, step: 'start', status: 'running', message, details });
+      return runId;
+    },
+    [pushDebugEvent]
+  );
+
+  const logDebug = useCallback(
+    (runId, scope, step, status, message, details = null) => {
+      pushDebugEvent({ runId, scope, step, status, message, details });
+    },
+    [pushDebugEvent]
+  );
+
+  const clearDebugTrace = useCallback(() => {
+    setDebugTrace([]);
+  }, []);
+
+  const inspectMaskCanvas = useCallback(() => {
+    const canvas = maskCanvasRef.current;
+    if (!canvas || canvas.width <= 0 || canvas.height <= 0) {
+      return { hasMask: false, paintedPixels: 0, coverage: 0 };
+    }
+
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return { hasMask: false, paintedPixels: 0, coverage: 0 };
+
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let paintedPixels = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      const alpha = data[index + 3];
+      const brightness = Math.max(data[index], data[index + 1], data[index + 2]);
+      if (alpha >= MASK_PIXEL_THRESHOLD || brightness >= MASK_PIXEL_THRESHOLD) paintedPixels += 1;
+    }
+
+    const totalPixels = Math.max(1, canvas.width * canvas.height);
+    const coverage = paintedPixels / totalPixels;
+    return {
+      hasMask: paintedPixels >= MASK_MIN_PAINTED_PIXELS,
+      paintedPixels,
+      coverage
+    };
+  }, []);
+
+  const syncMaskMetrics = useCallback(() => {
+    const next = inspectMaskCanvas();
+    setMaskMetrics(next);
+    return next;
+  }, [inspectMaskCanvas]);
+
+  const requestJson = useCallback(
+    async ({ runId, scope, step, url, options, successMessage, failureMessage, successDetails }) => {
+      logDebug(runId, scope, step, 'running', `${options?.method || 'GET'} ${url.replace(API_BASE, '')}`);
+      const res = await fetch(url, options);
+      const data = await readJsonSafe(res);
+
+      if (!res.ok || !data?.success) {
+        const message = data?.error || failureMessage;
+        logDebug(runId, scope, step, 'failed', message, {
+          status: res.status,
+          details: data?.details || null
+        });
+        const nextError = new Error(message || failureMessage);
+        nextError.status = res.status;
+        nextError.payload = data;
+        throw nextError;
+      }
+
+      logDebug(
+        runId,
+        scope,
+        step,
+        'success',
+        successMessage,
+        typeof successDetails === 'function' ? successDetails(data) : successDetails || { status: res.status }
+      );
+      return data;
+    },
+    [logDebug]
+  );
 
   const refreshHealth = useCallback(async () => {
     setIsHealthLoading(true);
@@ -366,6 +498,7 @@ export default function PhotoMagicEditor({ store }) {
     setPoints([]);
     setViewportMode('source');
     undoStackRef.current = [];
+    setMaskMetrics({ hasMask: false, paintedPixels: 0, coverage: 0 });
     const canvas = maskCanvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext('2d');
@@ -384,18 +517,31 @@ export default function PhotoMagicEditor({ store }) {
 
       setError(null);
       setIsUploading(true);
+      const runId = startDebugRun('Upload', `Importing ${sourceName || file?.name || 'seed asset'}`);
 
       try {
         resetOutputs();
         const form = new FormData();
         form.append('image', file);
 
-        const res = await fetch(withStore('/creative-studio/photo-magic/upload', store), {
-          method: 'POST',
-          body: form
+        const data = await requestJson({
+          runId,
+          scope: 'Upload',
+          step: 'upload',
+          url: withStore('/creative-studio/photo-magic/upload', store),
+          options: {
+            method: 'POST',
+            body: form
+          },
+          successMessage: 'Seed asset uploaded',
+          failureMessage: 'Upload failed',
+          successDetails: (payload) => ({
+            imageId: payload?.image_id || null,
+            width: payload?.width || null,
+            height: payload?.height || null,
+            filename: payload?.filename || null
+          })
         });
-        const data = await res.json();
-        if (!res.ok || !data?.success) throw new Error(data?.error || 'Upload failed');
 
         setImageId(data.image_id);
         setImageMeta({
@@ -415,13 +561,16 @@ export default function PhotoMagicEditor({ store }) {
         setLastRenderSummary(`Source ready ${data.width || '?'}x${data.height || '?'}`);
       } catch (nextError) {
         console.error(nextError);
-        setError(nextError?.message || 'Upload failed');
+        const message = nextError?.message || 'Upload failed';
+        setError(message);
+        setLastRenderSummary(`Failed: ${message}`);
+        logDebug(runId, 'Upload', 'complete', 'failed', message);
       } finally {
         setIsUploading(false);
         refreshHealth();
       }
     },
-    [refreshHealth, resetOutputs, store]
+    [logDebug, refreshHealth, requestJson, resetOutputs, startDebugRun, store]
   );
 
   const promoteOutputToSource = useCallback(
@@ -429,7 +578,9 @@ export default function PhotoMagicEditor({ store }) {
       if (!url) return;
 
       setError(null);
+      const runId = startDebugRun('Route', `Promoting ${stageLabel || 'output'} into the source chain`);
       try {
+        logDebug(runId, 'Route', 'download', 'running', 'Fetching render output for source promotion', { url });
         const response = await fetch(url);
         if (!response.ok) throw new Error('Failed to route output back into the source chain');
 
@@ -444,12 +595,19 @@ export default function PhotoMagicEditor({ store }) {
           nextTool,
           resetHistory: false
         });
+        logDebug(runId, 'Route', 'complete', 'success', `${stageLabel || 'Output'} promoted into source`, {
+          fileType: normalizedType,
+          nextTool
+        });
       } catch (nextError) {
         console.error(nextError);
-        setError(nextError?.message || 'Failed to promote output into the active source');
+        const message = nextError?.message || 'Failed to promote output into the active source';
+        setError(message);
+        setLastRenderSummary(`Failed: ${message}`);
+        logDebug(runId, 'Route', 'complete', 'failed', message);
       }
     },
-    [uploadImage]
+    [logDebug, startDebugRun, uploadImage]
   );
 
   const onPickFile = useCallback(() => {
@@ -525,14 +683,27 @@ export default function PhotoMagicEditor({ store }) {
 
     setError(null);
     setIsRunning(true);
+    const runId = startDebugRun('Foreground Isolation', 'Starting auto cutout');
     try {
-      const res = await fetch(withStore('/creative-studio/photo-magic/remove-bg', store), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_id: imageId, engine: 'rmbg2', max_side: maxSide })
+      const data = await requestJson({
+        runId,
+        scope: 'Foreground Isolation',
+        step: 'remove-bg',
+        url: withStore('/creative-studio/photo-magic/remove-bg', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_id: imageId, engine: 'rmbg2', max_side: maxSide })
+        },
+        successMessage: 'Cutout and mask assets generated',
+        failureMessage: 'Foreground isolation failed',
+        successDetails: (payload) => ({
+          cutoutReady: Boolean(payload?.cutout?.url),
+          maskReady: Boolean(payload?.mask?.url),
+          width: payload?.width || null,
+          height: payload?.height || null
+        })
       });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'Foreground isolation failed');
 
       setCutoutUrl(data.cutout?.url || null);
       setMaskUrl(data.mask?.url || null);
@@ -542,32 +713,46 @@ export default function PhotoMagicEditor({ store }) {
       setLastRenderSummary(`Auto cutout ready ${data.width || imageMeta?.width || '?'}x${data.height || imageMeta?.height || '?'}`);
     } catch (nextError) {
       console.error(nextError);
-      setError(nextError?.message || 'Foreground isolation failed');
+      const message = nextError?.message || 'Foreground isolation failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Foreground Isolation', 'complete', 'failed', message);
     } finally {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [imageId, imageMeta?.height, imageMeta?.width, maxSide, refreshHealth, store]);
+  }, [imageId, imageMeta?.height, imageMeta?.width, logDebug, maxSide, refreshHealth, requestJson, startDebugRun, store]);
 
   const runRefine = useCallback(async () => {
     if (!imageId || !points.length) return;
 
     setError(null);
     setIsRunning(true);
+    const runId = startDebugRun('Precision Mask', `Applying SAM2 refine with ${points.length} guide points`);
     try {
-      const res = await fetch(withStore('/creative-studio/photo-magic/remove-bg/refine', store), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_id: imageId,
-          points,
-          max_side: maxSide,
-          mask_dilate_px: maskDilatePx,
-          mask_feather_px: maskFeatherPx
+      const data = await requestJson({
+        runId,
+        scope: 'Precision Mask',
+        step: 'sam2-refine',
+        url: withStore('/creative-studio/photo-magic/remove-bg/refine', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            points,
+            max_side: maxSide,
+            mask_dilate_px: maskDilatePx,
+            mask_feather_px: maskFeatherPx
+          })
+        },
+        successMessage: 'SAM2 mask refinement completed',
+        failureMessage: 'SAM2 refine failed',
+        successDetails: (payload) => ({
+          cutoutReady: Boolean(payload?.cutout?.url),
+          maskReady: Boolean(payload?.mask?.url)
         })
       });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'SAM2 refine failed');
 
       setCutoutUrl(data.cutout?.url || null);
       setMaskUrl(data.mask?.url || null);
@@ -577,32 +762,48 @@ export default function PhotoMagicEditor({ store }) {
       setLastRenderSummary(`Precision mask ready with ${points.length} guide points`);
     } catch (nextError) {
       console.error(nextError);
-      setError(nextError?.message || 'SAM2 refine failed');
+      const message = nextError?.message || 'SAM2 refine failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Precision Mask', 'complete', 'failed', message);
     } finally {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [imageId, maskDilatePx, maskFeatherPx, maxSide, points, refreshHealth, store]);
+  }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, points, refreshHealth, requestJson, startDebugRun, store]);
 
   const runSelect = useCallback(async () => {
     if (!imageId || !selectionPrompt.trim()) return;
 
     setError(null);
     setIsRunning(true);
+    const promptLabel = selectionPrompt.trim();
+    const runId = startDebugRun('Prompt Selection', `Resolving "${promptLabel}"`);
     try {
-      const res = await fetch(withStore('/creative-studio/photo-magic/select', store), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_id: imageId,
-          prompt: selectionPrompt.trim(),
-          max_side: maxSide,
-          mask_dilate_px: maskDilatePx,
-          mask_feather_px: maskFeatherPx
+      const data = await requestJson({
+        runId,
+        scope: 'Prompt Selection',
+        step: 'select',
+        url: withStore('/creative-studio/photo-magic/select', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            prompt: promptLabel,
+            max_side: maxSide,
+            mask_dilate_px: maskDilatePx,
+            mask_feather_px: maskFeatherPx
+          })
+        },
+        successMessage: 'Prompt selection mask resolved',
+        failureMessage: 'Prompt selection failed',
+        successDetails: (payload) => ({
+          label: payload?.selection?.label || promptLabel,
+          confidence: payload?.selection?.confidence || null,
+          maskReady: Boolean(payload?.mask?.url)
         })
       });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'Prompt selection failed');
 
       setSelectionCutoutUrl(data.cutout?.url || null);
       setSelectionMaskUrl(data.mask?.url || null);
@@ -610,15 +811,18 @@ export default function PhotoMagicEditor({ store }) {
       setSelectionMaskOutputId(data.mask?.output_id || null);
       setSelectionMeta(data.selection || null);
       setViewportMode('compare');
-      setLastRenderSummary(`Selection locked for ${data.selection?.label || selectionPrompt.trim()}`);
+      setLastRenderSummary(`Selection locked for ${data.selection?.label || promptLabel}`);
     } catch (nextError) {
       console.error(nextError);
-      setError(nextError?.message || 'Prompt selection failed');
+      const message = nextError?.message || 'Prompt selection failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Prompt Selection', 'complete', 'failed', message, { prompt: promptLabel });
     } finally {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [imageId, maskDilatePx, maskFeatherPx, maxSide, refreshHealth, selectionPrompt, store]);
+  }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, refreshHealth, requestJson, selectionPrompt, startDebugRun, store]);
 
   const pushUndo = useCallback(() => {
     const canvas = maskCanvasRef.current;
@@ -644,9 +848,10 @@ export default function PhotoMagicEditor({ store }) {
       const ctx = canvas.getContext('2d');
       ctx?.clearRect(0, 0, canvas.width, canvas.height);
       ctx?.drawImage(img, 0, 0);
+      syncMaskMetrics();
     };
     img.src = previous;
-  }, []);
+  }, [syncMaskMetrics]);
 
   const clearMask = useCallback(() => {
     const canvas = maskCanvasRef.current;
@@ -655,6 +860,8 @@ export default function PhotoMagicEditor({ store }) {
     pushUndo();
     const ctx = canvas.getContext('2d');
     ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    setMaskMetrics({ hasMask: false, paintedPixels: 0, coverage: 0 });
+    setLastRenderSummary('Clean plate mask cleared');
   }, [pushUndo]);
 
   const drawStroke = useCallback((ctx, x, y, prevX, prevY, radius, mode) => {
@@ -741,8 +948,9 @@ export default function PhotoMagicEditor({ store }) {
       } catch {
         // Pointer capture is not available in every environment.
       }
+      syncMaskMetrics();
     },
-    [tool]
+    [syncMaskMetrics, tool]
   );
 
   const exportMaskBlob = useCallback(async () => {
@@ -768,8 +976,9 @@ export default function PhotoMagicEditor({ store }) {
   }, [imageMeta?.height, imageMeta?.width]);
 
   const applyMaskArtifactToCanvas = useCallback(
-    async (url) => {
+    async (url, options = {}) => {
       if (!url || !imageSrc) return;
+      const { summary = 'Selection mask routed into clean plate', logMessage = summary, runId = null } = options;
 
       setTool('erase');
       setViewportMode('source');
@@ -795,9 +1004,16 @@ export default function PhotoMagicEditor({ store }) {
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-      setLastRenderSummary('Selection mask routed into clean plate');
+      const stats = syncMaskMetrics();
+      setLastRenderSummary(summary);
+      if (runId != null) {
+        logDebug(runId, 'Clean Plate', 'mask-route', 'success', logMessage, {
+          coverage: Number((stats.coverage * 100).toFixed(2)),
+          paintedPixels: stats.paintedPixels
+        });
+      }
     },
-    [ensureMaskCanvasSize, imageSrc, pushUndo]
+    [ensureMaskCanvasSize, imageSrc, logDebug, pushUndo, syncMaskMetrics]
   );
 
   const runErase = useCallback(async () => {
@@ -805,7 +1021,29 @@ export default function PhotoMagicEditor({ store }) {
 
     setError(null);
     setIsRunning(true);
+    const scope = quality === 'hq' ? 'HQ Clean Plate' : 'Clean Plate';
+    const runId = startDebugRun(scope, `${quality === 'hq' ? 'HQ' : 'Standard'} clean plate requested`);
     try {
+      let maskState = syncMaskMetrics();
+      logDebug(runId, scope, 'mask-check', maskState.hasMask ? 'success' : 'running', maskState.hasMask ? 'Mask surface already contains painted or routed pixels' : 'Mask surface is blank', {
+        coverage: Number((maskState.coverage * 100).toFixed(2)),
+        paintedPixels: maskState.paintedPixels
+      });
+
+      if (!maskState.hasMask && latestMaskForErase) {
+        logDebug(runId, scope, 'mask-route', 'running', `Auto-loading ${latestMaskSourceLabel || 'latest'} mask into clean plate`);
+        await applyMaskArtifactToCanvas(latestMaskForErase, {
+          summary: `${latestMaskSourceLabel || 'Latest'} mask loaded for clean plate`,
+          logMessage: `${latestMaskSourceLabel || 'Latest'} mask copied into the clean plate surface`,
+          runId
+        });
+        maskState = syncMaskMetrics();
+      }
+
+      if (!maskState.hasMask) {
+        throw new Error('Paint a removal mask or route a mask artifact into clean plate first.');
+      }
+
       const maskBlob = await exportMaskBlob();
       if (!maskBlob) throw new Error('Mask surface is not ready');
 
@@ -826,38 +1064,61 @@ export default function PhotoMagicEditor({ store }) {
         form.append('seed', String(sdxlSeed));
       }
 
-      const res = await fetch(withStore('/creative-studio/photo-magic/erase', store), {
-        method: 'POST',
-        body: form
+      const data = await requestJson({
+        runId,
+        scope,
+        step: 'erase',
+        url: withStore('/creative-studio/photo-magic/erase', store),
+        options: {
+          method: 'POST',
+          body: form
+        },
+        successMessage: `${quality === 'hq' ? 'HQ' : 'Standard'} clean plate render completed`,
+        failureMessage: 'Clean plate render failed',
+        successDetails: (payload) => ({
+          outputReady: Boolean(payload?.url),
+          width: payload?.width || null,
+          height: payload?.height || null,
+          coverage: Number((maskState.coverage * 100).toFixed(2))
+        })
       });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'Clean plate render failed');
 
       setEraseUrl(data.url || null);
       setViewportMode('compare');
       setLastRenderSummary(`${quality === 'hq' ? 'HQ' : 'Standard'} clean plate ready`);
     } catch (nextError) {
       console.error(nextError);
-      setError(nextError?.message || 'Clean plate render failed');
+      const message = nextError?.message || 'Clean plate render failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, scope, 'complete', 'failed', message);
     } finally {
       setIsRunning(false);
       refreshHealth();
     }
   }, [
+    applyMaskArtifactToCanvas,
     cropMarginPx,
     cropToMask,
     exportMaskBlob,
     imageId,
+    latestMaskForErase,
+    latestMaskSourceLabel,
+    logDebug,
     maskDilatePx,
     maskFeatherPx,
     maxSide,
     quality,
     refreshHealth,
+    requestJson,
     sdxlGuidance,
     sdxlSeed,
     sdxlSteps,
     sdxlStrength,
+    startDebugRun,
     store
+    ,
+    syncMaskMetrics
   ]);
 
   const runEnhance = useCallback(async () => {
@@ -865,57 +1126,96 @@ export default function PhotoMagicEditor({ store }) {
 
     setError(null);
     setIsRunning(true);
+    const scope = 'Enhancement';
+    const runId = startDebugRun(scope, `Running ${enhanceMode.replace('_', ' ')} enhancement`);
     try {
-      const res = await fetch(withStore('/creative-studio/photo-magic/enhance', store), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_id: imageId,
-          mode: enhanceMode,
-          source_max_side: maxSide,
-          strength: enhanceStrength,
-          upscale_factor: upscaleFactor
+      const data = await requestJson({
+        runId,
+        scope,
+        step: 'enhance',
+        url: withStore('/creative-studio/photo-magic/enhance', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            mode: enhanceMode,
+            source_max_side: maxSide,
+            strength: enhanceStrength,
+            upscale_factor: upscaleFactor
+          })
+        },
+        successMessage: 'Enhancement pass rendered',
+        failureMessage: 'Enhancement pass failed',
+        successDetails: (payload) => ({
+          outputReady: Boolean(payload?.url),
+          engine: payload?.engine || null,
+          mode: enhanceMode
         })
       });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'Enhancement pass failed');
 
       setEnhanceUrl(data.url || null);
       setViewportMode('compare');
       setLastRenderSummary(`${enhanceMode.replace('_', ' ')} pass ready${data.engine ? ` via ${data.engine}` : ''}`);
     } catch (nextError) {
       console.error(nextError);
-      setError(nextError?.message || 'Enhancement pass failed');
+      const message = nextError?.message || 'Enhancement pass failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, scope, 'complete', 'failed', message);
     } finally {
       setIsRunning(false);
       refreshHealth();
     }
-  }, [enhanceMode, enhanceStrength, imageId, maxSide, refreshHealth, store, upscaleFactor]);
+  }, [
+    enhanceMode,
+    enhanceStrength,
+    imageId,
+    logDebug,
+    maxSide,
+    refreshHealth,
+    requestJson,
+    startDebugRun,
+    store,
+    upscaleFactor
+  ]);
 
   const runRelight = useCallback(async () => {
     if (!imageId) return;
 
     setError(null);
     setIsRunning(true);
+    const runId = startDebugRun('Lighting Stage', `Running ${relightPreset.replace('_', ' ')} relight preset`);
     try {
-      const res = await fetch(withStore('/creative-studio/photo-magic/relight', store), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_id: imageId,
-          mask_output_id: currentMaskOutputId,
-          preset: relightPreset,
-          subject_boost: subjectBoost,
-          background_exposure: backgroundExposure,
-          warmth: relightWarmth,
-          shadow_opacity: shadowOpacity,
-          shadow_blur_px: shadowBlurPx,
-          shadow_offset_x: shadowOffsetX,
-          shadow_offset_y: shadowOffsetY
+      const data = await requestJson({
+        runId,
+        scope: 'Lighting Stage',
+        step: 'relight',
+        url: withStore('/creative-studio/photo-magic/relight', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            mask_output_id: currentMaskOutputId,
+            preset: relightPreset,
+            subject_boost: subjectBoost,
+            background_exposure: backgroundExposure,
+            warmth: relightWarmth,
+            shadow_opacity: shadowOpacity,
+            shadow_blur_px: shadowBlurPx,
+            shadow_offset_x: shadowOffsetX,
+            shadow_offset_y: shadowOffsetY
+          })
+        },
+        successMessage: 'Lighting pass rendered',
+        failureMessage: 'Relight stage failed',
+        successDetails: (payload) => ({
+          resultReady: Boolean(payload?.url),
+          maskReady: Boolean(payload?.mask?.url),
+          preset: relightPreset
         })
       });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'Relight stage failed');
 
       setRelightUrl(data.url || null);
       setRelightMaskUrl(data.mask?.url || null);
@@ -924,7 +1224,10 @@ export default function PhotoMagicEditor({ store }) {
       setLastRenderSummary(`${relightPreset.replace('_', ' ')} relight ready`);
     } catch (nextError) {
       console.error(nextError);
-      setError(nextError?.message || 'Relight stage failed');
+      const message = nextError?.message || 'Relight stage failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Lighting Stage', 'complete', 'failed', message);
     } finally {
       setIsRunning(false);
       refreshHealth();
@@ -933,13 +1236,16 @@ export default function PhotoMagicEditor({ store }) {
     backgroundExposure,
     currentMaskOutputId,
     imageId,
+    logDebug,
     refreshHealth,
     relightPreset,
     relightWarmth,
+    requestJson,
     shadowBlurPx,
     shadowOffsetX,
     shadowOffsetY,
     shadowOpacity,
+    startDebugRun,
     store,
     subjectBoost
   ]);
@@ -949,25 +1255,38 @@ export default function PhotoMagicEditor({ store }) {
 
     setError(null);
     setIsRunning(true);
+    const scope = 'Canvas Expand';
+    const runId = startDebugRun(scope, `Expanding canvas to ${expandAspectRatio} from ${expandAnchor}`);
     try {
-      const res = await fetch(withStore('/creative-studio/photo-magic/expand', store), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_id: imageId,
-          prompt: expandPrompt,
-          negative_prompt: expandNegativePrompt,
-          aspect_ratio: expandAspectRatio,
-          anchor: expandAnchor,
-          num_inference_steps: expandSteps,
-          guidance_scale: expandGuidance,
-          strength: expandStrength,
-          seed: expandSeed,
-          feather_px: expandFeatherPx
+      const data = await requestJson({
+        runId,
+        scope,
+        step: 'expand',
+        url: withStore('/creative-studio/photo-magic/expand', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            prompt: expandPrompt,
+            negative_prompt: expandNegativePrompt,
+            aspect_ratio: expandAspectRatio,
+            anchor: expandAnchor,
+            num_inference_steps: expandSteps,
+            guidance_scale: expandGuidance,
+            strength: expandStrength,
+            seed: expandSeed,
+            feather_px: expandFeatherPx
+          })
+        },
+        successMessage: 'Canvas expand render completed',
+        failureMessage: 'Canvas expand failed',
+        successDetails: (payload) => ({
+          outputReady: Boolean(payload?.url),
+          maskReady: Boolean(payload?.mask?.url),
+          aspectRatio: payload?.aspect_ratio || expandAspectRatio
         })
       });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'Canvas expand failed');
 
       setExpandUrl(data.url || null);
       setExpandMaskUrl(data.mask?.url || null);
@@ -976,7 +1295,10 @@ export default function PhotoMagicEditor({ store }) {
       setLastRenderSummary(`Canvas expanded to ${data.aspect_ratio || expandAspectRatio}`);
     } catch (nextError) {
       console.error(nextError);
-      setError(nextError?.message || 'Canvas expand failed');
+      const message = nextError?.message || 'Canvas expand failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, scope, 'complete', 'failed', message);
     } finally {
       setIsRunning(false);
       refreshHealth();
@@ -992,7 +1314,10 @@ export default function PhotoMagicEditor({ store }) {
     expandSteps,
     expandStrength,
     imageId,
+    logDebug,
     refreshHealth,
+    requestJson,
+    startDebugRun,
     store
   ]);
 
@@ -1001,7 +1326,7 @@ export default function PhotoMagicEditor({ store }) {
       {
         id: 'rmbg2',
         title: 'Auto Cutout',
-        model: 'BRIA RMBG 2.0',
+        model: 'BiRefNet matting',
         ready: rmbg2Ready,
         description: 'Primary foreground isolation for the active seed asset.',
         error: aiHealthPayload?.errors?.rmbg2 || ''
@@ -1090,7 +1415,7 @@ export default function PhotoMagicEditor({ store }) {
         {
           id: 'cutout',
           title: 'Cutout Asset',
-          engine: 'RMBG2 / SAM2',
+          engine: 'BiRefNet / SAM2',
           url: cutoutUrl,
           empty: 'Run auto cutout or SAM2 refine to produce a foreground asset.',
           promoteable: true,
@@ -1285,6 +1610,8 @@ export default function PhotoMagicEditor({ store }) {
 
   const sourcePreviewStyles = cutoutUrl && tool === 'remove_bg' ? makeCheckerBg() : undefined;
   const isBusy = isUploading || isRunning;
+  const cleanPlateMaskReady = maskMetrics.hasMask;
+  const maskCoverageLabel = `${(maskMetrics.coverage * 100).toFixed(maskMetrics.coverage > 0 && maskMetrics.coverage < 0.1 ? 1 : 0)}%`;
 
   const renderCanvas = () => {
     if (!imageSrc) {
@@ -1840,6 +2167,27 @@ export default function PhotoMagicEditor({ store }) {
                   </Button>
                 </div>
 
+                <div className="mt-4 rounded-md border border-slate-800 bg-[#10151d] px-3 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <Label>Mask Coverage</Label>
+                      <div className="mt-2 text-sm font-medium text-slate-100">
+                        {cleanPlateMaskReady ? `${maskCoverageLabel} painted` : 'No active clean plate mask'}
+                      </div>
+                    </div>
+                    <StatusPill
+                      ok={cleanPlateMaskReady}
+                      label={cleanPlateMaskReady ? 'Mask ready' : 'Mask needed'}
+                      title={cleanPlateMaskReady ? `${maskMetrics.paintedPixels} painted pixels` : 'Paint over the source or route a mask artifact first'}
+                    />
+                  </div>
+                  <div className="mt-2 text-xs leading-5 text-slate-400">
+                    {latestMaskForErase
+                      ? 'If the surface is blank, Photo Magic will auto-load the latest available mask before rendering.'
+                      : 'Paint over the region to remove. Clean plate will not run until the mask surface contains visible pixels.'}
+                  </div>
+                </div>
+
                 {quality === 'hq' ? (
                   <div className="mt-4 rounded-md border border-slate-800 bg-[#10151d] p-3">
                     <div className="text-sm font-medium text-slate-100">SDXL tuning</div>
@@ -1902,7 +2250,7 @@ export default function PhotoMagicEditor({ store }) {
                   <Button
                     variant="primary"
                     onClick={runErase}
-                    disabled={!imageId || isRunning || (quality === 'hq' ? hqOption.disabled : !lamaReady)}
+                    disabled={!imageId || isRunning || (quality === 'hq' ? hqOption.disabled : !lamaReady) || (!cleanPlateMaskReady && !latestMaskForErase)}
                     className="w-full justify-center"
                   >
                     <Eraser className="h-4 w-4" />
@@ -2260,6 +2608,76 @@ export default function PhotoMagicEditor({ store }) {
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label>Execution Trace</Label>
+                  <div className="mt-2 text-sm font-medium text-slate-100">Track each stage request and exact failure point</div>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={clearDebugTrace} className="px-2 py-1 text-xs">
+                    Clear
+                  </Button>
+                  <Button variant="ghost" onClick={() => setShowDebugPanel((prev) => !prev)} className="px-2 py-1 text-xs">
+                    {showDebugPanel ? 'Hide' : 'Show'}
+                  </Button>
+                </div>
+              </div>
+
+              {showDebugPanel ? (
+                debugTrace.length ? (
+                  <div className="mt-4 max-h-[420px] space-y-2 overflow-auto">
+                    {debugTrace.map((entry) => {
+                      const tone =
+                        entry.status === 'failed'
+                          ? 'border-rose-900/70 bg-rose-950/20'
+                          : entry.status === 'success'
+                            ? 'border-emerald-900/70 bg-emerald-950/20'
+                            : 'border-slate-800 bg-[#10151d]';
+                      const pillTone =
+                        entry.status === 'failed'
+                          ? 'text-rose-300'
+                          : entry.status === 'success'
+                            ? 'text-emerald-300'
+                            : entry.status === 'running'
+                              ? 'text-amber-300'
+                              : 'text-slate-400';
+
+                      return (
+                        <div key={entry.id} className={cn('rounded-md border px-3 py-3', tone)}>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono uppercase tracking-[0.16em] text-slate-500">
+                              <span>Run {entry.runId}</span>
+                              <span>{entry.scope}</span>
+                              <span>{entry.step}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={cn('text-[11px] font-mono uppercase tracking-[0.16em]', pillTone)}>{entry.status}</span>
+                              <span className="text-[11px] font-mono text-slate-500">{formatDebugTimestamp(entry.at)}</span>
+                            </div>
+                          </div>
+                          <div className="mt-2 text-sm leading-6 text-slate-200">{entry.message}</div>
+                          {entry.details ? (
+                            <pre className="mt-3 overflow-auto rounded-sm border border-slate-800 bg-[#0b0f15] p-3 text-[11px] leading-5 text-slate-400">
+                              {JSON.stringify(entry.details, null, 2)}
+                            </pre>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-md border border-dashed border-slate-800 bg-[#10151d] px-3 py-3 text-xs leading-5 text-slate-500">
+                    No execution trace yet. Run a stage and this panel will show request start, success, failure, and any mask or routing blocker.
+                  </div>
+                )
+              ) : (
+                <div className="mt-4 rounded-md border border-dashed border-slate-800 bg-[#10151d] px-3 py-3 text-xs leading-5 text-slate-500">
+                  Keep this open while testing Photo Magic. It records the last {DEBUG_TRACE_LIMIT} execution events.
+                </div>
+              )}
             </div>
           </div>
         </div>
