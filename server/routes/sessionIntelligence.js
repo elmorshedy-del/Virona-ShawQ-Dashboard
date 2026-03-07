@@ -30,6 +30,12 @@ import {
   queueInvestigationJobs,
   runQueuedInvestigationJobs
 } from '../services/sessionIntelligenceInvestigationService.js';
+import {
+  getSessionIntelligenceSurveySummary,
+  listSessionIntelligenceSurveyTemplates,
+  upsertSessionIntelligenceSurveyTemplateConfig
+} from '../services/sessionIntelligenceSurveyService.js';
+import { validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
 
 const router = express.Router();
 
@@ -53,6 +59,18 @@ function normalizeIssueKeysInput(value) {
     return value.split(',').map((part) => part.trim()).filter(Boolean);
   }
   return [];
+}
+
+function requireSurveyAdminSession(req, res, next) {
+  const validation = validateSessionIntelligenceAdminRequest(req);
+  if (!validation.ok) {
+    return res.status(403).json({ success: false, error: validation.reason || 'Forbidden' });
+  }
+  return next();
+}
+
+function requireStoreParam(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
 router.get('/overview', (req, res) => {
@@ -298,6 +316,68 @@ router.post('/investigation/jobs/run', async (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] investigation run error:', error);
     res.status(500).json({ success: false, error: 'Failed to run investigation jobs' });
+  }
+});
+
+router.use('/survey', requireSurveyAdminSession);
+
+router.get('/survey/templates', (req, res) => {
+  try {
+    const store = requireStoreParam(req.query.store);
+    if (!store) return res.status(400).json({ success: false, error: 'Missing store' });
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const activeOnly = normalizeFlag(req.query.activeOnly);
+    const result = listSessionIntelligenceSurveyTemplates({ store, startDate, endDate, activeOnly });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] survey templates error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load survey templates' });
+  }
+});
+
+router.post('/survey/templates/config', (req, res) => {
+  try {
+    const store = requireStoreParam(req.body?.store);
+    if (!store) return res.status(400).json({ success: false, error: 'Missing store' });
+    const templateKey = req.body?.templateKey || req.body?.template_key;
+    const status = req.body?.status;
+    const consentMode = req.body?.consentMode || req.body?.consent_mode;
+    const deliveryType = req.body?.deliveryType || req.body?.delivery_type;
+    const questionText = req.body?.questionText || req.body?.question_text;
+    const choices = Array.isArray(req.body?.choices) ? req.body.choices : undefined;
+
+    const result = upsertSessionIntelligenceSurveyTemplateConfig({
+      store,
+      templateKey,
+      status,
+      consentMode,
+      deliveryType,
+      questionText,
+      choices
+    });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] survey config error:', error);
+    res.status(500).json({ success: false, error: 'Failed to save survey template config' });
+  }
+});
+
+router.get('/survey/summary', (req, res) => {
+  try {
+    const store = requireStoreParam(req.query.store);
+    if (!store) return res.status(400).json({ success: false, error: 'Missing store' });
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const limit = parsePositiveInt(req.query.limit, 8, 1, 20);
+    const result = getSessionIntelligenceSurveySummary({ store, startDate, endDate, limit });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[SessionIntelligence] survey summary error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load survey summary' });
   }
 });
 
