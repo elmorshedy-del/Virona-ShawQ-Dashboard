@@ -46,12 +46,20 @@ export function runSessionIntelligenceMigration() {
       session_id TEXT NOT NULL,
       client_id TEXT,
       shopper_number INTEGER,
+      user_id TEXT,
       source TEXT,
+      event_id TEXT,
+      event_sequence INTEGER,
       event_name TEXT NOT NULL,
       event_ts TEXT NOT NULL,
+      tab_id TEXT,
       page_url TEXT,
       page_path TEXT,
+      referrer_url TEXT,
+      page_title TEXT,
+      cart_token TEXT,
       checkout_token TEXT,
+      order_id TEXT,
       checkout_step TEXT,
       device_type TEXT,
       device_os TEXT,
@@ -83,6 +91,14 @@ export function runSessionIntelligenceMigration() {
     db.exec(`ALTER TABLE si_events ADD COLUMN checkout_step TEXT`);
   } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN shopper_number INTEGER`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN user_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN event_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN event_sequence INTEGER`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN tab_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN referrer_url TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN page_title TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN cart_token TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_events ADD COLUMN order_id TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN device_type TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN device_os TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_events ADD COLUMN country_code TEXT`); } catch (e) { /* column exists */ }
@@ -127,6 +143,21 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_events_store_cart_token
+    ON si_events(store, cart_token, event_ts)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_events_store_order_id
+    ON si_events(store, order_id, event_ts)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_events_store_user_id
+    ON si_events(store, user_id, event_ts)
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS si_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,
@@ -139,13 +170,17 @@ export function runSessionIntelligenceMigration() {
       entry_event_name TEXT,
       entry_page_url TEXT,
       entry_page_path TEXT,
+      entry_referrer_url TEXT,
       entry_utm_source TEXT,
       entry_utm_medium TEXT,
       entry_utm_campaign TEXT,
       atc_at TEXT,
       checkout_started_at TEXT,
       purchase_at TEXT,
+      last_user_id TEXT,
+      last_cart_token TEXT,
       last_checkout_token TEXT,
+      last_order_id TEXT,
       last_checkout_step TEXT,
       last_cart_json TEXT,
       shopper_number INTEGER,
@@ -174,12 +209,16 @@ export function runSessionIntelligenceMigration() {
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_event_name TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_page_url TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_page_path TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_referrer_url TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_utm_source TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_utm_medium TEXT`); } catch (e) { /* column exists */ }
   try { db.exec(`ALTER TABLE si_sessions ADD COLUMN entry_utm_campaign TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_user_id TEXT`); } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_cart_token TEXT`); } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE si_sessions ADD COLUMN last_checkout_token TEXT`);
   } catch (e) { /* column exists */ }
+  try { db.exec(`ALTER TABLE si_sessions ADD COLUMN last_order_id TEXT`); } catch (e) { /* column exists */ }
   try {
     db.exec(`ALTER TABLE si_sessions ADD COLUMN last_checkout_step TEXT`);
   } catch (e) { /* column exists */ }
@@ -227,6 +266,21 @@ export function runSessionIntelligenceMigration() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_sessions_store_checkout_token
     ON si_sessions(store, last_checkout_token)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_cart_token
+    ON si_sessions(store, last_cart_token)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_user_id
+    ON si_sessions(store, last_user_id)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_order_id
+    ON si_sessions(store, last_order_id)
   `);
 
   db.exec(`
@@ -381,6 +435,7 @@ export function runSessionIntelligenceMigration() {
       checkout_token TEXT NOT NULL,
       session_id TEXT NOT NULL,
       client_id TEXT,
+      shopper_number INTEGER,
       first_seen_at TEXT,
       last_seen_at TEXT,
       created_at TEXT DEFAULT (datetime('now')),
@@ -392,6 +447,49 @@ export function runSessionIntelligenceMigration() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_checkout_links_store_session
     ON si_checkout_session_links(store, session_id, last_seen_at)
+  `);
+
+  try { db.exec(`ALTER TABLE si_checkout_session_links ADD COLUMN shopper_number INTEGER`); } catch (e) { /* column exists */ }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_cart_session_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      cart_token TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      client_id TEXT,
+      shopper_number INTEGER,
+      first_seen_at TEXT,
+      last_seen_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, cart_token)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_cart_links_store_session
+    ON si_cart_session_links(store, session_id, last_seen_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_user_identity_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      client_id TEXT,
+      shopper_number INTEGER,
+      first_seen_at TEXT,
+      last_seen_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, user_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_user_identity_links_store_shopper
+    ON si_user_identity_links(store, shopper_number, last_seen_at)
   `);
 
   db.exec(`

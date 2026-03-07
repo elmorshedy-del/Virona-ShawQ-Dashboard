@@ -3,9 +3,18 @@
 This dashboard ingests Shopify behavioral events via:
 
 - **Shopify Custom Pixel** (recommended; covers product/cart/checkout events)
-- Optional **Theme snippet** (for extra UI click tracking like size chart)
+- **Theme snippet** (recommended; covers behavioral stitching, last-action checkpoints, and technical signals)
 
 Raw events auto-delete after **72 hours** on the server (configurable).
+
+## Quick install API
+
+The backend can now generate the current install pack for a store:
+
+- `GET /api/session-intelligence/install/shopify?store=shawq`
+- `GET /api/session-intelligence/architecture?store=shawq`
+
+Use those endpoints when you want the exact current custom-pixel script, theme snippet, identity spine, and event catalog without manually copying docs.
 
 ## 1) Set your endpoint (Railway)
 
@@ -31,12 +40,16 @@ const STORE = "shawq";
 
 const EVENTS = [
   "page_viewed",
-  "product_viewed",
   "collection_viewed",
+  "product_viewed",
   "search_submitted",
   "product_added_to_cart",
+  "product_removed_from_cart",
   "cart_viewed",
   "checkout_started",
+  "checkout_contact_info_submitted",
+  "checkout_address_info_submitted",
+  "checkout_shipping_info_submitted",
   "payment_info_submitted",
   "checkout_completed"
 ];
@@ -46,7 +59,6 @@ function send(event) {
     fetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // Attach store + source for easier debugging on the server.
       body: JSON.stringify({ ...event, store: STORE, source: "shopify_custom_pixel_v1" }),
       keepalive: true
     });
@@ -67,13 +79,30 @@ Notes:
 
 ## 3) Optional: Theme snippet for extra click tracking
 
-If you want Clarity‑style signals (rage clicks, dead clicks, scroll depth, JS errors, form validation friction), add this just before `</head>` (or `</body>`) in `layout/theme.liquid`:
+If you want Clarity-style signals plus shopper-footstep stitching signals (variant selection, size selection, checkout CTA clicks, last action before exit), add this just before `</head>` (or `</body>`) in `layout/theme.liquid`:
 
 ```html
 <script async src="https://YOUR-RAILWAY-DOMAIN/pixel.js?store=shawq"></script>
 ```
 
-This works on Shopify and also works on non‑Shopify sites (custom storefronts, WooCommerce, etc.).
+This works on Shopify and also works on non-Shopify sites (custom storefronts, WooCommerce, etc.).
+
+The theme pixel now captures:
+
+- `variant_selected`
+- `size_selected`
+- `add_to_cart_clicked`
+- `cart_quantity_changed`
+- `cart_drawer_opened`
+- `checkout_cta_clicked`
+- `last_action_checkpoint`
+- `dead_click`
+- `rage_click`
+- `js_error`
+- `unhandled_rejection`
+- `form_invalid`
+- `scroll_depth`
+- `scroll_max`
 
 ### Legacy (inline) click tracking snippet
 
@@ -141,6 +170,6 @@ If you only want the original extra UI clicks (e.g. “Size chart” open **and 
 </script>
 ```
 
-This is optional; the Custom Pixel already covers the key funnel events.
+The legacy snippet is now only useful for one-off theme debugging. For production stitching, prefer the generated theme pixel script above.
 
 Tip: If your theme uses different markup for size swatches, adjust the selectors in `sizeEl` to match your DOM.
