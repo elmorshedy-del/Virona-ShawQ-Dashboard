@@ -218,6 +218,22 @@ const PHOTO_MAGIC_TMP_DIR = path.join(os.tmpdir(), 'creative-studio', 'photo-mag
 const PHOTO_MAGIC_DEFAULT_STORE = 'vironax';
 const GEMINI_COORDINATE_SCALE = 1000;
 const DEFAULT_SELECTION_CONFIDENCE = 0.72;
+const PHOTO_MAGIC_SELECTION_PREVIEW_MAX_SIDE = 2048;
+const PHOTO_MAGIC_SELECTION_MAX_VARIANTS = 4;
+const PHOTO_MAGIC_SELECTION_VARIANT_RULES = [
+  {
+    pattern: /\b(logo|brand|wordmark|badge|emblem|mark|crest|symbol)\b/i,
+    variants: ['logo', 'brand mark', 'printed logo or wordmark', 'chest logo or badge']
+  },
+  {
+    pattern: /\b(text|word|words|lettering|print|printed|caption|slogan|title)\b/i,
+    variants: ['text', 'printed wording or lettering', 'text block or printed mark']
+  },
+  {
+    pattern: /\b(label|tag|price|sticker|barcode|ticket)\b/i,
+    variants: ['label or tag', 'price tag or sticker', 'product label']
+  }
+];
 
 function toSafePathSegment(value, { fallback = 'unknown', maxLen = 64 } = {}) {
   const raw = String(value || '').trim();
@@ -305,6 +321,37 @@ function parseHexColor(hex) {
 
 function getPhotoMagicSelectionModelName() {
   return String(process.env.PHOTO_MAGIC_SELECTION_MODEL || process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash').trim();
+}
+
+function dedupePhotoMagicSelectionPrompts(prompts) {
+  const seen = new Set();
+  const next = [];
+  for (const candidate of prompts) {
+    const text = String(candidate || '').trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(text);
+    if (next.length >= PHOTO_MAGIC_SELECTION_MAX_VARIANTS) break;
+  }
+  return next;
+}
+
+function buildPhotoMagicSelectionPromptVariants(prompt) {
+  const resolvedPrompt = String(prompt || '').trim();
+  const normalizedPrompt = resolvedPrompt
+    .replace(/^(remove|erase|select|find|detect|mask|isolate|target)\s+/i, '')
+    .trim();
+  const basePrompt = normalizedPrompt || resolvedPrompt;
+  const variants = [basePrompt];
+
+  for (const rule of PHOTO_MAGIC_SELECTION_VARIANT_RULES) {
+    if (!rule.pattern.test(basePrompt)) continue;
+    variants.push(...rule.variants);
+  }
+
+  return dedupePhotoMagicSelectionPrompts(variants);
 }
 
 async function detectPhotoMagicSelectionWithGemini({ imageBase64, prompt, width, height }) {
@@ -412,6 +459,39 @@ Rules:
       }
     ]
   };
+}
+
+async function detectPhotoMagicSelectionWithGeminiFallbacks({ imageBase64, prompt, width, height }) {
+  const resolvedPrompt = String(prompt || '').trim();
+  const attempts = [];
+
+  for (const candidatePrompt of buildPhotoMagicSelectionPromptVariants(resolvedPrompt)) {
+    attempts.push(candidatePrompt);
+    const selection = await detectPhotoMagicSelectionWithGemini({
+      imageBase64,
+      prompt: candidatePrompt,
+      width,
+      height
+    });
+    if (!selection) continue;
+
+    const matchedPrompt = candidatePrompt;
+    return {
+      attempts,
+      selection: {
+        ...selection,
+        requested_prompt: resolvedPrompt,
+        matched_prompt: matchedPrompt,
+        notes:
+          selection.notes ||
+          (matchedPrompt.toLowerCase() !== resolvedPrompt.toLowerCase()
+            ? `Matched via fallback prompt "${matchedPrompt}".`
+            : null)
+      }
+    };
+  }
+
+  return { attempts, selection: null };
 }
 
 const CREATIVE_OS_DEFAULT_STORE = 'vironax';
@@ -4597,12 +4677,17 @@ router.post('/photo-magic/select', async (req, res) => {
 
     const previewBuffer = await sharp(buf)
       .rotate()
-      .resize({ width: 1536, height: 1536, fit: 'inside', withoutEnlargement: true })
+      .resize({
+        width: PHOTO_MAGIC_SELECTION_PREVIEW_MAX_SIDE,
+        height: PHOTO_MAGIC_SELECTION_PREVIEW_MAX_SIDE,
+        fit: 'inside',
+        withoutEnlargement: true
+      })
       .jpeg({ quality: 92 })
       .toBuffer()
       .catch(() => buf);
 
-    const selection = await detectPhotoMagicSelectionWithGemini({
+    const { selection, attempts } = await detectPhotoMagicSelectionWithGeminiFallbacks({
       imageBase64: previewBuffer.toString('base64'),
       prompt,
       width: imageWidth,
@@ -4610,7 +4695,14 @@ router.post('/photo-magic/select', async (req, res) => {
     });
 
     if (!selection) {
-      return res.status(404).json({ success: false, error: `No visible target matched "${prompt}"` });
+      return res.status(404).json({
+        success: false,
+        error: `No visible target matched "${prompt}"`,
+        details: {
+          attempted_prompts: attempts,
+          model: getPhotoMagicSelectionModelName()
+        }
+      });
     }
 
     const result = await refineBgSam2({
