@@ -474,6 +474,16 @@ def extract_rmbg_prediction(output) -> torch.Tensor:
     raise TypeError(f"Unsupported RMBG output type: {type(output).__name__}")
 
 
+def pil_mask_from_prediction(prediction: torch.Tensor) -> Image.Image:
+    mask_tensor = prediction.detach().float().cpu().squeeze()
+    if mask_tensor.ndim != 2:
+        raise RuntimeError(f"Unexpected RMBG mask shape: {tuple(mask_tensor.shape)}")
+
+    mask_tensor = mask_tensor.clamp(0.0, 1.0).mul(255.0).round().to(torch.uint8).contiguous()
+    height, width = mask_tensor.shape
+    return Image.frombytes("L", (width, height), bytes(mask_tensor.view(-1).tolist()))
+
+
 def rmbg2_predict_mask(pil_image: Image.Image) -> Image.Image:
     if not RMBG2_AVAILABLE or rmbg2_model is None:
         raise RuntimeError("RMBG2 not available")
@@ -488,10 +498,9 @@ def rmbg2_predict_mask(pil_image: Image.Image) -> Image.Image:
         pred_max = float(pred.max().item())
         if pred_min < 0.0 or pred_max > 1.0:
             pred = torch.sigmoid(pred)
-        pred = pred.squeeze().detach().float().cpu().numpy()
+        mask = pil_mask_from_prediction(pred)
 
-    pred_u8 = np.clip(pred * 255.0, 0, 255).astype(np.uint8)
-    mask = Image.fromarray(pred_u8, mode="L").resize((orig_w, orig_h), resample=Image.BILINEAR)
+    mask = mask.resize((orig_w, orig_h), resample=Image.BILINEAR)
     return mask
 
 
