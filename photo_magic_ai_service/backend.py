@@ -127,6 +127,8 @@ def strip_data_prefix(b64: str) -> str:
 
 @app.before_request
 def _auth_guard():
+    if request.path == "/health":
+        return None
     if not SERVICE_TOKEN:
         return None
     auth = str(request.headers.get("authorization") or "")
