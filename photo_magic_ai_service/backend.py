@@ -281,6 +281,88 @@ def composite_with_alpha(base_rgb: np.ndarray, overlay_rgb: np.ndarray, alpha_u8
     )
 
 
+def extract_segmentation_tensor(output: Any) -> torch.Tensor | None:
+    if torch.is_tensor(output):
+        return output
+
+    if isinstance(output, (list, tuple)):
+        for item in reversed(output):
+            tensor = extract_segmentation_tensor(item)
+            if tensor is not None:
+                return tensor
+        return None
+
+    if isinstance(output, dict):
+        for key in ("logits", "pred", "preds", "mask", "masks", "alpha"):
+            if key in output:
+                tensor = extract_segmentation_tensor(output[key])
+                if tensor is not None:
+                    return tensor
+        for value in reversed(list(output.values())):
+            tensor = extract_segmentation_tensor(value)
+            if tensor is not None:
+                return tensor
+        return None
+
+    for attr in ("logits", "pred", "preds", "mask", "masks", "alpha"):
+        if hasattr(output, attr):
+            tensor = extract_segmentation_tensor(getattr(output, attr))
+            if tensor is not None:
+                return tensor
+    return None
+
+
+def normalize_segmentation_mask(mask_data: np.ndarray) -> np.ndarray:
+    pred = np.asarray(mask_data, dtype=np.float32)
+    pred = np.squeeze(pred)
+    if pred.ndim != 2:
+        raise RuntimeError(f"Unexpected segmentation mask shape: {tuple(pred.shape)}")
+
+    if float(pred.min()) < 0.0 or float(pred.max()) > 1.0:
+        pred = 1.0 / (1.0 + np.exp(-pred))
+
+    return np.clip(pred * 255.0, 0, 255).astype(np.uint8)
+
+
+def ensure_uint8_rgb_array(value: Any) -> np.ndarray:
+    if isinstance(value, Image.Image):
+        arr = np.array(value.convert("RGB"), dtype=np.uint8)
+    else:
+        arr = np.asarray(value)
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr], axis=-1)
+        if arr.ndim != 3:
+            raise RuntimeError(f"Unexpected image array shape from LaMa: {tuple(arr.shape)}")
+        if arr.shape[2] > 3:
+            arr = arr[..., :3]
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+
+    return np.ascontiguousarray(arr)
+
+
+def ensure_uint8_mask_array(value: Any) -> np.ndarray:
+    if isinstance(value, Image.Image):
+        arr = np.array(value.convert("L"), dtype=np.uint8)
+    else:
+        arr = np.asarray(value)
+        if arr.ndim == 3:
+            arr = arr[..., 0]
+        if arr.ndim != 2:
+            raise RuntimeError(f"Unexpected mask array shape for LaMa: {tuple(arr.shape)}")
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+
+    return np.ascontiguousarray(arr)
+
+
+def get_segmentation_preprocess_stats(model_id: str) -> tuple[list[float], list[float]]:
+    normalized_model_id = str(model_id or "").strip().lower()
+    if "birefnet" in normalized_model_id:
+        return [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+    return [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+
+
 # =============================================================================
 # Model Loading
 # =============================================================================
@@ -298,6 +380,7 @@ try:
     from transformers import AutoModelForImageSegmentation
     from torchvision import transforms
 
+    rmbg2_mean, rmbg2_std = get_segmentation_preprocess_stats(RMBG2_MODEL_ID)
     rmbg2_model = AutoModelForImageSegmentation.from_pretrained(RMBG2_MODEL_ID, trust_remote_code=True)
     rmbg2_model.to(DEVICE)
     rmbg2_model.eval()
@@ -306,7 +389,7 @@ try:
         [
             transforms.Resize((1024, 1024)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Normalize(mean=rmbg2_mean, std=rmbg2_std),
         ]
     )
 
@@ -457,11 +540,12 @@ def rmbg2_predict_mask(pil_image: Image.Image) -> Image.Image:
 
     with torch.inference_mode():
         out = rmbg2_model(image_tensor)
-        pred = out[-1] if isinstance(out, (list, tuple)) else out
-        pred = torch.sigmoid(pred)
-        pred = pred.squeeze().detach().float().cpu().numpy()
+        pred_tensor = extract_segmentation_tensor(out)
+        if pred_tensor is None:
+            raise RuntimeError(f"Unsupported segmentation output type: {type(out).__name__}")
+        pred = pred_tensor.detach().float().cpu().numpy()
 
-    pred_u8 = np.clip(pred * 255.0, 0, 255).astype(np.uint8)
+    pred_u8 = normalize_segmentation_mask(pred)
     mask = Image.fromarray(pred_u8, mode="L").resize((orig_w, orig_h), resample=Image.BILINEAR)
     return mask
 
@@ -879,22 +963,28 @@ def erase_lama():
             x2 = min(img_np.shape[1], x2 + crop_margin_px)
             y2 = min(img_np.shape[0], y2 + crop_margin_px)
 
-            img_crop = Image.fromarray(img_np[y1:y2, x1:x2])
-            mask_crop = Image.fromarray(mask_bin[y1:y2, x1:x2])
+            img_crop = img_np[y1:y2, x1:x2]
+            mask_crop = mask_bin[y1:y2, x1:x2]
             alpha_crop = mask_alpha[y1:y2, x1:x2]
 
-            inpainted_crop = lama_model(img_crop, mask_crop)
+            inpainted_crop = lama_model(
+                ensure_uint8_rgb_array(img_crop),
+                ensure_uint8_mask_array(mask_crop),
+            )
 
-            base_crop = np.array(img_crop)
-            over_crop = np.array(inpainted_crop.convert("RGB"))
+            base_crop = ensure_uint8_rgb_array(img_crop)
+            over_crop = ensure_uint8_rgb_array(inpainted_crop)
             blended_crop = composite_with_alpha(base_crop, over_crop, alpha_crop)
 
             out_small = img_np.copy()
             out_small[y1:y2, x1:x2] = blended_crop
         else:
-            inpainted = lama_model(pil_small, Image.fromarray(mask_bin))
+            inpainted = lama_model(
+                ensure_uint8_rgb_array(pil_small),
+                ensure_uint8_mask_array(mask_bin),
+            )
             base = img_np
-            over = np.array(inpainted.convert("RGB"))
+            over = ensure_uint8_rgb_array(inpainted)
             out_small = composite_with_alpha(base, over, mask_alpha)
 
         out_pil_small = Image.fromarray(out_small)
