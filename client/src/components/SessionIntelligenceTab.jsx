@@ -1679,22 +1679,26 @@ function userLabel(row) {
   return sessionId ? toCode('Session', sessionId, 6) : '—';
 }
 
+function normalizeSurveyKey(value) {
+  return (value || '').toString().toLowerCase().trim();
+}
+
 function surveyStatusLabel(status) {
-  const key = (status || '').toString().toLowerCase().trim();
+  const key = normalizeSurveyKey(status);
   if (key === 'active') return 'Active';
   if (key === 'paused') return 'Paused';
   return 'Ready';
 }
 
 function surveyStatusClassName(status) {
-  const key = (status || '').toString().toLowerCase().trim();
+  const key = normalizeSurveyKey(status);
   if (key === 'active') return 'si-survey-status-active';
   if (key === 'paused') return 'si-survey-status-paused';
   return 'si-survey-status-ready';
 }
 
 function surveyDeliveryLabel(deliveryType, fallbackLabel) {
-  const key = (deliveryType || '').toString().toLowerCase().trim();
+  const key = normalizeSurveyKey(deliveryType);
   if (key === 'return_visit') return 'Return visit';
   if (key === 'recovery') return 'Recovery';
   if (key === 'checkout_plus') return 'Checkout Plus';
@@ -1703,7 +1707,7 @@ function surveyDeliveryLabel(deliveryType, fallbackLabel) {
 }
 
 function surveyConsentLabel(consentMode) {
-  const key = (consentMode || '').toString().toLowerCase().trim();
+  const key = normalizeSurveyKey(consentMode);
   if (key === 'ask_consent') return 'Ask consent';
   if (key === 'response_only') return 'Response only';
   return 'Auto-link';
@@ -2038,11 +2042,14 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
 
     if (requestId !== surveyRequestIdRef.current) return;
 
+    const errors = [];
+
     if (templatesResult.status === 'fulfilled') {
       setSurveyTemplates(Array.isArray(templatesResult.value?.data?.templates) ? templatesResult.value.data.templates : []);
     } else {
       console.error('[SessionIntelligenceTab] survey templates load failed:', templatesResult.reason || templatesResult);
       setSurveyTemplates([]);
+      errors.push('Failed to load survey templates.');
     }
 
     if (summaryResult.status === 'fulfilled') {
@@ -2050,13 +2057,10 @@ export default function SessionIntelligenceTab({ store, dashboardDateRange = nul
     } else {
       console.error('[SessionIntelligenceTab] survey summary load failed:', summaryResult.reason || summaryResult);
       setSurveySummary(null);
+      errors.push('Failed to load survey responses.');
     }
 
-    if (templatesResult.status !== 'fulfilled' && summaryResult.status !== 'fulfilled') {
-      setSurveyError('Failed to load survey templates and responses');
-    } else {
-      setSurveyError('');
-    }
+    setSurveyError(errors.join(' '));
 
     if (requestId === surveyRequestIdRef.current && showLoading) {
       setSurveyLoading(false);

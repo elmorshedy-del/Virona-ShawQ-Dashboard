@@ -2,6 +2,14 @@ import express from 'express';
 import { getDb } from '../db/database.js';
 import { recordSessionIntelligenceEvent } from '../services/sessionIntelligenceService.js';
 import { recordBlackboxEvent, sanitizeShopifyPixelPayloadForBlackbox } from '../services/blackboxService.js';
+import {
+  listSessionIntelligencePublicSurveyTemplates,
+  recordSessionIntelligenceSurveyResponse
+} from '../services/sessionIntelligenceSurveyService.js';
+import {
+  issueSessionIntelligencePublicSurveyToken,
+  validateSessionIntelligencePublicSurveyRequest
+} from '../utils/sessionIntelligenceSurveyAccess.js';
 
 const router = express.Router();
 
@@ -14,6 +22,17 @@ const PIXEL_SCRIPT_VERSION = 'virona-pixel-v1';
 
 const LIVE_DB_BOOTSTRAP_TTL_MS = 60 * 1000;
 const liveDbBootstrapByKey = new Map();
+const SURVEY_PUBLIC_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const SURVEY_PUBLIC_RATE_LIMIT_MAX_REQUESTS = 12;
+const SURVEY_PUBLIC_RATE_LIMIT_MAX_ENTRIES = 5000;
+const surveyPublicRateLimit = new Map();
+
+function safeString(value, maxLength = 255) {
+  if (value == null) return '';
+  const raw = String(value).trim();
+  if (!raw) return '';
+  return raw.length > maxLength ? raw.slice(0, maxLength) : raw;
+}
 
 function shouldBootstrapLiveFromDb(store, windowSeconds) {
   const storeKey = typeof store === 'string' && store.trim() ? store.trim() : 'default';
@@ -25,7 +44,7 @@ function shouldBootstrapLiveFromDb(store, windowSeconds) {
   return true;
 }
 
-function renderUniversalPixelScript() {
+function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
   // IMPORTANT:
   // - This script is designed to run on ANY site (Shopify / custom / etc.)
   // - It posts to THIS server origin (derived from the script src), not the host site origin.
@@ -115,11 +134,12 @@ function renderUniversalPixelScript() {
   var endpointOverride = parsedScriptUrl && parsedScriptUrl.searchParams ? parsedScriptUrl.searchParams.get('endpoint') : null;
   var endpoint = endpointOverride || (scriptOrigin ? (scriptOrigin + '/api/pixels/shopify') : '/api/pixels/shopify');
   var surveyTemplatesEndpoint = scriptOrigin
-    ? (scriptOrigin + '/api/session-intelligence/survey/templates')
-    : '/api/session-intelligence/survey/templates';
+    ? (scriptOrigin + '/api/pixels/survey/templates')
+    : '/api/pixels/survey/templates';
   var surveyRespondEndpoint = scriptOrigin
-    ? (scriptOrigin + '/api/session-intelligence/survey/respond')
-    : '/api/session-intelligence/survey/respond';
+    ? (scriptOrigin + '/api/pixels/survey/respond')
+    : '/api/pixels/survey/respond';
+  var surveyPublicToken = ${JSON.stringify(surveyPublicToken)};
 
   function storageKey(base) {
     return base + ':' + store;
@@ -258,11 +278,16 @@ function renderUniversalPixelScript() {
     if (opts.activeOnly !== false) params.set('activeOnly', 'true');
     if (opts.startDate) params.set('startDate', safeString(opts.startDate, 20));
     if (opts.endDate) params.set('endDate', safeString(opts.endDate, 20));
+    params.set('pageUrl', currentPageUrl());
+    if (!surveyPublicToken) {
+      return Promise.reject(new Error('Survey SDK is not authorized for this storefront'));
+    }
     return fetch(surveyTemplatesEndpoint + '?' + params.toString(), {
       method: 'GET',
       mode: 'cors',
       credentials: 'omit',
-      cache: 'no-store'
+      cache: 'no-store',
+      headers: { 'X-Virona-Survey-Token': surveyPublicToken }
     }).then(function (response) {
       return response.text().then(function (raw) {
         var data = raw ? JSON.parse(raw) : null;
@@ -277,11 +302,17 @@ function renderUniversalPixelScript() {
   function submitSurveyResponse(input) {
     var payload = input && typeof input === 'object' ? input : {};
     var context = readSurveyContext();
+    if (!surveyPublicToken) {
+      return Promise.reject(new Error('Survey SDK is not authorized for this storefront'));
+    }
     return fetch(surveyRespondEndpoint, {
       method: 'POST',
       mode: 'cors',
       credentials: 'omit',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Virona-Survey-Token': surveyPublicToken
+      },
       body: JSON.stringify({
         store: store,
         source: 'virona_pixel_sdk',
@@ -621,9 +652,17 @@ function renderUniversalPixelScript() {
 }
 
 router.get('/pixel.js', (req, res) => {
+  const store = safeString(req.query.store, 80) || 'shawq';
+  const surveyPublicToken = issueSessionIntelligencePublicSurveyToken(req, store);
   res.setHeader('content-type', 'application/javascript; charset=utf-8');
-  res.setHeader('cache-control', `public, max-age=${PIXEL_SCRIPT_CACHE_SECONDS}`);
-  res.send(renderUniversalPixelScript());
+  res.setHeader('vary', 'Origin, Referer');
+  res.setHeader(
+    'cache-control',
+    surveyPublicToken
+      ? 'private, no-store, max-age=0'
+      : `public, max-age=${PIXEL_SCRIPT_CACHE_SECONDS}`
+  );
+  res.send(renderUniversalPixelScript({ surveyPublicToken }));
 });
 
 // In-memory live state (fast + works even if DB is read-only / unavailable).
@@ -703,6 +742,38 @@ function safeJsonParse(value) {
   } catch (error) {
     return null;
   }
+}
+
+function cleanupSurveyPublicRateLimit(nowMs) {
+  if (surveyPublicRateLimit.size <= SURVEY_PUBLIC_RATE_LIMIT_MAX_ENTRIES) return;
+  for (const [key, entry] of surveyPublicRateLimit.entries()) {
+    if (!entry || !Number.isFinite(entry.resetAt) || entry.resetAt <= nowMs) {
+      surveyPublicRateLimit.delete(key);
+    }
+  }
+}
+
+function checkSurveyPublicRateLimit(store, sessionId, ip) {
+  const nowMs = Date.now();
+  cleanupSurveyPublicRateLimit(nowMs);
+  const key = [
+    safeString(store, 80) || 'default',
+    safeString(sessionId, 160) || 'no-session',
+    safeString(ip, 80) || 'no-ip'
+  ].join(':');
+  const existing = surveyPublicRateLimit.get(key);
+  if (!existing || !Number.isFinite(existing.resetAt) || existing.resetAt <= nowMs) {
+    surveyPublicRateLimit.set(key, {
+      count: 1,
+      resetAt: nowMs + SURVEY_PUBLIC_RATE_LIMIT_WINDOW_MS
+    });
+    return { ok: true };
+  }
+  if (existing.count >= SURVEY_PUBLIC_RATE_LIMIT_MAX_REQUESTS) {
+    return { ok: false, retryAfterMs: Math.max(0, existing.resetAt - nowMs) };
+  }
+  existing.count += 1;
+  return { ok: true };
 }
 
 function parseSqliteTimestamp(value) {
@@ -894,6 +965,74 @@ async function lookupCountryCode(ip) {
     clearTimeout(timeout);
   }
 }
+
+router.get('/survey/templates', (req, res) => {
+  try {
+    const store = safeString(req.query.store, 80);
+    if (!store) return res.status(400).json({ success: false, error: 'Missing store' });
+
+    const validation = validateSessionIntelligencePublicSurveyRequest(req, {
+      store,
+      pageUrl: req.query.pageUrl
+    });
+    if (!validation.ok) {
+      return res.status(403).json({ success: false, error: validation.reason || 'Forbidden' });
+    }
+
+    const result = listSessionIntelligencePublicSurveyTemplates({
+      store,
+      activeOnly: true
+    });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[Pixels] Survey templates error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load survey templates' });
+  }
+});
+
+router.post('/survey/respond', (req, res) => {
+  try {
+    const store = safeString(req.body?.store, 80);
+    if (!store) return res.status(400).json({ success: false, error: 'Missing store' });
+
+    const validation = validateSessionIntelligencePublicSurveyRequest(req, {
+      store,
+      pageUrl: req.body?.pageUrl || req.body?.page_url
+    });
+    if (!validation.ok) {
+      return res.status(403).json({ success: false, error: validation.reason || 'Forbidden' });
+    }
+
+    const sessionId = safeString(req.body?.sessionId || req.body?.session_id, 160);
+    const clientId = safeString(req.body?.clientId || req.body?.client_id, 160);
+    if (!sessionId && !clientId) {
+      return res.status(400).json({ success: false, error: 'Missing survey session context' });
+    }
+
+    const ip = getClientIp(req);
+    const rateLimit = checkSurveyPublicRateLimit(store, sessionId || clientId, ip);
+    if (!rateLimit.ok) {
+      return res.status(429).json({
+        success: false,
+        error: 'Too many survey submissions from this shopper context. Try again later.'
+      });
+    }
+
+    const result = recordSessionIntelligenceSurveyResponse({
+      store,
+      payload: req.body || {},
+      source: req.body?.source || 'storefront',
+      requireActiveTemplate: true,
+      requireExistingSessionContext: true
+    });
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  } catch (error) {
+    console.error('[Pixels] Survey response error:', error);
+    res.status(500).json({ success: false, error: 'Failed to record survey response' });
+  }
+});
 
 router.post('/shopify', async (req, res) => {
   const wantsDebug = req.query.debug === '1' || process.env.PIXELS_DEBUG === '1';

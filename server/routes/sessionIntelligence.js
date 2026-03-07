@@ -33,9 +33,9 @@ import {
 import {
   getSessionIntelligenceSurveySummary,
   listSessionIntelligenceSurveyTemplates,
-  recordSessionIntelligenceSurveyResponse,
   upsertSessionIntelligenceSurveyTemplateConfig
 } from '../services/sessionIntelligenceSurveyService.js';
+import { validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
 
 const router = express.Router();
 
@@ -59,6 +59,18 @@ function normalizeIssueKeysInput(value) {
     return value.split(',').map((part) => part.trim()).filter(Boolean);
   }
   return [];
+}
+
+function requireSurveyAdminSession(req, res, next) {
+  const validation = validateSessionIntelligenceAdminRequest(req);
+  if (!validation.ok) {
+    return res.status(403).json({ success: false, error: validation.reason || 'Forbidden' });
+  }
+  return next();
+}
+
+function requireStoreParam(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
 router.get('/overview', (req, res) => {
@@ -307,9 +319,12 @@ router.post('/investigation/jobs/run', async (req, res) => {
   }
 });
 
+router.use('/survey', requireSurveyAdminSession);
+
 router.get('/survey/templates', (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
+    const store = requireStoreParam(req.query.store);
+    if (!store) return res.status(400).json({ success: false, error: 'Missing store' });
     const startDate = req.query.startDate || req.query.start || null;
     const endDate = req.query.endDate || req.query.end || null;
     const activeOnly = normalizeFlag(req.query.activeOnly);
@@ -324,7 +339,8 @@ router.get('/survey/templates', (req, res) => {
 
 router.post('/survey/templates/config', (req, res) => {
   try {
-    const store = req.body?.store || 'shawq';
+    const store = requireStoreParam(req.body?.store);
+    if (!store) return res.status(400).json({ success: false, error: 'Missing store' });
     const templateKey = req.body?.templateKey || req.body?.template_key;
     const status = req.body?.status;
     const consentMode = req.body?.consentMode || req.body?.consent_mode;
@@ -351,7 +367,8 @@ router.post('/survey/templates/config', (req, res) => {
 
 router.get('/survey/summary', (req, res) => {
   try {
-    const store = req.query.store || 'shawq';
+    const store = requireStoreParam(req.query.store);
+    if (!store) return res.status(400).json({ success: false, error: 'Missing store' });
     const startDate = req.query.startDate || req.query.start || null;
     const endDate = req.query.endDate || req.query.end || null;
     const limit = parsePositiveInt(req.query.limit, 8, 1, 20);
@@ -361,22 +378,6 @@ router.get('/survey/summary', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] survey summary error:', error);
     res.status(500).json({ success: false, error: 'Failed to load survey summary' });
-  }
-});
-
-router.post('/survey/respond', (req, res) => {
-  try {
-    const store = req.body?.store || 'shawq';
-    const result = recordSessionIntelligenceSurveyResponse({
-      store,
-      payload: req.body || {},
-      source: req.body?.source || 'storefront'
-    });
-    if (!result.success) return res.status(400).json(result);
-    res.json(result);
-  } catch (error) {
-    console.error('[SessionIntelligence] survey respond error:', error);
-    res.status(500).json({ success: false, error: 'Failed to record survey response' });
   }
 });
 

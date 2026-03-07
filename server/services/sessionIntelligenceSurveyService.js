@@ -15,6 +15,7 @@ const SURVEY_DEFAULT_LOOKBACK_DAYS = 30;
 const SURVEY_RECENT_RESPONSE_LIMIT = 6;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const SQLITE_DAY_END_SUFFIX_MS = (24 * 60 * 60 * 1000) - 1;
+const SURVEY_PUBLIC_TEMPLATE_LIMIT = 12;
 
 const SURVEY_TEMPLATES = [
   {
@@ -237,6 +238,25 @@ function getTemplateConfigMap(db, store) {
   return new Map(rows.map((row) => [row.template_key, row]));
 }
 
+function getTemplateConfigRow(db, store, templateKey) {
+  const normalizedKey = safeString(templateKey, 80);
+  if (!normalizedKey) return null;
+  return db.prepare(`
+    SELECT
+      template_key,
+      status,
+      consent_mode,
+      delivery_type,
+      question_text_override,
+      choices_override_json,
+      updated_at
+    FROM si_survey_template_configs
+    WHERE store = ?
+      AND template_key = ?
+    LIMIT 1
+  `).get(store, normalizedKey) || null;
+}
+
 function getResponseStatsMap(db, store, range) {
   const rows = db.prepare(`
     SELECT
@@ -402,6 +422,28 @@ function mergeTemplateWithState(template, configRow, statsRow, choiceRows, recom
   };
 }
 
+function toPublicTemplate(template) {
+  return {
+    key: template.key,
+    version: template.version,
+    name: template.name,
+    goal: template.goal,
+    description: template.description,
+    triggerLabel: template.triggerLabel,
+    deliveryLabel: template.deliveryLabel,
+    deliveryType: template.deliveryType,
+    consentMode: template.consentMode,
+    questionText: template.questionText,
+    choices: Array.isArray(template.choices)
+      ? template.choices.map((choice) => ({
+        key: safeString(choice?.key, 80),
+        label: safeString(choice?.label, SURVEY_CHOICE_LABEL_MAX_LENGTH)
+      }))
+      : [],
+    status: template.status
+  };
+}
+
 function inferLinkConsent(requestedConsent, consentMode) {
   if (typeof requestedConsent === 'boolean') return requestedConsent;
   if (typeof requestedConsent === 'number') return requestedConsent === 1;
@@ -506,6 +548,27 @@ export function listSessionIntelligenceSurveyTemplates({ store, startDate, endDa
   };
 }
 
+export function listSessionIntelligencePublicSurveyTemplates({ store, activeOnly = true } = {}) {
+  const db = getDb();
+  const normalizedStore = normalizeStore(store);
+  const configMap = getTemplateConfigMap(db, normalizedStore);
+
+  const templates = SURVEY_TEMPLATES
+    .map((template) => mergeTemplateWithState(template, configMap.get(template.key)))
+    .filter((template) => (activeOnly ? template.status === 'active' : true))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, SURVEY_PUBLIC_TEMPLATE_LIMIT)
+    .map((template) => toPublicTemplate(template));
+
+  return {
+    success: true,
+    data: {
+      store: normalizedStore,
+      templates
+    }
+  };
+}
+
 export function upsertSessionIntelligenceSurveyTemplateConfig({
   store,
   templateKey,
@@ -566,7 +629,13 @@ export function upsertSessionIntelligenceSurveyTemplateConfig({
   };
 }
 
-export function recordSessionIntelligenceSurveyResponse({ store, payload, source = 'storefront' } = {}) {
+export function recordSessionIntelligenceSurveyResponse({
+  store,
+  payload,
+  source = 'storefront',
+  requireActiveTemplate = false,
+  requireExistingSessionContext = false
+} = {}) {
   if (!payload || typeof payload !== 'object') {
     return { success: false, error: 'Invalid survey payload' };
   }
@@ -578,8 +647,11 @@ export function recordSessionIntelligenceSurveyResponse({ store, payload, source
     return { success: false, error: 'Unknown survey template key' };
   }
 
-  const configMap = getTemplateConfigMap(db, normalizedStore);
-  const config = configMap.get(template.key) || null;
+  const config = getTemplateConfigRow(db, normalizedStore, template.key);
+  const templateStatus = normalizeTemplateStatus(config?.status);
+  if (requireActiveTemplate && templateStatus !== 'active') {
+    return { success: false, error: 'Survey template is not active for this store' };
+  }
   const consentMode = normalizeConsentMode(config?.consent_mode || template.consentMode);
   const linkConsent = inferLinkConsent(payload.linkConsent ?? payload.link_consent, consentMode);
   const deliveryType = normalizeDeliveryType(payload.deliveryType || payload.delivery_type || config?.delivery_type, template.deliveryType);
@@ -600,7 +672,11 @@ export function recordSessionIntelligenceSurveyResponse({ store, payload, source
   const requestedSessionId = safeString(payload.sessionId || payload.session_id, 160) || null;
   const requestedClientId = safeString(payload.clientId || payload.client_id, 160) || null;
   const userId = safeString(payload.userId || payload.user_id, SURVEY_USER_ID_MAX_LENGTH) || null;
-  const linkedSession = linkConsent ? findLinkedSession(db, normalizedStore, requestedSessionId, requestedClientId) : null;
+  const matchedSession = findLinkedSession(db, normalizedStore, requestedSessionId, requestedClientId);
+  if (requireExistingSessionContext && !matchedSession) {
+    return { success: false, error: 'Survey session context could not be verified' };
+  }
+  const linkedSession = linkConsent ? matchedSession : null;
   const latestEvent = linkedSession?.session_id ? findLatestSessionEvent(db, normalizedStore, linkedSession.session_id) : null;
 
   const sessionId = linkConsent ? safeString(linkedSession?.session_id || requestedSessionId, 160) || null : null;
