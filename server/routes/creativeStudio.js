@@ -123,6 +123,7 @@ const VIDEO_OVERLAY_REFINEMENT_MIN_CROP_HEIGHT_PX = 10;
 const VIDEO_OVERLAY_REFINEMENT_MIN_BOX_SCALE_RATIO = 0.5;
 const VIDEO_OVERLAY_REFINEMENT_MAX_BOX_SCALE_RATIO = 2;
 const VIDEO_OVERLAY_REFINEMENT_MAX_TEXT_CHARS = 240;
+const VIDEO_OVERLAY_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function ensureVideoOverlayDirs() {
   await fs.promises.mkdir(VIDEO_OVERLAY_UPLOADS_DIR, { recursive: true });
@@ -140,6 +141,10 @@ function getExportedVideoPath(exportId) {
 
 function getOverlayRenderAssetPath(exportId, index) {
   return path.join(VIDEO_OVERLAY_RENDER_ASSETS_DIR, `${exportId}-${index}.png`);
+}
+
+function isVideoOverlayAssetId(value) {
+  return VIDEO_OVERLAY_ID_REGEX.test(String(value || '').trim());
 }
 
 const VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS = [
@@ -3586,12 +3591,6 @@ Rules:
       const parsedBox = parsed?.box && typeof parsed.box === 'object'
         ? parsed.box
         : parsed;
-      const hasBox = parsedBox
-        && typeof parsedBox.x === 'number'
-        && typeof parsedBox.y === 'number'
-        && typeof parsedBox.width === 'number'
-        && typeof parsedBox.height === 'number';
-
       const textLines = normalizeOverlayTextLines(parsed?.text_lines, ov.text);
       const text = textLines.length ? textLines.join('\n') : ov.text;
       const textColor = parseHexColor(parsed?.text_color)?.hex || ov.textColor || '#ffffff';
@@ -3605,6 +3604,31 @@ Rules:
       const fontWeight = String(parsed?.font_weight || '').trim().toLowerCase() === 'bold' ? 'bold' : (ov.fontWeight || 'normal');
       const fontStyle = String(parsed?.font_style || '').trim().toLowerCase() === 'italic' ? 'italic' : 'normal';
       const borderRadius = Math.max(0, Math.round(safeParseNumber(parsed?.border_radius_px, ov.borderRadius || 0) || 0));
+      const refinedOverlay = {
+        ...ov,
+        text,
+        textColor,
+        backgroundColor,
+        fontSize,
+        fontWeight,
+        fontStyle,
+        borderRadius,
+        textPaddingX: VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX,
+        lineHeight: VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT,
+        isGradient,
+        gradient: isGradient
+          ? {
+            direction: gradientDirection,
+            from: { hex: gradientFrom },
+            to: { hex: gradientTo }
+          }
+          : null
+      };
+      const hasBox = parsedBox
+        && typeof parsedBox.x === 'number'
+        && typeof parsedBox.y === 'number'
+        && typeof parsedBox.width === 'number'
+        && typeof parsedBox.height === 'number';
 
       if (hasBox) {
         const newX = Math.max(0, Math.min(videoWidth - 1, cropX + Math.round(parsedBox.x)));
@@ -3620,74 +3644,13 @@ Rules:
           && hRatio > VIDEO_OVERLAY_REFINEMENT_MIN_BOX_SCALE_RATIO
           && hRatio < VIDEO_OVERLAY_REFINEMENT_MAX_BOX_SCALE_RATIO
         ) {
-          refined.push({
-            ...ov,
-            x: newX,
-            y: newY,
-            width: newW,
-            height: newH,
-            text,
-            textColor,
-            backgroundColor,
-            fontSize,
-            fontWeight,
-            fontStyle,
-            borderRadius,
-            textPaddingX: VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX,
-            lineHeight: VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT,
-            isGradient,
-            gradient: isGradient
-              ? {
-                direction: gradientDirection,
-                from: { hex: gradientFrom },
-                to: { hex: gradientTo }
-              }
-              : null
-          });
-        } else {
-          refined.push({
-            ...ov,
-            text,
-            textColor,
-            backgroundColor,
-            fontSize,
-            fontWeight,
-            fontStyle,
-            borderRadius,
-            textPaddingX: VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX,
-            lineHeight: VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT,
-            isGradient,
-            gradient: isGradient
-              ? {
-                direction: gradientDirection,
-                from: { hex: gradientFrom },
-                to: { hex: gradientTo }
-              }
-              : null
-          });
+          refinedOverlay.x = newX;
+          refinedOverlay.y = newY;
+          refinedOverlay.width = newW;
+          refinedOverlay.height = newH;
         }
-      } else {
-        refined.push({
-          ...ov,
-          text,
-          textColor,
-          backgroundColor,
-          fontSize,
-          fontWeight,
-          fontStyle,
-          borderRadius,
-          textPaddingX: VIDEO_OVERLAY_DEFAULT_TEXT_PADDING_X_PX,
-          lineHeight: VIDEO_OVERLAY_DEFAULT_LINE_HEIGHT,
-          isGradient,
-          gradient: isGradient
-            ? {
-              direction: gradientDirection,
-              from: { hex: gradientFrom },
-              to: { hex: gradientTo }
-            }
-            : null
-        });
       }
+      refined.push(refinedOverlay);
     } catch {
       refined.push(ov);
     }
@@ -3714,8 +3677,7 @@ router.post('/video-overlay/scan', async (req, res) => {
     await ensureVideoOverlayDirs();
 
     const videoId = String(req.body?.video_id || '').trim();
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(videoId)) {
+    if (!isVideoOverlayAssetId(videoId)) {
       return res.status(400).json({ success: false, error: 'Invalid video_id format' });
     }
     const videoPath = getUploadedVideoPath(videoId);
@@ -4112,6 +4074,9 @@ router.post('/video-overlay/export', async (req, res) => {
 
     if (!videoId) {
       return res.status(400).json({ success: false, error: 'video_id is required' });
+    }
+    if (!isVideoOverlayAssetId(videoId)) {
+      return res.status(400).json({ success: false, error: 'Invalid video_id format' });
     }
     if (!segments.length) {
       return res.status(400).json({ success: false, error: 'segments are required' });

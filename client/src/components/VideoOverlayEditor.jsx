@@ -1144,10 +1144,9 @@ export default function VideoOverlayEditor({ store }) {
                                 fontSize: ov.fontSize ? `${ov.fontSize * Math.min(scale.x, scale.y)}px` : undefined,
                                 fontWeight: ov.fontWeight || 'normal',
                                 fontStyle: ov.fontStyle || 'normal',
-                                whiteSpace: 'pre-wrap',
+                                whiteSpace: 'pre-line',
                                 textAlign: 'center',
                                 lineHeight,
-                                wordBreak: 'break-word',
                                 overflow: 'hidden',
                                 maxHeight: '100%',
                                 maxWidth: '100%'

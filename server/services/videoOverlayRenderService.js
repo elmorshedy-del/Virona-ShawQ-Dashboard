@@ -12,6 +12,15 @@ const DEFAULT_OVERLAY_LINE_HEIGHT = 1.2;
 const MIN_OVERLAY_FONT_SIZE_PX = 8;
 const MIN_OVERLAY_BOX_SIZE_PX = 1;
 const MAX_OVERLAY_TEXT_LENGTH = 240;
+const INTER_FONT_VARIANTS = [
+  { fileName: 'Inter-Regular.ttf', weight: 400, style: 'normal' },
+  { fileName: 'Inter-Bold.ttf', weight: 700, style: 'normal' },
+  { fileName: 'Inter-Italic.ttf', weight: 400, style: 'italic' },
+  { fileName: 'Inter-BoldItalic.ttf', weight: 700, style: 'italic' }
+];
+const EMOJI_FONT_VARIANTS = [
+  { fileName: 'NotoColorEmoji.ttf', weight: 400, style: 'normal' }
+];
 
 const fontCache = new Map();
 
@@ -66,17 +75,27 @@ function loadFontData(fileName) {
 
 function buildFontConfig() {
   const fonts = [];
-  const interData = loadFontData('Inter-Regular.ttf');
-  if (interData) {
-    fonts.push({ name: 'Inter', data: interData, weight: 400, style: 'normal' });
-    fonts.push({ name: 'Inter', data: interData, weight: 700, style: 'normal' });
-    fonts.push({ name: 'Inter', data: interData, weight: 400, style: 'italic' });
-    fonts.push({ name: 'Inter', data: interData, weight: 700, style: 'italic' });
+
+  for (const variant of INTER_FONT_VARIANTS) {
+    const data = loadFontData(variant.fileName);
+    if (!data) continue;
+    fonts.push({
+      name: 'Inter',
+      data,
+      weight: variant.weight,
+      style: variant.style
+    });
   }
 
-  const emojiData = loadFontData('NotoColorEmoji.ttf');
-  if (emojiData) {
-    fonts.push({ name: 'Noto Color Emoji', data: emojiData, weight: 400, style: 'normal' });
+  for (const variant of EMOJI_FONT_VARIANTS) {
+    const data = loadFontData(variant.fileName);
+    if (!data) continue;
+    fonts.push({
+      name: 'Noto Color Emoji',
+      data,
+      weight: variant.weight,
+      style: variant.style
+    });
   }
 
   return fonts;
@@ -158,8 +177,7 @@ export async function renderVideoOverlayPng({ overlay, outputPath }) {
             fontStyle: resolveOverlayFontStyle(overlay?.fontStyle),
             lineHeight,
             textAlign: 'center',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
+            whiteSpace: 'pre-line',
             overflow: 'hidden'
           },
           children: text
