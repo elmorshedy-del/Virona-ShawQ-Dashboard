@@ -39,6 +39,10 @@ import {
   buildSessionIntelligenceArchitectureResponse,
   buildSessionIntelligenceShopifyInstallResponse
 } from '../services/sessionIntelligenceCaptureService.js';
+import {
+  getSessionIntelligenceJourneyDetail,
+  getSessionIntelligenceJourneys
+} from '../services/sessionIntelligenceJourneyService.js';
 import { validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
 
 const router = express.Router();
@@ -491,6 +495,45 @@ router.get('/journey/abandonment', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] journey abandonment error:', error);
     res.status(500).json({ success: false, error: 'Failed to load abandonment report' });
+  }
+});
+
+router.get('/journeys', requireSurveyAdminSession, (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const date = req.query.date || null;
+    const startDate = req.query.startDate || req.query.start || null;
+    const endDate = req.query.endDate || req.query.end || null;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
+    const rebuild = normalizeFlag(req.query.rebuild);
+
+    const report = getSessionIntelligenceJourneys(store, {
+      date,
+      startDate,
+      endDate,
+      limit,
+      rebuild
+    });
+    res.json({ success: true, ...report });
+  } catch (error) {
+    console.error('[SessionIntelligence] journeys error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load journeys' });
+  }
+});
+
+router.get('/journeys/:sessionId', requireSurveyAdminSession, (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const sessionId = req.params.sessionId || '';
+    const rebuild = normalizeFlag(req.query.rebuild);
+    const journey = getSessionIntelligenceJourneyDetail(store, sessionId, { rebuild });
+    if (!journey) {
+      return res.status(404).json({ success: false, error: 'Journey not found' });
+    }
+    res.json({ success: true, ...journey });
+  } catch (error) {
+    console.error('[SessionIntelligence] journey detail error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load journey detail' });
   }
 });
 
