@@ -112,6 +112,50 @@ function Select({ className, children, ...props }) {
   );
 }
 
+function RangeControl({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  hint,
+  formatValue = (next) => String(next),
+  minLabel,
+  maxLabel
+}) {
+  return (
+    <div className="rounded-2xl border border-gray-100 bg-gray-50/70 px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] transition-all duration-300 hover:-translate-y-0.5 hover:border-indigo-100 hover:bg-white hover:shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <Label>{label}</Label>
+          {hint ? <div className="mt-2 text-xs leading-5 text-gray-500">{hint}</div> : null}
+        </div>
+        <div className="shrink-0 rounded-full border border-white/80 bg-white px-2.5 py-1 text-[11px] font-semibold tracking-wide text-gray-600 shadow-sm">
+          {formatValue(value)}
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-2 w-full cursor-pointer appearance-none rounded-full bg-gradient-to-r from-indigo-100 via-indigo-200 to-violet-200 accent-indigo-500"
+        />
+      </div>
+
+      <div className="mt-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-gray-400">
+        <span>{minLabel || formatValue(min)}</span>
+        <span>{maxLabel || formatValue(max)}</span>
+      </div>
+    </div>
+  );
+}
+
 function Toggle({ value, onChange, options = [] }) {
   const columns = Math.max(1, Math.min(options.length, 3));
 
@@ -158,9 +202,9 @@ const TOOL_DEFINITIONS = {
     description: 'Cut the subject fast, then refine the edge mask with guided points.'
   },
   select: {
-    label: 'Prompt Selection',
+    label: 'Target Selection',
     engine: 'Gemini Vision',
-    description: 'Find a target from a text prompt, then convert the detection into a production mask.'
+    description: 'Find a logo, label, or object from language, then extract it or send the mask straight into eraser.'
   },
   erase: {
     label: 'Clean Plate',
@@ -182,6 +226,15 @@ const TOOL_DEFINITIONS = {
     engine: 'Real-ESRGAN + restoration',
     description: 'Recover detail, upscale soft inputs, or stabilize low-quality source work.'
   }
+};
+
+const TOOL_DISPLAY = {
+  remove_bg: { label: 'Background', accent: 'Cut out', icon: Wand2 },
+  select: { label: 'Target', accent: 'Find it', icon: Crosshair },
+  erase: { label: 'Eraser', accent: 'Remove', icon: Eraser },
+  relight: { label: 'Lighting', accent: 'Shape', icon: Sparkles },
+  expand: { label: 'Canvas', accent: 'Extend', icon: Layers3 },
+  enhance: { label: 'Enhance', accent: 'Recover', icon: RefreshCw }
 };
 
 const DEBUG_TRACE_LIMIT = 80;
@@ -243,6 +296,7 @@ export default function PhotoMagicEditor({ store }) {
   const [maskOutputId, setMaskOutputId] = useState(null);
 
   const [selectionPrompt, setSelectionPrompt] = useState('');
+  const [selectionIntent, setSelectionIntent] = useState('extract');
   const [selectionCutoutUrl, setSelectionCutoutUrl] = useState(null);
   const [selectionMaskUrl, setSelectionMaskUrl] = useState(null);
   const [selectionCutoutOutputId, setSelectionCutoutOutputId] = useState(null);
@@ -322,7 +376,7 @@ export default function PhotoMagicEditor({ store }) {
   const currentMaskOutputId = selectionMaskOutputId || maskOutputId || relightMaskOutputId || expandMaskOutputId || null;
   const latestMaskForErase = selectionMaskUrl || maskUrl || relightMaskUrl || expandMaskUrl || null;
   const latestMaskSourceLabel = selectionMaskUrl
-    ? 'Prompt selection'
+    ? 'Target selection'
     : maskUrl
       ? 'Foreground isolation'
       : relightMaskUrl
@@ -772,58 +826,6 @@ export default function PhotoMagicEditor({ store }) {
     }
   }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, points, refreshHealth, requestJson, startDebugRun, store]);
 
-  const runSelect = useCallback(async () => {
-    if (!imageId || !selectionPrompt.trim()) return;
-
-    setError(null);
-    setIsRunning(true);
-    const promptLabel = selectionPrompt.trim();
-    const runId = startDebugRun('Prompt Selection', `Resolving "${promptLabel}"`);
-    try {
-      const data = await requestJson({
-        runId,
-        scope: 'Prompt Selection',
-        step: 'select',
-        url: withStore('/creative-studio/photo-magic/select', store),
-        options: {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image_id: imageId,
-            prompt: promptLabel,
-            max_side: maxSide,
-            mask_dilate_px: maskDilatePx,
-            mask_feather_px: maskFeatherPx
-          })
-        },
-        successMessage: 'Prompt selection mask resolved',
-        failureMessage: 'Prompt selection failed',
-        successDetails: (payload) => ({
-          label: payload?.selection?.label || promptLabel,
-          confidence: payload?.selection?.confidence || null,
-          maskReady: Boolean(payload?.mask?.url)
-        })
-      });
-
-      setSelectionCutoutUrl(data.cutout?.url || null);
-      setSelectionMaskUrl(data.mask?.url || null);
-      setSelectionCutoutOutputId(data.cutout?.output_id || null);
-      setSelectionMaskOutputId(data.mask?.output_id || null);
-      setSelectionMeta(data.selection || null);
-      setViewportMode('compare');
-      setLastRenderSummary(`Selection locked for ${data.selection?.label || promptLabel}`);
-    } catch (nextError) {
-      console.error(nextError);
-      const message = nextError?.message || 'Prompt selection failed';
-      setError(message);
-      setLastRenderSummary(`Failed: ${message}`);
-      logDebug(runId, 'Prompt Selection', 'complete', 'failed', message, { prompt: promptLabel });
-    } finally {
-      setIsRunning(false);
-      refreshHealth();
-    }
-  }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, refreshHealth, requestJson, selectionPrompt, startDebugRun, store]);
-
   const pushUndo = useCallback(() => {
     const canvas = maskCanvasRef.current;
     if (!canvas) return;
@@ -1014,6 +1016,87 @@ export default function PhotoMagicEditor({ store }) {
       }
     },
     [ensureMaskCanvasSize, imageSrc, logDebug, pushUndo, syncMaskMetrics]
+  );
+
+  const runSelect = useCallback(
+    async (intentOverride = selectionIntent) => {
+      if (!imageId || !selectionPrompt.trim()) return;
+
+      const intentMode = intentOverride === 'erase' ? 'erase' : 'extract';
+      const promptLabel = selectionPrompt.trim();
+
+      setError(null);
+      setIsRunning(true);
+      const runId = startDebugRun('Target Selection', `Resolving "${promptLabel}" for ${intentMode === 'erase' ? 'eraser' : 'extraction'}`);
+      try {
+        const data = await requestJson({
+          runId,
+          scope: 'Target Selection',
+          step: 'select',
+          url: withStore('/creative-studio/photo-magic/select', store),
+          options: {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              image_id: imageId,
+              prompt: promptLabel,
+              max_side: maxSide,
+              mask_dilate_px: maskDilatePx,
+              mask_feather_px: maskFeatherPx
+            })
+          },
+          successMessage: 'Target selection resolved',
+          failureMessage: 'Target selection failed',
+          successDetails: (payload) => ({
+            label: payload?.selection?.label || promptLabel,
+            confidence: payload?.selection?.confidence || null,
+            maskReady: Boolean(payload?.mask?.url),
+            intent: intentMode
+          })
+        });
+
+        setSelectionCutoutUrl(data.cutout?.url || null);
+        setSelectionMaskUrl(data.mask?.url || null);
+        setSelectionCutoutOutputId(data.cutout?.output_id || null);
+        setSelectionMaskOutputId(data.mask?.output_id || null);
+        setSelectionMeta(data.selection || null);
+
+        if (intentMode === 'erase' && data.mask?.url) {
+          await applyMaskArtifactToCanvas(data.mask.url, {
+            summary: `${data.selection?.label || promptLabel} mask is ready inside Clean Plate`,
+            logMessage: `${data.selection?.label || promptLabel} target mask routed into clean plate`,
+            runId
+          });
+          setLastRenderSummary(`${data.selection?.label || promptLabel} is ready to remove`);
+        } else {
+          setViewportMode('compare');
+          setLastRenderSummary(`${data.selection?.label || promptLabel} is ready as its own asset`);
+        }
+      } catch (nextError) {
+        console.error(nextError);
+        const message = nextError?.message || 'Target selection failed';
+        setError(message);
+        setLastRenderSummary(`Failed: ${message}`);
+        logDebug(runId, 'Target Selection', 'complete', 'failed', message, { prompt: promptLabel, intent: intentMode });
+      } finally {
+        setIsRunning(false);
+        refreshHealth();
+      }
+    },
+    [
+      applyMaskArtifactToCanvas,
+      imageId,
+      logDebug,
+      maskDilatePx,
+      maskFeatherPx,
+      maxSide,
+      refreshHealth,
+      requestJson,
+      selectionIntent,
+      selectionPrompt,
+      startDebugRun,
+      store
+    ]
   );
 
   const runErase = useCallback(async () => {
@@ -1341,10 +1424,10 @@ export default function PhotoMagicEditor({ store }) {
       },
       {
         id: 'select',
-        title: 'Prompt Selection',
+        title: 'Target Selection',
         model: sam2Ready ? 'Gemini Vision + SAM2' : 'Gemini Vision',
         ready: Boolean(geminiReady),
-        description: 'Language-based target pickup that resolves into a real mask.',
+        description: 'Language-based target pickup that can extract an asset or feed eraser with a mask.',
         error: geminiReady ? '' : 'GEMINI_API_KEY is not configured.'
       },
       {
@@ -1457,8 +1540,8 @@ export default function PhotoMagicEditor({ store }) {
       return [
         {
           id: 'selection',
-          title: 'Selected Asset',
-          engine: selectionMeta?.label ? `Gemini: ${selectionMeta.label}` : 'Gemini Vision',
+          title: 'Extracted Target',
+          engine: selectionMeta?.label ? `Gemini: ${selectionMeta.label}` : 'Gemini target pickup',
           url: selectionCutoutUrl,
           empty: 'Type a target prompt to isolate a price tag, logo, bag, shoe, face, or text block.',
           promoteable: true,
@@ -1470,12 +1553,12 @@ export default function PhotoMagicEditor({ store }) {
         },
         {
           id: 'selection-mask',
-          title: 'Selection Mask',
+          title: 'Target Mask',
           engine: 'Prompt mask',
           url: selectionMaskUrl,
           empty: 'The target mask appears after the prompt selection pass.',
           promoteable: false,
-          maskAction: selectionMaskUrl ? 'Route to clean plate' : null,
+          maskAction: selectionMaskUrl ? 'Send to eraser' : null,
           checker: false,
           primary: false
         }
@@ -1877,7 +1960,7 @@ export default function PhotoMagicEditor({ store }) {
                   {tool === 'remove_bg' && precisionMode
                     ? 'Precision mode is live. Click to add keep points. Hold Alt or Command to add remove points.'
                     : tool === 'select'
-                      ? 'Prompt selection produces a usable mask. Route the mask into clean plate if you want direct object removal.'
+                      ? 'Target selection can either extract the detected asset or hand its mask straight to eraser for removal.'
                       : tool === 'relight'
                         ? 'Lighting stage reshapes the active source with highlight bias and cast shadow. Use Compare to judge grounding.'
                         : tool === 'expand'
@@ -1910,27 +1993,62 @@ export default function PhotoMagicEditor({ store }) {
               <h2 className="text-[13px] font-bold tracking-widest uppercase text-gray-400 mb-4 flex items-center gap-2">
                 <Layers3 className="h-4 w-4" /> Operation Mode
               </h2>
-              <div className="relative flex p-1 rounded-xl border border-gray-200/50 shadow-inner" style={{ background: 'rgba(243,244,246,0.8)' }}>
-                {Object.entries(availableTools).map(([value, config]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => {
-                      setTool(value);
-                      setError(null);
-                      if (value !== 'remove_bg') setPrecisionMode(false);
-                      if (value === 'erase' || value === 'select' || value === 'relight' || value === 'expand') setViewportMode('source');
-                    }}
-                    className={cn(
-                      'flex-1 rounded-lg px-2 py-1.5 text-center text-[12px] font-medium transition-all relative z-10',
-                      tool === value
-                        ? 'bg-white text-indigo-600 font-semibold shadow-sm'
-                        : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
-                    )}
-                  >
-                    {config.label.replace('Foreground Isolation', 'Background').replace('Clean Plate', 'Eraser').replace('Lighting Stage', 'Lighting').replace('Prompt Selection', 'Selection')}
-                  </button>
-                ))}
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(availableTools).map(([value, config]) => {
+                  const display = TOOL_DISPLAY[value] || { label: config.label, accent: config.engine, icon: Layers3 };
+                  const ToolIcon = display.icon;
+
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => {
+                        setTool(value);
+                        setError(null);
+                        if (value !== 'remove_bg') setPrecisionMode(false);
+                        if (value === 'erase' || value === 'select' || value === 'relight' || value === 'expand') setViewportMode('source');
+                      }}
+                      className={cn(
+                        'group relative overflow-hidden rounded-2xl border px-3 py-3 text-left transition-all duration-300',
+                        tool === value
+                          ? 'border-indigo-200 bg-white shadow-[0_12px_32px_rgba(99,102,241,0.14)]'
+                          : 'border-gray-200/70 bg-white/72 hover:-translate-y-0.5 hover:border-indigo-100 hover:bg-white hover:shadow-sm'
+                      )}
+                      style={{ backdropFilter: 'blur(18px)' }}
+                    >
+                      <div
+                        className={cn(
+                          'pointer-events-none absolute inset-x-0 top-0 h-px opacity-0 transition-opacity duration-300',
+                          tool === value ? 'opacity-100' : 'group-hover:opacity-70'
+                        )}
+                        style={{ background: 'linear-gradient(90deg, rgba(255,255,255,0), rgba(99,102,241,0.55), rgba(255,255,255,0))' }}
+                      />
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            className={cn(
+                              'flex h-9 w-9 items-center justify-center rounded-2xl border transition-all duration-300',
+                              tool === value ? 'border-indigo-100 bg-indigo-50 text-indigo-600' : 'border-white/80 bg-white text-gray-500'
+                            )}
+                          >
+                            <ToolIcon className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">{display.accent}</div>
+                            <div className={cn('mt-1 text-sm font-semibold', tool === value ? 'text-gray-950' : 'text-gray-700')}>{display.label}</div>
+                          </div>
+                        </div>
+                        <span
+                          className={cn(
+                            'mt-1 h-2.5 w-2.5 rounded-full transition-all duration-300',
+                            tool === value ? 'animate-pulse bg-indigo-500 shadow-[0_0_0_6px_rgba(99,102,241,0.08)]' : 'bg-gray-200 group-hover:bg-indigo-200'
+                          )}
+                        />
+                      </div>
+                      <div className="mt-3 text-[12px] leading-5 text-gray-500">{config.description}</div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -1938,59 +2056,59 @@ export default function PhotoMagicEditor({ store }) {
               <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <Label>Execution Parameters</Label>
                 <div className="mt-4 grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>Source Max Side</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={256}
-                        max={8192}
-                        value={maxSide}
-                        onChange={(event) => setMaxSide(clamp(toNumber(event.target.value, 2048), 256, 8192))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Mask Dilation</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={64}
-                        value={maskDilatePx}
-                        onChange={(event) => setMaskDilatePx(clamp(toNumber(event.target.value, 0), 0, 64))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Mask Feather</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={64}
-                        value={maskFeatherPx}
-                        onChange={(event) => setMaskFeatherPx(clamp(toNumber(event.target.value, 0), 0, 64))}
-                      />
-                    </div>
-                  </div>
+                  <RangeControl
+                    label="Detail Budget"
+                    value={maxSide}
+                    min={256}
+                    max={8192}
+                    step={64}
+                    onChange={(value) => setMaxSide(clamp(toNumber(value, 2048), 256, 8192))}
+                    formatValue={(value) => `${value}px`}
+                    minLabel="Fast"
+                    maxLabel="Fine detail"
+                    hint="The working resolution for AI passes. Raise it when tiny logos, seams, or tags need more edge fidelity."
+                  />
+                  <RangeControl
+                    label="Edge Grow"
+                    value={maskDilatePx}
+                    min={0}
+                    max={64}
+                    step={1}
+                    onChange={(value) => setMaskDilatePx(clamp(toNumber(value, 0), 0, 64))}
+                    formatValue={(value) => `${value}px`}
+                    minLabel="Tight"
+                    maxLabel="Wider"
+                    hint="Expands the detected mask before the render runs, useful when the selection is clipping the edge."
+                  />
+                  <RangeControl
+                    label="Edge Softness"
+                    value={maskFeatherPx}
+                    min={0}
+                    max={64}
+                    step={1}
+                    onChange={(value) => setMaskFeatherPx(clamp(toNumber(value, 0), 0, 64))}
+                    formatValue={(value) => `${value}px`}
+                    minLabel="Crisp"
+                    maxLabel="Blended"
+                    hint="Softens the mask edge so the cutout or cleanup feels less mechanical against the source."
+                  />
                   {tool === 'erase' ? (
-                    <div>
-                      <Label>Crop Margin</Label>
-                      <div className="mt-2">
-                        <Input
-                          type="number"
-                          min={0}
-                          max={2048}
-                          value={cropMarginPx}
-                          onChange={(event) => setCropMarginPx(clamp(toNumber(event.target.value, 128), 0, 2048))}
-                        />
-                      </div>
-                    </div>
+                    <RangeControl
+                      label="Cleanup Margin"
+                      value={cropMarginPx}
+                      min={0}
+                      max={2048}
+                      step={16}
+                      onChange={(value) => setCropMarginPx(clamp(toNumber(value, 128), 0, 2048))}
+                      formatValue={(value) => `${value}px`}
+                      minLabel="Mask bounds"
+                      maxLabel="More breathing room"
+                      hint="Adds extra space around the painted area before inpainting so cleanup has room to rebuild the surrounding pixels."
+                    />
                   ) : (
                     <div className="rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3 text-xs leading-5 text-gray-500">
                       {tool === 'select'
-                        ? 'Selection uses Gemini Vision for target pickup and converts the detected region into a production mask.'
+                        ? 'Target Selection uses Gemini Vision to pick the right region, then either extracts that target or hands its mask to eraser.'
                         : 'Isolation stages share the same mask dilation and feather controls so the cutout chain stays consistent.'}
                     </div>
                   )}
@@ -2044,8 +2162,22 @@ export default function PhotoMagicEditor({ store }) {
 
             {tool === 'select' ? (
               <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-                <Label>Prompt Selection</Label>
-                <div className="mt-3 text-sm text-gray-600">Describe the target you want masked. The editor will detect one best region and convert it into a usable production mask.</div>
+                <Label>Target Selection</Label>
+                <div className="mt-3 text-sm text-gray-600">Describe a logo, label, tag, or object. Photo Magic will detect one best region, then either isolate it as its own asset or pass the mask directly into eraser.</div>
+
+                <div className="mt-4">
+                  <Label>Deliver Into</Label>
+                  <div className="mt-2">
+                    <Toggle
+                      value={selectionIntent}
+                      onChange={setSelectionIntent}
+                      options={[
+                        { value: 'extract', label: 'Extract target', title: 'Keep only the detected target as a separate asset.' },
+                        { value: 'erase', label: 'Send to eraser', title: 'Detect the target and drop its mask straight into Clean Plate.' }
+                      ]}
+                    />
+                  </div>
+                </div>
 
                 <div className="mt-4">
                   <Label>Target Prompt</Label>
@@ -2053,7 +2185,7 @@ export default function PhotoMagicEditor({ store }) {
                     <Input
                       value={selectionPrompt}
                       onChange={(event) => setSelectionPrompt(event.target.value)}
-                      placeholder='price tag, brand logo, shoe, hand, text label'
+                      placeholder='logo on hoodie, neck label, price tag, chest text'
                     />
                   </div>
                 </div>
@@ -2065,15 +2197,39 @@ export default function PhotoMagicEditor({ store }) {
                       <div className="text-[11px] font-mono text-gray-500">{Math.round((selectionMeta.confidence || 0) * 100)}%</div>
                     </div>
                     <div className="mt-2 text-xs leading-5 text-gray-500">
-                      {selectionMeta.notes || 'Prompt detection is ready. Route the mask to clean plate if you want immediate object removal.'}
+                      {selectionMeta.notes || (selectionIntent === 'erase'
+                        ? 'The detection is ready to remove from the source. Send the mask to eraser when you want instant cleanup.'
+                        : 'The detection is ready as its own asset. Route the extracted result back into source if you want to keep editing it.')}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {selectionCutoutUrl ? (
+                        <Button
+                          variant="secondary"
+                          onClick={() => promoteOutputToSource({
+                            url: selectionCutoutUrl,
+                            stageLabel: selectionMeta?.label ? `${selectionMeta.label} source` : 'Selected source',
+                            nextTool: 'erase'
+                          })}
+                          disabled={isRunning}
+                        >
+                          <Upload className="h-4 w-4" />
+                          Route extracted target
+                        </Button>
+                      ) : null}
+                      {selectionMaskUrl ? (
+                        <Button variant="secondary" onClick={() => runSelect('erase')} disabled={isRunning}>
+                          <Paintbrush className="h-4 w-4" />
+                          Refresh eraser mask
+                        </Button>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}
 
                 <div className="mt-4">
-                  <Button variant="primary" onClick={runSelect} disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()} className="w-full justify-center">
+                  <Button variant="primary" onClick={() => runSelect()} disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()} className="w-full justify-center">
                     <Sparkles className="h-4 w-4" />
-                    Execute prompt selection
+                    {selectionIntent === 'erase' ? 'Find target and prep eraser' : 'Find and isolate target'}
                   </Button>
                 </div>
               </div>
@@ -2158,6 +2314,32 @@ export default function PhotoMagicEditor({ store }) {
                     {latestMaskForErase
                       ? 'If the surface is blank, Photo Magic will auto-load the latest available mask before rendering.'
                       : 'Paint over the region to remove. Clean plate will not run until the mask surface contains visible pixels.'}
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <Label>Prompt Masking</Label>
+                      <div className="mt-2 text-sm leading-6 text-gray-600">Describe what should disappear, and Gemini will detect it and route the mask straight into this eraser surface.</div>
+                    </div>
+                    <StatusPill ok={geminiReady} label={geminiReady ? 'Gemini on' : 'Gemini off'} title={geminiReady ? 'Gemini prompt targeting is available' : 'Set GEMINI_API_KEY to use prompt masking'} />
+                  </div>
+                  <div className="mt-3 flex flex-col gap-3">
+                    <Input
+                      value={selectionPrompt}
+                      onChange={(event) => setSelectionPrompt(event.target.value)}
+                      placeholder='logo on hoodie, neck label, chest text, hang tag'
+                    />
+                    <Button
+                      variant="secondary"
+                      onClick={() => runSelect('erase')}
+                      disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()}
+                      className="justify-center"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      Find target mask
+                    </Button>
                   </div>
                 </div>
 
@@ -2249,94 +2431,90 @@ export default function PhotoMagicEditor({ store }) {
                       </Select>
                     </div>
                   </div>
-                  <div>
-                    <Label>Shadow Blur</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={240}
-                        value={shadowBlurPx}
-                        onChange={(event) => setShadowBlurPx(clamp(toNumber(event.target.value, 42), 0, 240))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Subject Boost</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={-0.2}
-                        max={0.8}
-                        step="0.01"
-                        value={subjectBoost}
-                        onChange={(event) => setSubjectBoost(clamp(toNumber(event.target.value, 0.22), -0.2, 0.8))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Background Exposure</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={-0.6}
-                        max={0.35}
-                        step="0.01"
-                        value={backgroundExposure}
-                        onChange={(event) => setBackgroundExposure(clamp(toNumber(event.target.value, -0.08), -0.6, 0.35))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Warmth</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={-0.35}
-                        max={0.35}
-                        step="0.01"
-                        value={relightWarmth}
-                        onChange={(event) => setRelightWarmth(clamp(toNumber(event.target.value, 0.08), -0.35, 0.35))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Shadow Opacity</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={1}
-                        step="0.01"
-                        value={shadowOpacity}
-                        onChange={(event) => setShadowOpacity(clamp(toNumber(event.target.value, 0.28), 0, 1))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Shadow X</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={-256}
-                        max={256}
-                        value={shadowOffsetX}
-                        onChange={(event) => setShadowOffsetX(clamp(toNumber(event.target.value, 0), -256, 256))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Shadow Y</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={-256}
-                        max={256}
-                        value={shadowOffsetY}
-                        onChange={(event) => setShadowOffsetY(clamp(toNumber(event.target.value, 34), -256, 256))}
-                      />
-                    </div>
-                  </div>
+                  <RangeControl
+                    label="Shadow Softness"
+                    value={shadowBlurPx}
+                    min={0}
+                    max={240}
+                    step={1}
+                    onChange={(value) => setShadowBlurPx(clamp(toNumber(value, 42), 0, 240))}
+                    formatValue={(value) => `${value}px`}
+                    minLabel="Tight"
+                    maxLabel="Airy"
+                    hint="Softens the cast shadow edge so the subject feels grounded without looking pasted in."
+                  />
+                  <RangeControl
+                    label="Subject Lift"
+                    value={subjectBoost}
+                    min={-0.2}
+                    max={0.8}
+                    step={0.01}
+                    onChange={(value) => setSubjectBoost(clamp(toNumber(value, 0.22), -0.2, 0.8))}
+                    formatValue={(value) => value.toFixed(2)}
+                    minLabel="Muted"
+                    maxLabel="Hero"
+                    hint="Pushes highlight energy into the subject without changing the whole frame."
+                  />
+                  <RangeControl
+                    label="Backdrop Exposure"
+                    value={backgroundExposure}
+                    min={-0.6}
+                    max={0.35}
+                    step={0.01}
+                    onChange={(value) => setBackgroundExposure(clamp(toNumber(value, -0.08), -0.6, 0.35))}
+                    formatValue={(value) => value.toFixed(2)}
+                    minLabel="Moodier"
+                    maxLabel="Lighter"
+                    hint="Grades the background independently so the subject can step forward without losing depth."
+                  />
+                  <RangeControl
+                    label="Color Warmth"
+                    value={relightWarmth}
+                    min={-0.35}
+                    max={0.35}
+                    step={0.01}
+                    onChange={(value) => setRelightWarmth(clamp(toNumber(value, 0.08), -0.35, 0.35))}
+                    formatValue={(value) => value.toFixed(2)}
+                    minLabel="Cooler"
+                    maxLabel="Warmer"
+                    hint="Shifts the light mood from cooler editorial tones to warmer hero-lighting."
+                  />
+                  <RangeControl
+                    label="Shadow Density"
+                    value={shadowOpacity}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    onChange={(value) => setShadowOpacity(clamp(toNumber(value, 0.28), 0, 1))}
+                    formatValue={(value) => `${Math.round(value * 100)}%`}
+                    minLabel="Light"
+                    maxLabel="Dense"
+                    hint="Controls how visible the grounding shadow is once the lighting pass is rendered."
+                  />
+                  <RangeControl
+                    label="Shadow Drift X"
+                    value={shadowOffsetX}
+                    min={-256}
+                    max={256}
+                    step={1}
+                    onChange={(value) => setShadowOffsetX(clamp(toNumber(value, 0), -256, 256))}
+                    formatValue={(value) => `${value}px`}
+                    minLabel="Left"
+                    maxLabel="Right"
+                    hint="Slides the cast shadow sideways to match the implied light direction."
+                  />
+                  <RangeControl
+                    label="Shadow Drop Y"
+                    value={shadowOffsetY}
+                    min={-256}
+                    max={256}
+                    step={1}
+                    onChange={(value) => setShadowOffsetY(clamp(toNumber(value, 34), -256, 256))}
+                    formatValue={(value) => `${value}px`}
+                    minLabel="Lift"
+                    maxLabel="Drop"
+                    hint="Moves the shadow forward or backward to keep contact with the floor plane."
+                  />
                 </div>
 
                 <div className="mt-4">
