@@ -35,6 +35,10 @@ import {
   listSessionIntelligenceSurveyTemplates,
   upsertSessionIntelligenceSurveyTemplateConfig
 } from '../services/sessionIntelligenceSurveyService.js';
+import {
+  buildSessionIntelligenceArchitectureResponse,
+  buildSessionIntelligenceShopifyInstallResponse
+} from '../services/sessionIntelligenceCaptureService.js';
 import { validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
 
 const router = express.Router();
@@ -92,6 +96,28 @@ router.get('/day-pulse', (req, res) => {
   } catch (error) {
     console.error('[SessionIntelligence] day-pulse error:', error);
     res.status(500).json({ success: false, error: 'Failed to load day pulse' });
+  }
+});
+
+router.get('/architecture', requireSurveyAdminSession, (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const data = buildSessionIntelligenceArchitectureResponse(req, { store });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[SessionIntelligence] architecture error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load Session Intelligence architecture' });
+  }
+});
+
+router.get('/install/shopify', requireSurveyAdminSession, (req, res) => {
+  try {
+    const store = req.query.store || 'shawq';
+    const data = buildSessionIntelligenceShopifyInstallResponse(req, { store });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[SessionIntelligence] Shopify install error:', error);
+    res.status(500).json({ success: false, error: 'Failed to build Shopify install pack' });
   }
 });
 

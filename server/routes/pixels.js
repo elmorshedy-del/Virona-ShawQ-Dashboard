@@ -60,6 +60,7 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
   var RAGE_CLICK_WINDOW_MS = 800;
   var RAGE_CLICK_MIN_CLICKS = 3;
   var RAGE_CLICK_RADIUS_PX = 30;
+  var MEANINGFUL_ACTION_MAX_AGE_MS = 10 * 60 * 1000;
   var SCROLL_BUCKETS = [25, 50, 75, 90];
   var MAX_STRING = 240;
 
@@ -131,6 +132,7 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
   var parsedScriptUrl = parseUrl(scriptUrl);
   var scriptOrigin = parsedScriptUrl && parsedScriptUrl.origin ? parsedScriptUrl.origin : '';
   var store = (parsedScriptUrl && parsedScriptUrl.searchParams && parsedScriptUrl.searchParams.get('store')) || 'shawq';
+  var platform = (parsedScriptUrl && parsedScriptUrl.searchParams && parsedScriptUrl.searchParams.get('platform')) || '';
   var endpointOverride = parsedScriptUrl && parsedScriptUrl.searchParams ? parsedScriptUrl.searchParams.get('endpoint') : null;
   var endpoint = endpointOverride || (scriptOrigin ? (scriptOrigin + '/api/pixels/shopify') : '/api/pixels/shopify');
   var surveyTemplatesEndpoint = scriptOrigin
@@ -189,21 +191,57 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     return id;
   }
 
+  function getOrCreateTabId() {
+    var key = storageKey('virona_si_tab_id');
+    var existing = readStorage(window.sessionStorage, key);
+    if (existing) return existing;
+    var id = uuid();
+    writeStorage(window.sessionStorage, key, id);
+    return id;
+  }
+
+  function detectKnownUserId() {
+    try {
+      var candidates = [
+        window.ShopifyAnalytics && window.ShopifyAnalytics.meta && window.ShopifyAnalytics.meta.page && (window.ShopifyAnalytics.meta.page.customerId || window.ShopifyAnalytics.meta.page.customer_id),
+        window.meta && window.meta.page && (window.meta.page.customerId || window.meta.page.customer_id),
+        window.Shopify && (window.Shopify.customerId || window.Shopify.customer_id),
+        document && document.documentElement && document.documentElement.getAttribute && document.documentElement.getAttribute('data-customer-id')
+      ];
+      for (var i = 0; i < candidates.length; i += 1) {
+        var candidate = safeString(candidates[i], 160);
+        if (candidate) return candidate;
+      }
+    } catch (_e) {}
+    return '';
+  }
+
   var clientId = getOrCreateClientId();
   var sessionId = getOrCreateSessionId();
+  var tabId = getOrCreateTabId();
+  var eventSequence = 0;
+  var lastMeaningfulAction = null;
 
   function sessionContext() {
     // Refresh session id if we went idle.
     sessionId = getOrCreateSessionId();
+    tabId = getOrCreateTabId();
 
     return {
       clientId: clientId,
       sessionId: sessionId,
+      userId: detectKnownUserId() || null,
+      tabId: tabId,
+      platform: safeString(platform, 40) || null,
       navigator: { userAgent: safeString(navigator.userAgent, 280) },
       document: {
         title: safeString(document.title, 140),
         referrer: safeString(document.referrer, 280),
-        location: { href: safeString(window.location.href, 800) }
+        location: {
+          href: safeString(window.location.href, 800),
+          pathname: safeString(window.location.pathname, 500),
+          host: safeString(window.location.host, 160)
+        }
       }
     };
   }
@@ -214,6 +252,8 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
       var payload = {
         store: store,
         source: VERSION,
+        id: uuid(),
+        seq: (eventSequence += 1),
         timestamp: new Date().toISOString(),
         context: sessionContext(),
         event: {
@@ -258,6 +298,16 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     } catch (_e) {
       return '';
     }
+  }
+
+  function rememberMeaningfulAction(name, data) {
+    lastMeaningfulAction = {
+      name: safeString(name, 120) || 'unknown',
+      data: data || null,
+      pageUrl: currentPageUrl(),
+      pagePath: currentPagePath(),
+      timestamp: new Date().toISOString()
+    };
   }
 
   function readSurveyContext() {
@@ -390,6 +440,109 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     };
   }
 
+  function elementText(el) {
+    try {
+      return safeString((el && el.textContent) || '', 160).replace(/\s+/g, ' ').trim();
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function getFieldLabel(el) {
+    if (!el) return '';
+    try {
+      if (el.labels && el.labels.length) {
+        return elementText(el.labels[0]);
+      }
+    } catch (_e) {}
+    try {
+      if (el.id) {
+        var explicit = document.querySelector('label[for=\"' + CSS.escape(el.id) + '\"]');
+        if (explicit) return elementText(explicit);
+      }
+    } catch (_e2) {}
+    try {
+      var wrapped = el.closest && el.closest('label');
+      if (wrapped) return elementText(wrapped);
+    } catch (_e3) {}
+    return '';
+  }
+
+  function closestMatching(el, selector) {
+    try {
+      return el && el.closest ? el.closest(selector) : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function isQuantityField(el, labelText) {
+    var haystack = [
+      safeString(el && el.name, 120),
+      safeString(el && el.id, 120),
+      safeString(el && el.getAttribute && el.getAttribute('aria-label'), 120),
+      labelText
+    ].join(' ').toLowerCase();
+    return haystack.indexOf('quantity') >= 0 || /\bqty\b/.test(haystack);
+  }
+
+  function classifyOptionSelection(el, labelText) {
+    var hint = [
+      safeString(el && el.name, 120),
+      safeString(el && el.id, 120),
+      safeString(el && el.getAttribute && el.getAttribute('data-option-name'), 120),
+      safeString(el && el.getAttribute && el.getAttribute('data-name'), 120),
+      labelText
+    ].join(' ').toLowerCase();
+    if (!hint) return '';
+    if (hint.indexOf('size') >= 0) return 'size_selected';
+    if (
+      hint.indexOf('variant') >= 0 ||
+      hint.indexOf('option') >= 0 ||
+      hint.indexOf('color') >= 0 ||
+      hint.indexOf('colour') >= 0 ||
+      hint.indexOf('style') >= 0
+    ) {
+      return 'variant_selected';
+    }
+    return '';
+  }
+
+  function buildSelectionPayload(el, labelText) {
+    var value = '';
+    try {
+      if (el && typeof el.value !== 'undefined') value = safeString(el.value, 120);
+    } catch (_e) {}
+    if (!value) value = elementText(el);
+    return {
+      target_key: elementSummary(el).key,
+      target: elementSummary(el),
+      label: labelText || null,
+      value: value || null
+    };
+  }
+
+  function findAddToCartTarget(target) {
+    return closestMatching(
+      target,
+      'button[name=\"add\"], [name=\"add\"], [data-add-to-cart], [data-product-atc], form[action*=\"/cart/add\"] button, form[action*=\"/cart/add\"] [type=\"submit\"], button[id*=\"AddToCart\"]'
+    );
+  }
+
+  function findCheckoutTarget(target) {
+    return closestMatching(
+      target,
+      'a[href*=\"/checkout\"], button[name=\"checkout\"], input[name=\"checkout\"], [data-checkout-button], [data-cart-checkout], form[action*=\"/checkout\"] button, form[action*=\"/checkout\"] [type=\"submit\"]'
+    );
+  }
+
+  function findCartTarget(target) {
+    return closestMatching(
+      target,
+      'a[href=\"/cart\"], a[href$=\"/cart\"], [data-cart-toggle], [data-cart-drawer-toggle], [aria-controls*=\"cart\"], button[name=\"cart\"]'
+    );
+  }
+
   function isProbablyClickable(el) {
     if (!el || !el.closest) return false;
     var clickable = el.closest('a,button,[role=\"button\"],input[type=\"button\"],input[type=\"submit\"],summary,label');
@@ -406,6 +559,39 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     if (!e) return;
     var target = e.target && e.target.closest ? e.target.closest('a,button,[role=\"button\"],input,select,textarea,label,summary') : e.target;
     if (!target) return;
+
+    var checkoutTarget = findCheckoutTarget(target);
+    if (checkoutTarget) {
+      var checkoutPayload = {
+        target_key: elementSummary(checkoutTarget).key,
+        target: elementSummary(checkoutTarget),
+        label: elementText(checkoutTarget) || null
+      };
+      rememberMeaningfulAction('checkout_cta_clicked', checkoutPayload);
+      sendEvent('checkout_cta_clicked', checkoutPayload);
+    }
+
+    var addToCartTarget = findAddToCartTarget(target);
+    if (addToCartTarget) {
+      var addToCartPayload = {
+        target_key: elementSummary(addToCartTarget).key,
+        target: elementSummary(addToCartTarget),
+        label: elementText(addToCartTarget) || null
+      };
+      rememberMeaningfulAction('add_to_cart_clicked', addToCartPayload);
+      sendEvent('add_to_cart_clicked', addToCartPayload);
+    }
+
+    var cartTarget = findCartTarget(target);
+    if (cartTarget) {
+      var cartPayload = {
+        target_key: elementSummary(cartTarget).key,
+        target: elementSummary(cartTarget),
+        label: elementText(cartTarget) || null
+      };
+      rememberMeaningfulAction('cart_drawer_opened', cartPayload);
+      sendEvent('cart_drawer_opened', cartPayload);
+    }
 
     var point = {
       t: Date.now(),
@@ -590,6 +776,28 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     } catch (_e) {}
   }
 
+  function onChangeCapture(e) {
+    try {
+      var target = e && e.target ? e.target : null;
+      if (!target) return;
+      var labelText = getFieldLabel(target);
+
+      if (isQuantityField(target, labelText)) {
+        var quantityPayload = buildSelectionPayload(target, labelText);
+        quantityPayload.quantity = safeNumber(target.value);
+        rememberMeaningfulAction('cart_quantity_changed', quantityPayload);
+        sendEvent('cart_quantity_changed', quantityPayload);
+        return;
+      }
+
+      var selectionType = classifyOptionSelection(target, labelText);
+      if (!selectionType) return;
+      var selectionPayload = buildSelectionPayload(target, labelText);
+      rememberMeaningfulAction(selectionType, selectionPayload);
+      sendEvent(selectionType, selectionPayload);
+    } catch (_error) {}
+  }
+
   // ---------------------------------------------------------------------------
   // JS errors / unhandled rejections
   // ---------------------------------------------------------------------------
@@ -637,10 +845,23 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     if (scrollMaxPercent > 0) {
       sendEvent('scroll_max', { max_percent: scrollMaxPercent }, { beacon: true });
     }
+    if (lastMeaningfulAction) {
+      var actionAgeMs = Date.now() - (Date.parse(lastMeaningfulAction.timestamp) || 0);
+      if (actionAgeMs >= 0 && actionAgeMs <= MEANINGFUL_ACTION_MAX_AGE_MS) {
+        sendEvent('last_action_checkpoint', {
+          action_name: lastMeaningfulAction.name,
+          action_ts: lastMeaningfulAction.timestamp,
+          action: lastMeaningfulAction.data,
+          page_url: lastMeaningfulAction.pageUrl,
+          page_path: lastMeaningfulAction.pagePath
+        }, { beacon: true });
+      }
+    }
   }
 
   try {
     document.addEventListener('click', onClickCapture, true);
+    document.addEventListener('change', onChangeCapture, true);
     window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('error', onWindowError);
     window.addEventListener('unhandledrejection', onUnhandledRejection);
