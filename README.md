@@ -2,6 +2,10 @@
 
 Analytics dashboard for VironaX (Salla) and Shawq (Shopify) stores.
 
+## Engineering Rule
+
+- Critical: avoid magic numbers in production code. Use named constants or config for limits, thresholds, TTLs, retry counts, windows, weights, and heuristics.
+
 ## Features
 
 - **Store Switcher**: Toggle between VironaX and Shawq from the header

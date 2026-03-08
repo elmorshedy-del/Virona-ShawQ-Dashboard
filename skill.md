@@ -9,6 +9,7 @@
 - If any item above is violated in touched code, fix it in the same thread before shipping.
 
 ## Rules
+- Critical: always avoid magic numbers in touched code. Any limit, TTL, retry count, weight, threshold, interval, or heuristic must use a named constant or config entry.
 - PR freshness is mandatory: if there is a gap since the last implementation cycle and the previous PR may have been merged, create a new `codex/*` branch and open a new PR. Do not continue on an old PR by default.
 - Always share the active PR link after each commit/update.
 - After every commit, include the PR link in the status update to the user.
