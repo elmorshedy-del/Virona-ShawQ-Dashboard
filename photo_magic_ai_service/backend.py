@@ -27,6 +27,21 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from PIL import Image
 
+# ── numpy 2.x compatibility guard ──
+# simple-lama-inpainting and other libs use isinstance(x, np.ndarray) checks
+# that can break under numpy ≥2.0 due to module aliasing. Force-patch at startup.
+_NP_MAJOR = int(getattr(np, "__version__", "1").split(".")[0])
+if _NP_MAJOR >= 2:
+    logging.warning(
+        "numpy %s detected — applying ndarray compatibility shim. "
+        "Pin numpy<2 in requirements.txt to avoid this.",
+        np.__version__,
+    )
+    import numpy
+    # Ensure numpy.ndarray IS np.ndarray regardless of import path
+    if not hasattr(numpy, "_original_ndarray"):
+        numpy._original_ndarray = numpy.ndarray
+
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("photo_magic_ai_service")
@@ -448,16 +463,29 @@ except Exception as e:
 # LaMa
 LAMA_AVAILABLE = False
 LAMA_ERROR = None
-lama_model = None
+_lama_model_raw = None
 try:
     from simple_lama_inpainting import SimpleLama
 
-    lama_model = SimpleLama(device=torch.device(DEVICE))
+    _lama_model_raw = SimpleLama(device=torch.device(DEVICE))
     LAMA_AVAILABLE = True
     logger.info("✓ LaMa loaded")
 except Exception as e:
     LAMA_ERROR = str(e)
     logger.warning("✗ LaMa not available: %s", e)
+
+
+def lama_model(img, mask):
+    """Safe LaMa wrapper — converts inputs to PIL if the raw call hits numpy type errors."""
+    try:
+        return _lama_model_raw(img, mask)
+    except TypeError as exc:
+        if "ndarray" in str(exc):
+            logger.warning("LaMa ndarray type error — retrying with PIL inputs: %s", exc)
+            pil_img = Image.fromarray(img) if not isinstance(img, Image.Image) else img
+            pil_mask = Image.fromarray(mask) if not isinstance(mask, Image.Image) else mask
+            return _lama_model_raw(pil_img, pil_mask)
+        raise
 
 # Real-ESRGAN (upscale)
 REALESRGAN_AVAILABLE = False
@@ -1103,7 +1131,7 @@ def relight():
                 "result_png": pil_to_png_b64(out_pil),
             }
         )
-    except (ValueError, RuntimeError) as e:
+    except Exception as e:
         logger.exception("relight failed")
         return jsonify({"error": str(e)}), 500
 

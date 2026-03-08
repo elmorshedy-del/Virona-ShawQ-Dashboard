@@ -387,7 +387,7 @@ async function detectPhotoMagicSelectionWithGemini({ imageBase64, prompt, width,
     model: resolvedModelName,
     generationConfig: {
       temperature: 0,
-      maxOutputTokens: 768,
+      maxOutputTokens: 2048,
       responseMimeType: 'application/json',
       responseSchema
     }
@@ -420,7 +420,12 @@ Rules:
     ]);
 
     try {
-      parsed = parseModelJsonObject(result?.response?.text?.() ?? '');
+      let rawText = '';
+      try { rawText = result?.response?.text?.() ?? ''; } catch { }
+      if (!rawText) {
+        try { rawText = result?.response?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''; } catch { }
+      }
+      parsed = parseModelJsonObject(rawText);
       lastParseError = null;
       break;
     } catch (error) {
@@ -3557,12 +3562,34 @@ function parseModelJsonObject(rawText) {
   } catch { }
 
   const extracted = extractFirstJsonFragment(cleaned, '{', '}');
-  if (!extracted) {
-    throw new Error(`Gemini returned invalid JSON object. Preview: ${cleaned.slice(0, 200)}`);
+  if (extracted) {
+    try {
+      const parsed = JSON.parse(extracted);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch { }
   }
 
-  const parsed = JSON.parse(extracted);
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  // Attempt to repair truncated JSON (e.g. Gemini hit maxOutputTokens mid-value)
+  const braceStart = cleaned.indexOf('{');
+  if (braceStart >= 0) {
+    let truncated = cleaned.slice(braceStart).replace(/,\s*$/, '');
+    // Close any open strings, arrays, objects to make it parseable
+    const openBraces = (truncated.match(/\{/g) || []).length;
+    const closeBraces = (truncated.match(/\}/g) || []).length;
+    const openBrackets = (truncated.match(/\[/g) || []).length;
+    const closeBrackets = (truncated.match(/\]/g) || []).length;
+    // If inside a string value, close it
+    const quoteCount = (truncated.match(/(?<!\\)"/g) || []).length;
+    if (quoteCount % 2 !== 0) truncated += '"';
+    // Close unclosed brackets/braces
+    for (let i = 0; i < openBrackets - closeBrackets; i++) truncated += ']';
+    for (let i = 0; i < openBraces - closeBraces; i++) truncated += '}';
+    try {
+      const parsed = JSON.parse(truncated);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch { }
+  }
+
   throw new Error(`Gemini returned invalid JSON object. Preview: ${cleaned.slice(0, 200)}`);
 }
 
