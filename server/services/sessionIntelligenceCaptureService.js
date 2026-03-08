@@ -4,6 +4,7 @@ const DEFAULT_STORE = 'shawq';
 const DEFAULT_APP_BASE_URL = 'https://virona-shawq-dashboard-production-7573.up.railway.app';
 const MAX_TEXT_LENGTH = 240;
 const SHOPIFY_THEME_PIXEL_PLATFORM = 'shopify';
+const LOCALHOST_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d{1,5})?$/i;
 
 export const SESSION_INTELLIGENCE_IDENTITY_SPINE = [
   {
@@ -297,14 +298,17 @@ function normalizeAppBaseUrl(value) {
 }
 
 function resolveDefaultAppBaseUrl(req) {
+  const configured = normalizeAppBaseUrl(process.env.APP_BASE_URL || DEFAULT_APP_BASE_URL);
+  if (process.env.APP_BASE_URL) return configured;
+
   if (req && typeof req.get === 'function') {
     const host = safeString(req.get('host'), 255);
-    if (host) {
-      const protocol = safeString(req.get('x-forwarded-proto'), 20) || req.protocol || 'https';
+    if (host && LOCALHOST_HOST_RE.test(host)) {
+      const protocol = safeString(req.get('x-forwarded-proto'), 20) || req.protocol || 'http';
       return normalizeAppBaseUrl(`${protocol}://${host}`);
     }
   }
-  return normalizeAppBaseUrl(process.env.APP_BASE_URL || DEFAULT_APP_BASE_URL);
+  return configured;
 }
 
 function uniqueList(values) {

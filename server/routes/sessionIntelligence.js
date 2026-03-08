@@ -99,7 +99,7 @@ router.get('/day-pulse', (req, res) => {
   }
 });
 
-router.get('/architecture', (req, res) => {
+router.get('/architecture', requireSurveyAdminSession, (req, res) => {
   try {
     const store = req.query.store || 'shawq';
     const data = buildSessionIntelligenceArchitectureResponse(req, { store });
@@ -110,7 +110,7 @@ router.get('/architecture', (req, res) => {
   }
 });
 
-router.get('/install/shopify', (req, res) => {
+router.get('/install/shopify', requireSurveyAdminSession, (req, res) => {
   try {
     const store = req.query.store || 'shawq';
     const data = buildSessionIntelligenceShopifyInstallResponse(req, { store });
