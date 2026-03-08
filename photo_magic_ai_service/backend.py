@@ -353,7 +353,7 @@ def inpaint_with_standard_engine(image_rgb: Any, mask_u8: Any, *, radius: int = 
         return base
 
     nearest_indices = ndimage.distance_transform_edt(mask_bool, return_distances=False, return_indices=True)
-    repaired = base[nearest_indices[0], nearest_indices[1]].astype(np.uint8, copy=False)
+    repaired = base[nearest_indices[0], nearest_indices[1]]
     soften_radius = max(1, inpaint_radius / 1.5)
     softened = np.array(Image.fromarray(repaired, mode="RGB").filter(ImageFilter.GaussianBlur(radius=soften_radius)), dtype=np.uint8)
     alpha = feather_mask(mask_bin, max(inpaint_radius * 2, 4))
