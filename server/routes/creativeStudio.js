@@ -512,6 +512,86 @@ async function detectPhotoMagicSelectionWithGeminiFallbacks({ imageBase64, promp
   return { attempts, selection: null };
 }
 
+function clampPhotoMagicBoxCoordinate(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.min(max, Math.max(min, Math.round(numeric)));
+}
+
+function normalizePhotoMagicSelectionBox(boxXyxy, width, height, paddingPx = 0) {
+  const resolvedWidth = Math.max(1, Math.round(safeParseNumber(width, 1)));
+  const resolvedHeight = Math.max(1, Math.round(safeParseNumber(height, 1)));
+  const padding = Math.max(0, Math.round(safeParseNumber(paddingPx, 0)));
+  const [rawX1, rawY1, rawX2, rawY2] = Array.isArray(boxXyxy) ? boxXyxy : [0, 0, resolvedWidth, resolvedHeight];
+  const minX = Math.min(rawX1, rawX2);
+  const maxX = Math.max(rawX1, rawX2);
+  const minY = Math.min(rawY1, rawY2);
+  const maxY = Math.max(rawY1, rawY2);
+
+  const x1 = clampPhotoMagicBoxCoordinate(minX - padding, 0, resolvedWidth - 1);
+  const y1 = clampPhotoMagicBoxCoordinate(minY - padding, 0, resolvedHeight - 1);
+  const x2 = clampPhotoMagicBoxCoordinate(maxX + padding, x1 + 1, resolvedWidth);
+  const y2 = clampPhotoMagicBoxCoordinate(maxY + padding, y1 + 1, resolvedHeight);
+
+  return { x1, y1, x2, y2, width: resolvedWidth, height: resolvedHeight };
+}
+
+async function buildPhotoMagicSelectionBoxFallback({
+  sourceBuffer,
+  boxXyxy,
+  width,
+  height,
+  maskDilatePx = 4,
+  maskFeatherPx = 8
+}) {
+  const paddingPx = Math.max(2, Math.round(maskDilatePx + (maskFeatherPx * 1.5)));
+  const { x1, y1, x2, y2, width: resolvedWidth, height: resolvedHeight } = normalizePhotoMagicSelectionBox(
+    boxXyxy,
+    width,
+    height,
+    paddingPx
+  );
+  const rectWidth = Math.max(1, x2 - x1);
+  const rectHeight = Math.max(1, y2 - y1);
+  const radius = Math.max(8, Math.round(Math.min(rectWidth, rectHeight) * 0.12));
+  const blurStdDeviation = Math.max(0, Math.min(24, Math.round(maskFeatherPx) / 2));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${resolvedWidth}" height="${resolvedHeight}" viewBox="0 0 ${resolvedWidth} ${resolvedHeight}">
+    <defs>
+      <filter id="pm-selection-soft-mask" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="${blurStdDeviation}" />
+      </filter>
+    </defs>
+    <rect width="${resolvedWidth}" height="${resolvedHeight}" fill="transparent" />
+    <rect
+      x="${x1}"
+      y="${y1}"
+      width="${rectWidth}"
+      height="${rectHeight}"
+      rx="${Math.min(radius, Math.floor(rectWidth / 2), Math.floor(rectHeight / 2))}"
+      fill="white"
+      ${blurStdDeviation > 0 ? 'filter="url(#pm-selection-soft-mask)"' : ''}
+    />
+  </svg>`;
+
+  const maskBuffer = await sharp(Buffer.from(svg))
+    .png()
+    .toBuffer();
+
+  const cutoutBuffer = await sharp(sourceBuffer)
+    .ensureAlpha()
+    .composite([{ input: maskBuffer, blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+
+  return {
+    mask_png: maskBuffer.toString('base64'),
+    cutout_png: cutoutBuffer.toString('base64'),
+    width: resolvedWidth,
+    height: resolvedHeight,
+    fallback: 'box-mask'
+  };
+}
+
 const CREATIVE_OS_DEFAULT_STORE = 'vironax';
 const CREATIVE_OS_IMPORT_TIMEOUT_MS = 8000;
 const CREATIVE_OS_IMPORT_MAX_REDIRECTS = 3;
@@ -3590,6 +3670,16 @@ function parseModelJsonObject(rawText) {
     } catch { }
   }
 
+  if (extracted) {
+    try {
+      const parsed = JSON.parse(extracted);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      throw new Error(`Gemini returned non-object JSON. Preview: ${cleaned.slice(0, 200)}`);
+    } catch (parseErr) {
+      throw new Error(`Gemini returned malformed JSON: ${parseErr.message}. Preview: ${cleaned.slice(0, 200)}`);
+    }
+  }
+
   throw new Error(`Gemini returned invalid JSON object. Preview: ${cleaned.slice(0, 200)}`);
 }
 
@@ -4629,14 +4719,23 @@ router.post('/photo-magic/remove-bg/refine', async (req, res) => {
     const buf = await fs.promises.readFile(imagePath);
     const imageBase64 = buf.toString('base64');
 
-    const result = await refineBgSam2({
-      imageBase64,
-      points,
-      boxXyxy,
-      maxSide,
-      maskDilatePx,
-      maskFeatherPx
-    });
+    let result;
+    try {
+      result = await refineBgSam2({
+        imageBase64,
+        points,
+        boxXyxy,
+        maxSide,
+        maskDilatePx,
+        maskFeatherPx
+      });
+    } catch (sam2Error) {
+      console.warn('Photo magic refine: SAM2 unavailable, falling back to RMBG2 cutout:', sam2Error?.message || sam2Error);
+      result = await removeBgRmbg2({ imageBase64, maxSide });
+      if (!result) {
+        throw new Error('Both SAM2 refinement and RMBG2 background removal failed. Check AI service health.');
+      }
+    }
 
     const cutoutId = crypto.randomUUID();
     const maskId = crypto.randomUUID();
@@ -4745,14 +4844,30 @@ router.post('/photo-magic/select', async (req, res) => {
       });
     }
 
-    const result = await refineBgSam2({
-      imageBase64,
-      points: selection.points,
-      boxXyxy: selection.box_xyxy,
-      maxSide,
-      maskDilatePx,
-      maskFeatherPx
-    });
+    let result;
+    try {
+      result = await refineBgSam2({
+        imageBase64,
+        points: selection.points,
+        boxXyxy: selection.box_xyxy,
+        maxSide,
+        maskDilatePx,
+        maskFeatherPx
+      });
+    } catch (sam2Error) {
+      console.warn('Photo magic select: SAM2 refine unavailable, falling back to Gemini box mask:', sam2Error?.message || sam2Error);
+      result = await buildPhotoMagicSelectionBoxFallback({
+        sourceBuffer: buf,
+        boxXyxy: selection.box_xyxy,
+        width: imageWidth,
+        height: imageHeight,
+        maskDilatePx,
+        maskFeatherPx
+      });
+      selection.notes = selection.notes
+        ? `${selection.notes} Selection rendered via Gemini box fallback.`
+        : 'Selection rendered via Gemini box fallback.';
+    }
 
     const cutoutId = crypto.randomUUID();
     const maskId = crypto.randomUUID();

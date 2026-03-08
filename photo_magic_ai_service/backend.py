@@ -25,7 +25,7 @@ import numpy as np
 import torch
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from PIL import Image
+from PIL import Image, ImageFilter
 
 # ── numpy 2.x compatibility guard ──
 # simple-lama-inpainting and other libs use isinstance(x, np.ndarray) checks
@@ -66,6 +66,43 @@ DEVICE = os.environ.get("PHOTO_MAGIC_DEVICE", DEFAULT_DEVICE)
 
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+try:
+    if not hasattr(np.core.multiarray, "generic"):
+        np.core.multiarray.generic = np.generic
+    if not hasattr(np.core.multiarray, "ndarray"):
+        np.core.multiarray.ndarray = np.ndarray
+except Exception:
+    pass
+
+_TORCH_DTYPE_BY_NUMPY: dict[np.dtype[Any], torch.dtype] = {
+    np.dtype(np.uint8): torch.uint8,
+    np.dtype(np.int8): torch.int8,
+    np.dtype(np.int16): torch.int16,
+    np.dtype(np.int32): torch.int32,
+    np.dtype(np.int64): torch.int64,
+    np.dtype(np.float16): torch.float16,
+    np.dtype(np.float32): torch.float32,
+    np.dtype(np.float64): torch.float64,
+    np.dtype(np.bool_): torch.bool,
+}
+_TORCH_FROM_NUMPY_ORIGINAL = torch.from_numpy
+
+
+def safe_torch_from_numpy(array: Any) -> torch.Tensor:
+    try:
+        return _TORCH_FROM_NUMPY_ORIGINAL(array)
+    except TypeError as err:
+        if not isinstance(array, np.ndarray) or "expected np.ndarray" not in str(err):
+            raise
+        # Production wheels in Railway are intermittently failing the NumPy bridge.
+        # Fall back to an explicit copy so dependent libraries can still run.
+        logger.warning("torch.from_numpy ABI fallback triggered for dtype=%s shape=%s", array.dtype, array.shape)
+        torch_dtype = _TORCH_DTYPE_BY_NUMPY.get(np.dtype(array.dtype))
+        return torch.tensor(array.tolist(), dtype=torch_dtype)
+
+
+torch.from_numpy = safe_torch_from_numpy
 
 RELIGHT_PRESETS: dict[str, dict[str, float]] = {
     "studio": {
@@ -142,6 +179,8 @@ def strip_data_prefix(b64: str) -> str:
 
 @app.before_request
 def _auth_guard():
+    if request.path == "/health":
+        return None
     if not SERVICE_TOKEN:
         return None
     auth = str(request.headers.get("authorization") or "")
@@ -296,6 +335,23 @@ def composite_with_alpha(base_rgb: np.ndarray, overlay_rgb: np.ndarray, alpha_u8
     )
 
 
+def inpaint_with_standard_engine(image_rgb: Any, mask_u8: Any, *, radius: int = 4) -> np.ndarray:
+    base = ensure_uint8_rgb_array(image_rgb)
+    mask = ensure_uint8_mask_array(mask_u8)
+    mask_bin = ((mask > 0).astype(np.uint8) * 255)
+    inpaint_radius = max(1, min(16, int(radius)))
+
+    if lama_model is not None:
+        try:
+            return ensure_uint8_rgb_array(lama_model(base, mask_bin))
+        except Exception as exc:
+            logger.warning("LaMa runtime failed; falling back to OpenCV inpaint: %s", exc)
+
+    bgr = cv2.cvtColor(base, cv2.COLOR_RGB2BGR)
+    repaired = cv2.inpaint(bgr, mask_bin, inpaint_radius, cv2.INPAINT_TELEA)
+    return cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
+
+
 def extract_segmentation_tensor(output: Any) -> torch.Tensor | None:
     if torch.is_tensor(output):
         return output
@@ -372,9 +428,11 @@ def ensure_uint8_mask_array(value: Any) -> np.ndarray:
 
 
 def get_segmentation_preprocess_stats(model_id: str) -> tuple[list[float], list[float]]:
-    normalized_model_id = str(model_id or "").strip().lower()
-    if "birefnet" in normalized_model_id:
-        return [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+    mid = str(model_id or "").strip().lower()
+    if "rmbg-1.4" in mid:
+        # RMBG 1.4 (IS-Net) official preprocessing: (x - 0.5) / 1.0 -> range [-0.5, 0.5]
+        return [0.5, 0.5, 0.5], [1.0, 1.0, 1.0]
+    # BiRefNet, RMBG 2.0, and most other segmentation models use ImageNet normalization
     return [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
 
 
@@ -388,25 +446,23 @@ logger.info("Loading models...")
 RMBG2_AVAILABLE = False
 RMBG2_ERROR = None
 rmbg2_model = None
-rmbg2_transform = None
+rmbg2_preprocess_config = None
+RMBG2_INPUT_SIZE = (1024, 1024)
 RMBG2_MODEL_ID = os.environ.get("RMBG2_MODEL_ID", "briaai/RMBG-2.0")
 
 try:
     from transformers import AutoModelForImageSegmentation
-    from torchvision import transforms
 
     rmbg2_mean, rmbg2_std = get_segmentation_preprocess_stats(RMBG2_MODEL_ID)
     rmbg2_model = AutoModelForImageSegmentation.from_pretrained(RMBG2_MODEL_ID, trust_remote_code=True)
     rmbg2_model.to(DEVICE)
     rmbg2_model.eval()
 
-    rmbg2_transform = transforms.Compose(
-        [
-            transforms.Resize((1024, 1024)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=rmbg2_mean, std=rmbg2_std),
-        ]
-    )
+    rmbg2_preprocess_config = {
+        "mean": tuple(float(value) for value in rmbg2_mean),
+        "std": tuple(float(value) for value in rmbg2_std),
+        "size": RMBG2_INPUT_SIZE,
+    }
 
     RMBG2_AVAILABLE = True
     logger.info("✓ RMBG2 loaded")
@@ -560,21 +616,69 @@ def require_ready(models: dict[str, bool]) -> tuple[bool, Any]:
 
 
 def rmbg2_predict_mask(pil_image: Image.Image) -> Image.Image:
-    if not RMBG2_AVAILABLE or rmbg2_model is None or rmbg2_transform is None:
+    if not RMBG2_AVAILABLE or rmbg2_model is None or rmbg2_preprocess_config is None:
         raise RuntimeError("RMBG2 not available")
 
     orig_w, orig_h = pil_image.size
-    image_tensor = rmbg2_transform(pil_image).unsqueeze(0).to(DEVICE)
+    resized = pil_image.convert("RGB").resize(rmbg2_preprocess_config["size"], resample=Image.BILINEAR)
+
+    # Avoid torchvision ToTensor here because it routes through torch.from_numpy(),
+    # which is the exact runtime boundary currently failing in production.
+    pixel_bytes = torch.tensor(bytearray(resized.tobytes()), dtype=torch.uint8)
+    image_tensor = pixel_bytes.view(resized.height, resized.width, 3).permute(2, 0, 1).float().div(255.0)
+
+    mean = torch.tensor(rmbg2_preprocess_config["mean"], dtype=image_tensor.dtype).view(3, 1, 1)
+    std = torch.tensor(rmbg2_preprocess_config["std"], dtype=image_tensor.dtype).view(3, 1, 1)
+    image_tensor = ((image_tensor - mean) / std).unsqueeze(0).to(DEVICE)
 
     with torch.inference_mode():
         out = rmbg2_model(image_tensor)
-        pred_tensor = extract_segmentation_tensor(out)
-        if pred_tensor is None:
-            raise RuntimeError(f"Unsupported segmentation output type: {type(out).__name__}")
-        pred = pred_tensor.detach().float().cpu().numpy()
+        # Model-aware output extraction:
+        # IS-Net / RMBG 1.4 returns [d0_refined, d1_side, ..., d6_side] - first is best.
+        # BiRefNet returns [s1_coarse, ..., s_final] - last is best.
+        pred_tensor = None
+        if isinstance(out, (list, tuple)) and len(out) > 0:
+            is_birefnet = "birefnet" in RMBG2_MODEL_ID.lower()
+            candidate = out[-1] if is_birefnet else out[0]
+            # Handle nested list: some models return [[tensor, ...]]
+            if isinstance(candidate, (list, tuple)) and len(candidate) > 0:
+                candidate = candidate[-1] if is_birefnet else candidate[0]
+            if torch.is_tensor(candidate):
+                pred_tensor = candidate
 
-    pred_u8 = normalize_segmentation_mask(pred)
-    mask = Image.fromarray(pred_u8, mode="L").resize((orig_w, orig_h), resample=Image.BILINEAR)
+        # Fallback to generic extraction if model-aware path didn't work
+        if pred_tensor is None:
+            pred_tensor = extract_segmentation_tensor(out)
+
+        if pred_tensor is None:
+            raise RuntimeError(f"Unsupported segmentation output: {type(out).__name__}")
+
+        pred = pred_tensor.detach().float().cpu().squeeze()
+
+    if pred.ndim != 2:
+        raise RuntimeError(f"Unexpected mask shape after squeeze: {tuple(pred.shape)}")
+
+    # Min-max normalization (correct for RMBG 1.4, BiRefNet, and RMBG 2.0)
+    mi = pred.min()
+    ma = pred.max()
+    if (ma - mi).abs() < 1e-6:
+        mask_np = np.zeros(pred.shape, dtype=np.uint8)
+    else:
+        pred_norm = (pred - mi) / (ma - mi)
+        mask_np = (pred_norm * 255).clamp(0, 255).to(torch.uint8).numpy()
+
+    # Diagnostic logging - critical for verifying the fix works
+    fg_pixels = int(np.count_nonzero(mask_np > 128))
+    total = mask_np.size
+    logger.info(
+        "cutout: model=%s pred_raw_range=[%.3f,%.3f] fg_ratio=%.4f (%d/%d) shape=%s",
+        RMBG2_MODEL_ID,
+        float(mi), float(ma),
+        fg_pixels / max(1, total), fg_pixels, total,
+        mask_np.shape,
+    )
+
+    mask = Image.fromarray(mask_np, mode="L").resize((orig_w, orig_h), resample=Image.BILINEAR)
     return mask
 
 
@@ -629,6 +733,7 @@ def build_projected_shadow(
     scale_x: float,
     scale_y: float,
 ) -> np.ndarray:
+    mask_u8 = ensure_uint8_mask_array(mask_u8)
     bbox = mask_bbox(mask_u8)
     if bbox is None:
         return np.zeros_like(mask_u8, dtype=np.uint8)
@@ -640,7 +745,10 @@ def build_projected_shadow(
 
     scaled_w = max(1, int(round(crop.shape[1] * max(0.2, float(scale_x)))))
     scaled_h = max(1, int(round(crop.shape[0] * max(0.05, float(scale_y)))))
-    shadow_crop = cv2.resize(crop, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
+    shadow_crop = np.array(
+        Image.fromarray(np.ascontiguousarray(crop), mode="L").resize((scaled_w, scaled_h), resample=Image.BILINEAR),
+        dtype=np.uint8,
+    )
 
     dest_x = int(round(x1 + ((crop.shape[1] - scaled_w) / 2.0) + float(offset_x)))
     dest_y = int(round(y2 - (scaled_h * 0.35) + float(offset_y)))
@@ -662,8 +770,10 @@ def build_projected_shadow(
 
     blur = max(0, int(round(blur_px)))
     if blur > 0:
-        kernel = max(3, blur * 2 + 1)
-        shadow = cv2.GaussianBlur(shadow, (kernel, kernel), 0)
+        shadow = np.array(
+            Image.fromarray(shadow, mode="L").filter(ImageFilter.GaussianBlur(radius=max(0.5, blur / 2.0))),
+            dtype=np.uint8,
+        )
     return shadow
 
 
@@ -815,8 +925,9 @@ def enhance_with_opencv(pil_rgb: Image.Image, mode: str, strength: float) -> Ima
 
 @app.route("/health", methods=["GET"])
 def health():
+    core_ready = RMBG2_AVAILABLE and LAMA_AVAILABLE
     payload = {
-        "status": "ok" if (RMBG2_AVAILABLE and SAM2_AVAILABLE and LAMA_AVAILABLE) else "not_ready",
+        "status": "ok" if core_ready else "not_ready",
         "strict": STRICT_MODE,
         "device": DEVICE,
         "models": {
@@ -842,7 +953,7 @@ def health():
             "relight_presets": sorted(RELIGHT_PRESETS.keys()),
         },
     }
-    if STRICT_MODE and not (RMBG2_AVAILABLE and SAM2_AVAILABLE and LAMA_AVAILABLE):
+    if STRICT_MODE and not core_ready:
         return jsonify(payload), 503
     return jsonify(payload)
 
@@ -850,7 +961,7 @@ def health():
 @app.route("/remove-bg/rmbg2", methods=["POST"])
 def remove_bg_rmbg2():
     try:
-        ok, err = require_ready({"rmbg2": RMBG2_AVAILABLE, "sam2": True, "lama": True})
+        ok, err = require_ready({"rmbg2": RMBG2_AVAILABLE})
         if not ok:
             return err, 503
 
@@ -888,10 +999,6 @@ def remove_bg_rmbg2():
 @app.route("/remove-bg/sam2-refine", methods=["POST"])
 def remove_bg_sam2_refine():
     try:
-        ok, err = require_ready({"sam2": SAM2_AVAILABLE})
-        if not ok:
-            return err, 503
-
         data = request.json or {}
         image_b64 = data.get("image") or ""
         points = data.get("points") or []
@@ -902,6 +1009,43 @@ def remove_bg_sam2_refine():
 
         if not image_b64:
             return jsonify({"error": "image is required"}), 400
+
+        if not SAM2_AVAILABLE:
+            logger.warning("remove-bg/sam2-refine: SAM2 unavailable, falling back to RMBG2 mask")
+            pil = decode_b64_to_pil(image_b64)
+            orig_w, orig_h = pil.size
+
+            if max(orig_w, orig_h) > max_side:
+                scale = max_side / float(max(orig_w, orig_h))
+                pil_small = pil.resize((int(round(orig_w * scale)), int(round(orig_h * scale))), resample=Image.LANCZOS)
+            else:
+                scale = 1.0
+                pil_small = pil
+
+            mask_small = rmbg2_predict_mask(pil_small)
+            mask_u8 = np.array(mask_small, dtype=np.uint8)
+            if dilate_px:
+                mask_u8 = dilate_mask(mask_u8, dilate_px)
+            mask_u8_soft = feather_mask(mask_u8, feather_px) if feather_px else mask_u8
+
+            if scale != 1.0:
+                mask_u8_soft = np.array(
+                    Image.fromarray(mask_u8_soft, mode="L").resize((orig_w, orig_h), resample=Image.BILINEAR),
+                    dtype=np.uint8,
+                )
+
+            mask_soft_pil = Image.fromarray(mask_u8_soft, mode="L")
+            cutout = make_cutout_rgba(pil, mask_soft_pil)
+
+            return jsonify(
+                {
+                    "mask_png": pil_to_png_b64(mask_soft_pil),
+                    "cutout_png": pil_to_png_b64(cutout),
+                    "width": orig_w,
+                    "height": orig_h,
+                    "engine": "rmbg2_fallback",
+                }
+            )
 
         bgr = decode_b64_to_cv2_bgr(image_b64)
         orig_h, orig_w = bgr.shape[:2]
@@ -995,9 +1139,18 @@ def erase_lama():
             mask_crop = mask_bin[y1:y2, x1:x2]
             alpha_crop = mask_alpha[y1:y2, x1:x2]
 
-            inpainted_crop = lama_model(
-                ensure_uint8_rgb_array(img_crop),
-                ensure_uint8_mask_array(mask_crop),
+            _lama_img = ensure_uint8_rgb_array(img_crop)
+            _lama_mask = ensure_uint8_mask_array(mask_crop)
+            logger.info(
+                "lama[crop]: image=%s %s range=[%d,%d] mask=%s %s range=[%d,%d] contig=%s,%s",
+                _lama_img.dtype, _lama_img.shape, int(_lama_img.min()), int(_lama_img.max()),
+                _lama_mask.dtype, _lama_mask.shape, int(_lama_mask.min()), int(_lama_mask.max()),
+                _lama_img.flags["C_CONTIGUOUS"], _lama_mask.flags["C_CONTIGUOUS"],
+            )
+            inpainted_crop = inpaint_with_standard_engine(
+                _lama_img,
+                _lama_mask,
+                radius=max(3, min(12, int(round((dilate_px + feather_px + 4) / 4))))
             )
 
             base_crop = ensure_uint8_rgb_array(img_crop)
@@ -1007,9 +1160,18 @@ def erase_lama():
             out_small = img_np.copy()
             out_small[y1:y2, x1:x2] = blended_crop
         else:
-            inpainted = lama_model(
-                ensure_uint8_rgb_array(pil_small),
-                ensure_uint8_mask_array(mask_bin),
+            _lama_img = ensure_uint8_rgb_array(pil_small)
+            _lama_mask = ensure_uint8_mask_array(mask_bin)
+            logger.info(
+                "lama[full]: image=%s %s range=[%d,%d] mask=%s %s range=[%d,%d] contig=%s,%s",
+                _lama_img.dtype, _lama_img.shape, int(_lama_img.min()), int(_lama_img.max()),
+                _lama_mask.dtype, _lama_mask.shape, int(_lama_mask.min()), int(_lama_mask.max()),
+                _lama_img.flags["C_CONTIGUOUS"], _lama_mask.flags["C_CONTIGUOUS"],
+            )
+            inpainted = inpaint_with_standard_engine(
+                _lama_img,
+                _lama_mask,
+                radius=max(3, min(12, int(round((dilate_px + feather_px + 4) / 4))))
             )
             base = img_np
             over = ensure_uint8_rgb_array(inpainted)
