@@ -53,6 +53,8 @@ const SESSION_INTELLIGENCE_ORDER_ID_MAX_CHARS = 120;
 const SESSION_INTELLIGENCE_TOKEN_MAX_CHARS = 120;
 const SESSION_INTELLIGENCE_TAB_ID_MAX_CHARS = 120;
 const SESSION_INTELLIGENCE_PAGE_TITLE_MAX_CHARS = 240;
+const SHOPIFY_CUSTOM_PIXEL_SOURCE = 'shopify_custom_pixel';
+const SYNTHETIC_SESSION_ID_PREFIXES = ['si:', 'anon:'];
 const MIN_SESSIONS_FOR_SCROLL_DROPOFF = Math.min(
   Math.max(parseInt(process.env.SESSION_INTELLIGENCE_SCROLL_DROPOFF_MIN_SESSIONS || '8', 10) || 8, 1),
   500
@@ -2244,6 +2246,99 @@ function buildDynamicUpdateSql(tableName, row, allowedColumns, where) {
   };
 }
 
+function isSyntheticSessionId(sessionId) {
+  const normalizedSessionId = safeString(sessionId).trim();
+  if (!normalizedSessionId) return false;
+  return SYNTHETIC_SESSION_ID_PREFIXES.some((prefix) => normalizedSessionId.startsWith(prefix));
+}
+
+function scoreSessionIdentity({ sessionId, clientId, shopperNumber, userId, tabId }) {
+  let score = 0;
+  if (safeString(clientId).trim()) score += 1;
+  if (Number.isFinite(Number(shopperNumber)) && Number(shopperNumber) > 0) score += 1;
+  if (safeString(userId).trim()) score += 2;
+  if (safeString(tabId).trim()) score += 1;
+
+  const normalizedSessionId = safeString(sessionId).trim();
+  if (normalizedSessionId) {
+    score += isSyntheticSessionId(normalizedSessionId) ? 1 : 3;
+  }
+
+  return score;
+}
+
+function findDuplicateCustomPixelEvent(db, { store, eventId, eventName }) {
+  const normalizedStore = safeString(store).trim();
+  const normalizedEventId = safeString(eventId).trim();
+  const normalizedEventName = safeString(eventName).trim();
+  if (!normalizedStore || !normalizedEventId || !normalizedEventName) return null;
+
+  return db.prepare(`
+    SELECT
+      id,
+      session_id,
+      client_id,
+      shopper_number,
+      user_id,
+      tab_id
+    FROM si_events
+    WHERE store = ?
+      AND source = ?
+      AND event_id = ?
+      AND event_name = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(normalizedStore, SHOPIFY_CUSTOM_PIXEL_SOURCE, normalizedEventId, normalizedEventName);
+}
+
+function updateDuplicateCustomPixelEventIdentity(db, {
+  eventRowId,
+  sessionId,
+  clientId,
+  shopperNumber,
+  userId,
+  tabId
+}) {
+  if (!Number.isFinite(Number(eventRowId))) return;
+
+  db.prepare(`
+    UPDATE si_events
+    SET
+      session_id = ?,
+      client_id = ?,
+      shopper_number = ?,
+      user_id = ?,
+      tab_id = ?
+    WHERE id = ?
+  `).run(
+    sessionId,
+    clientId || null,
+    shopperNumber || null,
+    userId || null,
+    tabId || null,
+    Number(eventRowId)
+  );
+}
+
+function deleteSessionIfEventless(db, { store, sessionId }) {
+  const normalizedStore = safeString(store).trim();
+  const normalizedSessionId = safeString(sessionId).trim();
+  if (!normalizedStore || !normalizedSessionId) return;
+
+  const eventCount = Number(db.prepare(`
+    SELECT COUNT(1) AS count
+    FROM si_events
+    WHERE store = ? AND session_id = ?
+  `).get(normalizedStore, normalizedSessionId)?.count || 0);
+
+  if (eventCount > 0) return;
+
+  db.prepare(`
+    DELETE FROM si_sessions
+    WHERE store = ? AND session_id = ?
+  `).run(normalizedStore, normalizedSessionId);
+}
+
 function tryRecordSessionIntelligenceEventFallback({
   db,
   normalizedStore,
@@ -2479,6 +2574,7 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
 
   const clientId = identifiers.clientId || null;
   const userId = identifiers.userId || null;
+  const tabId = identifiers.tabId || null;
   const linkedSessionId = checkoutToken
     ? findSessionIdByCheckoutToken(db, normalizedStore, checkoutToken)
     : null;
@@ -2535,6 +2631,16 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     (cartToken ? `cart:${cartToken}` : null) ||
     (checkoutToken ? `checkout:${checkoutToken}` : null) ||
     `anon:${randomUUID()}`;
+
+  const duplicateCustomPixelEvent = (
+    source === SHOPIFY_CUSTOM_PIXEL_SOURCE && identifiers.eventId
+  )
+    ? findDuplicateCustomPixelEvent(db, {
+      store: normalizedStore,
+      eventId: identifiers.eventId,
+      eventName
+    })
+    : null;
 
   const sessionCampaign = findRecentSessionCampaign(db, normalizedStore, sessionId);
   const clientCampaign = findRecentClientCampaign(db, normalizedStore, clientId);
@@ -2775,8 +2881,63 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
     purchaseAt ? 'purchased' : checkoutStartedAt ? 'checkout' : atcAt ? 'atc' : 'active';
 
   let sessionNumber = null;
+  let duplicateResolution = null;
 
   const tx = db.transaction(() => {
+    if (duplicateCustomPixelEvent) {
+      const currentIdentityScore = scoreSessionIdentity({
+        sessionId,
+        clientId,
+        shopperNumber,
+        userId,
+        tabId
+      });
+      const existingIdentityScore = scoreSessionIdentity({
+        sessionId: duplicateCustomPixelEvent.session_id,
+        clientId: duplicateCustomPixelEvent.client_id,
+        shopperNumber: duplicateCustomPixelEvent.shopper_number,
+        userId: duplicateCustomPixelEvent.user_id,
+        tabId: duplicateCustomPixelEvent.tab_id
+      });
+
+      if (currentIdentityScore <= existingIdentityScore) {
+        duplicateResolution = {
+          mode: 'reuse_existing',
+          eventRowId: duplicateCustomPixelEvent.id,
+          sessionId: duplicateCustomPixelEvent.session_id
+        };
+        sessionNumber = db.prepare(`
+          SELECT session_number
+          FROM si_sessions
+          WHERE store = ? AND session_id = ?
+          LIMIT 1
+        `).get(normalizedStore, duplicateCustomPixelEvent.session_id)?.session_number || null;
+        return;
+      }
+
+      updateDuplicateCustomPixelEventIdentity(db, {
+        eventRowId: duplicateCustomPixelEvent.id,
+        sessionId,
+        clientId,
+        shopperNumber,
+        userId,
+        tabId
+      });
+
+      if (duplicateCustomPixelEvent.session_id !== sessionId) {
+        deleteSessionIfEventless(db, {
+          store: normalizedStore,
+          sessionId: duplicateCustomPixelEvent.session_id
+        });
+      }
+
+      duplicateResolution = {
+        mode: 'replace_existing',
+        eventRowId: duplicateCustomPixelEvent.id,
+        previousSessionId: duplicateCustomPixelEvent.session_id
+      };
+    }
+
     // Allocate a stable, per-store sequential session_number (S-000123).
     try {
       const existing = db.prepare(`
@@ -2813,45 +2974,47 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
       sessionNumber = null;
     }
 
-    insertEvent.run(
-      normalizedStore,
-      sessionId,
-      clientId,
-      shopperNumber,
-      userId,
-      source,
-      identifiers.eventId,
-      identifiers.eventSequence,
-      eventName,
-      eventTs,
-      identifiers.tabId,
-      location.pageUrl,
-      location.pagePath,
-      location.referrerUrl,
-      location.pageTitle,
-      cartToken,
-      checkoutToken,
-      orderId,
-      checkoutStep,
-      deviceType,
-      deviceOs,
-      countryCode,
-      product?.productId || null,
-      product?.variantId || null,
-      attribution.utm_source,
-      attribution.utm_medium,
-      attribution.utm_campaign,
-      attribution.utm_content,
-      attribution.utm_term,
-      attribution.fbclid,
-      attribution.gclid,
-      attribution.ttclid,
-      attribution.msclkid,
-      attribution.wbraid,
-      attribution.gbraid,
-      attribution.irclickid,
-      dataToStore ? JSON.stringify(dataToStore) : null
-    );
+    if (duplicateResolution?.mode !== 'replace_existing') {
+      insertEvent.run(
+        normalizedStore,
+        sessionId,
+        clientId,
+        shopperNumber,
+        userId,
+        source,
+        identifiers.eventId,
+        identifiers.eventSequence,
+        eventName,
+        eventTs,
+        tabId,
+        location.pageUrl,
+        location.pagePath,
+        location.referrerUrl,
+        location.pageTitle,
+        cartToken,
+        checkoutToken,
+        orderId,
+        checkoutStep,
+        deviceType,
+        deviceOs,
+        countryCode,
+        product?.productId || null,
+        product?.variantId || null,
+        attribution.utm_source,
+        attribution.utm_medium,
+        attribution.utm_campaign,
+        attribution.utm_content,
+        attribution.utm_term,
+        attribution.fbclid,
+        attribution.gclid,
+        attribution.ttclid,
+        attribution.msclkid,
+        attribution.wbraid,
+        attribution.gbraid,
+        attribution.irclickid,
+        dataToStore ? JSON.stringify(dataToStore) : null
+      );
+    }
 
     upsertSession.run(
       normalizedStore,
@@ -2979,12 +3142,15 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
   return {
     ok: true,
     store: normalizedStore,
-    sessionId,
+    sessionId: duplicateResolution?.mode === 'reuse_existing'
+      ? duplicateResolution.sessionId
+      : sessionId,
     sessionNumber,
     eventName,
     eventTs,
     checkoutToken,
     checkoutStep,
+    duplicateResolution: duplicateResolution?.mode || null,
     degradedWrite: false
   };
 }

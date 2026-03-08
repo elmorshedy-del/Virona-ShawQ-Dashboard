@@ -158,6 +158,11 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_events_store_source_event_id
+    ON si_events(store, source, event_id, event_name)
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS si_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,
