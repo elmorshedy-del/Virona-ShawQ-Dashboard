@@ -18,7 +18,7 @@ const MAX_WINDOW_SECONDS = 1800;
 const LIVE_STATE_GC_MULTIPLIER = 6; // keep some buffer beyond the visible window
 
 const PIXEL_SCRIPT_CACHE_SECONDS = 300; // keep short so we can ship fixes quickly
-const PIXEL_SCRIPT_VERSION = 'virona-pixel-v1';
+const PIXEL_SCRIPT_VERSION = 'virona-pixel-v2';
 
 const LIVE_DB_BOOTSTRAP_TTL_MS = 60 * 1000;
 const liveDbBootstrapByKey = new Map();
@@ -147,6 +147,10 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     return base + ':' + store;
   }
 
+  function cookieKey(base) {
+    return (base + '__' + store).replace(/[^a-zA-Z0-9_-]/g, '_');
+  }
+
   function readStorage(storage, key) {
     try {
       return storage.getItem(key);
@@ -164,30 +168,91 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     }
   }
 
+  function readCookie(name) {
+    try {
+      if (!document || typeof document.cookie !== 'string' || !document.cookie) return null;
+      var encodedName = encodeURIComponent(name) + '=';
+      var cookies = document.cookie.split(';');
+      for (var i = 0; i < cookies.length; i += 1) {
+        var cookie = cookies[i].trim();
+        if (cookie.indexOf(encodedName) !== 0) continue;
+        return decodeURIComponent(cookie.slice(encodedName.length));
+      }
+    } catch (_e) {}
+    return null;
+  }
+
+  function writeCookie(name, value, maxAgeSeconds) {
+    try {
+      if (!document) return false;
+      var parts = [
+        encodeURIComponent(name) + '=' + encodeURIComponent(value),
+        'Path=/',
+        'SameSite=Lax'
+      ];
+      if (window && window.location && window.location.protocol === 'https:') {
+        parts.push('Secure');
+      }
+      if (Number.isFinite(maxAgeSeconds) && maxAgeSeconds > 0) {
+        parts.push('Max-Age=' + String(Math.round(maxAgeSeconds)));
+      }
+      document.cookie = parts.join('; ');
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
   function getOrCreateClientId() {
     var key = storageKey('virona_si_client_id');
+    var bridgeKey = cookieKey('virona_si_client_id');
     var existing = readStorage(window.localStorage, key);
-    if (existing) return existing;
+    if (existing) {
+      writeCookie(bridgeKey, existing, 60 * 60 * 24 * 400);
+      return existing;
+    }
+    var bridged = readCookie(bridgeKey);
+    if (bridged) {
+      writeStorage(window.localStorage, key, bridged);
+      return bridged;
+    }
     var id = uuid();
     writeStorage(window.localStorage, key, id);
+    writeCookie(bridgeKey, id, 60 * 60 * 24 * 400);
     return id;
   }
 
   function getOrCreateSessionId() {
     var idKey = storageKey('virona_si_session_id');
     var tsKey = storageKey('virona_si_session_last_ts');
+    var bridgeIdKey = cookieKey('virona_si_session_id');
+    var bridgeTsKey = cookieKey('virona_si_session_last_ts');
     var existing = readStorage(window.sessionStorage, idKey);
     var lastTs = safeNumber(readStorage(window.sessionStorage, tsKey));
     var now = Date.now();
 
     if (existing && lastTs != null && (now - lastTs) < SESSION_IDLE_MS) {
       writeStorage(window.sessionStorage, tsKey, String(now));
+      writeCookie(bridgeIdKey, existing, 60 * 60 * 24 * 7);
+      writeCookie(bridgeTsKey, String(now), 60 * 60 * 24 * 7);
       return existing;
+    }
+
+    var bridged = readCookie(bridgeIdKey);
+    var bridgedTs = safeNumber(readCookie(bridgeTsKey));
+    if (bridged && bridgedTs != null && (now - bridgedTs) < SESSION_IDLE_MS) {
+      writeStorage(window.sessionStorage, idKey, bridged);
+      writeStorage(window.sessionStorage, tsKey, String(now));
+      writeCookie(bridgeIdKey, bridged, 60 * 60 * 24 * 7);
+      writeCookie(bridgeTsKey, String(now), 60 * 60 * 24 * 7);
+      return bridged;
     }
 
     var id = uuid();
     writeStorage(window.sessionStorage, idKey, id);
     writeStorage(window.sessionStorage, tsKey, String(now));
+    writeCookie(bridgeIdKey, id, 60 * 60 * 24 * 7);
+    writeCookie(bridgeTsKey, String(now), 60 * 60 * 24 * 7);
     return id;
   }
 
