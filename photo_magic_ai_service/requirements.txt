@@ -4,21 +4,21 @@ flask-cors>=4.0.0
 
 # Image processing
 numpy>=1.24.0,<2
-Pillow>=10.0.0
+# simple-lama-inpainting==0.1.2 requires Pillow<10
+Pillow>=9.5.0,<10.0.0
 opencv-python-headless>=4.8.0
 
-# Torch
+# Torch (CPU)
 torch>=2.0.0
-torchvision>=0.15.0
 
-# RMBG 2.0 (BRIA)
+# Segmentation model (RMBG 1.4 or BiRefNet via HuggingFace)
 transformers==4.54.1
 kornia>=0.8.0
 
 # SAM 2 (installed from source; not published on PyPI)
 git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4
 
-# LaMa (TorchScript wrapper)
+# LaMa inpainting
 simple-lama-inpainting==0.1.2
 
 # Super-resolution
