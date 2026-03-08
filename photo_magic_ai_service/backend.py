@@ -26,6 +26,7 @@ import torch
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from PIL import Image, ImageFilter
+from scipy import ndimage
 
 # ── numpy 2.x compatibility guard ──
 # simple-lama-inpainting and other libs use isinstance(x, np.ndarray) checks
@@ -345,11 +346,18 @@ def inpaint_with_standard_engine(image_rgb: Any, mask_u8: Any, *, radius: int = 
         try:
             return ensure_uint8_rgb_array(lama_model(base, mask_bin))
         except Exception as exc:
-            logger.warning("LaMa runtime failed; falling back to OpenCV inpaint: %s", exc)
+            logger.warning("LaMa runtime failed; falling back to distance-fill inpaint: %s", exc)
 
-    bgr = cv2.cvtColor(base, cv2.COLOR_RGB2BGR)
-    repaired = cv2.inpaint(bgr, mask_bin, inpaint_radius, cv2.INPAINT_TELEA)
-    return cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
+    mask_bool = mask_bin > 0
+    if not mask_bool.any():
+        return base
+
+    nearest_indices = ndimage.distance_transform_edt(mask_bool, return_distances=False, return_indices=True)
+    repaired = base[nearest_indices[0], nearest_indices[1]]
+    soften_radius = max(1, inpaint_radius / 1.5)
+    softened = np.array(Image.fromarray(repaired, mode="RGB").filter(ImageFilter.GaussianBlur(radius=soften_radius)), dtype=np.uint8)
+    alpha = feather_mask(mask_bin, max(inpaint_radius * 2, 4))
+    return composite_with_alpha(base, softened, alpha)
 
 
 def extract_segmentation_tensor(output: Any) -> torch.Tensor | None:
