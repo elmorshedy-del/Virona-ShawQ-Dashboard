@@ -25,7 +25,7 @@ One derived row per stitched session.
 It stores:
 
 - identity spine (`client_id`, `session_id`, `shopper_number`, `user_id`)
-- entry context (`entry_page_path`, source, campaign, device, country)
+- entry context (`entry_page_path`, `source`, `campaign`, `device`, `country`)
 - first / last product context
 - cart / checkout / payment / purchase milestones
 - last meaningful action before exit

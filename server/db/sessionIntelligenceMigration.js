@@ -549,11 +549,6 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_si_journey_steps_store_session
-    ON si_journey_steps(store, session_id, step_index)
-  `);
-
-  db.exec(`
     CREATE TABLE IF NOT EXISTS si_checkout_session_links (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store TEXT NOT NULL,

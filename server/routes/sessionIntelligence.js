@@ -498,7 +498,7 @@ router.get('/journey/abandonment', (req, res) => {
   }
 });
 
-router.get('/journeys', (req, res) => {
+router.get('/journeys', requireSurveyAdminSession, (req, res) => {
   try {
     const store = req.query.store || 'shawq';
     const date = req.query.date || null;
@@ -521,7 +521,7 @@ router.get('/journeys', (req, res) => {
   }
 });
 
-router.get('/journeys/:sessionId', (req, res) => {
+router.get('/journeys/:sessionId', requireSurveyAdminSession, (req, res) => {
   try {
     const store = req.query.store || 'shawq';
     const sessionId = req.params.sessionId || '';

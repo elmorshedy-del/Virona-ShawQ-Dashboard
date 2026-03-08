@@ -563,6 +563,23 @@ function resolveLaterSessionOutcome(db, store, sessionRow) {
   };
 }
 
+function buildJourneySourceUpdatedAt(sessionRow) {
+  return normalizeSqliteDateTime(
+    sessionRow?.updated_at ||
+    sessionRow?.last_event_at ||
+    sessionRow?.started_at ||
+    new Date()
+  );
+}
+
+function isJourneyFresh(journeyRow, sourceUpdatedAt) {
+  return Boolean(
+    journeyRow
+    && Number(journeyRow.builder_version) === JOURNEY_BUILDER_VERSION
+    && safeString(journeyRow.source_updated_at).trim() === safeString(sourceUpdatedAt).trim()
+  );
+}
+
 function buildJourneyPayload(sessionRow, eventRows, laterOutcome) {
   const steps = [];
   const sequence = [];
@@ -837,6 +854,8 @@ function persistJourney(db, journeyPayload) {
   if (!journey || !safeString(journey.store).trim() || !safeString(journey.session_id).trim()) return null;
 
   const persistTx = db.transaction(() => {
+    // Keep this explicit journey column list mirrored with the `si_journeys` schema so field-level changes
+    // remain reviewable. If this statement grows much further, promote it to a shared generated column map.
     db.prepare(`
       INSERT INTO si_journeys (
         store,
@@ -1077,6 +1096,25 @@ function selectJourneyRow(db, store, sessionId) {
   `).get(store, sessionId);
 }
 
+function selectJourneyRowsForSessionIds(db, store, sessionIds) {
+  if (!Array.isArray(sessionIds) || !sessionIds.length) return new Map();
+  const placeholders = sessionIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT *
+    FROM si_journeys
+    WHERE store = ?
+      AND session_id IN (${placeholders})
+  `).all(store, ...sessionIds);
+
+  const bySessionId = new Map();
+  for (const row of rows) {
+    const sessionId = safeString(row?.session_id).trim();
+    if (!sessionId) continue;
+    bySessionId.set(sessionId, row);
+  }
+  return bySessionId;
+}
+
 function selectJourneySteps(db, store, sessionId) {
   return db.prepare(`
     SELECT *
@@ -1088,10 +1126,8 @@ function selectJourneySteps(db, store, sessionId) {
 
 function buildOrRefreshJourney(db, store, sessionRow, { rebuild = false } = {}) {
   const existing = selectJourneyRow(db, store, sessionRow.session_id);
-  const sourceUpdatedAt = normalizeSqliteDateTime(sessionRow.updated_at || sessionRow.last_event_at || sessionRow.started_at || new Date());
-  const isFresh = existing
-    && Number(existing.builder_version) === JOURNEY_BUILDER_VERSION
-    && safeString(existing.source_updated_at).trim() === sourceUpdatedAt;
+  const sourceUpdatedAt = buildJourneySourceUpdatedAt(sessionRow);
+  const isFresh = isJourneyFresh(existing, sourceUpdatedAt);
 
   if (!rebuild && isFresh) {
     return {
@@ -1109,6 +1145,53 @@ function buildOrRefreshJourney(db, store, sessionRow, { rebuild = false } = {}) 
     journey,
     steps: selectJourneySteps(db, store, sessionRow.session_id),
     rebuilt: true
+  };
+}
+
+function buildOrRefreshJourneysForList(db, store, sessionRows, { rebuild = false } = {}) {
+  const normalizedRows = Array.isArray(sessionRows) ? sessionRows : [];
+  if (!normalizedRows.length) return { journeys: [], rebuilt: 0 };
+
+  const sessionIds = normalizedRows
+    .map((row) => safeString(row?.session_id).trim())
+    .filter(Boolean);
+
+  const existingBySessionId = selectJourneyRowsForSessionIds(db, store, sessionIds);
+  const rebuildRows = [];
+
+  for (const sessionRow of normalizedRows) {
+    const sourceUpdatedAt = buildJourneySourceUpdatedAt(sessionRow);
+    const existing = existingBySessionId.get(sessionRow.session_id) || null;
+    if (rebuild || !isJourneyFresh(existing, sourceUpdatedAt)) {
+      rebuildRows.push(sessionRow);
+    }
+  }
+
+  if (rebuildRows.length) {
+    const rebuildSessionIds = rebuildRows.map((row) => row.session_id);
+    const eventRowsBySessionId = loadEventRowsForSessionIds(db, store, rebuildSessionIds);
+    const rebuildTx = db.transaction(() => {
+      for (const sessionRow of rebuildRows) {
+        const eventRows = eventRowsBySessionId.get(sessionRow.session_id) || [];
+        const laterOutcome = resolveLaterSessionOutcome(db, store, sessionRow);
+        const payload = buildJourneyPayload(sessionRow, eventRows, laterOutcome);
+        const journey = persistJourney(db, payload);
+        existingBySessionId.set(sessionRow.session_id, journey);
+      }
+    });
+    rebuildTx();
+  }
+
+  const journeys = [];
+  for (const sessionRow of normalizedRows) {
+    const journey = existingBySessionId.get(sessionRow.session_id) || null;
+    if (!journey) continue;
+    journeys.push(journey);
+  }
+
+  return {
+    journeys,
+    rebuilt: rebuildRows.length
   };
 }
 
@@ -1191,14 +1274,8 @@ export function getSessionIntelligenceJourneys(store, {
   const range = resolveJourneyRange({ date, startDate, endDate });
   const max = normalizeLimit(limit);
   const sessionRows = selectSessionsForRange(db, normalizedStore, range, max);
-  const rows = [];
-  let rebuilt = 0;
-
-  for (const sessionRow of sessionRows) {
-    const result = buildOrRefreshJourney(db, normalizedStore, sessionRow, { rebuild });
-    if (result.rebuilt) rebuilt += 1;
-    rows.push(formatJourneyListRow(result.journey));
-  }
+  const { journeys, rebuilt } = buildOrRefreshJourneysForList(db, normalizedStore, sessionRows, { rebuild });
+  const rows = journeys.map(formatJourneyListRow);
 
   return {
     store: normalizedStore,
