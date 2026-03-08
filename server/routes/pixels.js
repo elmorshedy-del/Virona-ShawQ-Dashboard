@@ -56,6 +56,8 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
 
   var VERSION = ${JSON.stringify(PIXEL_SCRIPT_VERSION)};
   var SESSION_IDLE_MS = 30 * 60 * 1000;
+  var CLIENT_ID_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 400;
+  var SESSION_BRIDGE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
   var DEAD_CLICK_TIMEOUT_MS = 1200;
   var RAGE_CLICK_WINDOW_MS = 800;
   var RAGE_CLICK_MIN_CLICKS = 3;
@@ -208,7 +210,7 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     var bridgeKey = cookieKey('virona_si_client_id');
     var existing = readStorage(window.localStorage, key);
     if (existing) {
-      writeCookie(bridgeKey, existing, 60 * 60 * 24 * 400);
+      writeCookie(bridgeKey, existing, CLIENT_ID_COOKIE_MAX_AGE_SECONDS);
       return existing;
     }
     var bridged = readCookie(bridgeKey);
@@ -218,8 +220,19 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     }
     var id = uuid();
     writeStorage(window.localStorage, key, id);
-    writeCookie(bridgeKey, id, 60 * 60 * 24 * 400);
+    writeCookie(bridgeKey, id, CLIENT_ID_COOKIE_MAX_AGE_SECONDS);
     return id;
+  }
+
+  function persistSessionBridge(idKey, tsKey, bridgeIdKey, bridgeTsKey, sessionId, now, writeIdToStorage) {
+    var nowString = String(now);
+    if (writeIdToStorage) {
+      writeStorage(window.sessionStorage, idKey, sessionId);
+    }
+    writeStorage(window.sessionStorage, tsKey, nowString);
+    writeCookie(bridgeIdKey, sessionId, SESSION_BRIDGE_COOKIE_MAX_AGE_SECONDS);
+    writeCookie(bridgeTsKey, nowString, SESSION_BRIDGE_COOKIE_MAX_AGE_SECONDS);
+    return sessionId;
   }
 
   function getOrCreateSessionId() {
@@ -227,33 +240,27 @@ function renderUniversalPixelScript({ surveyPublicToken = '' } = {}) {
     var tsKey = storageKey('virona_si_session_last_ts');
     var bridgeIdKey = cookieKey('virona_si_session_id');
     var bridgeTsKey = cookieKey('virona_si_session_last_ts');
+    var now = Date.now();
     var existing = readStorage(window.sessionStorage, idKey);
     var lastTs = safeNumber(readStorage(window.sessionStorage, tsKey));
-    var now = Date.now();
+    var sessionId = null;
+    var writeIdToStorage = false;
 
     if (existing && lastTs != null && (now - lastTs) < SESSION_IDLE_MS) {
-      writeStorage(window.sessionStorage, tsKey, String(now));
-      writeCookie(bridgeIdKey, existing, 60 * 60 * 24 * 7);
-      writeCookie(bridgeTsKey, String(now), 60 * 60 * 24 * 7);
-      return existing;
+      sessionId = existing;
+    } else {
+      var bridged = readCookie(bridgeIdKey);
+      var bridgedTs = safeNumber(readCookie(bridgeTsKey));
+      if (bridged && bridgedTs != null && (now - bridgedTs) < SESSION_IDLE_MS) {
+        sessionId = bridged;
+        writeIdToStorage = true;
+      } else {
+        sessionId = uuid();
+        writeIdToStorage = true;
+      }
     }
 
-    var bridged = readCookie(bridgeIdKey);
-    var bridgedTs = safeNumber(readCookie(bridgeTsKey));
-    if (bridged && bridgedTs != null && (now - bridgedTs) < SESSION_IDLE_MS) {
-      writeStorage(window.sessionStorage, idKey, bridged);
-      writeStorage(window.sessionStorage, tsKey, String(now));
-      writeCookie(bridgeIdKey, bridged, 60 * 60 * 24 * 7);
-      writeCookie(bridgeTsKey, String(now), 60 * 60 * 24 * 7);
-      return bridged;
-    }
-
-    var id = uuid();
-    writeStorage(window.sessionStorage, idKey, id);
-    writeStorage(window.sessionStorage, tsKey, String(now));
-    writeCookie(bridgeIdKey, id, 60 * 60 * 24 * 7);
-    writeCookie(bridgeTsKey, String(now), 60 * 60 * 24 * 7);
-    return id;
+    return persistSessionBridge(idKey, tsKey, bridgeIdKey, bridgeTsKey, sessionId, now, writeIdToStorage);
   }
 
   function getOrCreateTabId() {
