@@ -2291,13 +2291,25 @@ function findDuplicateCustomPixelEvent(db, { store, eventId, eventName }) {
   `).get(normalizedStore, SHOPIFY_CUSTOM_PIXEL_SOURCE, normalizedEventId, normalizedEventName);
 }
 
-function updateDuplicateCustomPixelEventIdentity(db, {
+function updateDuplicateCustomPixelEvent(db, {
   eventRowId,
   sessionId,
   clientId,
   shopperNumber,
   userId,
-  tabId
+  tabId,
+  eventTs,
+  location,
+  cartToken,
+  checkoutToken,
+  orderId,
+  checkoutStep,
+  deviceType,
+  deviceOs,
+  countryCode,
+  product,
+  attribution,
+  dataJson
 }) {
   if (!Number.isFinite(Number(eventRowId))) return;
 
@@ -2308,7 +2320,34 @@ function updateDuplicateCustomPixelEventIdentity(db, {
       client_id = ?,
       shopper_number = ?,
       user_id = ?,
-      tab_id = ?
+      tab_id = ?,
+      event_ts = ?,
+      page_url = ?,
+      page_path = ?,
+      referrer_url = ?,
+      page_title = ?,
+      cart_token = ?,
+      checkout_token = ?,
+      order_id = ?,
+      checkout_step = ?,
+      device_type = ?,
+      device_os = ?,
+      country_code = ?,
+      product_id = ?,
+      variant_id = ?,
+      utm_source = ?,
+      utm_medium = ?,
+      utm_campaign = ?,
+      utm_content = ?,
+      utm_term = ?,
+      fbclid = ?,
+      gclid = ?,
+      ttclid = ?,
+      msclkid = ?,
+      wbraid = ?,
+      gbraid = ?,
+      irclickid = ?,
+      data_json = ?
     WHERE id = ?
   `).run(
     sessionId,
@@ -2316,6 +2355,33 @@ function updateDuplicateCustomPixelEventIdentity(db, {
     shopperNumber || null,
     userId || null,
     tabId || null,
+    eventTs,
+    location.pageUrl,
+    location.pagePath,
+    location.referrerUrl,
+    location.pageTitle,
+    cartToken,
+    checkoutToken,
+    orderId,
+    checkoutStep,
+    deviceType,
+    deviceOs,
+    countryCode,
+    product?.productId || null,
+    product?.variantId || null,
+    attribution.utm_source,
+    attribution.utm_medium,
+    attribution.utm_campaign,
+    attribution.utm_content,
+    attribution.utm_term,
+    attribution.fbclid,
+    attribution.gclid,
+    attribution.ttclid,
+    attribution.msclkid,
+    attribution.wbraid,
+    attribution.gbraid,
+    attribution.irclickid,
+    dataJson,
     Number(eventRowId)
   );
 }
@@ -2915,13 +2981,25 @@ export function recordSessionIntelligenceEvent({ store, payload, source = 'shopi
         return;
       }
 
-      updateDuplicateCustomPixelEventIdentity(db, {
+      updateDuplicateCustomPixelEvent(db, {
         eventRowId: duplicateCustomPixelEvent.id,
         sessionId,
         clientId,
         shopperNumber,
         userId,
-        tabId
+        tabId,
+        eventTs,
+        location,
+        cartToken,
+        checkoutToken,
+        orderId,
+        checkoutStep,
+        deviceType,
+        deviceOs,
+        countryCode,
+        product,
+        attribution,
+        dataJson: dataToStore ? JSON.stringify(dataToStore) : null
       });
 
       if (duplicateCustomPixelEvent.session_id !== sessionId) {
