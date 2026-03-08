@@ -45,8 +45,8 @@ function StatusPill({ ok, label, title }) {
   return (
     <div
       className={cn(
-        'inline-flex items-center gap-2 rounded-sm border px-2.5 py-1 text-[11px] font-semibold tracking-wide',
-        ok ? 'border-emerald-900 bg-emerald-950/40 text-emerald-300' : 'border-rose-900 bg-rose-950/30 text-rose-300'
+        'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-semibold tracking-wide',
+        ok ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-600'
       )}
       title={title || label}
     >
@@ -58,9 +58,9 @@ function StatusPill({ ok, label, title }) {
 
 function Button({ variant = 'primary', disabled, className, children, ...props }) {
   const styles = {
-    primary: 'border border-amber-400/40 bg-amber-500 text-[#09090b] hover:bg-amber-400',
-    secondary: 'border border-slate-700 bg-[#161b23] text-slate-100 hover:bg-[#1d2430]',
-    ghost: 'border border-transparent bg-transparent text-slate-400 hover:border-slate-700 hover:bg-[#161b23] hover:text-slate-100'
+    primary: 'border border-indigo-200 bg-indigo-600 text-white shadow-sm hover:bg-indigo-500',
+    secondary: 'border border-gray-200 bg-white text-gray-700 shadow-sm hover:bg-gray-50 hover:border-gray-300',
+    ghost: 'border border-transparent bg-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-700'
   };
 
   return (
@@ -68,7 +68,7 @@ function Button({ variant = 'primary', disabled, className, children, ...props }
       type="button"
       disabled={disabled}
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-sm px-3 py-2 text-sm font-medium transition-colors',
+        'inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-all',
         'disabled:cursor-not-allowed disabled:opacity-50',
         styles[variant],
         className
@@ -81,15 +81,15 @@ function Button({ variant = 'primary', disabled, className, children, ...props }
 }
 
 function Label({ children }) {
-  return <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-500">{children}</div>;
+  return <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400">{children}</div>;
 }
 
 function Input({ className, ...props }) {
   return (
     <input
       className={cn(
-        'w-full rounded-sm border border-slate-700 bg-[#0f131a] px-3 py-2 text-sm text-slate-100 outline-none transition-colors',
-        'focus:border-amber-400 focus:bg-[#121924]',
+        'w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition-colors',
+        'placeholder:text-gray-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100',
         className
       )}
       {...props}
@@ -101,8 +101,8 @@ function Select({ className, children, ...props }) {
   return (
     <select
       className={cn(
-        'w-full rounded-sm border border-slate-700 bg-[#0f131a] px-3 py-2 text-sm text-slate-100 outline-none transition-colors',
-        'focus:border-amber-400 focus:bg-[#121924]',
+        'w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition-colors',
+        'focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100',
         className
       )}
       {...props}
@@ -124,11 +124,11 @@ function Toggle({ value, onChange, options = [] }) {
           onClick={() => onChange(opt.value)}
           disabled={opt.disabled}
           className={cn(
-            'rounded-sm border px-3 py-2 text-sm font-medium transition-colors',
+            'rounded-xl border px-3 py-2 text-sm font-medium transition-all',
             'disabled:cursor-not-allowed disabled:opacity-45',
             value === opt.value
-              ? 'border-amber-400 bg-amber-500/12 text-amber-100'
-              : 'border-slate-700 bg-[#0f131a] text-slate-300 hover:bg-[#151b24]'
+              ? 'border-indigo-200 bg-indigo-50 text-indigo-700 shadow-sm'
+              : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
           )}
           title={opt.title}
         >
@@ -142,10 +142,10 @@ function Toggle({ value, onChange, options = [] }) {
 function makeCheckerBg() {
   return {
     backgroundImage:
-      'linear-gradient(45deg, rgba(255,255,255,0.05) 25%, transparent 25%),' +
-      'linear-gradient(-45deg, rgba(255,255,255,0.05) 25%, transparent 25%),' +
-      'linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.05) 75%),' +
-      'linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.05) 75%)',
+      'linear-gradient(45deg, rgba(0,0,0,0.06) 25%, transparent 25%),' +
+      'linear-gradient(-45deg, rgba(0,0,0,0.06) 25%, transparent 25%),' +
+      'linear-gradient(45deg, transparent 75%, rgba(0,0,0,0.06) 75%),' +
+      'linear-gradient(-45deg, transparent 75%, rgba(0,0,0,0.06) 75%)',
     backgroundSize: '24px 24px',
     backgroundPosition: '0 0, 0 12px, 12px -12px, -12px 0px'
   };
@@ -159,7 +159,7 @@ const TOOL_DEFINITIONS = {
   },
   select: {
     label: 'Prompt Selection',
-    engine: 'Gemini Vision + SAM2',
+    engine: 'Gemini Vision',
     description: 'Find a target from a text prompt, then convert the detection into a production mask.'
   },
   erase: {
@@ -216,7 +216,7 @@ export default function PhotoMagicEditor({ store }) {
   const [health, setHealth] = useState(null);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [showDebugPanel, setShowDebugPanel] = useState(true);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugTrace, setDebugTrace] = useState([]);
 
   const [tool, setTool] = useState('remove_bg');
@@ -1342,10 +1342,10 @@ export default function PhotoMagicEditor({ store }) {
       {
         id: 'select',
         title: 'Prompt Selection',
-        model: 'Gemini Vision + SAM2',
-        ready: Boolean(geminiReady && sam2Ready),
+        model: sam2Ready ? 'Gemini Vision + SAM2' : 'Gemini Vision',
+        ready: Boolean(geminiReady),
         description: 'Language-based target pickup that resolves into a real mask.',
-        error: geminiReady ? (aiHealthPayload?.errors?.sam2 || '') : 'GEMINI_API_KEY is not configured.'
+        error: geminiReady ? '' : 'GEMINI_API_KEY is not configured.'
       },
       {
         id: 'lama',
@@ -1407,7 +1407,21 @@ export default function PhotoMagicEditor({ store }) {
     ]
   );
 
-  const readyCount = connectedStack.filter((item) => item.ready).length;
+  const visibleStack = useMemo(() => {
+    const alwaysShow = new Set(['rmbg2', 'lama', 'select']);
+    return connectedStack.filter((item) => alwaysShow.has(item.id) || item.ready);
+  }, [connectedStack]);
+  const readyCount = visibleStack.filter((item) => item.ready).length;
+
+  const availableTools = useMemo(() => {
+    const gating = {
+      expand: expandReady,
+    };
+    return Object.fromEntries(
+      Object.entries(TOOL_DEFINITIONS).filter(([key]) => gating[key] === undefined || gating[key])
+    );
+  }, [expandReady]);
+
   const stageConfig = TOOL_DEFINITIONS[tool];
   const outputCards = useMemo(() => {
     if (tool === 'remove_bg') {
@@ -1444,7 +1458,7 @@ export default function PhotoMagicEditor({ store }) {
         {
           id: 'selection',
           title: 'Selected Asset',
-          engine: selectionMeta?.label ? `Gemini: ${selectionMeta.label}` : 'Gemini Vision / SAM2',
+          engine: selectionMeta?.label ? `Gemini: ${selectionMeta.label}` : 'Gemini Vision',
           url: selectionCutoutUrl,
           empty: 'Type a target prompt to isolate a price tag, logo, bag, shoe, face, or text block.',
           promoteable: true,
@@ -1618,11 +1632,11 @@ export default function PhotoMagicEditor({ store }) {
       return (
         <div className="flex min-h-[720px] items-center justify-center px-8">
           <div className="relative flex max-w-xl flex-col items-center text-center">
-            <div className="absolute left-1/2 top-1/2 h-24 w-px -translate-x-1/2 -translate-y-1/2 bg-slate-700" />
-            <div className="absolute left-1/2 top-1/2 h-px w-24 -translate-x-1/2 -translate-y-1/2 bg-slate-700" />
-            <Crosshair className="relative z-10 h-6 w-6 text-slate-500" />
-            <div className="mt-6 text-sm font-medium tracking-wide text-slate-100">Import seed asset or route an output into the source chain</div>
-            <div className="mt-2 max-w-md text-sm leading-6 text-slate-400">
+            <div className="absolute left-1/2 top-1/2 h-24 w-px -translate-x-1/2 -translate-y-1/2 bg-gray-200" />
+            <div className="absolute left-1/2 top-1/2 h-px w-24 -translate-x-1/2 -translate-y-1/2 bg-gray-200" />
+            <Crosshair className="relative z-10 h-6 w-6 text-gray-400" />
+            <div className="mt-6 text-sm font-medium tracking-wide text-gray-900">Import seed asset or route an output into the source chain</div>
+            <div className="mt-2 max-w-md text-sm leading-6 text-gray-500">
               This workbench treats cutout, cleanup, and enhancement as one connected sequence. Start with a seed asset and promote renders back into source when you want to continue the stack.
             </div>
             <div className="mt-6">
@@ -1639,7 +1653,7 @@ export default function PhotoMagicEditor({ store }) {
     if (viewportMode === 'mask' && activeMaskUrl) {
       return (
         <div className="flex min-h-[720px] items-center justify-center p-10">
-          <img src={activeMaskUrl} alt="Mask artifact" className="block max-h-[780px] max-w-full rounded-sm border border-slate-700 bg-[#10151d]" />
+          <img src={activeMaskUrl} alt="Mask artifact" className="block max-h-[780px] max-w-full rounded-xl border border-gray-100 bg-gray-50" />
         </div>
       );
     }
@@ -1647,8 +1661,8 @@ export default function PhotoMagicEditor({ store }) {
     if (viewportMode === 'result' && primaryOutputUrl) {
       return (
         <div className="flex min-h-[720px] items-center justify-center p-10">
-          <div className="rounded-sm border border-slate-700 bg-[#10151d] p-0" style={primaryOutput?.checker ? makeCheckerBg() : undefined}>
-            <img src={primaryOutputUrl} alt={primaryOutput?.title || 'Result'} className="block max-h-[780px] max-w-full rounded-sm" />
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-0" style={primaryOutput?.checker ? makeCheckerBg() : undefined}>
+            <img src={primaryOutputUrl} alt={primaryOutput?.title || 'Result'} className="block max-h-[780px] max-w-full rounded-xl" />
           </div>
         </div>
       );
@@ -1657,8 +1671,8 @@ export default function PhotoMagicEditor({ store }) {
     if (viewportMode === 'compare' && primaryOutputUrl) {
       return (
         <div className="flex min-h-[720px] items-center justify-center p-10">
-          <div className="relative inline-block overflow-hidden rounded-sm border border-slate-700 bg-[#10151d]" style={primaryOutput?.checker ? makeCheckerBg() : undefined}>
-            <img src={primaryOutputUrl} alt={primaryOutput?.title || 'Result'} className="block max-h-[780px] max-w-full rounded-sm" />
+          <div className="relative inline-block overflow-hidden rounded-xl border border-gray-100 bg-gray-50" style={primaryOutput?.checker ? makeCheckerBg() : undefined}>
+            <img src={primaryOutputUrl} alt={primaryOutput?.title || 'Result'} className="block max-h-[780px] max-w-full rounded-xl" />
             <div className="pointer-events-none absolute inset-0">
               <img
                 src={imageSrc}
@@ -1668,10 +1682,10 @@ export default function PhotoMagicEditor({ store }) {
               />
             </div>
             <div className="pointer-events-none absolute inset-y-0 border-r border-white/80" style={{ left: `${compareSplit}%` }} />
-            <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-slate-700 bg-[#0f131a]/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+            <div className="pointer-events-none absolute left-4 top-4 rounded-xl border border-white/50 bg-white/75 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-gray-500 shadow-sm" style={{ backdropFilter: 'blur(24px)' }}>
               Source
             </div>
-            <div className="pointer-events-none absolute right-4 top-4 rounded-md border border-slate-700 bg-[#0f131a]/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+            <div className="pointer-events-none absolute right-4 top-4 rounded-xl border border-white/50 bg-white/75 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-gray-500 shadow-sm" style={{ backdropFilter: 'blur(24px)' }}>
               Result
             </div>
           </div>
@@ -1682,7 +1696,7 @@ export default function PhotoMagicEditor({ store }) {
     return (
       <div className="flex min-h-[720px] items-center justify-center p-10">
         <div className="relative inline-block select-none" onClick={addPointFromEvent}>
-          <div className="rounded-sm border border-slate-700 bg-[#10151d]" style={sourcePreviewStyles}>
+          <div className="rounded-xl border border-gray-100 bg-gray-50" style={sourcePreviewStyles}>
             <img
               ref={imgRef}
               src={imageSrc}
@@ -1731,174 +1745,135 @@ export default function PhotoMagicEditor({ store }) {
   };
 
   return (
-    <div className="px-4 py-4 text-slate-100" style={{ fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
-      <div className="mx-auto max-w-[1880px] overflow-hidden rounded-sm border border-slate-800 bg-[#0f1115]">
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 px-5 py-4">
+    <div className="px-4 py-4 text-gray-900" style={{ fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+      <div className="mx-auto max-w-[1880px] overflow-hidden rounded-2xl border border-gray-200/60 bg-white/80 shadow-xl" style={{ backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)' }}>
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-100 px-6 py-4">
           <div className="flex items-center gap-4">
-            <div className="flex h-11 w-11 items-center justify-center rounded-sm border border-amber-400/30 bg-amber-500/10 text-amber-200">
-              <Wand2 className="h-5 w-5" />
+            <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 text-white shadow-lg shadow-indigo-500/20">
+              <Wand2 className="h-4 w-4 pm-sparkle-icon" />
             </div>
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-slate-500">Creative Studio / Photo Magic</div>
-              <div className="mt-1 text-lg font-semibold tracking-tight text-white">Photo Magic Studio</div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+              <span className="text-[15px] font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-gray-900 to-gray-600">Photo Magic</span>
+              <div className="flex items-center gap-1.5 mt-[-2px]">
+                <span className="text-[9px] font-semibold text-indigo-500 tracking-widest uppercase">Studio Engine</span>
+                <div className="w-1 h-1 rounded-full bg-indigo-400" />
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
                 <span>{sourceStage}</span>
-                <span className="h-1 w-1 rounded-full bg-slate-700" />
+                <span className="h-1 w-1 rounded-full bg-gray-300" />
                 <span>{sourceLabel || 'Awaiting seed asset'}</span>
-                <span className="h-1 w-1 rounded-full bg-slate-700" />
+                <span className="h-1 w-1 rounded-full bg-gray-300" />
                 <span>{sourceDimensions}</span>
               </div>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="rounded-sm border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-[11px] font-mono text-cyan-200">
-              Stack {readyCount}/{connectedStack.length} online
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-1.5 shadow-sm">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-50 blur-[2px]" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 pm-pulse-badge" />
+              </span>
+              <span className="text-[11px] font-semibold text-gray-600">
+                {readyCount}/{visibleStack.length} Online
+              </span>
             </div>
             <Button variant="secondary" onClick={refreshHealth} disabled={isHealthLoading}>
               <RefreshCw className={cn('h-4 w-4', isHealthLoading ? 'animate-spin' : '')} />
-              Sync stack
+              Sync
             </Button>
-            <Button variant="primary" onClick={onPickFile} disabled={isUploading}>
-              <Upload className="h-4 w-4" />
-              Import seed asset
-            </Button>
+            <button
+              type="button"
+              onClick={onPickFile}
+              disabled={isUploading}
+              className="pm-shimmer flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold shadow-md shadow-blue-500/20 transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Import Asset
+            </button>
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
           </div>
         </div>
 
-        <div className="grid xl:grid-cols-[280px_minmax(0,1fr)_360px]">
-          <div className="border-b border-slate-800 bg-[#11161e] p-4 xl:border-b-0 xl:border-r">
-            <div className="rounded-md border border-slate-800 bg-[#0d1117] p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <Label>Active Source</Label>
-                  <div className="mt-2 text-sm font-medium text-slate-100">{sourceLabel || 'No source loaded'}</div>
-                </div>
-                <StatusPill ok={Boolean(imageId)} label={imageId ? 'Loaded' : 'Idle'} title={imageId || 'Upload a source image'} />
-              </div>
+        <div className="grid xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="relative min-w-0 overflow-hidden bg-[#f0f0f3] p-6">
+            {/* Floating gradient orbs */}
+            <div className="pointer-events-none absolute -top-20 -left-20 h-64 w-64 rounded-full bg-purple-300/20 opacity-70" style={{ filter: 'blur(80px)', animation: 'pm-float-gentle 6s infinite ease-in-out' }} />
+            <div className="pointer-events-none absolute -bottom-16 right-[20%] h-64 w-64 rounded-full bg-blue-300/20 opacity-70" style={{ filter: 'blur(80px)', animation: 'pm-float-gentle 8s infinite ease-in-out reverse' }} />
 
-              <div className="mt-4 overflow-hidden rounded-sm border border-slate-800 bg-[#161b23]" style={imageSrc ? makeCheckerBg() : undefined}>
-                {imageSrc ? (
-                  <img src={imageSrc} alt="Source preview" className="block aspect-[4/5] w-full object-contain" />
-                ) : (
-                  <div className="flex aspect-[4/5] items-center justify-center text-sm text-slate-500">Source preview</div>
-                )}
-              </div>
-
-              <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
-                <div>
-                  <Label>Stage</Label>
-                  <div className="mt-2 text-sm text-slate-200">{sourceStage}</div>
-                </div>
-                <div>
-                  <Label>File</Label>
-                  <div className="mt-2 text-sm text-slate-200">{imageMeta?.filename || '-'}</div>
-                </div>
-                <div>
-                  <Label>Resolution</Label>
-                  <div className="mt-2 text-sm text-slate-200">{sourceDimensions}</div>
-                </div>
-                <div>
-                  <Label>Size</Label>
-                  <div className="mt-2 text-sm text-slate-200">{formatBytes(imageMeta?.size)}</div>
-                </div>
-              </div>
-
-              <div className="mt-4">
-                <Label>Working Chain</Label>
-                <div className="mt-2 rounded-md border border-slate-800 bg-[#0f131a] px-3 py-2 text-xs font-mono text-slate-400">
-                  {sourceHistory.length ? sourceHistory.join(' > ') : 'Seed asset > Render > Promote back to source'}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <Label>Connected Stack</Label>
-                  <div className="mt-2 text-sm font-medium text-slate-100">Every engine is surfaced as a real stage</div>
-                </div>
-                <Layers3 className="h-4 w-4 text-slate-500" />
-              </div>
-
-              <div className="mt-4 space-y-3">
-                {connectedStack.map((item) => (
-                  <div key={item.id} className="rounded-sm border border-slate-800 bg-[#10151d] p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium text-slate-100">{item.title}</div>
-                      <StatusPill ok={item.ready} label={item.ready ? 'Online' : 'Offline'} title={item.error} />
-                    </div>
-                    <div className="mt-1 text-[11px] font-mono uppercase tracking-[0.18em] text-cyan-300/80">{item.model}</div>
-                    <div className="mt-2 text-xs leading-5 text-slate-400">{item.description}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <Label>Diagnostics</Label>
-                  <div className="mt-2 text-sm font-medium text-slate-100">Service status and payload detail</div>
-                </div>
-                <Button variant="ghost" onClick={() => setShowDiagnostics((prev) => !prev)} className="px-2 py-1 text-xs">
-                  {showDiagnostics ? 'Hide' : 'Show'}
-                </Button>
-              </div>
-
-              {showDiagnostics ? (
-                <pre className="mt-4 max-h-[320px] overflow-auto rounded-md border border-slate-800 bg-[#0a0d12] p-3 text-[11px] leading-5 text-slate-400">
-                  {JSON.stringify(health ?? null, null, 2)}
-                </pre>
-              ) : (
-                <div className="mt-4 rounded-md border border-dashed border-slate-800 bg-[#0f131a] px-3 py-3 text-xs text-slate-500">
-                  Keep this collapsed unless you need exact health payloads from the AI and HQ services.
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="min-w-0 border-b border-slate-800 bg-[#0f1115] p-4 xl:border-b-0 xl:border-r">
-            <div className="rounded-md border border-slate-800 bg-[#131922]">
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 px-4 py-3">
+            <div className="rounded-2xl border border-white bg-white shadow-[0_20px_50px_-12px_rgba(0,0,0,0.15)]">
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-100 px-5 py-3">
                 <div>
                   <Label>Viewport</Label>
-                  <div className="mt-2 text-sm font-medium text-slate-100">{stageConfig.label}</div>
-                  <div className="mt-1 text-xs text-slate-400">{stageConfig.description}</div>
+                  <div className="mt-1 text-sm font-medium text-gray-900">{stageConfig.label}</div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex gap-1 rounded-xl bg-gray-100 p-0.5">
                   {activeViewOptions.map((view) => (
-                    <Button
+                    <button
                       key={view.id}
-                      variant={viewportMode === view.id ? 'primary' : 'secondary'}
+                      type="button"
                       disabled={!view.enabled}
-                      className="px-3 py-1.5 text-xs"
+                      className={cn(
+                        'rounded-lg px-3 py-1.5 text-xs font-medium transition-all disabled:opacity-40',
+                        viewportMode === view.id
+                          ? 'bg-white text-gray-900 shadow-sm'
+                          : 'text-gray-500 hover:text-gray-700'
+                      )}
                       onClick={() => setViewportMode(view.id)}
                     >
                       {view.label}
-                    </Button>
+                    </button>
                   ))}
                 </div>
               </div>
 
-              <div className="relative overflow-hidden bg-[#1a1d23]">
+              <div className="relative overflow-hidden bg-[#f0f0f3]" style={makeCheckerBg()}>
                 {renderCanvas()}
 
                 {imageSrc ? (
-                  <div className="pointer-events-none absolute left-6 top-6 rounded-md border border-slate-700 bg-[#0f131a]/90 px-3 py-2 text-[11px] font-mono text-slate-400">
+                  <div className="pointer-events-none absolute left-4 top-4 rounded-xl border border-white/50 bg-white/75 px-3 py-1.5 text-[11px] font-mono text-gray-500 shadow-sm" style={{ backdropFilter: 'blur(24px)' }}>
                     {sourceDimensions}
                   </div>
                 ) : null}
 
-                <div className="pointer-events-none absolute bottom-6 right-6 rounded-md border border-slate-700 bg-[#0f131a]/90 px-3 py-2 text-[11px] font-mono uppercase tracking-[0.18em] text-slate-400">
+                <div className="pointer-events-none absolute bottom-4 right-4 rounded-xl border border-white/50 bg-white/75 px-3 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] text-gray-500 shadow-sm" style={{ backdropFilter: 'blur(24px)' }}>
                   {viewportMode}
+                </div>
+
+                {/* Floating engine badges */}
+                <div className="absolute bottom-4 left-4 flex flex-col gap-2 z-10">
+                  {visibleStack.filter(item => item.ready).map((item) => (
+                    <div key={item.id} className="pm-hover-lift flex items-center gap-2.5 rounded-xl border border-white/50 bg-white/75 px-3 py-1.5 shadow-sm cursor-default" style={{ backdropFilter: 'blur(24px)' }}>
+                      <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-100">
+                        <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                      </div>
+                      <div>
+                        <div className="text-[9px] font-bold uppercase tracking-widest text-emerald-600 leading-none">Online</div>
+                        <div className="text-[11px] font-bold text-gray-800 leading-none mt-0.5">{item.title}</div>
+                      </div>
+                      <span className="relative flex h-1.5 w-1.5 ml-1">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Floating zoom controls */}
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-2xl border border-white/60 bg-white/75 px-1.5 py-1.5 shadow-xl z-10 pm-hover-lift" style={{ backdropFilter: 'blur(24px)' }}>
+                  <button type="button" className="p-2 text-gray-500 hover:text-gray-900 hover:bg-white rounded-xl transition">
+                    <Wand2 className="h-4 w-4" />
+                  </button>
+                  <div className="px-3 text-[11px] font-bold text-gray-700 font-mono tracking-wider bg-white/50 py-1 rounded-lg">100%</div>
+                  <button type="button" className="p-2 text-gray-500 hover:text-gray-900 hover:bg-white rounded-xl transition">
+                    <Layers3 className="h-4 w-4" />
+                  </button>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-800 px-4 py-3">
-                <div className="text-xs text-slate-400">
+              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-gray-100 px-5 py-3">
+                <div className="text-xs text-gray-500">
                   {tool === 'remove_bg' && precisionMode
                     ? 'Precision mode is live. Click to add keep points. Hold Alt or Command to add remove points.'
                     : tool === 'select'
@@ -1914,27 +1889,29 @@ export default function PhotoMagicEditor({ store }) {
 
                 {viewportMode === 'compare' && canCompare ? (
                   <div className="flex items-center gap-3">
-                    <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-slate-500">Split</span>
+                    <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-gray-400">Split</span>
                     <input
                       type="range"
                       min={10}
                       max={90}
                       value={compareSplit}
                       onChange={(event) => setCompareSplit(clamp(toNumber(event.target.value, 56), 10, 90))}
-                      className="w-40 accent-amber-400"
+                      className="w-40 accent-indigo-500"
                     />
-                    <span className="text-[11px] font-mono text-slate-400">{compareSplit}%</span>
+                    <span className="text-[11px] font-mono text-gray-400">{compareSplit}%</span>
                   </div>
                 ) : null}
               </div>
             </div>
           </div>
 
-          <div className="bg-[#11161e] p-4">
-            <div className="rounded-md border border-slate-800 bg-[#0d1117] p-4">
-              <Label>Operation Mode</Label>
-              <div className="mt-3 space-y-2">
-                {Object.entries(TOOL_DEFINITIONS).map(([value, config]) => (
+          <div className="pm-glass-panel pm-scroll flex flex-col overflow-y-auto border-l border-white p-5" style={{ background: 'rgba(255,255,255,0.40)', boxShadow: '-20px 0 40px rgba(0,0,0,0.03)' }}>
+            <div className="mb-6">
+              <h2 className="text-[13px] font-bold tracking-widest uppercase text-gray-400 mb-4 flex items-center gap-2">
+                <Layers3 className="h-4 w-4" /> Operation Mode
+              </h2>
+              <div className="relative flex p-1 rounded-xl border border-gray-200/50 shadow-inner" style={{ background: 'rgba(243,244,246,0.8)' }}>
+                {Object.entries(availableTools).map(([value, config]) => (
                   <button
                     key={value}
                     type="button"
@@ -1945,24 +1922,20 @@ export default function PhotoMagicEditor({ store }) {
                       if (value === 'erase' || value === 'select' || value === 'relight' || value === 'expand') setViewportMode('source');
                     }}
                     className={cn(
-                      'w-full rounded-sm border p-3 text-left transition-colors',
+                      'flex-1 rounded-lg px-2 py-1.5 text-center text-[12px] font-medium transition-all relative z-10',
                       tool === value
-                        ? 'border-amber-400 bg-amber-500/10'
-                        : 'border-slate-800 bg-[#10151d] hover:bg-[#151b24]'
+                        ? 'bg-white text-indigo-600 font-semibold shadow-sm'
+                        : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
                     )}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium text-slate-100">{config.label}</div>
-                      <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-slate-500">{config.engine}</div>
-                    </div>
-                    <div className="mt-2 text-xs leading-5 text-slate-400">{config.description}</div>
+                    {config.label.replace('Foreground Isolation', 'Background').replace('Clean Plate', 'Eraser').replace('Lighting Stage', 'Lighting').replace('Prompt Selection', 'Selection')}
                   </button>
                 ))}
               </div>
             </div>
 
             {['remove_bg', 'select', 'erase'].includes(tool) ? (
-              <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <Label>Execution Parameters</Label>
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <div>
@@ -2015,9 +1988,9 @@ export default function PhotoMagicEditor({ store }) {
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded-md border border-slate-800 bg-[#10151d] px-3 py-3 text-xs leading-5 text-slate-400">
+                    <div className="rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3 text-xs leading-5 text-gray-500">
                       {tool === 'select'
-                        ? 'Selection uses Gemini Vision for target pickup, then SAM2 converts the detected region into a production mask.'
+                        ? 'Selection uses Gemini Vision for target pickup and converts the detected region into a production mask.'
                         : 'Isolation stages share the same mask dilation and feather controls so the cutout chain stays consistent.'}
                     </div>
                   )}
@@ -2026,9 +1999,9 @@ export default function PhotoMagicEditor({ store }) {
             ) : null}
 
             {tool === 'remove_bg' ? (
-              <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <Label>Foreground Isolation</Label>
-                <div className="mt-3 text-sm text-slate-300">Run the auto cutout first, then enter SAM2 precision if the silhouette needs manual correction.</div>
+                <div className="mt-3 text-sm text-gray-600">Run the auto cutout first, then enter SAM2 precision if the silhouette needs manual correction.</div>
 
                 <div className="mt-4 space-y-3">
                   <Button variant="primary" onClick={runRemoveBg} disabled={!imageId || isRunning || !rmbg2Ready} className="w-full justify-center">
@@ -2050,9 +2023,9 @@ export default function PhotoMagicEditor({ store }) {
                   </Button>
 
                   {precisionMode ? (
-                    <div className="rounded-md border border-slate-800 bg-[#10151d] p-3">
-                      <div className="text-sm font-medium text-slate-100">SAM2 guide points</div>
-                      <div className="mt-2 text-xs leading-5 text-slate-400">
+                    <div className="rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
+                      <div className="text-sm font-medium text-gray-900">SAM2 guide points</div>
+                      <div className="mt-2 text-xs leading-5 text-gray-500">
                         Default clicks add keep points. Hold Alt or Command for remove points. The refine pass uses the current source plus your point set.
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
@@ -2070,9 +2043,9 @@ export default function PhotoMagicEditor({ store }) {
             ) : null}
 
             {tool === 'select' ? (
-              <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <Label>Prompt Selection</Label>
-                <div className="mt-3 text-sm text-slate-300">Describe the target you want masked. The editor will detect one best region and convert it into a usable production mask.</div>
+                <div className="mt-3 text-sm text-gray-600">Describe the target you want masked. The editor will detect one best region and convert it into a usable production mask.</div>
 
                 <div className="mt-4">
                   <Label>Target Prompt</Label>
@@ -2086,19 +2059,19 @@ export default function PhotoMagicEditor({ store }) {
                 </div>
 
                 {selectionMeta ? (
-                  <div className="mt-4 rounded-md border border-slate-800 bg-[#10151d] p-3">
+                  <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
                     <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium text-slate-100">{selectionMeta.label || 'Resolved target'}</div>
-                      <div className="text-[11px] font-mono text-slate-400">{Math.round((selectionMeta.confidence || 0) * 100)}%</div>
+                      <div className="text-sm font-medium text-gray-900">{selectionMeta.label || 'Resolved target'}</div>
+                      <div className="text-[11px] font-mono text-gray-500">{Math.round((selectionMeta.confidence || 0) * 100)}%</div>
                     </div>
-                    <div className="mt-2 text-xs leading-5 text-slate-400">
+                    <div className="mt-2 text-xs leading-5 text-gray-500">
                       {selectionMeta.notes || 'Prompt detection is ready. Route the mask to clean plate if you want immediate object removal.'}
                     </div>
                   </div>
                 ) : null}
 
                 <div className="mt-4">
-                  <Button variant="primary" onClick={runSelect} disabled={!imageId || isRunning || !geminiReady || !sam2Ready || !selectionPrompt.trim()} className="w-full justify-center">
+                  <Button variant="primary" onClick={runSelect} disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()} className="w-full justify-center">
                     <Sparkles className="h-4 w-4" />
                     Execute prompt selection
                   </Button>
@@ -2107,7 +2080,7 @@ export default function PhotoMagicEditor({ store }) {
             ) : null}
 
             {tool === 'erase' ? (
-              <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <Label>Clean Plate Engine</Label>
                 <div className="mt-4">
                   <Toggle
@@ -2148,10 +2121,10 @@ export default function PhotoMagicEditor({ store }) {
                   </div>
                 </div>
 
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-800 bg-[#10151d] px-3 py-3">
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
                   <div>
                     <Label>Crop to Mask</Label>
-                    <div className="mt-2 text-sm text-slate-300">Limit the render region to the painted area before cleanup.</div>
+                    <div className="mt-2 text-sm text-gray-600">Limit the render region to the painted area before cleanup.</div>
                   </div>
                   <Button variant={cropToMask ? 'primary' : 'secondary'} onClick={() => setCropToMask((prev) => !prev)} className="px-3 py-1.5 text-xs">
                     {cropToMask ? 'Enabled' : 'Disabled'}
@@ -2167,11 +2140,11 @@ export default function PhotoMagicEditor({ store }) {
                   </Button>
                 </div>
 
-                <div className="mt-4 rounded-md border border-slate-800 bg-[#10151d] px-3 py-3">
+                <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <Label>Mask Coverage</Label>
-                      <div className="mt-2 text-sm font-medium text-slate-100">
+                      <div className="mt-2 text-sm font-medium text-gray-900">
                         {cleanPlateMaskReady ? `${maskCoverageLabel} painted` : 'No active clean plate mask'}
                       </div>
                     </div>
@@ -2181,7 +2154,7 @@ export default function PhotoMagicEditor({ store }) {
                       title={cleanPlateMaskReady ? `${maskMetrics.paintedPixels} painted pixels` : 'Paint over the source or route a mask artifact first'}
                     />
                   </div>
-                  <div className="mt-2 text-xs leading-5 text-slate-400">
+                  <div className="mt-2 text-xs leading-5 text-gray-500">
                     {latestMaskForErase
                       ? 'If the surface is blank, Photo Magic will auto-load the latest available mask before rendering.'
                       : 'Paint over the region to remove. Clean plate will not run until the mask surface contains visible pixels.'}
@@ -2189,8 +2162,8 @@ export default function PhotoMagicEditor({ store }) {
                 </div>
 
                 {quality === 'hq' ? (
-                  <div className="mt-4 rounded-md border border-slate-800 bg-[#10151d] p-3">
-                    <div className="text-sm font-medium text-slate-100">SDXL tuning</div>
+                  <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
+                    <div className="text-sm font-medium text-gray-900">SDXL tuning</div>
                     <div className="mt-4 grid grid-cols-2 gap-3">
                       <div>
                         <Label>Steps</Label>
@@ -2261,7 +2234,7 @@ export default function PhotoMagicEditor({ store }) {
             ) : null}
 
             {tool === 'relight' ? (
-              <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <Label>Lighting Stage</Label>
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <div>
@@ -2376,7 +2349,7 @@ export default function PhotoMagicEditor({ store }) {
             ) : null}
 
             {tool === 'expand' ? (
-              <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <Label>Canvas Expand</Label>
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <div>
@@ -2496,7 +2469,7 @@ export default function PhotoMagicEditor({ store }) {
             ) : null}
 
             {tool === 'enhance' ? (
-              <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
                 <Label>Enhancement Pass</Label>
                 <div className="mt-4">
                   <Label>Mode</Label>
@@ -2555,24 +2528,24 @@ export default function PhotoMagicEditor({ store }) {
               </div>
             ) : null}
 
-            <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
+            <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
               <Label>Rendered Outputs</Label>
               <div className="mt-4 space-y-4">
                 {outputCards.map((card) => (
-                  <div key={card.id} className="rounded-md border border-slate-800 bg-[#10151d] p-3">
+                  <div key={card.id} className="rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-sm font-medium text-slate-100">{card.title}</div>
-                        <div className="mt-1 text-[10px] font-mono uppercase tracking-[0.18em] text-cyan-300/80">{card.engine}</div>
+                        <div className="text-sm font-medium text-gray-900">{card.title}</div>
+                        <div className="mt-1 text-[10px] font-mono uppercase tracking-[0.18em] text-indigo-500">{card.engine}</div>
                       </div>
                       <StatusPill ok={Boolean(card.url)} label={card.url ? 'Ready' : 'Idle'} title={card.engine} />
                     </div>
 
-                    <div className="mt-3 overflow-hidden rounded-sm border border-slate-800 bg-[#161b23]" style={card.checker ? makeCheckerBg() : undefined}>
+                    <div className="mt-3 overflow-hidden rounded-xl border border-gray-100 bg-gray-50" style={card.checker ? makeCheckerBg() : undefined}>
                       {card.url ? (
                         <img src={card.url} alt={card.title} className="block aspect-[4/5] w-full object-contain" />
                       ) : (
-                        <div className="flex aspect-[4/5] items-center justify-center px-6 text-center text-sm leading-6 text-slate-500">{card.empty}</div>
+                        <div className="flex aspect-[4/5] items-center justify-center px-6 text-center text-sm leading-6 text-gray-400">{card.empty}</div>
                       )}
                     </div>
 
@@ -2595,7 +2568,7 @@ export default function PhotoMagicEditor({ store }) {
                           </Button>
                         ) : null}
                         <a
-                          className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-700 bg-[#161b23] px-3 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-[#1d2430]"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
                           href={card.url}
                           target="_blank"
                           rel="noreferrer"
@@ -2610,57 +2583,53 @@ export default function PhotoMagicEditor({ store }) {
               </div>
             </div>
 
-            <div className="mt-4 rounded-md border border-slate-800 bg-[#0d1117] p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
+            {showDebugPanel ? (
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
                   <Label>Execution Trace</Label>
-                  <div className="mt-2 text-sm font-medium text-slate-100">Track each stage request and exact failure point</div>
+                  <div className="flex gap-2">
+                    <Button variant="ghost" onClick={clearDebugTrace} className="px-2 py-1 text-xs">
+                      Clear
+                    </Button>
+                    <Button variant="ghost" onClick={() => setShowDebugPanel(false)} className="px-2 py-1 text-xs">
+                      Hide
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <Button variant="ghost" onClick={clearDebugTrace} className="px-2 py-1 text-xs">
-                    Clear
-                  </Button>
-                  <Button variant="ghost" onClick={() => setShowDebugPanel((prev) => !prev)} className="px-2 py-1 text-xs">
-                    {showDebugPanel ? 'Hide' : 'Show'}
-                  </Button>
-                </div>
-              </div>
 
-              {showDebugPanel ? (
-                debugTrace.length ? (
+                {debugTrace.length ? (
                   <div className="mt-4 max-h-[420px] space-y-2 overflow-auto">
                     {debugTrace.map((entry) => {
                       const tone =
                         entry.status === 'failed'
-                          ? 'border-rose-900/70 bg-rose-950/20'
+                          ? 'border-rose-200 bg-rose-50'
                           : entry.status === 'success'
-                            ? 'border-emerald-900/70 bg-emerald-950/20'
-                            : 'border-slate-800 bg-[#10151d]';
+                            ? 'border-emerald-200 bg-emerald-50'
+                            : 'border-gray-100 bg-gray-50/80';
                       const pillTone =
                         entry.status === 'failed'
-                          ? 'text-rose-300'
+                          ? 'text-rose-600'
                           : entry.status === 'success'
-                            ? 'text-emerald-300'
+                            ? 'text-emerald-600'
                             : entry.status === 'running'
-                              ? 'text-amber-300'
-                              : 'text-slate-400';
+                              ? 'text-amber-600'
+                              : 'text-gray-400';
 
                       return (
                         <div key={entry.id} className={cn('rounded-md border px-3 py-3', tone)}>
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono uppercase tracking-[0.16em] text-slate-500">
-                              <span>Run {entry.runId}</span>
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono uppercase tracking-[0.16em] text-gray-400">
                               <span>{entry.scope}</span>
                               <span>{entry.step}</span>
                             </div>
                             <div className="flex items-center gap-2">
                               <span className={cn('text-[11px] font-mono uppercase tracking-[0.16em]', pillTone)}>{entry.status}</span>
-                              <span className="text-[11px] font-mono text-slate-500">{formatDebugTimestamp(entry.at)}</span>
+                              <span className="text-[11px] font-mono text-gray-400">{formatDebugTimestamp(entry.at)}</span>
                             </div>
                           </div>
-                          <div className="mt-2 text-sm leading-6 text-slate-200">{entry.message}</div>
+                          <div className="mt-2 text-sm leading-6 text-gray-700">{entry.message}</div>
                           {entry.details ? (
-                            <pre className="mt-3 overflow-auto rounded-sm border border-slate-800 bg-[#0b0f15] p-3 text-[11px] leading-5 text-slate-400">
+                            <pre className="mt-3 overflow-auto rounded-xl border border-gray-100 bg-gray-50 p-3 text-[11px] leading-5 text-gray-500">
                               {JSON.stringify(entry.details, null, 2)}
                             </pre>
                           ) : null}
@@ -2669,36 +2638,34 @@ export default function PhotoMagicEditor({ store }) {
                     })}
                   </div>
                 ) : (
-                  <div className="mt-4 rounded-md border border-dashed border-slate-800 bg-[#10151d] px-3 py-3 text-xs leading-5 text-slate-500">
+                  <div className="mt-4 rounded-2xl border border-dashed border-gray-200 bg-gray-50/80 px-3 py-3 text-xs leading-5 text-gray-400">
                     No execution trace yet. Run a stage and this panel will show request start, success, failure, and any mask or routing blocker.
                   </div>
-                )
-              ) : (
-                <div className="mt-4 rounded-md border border-dashed border-slate-800 bg-[#10151d] px-3 py-3 text-xs leading-5 text-slate-500">
-                  Keep this open while testing Photo Magic. It records the last {DEBUG_TRACE_LIMIT} execution events.
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            ) : (
+              <div className="mt-4">
+                <Button variant="ghost" onClick={() => setShowDebugPanel(true)} className="w-full justify-center px-2 py-1 text-xs text-gray-400">
+                  Show execution trace
+                </Button>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="border-t border-slate-800 bg-[#0b0f15] px-5 py-3">
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[11px] font-mono uppercase tracking-[0.16em] text-slate-500">
-            <span>Source {sourceLabel || 'none'}</span>
-            <span>Tool {tool}</span>
-            <span>View {viewportMode}</span>
-            <span>Store {store || 'vironax'}</span>
-            <span>Status {isUploading ? 'uploading' : isRunning ? 'running' : 'idle'}</span>
-            <span>Last {lastRenderSummary}</span>
+        <div className="border-t border-gray-100 bg-white/60 px-5 py-3" style={{ backdropFilter: 'blur(24px)' }}>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[11px] font-mono uppercase tracking-[0.16em] text-gray-400">
+            <span>{stageConfig?.label || tool}</span>
+            <span>{isUploading ? 'Uploading...' : isRunning ? 'Processing...' : lastRenderSummary}</span>
           </div>
         </div>
 
         {error ? (
-          <div className="border-t border-rose-900/60 bg-rose-950/25 px-5 py-4">
-            <div className="flex items-start gap-3 text-sm text-rose-200">
-              <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
+          <div className="border-t border-rose-200 bg-rose-50 px-5 py-4">
+            <div className="flex items-start gap-3 text-sm text-rose-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-none text-rose-500" />
               <div>
-                <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-rose-300">Render Console</div>
+                <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-rose-500">Render Console</div>
                 <div className="mt-2 leading-6">{error}</div>
               </div>
             </div>

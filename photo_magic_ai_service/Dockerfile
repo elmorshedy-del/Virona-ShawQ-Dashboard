@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
 # Railway CPU builds: skip CUDA extension build for SAM2.
 ENV SAM2_BUILD_CUDA=0
 
+ARG REQUIREMENTS_BUST=v4_no_torchvision_20260307
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
