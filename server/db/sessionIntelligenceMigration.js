@@ -264,6 +264,16 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_client_started
+    ON si_sessions(store, client_id, started_at)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_user_started
+    ON si_sessions(store, last_user_id, started_at)
+  `);
+
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_sessions_store_entry_path
     ON si_sessions(store, entry_page_path)
   `);
@@ -431,6 +441,116 @@ export function runSessionIntelligenceMigration() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_investigation_jobs_store_status
     ON si_investigation_jobs(store, status, requested_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_journeys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      session_number INTEGER,
+      client_id TEXT,
+      shopper_number INTEGER,
+      user_id TEXT,
+      builder_version INTEGER NOT NULL,
+      source_updated_at TEXT,
+      built_at TEXT NOT NULL,
+      journey_date TEXT NOT NULL,
+      status TEXT NOT NULL,
+      journey_confidence TEXT NOT NULL,
+      entry_page_path TEXT,
+      entry_page_label TEXT,
+      entry_referrer_url TEXT,
+      entry_source TEXT,
+      entry_medium TEXT,
+      entry_campaign TEXT,
+      entry_device_type TEXT,
+      entry_device_os TEXT,
+      entry_country_code TEXT,
+      first_product_id TEXT,
+      first_product_label TEXT,
+      last_product_before_cart_id TEXT,
+      last_product_before_cart_label TEXT,
+      last_product_id TEXT,
+      last_product_label TEXT,
+      cart_entered_at TEXT,
+      checkout_started_at TEXT,
+      last_checkout_step TEXT,
+      payment_info_submitted_at TEXT,
+      purchase_at TEXT,
+      purchased_in_session INTEGER DEFAULT 0,
+      exit_step TEXT,
+      exit_page_path TEXT,
+      exit_page_label TEXT,
+      last_meaningful_event_name TEXT,
+      last_meaningful_event_ts TEXT,
+      last_meaningful_page_path TEXT,
+      last_signal_event_name TEXT,
+      last_signal_event_ts TEXT,
+      last_signal_page_path TEXT,
+      event_count INTEGER DEFAULT 0,
+      meaningful_event_count INTEGER DEFAULT 0,
+      step_count INTEGER DEFAULT 0,
+      product_view_count INTEGER DEFAULT 0,
+      technical_issue_count INTEGER DEFAULT 0,
+      friction_signal_count INTEGER DEFAULT 0,
+      returned_later INTEGER DEFAULT 0,
+      purchased_later INTEGER DEFAULT 0,
+      next_session_id TEXT,
+      next_session_started_at TEXT,
+      later_purchase_session_id TEXT,
+      later_purchase_at TEXT,
+      data_json TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, session_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_journeys_store_date
+    ON si_journeys(store, journey_date, built_at)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_journeys_store_shopper_date
+    ON si_journeys(store, shopper_number, journey_date)
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_journeys_store_status
+    ON si_journeys(store, status, journey_date)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS si_journey_steps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      step_index INTEGER NOT NULL,
+      step_key TEXT NOT NULL,
+      step_label TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at TEXT NOT NULL,
+      first_event_name TEXT,
+      last_event_name TEXT,
+      page_path TEXT,
+      page_label TEXT,
+      product_id TEXT,
+      product_label TEXT,
+      variant_id TEXT,
+      checkout_step TEXT,
+      event_count INTEGER DEFAULT 0,
+      data_json TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(store, session_id, step_index)
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_journey_steps_store_session
+    ON si_journey_steps(store, session_id, step_index)
   `);
 
   db.exec(`
