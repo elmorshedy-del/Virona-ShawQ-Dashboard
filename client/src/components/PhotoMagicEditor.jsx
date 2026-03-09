@@ -1,19 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Camera,
   CheckCircle2,
+  ChevronDown,
+  Contrast,
+  Crop,
   Crosshair,
   Download,
+  Droplets,
   Eraser,
+  Film,
+  FlipHorizontal2,
+  FlipVertical2,
   ImagePlus,
   Layers3,
+  Loader2,
+  Music,
   Paintbrush,
+  Palette,
+  Pause,
+  Play,
   RefreshCw,
+  RotateCcw,
+  ScanSearch,
+  ShoppingBag,
+  SkipBack,
+  SkipForward,
   Sparkles,
+  Sun,
+  Sunset,
   Upload,
+  Volume2,
+  VolumeX,
   Wand2,
-  XCircle
+  XCircle,
+  Zap
 } from 'lucide-react';
+import VideoResizerPanel from './VideoResizerPanel';
+import ProductHubPanel from './ProductHubPanel';
 
 const API_BASE = '/api';
 const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
@@ -24,6 +49,11 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const toNumber = (value, fallback) => {
   const next = Number(value);
   return Number.isFinite(next) ? next : fallback;
+};
+
+const formatCurrency = (value, currency = 'USD') => {
+  try { return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 0 }).format(value); }
+  catch { return `$${value}`; }
 };
 
 const formatBytes = (value) => {
@@ -112,45 +142,42 @@ function Select({ className, children, ...props }) {
   );
 }
 
-function RangeControl({
-  label,
-  value,
-  onChange,
-  min,
-  max,
-  step = 1,
-  hint,
-  formatValue = (next) => String(next),
-  minLabel,
-  maxLabel
-}) {
+function Slider({ label, tooltip, value, onChange, min, max, step = 1, disabled, className }) {
+  const decimals = step < 1 ? String(step).split('.')[1]?.length || 2 : 0;
+  const display = decimals ? Number(value).toFixed(decimals) : value;
   return (
-    <div className="rounded-2xl border border-gray-100 bg-gray-50/70 px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] transition-all duration-300 hover:-translate-y-0.5 hover:border-indigo-100 hover:bg-white hover:shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Label>{label}</Label>
-          {hint ? <div className="mt-2 text-xs leading-5 text-gray-500">{hint}</div> : null}
+    <div className={cn('group', className)}>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400 transition-colors group-hover:text-gray-600">{label}</span>
+          {tooltip ? (
+            <span className="text-gray-300 hover:text-gray-500 transition-colors cursor-help" title={tooltip}>
+              <svg className="h-3 w-3" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm.93 12.4h-1.86v-1.6h1.86v1.6zm1.82-5.68c-.2.36-.66.8-1.38 1.3-.4.28-.62.52-.68.72-.06.2-.08.48-.08.84H6.93c0-.56.08-1 .24-1.32.16-.32.54-.72 1.14-1.18.46-.36.76-.66.88-.92.12-.26.18-.54.18-.84 0-.42-.14-.76-.42-1.02-.28-.26-.66-.4-1.14-.4-.48 0-.86.14-1.14.42-.28.28-.42.66-.42 1.14H4.39c.02-.96.36-1.72 1.02-2.28.66-.56 1.5-.84 2.52-.84.98 0 1.78.26 2.38.78.6.52.9 1.22.9 2.1 0 .56-.16 1.08-.46 1.5z"/></svg>
+            </span>
+          ) : null}
         </div>
-        <div className="shrink-0 rounded-full border border-white/80 bg-white px-2.5 py-1 text-[11px] font-semibold tracking-wide text-gray-600 shadow-sm">
-          {formatValue(value)}
-        </div>
+        <span className="text-[11px] font-mono font-medium text-gray-500 tabular-nums transition-colors group-hover:text-gray-700">{display}</span>
       </div>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={onChange} disabled={disabled} className="pm-slider w-full" />
+    </div>
+  );
+}
 
-      <div className="mt-4">
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="h-2 w-full cursor-pointer appearance-none rounded-full bg-gradient-to-r from-indigo-100 via-indigo-200 to-violet-200 accent-indigo-500"
-        />
-      </div>
-
-      <div className="mt-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-gray-400">
-        <span>{minLabel || formatValue(min)}</span>
-        <span>{maxLabel || formatValue(max)}</span>
+function AccordionSection({ icon: Icon, title, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="rounded-2xl border border-gray-100/80 bg-white/70 shadow-sm overflow-hidden transition-all">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left hover:bg-gray-50/50 transition-colors"
+      >
+        {Icon ? <Icon className="h-3.5 w-3.5 text-indigo-400" /> : null}
+        <span className="flex-1 text-[11px] font-bold uppercase tracking-widest text-gray-500">{title}</span>
+        <ChevronDown className={cn('h-3.5 w-3.5 text-gray-400 transition-transform duration-300', open && 'rotate-180')} />
+      </button>
+      <div className="pm-accordion-body" data-open={String(open)}>
+        <div className="px-3.5 pb-3.5 pt-1 space-y-3">{children}</div>
       </div>
     </div>
   );
@@ -183,59 +210,119 @@ function Toggle({ value, onChange, options = [] }) {
   );
 }
 
-function makeCheckerBg() {
+function makeTransparentBg() {
   return {
-    backgroundImage:
-      'linear-gradient(45deg, rgba(0,0,0,0.06) 25%, transparent 25%),' +
-      'linear-gradient(-45deg, rgba(0,0,0,0.06) 25%, transparent 25%),' +
-      'linear-gradient(45deg, transparent 75%, rgba(0,0,0,0.06) 75%),' +
-      'linear-gradient(-45deg, transparent 75%, rgba(0,0,0,0.06) 75%)',
-    backgroundSize: '24px 24px',
-    backgroundPosition: '0 0, 0 12px, 12px -12px, -12px 0px'
+    background: 'linear-gradient(135deg, #f8f9ff 0%, #eef0f8 25%, #f3f0fa 50%, #eef4fb 75%, #f8f9ff 100%)'
   };
 }
 
 const TOOL_DEFINITIONS = {
   remove_bg: {
-    label: 'Foreground Isolation',
+    label: 'Remove BG',
     engine: 'BiRefNet + SAM2',
-    description: 'Cut the subject fast, then refine the edge mask with guided points.'
-  },
-  select: {
-    label: 'Target Selection',
-    engine: 'Gemini Vision',
-    description: 'Find a logo, label, or object from language, then extract it or send the mask straight into eraser.'
+    description: 'Automatically remove the background, then fine-tune the edges if needed.'
   },
   erase: {
-    label: 'Clean Plate',
+    label: 'Object Remover',
     engine: 'LaMa / SDXL HQ',
-    description: 'Paint removal regions and render a cleaned frame from the active source.'
+    description: 'Select objects with AI or paint a mask manually, then remove them cleanly.'
   },
   relight: {
-    label: 'Lighting Stage',
+    label: 'Lighting',
     engine: 'Relight + shadows',
-    description: 'Re-ground the current subject with directional light shaping and contact shadow control.'
+    description: 'Reshape your image with studio-quality directional lighting and natural shadows.'
   },
   expand: {
-    label: 'Canvas Expand',
+    label: 'Extend',
     engine: 'SDXL expand',
-    description: 'Extend the canvas, regenerate background space, and keep the current subject anchored.'
+    description: 'Expand the frame to a new aspect ratio and generate the missing background.'
   },
   enhance: {
-    label: 'Enhancement',
+    label: 'Enhance',
     engine: 'Real-ESRGAN + restoration',
-    description: 'Recover detail, upscale soft inputs, or stabilize low-quality source work.'
+    description: 'Upscale, sharpen, denoise, or recover detail from low-quality images.'
   }
 };
 
-const TOOL_DISPLAY = {
-  remove_bg: { label: 'Background', accent: 'Cut out', icon: Wand2 },
-  select: { label: 'Target', accent: 'Find it', icon: Crosshair },
-  erase: { label: 'Eraser', accent: 'Remove', icon: Eraser },
-  relight: { label: 'Lighting', accent: 'Shape', icon: Sparkles },
-  expand: { label: 'Canvas', accent: 'Extend', icon: Layers3 },
-  enhance: { label: 'Enhance', accent: 'Recover', icon: RefreshCw }
+/* ── Video Magic Tool Definitions ─────────────────────────── */
+const VIDEO_TOOL_DEFINITIONS = {
+  overlay:     { label: 'Overlays',     description: 'Detect & edit text overlays on your video' },
+  resize:      { label: 'Smart Resize', description: 'Auto-resize for every social platform' },
+  product_hub: { label: 'Product Hub',  description: 'Connect products from your catalog' },
+  music:       { label: 'Music',        description: 'Add background music to your video' },
+  enhance_v:   { label: 'Enhance',      description: 'Upscale and improve video quality' },
 };
+
+const VIDEO_TOOL_ICONS = {
+  overlay: Layers3,
+  resize: Crop,
+  product_hub: ShoppingBag,
+  music: Music,
+  enhance_v: Zap,
+};
+
+/* ── Video Time Formatting ────────────────────────────────── */
+const formatVideoTime = (seconds) => {
+  if (!seconds || !Number.isFinite(seconds)) return '0:00';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+};
+
+/* ── Photo Adjustment Presets ──────────────────────────────── */
+const DEFAULT_ADJUSTMENTS = {
+  brightness: 0, contrast: 0, exposure: 0, highlights: 0, shadows: 0,
+  saturation: 0, vibrance: 0, temperature: 0, tint: 0,
+  sharpness: 0, clarity: 0, blur: 0,
+  vignette: 0, grain: 0, fade: 0,
+  rotate: 0, flipH: false, flipV: false
+};
+
+const PHOTO_FILTERS = [
+  { id: 'original', label: 'Original', adj: {} },
+  { id: 'vivid', label: 'Vivid', adj: { brightness: 5, contrast: 12, saturation: 30 } },
+  { id: 'warm', label: 'Warm', adj: { temperature: 25, brightness: 3, saturation: 10 } },
+  { id: 'cool', label: 'Cool', adj: { temperature: -22, brightness: 3, saturation: -5 } },
+  { id: 'bw', label: 'B\u2009&\u2009W', adj: { saturation: -100, contrast: 10 } },
+  { id: 'cinematic', label: 'Cinematic', adj: { contrast: 18, saturation: -12, temperature: 6, vignette: 35 } },
+  { id: 'vintage', label: 'Vintage', adj: { temperature: 16, contrast: -10, brightness: 5, grain: 22, fade: 15 } },
+  { id: 'dramatic', label: 'Dramatic', adj: { contrast: 30, brightness: -5, shadows: -20, clarity: 20 } },
+  { id: 'soft', label: 'Soft', adj: { contrast: -15, brightness: 10, clarity: -15, highlights: 15 } },
+  { id: 'film', label: 'Film', adj: { contrast: 5, saturation: -15, grain: 15, temperature: 8, fade: 10 } },
+];
+
+/** Build CSS filter + transform strings from adjustment values */
+function buildFilterStyles(adj) {
+  const filters = [];
+  const b = 1 + (adj.brightness || 0) / 100 + (adj.exposure || 0) / 200;
+  if (b !== 1) filters.push(`brightness(${b.toFixed(3)})`);
+  const c = 1 + (adj.contrast || 0) / 100 + (adj.clarity || 0) / 200;
+  if (c !== 1) filters.push(`contrast(${c.toFixed(3)})`);
+  const s = 1 + (adj.saturation || 0) / 100 + (adj.vibrance || 0) / 200;
+  if (s !== 1) filters.push(`saturate(${s.toFixed(3)})`);
+  if (adj.temperature) {
+    const t = adj.temperature;
+    if (t > 0) filters.push(`sepia(${(t / 300).toFixed(3)})`);
+    filters.push(`hue-rotate(${(-t * 0.4).toFixed(1)}deg)`);
+  }
+  if (adj.tint) filters.push(`hue-rotate(${(adj.tint * 0.6).toFixed(1)}deg)`);
+  if (adj.highlights) filters.push(`brightness(${(1 + adj.highlights / 300).toFixed(3)})`);
+  if (adj.shadows) filters.push(`brightness(${(1 + adj.shadows / 400).toFixed(3)})`);
+  if (adj.blur) filters.push(`blur(${(adj.blur / 12).toFixed(1)}px)`);
+  if (adj.fade) filters.push(`opacity(${(1 - adj.fade / 150).toFixed(3)})`);
+
+  const transforms = [];
+  if (adj.rotate) transforms.push(`rotate(${adj.rotate}deg)`);
+  if (adj.flipH) transforms.push('scaleX(-1)');
+  if (adj.flipV) transforms.push('scaleY(-1)');
+
+  return {
+    filter: filters.length ? filters.join(' ') : undefined,
+    transform: transforms.length ? transforms.join(' ') : undefined,
+    '--pm-vignette': adj.vignette ? (adj.vignette / 100 * 0.7).toFixed(2) : '0',
+    '--pm-grain': adj.grain ? (adj.grain / 100 * 0.4).toFixed(2) : '0',
+  };
+}
 
 const DEBUG_TRACE_LIMIT = 80;
 const MASK_PIXEL_THRESHOLD = 18;
@@ -279,7 +366,7 @@ export default function PhotoMagicEditor({ store }) {
   const [imageMeta, setImageMeta] = useState(null);
   const [imageSrc, setImageSrc] = useState(null);
   const [sourceLabel, setSourceLabel] = useState('');
-  const [sourceStage, setSourceStage] = useState('Seed asset');
+  const [sourceStage, setSourceStage] = useState('Original');
   const [sourceHistory, setSourceHistory] = useState([]);
   const [viewportMode, setViewportMode] = useState('source');
   const [compareSplit, setCompareSplit] = useState(56);
@@ -296,7 +383,6 @@ export default function PhotoMagicEditor({ store }) {
   const [maskOutputId, setMaskOutputId] = useState(null);
 
   const [selectionPrompt, setSelectionPrompt] = useState('');
-  const [selectionIntent, setSelectionIntent] = useState('extract');
   const [selectionCutoutUrl, setSelectionCutoutUrl] = useState(null);
   const [selectionMaskUrl, setSelectionMaskUrl] = useState(null);
   const [selectionCutoutOutputId, setSelectionCutoutOutputId] = useState(null);
@@ -350,6 +436,70 @@ export default function PhotoMagicEditor({ store }) {
   const [expandMaskUrl, setExpandMaskUrl] = useState(null);
   const [expandMaskOutputId, setExpandMaskOutputId] = useState(null);
 
+  // ── Object Remover: mask method toggle ──
+  const [maskMethod, setMaskMethod] = useState('smart');
+
+  // ── Export Modal ──
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFormat, setExportFormat] = useState('png');
+  const [exportQuality, setExportQuality] = useState(90);
+  const [exportScale, setExportScale] = useState('1x');
+
+  // ── Editor Mode: photo / video ──
+  const [editorMode, setEditorMode] = useState('photo');
+
+  // ── Video State ──
+  const [videoSrc, setVideoSrc] = useState(null);
+  const [videoId, setVideoId] = useState(null);
+  const [videoFileInfo, setVideoFileInfo] = useState(null);
+  const [isVideoUploading, setIsVideoUploading] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoTrimStart, setVideoTrimStart] = useState(0);
+  const [videoTrimEnd, setVideoTrimEnd] = useState(null);
+  const [videoVolume, setVideoVolume] = useState(100);
+  const [videoSpeed, setVideoSpeed] = useState(1);
+  const [videoMuted, setVideoMuted] = useState(false);
+  const [videoTool, setVideoTool] = useState('overlay');
+  const videoRef = useRef(null);
+  const videoFileInputRef = useRef(null);
+
+  // ── Video Overlay State ──
+  const [overlaySegments, setOverlaySegments] = useState([]);
+  const [overlayScanning, setOverlayScanning] = useState(false);
+  const [overlayExporting, setOverlayExporting] = useState(false);
+  const [selectedOverlaySegIdx, setSelectedOverlaySegIdx] = useState(null);
+  const [selectedOverlayIdx, setSelectedOverlayIdx] = useState(null);
+  const [overlayScanInterval, setOverlayScanInterval] = useState(1.0);
+  const [overlayScanMaxFrames, setOverlayScanMaxFrames] = useState(60);
+
+  // ── Music State ──
+  const [musicTracks, setMusicTracks] = useState([]);
+  const [musicLoading, setMusicLoading] = useState(false);
+  const [selectedTrackId, setSelectedTrackId] = useState(null);
+  const [musicVolume, setMusicVolume] = useState(80);
+  const [musicFadeIn, setMusicFadeIn] = useState(2);
+  const [musicFadeOut, setMusicFadeOut] = useState(3);
+
+  // ── Photo Adjustments ──
+  const [adjustments, setAdjustments] = useState({ ...DEFAULT_ADJUSTMENTS });
+  const [activeFilter, setActiveFilter] = useState('original');
+  const setAdj = useCallback((key, val) => {
+    setAdjustments((prev) => ({ ...prev, [key]: val }));
+    setActiveFilter('original');
+  }, []);
+  const resetAdjustments = useCallback(() => {
+    setAdjustments({ ...DEFAULT_ADJUSTMENTS });
+    setActiveFilter('original');
+  }, []);
+  const applyFilter = useCallback((filter) => {
+    setActiveFilter(filter.id);
+    setAdjustments((prev) => ({ ...DEFAULT_ADJUSTMENTS, ...filter.adj, rotate: prev.rotate, flipH: prev.flipH, flipV: prev.flipV }));
+  }, []);
+  const adjStyles = useMemo(() => buildFilterStyles(adjustments), [adjustments]);
+  const hasAdjustments = useMemo(() => Object.keys(DEFAULT_ADJUSTMENTS).some((k) => adjustments[k] !== DEFAULT_ADJUSTMENTS[k]), [adjustments]);
+
   const imgRef = useRef(null);
   const maskCanvasRef = useRef(null);
   const paintStateRef = useRef({ painting: false, lastX: 0, lastY: 0 });
@@ -376,7 +526,7 @@ export default function PhotoMagicEditor({ store }) {
   const currentMaskOutputId = selectionMaskOutputId || maskOutputId || relightMaskOutputId || expandMaskOutputId || null;
   const latestMaskForErase = selectionMaskUrl || maskUrl || relightMaskUrl || expandMaskUrl || null;
   const latestMaskSourceLabel = selectionMaskUrl
-    ? 'Target selection'
+    ? 'Prompt selection'
     : maskUrl
       ? 'Foreground isolation'
       : relightMaskUrl
@@ -531,6 +681,181 @@ export default function PhotoMagicEditor({ store }) {
     setShadowOffsetY(preset.shadowOffsetY);
   }, [relightPreset]);
 
+  // ── Video: Upload handler ──
+  const handleVideoUpload = useCallback(async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsVideoUploading(true);
+    setVideoSrc(URL.createObjectURL(file));
+    setVideoTrimStart(0);
+    setVideoTrimEnd(null);
+    setOverlaySegments([]);
+    try {
+      const formData = new FormData();
+      formData.append('video', file);
+      const res = await fetch(withStore('/creative-studio/video-overlay/upload', store), { method: 'POST', body: formData });
+      const data = await res.json();
+      if (res.ok && data?.success !== false) {
+        setVideoId(data.video_id || data.videoId);
+        setVideoFileInfo({ width: data.width, height: data.height, duration: data.duration, size: file.size });
+      }
+    } catch (_err) {
+      console.error('Video upload failed:', _err);
+    }
+    setIsVideoUploading(false);
+  }, [store]);
+
+  // ── Video: Playback controls ──
+  const toggleVideoPlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) { v.play(); setIsVideoPlaying(true); }
+    else { v.pause(); setIsVideoPlaying(false); }
+  }, []);
+
+  const seekVideo = useCallback((time) => {
+    const v = videoRef.current;
+    if (v) { v.currentTime = time; setVideoCurrentTime(time); }
+  }, []);
+
+  const skipVideo = useCallback((delta) => {
+    const v = videoRef.current;
+    if (v) seekVideo(clamp(v.currentTime + delta, 0, videoDuration));
+  }, [seekVideo, videoDuration]);
+
+  // ── Video: Time update handler ──
+  const onVideoTimeUpdate = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    setVideoCurrentTime(v.currentTime);
+    const end = videoTrimEnd ?? videoDuration;
+    if (v.currentTime >= end) { v.pause(); setIsVideoPlaying(false); }
+  }, [videoTrimEnd, videoDuration]);
+
+  const onVideoLoaded = useCallback(() => {
+    const v = videoRef.current;
+    if (v) { setVideoDuration(v.duration); setVideoTrimEnd(null); }
+  }, []);
+
+  // ── Video: Volume/Speed sync ──
+  useEffect(() => {
+    const v = videoRef.current;
+    if (v) { v.volume = videoMuted ? 0 : videoVolume / 100; v.playbackRate = videoSpeed; }
+  }, [videoVolume, videoMuted, videoSpeed]);
+
+  // ── Video: Overlay scan ──
+  const scanOverlays = useCallback(async () => {
+    if (!videoId) return;
+    setOverlayScanning(true);
+    try {
+      const res = await fetch(withStore('/creative-studio/video-overlay/scan', store), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoId: videoId, intervalSec: overlayScanInterval, maxFrames: overlayScanMaxFrames })
+      });
+      const data = await res.json();
+      if (res.ok && data?.segments) {
+        setOverlaySegments(data.segments);
+      }
+    } catch (_err) {
+      console.error('Overlay scan failed:', _err);
+    }
+    setOverlayScanning(false);
+  }, [videoId, overlayScanInterval, overlayScanMaxFrames, store]);
+
+  // ── Video: Overlay export ──
+  const exportOverlays = useCallback(async () => {
+    if (!videoId || !overlaySegments.length) return;
+    setOverlayExporting(true);
+    try {
+      const res = await fetch(withStore('/creative-studio/video-overlay/export', store), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoId, segments: overlaySegments })
+      });
+      const data = await res.json();
+      if (res.ok && data?.downloadUrl) {
+        const link = document.createElement('a');
+        link.href = data.downloadUrl;
+        link.download = 'video-with-overlays.mp4';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    } catch (_err) {
+      console.error('Export failed:', _err);
+    }
+    setOverlayExporting(false);
+  }, [videoId, overlaySegments, store]);
+
+  // ── Video: Music library fetch ──
+  const loadMusicLibrary = useCallback(async () => {
+    setMusicLoading(true);
+    try {
+      const res = await fetch(withStore('/creative-studio/creative-os/video/music/library', store));
+      const data = await res.json();
+      if (res.ok && data?.tracks) setMusicTracks(data.tracks);
+      else if (res.ok && Array.isArray(data)) setMusicTracks(data);
+    } catch (_err) {
+      console.error('Music library load failed:', _err);
+    }
+    setMusicLoading(false);
+  }, [store]);
+
+  // ── Video: Update overlay ──
+  const updateOverlay = useCallback((segIdx, ovIdx, patch) => {
+    setOverlaySegments((prev) => prev.map((seg, si) => {
+      if (si !== segIdx) return seg;
+      return { ...seg, overlays: seg.overlays.map((ov, oi) => oi === ovIdx ? { ...ov, ...patch } : ov) };
+    }));
+  }, []);
+
+  const deleteOverlay = useCallback((segIdx, ovIdx) => {
+    setOverlaySegments((prev) => prev.map((seg, si) => {
+      if (si !== segIdx) return seg;
+      return { ...seg, overlays: seg.overlays.filter((_, oi) => oi !== ovIdx) };
+    }));
+  }, []);
+
+  // ── Export: Download with quality/format/scale ──
+  const handleExport = useCallback(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    const scales = { '0.5x': 0.5, '1x': 1, '2x': 2, '3x': 3, '4x': 4 };
+    const scale = scales[exportScale] || 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    const ctx = canvas.getContext('2d');
+
+    // Apply CSS filters if any
+    if (adjStyles.filter) ctx.filter = adjStyles.filter;
+    // Apply transforms
+    ctx.save();
+    if (adjustments.flipH || adjustments.flipV || adjustments.rotate) {
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      if (adjustments.rotate) ctx.rotate((adjustments.rotate * Math.PI) / 180);
+      ctx.scale(adjustments.flipH ? -1 : 1, adjustments.flipV ? -1 : 1);
+      ctx.translate(-canvas.width / 2, -canvas.height / 2);
+    }
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    const mimeTypes = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' };
+    const mime = mimeTypes[exportFormat] || 'image/png';
+    const quality = exportFormat === 'png' ? undefined : exportQuality / 100;
+    const dataUrl = canvas.toDataURL(mime, quality);
+
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    const baseName = sourceLabel?.replace(/\.\w+$/, '') || 'export';
+    link.download = `${baseName}-${exportScale}.${exportFormat}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setShowExportModal(false);
+  }, [adjStyles, adjustments, exportFormat, exportQuality, exportScale, sourceLabel]);
+
   const resetOutputs = useCallback(() => {
     setCutoutUrl(null);
     setMaskUrl(null);
@@ -563,7 +888,7 @@ export default function PhotoMagicEditor({ store }) {
   const uploadImage = useCallback(
     async (file, options = {}) => {
       const {
-        sourceStageLabel = 'Seed asset',
+        sourceStageLabel = 'Original',
         sourceName = file?.name || '',
         nextTool = 'remove_bg',
         resetHistory = true
@@ -571,7 +896,7 @@ export default function PhotoMagicEditor({ store }) {
 
       setError(null);
       setIsUploading(true);
-      const runId = startDebugRun('Upload', `Importing ${sourceName || file?.name || 'seed asset'}`);
+      const runId = startDebugRun('Upload', `Importing ${sourceName || file?.name || 'image'}`);
 
       try {
         resetOutputs();
@@ -587,7 +912,7 @@ export default function PhotoMagicEditor({ store }) {
             method: 'POST',
             body: form
           },
-          successMessage: 'Seed asset uploaded',
+          successMessage: 'Image uploaded',
           failureMessage: 'Upload failed',
           successDetails: (payload) => ({
             imageId: payload?.image_id || null,
@@ -606,7 +931,7 @@ export default function PhotoMagicEditor({ store }) {
           size: data.size
         });
         setImageSrc(URL.createObjectURL(file));
-        setSourceLabel(sourceName || data.filename || file?.name || 'seed-asset');
+        setSourceLabel(sourceName || data.filename || file?.name || 'untitled');
         setSourceStage(sourceStageLabel);
         setSourceHistory((prev) => (resetHistory ? [sourceStageLabel] : [...prev, sourceStageLabel].slice(-4)));
         setPrecisionMode(false);
@@ -673,7 +998,7 @@ export default function PhotoMagicEditor({ store }) {
       const file = event.target.files?.[0];
       if (file) {
         uploadImage(file, {
-          sourceStageLabel: 'Seed asset',
+          sourceStageLabel: 'Original',
           sourceName: file.name,
           nextTool: 'remove_bg',
           resetHistory: true
@@ -825,6 +1150,58 @@ export default function PhotoMagicEditor({ store }) {
       refreshHealth();
     }
   }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, points, refreshHealth, requestJson, startDebugRun, store]);
+
+  const runSelect = useCallback(async () => {
+    if (!imageId || !selectionPrompt.trim()) return;
+
+    setError(null);
+    setIsRunning(true);
+    const promptLabel = selectionPrompt.trim();
+    const runId = startDebugRun('Prompt Selection', `Resolving "${promptLabel}"`);
+    try {
+      const data = await requestJson({
+        runId,
+        scope: 'Prompt Selection',
+        step: 'select',
+        url: withStore('/creative-studio/photo-magic/select', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            prompt: promptLabel,
+            max_side: maxSide,
+            mask_dilate_px: maskDilatePx,
+            mask_feather_px: maskFeatherPx
+          })
+        },
+        successMessage: 'Prompt selection mask resolved',
+        failureMessage: 'Prompt selection failed',
+        successDetails: (payload) => ({
+          label: payload?.selection?.label || promptLabel,
+          confidence: payload?.selection?.confidence || null,
+          maskReady: Boolean(payload?.mask?.url)
+        })
+      });
+
+      setSelectionCutoutUrl(data.cutout?.url || null);
+      setSelectionMaskUrl(data.mask?.url || null);
+      setSelectionCutoutOutputId(data.cutout?.output_id || null);
+      setSelectionMaskOutputId(data.mask?.output_id || null);
+      setSelectionMeta(data.selection || null);
+      setViewportMode('compare');
+      setLastRenderSummary(`Selection locked for ${data.selection?.label || promptLabel}`);
+    } catch (nextError) {
+      console.error(nextError);
+      const message = nextError?.message || 'Prompt selection failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Prompt Selection', 'complete', 'failed', message, { prompt: promptLabel });
+    } finally {
+      setIsRunning(false);
+      refreshHealth();
+    }
+  }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, refreshHealth, requestJson, selectionPrompt, startDebugRun, store]);
 
   const pushUndo = useCallback(() => {
     const canvas = maskCanvasRef.current;
@@ -1016,87 +1393,6 @@ export default function PhotoMagicEditor({ store }) {
       }
     },
     [ensureMaskCanvasSize, imageSrc, logDebug, pushUndo, syncMaskMetrics]
-  );
-
-  const runSelect = useCallback(
-    async (intentOverride = selectionIntent) => {
-      if (!imageId || !selectionPrompt.trim()) return;
-
-      const intentMode = intentOverride === 'erase' ? 'erase' : 'extract';
-      const promptLabel = selectionPrompt.trim();
-
-      setError(null);
-      setIsRunning(true);
-      const runId = startDebugRun('Target Selection', `Resolving "${promptLabel}" for ${intentMode === 'erase' ? 'eraser' : 'extraction'}`);
-      try {
-        const data = await requestJson({
-          runId,
-          scope: 'Target Selection',
-          step: 'select',
-          url: withStore('/creative-studio/photo-magic/select', store),
-          options: {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              image_id: imageId,
-              prompt: promptLabel,
-              max_side: maxSide,
-              mask_dilate_px: maskDilatePx,
-              mask_feather_px: maskFeatherPx
-            })
-          },
-          successMessage: 'Target selection resolved',
-          failureMessage: 'Target selection failed',
-          successDetails: (payload) => ({
-            label: payload?.selection?.label || promptLabel,
-            confidence: payload?.selection?.confidence || null,
-            maskReady: Boolean(payload?.mask?.url),
-            intent: intentMode
-          })
-        });
-
-        setSelectionCutoutUrl(data.cutout?.url || null);
-        setSelectionMaskUrl(data.mask?.url || null);
-        setSelectionCutoutOutputId(data.cutout?.output_id || null);
-        setSelectionMaskOutputId(data.mask?.output_id || null);
-        setSelectionMeta(data.selection || null);
-
-        if (intentMode === 'erase' && data.mask?.url) {
-          await applyMaskArtifactToCanvas(data.mask.url, {
-            summary: `${data.selection?.label || promptLabel} mask is ready inside Clean Plate`,
-            logMessage: `${data.selection?.label || promptLabel} target mask routed into clean plate`,
-            runId
-          });
-          setLastRenderSummary(`${data.selection?.label || promptLabel} is ready to remove`);
-        } else {
-          setViewportMode('compare');
-          setLastRenderSummary(`${data.selection?.label || promptLabel} is ready as its own asset`);
-        }
-      } catch (nextError) {
-        console.error(nextError);
-        const message = nextError?.message || 'Target selection failed';
-        setError(message);
-        setLastRenderSummary(`Failed: ${message}`);
-        logDebug(runId, 'Target Selection', 'complete', 'failed', message, { prompt: promptLabel, intent: intentMode });
-      } finally {
-        setIsRunning(false);
-        refreshHealth();
-      }
-    },
-    [
-      applyMaskArtifactToCanvas,
-      imageId,
-      logDebug,
-      maskDilatePx,
-      maskFeatherPx,
-      maxSide,
-      refreshHealth,
-      requestJson,
-      selectionIntent,
-      selectionPrompt,
-      startDebugRun,
-      store
-    ]
   );
 
   const runErase = useCallback(async () => {
@@ -1411,7 +1707,7 @@ export default function PhotoMagicEditor({ store }) {
         title: 'Auto Cutout',
         model: 'BiRefNet matting',
         ready: rmbg2Ready,
-        description: 'Primary foreground isolation for the active seed asset.',
+        description: 'Primary foreground isolation for the current image.',
         error: aiHealthPayload?.errors?.rmbg2 || ''
       },
       {
@@ -1424,10 +1720,10 @@ export default function PhotoMagicEditor({ store }) {
       },
       {
         id: 'select',
-        title: 'Target Selection',
+        title: 'Prompt Selection',
         model: sam2Ready ? 'Gemini Vision + SAM2' : 'Gemini Vision',
         ready: Boolean(geminiReady),
-        description: 'Language-based target pickup that can extract an asset or feed eraser with a mask.',
+        description: 'Language-based target pickup that resolves into a real mask.',
         error: geminiReady ? '' : 'GEMINI_API_KEY is not configured.'
       },
       {
@@ -1505,94 +1801,80 @@ export default function PhotoMagicEditor({ store }) {
     );
   }, [expandReady]);
 
-  const stageConfig = TOOL_DEFINITIONS[tool];
+  const stageConfig = TOOL_DEFINITIONS[tool] || TOOL_DEFINITIONS['erase'];
   const outputCards = useMemo(() => {
     if (tool === 'remove_bg') {
       return [
         {
           id: 'cutout',
-          title: 'Cutout Asset',
+          title: 'Background Removed',
           engine: 'BiRefNet / SAM2',
           url: cutoutUrl,
-          empty: 'Run auto cutout or SAM2 refine to produce a foreground asset.',
+          empty: 'Run background removal to produce a clean cutout.',
           promoteable: true,
-          promoteLabel: 'Route to source',
+          promoteLabel: 'Use as source',
           promoteStage: 'Cutout source',
-          nextTool: 'select',
-          checker: true,
-          primary: true
-        },
-        {
-          id: 'mask',
-          title: 'Mask Artifact',
-          engine: 'Segmentation mask',
-          url: maskUrl,
-          empty: 'Mask artifact appears after the isolation pass.',
-          promoteable: false,
-          maskAction: maskUrl ? 'Route to clean plate' : null,
-          checker: false,
-          primary: false
-        }
-      ];
-    }
-
-    if (tool === 'select') {
-      return [
-        {
-          id: 'selection',
-          title: 'Extracted Target',
-          engine: selectionMeta?.label ? `Gemini: ${selectionMeta.label}` : 'Gemini target pickup',
-          url: selectionCutoutUrl,
-          empty: 'Type a target prompt to isolate a price tag, logo, bag, shoe, face, or text block.',
-          promoteable: true,
-          promoteLabel: 'Route to source',
-          promoteStage: selectionMeta?.label ? `${selectionMeta.label} source` : 'Selected source',
           nextTool: 'erase',
           checker: true,
           primary: true
         },
         {
-          id: 'selection-mask',
-          title: 'Target Mask',
-          engine: 'Prompt mask',
-          url: selectionMaskUrl,
-          empty: 'The target mask appears after the prompt selection pass.',
+          id: 'mask',
+          title: 'Selection Mask',
+          engine: 'Segmentation mask',
+          url: maskUrl,
+          empty: 'Mask appears after the background removal pass.',
           promoteable: false,
-          maskAction: selectionMaskUrl ? 'Send to eraser' : null,
+          maskAction: maskUrl ? 'Use for removal' : null,
           checker: false,
           primary: false
         }
       ];
     }
 
-    if (tool === 'erase') {
-      return [
-        {
-          id: 'erase',
-          title: 'Clean Plate',
-          engine: quality === 'hq' ? 'SDXL HQ' : 'LaMa',
-          url: eraseUrl,
-          empty: 'Paint the removal region, then render a clean plate.',
+    if (tool === 'select' || tool === 'erase') {
+      const cards = [];
+      if (selectionCutoutUrl) {
+        cards.push({
+          id: 'selection',
+          title: 'Detected Object',
+          engine: selectionMeta?.label ? `AI: ${selectionMeta.label}` : 'Smart Select',
+          url: selectionCutoutUrl,
+          empty: 'Use Smart Select to detect and extract an object.',
           promoteable: true,
-          promoteLabel: 'Route to source',
-          promoteStage: quality === 'hq' ? 'HQ clean plate' : 'Clean plate',
-          nextTool: 'relight',
-          checker: false,
-          primary: true
-        }
-      ];
+          promoteLabel: 'Use as source',
+          promoteStage: selectionMeta?.label ? `${selectionMeta.label} source` : 'Selected source',
+          nextTool: 'erase',
+          checker: true,
+          primary: false
+        });
+      }
+      cards.push({
+        id: 'erase',
+        title: 'Cleaned Image',
+        engine: quality === 'hq' ? 'SDXL HQ' : 'LaMa',
+        url: eraseUrl,
+        empty: 'Select the area to remove, then run the removal engine.',
+        promoteable: true,
+        promoteLabel: 'Use as source',
+        promoteStage: quality === 'hq' ? 'HQ clean plate' : 'Clean plate',
+        nextTool: 'relight',
+        checker: false,
+        primary: true
+      });
+      return cards;
     }
 
     if (tool === 'relight') {
       return [
         {
           id: 'relight',
-          title: 'Lighting Pass',
+          title: 'Relit Image',
           engine: 'Relight + shadow stage',
           url: relightUrl,
-          empty: 'Run the lighting stage to re-ground the active source with controlled highlights and cast shadow.',
+          empty: 'Apply lighting to reshape your image with studio-quality light.',
           promoteable: true,
-          promoteLabel: 'Route to source',
+          promoteLabel: 'Use as source',
           promoteStage: 'Relit source',
           nextTool: 'expand',
           checker: false,
@@ -1600,10 +1882,10 @@ export default function PhotoMagicEditor({ store }) {
         },
         {
           id: 'relight-mask',
-          title: 'Lighting Subject Mask',
+          title: 'Subject Mask',
           engine: 'Subject matte',
           url: relightMaskUrl,
-          empty: 'Subject matte is generated automatically during the relight stage.',
+          empty: 'Subject mask generated automatically during lighting.',
           promoteable: false,
           checker: false,
           primary: false
@@ -1615,12 +1897,12 @@ export default function PhotoMagicEditor({ store }) {
       return [
         {
           id: 'expand',
-          title: 'Expanded Canvas',
+          title: 'Extended Canvas',
           engine: 'SDXL expand',
           url: expandUrl,
-          empty: 'Extend the frame to a new aspect ratio and regenerate the missing background area.',
+          empty: 'Extend the frame and generate the missing background area.',
           promoteable: true,
-          promoteLabel: 'Route to source',
+          promoteLabel: 'Use as source',
           promoteStage: 'Expanded source',
           nextTool: 'enhance',
           checker: false,
@@ -1628,10 +1910,10 @@ export default function PhotoMagicEditor({ store }) {
         },
         {
           id: 'expand-mask',
-          title: 'Expansion Mask',
+          title: 'Extension Mask',
           engine: 'Outpaint mask',
           url: expandMaskUrl,
-          empty: 'The outpaint mask appears after the canvas expand pass.',
+          empty: 'The extension mask appears after the canvas expand pass.',
           promoteable: false,
           checker: false,
           primary: false
@@ -1640,14 +1922,14 @@ export default function PhotoMagicEditor({ store }) {
     }
 
     return [
-        {
-          id: 'enhance',
-          title: 'Enhanced Render',
-          engine: enhanceMode === 'upscale' ? 'Real-ESRGAN' : 'Enhancement pipeline',
-          url: enhanceUrl,
-          empty: 'Run the selected enhancement pass to produce a finishing render.',
-          promoteable: true,
-          promoteLabel: 'Route back to source',
+      {
+        id: 'enhance',
+        title: 'Enhanced Image',
+        engine: enhanceMode === 'upscale' ? 'Real-ESRGAN' : 'Enhancement pipeline',
+        url: enhanceUrl,
+        empty: 'Run enhancement to produce a polished render.',
+        promoteable: true,
+        promoteLabel: 'Use as source',
         promoteStage: 'Enhanced source',
         nextTool: 'enhance',
         checker: false,
@@ -1657,13 +1939,15 @@ export default function PhotoMagicEditor({ store }) {
   }, [cutoutUrl, enhanceMode, enhanceUrl, eraseUrl, expandMaskUrl, expandUrl, maskUrl, quality, relightMaskUrl, relightUrl, selectionCutoutUrl, selectionMaskUrl, selectionMeta?.label, tool]);
 
   const activeMaskUrl =
-    tool === 'select'
-      ? selectionMaskUrl
-      : tool === 'relight'
-        ? relightMaskUrl
-        : tool === 'expand'
-          ? expandMaskUrl
-          : maskUrl;
+    tool === 'erase'
+      ? (selectionMaskUrl || maskUrl)
+      : tool === 'select'
+        ? selectionMaskUrl
+        : tool === 'relight'
+          ? relightMaskUrl
+          : tool === 'expand'
+            ? expandMaskUrl
+            : maskUrl;
 
   const primaryOutput = outputCards.find((item) => item.primary && item.url) || outputCards.find((item) => item.url) || null;
   const primaryOutputUrl = primaryOutput?.url || null;
@@ -1705,7 +1989,7 @@ export default function PhotoMagicEditor({ store }) {
     }
   }, [activeMaskUrl, imageSrc, primaryOutputUrl, tool, viewportMode]);
 
-  const sourcePreviewStyles = cutoutUrl && tool === 'remove_bg' ? makeCheckerBg() : undefined;
+  const sourcePreviewStyles = cutoutUrl && tool === 'remove_bg' ? makeTransparentBg() : undefined;
   const isBusy = isUploading || isRunning;
   const cleanPlateMaskReady = maskMetrics.hasMask;
   const maskCoverageLabel = `${(maskMetrics.coverage * 100).toFixed(maskMetrics.coverage > 0 && maskMetrics.coverage < 0.1 ? 1 : 0)}%`;
@@ -1718,14 +2002,14 @@ export default function PhotoMagicEditor({ store }) {
             <div className="absolute left-1/2 top-1/2 h-24 w-px -translate-x-1/2 -translate-y-1/2 bg-gray-200" />
             <div className="absolute left-1/2 top-1/2 h-px w-24 -translate-x-1/2 -translate-y-1/2 bg-gray-200" />
             <Crosshair className="relative z-10 h-6 w-6 text-gray-400" />
-            <div className="mt-6 text-sm font-medium tracking-wide text-gray-900">Import seed asset or route an output into the source chain</div>
+            <div className="mt-6 text-sm font-medium tracking-wide text-gray-900">Upload a photo to start editing</div>
             <div className="mt-2 max-w-md text-sm leading-6 text-gray-500">
-              This workbench treats cutout, cleanup, and enhancement as one connected sequence. Start with a seed asset and promote renders back into source when you want to continue the stack.
+              Remove backgrounds, erase objects, adjust lighting, extend canvas, and enhance quality — all in one place. Each result can be used as input for the next step.
             </div>
             <div className="mt-6">
               <Button variant="primary" onClick={onPickFile} disabled={isUploading}>
                 <ImagePlus className="h-4 w-4" />
-                Import seed asset
+                Upload Photo
               </Button>
             </div>
           </div>
@@ -1744,7 +2028,7 @@ export default function PhotoMagicEditor({ store }) {
     if (viewportMode === 'result' && primaryOutputUrl) {
       return (
         <div className="flex min-h-[720px] items-center justify-center p-10">
-          <div className="rounded-xl border border-gray-100 bg-gray-50 p-0" style={primaryOutput?.checker ? makeCheckerBg() : undefined}>
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-0" style={primaryOutput?.checker ? makeTransparentBg() : undefined}>
             <img src={primaryOutputUrl} alt={primaryOutput?.title || 'Result'} className="block max-h-[780px] max-w-full rounded-xl" />
           </div>
         </div>
@@ -1754,7 +2038,7 @@ export default function PhotoMagicEditor({ store }) {
     if (viewportMode === 'compare' && primaryOutputUrl) {
       return (
         <div className="flex min-h-[720px] items-center justify-center p-10">
-          <div className="relative inline-block overflow-hidden rounded-xl border border-gray-100 bg-gray-50" style={primaryOutput?.checker ? makeCheckerBg() : undefined}>
+          <div className="relative inline-block overflow-hidden rounded-xl border border-gray-100 bg-gray-50" style={primaryOutput?.checker ? makeTransparentBg() : undefined}>
             <img src={primaryOutputUrl} alt={primaryOutput?.title || 'Result'} className="block max-h-[780px] max-w-full rounded-xl" />
             <div className="pointer-events-none absolute inset-0">
               <img
@@ -1779,17 +2063,20 @@ export default function PhotoMagicEditor({ store }) {
     return (
       <div className="flex min-h-[720px] items-center justify-center p-10">
         <div className="relative inline-block select-none" onClick={addPointFromEvent}>
-          <div className="rounded-xl border border-gray-100 bg-gray-50" style={sourcePreviewStyles}>
+          <div className="relative rounded-xl border border-gray-100 bg-gray-50 overflow-hidden" style={sourcePreviewStyles}>
             <img
               ref={imgRef}
               src={imageSrc}
               alt="Active source asset"
               className="block max-h-[780px] max-w-full rounded-sm"
+              style={{ filter: adjStyles.filter, transform: adjStyles.transform, transition: 'filter 0.15s ease, transform 0.2s ease' }}
               onLoad={() => ensureMaskCanvasSize()}
             />
+            {adjustments.vignette > 0 && <div className="pm-vignette-overlay" style={{ '--pm-vignette': adjStyles['--pm-vignette'] }} />}
+            {adjustments.grain > 0 && <div className="pm-grain-overlay" style={{ '--pm-grain': adjStyles['--pm-grain'] }} />}
           </div>
 
-          {(tool === 'remove_bg' || tool === 'select') && activeMaskUrl && (
+          {(tool === 'remove_bg' || tool === 'erase') && activeMaskUrl && (
             <img
               src={activeMaskUrl}
               alt="Mask overlay"
@@ -1836,49 +2123,226 @@ export default function PhotoMagicEditor({ store }) {
               <Wand2 className="h-4 w-4 pm-sparkle-icon" />
             </div>
             <div>
-              <span className="text-[15px] font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-gray-900 to-gray-600">Photo Magic</span>
+              <span className="text-[15px] font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-gray-900 to-gray-600">
+                {editorMode === 'photo' ? 'Photo Magic' : 'Video Magic'}
+              </span>
               <div className="flex items-center gap-1.5 mt-[-2px]">
                 <span className="text-[9px] font-semibold text-indigo-500 tracking-widest uppercase">Studio Engine</span>
                 <div className="w-1 h-1 rounded-full bg-indigo-400" />
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                <span>{sourceStage}</span>
-                <span className="h-1 w-1 rounded-full bg-gray-300" />
-                <span>{sourceLabel || 'Awaiting seed asset'}</span>
-                <span className="h-1 w-1 rounded-full bg-gray-300" />
-                <span>{sourceDimensions}</span>
-              </div>
+              {editorMode === 'photo' ? (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                  <span>{sourceStage}</span>
+                  <span className="h-1 w-1 rounded-full bg-gray-300" />
+                  <span>{sourceLabel || 'No image loaded'}</span>
+                  <span className="h-1 w-1 rounded-full bg-gray-300" />
+                  <span>{sourceDimensions}</span>
+                </div>
+              ) : (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                  {videoFileInfo ? (
+                    <>
+                      <span>{videoFileInfo.width}x{videoFileInfo.height}</span>
+                      <span className="h-1 w-1 rounded-full bg-gray-300" />
+                      <span>{formatVideoTime(videoFileInfo.duration)}</span>
+                      <span className="h-1 w-1 rounded-full bg-gray-300" />
+                      <span>{(videoFileInfo.size / 1024 / 1024).toFixed(1)}MB</span>
+                    </>
+                  ) : (
+                    <span>Awaiting video</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-1.5 shadow-sm">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-50 blur-[2px]" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 pm-pulse-badge" />
-              </span>
-              <span className="text-[11px] font-semibold text-gray-600">
-                {readyCount}/{visibleStack.length} Online
-              </span>
+            {/* ── Mode Toggle ── */}
+            <div className="pm-mode-toggle">
+              <div className="pm-mode-pill" style={{ left: editorMode === 'photo' ? 3 : '50%', width: 'calc(50% - 3px)' }} />
+              <button type="button" className={editorMode === 'photo' ? 'active' : ''} onClick={() => setEditorMode('photo')}>
+                <Camera className="h-3.5 w-3.5" /> Photo
+              </button>
+              <button type="button" className={editorMode === 'video' ? 'active' : ''} onClick={() => setEditorMode('video')}>
+                <Film className="h-3.5 w-3.5" /> Video
+              </button>
             </div>
-            <Button variant="secondary" onClick={refreshHealth} disabled={isHealthLoading}>
-              <RefreshCw className={cn('h-4 w-4', isHealthLoading ? 'animate-spin' : '')} />
-              Sync
-            </Button>
-            <button
-              type="button"
-              onClick={onPickFile}
-              disabled={isUploading}
-              className="pm-shimmer flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold shadow-md shadow-blue-500/20 transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Upload className="h-3.5 w-3.5" />
-              Import Asset
-            </button>
-            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
+
+            {editorMode === 'photo' && (
+              <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-1.5 shadow-sm">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-50 blur-[2px]" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 pm-pulse-badge" />
+                </span>
+                <span className="text-[11px] font-semibold text-gray-600">
+                  {readyCount}/{visibleStack.length} Online
+                </span>
+              </div>
+            )}
+
+            {editorMode === 'photo' && (
+              <Button variant="secondary" onClick={refreshHealth} disabled={isHealthLoading}>
+                <RefreshCw className={cn('h-4 w-4', isHealthLoading ? 'animate-spin' : '')} />
+                Sync
+              </Button>
+            )}
+
+            {editorMode === 'photo' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onPickFile}
+                  disabled={isUploading}
+                  className="pm-shimmer flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold shadow-md shadow-blue-500/20 transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  Import Image
+                </button>
+                <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
+                {imageSrc && (
+                  <button
+                    type="button"
+                    onClick={() => setShowExportModal(true)}
+                    className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white shadow-md transition-transform hover:scale-105"
+                    style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Export
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => videoFileInputRef.current?.click()}
+                  disabled={isVideoUploading}
+                  className="pm-shimmer flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold shadow-md shadow-blue-500/20 transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isVideoUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                  {isVideoUploading ? 'Uploading...' : 'Import Video'}
+                </button>
+                <input ref={videoFileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,video/x-msvideo" className="hidden" onChange={handleVideoUpload} />
+              </>
+            )}
           </div>
         </div>
 
-        <div className="grid xl:grid-cols-[minmax(0,1fr)_360px]">
+        {editorMode === 'photo' ? (
+        <div className="grid xl:grid-cols-[260px_minmax(0,1fr)_360px]">
+          {/* ── Left Panel: Photo Adjustments ── */}
+          <div className="pm-glass-panel pm-scroll pm-left-panel flex flex-col border-r border-white/60 p-4 space-y-2" style={{ background: 'rgba(255,255,255,0.45)', boxShadow: '20px 0 40px rgba(0,0,0,0.02)' }}>
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-lg bg-gradient-to-tr from-indigo-500 to-purple-400 flex items-center justify-center">
+                  <Palette className="h-3 w-3 text-white" />
+                </div>
+                <span className="text-[12px] font-bold tracking-tight text-gray-700">Adjustments</span>
+              </div>
+              {hasAdjustments ? (
+                <button type="button" onClick={resetAdjustments} className="text-[10px] font-semibold text-indigo-500 hover:text-indigo-700 transition-colors flex items-center gap-1">
+                  <RotateCcw className="h-3 w-3" /> Reset
+                </button>
+              ) : null}
+            </div>
+
+            <AccordionSection icon={Sun} title="Light" defaultOpen>
+              <Slider label="Brightness" value={adjustments.brightness} onChange={(e) => setAdj('brightness', +e.target.value)} min={-100} max={100} />
+              <Slider label="Contrast" value={adjustments.contrast} onChange={(e) => setAdj('contrast', +e.target.value)} min={-100} max={100} />
+              <Slider label="Exposure" value={adjustments.exposure} onChange={(e) => setAdj('exposure', +e.target.value)} min={-100} max={100} />
+              <Slider label="Highlights" value={adjustments.highlights} onChange={(e) => setAdj('highlights', +e.target.value)} min={-100} max={100} />
+              <Slider label="Shadows" value={adjustments.shadows} onChange={(e) => setAdj('shadows', +e.target.value)} min={-100} max={100} />
+            </AccordionSection>
+
+            <AccordionSection icon={Droplets} title="Color">
+              <Slider label="Saturation" value={adjustments.saturation} onChange={(e) => setAdj('saturation', +e.target.value)} min={-100} max={100} />
+              <Slider label="Vibrance" value={adjustments.vibrance} onChange={(e) => setAdj('vibrance', +e.target.value)} min={-100} max={100} />
+              <Slider label="Temperature" value={adjustments.temperature} onChange={(e) => setAdj('temperature', +e.target.value)} min={-100} max={100} />
+              <Slider label="Tint" value={adjustments.tint} onChange={(e) => setAdj('tint', +e.target.value)} min={-100} max={100} />
+            </AccordionSection>
+
+            <AccordionSection icon={Contrast} title="Detail">
+              <Slider label="Sharpness" value={adjustments.sharpness} onChange={(e) => setAdj('sharpness', +e.target.value)} min={0} max={100} />
+              <Slider label="Clarity" value={adjustments.clarity} onChange={(e) => setAdj('clarity', +e.target.value)} min={-100} max={100} />
+              <Slider label="Blur" value={adjustments.blur} onChange={(e) => setAdj('blur', +e.target.value)} min={0} max={100} />
+            </AccordionSection>
+
+            <AccordionSection icon={Sparkles} title="Effects">
+              <Slider label="Vignette" value={adjustments.vignette} onChange={(e) => setAdj('vignette', +e.target.value)} min={0} max={100} />
+              <Slider label="Grain" value={adjustments.grain} onChange={(e) => setAdj('grain', +e.target.value)} min={0} max={100} />
+              <Slider label="Fade" value={adjustments.fade} onChange={(e) => setAdj('fade', +e.target.value)} min={0} max={100} />
+            </AccordionSection>
+
+            <AccordionSection icon={Crop} title="Transform">
+              <Slider label="Rotate" value={adjustments.rotate} onChange={(e) => setAdj('rotate', +e.target.value)} min={-180} max={180} />
+              <div className="flex gap-2 mt-1">
+                <button
+                  type="button"
+                  onClick={() => setAdj('flipH', !adjustments.flipH)}
+                  className={cn('pm-icon-btn flex-1', adjustments.flipH && 'active')}
+                  title="Flip horizontal"
+                >
+                  <FlipHorizontal2 className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdj('flipV', !adjustments.flipV)}
+                  className={cn('pm-icon-btn flex-1', adjustments.flipV && 'active')}
+                  title="Flip vertical"
+                >
+                  <FlipVertical2 className="h-4 w-4" />
+                </button>
+              </div>
+            </AccordionSection>
+
+            <AccordionSection icon={Sunset} title="Filters">
+              <div className="grid grid-cols-3 gap-1.5">
+                {PHOTO_FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => applyFilter(f)}
+                    className={cn(
+                      'flex flex-col items-center gap-1 rounded-xl p-1.5 transition-all text-center',
+                      activeFilter === f.id
+                        ? 'bg-indigo-50 border border-indigo-200 shadow-sm'
+                        : 'border border-transparent hover:bg-gray-50 hover:border-gray-100'
+                    )}
+                  >
+                    <div
+                      className="w-full aspect-square rounded-lg bg-gradient-to-br from-gray-100 to-gray-200 overflow-hidden"
+                      style={imageSrc ? {
+                        backgroundImage: `url(${imageSrc})`,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                        filter: buildFilterStyles({ ...DEFAULT_ADJUSTMENTS, ...f.adj }).filter || 'none'
+                      } : undefined}
+                    />
+                    <span className={cn(
+                      'text-[9px] font-semibold uppercase tracking-wider',
+                      activeFilter === f.id ? 'text-indigo-600' : 'text-gray-400'
+                    )}>
+                      {f.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </AccordionSection>
+
+            {hasAdjustments ? (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={resetAdjustments}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors flex items-center justify-center gap-1.5 pm-btn-hover"
+                >
+                  <RotateCcw className="h-3 w-3" /> Reset All Adjustments
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          {/* ── Center: Canvas Viewport ── */}
           <div className="relative min-w-0 overflow-hidden bg-[#f0f0f3] p-6">
             {/* Floating gradient orbs */}
             <div className="pointer-events-none absolute -top-20 -left-20 h-64 w-64 rounded-full bg-purple-300/20 opacity-70" style={{ filter: 'blur(80px)', animation: 'pm-float-gentle 6s infinite ease-in-out' }} />
@@ -1911,7 +2375,7 @@ export default function PhotoMagicEditor({ store }) {
                 </div>
               </div>
 
-              <div className="relative overflow-hidden bg-[#f0f0f3]" style={makeCheckerBg()}>
+              <div className="relative overflow-hidden bg-[#f0f0f3]" style={makeTransparentBg()}>
                 {renderCanvas()}
 
                 {imageSrc ? (
@@ -1958,16 +2422,14 @@ export default function PhotoMagicEditor({ store }) {
               <div className="flex flex-wrap items-center justify-between gap-4 border-t border-gray-100 px-5 py-3">
                 <div className="text-xs text-gray-500">
                   {tool === 'remove_bg' && precisionMode
-                    ? 'Precision mode is live. Click to add keep points. Hold Alt or Command to add remove points.'
-                    : tool === 'select'
-                      ? 'Target selection can either extract the detected asset or hand its mask straight to eraser for removal.'
-                      : tool === 'relight'
-                        ? 'Lighting stage reshapes the active source with highlight bias and cast shadow. Use Compare to judge grounding.'
-                        : tool === 'expand'
-                          ? 'Canvas expand regenerates only the missing frame area. Route the expanded result back into source for the next pass.'
+                    ? 'Click to add keep points. Hold Alt or Cmd for remove points.'
+                    : tool === 'relight'
+                      ? 'Adjust lighting to reshape your image. Use Compare to preview changes.'
+                      : tool === 'expand'
+                        ? 'Extend the canvas and regenerate the missing area. Use the result as your new starting image.'
                     : tool === 'erase' && imageSrc
-                      ? 'Paint removal regions on the active source. Switch to Compare to inspect the clean plate after render.'
-                      : 'Route outputs back into source when you want to continue the stack from the latest render.'}
+                      ? 'Use Smart Select or paint a mask manually, then remove. Switch to Compare to preview.'
+                      : 'Use the tools on the right to process your image. Each result can be used as input for the next step.'}
                 </div>
 
                 {viewportMode === 'compare' && canCompare ? (
@@ -1988,719 +2450,324 @@ export default function PhotoMagicEditor({ store }) {
             </div>
           </div>
 
-          <div className="pm-glass-panel pm-scroll flex flex-col overflow-y-auto border-l border-white p-5" style={{ background: 'rgba(255,255,255,0.40)', boxShadow: '-20px 0 40px rgba(0,0,0,0.03)' }}>
+          {/* ── Right Panel: AI Magic Tools ── */}
+          <div className="pm-glass-panel pm-scroll pm-right-panel flex flex-col border-l border-white p-5" style={{ background: 'rgba(255,255,255,0.40)', boxShadow: '-20px 0 40px rgba(0,0,0,0.03)' }}>
             <div className="mb-6">
               <h2 className="text-[13px] font-bold tracking-widest uppercase text-gray-400 mb-4 flex items-center gap-2">
                 <Layers3 className="h-4 w-4" /> Operation Mode
               </h2>
-              <div className="grid grid-cols-2 gap-2">
-                {Object.entries(availableTools).map(([value, config]) => {
-                  const display = TOOL_DISPLAY[value] || { label: config.label, accent: config.engine, icon: Layers3 };
-                  const ToolIcon = display.icon;
-
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => {
-                        setTool(value);
-                        setError(null);
-                        if (value !== 'remove_bg') setPrecisionMode(false);
-                        if (value === 'erase' || value === 'select' || value === 'relight' || value === 'expand') setViewportMode('source');
-                      }}
-                      className={cn(
-                        'group relative overflow-hidden rounded-2xl border px-3 py-3 text-left transition-all duration-300',
-                        tool === value
-                          ? 'border-indigo-200 bg-white shadow-[0_12px_32px_rgba(99,102,241,0.14)]'
-                          : 'border-gray-200/70 bg-white/72 hover:-translate-y-0.5 hover:border-indigo-100 hover:bg-white hover:shadow-sm'
-                      )}
-                      style={{ backdropFilter: 'blur(18px)' }}
-                    >
-                      <div
-                        className={cn(
-                          'pointer-events-none absolute inset-x-0 top-0 h-px opacity-0 transition-opacity duration-300',
-                          tool === value ? 'opacity-100' : 'group-hover:opacity-70'
-                        )}
-                        style={{ background: 'linear-gradient(90deg, rgba(255,255,255,0), rgba(99,102,241,0.55), rgba(255,255,255,0))' }}
-                      />
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-2.5">
-                          <div
-                            className={cn(
-                              'flex h-9 w-9 items-center justify-center rounded-2xl border transition-all duration-300',
-                              tool === value ? 'border-indigo-100 bg-indigo-50 text-indigo-600' : 'border-white/80 bg-white text-gray-500'
-                            )}
-                          >
-                            <ToolIcon className="h-4 w-4" />
-                          </div>
-                          <div>
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">{display.accent}</div>
-                            <div className={cn('mt-1 text-sm font-semibold', tool === value ? 'text-gray-950' : 'text-gray-700')}>{display.label}</div>
-                          </div>
-                        </div>
-                        <span
-                          className={cn(
-                            'mt-1 h-2.5 w-2.5 rounded-full transition-all duration-300',
-                            tool === value ? 'animate-pulse bg-indigo-500 shadow-[0_0_0_6px_rgba(99,102,241,0.08)]' : 'bg-gray-200 group-hover:bg-indigo-200'
-                          )}
-                        />
-                      </div>
-                      <div className="mt-3 text-[12px] leading-5 text-gray-500">{config.description}</div>
-                    </button>
-                  );
-                })}
+              <div className="relative flex p-1 rounded-xl border border-gray-200/50 shadow-inner" style={{ background: 'rgba(243,244,246,0.8)' }}>
+                {Object.entries(availableTools).map(([value, config]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => {
+                      setTool(value);
+                      setError(null);
+                      if (value !== 'remove_bg') setPrecisionMode(false);
+                      if (value === 'erase' || value === 'relight' || value === 'expand') setViewportMode('source');
+                    }}
+                    className={cn(
+                      'flex-1 rounded-lg px-2 py-1.5 text-center text-[12px] font-medium transition-all relative z-10',
+                      tool === value
+                        ? 'bg-white text-indigo-600 font-semibold shadow-sm'
+                        : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                    )}
+                  >
+                    {config.label}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {['remove_bg', 'select', 'erase'].includes(tool) ? (
-              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-                <Label>Execution Parameters</Label>
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <RangeControl
-                    label="Detail Budget"
-                    value={maxSide}
-                    min={256}
-                    max={8192}
-                    step={64}
-                    onChange={(value) => setMaxSide(clamp(toNumber(value, 2048), 256, 8192))}
-                    formatValue={(value) => `${value}px`}
-                    minLabel="Fast"
-                    maxLabel="Fine detail"
-                    hint="The working resolution for AI passes. Raise it when tiny logos, seams, or tags need more edge fidelity."
-                  />
-                  <RangeControl
-                    label="Edge Grow"
-                    value={maskDilatePx}
-                    min={0}
-                    max={64}
-                    step={1}
-                    onChange={(value) => setMaskDilatePx(clamp(toNumber(value, 0), 0, 64))}
-                    formatValue={(value) => `${value}px`}
-                    minLabel="Tight"
-                    maxLabel="Wider"
-                    hint="Expands the detected mask before the render runs, useful when the selection is clipping the edge."
-                  />
-                  <RangeControl
-                    label="Edge Softness"
-                    value={maskFeatherPx}
-                    min={0}
-                    max={64}
-                    step={1}
-                    onChange={(value) => setMaskFeatherPx(clamp(toNumber(value, 0), 0, 64))}
-                    formatValue={(value) => `${value}px`}
-                    minLabel="Crisp"
-                    maxLabel="Blended"
-                    hint="Softens the mask edge so the cutout or cleanup feels less mechanical against the source."
-                  />
-                  {tool === 'erase' ? (
-                    <RangeControl
-                      label="Cleanup Margin"
-                      value={cropMarginPx}
-                      min={0}
-                      max={2048}
-                      step={16}
-                      onChange={(value) => setCropMarginPx(clamp(toNumber(value, 128), 0, 2048))}
-                      formatValue={(value) => `${value}px`}
-                      minLabel="Mask bounds"
-                      maxLabel="More breathing room"
-                      hint="Adds extra space around the painted area before inpainting so cleanup has room to rebuild the surrounding pixels."
-                    />
-                  ) : (
-                    <div className="rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3 text-xs leading-5 text-gray-500">
-                      {tool === 'select'
-                        ? 'Target Selection uses Gemini Vision to pick the right region, then either extracts that target or hands its mask to eraser.'
-                        : 'Isolation stages share the same mask dilation and feather controls so the cutout chain stays consistent.'}
-                    </div>
-                  )}
+            {/* ── Remove Background ── */}
+            {tool === 'remove_bg' ? (
+              <div className="mt-4 space-y-3 pm-section-enter">
+                <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                  <Label>Processing Settings</Label>
+                  <div className="mt-4 space-y-3">
+                    <Slider label="Max Resolution" tooltip="Maximum image dimension for processing" value={maxSide} onChange={(e) => setMaxSide(clamp(toNumber(e.target.value, 2048), 256, 8192))} min={256} max={8192} step={256} />
+                    <Slider label="Edge Expansion" tooltip="Grow the selection boundary outward" value={maskDilatePx} onChange={(e) => setMaskDilatePx(clamp(toNumber(e.target.value, 0), 0, 64))} min={0} max={64} />
+                    <Slider label="Edge Softness" tooltip="Smooth the selection edges" value={maskFeatherPx} onChange={(e) => setMaskFeatherPx(clamp(toNumber(e.target.value, 0), 0, 64))} min={0} max={64} />
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                  <Label>Background Removal</Label>
+                  <div className="mt-2 text-sm text-gray-500">Automatically remove the background, then fine-tune edges if needed.</div>
+                  <div className="mt-4 space-y-2">
+                    <Button variant="primary" onClick={runRemoveBg} disabled={!imageId || isRunning || !rmbg2Ready} className="w-full justify-center pm-btn-hover">
+                      <Wand2 className="h-4 w-4 pm-sparkle-icon" />
+                      Remove Background
+                    </Button>
+                    <Button variant="secondary" onClick={() => { setPrecisionMode((prev) => !prev); setViewportMode('source'); }} disabled={!imageId || isRunning || !sam2Ready} className="w-full justify-center pm-btn-hover">
+                      <Crosshair className="h-4 w-4" />
+                      {precisionMode ? 'Exit Precision Mode' : 'Refine Edges'}
+                    </Button>
+                    {precisionMode ? (
+                      <div className="rounded-2xl border border-indigo-100 bg-indigo-50/50 p-3 pm-section-enter">
+                        <div className="text-sm font-medium text-gray-900">Edge Guide Points</div>
+                        <div className="mt-1.5 text-xs leading-5 text-gray-500">Click to add keep points. Hold Alt/Cmd for remove points.</div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Button variant="primary" onClick={runRefine} disabled={!points.length || isRunning} className="pm-btn-hover">
+                            Apply Refinement ({points.length})
+                          </Button>
+                          <Button variant="secondary" onClick={() => setPoints([])} disabled={!points.length || isRunning}>Clear</Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             ) : null}
 
-            {tool === 'remove_bg' ? (
-              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-                <Label>Foreground Isolation</Label>
-                <div className="mt-3 text-sm text-gray-600">Run the auto cutout first, then enter SAM2 precision if the silhouette needs manual correction.</div>
+            {/* ── Object Remover (merged select + erase) ── */}
+            {tool === 'erase' ? (
+              <div className="mt-4 space-y-3 pm-section-enter">
+                {/* Mask method toggle */}
+                <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                  <Label>How to Select</Label>
+                  <div className="mt-3">
+                    <Toggle value={maskMethod} onChange={setMaskMethod} options={[
+                      { value: 'smart', label: 'Smart Select', title: 'AI-powered detection using text prompts' },
+                      { value: 'brush', label: 'Manual Brush', title: 'Paint the mask by hand' }
+                    ]} />
+                  </div>
+                </div>
 
-                <div className="mt-4 space-y-3">
-                  <Button variant="primary" onClick={runRemoveBg} disabled={!imageId || isRunning || !rmbg2Ready} className="w-full justify-center">
-                    <Wand2 className="h-4 w-4" />
-                    Execute cutout
-                  </Button>
-
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      setPrecisionMode((prev) => !prev);
-                      setViewportMode('source');
-                    }}
-                    disabled={!imageId || isRunning || !sam2Ready}
-                    className="w-full justify-center"
-                  >
-                    <Sparkles className="h-4 w-4" />
-                    {precisionMode ? 'Exit SAM2 precision' : 'Enter SAM2 precision'}
-                  </Button>
-
-                  {precisionMode ? (
-                    <div className="rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
-                      <div className="text-sm font-medium text-gray-900">SAM2 guide points</div>
-                      <div className="mt-2 text-xs leading-5 text-gray-500">
-                        Default clicks add keep points. Hold Alt or Command for remove points. The refine pass uses the current source plus your point set.
+                {/* Smart Select */}
+                {maskMethod === 'smart' ? (
+                  <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm pm-section-enter">
+                    <div className="flex items-center gap-2 mb-2">
+                      <ScanSearch className="h-4 w-4 text-indigo-400" />
+                      <Label>Smart Select</Label>
+                    </div>
+                    <div className="text-xs text-gray-500 mb-3">Describe what to detect. AI will find and mask it.</div>
+                    <div className="space-y-3">
+                      <Slider label="Max Resolution" tooltip="Maximum image dimension" value={maxSide} onChange={(e) => setMaxSide(clamp(toNumber(e.target.value, 2048), 256, 8192))} min={256} max={8192} step={256} />
+                      <Slider label="Edge Expansion" tooltip="Grow the boundary outward" value={maskDilatePx} onChange={(e) => setMaskDilatePx(clamp(toNumber(e.target.value, 0), 0, 64))} min={0} max={64} />
+                      <Slider label="Edge Softness" tooltip="Smooth the edges" value={maskFeatherPx} onChange={(e) => setMaskFeatherPx(clamp(toNumber(e.target.value, 0), 0, 64))} min={0} max={64} />
+                    </div>
+                    <div className="mt-3">
+                      <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">What to detect</div>
+                      <Input value={selectionPrompt} onChange={(e) => setSelectionPrompt(e.target.value)} placeholder="e.g. price tag, logo, shoe, hand..." />
+                    </div>
+                    {selectionMeta ? (
+                      <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50/50 p-2.5 pm-section-enter">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-gray-900">{selectionMeta.label || 'Detected'}</span>
+                          <span className="text-[11px] font-mono font-semibold text-emerald-600">{Math.round((selectionMeta.confidence || 0) * 100)}%</span>
+                        </div>
                       </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button variant="primary" onClick={runRefine} disabled={!points.length || isRunning}>
-                          Apply precision mask ({points.length})
+                    ) : null}
+                    <div className="mt-3">
+                      <Button variant="primary" onClick={runSelect} disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()} className="w-full justify-center pm-btn-hover">
+                        <ScanSearch className="h-4 w-4" />
+                        Detect Object
+                      </Button>
+                    </div>
+                    {selectionMaskUrl ? (
+                      <div className="mt-2 space-y-1.5 pm-section-enter">
+                        <Button variant="primary" onClick={() => { applyMaskArtifactToCanvas(selectionMaskUrl); setMaskMethod('brush'); }} disabled={isBusy} className="w-full justify-center pm-btn-hover">
+                          <Eraser className="h-4 w-4" /> Remove Object
                         </Button>
-                        <Button variant="secondary" onClick={() => setPoints([])} disabled={!points.length || isRunning}>
-                          Clear points
+                        <Button variant="secondary" onClick={() => promoteOutputToSource({ url: selectionCutoutUrl, stageLabel: selectionMeta?.label ? `${selectionMeta.label} extract` : 'Extracted object', nextTool: 'erase' })} disabled={isBusy || !selectionCutoutUrl} className="w-full justify-center pm-btn-hover">
+                          <Wand2 className="h-4 w-4" /> Extract Object
                         </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {/* Manual Brush */}
+                {maskMethod === 'brush' ? (
+                  <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm pm-section-enter">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Paintbrush className="h-4 w-4 text-rose-400" />
+                      <Label>Brush Controls</Label>
+                    </div>
+                    <div className="space-y-3">
+                      <Slider label="Brush Size" value={brushSize} onChange={(e) => setBrushSize(clamp(toNumber(e.target.value, 32), 4, 256))} min={4} max={256} />
+                      <div>
+                        <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Brush Mode</div>
+                        <Toggle value={eraseMode} onChange={setEraseMode} options={[
+                          { value: 'paint', label: 'Paint' },
+                          { value: 'erase', label: 'Erase' }
+                        ]} />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <Button variant="secondary" onClick={undoMask} disabled={isRunning} className="flex-1 pm-btn-hover">Undo</Button>
+                      <Button variant="secondary" onClick={clearMask} disabled={isRunning} className="flex-1 pm-btn-hover">Clear</Button>
+                    </div>
+                    <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Coverage</div>
+                          <div className="mt-0.5 text-sm font-medium text-gray-900">
+                            {cleanPlateMaskReady ? `${maskCoverageLabel} painted` : 'No mask yet'}
+                          </div>
+                        </div>
+                        <StatusPill ok={cleanPlateMaskReady} label={cleanPlateMaskReady ? 'Ready' : 'Needed'} />
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Removal Engine */}
+                <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                  <Label>Removal Engine</Label>
+                  <div className="mt-3">
+                    <Toggle value={quality} onChange={setQuality} options={[
+                      { value: 'standard', label: 'Fast (LaMa)', title: 'Quick removal' },
+                      { value: 'hq', label: 'HD (SDXL)', disabled: hqOption.disabled, title: hqOption.title }
+                    ]} />
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    <Slider label="Padding" tooltip="Extra space around detected region" value={cropMarginPx} onChange={(e) => setCropMarginPx(clamp(toNumber(e.target.value, 128), 0, 2048))} min={0} max={2048} step={16} />
+                    <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2">
+                      <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Crop to selection</span>
+                      <button type="button" onClick={() => setCropToMask((prev) => !prev)} className={cn('pm-icon-btn', cropToMask && 'active')} style={{ width: 28, height: 28 }}>
+                        {cropToMask ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                  {quality === 'hq' ? (
+                    <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/30 p-3 pm-section-enter">
+                      <div className="text-xs font-semibold text-gray-700 mb-2">HD Quality Settings</div>
+                      <div className="space-y-2.5">
+                        <Slider label="Quality Steps" tooltip="More = higher quality, slower" value={sdxlSteps} onChange={(e) => setSdxlSteps(clamp(toNumber(e.target.value, 20), 5, 80))} min={5} max={80} />
+                        <Slider label="AI Creativity" tooltip="Lower = follows image closely" value={sdxlGuidance} onChange={(e) => setSdxlGuidance(clamp(toNumber(e.target.value, 8), 0, 20))} min={0} max={20} step={0.1} />
+                        <Slider label="Effect Intensity" value={sdxlStrength} onChange={(e) => setSdxlStrength(clamp(toNumber(e.target.value, 0.99), 0, 1))} min={0} max={1} step={0.01} />
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Variation Seed</span>
+                          </div>
+                          <Input type="number" min={0} max={2147483647} value={sdxlSeed} onChange={(e) => setSdxlSeed(clamp(toNumber(e.target.value, 0), 0, 2147483647))} />
+                        </div>
                       </div>
                     </div>
                   ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            {tool === 'select' ? (
-              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-                <Label>Target Selection</Label>
-                <div className="mt-3 text-sm text-gray-600">Describe a logo, label, tag, or object. Photo Magic will detect one best region, then either isolate it as its own asset or pass the mask directly into eraser.</div>
-
-                <div className="mt-4">
-                  <Label>Deliver Into</Label>
-                  <div className="mt-2">
-                    <Toggle
-                      value={selectionIntent}
-                      onChange={setSelectionIntent}
-                      options={[
-                        { value: 'extract', label: 'Extract target', title: 'Keep only the detected target as a separate asset.' },
-                        { value: 'erase', label: 'Send to eraser', title: 'Detect the target and drop its mask straight into Clean Plate.' }
-                      ]}
-                    />
-                  </div>
-                </div>
-
-                <div className="mt-4">
-                  <Label>Target Prompt</Label>
-                  <div className="mt-2">
-                    <Input
-                      value={selectionPrompt}
-                      onChange={(event) => setSelectionPrompt(event.target.value)}
-                      placeholder='logo on hoodie, neck label, price tag, chest text'
-                    />
-                  </div>
-                </div>
-
-                {selectionMeta ? (
-                  <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium text-gray-900">{selectionMeta.label || 'Resolved target'}</div>
-                      <div className="text-[11px] font-mono text-gray-500">{Math.round((selectionMeta.confidence || 0) * 100)}%</div>
-                    </div>
-                    <div className="mt-2 text-xs leading-5 text-gray-500">
-                      {selectionMeta.notes || (selectionIntent === 'erase'
-                        ? 'The detection is ready to remove from the source. Send the mask to eraser when you want instant cleanup.'
-                        : 'The detection is ready as its own asset. Route the extracted result back into source if you want to keep editing it.')}
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {selectionCutoutUrl ? (
-                        <Button
-                          variant="secondary"
-                          onClick={() => promoteOutputToSource({
-                            url: selectionCutoutUrl,
-                            stageLabel: selectionMeta?.label ? `${selectionMeta.label} source` : 'Selected source',
-                            nextTool: 'erase'
-                          })}
-                          disabled={isRunning}
-                        >
-                          <Upload className="h-4 w-4" />
-                          Route extracted target
-                        </Button>
-                      ) : null}
-                      {selectionMaskUrl ? (
-                        <Button variant="secondary" onClick={() => runSelect('erase')} disabled={isRunning}>
-                          <Paintbrush className="h-4 w-4" />
-                          Refresh eraser mask
-                        </Button>
-                      ) : null}
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="mt-4">
-                  <Button variant="primary" onClick={() => runSelect()} disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()} className="w-full justify-center">
-                    <Sparkles className="h-4 w-4" />
-                    {selectionIntent === 'erase' ? 'Find target and prep eraser' : 'Find and isolate target'}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            {tool === 'erase' ? (
-              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-                <Label>Clean Plate Engine</Label>
-                <div className="mt-4">
-                  <Toggle
-                    value={quality}
-                    onChange={setQuality}
-                    options={[
-                      { value: 'standard', label: 'LaMa', title: 'Fast standard cleanup' },
-                      { value: 'hq', label: 'SDXL HQ', disabled: hqOption.disabled, title: hqOption.title }
-                    ]}
-                  />
-                </div>
-
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>Brush Size</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={4}
-                        max={256}
-                        value={brushSize}
-                        onChange={(event) => setBrushSize(clamp(toNumber(event.target.value, 32), 4, 256))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Mask Mode</Label>
-                    <div className="mt-2">
-                      <Toggle
-                        value={eraseMode}
-                        onChange={setEraseMode}
-                        options={[
-                          { value: 'paint', label: 'Paint' },
-                          { value: 'erase', label: 'Erase' }
-                        ]}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
-                  <div>
-                    <Label>Crop to Mask</Label>
-                    <div className="mt-2 text-sm text-gray-600">Limit the render region to the painted area before cleanup.</div>
-                  </div>
-                  <Button variant={cropToMask ? 'primary' : 'secondary'} onClick={() => setCropToMask((prev) => !prev)} className="px-3 py-1.5 text-xs">
-                    {cropToMask ? 'Enabled' : 'Disabled'}
-                  </Button>
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button variant="secondary" onClick={undoMask} disabled={isRunning}>
-                    Undo mask
-                  </Button>
-                  <Button variant="secondary" onClick={clearMask} disabled={isRunning}>
-                    Clear mask
-                  </Button>
-                </div>
-
-                <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <Label>Mask Coverage</Label>
-                      <div className="mt-2 text-sm font-medium text-gray-900">
-                        {cleanPlateMaskReady ? `${maskCoverageLabel} painted` : 'No active clean plate mask'}
-                      </div>
-                    </div>
-                    <StatusPill
-                      ok={cleanPlateMaskReady}
-                      label={cleanPlateMaskReady ? 'Mask ready' : 'Mask needed'}
-                      title={cleanPlateMaskReady ? `${maskMetrics.paintedPixels} painted pixels` : 'Paint over the source or route a mask artifact first'}
-                    />
-                  </div>
-                  <div className="mt-2 text-xs leading-5 text-gray-500">
-                    {latestMaskForErase
-                      ? 'If the surface is blank, Photo Magic will auto-load the latest available mask before rendering.'
-                      : 'Paint over the region to remove. Clean plate will not run until the mask surface contains visible pixels.'}
-                  </div>
-                </div>
-
-                <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <Label>Prompt Masking</Label>
-                      <div className="mt-2 text-sm leading-6 text-gray-600">Describe what should disappear, and Gemini will detect it and route the mask straight into this eraser surface.</div>
-                    </div>
-                    <StatusPill ok={geminiReady} label={geminiReady ? 'Gemini on' : 'Gemini off'} title={geminiReady ? 'Gemini prompt targeting is available' : 'Set GEMINI_API_KEY to use prompt masking'} />
-                  </div>
-                  <div className="mt-3 flex flex-col gap-3">
-                    <Input
-                      value={selectionPrompt}
-                      onChange={(event) => setSelectionPrompt(event.target.value)}
-                      placeholder='logo on hoodie, neck label, chest text, hang tag'
-                    />
-                    <Button
-                      variant="secondary"
-                      onClick={() => runSelect('erase')}
-                      disabled={!imageId || isRunning || !geminiReady || !selectionPrompt.trim()}
-                      className="justify-center"
-                    >
-                      <Sparkles className="h-4 w-4" />
-                      Find target mask
+                  <div className="mt-3">
+                    <Button variant="primary" onClick={runErase} disabled={!imageId || isRunning || (quality === 'hq' ? hqOption.disabled : !lamaReady) || (!cleanPlateMaskReady && !latestMaskForErase)} className="w-full justify-center pm-btn-hover">
+                      <Eraser className="h-4 w-4" />
+                      {quality === 'hq' ? 'Remove (HD)' : 'Remove Object'}
                     </Button>
                   </div>
                 </div>
-
-                {quality === 'hq' ? (
-                  <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/80 p-3">
-                    <div className="text-sm font-medium text-gray-900">SDXL tuning</div>
-                    <div className="mt-4 grid grid-cols-2 gap-3">
-                      <div>
-                        <Label>Steps</Label>
-                        <div className="mt-2">
-                          <Input
-                            type="number"
-                            min={5}
-                            max={80}
-                            value={sdxlSteps}
-                            onChange={(event) => setSdxlSteps(clamp(toNumber(event.target.value, 20), 5, 80))}
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <Label>Guidance</Label>
-                        <div className="mt-2">
-                          <Input
-                            type="number"
-                            min={0}
-                            max={20}
-                            step="0.1"
-                            value={sdxlGuidance}
-                            onChange={(event) => setSdxlGuidance(clamp(toNumber(event.target.value, 8), 0, 20))}
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <Label>Strength</Label>
-                        <div className="mt-2">
-                          <Input
-                            type="number"
-                            min={0}
-                            max={1}
-                            step="0.01"
-                            value={sdxlStrength}
-                            onChange={(event) => setSdxlStrength(clamp(toNumber(event.target.value, 0.99), 0, 1))}
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <Label>Seed</Label>
-                        <div className="mt-2">
-                          <Input
-                            type="number"
-                            min={0}
-                            max={2147483647}
-                            value={sdxlSeed}
-                            onChange={(event) => setSdxlSeed(clamp(toNumber(event.target.value, 0), 0, 2147483647))}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="mt-4">
-                  <Button
-                    variant="primary"
-                    onClick={runErase}
-                    disabled={!imageId || isRunning || (quality === 'hq' ? hqOption.disabled : !lamaReady) || (!cleanPlateMaskReady && !latestMaskForErase)}
-                    className="w-full justify-center"
-                  >
-                    <Eraser className="h-4 w-4" />
-                    {quality === 'hq' ? 'Execute HQ clean plate' : 'Execute clean plate'}
-                  </Button>
-                </div>
               </div>
             ) : null}
 
+            {/* ── Adjust Lighting ── */}
             {tool === 'relight' ? (
-              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-                <Label>Lighting Stage</Label>
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>Preset</Label>
-                    <div className="mt-2">
-                      <Select value={relightPreset} onChange={(event) => setRelightPreset(event.target.value)}>
-                        <option value="studio">Studio</option>
-                        <option value="window_left">Window Left</option>
-                        <option value="window_right">Window Right</option>
-                        <option value="golden_hour">Golden Hour</option>
-                        <option value="rim">Rim Light</option>
-                      </Select>
-                    </div>
-                  </div>
-                  <RangeControl
-                    label="Shadow Softness"
-                    value={shadowBlurPx}
-                    min={0}
-                    max={240}
-                    step={1}
-                    onChange={(value) => setShadowBlurPx(clamp(toNumber(value, 42), 0, 240))}
-                    formatValue={(value) => `${value}px`}
-                    minLabel="Tight"
-                    maxLabel="Airy"
-                    hint="Softens the cast shadow edge so the subject feels grounded without looking pasted in."
-                  />
-                  <RangeControl
-                    label="Subject Lift"
-                    value={subjectBoost}
-                    min={-0.2}
-                    max={0.8}
-                    step={0.01}
-                    onChange={(value) => setSubjectBoost(clamp(toNumber(value, 0.22), -0.2, 0.8))}
-                    formatValue={(value) => value.toFixed(2)}
-                    minLabel="Muted"
-                    maxLabel="Hero"
-                    hint="Pushes highlight energy into the subject without changing the whole frame."
-                  />
-                  <RangeControl
-                    label="Backdrop Exposure"
-                    value={backgroundExposure}
-                    min={-0.6}
-                    max={0.35}
-                    step={0.01}
-                    onChange={(value) => setBackgroundExposure(clamp(toNumber(value, -0.08), -0.6, 0.35))}
-                    formatValue={(value) => value.toFixed(2)}
-                    minLabel="Moodier"
-                    maxLabel="Lighter"
-                    hint="Grades the background independently so the subject can step forward without losing depth."
-                  />
-                  <RangeControl
-                    label="Color Warmth"
-                    value={relightWarmth}
-                    min={-0.35}
-                    max={0.35}
-                    step={0.01}
-                    onChange={(value) => setRelightWarmth(clamp(toNumber(value, 0.08), -0.35, 0.35))}
-                    formatValue={(value) => value.toFixed(2)}
-                    minLabel="Cooler"
-                    maxLabel="Warmer"
-                    hint="Shifts the light mood from cooler editorial tones to warmer hero-lighting."
-                  />
-                  <RangeControl
-                    label="Shadow Density"
-                    value={shadowOpacity}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    onChange={(value) => setShadowOpacity(clamp(toNumber(value, 0.28), 0, 1))}
-                    formatValue={(value) => `${Math.round(value * 100)}%`}
-                    minLabel="Light"
-                    maxLabel="Dense"
-                    hint="Controls how visible the grounding shadow is once the lighting pass is rendered."
-                  />
-                  <RangeControl
-                    label="Shadow Drift X"
-                    value={shadowOffsetX}
-                    min={-256}
-                    max={256}
-                    step={1}
-                    onChange={(value) => setShadowOffsetX(clamp(toNumber(value, 0), -256, 256))}
-                    formatValue={(value) => `${value}px`}
-                    minLabel="Left"
-                    maxLabel="Right"
-                    hint="Slides the cast shadow sideways to match the implied light direction."
-                  />
-                  <RangeControl
-                    label="Shadow Drop Y"
-                    value={shadowOffsetY}
-                    min={-256}
-                    max={256}
-                    step={1}
-                    onChange={(value) => setShadowOffsetY(clamp(toNumber(value, 34), -256, 256))}
-                    formatValue={(value) => `${value}px`}
-                    minLabel="Lift"
-                    maxLabel="Drop"
-                    hint="Moves the shadow forward or backward to keep contact with the floor plane."
-                  />
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm pm-section-enter">
+                <Label>Lighting Adjustment</Label>
+                <div className="mt-3">
+                  <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Preset</div>
+                  <Select value={relightPreset} onChange={(e) => setRelightPreset(e.target.value)}>
+                    <option value="studio">Studio</option>
+                    <option value="window_left">Window Left</option>
+                    <option value="window_right">Window Right</option>
+                    <option value="golden_hour">Golden Hour</option>
+                    <option value="rim">Rim Light</option>
+                  </Select>
                 </div>
-
+                <div className="mt-4 space-y-3">
+                  <Slider label="Subject Brightness" value={subjectBoost} onChange={(e) => setSubjectBoost(clamp(toNumber(e.target.value, 0.22), -0.2, 0.8))} min={-0.2} max={0.8} step={0.01} />
+                  <Slider label="Background Brightness" value={backgroundExposure} onChange={(e) => setBackgroundExposure(clamp(toNumber(e.target.value, -0.08), -0.6, 0.35))} min={-0.6} max={0.35} step={0.01} />
+                  <Slider label="Color Warmth" value={relightWarmth} onChange={(e) => setRelightWarmth(clamp(toNumber(e.target.value, 0.08), -0.35, 0.35))} min={-0.35} max={0.35} step={0.01} />
+                  <Slider label="Shadow Darkness" value={shadowOpacity} onChange={(e) => setShadowOpacity(clamp(toNumber(e.target.value, 0.28), 0, 1))} min={0} max={1} step={0.01} />
+                  <Slider label="Shadow Softness" value={shadowBlurPx} onChange={(e) => setShadowBlurPx(clamp(toNumber(e.target.value, 42), 0, 240))} min={0} max={240} />
+                  <Slider label="Shadow Position X" value={shadowOffsetX} onChange={(e) => setShadowOffsetX(clamp(toNumber(e.target.value, 0), -256, 256))} min={-256} max={256} />
+                  <Slider label="Shadow Position Y" value={shadowOffsetY} onChange={(e) => setShadowOffsetY(clamp(toNumber(e.target.value, 34), -256, 256))} min={-256} max={256} />
+                </div>
                 <div className="mt-4">
-                  <Button variant="primary" onClick={runRelight} disabled={!imageId || isRunning || !relightReady} className="w-full justify-center">
-                    <Sparkles className="h-4 w-4" />
-                    Execute lighting stage
+                  <Button variant="primary" onClick={runRelight} disabled={!imageId || isRunning || !relightReady} className="w-full justify-center pm-btn-hover">
+                    <Sparkles className="h-4 w-4 pm-sparkle-icon" />
+                    Apply Lighting
                   </Button>
                 </div>
               </div>
             ) : null}
 
+            {/* ── Extend Canvas ── */}
             {tool === 'expand' ? (
-              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-                <Label>Canvas Expand</Label>
-                <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm pm-section-enter">
+                <Label>Canvas Extension</Label>
+                <div className="mt-3 grid grid-cols-2 gap-3">
                   <div>
-                    <Label>Aspect Ratio</Label>
-                    <div className="mt-2">
-                      <Select value={expandAspectRatio} onChange={(event) => setExpandAspectRatio(event.target.value)}>
-                        <option value="1:1">1:1</option>
-                        <option value="4:5">4:5</option>
-                        <option value="5:4">5:4</option>
-                        <option value="16:9">16:9</option>
-                        <option value="9:16">9:16</option>
-                        <option value="3:2">3:2</option>
-                        <option value="2:3">2:3</option>
-                      </Select>
-                    </div>
+                    <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Aspect Ratio</div>
+                    <Select value={expandAspectRatio} onChange={(e) => setExpandAspectRatio(e.target.value)}>
+                      <option value="1:1">1:1</option>
+                      <option value="4:5">4:5</option>
+                      <option value="5:4">5:4</option>
+                      <option value="16:9">16:9</option>
+                      <option value="9:16">9:16</option>
+                      <option value="3:2">3:2</option>
+                      <option value="2:3">2:3</option>
+                    </Select>
                   </div>
                   <div>
-                    <Label>Anchor</Label>
-                    <div className="mt-2">
-                      <Select value={expandAnchor} onChange={(event) => setExpandAnchor(event.target.value)}>
-                        <option value="center">Center</option>
-                        <option value="left">Left</option>
-                        <option value="right">Right</option>
-                        <option value="top">Top</option>
-                        <option value="bottom">Bottom</option>
-                      </Select>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-4">
-                  <Label>Prompt</Label>
-                  <div className="mt-2">
-                    <Input value={expandPrompt} onChange={(event) => setExpandPrompt(event.target.value)} placeholder="premium studio backdrop, soft floor gradient, natural depth" />
-                  </div>
-                </div>
-
-                <div className="mt-4">
-                  <Label>Negative Prompt</Label>
-                  <div className="mt-2">
-                    <Input value={expandNegativePrompt} onChange={(event) => setExpandNegativePrompt(event.target.value)} placeholder="text, watermark, duplicate subject, clutter" />
-                  </div>
-                </div>
-
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>Steps</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={5}
-                        max={80}
-                        value={expandSteps}
-                        onChange={(event) => setExpandSteps(clamp(toNumber(event.target.value, 24), 5, 80))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Guidance</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={20}
-                        step="0.1"
-                        value={expandGuidance}
-                        onChange={(event) => setExpandGuidance(clamp(toNumber(event.target.value, 7.5), 0, 20))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Strength</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={1}
-                        step="0.01"
-                        value={expandStrength}
-                        onChange={(event) => setExpandStrength(clamp(toNumber(event.target.value, 0.96), 0, 1))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Feather</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={128}
-                        value={expandFeatherPx}
-                        onChange={(event) => setExpandFeatherPx(clamp(toNumber(event.target.value, 24), 0, 128))}
-                      />
-                    </div>
-                  </div>
-                  <div className="col-span-2">
-                    <Label>Seed</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={2147483647}
-                        value={expandSeed}
-                        onChange={(event) => setExpandSeed(clamp(toNumber(event.target.value, 0), 0, 2147483647))}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-4">
-                  <Button variant="primary" onClick={runExpand} disabled={!imageId || isRunning || !expandReady} className="w-full justify-center">
-                    <Sparkles className="h-4 w-4" />
-                    Execute canvas expand
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            {tool === 'enhance' ? (
-              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-                <Label>Enhancement Pass</Label>
-                <div className="mt-4">
-                  <Label>Mode</Label>
-                  <div className="mt-2">
-                    <Select value={enhanceMode} onChange={(event) => setEnhanceMode(event.target.value)}>
-                      <option value="upscale">Upscale</option>
-                      <option value="denoise">Denoise</option>
-                      <option value="deblur">Deblur</option>
-                      <option value="sharpen">Sharpen</option>
-                      <option value="low_light">Low light</option>
+                    <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Anchor</div>
+                    <Select value={expandAnchor} onChange={(e) => setExpandAnchor(e.target.value)}>
+                      <option value="center">Center</option>
+                      <option value="left">Left</option>
+                      <option value="right">Right</option>
+                      <option value="top">Top</option>
+                      <option value="bottom">Bottom</option>
                     </Select>
                   </div>
                 </div>
-
-                <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="mt-3">
+                  <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Scene Description</div>
+                  <Input value={expandPrompt} onChange={(e) => setExpandPrompt(e.target.value)} placeholder="premium studio backdrop, soft gradient..." />
+                </div>
+                <div className="mt-3">
+                  <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Avoid</div>
+                  <Input value={expandNegativePrompt} onChange={(e) => setExpandNegativePrompt(e.target.value)} placeholder="text, watermark, clutter..." />
+                </div>
+                <div className="mt-4 space-y-3">
+                  <Slider label="Quality Steps" tooltip="More = higher quality, slower" value={expandSteps} onChange={(e) => setExpandSteps(clamp(toNumber(e.target.value, 24), 5, 80))} min={5} max={80} />
+                  <Slider label="AI Creativity" tooltip="Lower = follows image closely" value={expandGuidance} onChange={(e) => setExpandGuidance(clamp(toNumber(e.target.value, 7.5), 0, 20))} min={0} max={20} step={0.1} />
+                  <Slider label="Effect Intensity" value={expandStrength} onChange={(e) => setExpandStrength(clamp(toNumber(e.target.value, 0.96), 0, 1))} min={0} max={1} step={0.01} />
+                  <Slider label="Blend Softness" tooltip="How smoothly new area blends" value={expandFeatherPx} onChange={(e) => setExpandFeatherPx(clamp(toNumber(e.target.value, 24), 0, 128))} min={0} max={128} />
                   <div>
-                    <Label>Strength</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={1}
-                        step="0.05"
-                        value={enhanceStrength}
-                        onChange={(event) => setEnhanceStrength(clamp(toNumber(event.target.value, 0.5), 0, 1))}
-                      />
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Variation Seed</span>
                     </div>
-                  </div>
-                  <div>
-                    <Label>Upscale Factor</Label>
-                    <div className="mt-2">
-                      <Input
-                        type="number"
-                        min={1}
-                        max={4}
-                        step="1"
-                        value={upscaleFactor}
-                        onChange={(event) => setUpscaleFactor(clamp(toNumber(event.target.value, 2), 1, 4))}
-                        disabled={enhanceMode !== 'upscale'}
-                      />
-                    </div>
+                    <Input type="number" min={0} max={2147483647} value={expandSeed} onChange={(e) => setExpandSeed(clamp(toNumber(e.target.value, 0), 0, 2147483647))} />
                   </div>
                 </div>
-
                 <div className="mt-4">
-                  <Button
-                    variant="primary"
-                    onClick={runEnhance}
-                    disabled={!imageId || isRunning || (enhanceMode === 'upscale' && !realEsrganReady)}
-                    className="w-full justify-center"
-                  >
-                    <Sparkles className="h-4 w-4" />
-                    Execute enhancement pass
+                  <Button variant="primary" onClick={runExpand} disabled={!imageId || isRunning || !expandReady} className="w-full justify-center pm-btn-hover">
+                    <Sparkles className="h-4 w-4 pm-sparkle-icon" />
+                    Extend Canvas
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {/* ── Enhance Quality ── */}
+            {tool === 'enhance' ? (
+              <div className="mt-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm pm-section-enter">
+                <Label>Quality Enhancement</Label>
+                <div className="mt-3">
+                  <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Mode</div>
+                  <Select value={enhanceMode} onChange={(e) => setEnhanceMode(e.target.value)}>
+                    <option value="upscale">Upscale</option>
+                    <option value="denoise">Denoise</option>
+                    <option value="deblur">Deblur</option>
+                    <option value="sharpen">Sharpen</option>
+                    <option value="low_light">Low Light</option>
+                  </Select>
+                </div>
+                <div className="mt-4 space-y-3">
+                  <Slider label="Effect Intensity" value={enhanceStrength} onChange={(e) => setEnhanceStrength(clamp(toNumber(e.target.value, 0.5), 0, 1))} min={0} max={1} step={0.05} />
+                  <Slider label="Upscale Factor" value={upscaleFactor} onChange={(e) => setUpscaleFactor(clamp(toNumber(e.target.value, 2), 1, 4))} min={1} max={4} disabled={enhanceMode !== 'upscale'} />
+                </div>
+                <div className="mt-4">
+                  <Button variant="primary" onClick={runEnhance} disabled={!imageId || isRunning || (enhanceMode === 'upscale' && !realEsrganReady)} className="w-full justify-center pm-btn-hover">
+                    <Zap className="h-4 w-4" />
+                    Enhance Image
                   </Button>
                 </div>
               </div>
@@ -2719,7 +2786,7 @@ export default function PhotoMagicEditor({ store }) {
                       <StatusPill ok={Boolean(card.url)} label={card.url ? 'Ready' : 'Idle'} title={card.engine} />
                     </div>
 
-                    <div className="mt-3 overflow-hidden rounded-xl border border-gray-100 bg-gray-50" style={card.checker ? makeCheckerBg() : undefined}>
+                    <div className="mt-3 overflow-hidden rounded-xl border border-gray-100 bg-gray-50" style={card.checker ? makeTransparentBg() : undefined}>
                       {card.url ? (
                         <img src={card.url} alt={card.title} className="block aspect-[4/5] w-full object-contain" />
                       ) : (
@@ -2830,11 +2897,479 @@ export default function PhotoMagicEditor({ store }) {
             )}
           </div>
         </div>
+        ) : (
+        /* ══════════════════════════════════════════════════════════
+           VIDEO MODE — Full 3-column video editing layout
+           ══════════════════════════════════════════════════════════ */
+        <div className="grid xl:grid-cols-[260px_minmax(0,1fr)_360px]">
+          {/* ── Video Left Panel: Adjustments ── */}
+          <div className="pm-glass-panel pm-scroll pm-left-panel flex flex-col border-r border-white/60 p-4 space-y-2" style={{ background: 'rgba(255,255,255,0.45)', boxShadow: '20px 0 40px rgba(0,0,0,0.02)' }}>
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-lg bg-gradient-to-tr from-purple-500 to-pink-400 flex items-center justify-center">
+                  <Film className="h-3 w-3 text-white" />
+                </div>
+                <span className="text-[12px] font-bold tracking-tight text-gray-700">Video Edits</span>
+              </div>
+              {hasAdjustments ? (
+                <button type="button" onClick={resetAdjustments} className="text-[10px] font-semibold text-indigo-500 hover:text-indigo-700 transition-colors flex items-center gap-1">
+                  <RotateCcw className="h-3 w-3" /> Reset
+                </button>
+              ) : null}
+            </div>
+
+            <AccordionSection icon={Play} title="Playback" defaultOpen>
+              <Slider label="Speed" tooltip="Playback speed multiplier" value={videoSpeed} onChange={(e) => setVideoSpeed(+e.target.value)} min={0.25} max={4} step={0.25} />
+              <div className="flex items-center gap-2 mt-1">
+                <Slider label="Volume" value={videoVolume} onChange={(e) => setVideoVolume(+e.target.value)} min={0} max={100} className="flex-1" />
+                <button type="button" onClick={() => setVideoMuted(!videoMuted)} className={cn('pm-icon-btn', videoMuted && 'active')}>
+                  {videoMuted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+            </AccordionSection>
+
+            {videoDuration > 0 && (
+              <AccordionSection icon={Crop} title="Trim">
+                <Slider label="Start" value={videoTrimStart} onChange={(e) => { setVideoTrimStart(+e.target.value); seekVideo(+e.target.value); }} min={0} max={videoDuration} step={0.1} />
+                <Slider label="End" value={videoTrimEnd ?? videoDuration} onChange={(e) => setVideoTrimEnd(+e.target.value)} min={0} max={videoDuration} step={0.1} />
+                <div className="flex items-center justify-between text-[10px] text-gray-400 mt-1">
+                  <span>{formatVideoTime(videoTrimStart)}</span>
+                  <span>Duration: {formatVideoTime((videoTrimEnd ?? videoDuration) - videoTrimStart)}</span>
+                  <span>{formatVideoTime(videoTrimEnd ?? videoDuration)}</span>
+                </div>
+                <button type="button" onClick={() => { setVideoTrimStart(0); setVideoTrimEnd(null); }} className="w-full mt-1 text-[10px] font-medium text-gray-400 hover:text-indigo-500 transition-colors">
+                  Reset Trim
+                </button>
+              </AccordionSection>
+            )}
+
+            <AccordionSection icon={Sun} title="Color Grading">
+              <Slider label="Brightness" value={adjustments.brightness} onChange={(e) => setAdj('brightness', +e.target.value)} min={-100} max={100} />
+              <Slider label="Contrast" value={adjustments.contrast} onChange={(e) => setAdj('contrast', +e.target.value)} min={-100} max={100} />
+              <Slider label="Exposure" value={adjustments.exposure} onChange={(e) => setAdj('exposure', +e.target.value)} min={-100} max={100} />
+              <Slider label="Saturation" value={adjustments.saturation} onChange={(e) => setAdj('saturation', +e.target.value)} min={-100} max={100} />
+              <Slider label="Temperature" value={adjustments.temperature} onChange={(e) => setAdj('temperature', +e.target.value)} min={-100} max={100} />
+              <Slider label="Tint" value={adjustments.tint} onChange={(e) => setAdj('tint', +e.target.value)} min={-100} max={100} />
+            </AccordionSection>
+
+            <AccordionSection icon={Sparkles} title="Effects">
+              <Slider label="Vignette" value={adjustments.vignette} onChange={(e) => setAdj('vignette', +e.target.value)} min={0} max={100} />
+              <Slider label="Grain" value={adjustments.grain} onChange={(e) => setAdj('grain', +e.target.value)} min={0} max={100} />
+              <Slider label="Fade" value={adjustments.fade} onChange={(e) => setAdj('fade', +e.target.value)} min={0} max={100} />
+            </AccordionSection>
+
+            <AccordionSection icon={Sunset} title="Filters">
+              <div className="grid grid-cols-3 gap-1.5">
+                {PHOTO_FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => applyFilter(f)}
+                    className={cn(
+                      'flex flex-col items-center gap-1 rounded-xl p-1.5 transition-all text-center',
+                      activeFilter === f.id
+                        ? 'bg-indigo-50 border border-indigo-200 shadow-sm'
+                        : 'border border-transparent hover:bg-gray-50 hover:border-gray-100'
+                    )}
+                  >
+                    <div className="w-full aspect-square rounded-lg bg-gradient-to-br from-gray-100 to-gray-200 overflow-hidden"
+                      style={{ filter: buildFilterStyles({ ...DEFAULT_ADJUSTMENTS, ...f.adj }).filter || 'none' }}
+                    />
+                    <span className={cn('text-[9px] font-semibold uppercase tracking-wider', activeFilter === f.id ? 'text-indigo-600' : 'text-gray-400')}>
+                      {f.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </AccordionSection>
+
+            <AccordionSection icon={Crop} title="Transform">
+              <Slider label="Rotate" value={adjustments.rotate} onChange={(e) => setAdj('rotate', +e.target.value)} min={-180} max={180} />
+              <div className="flex gap-2 mt-1">
+                <button type="button" onClick={() => setAdj('flipH', !adjustments.flipH)} className={cn('pm-icon-btn flex-1', adjustments.flipH && 'active')} title="Flip horizontal">
+                  <FlipHorizontal2 className="h-4 w-4" />
+                </button>
+                <button type="button" onClick={() => setAdj('flipV', !adjustments.flipV)} className={cn('pm-icon-btn flex-1', adjustments.flipV && 'active')} title="Flip vertical">
+                  <FlipVertical2 className="h-4 w-4" />
+                </button>
+              </div>
+            </AccordionSection>
+
+            {hasAdjustments && (
+              <div className="pt-2">
+                <button type="button" onClick={resetAdjustments} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors flex items-center justify-center gap-1.5 pm-btn-hover">
+                  <RotateCcw className="h-3 w-3" /> Reset All
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* ── Video Center Panel: Player ── */}
+          <div className="relative min-w-0 overflow-hidden bg-[#f0f0f3] p-6">
+            <div className="pointer-events-none absolute -top-20 -left-20 h-64 w-64 rounded-full bg-purple-300/20 opacity-70" style={{ filter: 'blur(80px)', animation: 'pm-float-gentle 6s infinite ease-in-out' }} />
+            <div className="pointer-events-none absolute -bottom-16 right-[20%] h-64 w-64 rounded-full bg-pink-300/20 opacity-70" style={{ filter: 'blur(80px)', animation: 'pm-float-gentle 8s infinite ease-in-out reverse' }} />
+
+            <div className="rounded-2xl border border-white bg-white shadow-[0_20px_50px_-12px_rgba(0,0,0,0.15)] overflow-hidden">
+              {!videoSrc ? (
+                /* Upload area */
+                <div className="pm-video-dropzone" onClick={() => videoFileInputRef.current?.click()}>
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-purple-100 to-pink-100 flex items-center justify-center mb-4">
+                    <Film className="h-7 w-7 text-purple-400" />
+                  </div>
+                  <p className="text-sm font-semibold text-gray-600 mb-1">Import a video to begin</p>
+                  <p className="text-xs text-gray-400">MP4, WebM, MOV up to 100MB</p>
+                  {isVideoUploading && (
+                    <div className="mt-4 flex items-center gap-2 text-indigo-500">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span className="text-xs font-medium">Uploading...</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {/* Video Preview */}
+                  <div className="relative" style={makeTransparentBg()}>
+                    <video
+                      ref={videoRef}
+                      src={videoSrc}
+                      className="block w-full max-h-[520px] object-contain"
+                      style={{ filter: adjStyles.filter, transform: adjStyles.transform, transition: 'filter 0.15s ease, transform 0.2s ease' }}
+                      onTimeUpdate={onVideoTimeUpdate}
+                      onLoadedMetadata={onVideoLoaded}
+                      onEnded={() => setIsVideoPlaying(false)}
+                      onClick={toggleVideoPlay}
+                    />
+                    {adjustments.vignette > 0 && <div className="pm-vignette-overlay" style={{ '--pm-vignette': adjStyles['--pm-vignette'] }} />}
+                    {adjustments.grain > 0 && <div className="pm-grain-overlay" style={{ '--pm-grain': adjStyles['--pm-grain'] }} />}
+
+                    {/* Play overlay on pause */}
+                    {!isVideoPlaying && videoSrc && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-16 h-16 rounded-full bg-white/80 shadow-xl flex items-center justify-center" style={{ backdropFilter: 'blur(12px)' }}>
+                          <Play className="h-6 w-6 text-indigo-600 ml-1" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Progress Bar */}
+                  <div className="px-4 pt-3">
+                    <div className="pm-progress-bar" onClick={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const pct = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+                      seekVideo(pct * videoDuration);
+                    }}>
+                      <div className="pm-progress-fill" style={{ width: `${videoDuration ? (videoCurrentTime / videoDuration) * 100 : 0}%` }} />
+                      <div className="pm-progress-thumb" style={{ left: `${videoDuration ? (videoCurrentTime / videoDuration) * 100 : 0}%` }} />
+                    </div>
+                  </div>
+
+                  {/* Controls */}
+                  <div className="pm-video-controls">
+                    <span className="text-[11px] font-mono text-gray-400 tabular-nums w-10">{formatVideoTime(videoCurrentTime)}</span>
+                    <button type="button" className="pm-video-ctrl-btn" onClick={() => skipVideo(-5)}>
+                      <SkipBack className="h-4 w-4" />
+                    </button>
+                    <button type="button" className="pm-video-ctrl-btn primary" onClick={toggleVideoPlay}>
+                      {isVideoPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
+                    </button>
+                    <button type="button" className="pm-video-ctrl-btn" onClick={() => skipVideo(5)}>
+                      <SkipForward className="h-4 w-4" />
+                    </button>
+                    <span className="text-[11px] font-mono text-gray-400 tabular-nums w-10">{formatVideoTime(videoDuration)}</span>
+                    <div className="flex-1" />
+                    <button type="button" onClick={() => setVideoMuted(!videoMuted)} className="pm-video-ctrl-btn">
+                      {videoMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                    </button>
+                    <span className="text-[11px] font-mono text-gray-500 tabular-nums">{videoSpeed}x</span>
+                  </div>
+
+                  {/* Trim Bar */}
+                  {videoDuration > 0 && (
+                    <div className="px-4 pb-3">
+                      <div className="pm-trim-bar">
+                        <div className="pm-trim-region" style={{
+                          left: `${(videoTrimStart / videoDuration) * 100}%`,
+                          width: `${(((videoTrimEnd ?? videoDuration) - videoTrimStart) / videoDuration) * 100}%`
+                        }} />
+                        <div className="pm-trim-playhead" style={{ left: `${(videoCurrentTime / videoDuration) * 100}%` }} />
+                        <div className="absolute inset-0 flex items-end justify-between px-1 pb-1">
+                          <span className="text-[8px] font-mono text-gray-400">{formatVideoTime(videoTrimStart)}</span>
+                          <span className="text-[8px] font-mono text-gray-400">{formatVideoTime(videoTrimEnd ?? videoDuration)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* ── Video Right Panel: Magic Tools ── */}
+          <div className="pm-glass-panel pm-scroll pm-right-panel flex flex-col border-l border-white p-5" style={{ background: 'rgba(255,255,255,0.40)', boxShadow: '-20px 0 40px rgba(0,0,0,0.03)' }}>
+            <div className="mb-6">
+              <h2 className="text-[13px] font-bold tracking-widest uppercase text-gray-400 mb-4 flex items-center gap-2">
+                <Sparkles className="h-4 w-4" /> Video Magic
+              </h2>
+              <div className="relative flex flex-wrap p-1 gap-0.5 rounded-xl border border-gray-200/50 shadow-inner" style={{ background: 'rgba(243,244,246,0.8)' }}>
+                {Object.entries(VIDEO_TOOL_DEFINITIONS).map(([key, def]) => {
+                  const IconComp = VIDEO_TOOL_ICONS[key] || Zap;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={cn(
+                        'flex-1 min-w-0 rounded-lg px-1.5 py-1.5 text-center transition-all',
+                        videoTool === key
+                          ? 'bg-white text-gray-900 shadow-sm'
+                          : 'text-gray-400 hover:text-gray-600'
+                      )}
+                      onClick={() => {
+                        setVideoTool(key);
+                        if (key === 'music' && musicTracks.length === 0) loadMusicLibrary();
+                      }}
+                    >
+                      <IconComp className="h-3.5 w-3.5 mx-auto mb-0.5" />
+                      <span className="text-[9px] font-bold uppercase tracking-wider block truncate">{def.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[10px] text-gray-400 leading-relaxed">{VIDEO_TOOL_DEFINITIONS[videoTool]?.description}</p>
+            </div>
+
+            {/* ═══ Overlays Tool ═══ */}
+            {videoTool === 'overlay' && (
+              <div className="space-y-3 pm-section-enter">
+                <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm space-y-3">
+                  <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500 block">Scan Settings</span>
+                  <Slider label="Interval" tooltip="Seconds between frames" value={overlayScanInterval} onChange={(e) => setOverlayScanInterval(+e.target.value)} min={0.5} max={5} step={0.5} />
+                  <Slider label="Max Frames" value={overlayScanMaxFrames} onChange={(e) => setOverlayScanMaxFrames(+e.target.value)} min={10} max={120} step={5} />
+                  <button
+                    type="button"
+                    onClick={scanOverlays}
+                    disabled={!videoId || overlayScanning}
+                    className="w-full py-2 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+                    style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+                  >
+                    {overlayScanning ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Scanning...</> : <><ScanSearch className="h-3.5 w-3.5" /> Scan for Overlays</>}
+                  </button>
+                </div>
+
+                {overlaySegments.length > 0 && (
+                  <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm">
+                    <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500 block mb-2">Detected Segments</span>
+                    <div className="space-y-2 max-h-48 overflow-y-auto pm-scroll">
+                      {overlaySegments.map((seg, si) => (
+                        <div key={si} className="rounded-xl border border-gray-100 bg-white/50 p-2">
+                          <button type="button" onClick={() => { setSelectedOverlaySegIdx(si); seekVideo(seg.start || 0); }}
+                            className="w-full text-left text-[10px] font-semibold text-gray-600 mb-1">
+                            Segment {si + 1} <span className="text-gray-400 font-mono">({formatVideoTime(seg.start)} - {formatVideoTime(seg.end)})</span>
+                          </button>
+                          {seg.overlays?.map((ov, oi) => (
+                            <div key={oi} className={cn(
+                              'flex items-center justify-between px-2 py-1 rounded-lg transition-all cursor-pointer',
+                              selectedOverlaySegIdx === si && selectedOverlayIdx === oi ? 'bg-indigo-50 border border-indigo-200' : 'hover:bg-gray-50'
+                            )} onClick={() => { setSelectedOverlaySegIdx(si); setSelectedOverlayIdx(oi); }}>
+                              <span className="text-[10px] text-gray-600 truncate flex-1">"{ov.text || 'Overlay'}"</span>
+                              <button type="button" onClick={(e) => { e.stopPropagation(); deleteOverlay(si, oi); }} className="text-gray-300 hover:text-red-400 ml-1">
+                                <XCircle className="h-3 w-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {selectedOverlaySegIdx !== null && selectedOverlayIdx !== null && overlaySegments[selectedOverlaySegIdx]?.overlays?.[selectedOverlayIdx] && (() => {
+                  const ov = overlaySegments[selectedOverlaySegIdx].overlays[selectedOverlayIdx];
+                  const patch = (p) => updateOverlay(selectedOverlaySegIdx, selectedOverlayIdx, p);
+                  return (
+                    <div className="rounded-2xl border border-indigo-100 bg-indigo-50/30 p-3 shadow-sm space-y-2">
+                      <span className="text-[11px] font-bold uppercase tracking-widest text-indigo-400 block">Edit Overlay</span>
+                      <div>
+                        <span className="text-[10px] font-semibold text-gray-500 mb-1 block">Text</span>
+                        <input type="text" value={ov.text || ''} onChange={(e) => patch({ text: e.target.value })}
+                          className="w-full px-2 py-1.5 rounded-lg border border-gray-200 bg-white text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-300" />
+                      </div>
+                      <Slider label="Font Size" value={ov.fontSize || 24} onChange={(e) => patch({ fontSize: +e.target.value })} min={8} max={120} />
+                      <div className="flex gap-2">
+                        <div className="flex-1">
+                          <span className="text-[10px] font-semibold text-gray-500 mb-1 block">Text Color</span>
+                          <input type="color" value={ov.textColor || '#ffffff'} onChange={(e) => patch({ textColor: e.target.value })} className="w-full h-7 rounded-lg cursor-pointer" />
+                        </div>
+                        <div className="flex-1">
+                          <span className="text-[10px] font-semibold text-gray-500 mb-1 block">Background</span>
+                          <input type="color" value={ov.backgroundColor || '#333333'} onChange={(e) => patch({ backgroundColor: e.target.value })} className="w-full h-7 rounded-lg cursor-pointer" />
+                        </div>
+                      </div>
+                      <Slider label="Border Radius" value={ov.borderRadius || 0} onChange={(e) => patch({ borderRadius: +e.target.value })} min={0} max={32} />
+                    </div>
+                  );
+                })()}
+
+                {overlaySegments.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={exportOverlays}
+                    disabled={overlayExporting}
+                    className="w-full py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+                    style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+                  >
+                    {overlayExporting ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Exporting...</> : <><Film className="h-3.5 w-3.5" /> Export with Overlays</>}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* ═══ Smart Resize Tool ═══ */}
+            {videoTool === 'resize' && (
+              <div className="pm-section-enter">
+                <VideoResizerPanel store={store} videoId={videoId} videoInfo={videoFileInfo} />
+              </div>
+            )}
+
+            {/* ═══ Product Hub Tool ═══ */}
+            {videoTool === 'product_hub' && (
+              <div className="pm-section-enter">
+                <ProductHubPanel store={store} onProductSelect={(product) => {
+                  // Add product text as a new overlay on the current segment
+                  if (overlaySegments.length === 0) {
+                    setOverlaySegments([{ start: 0, end: videoDuration || 10, overlays: [{ text: `${product.name} — ${formatCurrency(product.price, product.currency)}`, fontSize: 28, textColor: '#ffffff', backgroundColor: '#1a1a2e', borderRadius: 8, x: 40, y: 40, width: 400, height: 60 }] }]);
+                  } else {
+                    const segIdx = selectedOverlaySegIdx ?? 0;
+                    setOverlaySegments((prev) => prev.map((seg, i) => {
+                      if (i !== segIdx) return seg;
+                      return { ...seg, overlays: [...(seg.overlays || []), { text: `${product.name} — ${formatCurrency(product.price, product.currency)}`, fontSize: 28, textColor: '#ffffff', backgroundColor: '#1a1a2e', borderRadius: 8, x: 40, y: 40 + (seg.overlays?.length || 0) * 70, width: 400, height: 60 }] };
+                    }));
+                  }
+                  setVideoTool('overlay');
+                }} />
+              </div>
+            )}
+
+            {/* ═══ Music Library Tool ═══ */}
+            {videoTool === 'music' && (
+              <div className="space-y-3 pm-section-enter">
+                <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-6 h-6 rounded-lg bg-gradient-to-tr from-pink-400 to-purple-400 flex items-center justify-center">
+                      <Music className="h-3 w-3 text-white" />
+                    </div>
+                    <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500">Background Music</span>
+                  </div>
+
+                  {musicLoading ? (
+                    <div className="flex items-center justify-center py-6 text-gray-400">
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      <span className="text-[11px]">Loading tracks...</span>
+                    </div>
+                  ) : musicTracks.length === 0 ? (
+                    <div className="text-center py-6 text-gray-400">
+                      <Music className="h-6 w-6 mx-auto mb-2 opacity-40" />
+                      <p className="text-[11px]">No tracks loaded</p>
+                      <button type="button" onClick={loadMusicLibrary} className="mt-2 text-[10px] font-medium text-indigo-500 hover:text-indigo-700 transition-colors">
+                        Load Library
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {musicTracks.map((track, idx) => (
+                        <div
+                          key={track.id || idx}
+                          className={cn('pm-music-card', selectedTrackId === (track.id || idx) && 'active')}
+                          onClick={() => setSelectedTrackId(track.id || idx)}
+                        >
+                          <div className="pm-music-icon" style={{ background: `linear-gradient(135deg, ${idx === 0 ? '#c084fc, #a78bfa' : idx === 1 ? '#f472b6, #e879f9' : '#60a5fa, #818cf8'})` }}>
+                            <Music className="h-4 w-4 text-white" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-semibold text-gray-700 truncate">{track.name || track.title || `Track ${idx + 1}`}</p>
+                            <p className="text-[9px] text-gray-400">{track.bpm ? `${track.bpm} BPM` : ''} {track.mood ? `\u00B7 ${track.mood}` : ''}</p>
+                          </div>
+                          <div className={cn('w-3 h-3 rounded-full border-2 transition-all', selectedTrackId === (track.id || idx) ? 'border-indigo-500 bg-indigo-500' : 'border-gray-300 bg-white')} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm space-y-3">
+                  <Slider label="Volume" value={musicVolume} onChange={(e) => setMusicVolume(+e.target.value)} min={0} max={100} />
+                  <Slider label="Fade In" tooltip="Seconds" value={musicFadeIn} onChange={(e) => setMusicFadeIn(+e.target.value)} min={0} max={10} step={0.5} />
+                  <Slider label="Fade Out" tooltip="Seconds" value={musicFadeOut} onChange={(e) => setMusicFadeOut(+e.target.value)} min={0} max={10} step={0.5} />
+                </div>
+
+                <div className="rounded-2xl border border-dashed border-amber-200 bg-amber-50/30 p-3 text-center">
+                  <span className="pm-badge-soon">Coming Soon</span>
+                  <p className="text-[11px] text-gray-500 mt-2 font-medium">Connect Music Service</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Epidemic Sound, Artlist, and more</p>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={selectedTrackId === null}
+                  className="w-full py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+                  style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+                >
+                  <Music className="h-3.5 w-3.5" /> Apply to Video
+                </button>
+              </div>
+            )}
+
+            {/* ═══ Enhance Tool ═══ */}
+            {videoTool === 'enhance_v' && (
+              <div className="space-y-3 pm-section-enter">
+                <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm space-y-3">
+                  <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500 block">Enhancement Mode</span>
+                  <div className="flex gap-1.5">
+                    {['Upscale', 'Denoise', 'Stabilize'].map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={cn(
+                          'flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all relative',
+                          mode === 'Upscale' ? 'bg-indigo-100 text-indigo-600 shadow-sm' : 'bg-gray-100/60 text-gray-400 hover:text-gray-600'
+                        )}
+                      >
+                        {mode}
+                        {mode === 'Stabilize' && <span className="pm-badge-soon absolute -top-1 -right-1">Soon</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3 shadow-sm space-y-3">
+                  <Slider label="Quality" value={80} onChange={() => {}} min={0} max={100} />
+                  <Slider label="Strength" value={50} onChange={() => {}} min={0} max={100} />
+                </div>
+
+                <button
+                  type="button"
+                  disabled
+                  className="w-full py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+                  style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+                >
+                  <Zap className="h-3.5 w-3.5" /> Enhance Video
+                </button>
+
+                <div className="rounded-2xl border border-dashed border-amber-200 bg-amber-50/30 p-3 text-center">
+                  <span className="pm-badge-soon">Coming Soon</span>
+                  <p className="text-[11px] text-gray-500 mt-2 font-medium">Video enhancement is in development</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">AI upscaling, denoising, and stabilization</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        )}
 
         <div className="border-t border-gray-100 bg-white/60 px-5 py-3" style={{ backdropFilter: 'blur(24px)' }}>
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[11px] font-mono uppercase tracking-[0.16em] text-gray-400">
-            <span>{stageConfig?.label || tool}</span>
-            <span>{isUploading ? 'Uploading...' : isRunning ? 'Processing...' : lastRenderSummary}</span>
+            <span>{editorMode === 'photo' ? (stageConfig?.label || tool) : (VIDEO_TOOL_DEFINITIONS[videoTool]?.label || videoTool)}</span>
+            <span>{editorMode === 'photo' ? (isUploading ? 'Uploading...' : isRunning ? 'Processing...' : lastRenderSummary) : (isVideoUploading ? 'Uploading video...' : videoSrc ? 'Ready' : 'Idle')}</span>
           </div>
         </div>
 
@@ -2850,6 +3385,102 @@ export default function PhotoMagicEditor({ store }) {
           </div>
         ) : null}
       </div>
+
+      {/* ═══ Export Modal ═══ */}
+      {showExportModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" style={{ backdropFilter: 'blur(8px)' }} onClick={() => setShowExportModal(false)}>
+          <div className="bg-white rounded-3xl overflow-hidden w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-5 border-b border-gray-100">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Export Image</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">Choose format, quality, and size</p>
+                </div>
+                <button type="button" onClick={() => setShowExportModal(false)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
+                  <XCircle className="h-5 w-5 text-gray-400" />
+                </button>
+              </div>
+            </div>
+
+            <div className="px-6 py-5 space-y-5">
+              {/* Format */}
+              <div>
+                <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400 block mb-2">Format</span>
+                <div className="flex gap-2">
+                  {['png', 'jpg', 'webp'].map((fmt) => (
+                    <button
+                      key={fmt}
+                      type="button"
+                      onClick={() => setExportFormat(fmt)}
+                      className={cn(
+                        'flex-1 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all',
+                        exportFormat === fmt
+                          ? 'bg-indigo-100 text-indigo-600 shadow-sm border border-indigo-200'
+                          : 'bg-gray-50 text-gray-400 border border-transparent hover:bg-gray-100'
+                      )}
+                    >
+                      .{fmt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Quality (only for jpg/webp) */}
+              {exportFormat !== 'png' && (
+                <div>
+                  <Slider label="Quality" tooltip="Higher = better quality, larger file" value={exportQuality} onChange={(e) => setExportQuality(+e.target.value)} min={10} max={100} />
+                </div>
+              )}
+
+              {/* Scale / Size */}
+              <div>
+                <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400 block mb-2">Size</span>
+                <div className="flex gap-2">
+                  {['0.5x', '1x', '2x', '3x', '4x'].map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setExportScale(s)}
+                      className={cn(
+                        'flex-1 py-2.5 rounded-xl text-xs font-bold tracking-wider transition-all',
+                        exportScale === s
+                          ? 'bg-indigo-100 text-indigo-600 shadow-sm border border-indigo-200'
+                          : 'bg-gray-50 text-gray-400 border border-transparent hover:bg-gray-100'
+                      )}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                {imageMeta?.width && (
+                  <p className="text-[10px] text-gray-400 mt-2 text-center">
+                    Output: {Math.round(imageMeta.width * ({ '0.5x': 0.5, '1x': 1, '2x': 2, '3x': 3, '4x': 4 }[exportScale] || 1))} x {Math.round(imageMeta.height * ({ '0.5x': 0.5, '1x': 1, '2x': 2, '3x': 3, '4x': 4 }[exportScale] || 1))} px
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-100 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowExportModal(false)}
+                className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-gray-600 border border-gray-200 hover:bg-gray-50 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExport}
+                className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md"
+                style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Download
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
