@@ -55,7 +55,6 @@ import { runCampaignIntelligenceDailyTrainer } from './services/campaignIntellig
 import { runCampaignIntelligenceDailyBriefs } from './services/campaignIntelligence/briefScheduler.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
 import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
-import { issueSessionIntelligenceAdminCookie } from './utils/sessionIntelligenceSurveyAccess.js';
 import {
   fetchApilayerHistoricalTryToUsdRate,
   fetchCurrencyFreaksTimeseriesTryToUsdRates,
@@ -301,7 +300,6 @@ app.use('/api/blackbox', blackboxRouter);
 const clientDist = path.join(__dirname, '../client/dist');
 const clientIndexPath = path.join(clientDist, 'index.html');
 const hasClientBuild = fs.existsSync(clientIndexPath);
-
 if (hasClientBuild) {
   app.use(express.static(clientDist));
 } else {
@@ -320,7 +318,6 @@ app.get('*', (req, res, next) => {
   // Don't serve the SPA shell for API routes (prevents "Unexpected token <" JSON errors).
   if (req.path.startsWith('/api')) return next();
   if (hasClientBuild) {
-    issueSessionIntelligenceAdminCookie(req, res);
     return res.sendFile(clientIndexPath);
   }
   return res.status(200).send('Virona backend is running. Frontend build is not available on this instance.');

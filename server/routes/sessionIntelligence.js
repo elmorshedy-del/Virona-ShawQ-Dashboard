@@ -43,7 +43,7 @@ import {
   getSessionIntelligenceJourneyDetail,
   getSessionIntelligenceJourneys
 } from '../services/sessionIntelligenceJourneyService.js';
-import { validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
+import { issueSessionIntelligenceAdminCookie, validateSessionIntelligenceAdminRequest } from '../utils/sessionIntelligenceSurveyAccess.js';
 
 const router = express.Router();
 
@@ -80,6 +80,21 @@ function requireSurveyAdminSession(req, res, next) {
 function requireStoreParam(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
+
+router.post('/admin-session', (req, res) => {
+  const validation = validateSessionIntelligenceAdminRequest(req);
+  if (!validation.ok) {
+    return res.status(403).json({ success: false, error: validation.reason || 'Forbidden' });
+  }
+  if (validation.authMode !== 'admin_key') {
+    return res.status(403).json({ success: false, error: 'Session Intelligence admin key required' });
+  }
+  const issued = issueSessionIntelligenceAdminCookie(req, res);
+  if (!issued) {
+    return res.status(500).json({ success: false, error: 'Failed to issue Session Intelligence admin session' });
+  }
+  return res.json({ success: true });
+});
 
 router.get('/overview', (req, res) => {
   try {
