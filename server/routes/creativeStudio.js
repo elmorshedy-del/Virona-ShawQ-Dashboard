@@ -149,16 +149,33 @@ function isVideoOverlayAssetId(value) {
 }
 
 const VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS = [
-  'gemini-3-pro-preview',
+  'gemini-3.1-pro-preview',
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite'
 ];
-const VIDEO_OVERLAY_DEFAULT_SCAN_MODEL = 'gemini-2.5-pro';
+const VIDEO_OVERLAY_DEFAULT_SCAN_MODEL = 'gemini-3.1-pro-preview';
 const VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP = {
-  'gemini-3-pro': 'gemini-3-pro-preview',
+  'gemini-3-pro': 'gemini-3.1-pro-preview',
+  'gemini-3-pro-preview': 'gemini-3.1-pro-preview',
+  'gemini-3.1-pro': 'gemini-3.1-pro-preview',
   'gemini-2.0-flash-lite': VIDEO_OVERLAY_DEFAULT_SCAN_MODEL
 };
+const VIDEO_OVERLAY_SCAN_MODEL_ENV_KEYS = ['VIDEO_OVERLAY_SCAN_MODEL', 'GEMINI_VISION_MODEL'];
+const VIDEO_OVERLAY_SCAN_MODEL_MAX_CHUNK_SIZE = {
+  'gemini-3.1-pro-preview': 4,
+  'gemini-2.5-pro': 6
+};
+
+function getConfiguredVideoOverlayScanModelSetting() {
+  for (const envKey of VIDEO_OVERLAY_SCAN_MODEL_ENV_KEYS) {
+    const value = String(process.env[envKey] || '').trim();
+    if (value) {
+      return { envKey, value };
+    }
+  }
+  return { envKey: null, value: '' };
+}
 
 function normalizeVideoOverlayScanModelName(value) {
   return String(value || '').trim().toLowerCase();
@@ -192,19 +209,19 @@ function resolveVideoOverlayScanModel({ requestedModel = null, configuredModel =
   return VIDEO_OVERLAY_DEFAULT_SCAN_MODEL;
 }
 
-function getVideoOverlayScanModelWarning(configuredModel) {
+function getVideoOverlayScanModelWarning(configuredModel, configuredModelSource = 'VIDEO_OVERLAY_SCAN_MODEL') {
   const raw = String(configuredModel || '').trim();
   if (!raw) return null;
 
   const normalized = normalizeVideoOverlayScanModelName(raw);
   if (VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP[normalized]) {
     const mapped = VIDEO_OVERLAY_LEGACY_SCAN_MODEL_MAP[normalized];
-    return `VIDEO_OVERLAY_SCAN_MODEL=${raw} is deprecated. Using ${mapped} instead.`;
+    return `${configuredModelSource}=${raw} is deprecated. Using ${mapped} instead.`;
   }
 
   const resolved = resolveVideoOverlayScanModel({ configuredModel: raw });
   if (resolved !== normalized) {
-    return `VIDEO_OVERLAY_SCAN_MODEL=${raw} is unsupported. Falling back to ${resolved}.`;
+    return `${configuredModelSource}=${raw} is unsupported. Falling back to ${resolved}.`;
   }
 
   return null;
@@ -3148,9 +3165,9 @@ router.get('/video-overlay/health', async (req, res) => {
   try {
     const overlayAiConfigured = isVideoOverlayAiConfigured();
     const overlayAiHealth = overlayAiConfigured ? await getVideoOverlayAiHealth().catch(() => null) : null;
-    const configuredModel = String(process.env.VIDEO_OVERLAY_SCAN_MODEL || '').trim();
+    const { value: configuredModel, envKey: configuredModelSource } = getConfiguredVideoOverlayScanModelSetting();
     const resolvedModel = resolveVideoOverlayScanModel({ configuredModel });
-    const modelWarning = getVideoOverlayScanModelWarning(configuredModel);
+    const modelWarning = getVideoOverlayScanModelWarning(configuredModel, configuredModelSource || 'VIDEO_OVERLAY_SCAN_MODEL');
 
     res.json({
       success: true,
@@ -3168,6 +3185,7 @@ router.get('/video-overlay/health', async (req, res) => {
         configured: Boolean(process.env.GEMINI_API_KEY),
         model: resolvedModel,
         configured_model: configuredModel || null,
+        configured_model_source: configuredModelSource || null,
         supported_models: VIDEO_OVERLAY_SUPPORTED_SCAN_MODELS,
         warning: modelWarning
       },
@@ -3277,7 +3295,7 @@ async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
 
   const resolvedModelName = resolveVideoOverlayScanModel({
     requestedModel: modelName,
-    configuredModel: process.env.VIDEO_OVERLAY_SCAN_MODEL || ''
+    configuredModel: getConfiguredVideoOverlayScanModelSetting().value
   });
   const genAI = new GoogleGenerativeAI(apiKey);
 
@@ -3311,11 +3329,10 @@ async function detectOverlayKeysWithGemini({ frames, modelName = null } = {}) {
 
   const results = [];
   const configuredChunkSize = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_CHUNK_SIZE ?? 8, 1, 16));
-  const chunkSize = resolvedModelName === 'gemini-3-pro-preview'
-    ? Math.min(configuredChunkSize, 4)
-    : resolvedModelName === 'gemini-2.5-pro'
-      ? Math.min(configuredChunkSize, 6)
-      : configuredChunkSize;
+  const modelMaxChunkSize = VIDEO_OVERLAY_SCAN_MODEL_MAX_CHUNK_SIZE[resolvedModelName];
+  const chunkSize = Number.isFinite(modelMaxChunkSize)
+    ? Math.min(configuredChunkSize, modelMaxChunkSize)
+    : configuredChunkSize;
   const parseRetries = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_PARSE_RETRIES ?? 2, 0, 5));
   const maxRetries = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_RETRIES ?? 6, 0, 10));
   const minDelayMs = Math.round(clampNumber(process.env.VIDEO_OVERLAY_GEMINI_MIN_DELAY_MS ?? 250, 0, 5000));
@@ -3718,7 +3735,7 @@ async function detectSegmentOverlaysWithGeminiVision({
 
   const resolvedModelName = resolveVideoOverlayScanModel({
     requestedModel: modelName,
-    configuredModel: process.env.VIDEO_OVERLAY_SCAN_MODEL || ''
+    configuredModel: getConfiguredVideoOverlayScanModelSetting().value
   });
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
@@ -3823,7 +3840,7 @@ async function refineOverlayPositions({ overlays, videoPath, sampleTime, videoWi
 
   const resolvedModelName = resolveVideoOverlayScanModel({
     requestedModel: modelName,
-    configuredModel: process.env.VIDEO_OVERLAY_SCAN_MODEL || ''
+    configuredModel: getConfiguredVideoOverlayScanModelSetting().value
   });
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
@@ -3925,7 +3942,8 @@ Rules:
       const gradientTo = parseHexColor(parsed?.gradient_to)?.hex || backgroundColor;
       const isGradient = backgroundStyle === 'horizontal_gradient' || backgroundStyle === 'vertical_gradient';
       const fontSize = Math.max(8, Math.round(safeParseNumber(parsed?.font_size_px, ov.fontSize || 24) || 24));
-      const fontWeight = String(parsed?.font_weight || '').trim().toLowerCase() === 'bold' ? 'bold' : (ov.fontWeight || 'normal');
+      const parsedWeight = String(parsed?.font_weight || '').trim().toLowerCase();
+      const fontWeight = (parsedWeight === 'bold' || parsedWeight === 'normal') ? parsedWeight : (ov.fontWeight || 'normal');
       const fontStyle = String(parsed?.font_style || '').trim().toLowerCase() === 'italic' ? 'italic' : 'normal';
       const borderRadius = Math.max(0, Math.round(safeParseNumber(parsed?.border_radius_px, ov.borderRadius || 0) || 0));
       const refinedOverlay = {
@@ -4049,7 +4067,7 @@ router.post('/video-overlay/scan', async (req, res) => {
     const requestedScanModel = String(req.body?.scan_model ?? req.body?.scanModel ?? '').trim();
     const scanModel = resolveVideoOverlayScanModel({
       requestedModel: requestedScanModel || null,
-      configuredModel: process.env.VIDEO_OVERLAY_SCAN_MODEL || ''
+      configuredModel: getConfiguredVideoOverlayScanModelSetting().value
     });
 
     const useGemini = req.body?.use_gemini !== false;
