@@ -3610,7 +3610,7 @@ export default function PhotoMagicEditor({ store }) {
                   <div className="grid max-h-[520px] gap-4 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
                     {visibleShopifyProducts.map((product) => {
                       const productImage = String(product?.image_url || product?.imageUrl || '').trim();
-                      const importDisabled = !productImage || importingProductId === String(product?.id || '');
+                      const importDisabled = !productImage || importingProductId === String(product?.id ?? '');
                       return (
                         <div key={product.id || product.name} className="overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-sm">
                           <div className="aspect-[4/5] bg-gray-100">
