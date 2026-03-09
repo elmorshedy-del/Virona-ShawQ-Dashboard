@@ -5019,8 +5019,9 @@ router.get('/photo-magic/source', async (req, res) => {
   try {
     const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
     const imageId = String(req.query?.image_id || '').trim();
-    if (!imageId) {
-      return res.status(400).json({ success: false, error: 'image_id is required' });
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(imageId)) {
+      return res.status(400).json({ success: false, error: 'A valid image_id is required.' });
     }
 
     const imagePath = getUploadedPhotoPath(store, imageId);
