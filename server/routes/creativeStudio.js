@@ -34,6 +34,7 @@ import {
   removeBgRmbg2
 } from '../services/photoMagicAiClient.js';
 import { eraseSdxl, expandPhotoCanvas, getPhotoMagicHqHealth, isPhotoMagicHqConfigured } from '../services/photoMagicHqClient.js';
+import { eraseFluxFill, getPhotoMagicReplicateConfig, getPhotoMagicReplicateHealth, isPhotoMagicReplicateConfigured } from '../services/photoMagicReplicateClient.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,6 +58,9 @@ const PHOTO_MAGIC_MAX_IMAGE_PIXELS = (() => {
   const resolved = Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 60000000;
   return Math.min(Math.max(1000000, resolved), 200000000);
 })();
+
+const PHOTO_MAGIC_MASK_BOUNDS_THRESHOLD = 8;
+const PHOTO_MAGIC_REPLICATE_MIN_CROP_DIMENSION = 32;
 
 const photoMagicUpload = multer({
   storage: multer.memoryStorage(),
@@ -279,6 +283,136 @@ function getUploadedPhotoPath(store, imageId) {
 
 function getPhotoMagicOutputPath(store, outputId, ext = 'png') {
   return path.join(getPhotoMagicOutputsDir(store), `${outputId}.${ext}`);
+}
+
+function getPhotoMagicPublicBaseUrl(req) {
+  const explicit = String(process.env.PHOTO_MAGIC_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const proto = String(req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim() || 'https';
+  const host = String(req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
+  return host ? `${proto}://${host}` : '';
+}
+
+function buildPhotoMagicAssetUrl(req, store, outputId, filename) {
+  const baseUrl = getPhotoMagicPublicBaseUrl(req);
+  const relative = withStoreParam(
+    `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(outputId)}&filename=${encodeURIComponent(filename)}`,
+    store
+  );
+  return baseUrl ? `${baseUrl}${relative}` : relative;
+}
+
+async function prepareReplicateSourceImageBuffer(imageBuffer, maxSide) {
+  const pipeline = sharp(imageBuffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+    .rotate()
+    .resize({
+      width: Math.max(1, Math.round(maxSide)),
+      height: Math.max(1, Math.round(maxSide)),
+      fit: 'inside',
+      withoutEnlargement: true
+    })
+    .png();
+
+  const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
+  return {
+    buffer: data,
+    width: info.width,
+    height: info.height
+  };
+}
+
+function computeMaskBounds(maskData, width, height, threshold = PHOTO_MAGIC_MASK_BOUNDS_THRESHOLD) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let index = 0; index < maskData.length; index += 1) {
+    if ((maskData[index] || 0) < threshold) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+
+  if (maxX < minX || maxY < minY) return null;
+  return {
+    left: minX,
+    top: minY,
+    width: Math.max(1, (maxX - minX) + 1),
+    height: Math.max(1, (maxY - minY) + 1)
+  };
+}
+
+function expandMaskBounds(bounds, padding, maxWidth, maxHeight) {
+  if (!bounds) return null;
+  const safePadding = Math.max(0, Math.round(Number(padding) || 0));
+  let left = Math.max(0, bounds.left - safePadding);
+  let top = Math.max(0, bounds.top - safePadding);
+  const right = Math.min(maxWidth, bounds.left + bounds.width + safePadding);
+  const bottom = Math.min(maxHeight, bounds.top + bounds.height + safePadding);
+  let width = right - left;
+  let height = bottom - top;
+
+  if (width < PHOTO_MAGIC_REPLICATE_MIN_CROP_DIMENSION) {
+    left = Math.max(0, Math.min(left, maxWidth - PHOTO_MAGIC_REPLICATE_MIN_CROP_DIMENSION));
+    width = Math.min(maxWidth - left, PHOTO_MAGIC_REPLICATE_MIN_CROP_DIMENSION);
+  }
+
+  if (height < PHOTO_MAGIC_REPLICATE_MIN_CROP_DIMENSION) {
+    top = Math.max(0, Math.min(top, maxHeight - PHOTO_MAGIC_REPLICATE_MIN_CROP_DIMENSION));
+    height = Math.min(maxHeight - top, PHOTO_MAGIC_REPLICATE_MIN_CROP_DIMENSION);
+  }
+
+  return {
+    left,
+    top,
+    width,
+    height
+  };
+}
+
+async function normalizeReplicateMaskBuffer(maskBuffer, { width, height, dilatePx = 0, featherPx = 0 } = {}) {
+  const { data, info } = await sharp(maskBuffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+    .ensureAlpha()
+    .resize(width, height, { fit: 'fill', kernel: 'nearest' })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const maskData = Buffer.alloc(info.width * info.height);
+  for (let sourceIndex = 0, targetIndex = 0; sourceIndex < data.length; sourceIndex += info.channels, targetIndex += 1) {
+    const r = data[sourceIndex] || 0;
+    const g = data[sourceIndex + 1] || 0;
+    const b = data[sourceIndex + 2] || 0;
+    const a = info.channels > 3 ? data[sourceIndex + 3] || 0 : 255;
+    maskData[targetIndex] = Math.max(r, g, b, a);
+  }
+
+  const bounds = computeMaskBounds(maskData, info.width, info.height);
+
+  let pipeline = sharp(maskData, {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: 1
+    }
+  });
+
+  if (dilatePx > 0) {
+    pipeline = pipeline.dilate(Math.max(1, Math.round(dilatePx)));
+  }
+  if (featherPx > 0) {
+    pipeline = pipeline.blur(Math.max(0.3, Number(featherPx) / 3));
+  }
+
+  return {
+    buffer: await pipeline.png().toBuffer(),
+    width: info.width,
+    height: info.height,
+    bounds
+  };
 }
 
 function isSafeTmpId(id) {
@@ -4519,11 +4653,42 @@ router.get('/photo-magic/health', async (req, res) => {
     const aiHealth = aiConfigured
       ? await getPhotoMagicAiHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
       : null;
+    const aiHealthPayload = aiHealth?.payload || {};
 
     const hqConfigured = isPhotoMagicHqConfigured();
     const hqHealth = hqConfigured
       ? await getPhotoMagicHqHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
       : null;
+    const replicateConfig = getPhotoMagicReplicateConfig();
+    const replicateBaseUrl = getPhotoMagicPublicBaseUrl(req);
+    const replicateHealth = isPhotoMagicReplicateConfigured()
+      ? await getPhotoMagicReplicateHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
+    const replicateReady = Boolean(replicateBaseUrl && replicateHealth?.ok);
+    const standardErase = isPhotoMagicReplicateConfigured()
+      ? {
+          configured: true,
+          ready: replicateReady,
+          provider: 'replicate',
+          model: replicateConfig.model,
+          prompt: replicateConfig.prompt,
+          timeout_ms: replicateConfig.timeout_ms,
+          wait_seconds: replicateConfig.wait_seconds,
+          health: replicateHealth,
+          error: !replicateBaseUrl
+            ? 'PHOTO_MAGIC_PUBLIC_BASE_URL could not be resolved for Replicate erase.'
+            : (replicateHealth?.ok ? null : (replicateHealth?.payload?.detail || replicateHealth?.payload?.error || 'Replicate erase is not ready.'))
+        }
+      : {
+          configured: aiConfigured,
+          ready: Boolean(aiConfigured && aiHealth?.ok && aiHealthPayload?.models?.lama),
+          provider: 'photo-magic-ai',
+          model: 'LaMa inpainting',
+          prompt: null,
+          timeout_ms: Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000),
+          wait_seconds: null,
+          error: aiHealthPayload?.errors?.lama || null
+        };
 
     res.json({
       success: true,
@@ -4555,7 +4720,8 @@ router.get('/photo-magic/health', async (req, res) => {
             configured: Boolean(String(process.env.GEMINI_API_KEY || '').trim()),
             model: getPhotoMagicSelectionModelName()
           }
-        }
+        },
+        standard_erase: standardErase
       }
     });
   } catch (error) {
@@ -4941,6 +5107,10 @@ router.post('/photo-magic/erase', photoMagicSingle('mask'), async (req, res) => 
     const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 8, 0, 64);
     const cropToMask = parseBool(req.body?.crop_to_mask ?? req.body?.cropToMask, true);
     const cropMarginPx = clampNumber(req.body?.crop_margin_px ?? req.body?.cropMarginPx ?? 128, 0, 2048);
+    const normalizedMaskBase64 = String(maskBase64 || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '').trim();
+    const maskBuffer = req.file?.buffer?.length
+      ? req.file.buffer
+      : Buffer.from(normalizedMaskBase64, 'base64');
 
     let result;
     if (quality === 'hq') {
@@ -4978,22 +5148,114 @@ router.post('/photo-magic/erase', photoMagicSingle('mask'), async (req, res) => 
         cropMarginPx
       });
     } else {
-      if (!isPhotoMagicAiConfigured()) {
-        return res.status(503).json({
-          success: false,
-          error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+      if (isPhotoMagicReplicateConfigured()) {
+        const publicBaseUrl = getPhotoMagicPublicBaseUrl(req);
+        if (!publicBaseUrl) {
+          return res.status(503).json({
+            success: false,
+            error: 'Photo Magic public base URL could not be resolved for Replicate erase.'
+          });
+        }
+
+        const sourceAssetId = crypto.randomUUID();
+        const maskAssetId = crypto.randomUUID();
+        const sourceAssetPath = getPhotoMagicOutputPath(store, sourceAssetId, 'png');
+        const maskAssetPath = getPhotoMagicOutputPath(store, maskAssetId, 'png');
+
+        try {
+          const preparedSource = await prepareReplicateSourceImageBuffer(buf, maxSide);
+          const preparedMask = await normalizeReplicateMaskBuffer(maskBuffer, {
+            width: preparedSource.width,
+            height: preparedSource.height,
+            dilatePx: maskDilatePx,
+            featherPx: maskFeatherPx
+          });
+
+          const cropBounds = cropToMask
+            ? expandMaskBounds(
+                preparedMask.bounds,
+                cropMarginPx + maskDilatePx + Math.ceil(maskFeatherPx),
+                preparedSource.width,
+                preparedSource.height
+              )
+            : null;
+
+          const sourceForReplicate = cropBounds
+            ? await sharp(preparedSource.buffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+                .extract(cropBounds)
+                .png()
+                .toBuffer()
+            : preparedSource.buffer;
+
+          const maskForReplicate = cropBounds
+            ? await sharp(preparedMask.buffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+                .extract(cropBounds)
+                .png()
+                .toBuffer()
+            : preparedMask.buffer;
+
+          await fs.promises.writeFile(sourceAssetPath, sourceForReplicate);
+          await fs.promises.writeFile(maskAssetPath, maskForReplicate);
+
+          const { outputUrl } = await eraseFluxFill({
+            imageUrl: buildPhotoMagicAssetUrl(req, store, sourceAssetId, 'replicate-source.png'),
+            maskUrl: buildPhotoMagicAssetUrl(req, store, maskAssetId, 'replicate-mask.png')
+          });
+
+          const outputResponse = await axios.get(outputUrl, {
+            responseType: 'arraybuffer',
+            timeout: Number(process.env.PHOTO_MAGIC_REPLICATE_TIMEOUT_MS || 300000),
+            maxContentLength: PHOTO_MAGIC_MAX_UPLOAD_BYTES * 4
+          });
+
+          const renderedCrop = await sharp(Buffer.from(outputResponse.data), { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+            .png()
+            .toBuffer();
+
+          const finalBuffer = cropBounds
+            ? await sharp(preparedSource.buffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+                .composite([{
+                  input: await sharp(renderedCrop, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+                    .resize(cropBounds.width, cropBounds.height, { fit: 'fill' })
+                    .png()
+                    .toBuffer(),
+                  left: cropBounds.left,
+                  top: cropBounds.top
+                }])
+                .png()
+                .toBuffer()
+            : renderedCrop;
+
+          result = {
+            result_png: finalBuffer.toString('base64'),
+            width: preparedSource.width,
+            height: preparedSource.height,
+            provider: 'replicate'
+          };
+        } finally {
+          await Promise.allSettled([
+            fs.promises.unlink(sourceAssetPath),
+            fs.promises.unlink(maskAssetPath)
+          ]);
+        }
+      } else {
+        if (!isPhotoMagicAiConfigured()) {
+          return res.status(503).json({
+            success: false,
+            error: 'Standard removal is unavailable. Configure REPLICATE_API_TOKEN or PHOTO_MAGIC_AI_URL.'
+          });
+        }
+
+        result = await eraseLama({
+          imageBase64,
+          maskBase64: normalizedMaskBase64,
+          maxSide,
+          maskDilatePx,
+          maskFeatherPx,
+          cropToMask,
+          cropMarginPx
         });
       }
-
-      result = await eraseLama({
-        imageBase64,
-        maskBase64,
-        maxSide,
-        maskDilatePx,
-        maskFeatherPx,
-        cropToMask,
-        cropMarginPx
-      });
     }
 
     const outId = crypto.randomUUID();
