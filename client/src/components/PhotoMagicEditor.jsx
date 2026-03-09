@@ -522,6 +522,13 @@ export default function PhotoMagicEditor({ store }) {
   const hqModels = health?.photo_magic?.hq?.health?.payload?.models || {};
   const hqReason = health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_inpaint || null;
   const expandReady = Boolean(hqConfigured && hqOk && hqModels?.sdxl_expand);
+  const standardEraseState = health?.photo_magic?.standard_erase || {};
+  const standardEraseReady = Boolean(standardEraseState?.ready ?? lamaReady);
+  const standardEraseProvider = String(standardEraseState?.provider || (lamaReady ? 'photo-magic-ai' : 'standard')).trim();
+  const standardEraseModel = String(
+    standardEraseState?.model || (standardEraseProvider === 'replicate' ? 'black-forest-labs/flux-fill-pro' : 'LaMa inpainting')
+  ).trim();
+  const standardEraseToggleLabel = standardEraseProvider === 'replicate' ? 'Fast (Flux Fill)' : 'Fast (LaMa)';
 
   const currentMaskOutputId = selectionMaskOutputId || maskOutputId || relightMaskOutputId || expandMaskOutputId || null;
   const latestMaskForErase = selectionMaskUrl || maskUrl || relightMaskUrl || expandMaskUrl || null;
@@ -1729,10 +1736,10 @@ export default function PhotoMagicEditor({ store }) {
       {
         id: 'lama',
         title: 'Standard Clean Plate',
-        model: 'LaMa inpainting',
-        ready: lamaReady,
+        model: standardEraseModel,
+        ready: standardEraseReady,
         description: 'Fast object removal for working iterations.',
-        error: aiHealthPayload?.errors?.lama || ''
+        error: standardEraseState?.error || aiHealthPayload?.errors?.lama || ''
       },
       {
         id: 'sdxl',
@@ -1782,7 +1789,10 @@ export default function PhotoMagicEditor({ store }) {
       realEsrganReady,
       relightReady,
       rmbg2Ready,
-      sam2Ready
+      sam2Ready,
+      standardEraseModel,
+      standardEraseReady,
+      standardEraseState?.error
     ]
   );
 
@@ -1852,7 +1862,7 @@ export default function PhotoMagicEditor({ store }) {
       cards.push({
         id: 'erase',
         title: 'Cleaned Image',
-        engine: quality === 'hq' ? 'SDXL HQ' : 'LaMa',
+        engine: quality === 'hq' ? 'SDXL HQ' : (standardEraseProvider === 'replicate' ? 'FLUX Fill' : 'LaMa'),
         url: eraseUrl,
         empty: 'Select the area to remove, then run the removal engine.',
         promoteable: true,
@@ -2618,7 +2628,7 @@ export default function PhotoMagicEditor({ store }) {
                   <Label>Removal Engine</Label>
                   <div className="mt-3">
                     <Toggle value={quality} onChange={setQuality} options={[
-                      { value: 'standard', label: 'Fast (LaMa)', title: 'Quick removal' },
+                      { value: 'standard', label: standardEraseToggleLabel, title: 'Quick removal' },
                       { value: 'hq', label: 'HD (SDXL)', disabled: hqOption.disabled, title: hqOption.title }
                     ]} />
                   </div>
@@ -2648,7 +2658,7 @@ export default function PhotoMagicEditor({ store }) {
                     </div>
                   ) : null}
                   <div className="mt-3">
-                    <Button variant="primary" onClick={runErase} disabled={!imageId || isRunning || (quality === 'hq' ? hqOption.disabled : !lamaReady) || (!cleanPlateMaskReady && !latestMaskForErase)} className="w-full justify-center pm-btn-hover">
+                    <Button variant="primary" onClick={runErase} disabled={!imageId || isRunning || (quality === 'hq' ? hqOption.disabled : !standardEraseReady) || (!cleanPlateMaskReady && !latestMaskForErase)} className="w-full justify-center pm-btn-hover">
                       <Eraser className="h-4 w-4" />
                       {quality === 'hq' ? 'Remove (HD)' : 'Remove Object'}
                     </Button>
