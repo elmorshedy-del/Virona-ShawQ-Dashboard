@@ -444,6 +444,12 @@ export default function PhotoMagicEditor({ store }) {
   const [exportFormat, setExportFormat] = useState('png');
   const [exportQuality, setExportQuality] = useState(90);
   const [exportScale, setExportScale] = useState('1x');
+  const [showShopifyImportModal, setShowShopifyImportModal] = useState(false);
+  const [shopifyProducts, setShopifyProducts] = useState([]);
+  const [shopifyCatalogLoading, setShopifyCatalogLoading] = useState(false);
+  const [shopifyCatalogError, setShopifyCatalogError] = useState(null);
+  const [shopifySearchQuery, setShopifySearchQuery] = useState('');
+  const [importingProductId, setImportingProductId] = useState(null);
 
   // ── Editor Mode: photo / video ──
   const [editorMode, setEditorMode] = useState('photo');
@@ -595,6 +601,15 @@ export default function PhotoMagicEditor({ store }) {
     setDebugTrace([]);
   }, []);
 
+  const visibleShopifyProducts = useMemo(() => {
+    const query = shopifySearchQuery.trim().toLowerCase();
+    if (!query) return shopifyProducts;
+    return shopifyProducts.filter((product) => {
+      const haystack = `${product?.name || ''} ${product?.collection || ''}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [shopifyProducts, shopifySearchQuery]);
+
   const inspectMaskCanvas = useCallback(() => {
     const canvas = maskCanvasRef.current;
     if (!canvas || canvas.width <= 0 || canvas.height <= 0) {
@@ -672,6 +687,33 @@ export default function PhotoMagicEditor({ store }) {
       setIsHealthLoading(false);
     }
   }, [store]);
+
+  const applySourcePayload = useCallback((payload, options = {}) => {
+    const {
+      previewUrl = null,
+      sourceStageLabel = 'Original',
+      sourceName = payload?.filename || 'untitled',
+      nextTool = 'remove_bg',
+      resetHistory = true
+    } = options;
+
+    setImageId(payload.image_id);
+    setImageMeta({
+      width: payload.width,
+      height: payload.height,
+      filename: payload.filename,
+      mime: payload.mime,
+      size: payload.size
+    });
+    setImageSrc(previewUrl);
+    setSourceLabel(sourceName || payload.filename || 'untitled');
+    setSourceStage(sourceStageLabel);
+    setSourceHistory((prev) => (resetHistory ? [sourceStageLabel] : [...prev, sourceStageLabel].slice(-4)));
+    setPrecisionMode(false);
+    setViewportMode('source');
+    setTool(nextTool);
+    setLastRenderSummary(`Source ready ${payload.width || '?'}x${payload.height || '?'}`);
+  }, []);
 
   useEffect(() => {
     refreshHealth();
@@ -941,22 +983,13 @@ export default function PhotoMagicEditor({ store }) {
           })
         });
 
-        setImageId(data.image_id);
-        setImageMeta({
-          width: data.width,
-          height: data.height,
-          filename: data.filename,
-          mime: data.mime,
-          size: data.size
+        applySourcePayload(data, {
+          previewUrl: URL.createObjectURL(file),
+          sourceStageLabel,
+          sourceName: sourceName || data.filename || file?.name || 'untitled',
+          nextTool,
+          resetHistory
         });
-        setImageSrc(URL.createObjectURL(file));
-        setSourceLabel(sourceName || data.filename || file?.name || 'untitled');
-        setSourceStage(sourceStageLabel);
-        setSourceHistory((prev) => (resetHistory ? [sourceStageLabel] : [...prev, sourceStageLabel].slice(-4)));
-        setPrecisionMode(false);
-        setViewportMode('source');
-        setTool(nextTool);
-        setLastRenderSummary(`Source ready ${data.width || '?'}x${data.height || '?'}`);
       } catch (nextError) {
         console.error(nextError);
         const message = nextError?.message || 'Upload failed';
@@ -968,8 +1001,90 @@ export default function PhotoMagicEditor({ store }) {
         refreshHealth();
       }
     },
-    [logDebug, refreshHealth, requestJson, resetOutputs, startDebugRun, store]
+    [applySourcePayload, logDebug, refreshHealth, requestJson, resetOutputs, startDebugRun, store]
   );
+
+  const loadShopifyCatalog = useCallback(async () => {
+    setShopifyCatalogLoading(true);
+    setShopifyCatalogError(null);
+    try {
+      const res = await fetch(withStore('/creative-studio/creative-os/catalog?limit=120', store));
+      const data = await readJsonSafe(res);
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || 'Failed to load Shopify catalog');
+      }
+      setShopifyProducts(Array.isArray(data.products) ? data.products : []);
+    } catch (nextError) {
+      console.error(nextError);
+      setShopifyCatalogError(nextError?.message || 'Failed to load Shopify catalog');
+    } finally {
+      setShopifyCatalogLoading(false);
+    }
+  }, [store]);
+
+  const openShopifyImport = useCallback(() => {
+    setShowShopifyImportModal(true);
+    if (!shopifyProducts.length && !shopifyCatalogLoading) {
+      loadShopifyCatalog();
+    }
+  }, [loadShopifyCatalog, shopifyCatalogLoading, shopifyProducts.length]);
+
+  const importShopifyProduct = useCallback(async (product) => {
+    const imageUrl = String(product?.image_url || product?.imageUrl || '').trim();
+    if (!imageUrl) {
+      setShopifyCatalogError('This product does not have an image to edit yet.');
+      return;
+    }
+
+    setImportingProductId(String(product?.id || 'product'));
+    setError(null);
+    const runId = startDebugRun('Upload', `Importing ${product?.name || 'product'} from Shopify`);
+
+    try {
+      resetOutputs();
+      const data = await requestJson({
+        runId,
+        scope: 'Upload',
+        step: 'import-product',
+        url: withStore('/creative-studio/photo-magic/import-product', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_url: imageUrl,
+            product_name: product?.name || 'Product photo'
+          })
+        },
+        successMessage: 'Product photo imported',
+        failureMessage: 'Product photo import failed',
+        successDetails: (payload) => ({
+          imageId: payload?.image_id || null,
+          width: payload?.width || null,
+          height: payload?.height || null,
+          filename: payload?.filename || null,
+          source: payload?.source || null
+        })
+      });
+
+      applySourcePayload(data, {
+        previewUrl: data.preview_url,
+        sourceStageLabel: 'Shopify product',
+        sourceName: product?.name || data.filename || 'Product photo',
+        nextTool: 'remove_bg',
+        resetHistory: true
+      });
+      setShowShopifyImportModal(false);
+    } catch (nextError) {
+      console.error(nextError);
+      const message = nextError?.message || 'Product photo import failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Upload', 'complete', 'failed', message);
+    } finally {
+      setImportingProductId(null);
+      refreshHealth();
+    }
+  }, [applySourcePayload, logDebug, refreshHealth, requestJson, resetOutputs, startDebugRun, store]);
 
   const promoteOutputToSource = useCallback(
     async ({ url, stageLabel, nextTool = 'remove_bg' }) => {
@@ -2033,10 +2148,16 @@ export default function PhotoMagicEditor({ store }) {
               Remove backgrounds, erase objects, adjust lighting, extend canvas, and enhance quality — all in one place. Each result can be used as input for the next step.
             </div>
             <div className="mt-6">
-              <Button variant="primary" onClick={onPickFile} disabled={isUploading}>
-                <ImagePlus className="h-4 w-4" />
-                Upload Photo
-              </Button>
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                <Button variant="primary" onClick={onPickFile} disabled={isUploading}>
+                  <ImagePlus className="h-4 w-4" />
+                  Upload Photo
+                </Button>
+                <Button variant="secondary" onClick={openShopifyImport} disabled={isUploading || shopifyCatalogLoading}>
+                  {shopifyCatalogLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingBag className="h-4 w-4" />}
+                  Import from Shopify
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -2223,6 +2344,16 @@ export default function PhotoMagicEditor({ store }) {
                 >
                   <Upload className="h-3.5 w-3.5" />
                   Import Image
+                </button>
+                <button
+                  type="button"
+                  onClick={openShopifyImport}
+                  disabled={isUploading || shopifyCatalogLoading}
+                  className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ background: 'rgba(255,255,255,0.82)', border: '1px solid rgba(209,213,219,0.9)' }}
+                >
+                  {shopifyCatalogLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShoppingBag className="h-3.5 w-3.5" />}
+                  Import from Shopify
                 </button>
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
                 {imageSrc && (
@@ -3401,6 +3532,121 @@ export default function PhotoMagicEditor({ store }) {
           </div>
         ) : null}
       </div>
+
+      {/* ═══ Shopify Import Modal ═══ */}
+      {showShopifyImportModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
+          style={{ backdropFilter: 'blur(8px)' }}
+          onClick={() => setShowShopifyImportModal(false)}
+        >
+          <div
+            className="w-full max-w-4xl overflow-hidden rounded-[28px] border border-white/70 bg-white/96 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="border-b border-gray-100 px-6 py-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-indigo-400">Photo Magic Source</div>
+                  <h3 className="mt-2 text-xl font-bold text-gray-900">Import from Shopify</h3>
+                  <p className="mt-1 text-sm text-gray-500">Choose a product photo and open it directly as the editable source image.</p>
+                </div>
+                <button type="button" onClick={() => setShowShopifyImportModal(false)} className="rounded-xl p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600">
+                  <XCircle className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-0 md:grid-cols-[300px_minmax(0,1fr)]">
+              <div className="border-r border-gray-100 bg-gray-50/60 px-5 py-5">
+                <Label>Catalog Search</Label>
+                <Input
+                  className="mt-2"
+                  value={shopifySearchQuery}
+                  onChange={(event) => setShopifySearchQuery(event.target.value)}
+                  placeholder="Search products..."
+                />
+
+                <div className="mt-4 rounded-2xl border border-gray-100 bg-white/80 p-4 text-sm text-gray-500">
+                  <div className="font-semibold text-gray-700">How this works</div>
+                  <p className="mt-2 leading-6">
+                    Shopify product photos become the current source image immediately. This stays separate from overlays and opens the photo directly into the editor chain.
+                  </p>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between rounded-2xl border border-gray-100 bg-white/80 px-4 py-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-gray-400">Catalog</div>
+                    <div className="mt-1 text-sm font-semibold text-gray-800">{shopifyCatalogLoading ? 'Syncing…' : `${shopifyProducts.length} products`}</div>
+                  </div>
+                  <Button variant="secondary" onClick={loadShopifyCatalog} disabled={shopifyCatalogLoading}>
+                    {shopifyCatalogLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    Refresh
+                  </Button>
+                </div>
+              </div>
+
+              <div className="px-5 py-5">
+                {shopifyCatalogError ? (
+                  <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                    {shopifyCatalogError}
+                  </div>
+                ) : null}
+
+                {shopifyCatalogLoading ? (
+                  <div className="flex min-h-[420px] items-center justify-center text-gray-400">
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                    <span className="text-sm">Loading Shopify catalog…</span>
+                  </div>
+                ) : visibleShopifyProducts.length === 0 ? (
+                  <div className="flex min-h-[420px] flex-col items-center justify-center rounded-3xl border border-dashed border-gray-200 bg-gray-50/70 px-8 text-center">
+                    <ShoppingBag className="h-7 w-7 text-gray-300" />
+                    <div className="mt-4 text-base font-semibold text-gray-700">No product photos available</div>
+                    <div className="mt-2 max-w-md text-sm leading-6 text-gray-500">
+                      Sync a store catalog or search with a different keyword to bring a product image into Photo Magic.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid max-h-[520px] gap-4 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
+                    {visibleShopifyProducts.map((product) => {
+                      const productImage = String(product?.image_url || product?.imageUrl || '').trim();
+                      const importDisabled = !productImage || importingProductId === String(product?.id ?? '');
+                      return (
+                        <div key={product.id || product.name} className="overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-sm">
+                          <div className="aspect-[4/5] bg-gray-100">
+                            {productImage ? (
+                              <img src={productImage} alt={product.name || 'Product'} className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="flex h-full items-center justify-center text-sm text-gray-400">No image</div>
+                            )}
+                          </div>
+                          <div className="space-y-3 px-4 py-4">
+                            <div>
+                              <div className="line-clamp-2 text-sm font-semibold text-gray-900">{product.name || 'Product'}</div>
+                              <div className="mt-1 text-xs text-gray-400">
+                                {product.price ? formatCurrency(product.price, product.currency) : 'Price unavailable'}
+                              </div>
+                            </div>
+                            <Button
+                              variant="primary"
+                              className="w-full"
+                              disabled={importDisabled}
+                              onClick={() => importShopifyProduct(product)}
+                            >
+                              {importingProductId === String(product?.id || '') ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}
+                              Open as Source
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ═══ Export Modal ═══ */}
       {showExportModal && (
