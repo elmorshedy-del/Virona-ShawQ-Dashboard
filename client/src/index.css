@@ -501,16 +501,31 @@ tbody td {
 
 /* ── Accordion Sections ──────────────────────────────────── */
 .pm-accordion-body {
+  display: grid;
+  grid-template-rows: 0fr;
   overflow: hidden;
-  transition: max-height 0.35s cubic-bezier(0.16,1,0.3,1), opacity 0.25s ease;
+  transition: grid-template-rows 0.35s cubic-bezier(0.16,1,0.3,1), opacity 0.25s ease;
 }
 .pm-accordion-body[data-open="false"] {
-  max-height: 0;
   opacity: 0;
 }
 .pm-accordion-body[data-open="true"] {
-  max-height: 600px;
+  grid-template-rows: 1fr;
   opacity: 1;
+}
+.pm-accordion-body > div {
+  min-height: 0;
+}
+
+.pm-btn-primary-grad {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
+.pm-btn-primary-grad:hover:not(:disabled) {
+  box-shadow: 0 6px 16px rgba(99,102,241,0.22);
+  transform: translateY(-1px);
+}
+.pm-btn-primary-grad:disabled {
+  box-shadow: none;
 }
 
 /* ── Adjustment Overlays ─────────────────────────────────── */

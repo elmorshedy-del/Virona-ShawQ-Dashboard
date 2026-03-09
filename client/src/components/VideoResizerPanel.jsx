@@ -16,8 +16,39 @@ import {
 } from 'lucide-react';
 
 const API_BASE = '/api';
-const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
 const cn = (...c) => c.filter(Boolean).join(' ');
+const DEFAULT_STORE_SCOPE = 'default-tenant';
+const CLOUDINARY_UPLOAD_SEGMENT = '/upload/';
+const CLOUDINARY_POSTER_SEGMENT = '/upload/so_0/';
+
+const resolveStoreScope = (store) => {
+  if (store) return store;
+  if (typeof window !== 'undefined') {
+    const selectedStore = window.localStorage.getItem('selectedStore');
+    if (selectedStore) return selectedStore;
+  }
+  return DEFAULT_STORE_SCOPE;
+};
+
+const withStore = (path, store) => {
+  const resolvedStore = resolveStoreScope(store);
+  return `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(resolvedStore)}`;
+};
+
+function resolveCloudinaryPosterUrl(sourceUrl) {
+  if (!sourceUrl) return null;
+
+  try {
+    const parsed = new URL(sourceUrl, typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+    if (!parsed.pathname.includes(CLOUDINARY_UPLOAD_SEGMENT)) return null;
+    parsed.pathname = parsed.pathname
+      .replace(CLOUDINARY_UPLOAD_SEGMENT, CLOUDINARY_POSTER_SEGMENT)
+      .replace(/\.\w+$/, '.jpg');
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
 
 const PLATFORM_SIZES = [
   { id: 'meta_feed', label: 'Meta Feed', ratio: '1.91:1', platform: 'Meta' },
@@ -33,6 +64,7 @@ const PLATFORM_SIZES = [
 ];
 
 export default function VideoResizerPanel({ store, videoId, videoInfo, onVersionSelect }) {
+  const storeScope = resolveStoreScope(store);
   const [processing, setProcessing] = useState(false);
   const [versions, setVersions] = useState(null);
   const [smartCrop, setSmartCrop] = useState(true);
@@ -48,9 +80,7 @@ export default function VideoResizerPanel({ store, videoId, videoInfo, onVersion
     if (directThumb) return directThumb;
     const baseUrl = resolveVersionUrl(version);
     if (!baseUrl) return null;
-    const [path, query] = baseUrl.split('?');
-    const thumbnailPath = path.replace('/upload/', '/upload/so_0/').replace(/\.\w+$/, '.jpg');
-    return query ? `${thumbnailPath}?${query}` : thumbnailPath;
+    return resolveCloudinaryPosterUrl(baseUrl);
   };
 
   const triggerDownload = async (version) => {
@@ -88,7 +118,7 @@ export default function VideoResizerPanel({ store, videoId, videoInfo, onVersion
     setError(null);
     setProcessing(true);
     try {
-      const response = await fetch(withStore('/creative-studio/video/resize', store), {
+      const response = await fetch(withStore('/creative-studio/video/resize', storeScope), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ video_id: videoId, smart_crop: smartCrop })
@@ -103,7 +133,7 @@ export default function VideoResizerPanel({ store, videoId, videoInfo, onVersion
       setError('Resize failed. Check connection and try again.');
     }
     setProcessing(false);
-  }, [videoId, smartCrop, store]);
+  }, [videoId, smartCrop, storeScope]);
 
   if (!videoId) {
     return (
@@ -119,21 +149,27 @@ export default function VideoResizerPanel({ store, videoId, videoInfo, onVersion
     <div className="space-y-3">
       {/* Smart Crop Toggle */}
       <div className="rounded-2xl border border-gray-100/80 bg-white/70 p-3">
-        <label className="flex items-center justify-between cursor-pointer">
+        <div className="flex items-center justify-between">
           <div>
             <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500">AI Smart Crop</span>
             <p className="text-[10px] text-gray-400 mt-0.5">Detects faces & products for optimal framing</p>
           </div>
-          <div className={cn(
+          <button
+            type="button"
+            role="switch"
+            aria-checked={smartCrop}
+            aria-label={`AI Smart Crop ${smartCrop ? 'enabled' : 'disabled'}`}
+            className={cn(
             'relative w-10 h-5 rounded-full transition-colors',
             smartCrop ? 'bg-indigo-500' : 'bg-gray-200'
           )} onClick={() => setSmartCrop(!smartCrop)}>
+            <span className="sr-only">Toggle AI Smart Crop</span>
             <div className={cn(
               'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
               smartCrop ? 'translate-x-5' : 'translate-x-0.5'
             )} />
-          </div>
-        </label>
+          </button>
+        </div>
       </div>
 
       {/* Platform Sizes Reference */}
@@ -160,8 +196,7 @@ export default function VideoResizerPanel({ store, videoId, videoInfo, onVersion
       <button
         onClick={handleResize}
         disabled={processing}
-        className="w-full py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
-        style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+        className="pm-btn-primary-grad w-full py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
       >
         {processing ? (
           <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Resizing...</>
@@ -238,8 +273,7 @@ export default function VideoResizerPanel({ store, videoId, videoInfo, onVersion
               <button onClick={() => setPreviewVersion(null)} className="px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded-lg">Close</button>
               <button
                 onClick={() => triggerDownload(previewVersion)}
-                className="px-3 py-1.5 text-xs font-medium text-white rounded-lg flex items-center gap-1.5"
-                style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+                className="pm-btn-primary-grad px-3 py-1.5 text-xs font-medium text-white rounded-lg flex items-center gap-1.5"
               >
                 <Download size={14} /> Download
               </button>

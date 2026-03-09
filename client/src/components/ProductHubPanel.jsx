@@ -16,8 +16,23 @@ import {
 } from 'lucide-react';
 
 const API_BASE = '/api';
-const withStore = (path, store) => `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(store ?? 'vironax')}`;
+const DEFAULT_STORE_SCOPE = 'default-tenant';
+const CATALOG_REFRESH_INTERVAL_MS = 30_000;
 const cn = (...c) => c.filter(Boolean).join(' ');
+
+const resolveStoreScope = (store) => {
+  if (store) return store;
+  if (typeof window !== 'undefined') {
+    const selectedStore = window.localStorage.getItem('selectedStore');
+    if (selectedStore) return selectedStore;
+  }
+  return DEFAULT_STORE_SCOPE;
+};
+
+const withStore = (path, store) => {
+  const resolvedStore = resolveStoreScope(store);
+  return `${API_BASE}${path}${path.includes('?') ? '&' : '?'}store=${encodeURIComponent(resolvedStore)}`;
+};
 
 const COLLECTIONS = [
   { id: 'all', label: 'All' },
@@ -45,6 +60,7 @@ const formatCurrency = (value, currency = 'USD') => {
 };
 
 export default function ProductHubPanel({ store, onProductSelect }) {
+  const storeScope = useMemo(() => resolveStoreScope(store), [store]);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -60,7 +76,7 @@ export default function ProductHubPanel({ store, onProductSelect }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(withStore('/creative-studio/creative-os/catalog?limit=150', store));
+      const res = await fetch(withStore('/creative-studio/creative-os/catalog?limit=150', storeScope));
       const data = await res.json();
       if (res.ok && data?.products?.length) {
         setProducts(data.products);
@@ -79,13 +95,13 @@ export default function ProductHubPanel({ store, onProductSelect }) {
       setError('Could not load catalog');
     }
     setLoading(false);
-  }, [store]);
+  }, [storeScope]);
 
   useEffect(() => { loadCatalog(); }, [loadCatalog]);
 
   useEffect(() => {
     if (!dynamicSync) return;
-    const interval = setInterval(loadCatalog, 30000);
+    const interval = setInterval(loadCatalog, CATALOG_REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [dynamicSync, loadCatalog]);
 
@@ -110,10 +126,10 @@ export default function ProductHubPanel({ store, onProductSelect }) {
     setImporting(true);
     setError(null);
     try {
-      const res = await fetch(withStore('/creative-studio/creative-os/product/import-url', store), {
+      const res = await fetch(withStore('/creative-studio/creative-os/product/import-url', storeScope), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store: store || 'default-tenant', url: importUrl.trim() })
+        body: JSON.stringify({ store: storeScope, url: importUrl.trim() })
       });
       const data = await res.json();
       if (res.ok && data?.product) {
@@ -127,7 +143,7 @@ export default function ProductHubPanel({ store, onProductSelect }) {
       setError('Import failed. Check the URL and try again.');
     }
     setImporting(false);
-  }, [importUrl, store]);
+  }, [importUrl, storeScope]);
 
   const handleSelect = (product) => {
     setSelectedProductId(product.id);
@@ -187,12 +203,17 @@ export default function ProductHubPanel({ store, onProductSelect }) {
       {/* Dynamic Sync Toggle */}
       <div className="flex items-center justify-between px-1">
         <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Live Price Sync</span>
-        <div
+        <button
+          type="button"
+          role="switch"
+          aria-checked={dynamicSync}
+          aria-label={`Live price sync ${dynamicSync ? 'enabled' : 'disabled'}`}
           className={cn('relative w-8 h-4 rounded-full cursor-pointer transition-colors', dynamicSync ? 'bg-indigo-500' : 'bg-gray-200')}
           onClick={() => setDynamicSync(!dynamicSync)}
         >
+          <span className="sr-only">Toggle live price sync</span>
           <div className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', dynamicSync ? 'translate-x-4' : 'translate-x-0.5')} />
-        </div>
+        </button>
       </div>
 
       {/* Product List */}
@@ -260,8 +281,7 @@ export default function ProductHubPanel({ store, onProductSelect }) {
           <button
             onClick={handleImport}
             disabled={importing || !importUrl.trim()}
-            className="px-3 py-1.5 rounded-lg text-[10px] font-semibold text-white disabled:opacity-40 transition-all"
-            style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+            className="pm-btn-primary-grad px-3 py-1.5 rounded-lg text-[10px] font-semibold text-white disabled:opacity-40 transition-all"
           >
             {importing ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Go'}
           </button>
@@ -286,8 +306,7 @@ export default function ProductHubPanel({ store, onProductSelect }) {
           </div>
           <button
             onClick={() => onProductSelect?.(selectedProduct)}
-            className="w-full mt-2 py-1.5 rounded-xl text-[10px] font-semibold text-white flex items-center justify-center gap-1.5 transition-all"
-            style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+            className="pm-btn-primary-grad w-full mt-2 py-1.5 rounded-xl text-[10px] font-semibold text-white flex items-center justify-center gap-1.5 transition-all"
           >
             <Tag className="h-3 w-3" /> Add to Video Overlay
           </button>
