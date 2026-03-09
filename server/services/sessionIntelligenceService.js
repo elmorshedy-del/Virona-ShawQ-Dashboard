@@ -3,6 +3,7 @@ import { getDb } from '../db/database.js';
 import { askOpenAIChat } from './openaiService.js';
 import { askDeepSeekChat, normalizeTemperature } from './deepseekService.js';
 import { persistInvestigationIssueSnapshots } from './sessionIntelligenceInvestigationService.js';
+import { resolveStoreUrl } from './storeProfileService.js';
 
 const RAW_RETENTION_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_RAW_RETENTION_HOURS || '72', 10);
 const ABANDON_AFTER_HOURS = parseInt(process.env.SESSION_INTELLIGENCE_ABANDON_AFTER_HOURS || '24', 10);
@@ -87,6 +88,10 @@ const THEME_SIGNAL_SOURCE_PLACEHOLDERS = THEME_SIGNAL_SOURCES.map(() => '?').joi
 
 const SHOPPER_BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 const SHOPPER_BACKFILL_FAILURE_RETRY_MS = 30 * 1000;
+const SHOPPER_BACKFILL_MAX_PENDING_STORES = Math.min(
+  Math.max(parseInt(process.env.SESSION_INTELLIGENCE_SHOPPER_BACKFILL_MAX_PENDING_STORES || '4', 10) || 4, 1),
+  16
+);
 const REALTIME_FOCUS_GEO_LIMIT = 12;
 const REALTIME_GEO_FALLBACK_SAMPLE_LIMIT = 1500;
 const REALTIME_GEO_CACHE_TTL_MS = 15 * 1000;
@@ -822,10 +827,13 @@ function runRecentShopperNumberBackfill(store) {
 
 function scheduleRecentShopperNumberBackfill(store) {
   const normalizedStore = safeString(store).trim() || 'shawq';
+  if (!isKnownSessionIntelligenceStore(normalizedStore)) return;
+
   const now = Date.now();
   const last = lastShopperBackfillByStore.get(normalizedStore) || 0;
   if (now - last < SHOPPER_BACKFILL_COOLDOWN_MS) return;
   if (pendingShopperBackfillByStore.has(normalizedStore)) return;
+  if (pendingShopperBackfillByStore.size >= SHOPPER_BACKFILL_MAX_PENDING_STORES) return;
 
   lastShopperBackfillByStore.set(normalizedStore, now);
   pendingShopperBackfillByStore.add(normalizedStore);
@@ -848,6 +856,11 @@ function scheduleRecentShopperNumberBackfill(store) {
 
 function ensureRecentShopperNumbers(store) {
   scheduleRecentShopperNumberBackfill(store);
+}
+
+function isKnownSessionIntelligenceStore(store) {
+  const normalizedStore = safeString(store).trim() || 'shawq';
+  return Boolean(resolveStoreUrl(normalizedStore));
 }
 
 function safeJsonParse(value) {
