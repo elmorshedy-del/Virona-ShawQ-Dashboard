@@ -314,6 +314,54 @@ function buildPhotoMagicAssetUrl(req, store, outputId, filename) {
   return baseUrl ? `${baseUrl}${relative}` : relative;
 }
 
+function buildPhotoMagicSourceUrl(req, store, imageId, filename = 'source.png') {
+  const baseUrl = getPhotoMagicPublicBaseUrl(req);
+  const relative = withStoreParam(
+    `/api/creative-studio/photo-magic/source?image_id=${encodeURIComponent(imageId)}&filename=${encodeURIComponent(filename)}`,
+    store
+  );
+  return baseUrl ? `${baseUrl}${relative}` : relative;
+}
+
+async function storePhotoMagicUploadBuffer({ store, buffer, filename, mime }) {
+  await ensurePhotoMagicDirs(store);
+
+  let meta = null;
+  try {
+    meta = await sharp(buffer).metadata();
+  } catch {
+    meta = null;
+  }
+
+  const width = Number(meta?.width || 0);
+  const height = Number(meta?.height || 0);
+  if (!width || !height) {
+    const error = new Error('Invalid image (could not read metadata)');
+    error.status = 400;
+    throw error;
+  }
+
+  const pixels = width * height;
+  if (Number.isFinite(pixels) && pixels > PHOTO_MAGIC_MAX_IMAGE_PIXELS) {
+    const error = new Error(`Image too large (${width}x${height}). Max pixels is ${PHOTO_MAGIC_MAX_IMAGE_PIXELS}.`);
+    error.status = 413;
+    throw error;
+  }
+
+  const imageId = crypto.randomUUID();
+  const imagePath = getUploadedPhotoPath(store, imageId);
+  await fs.promises.writeFile(imagePath, buffer);
+
+  return {
+    image_id: imageId,
+    filename,
+    size: buffer.length,
+    mime,
+    width,
+    height
+  };
+}
+
 async function prepareReplicateSourceImageBuffer(imageBuffer, maxSide) {
   const pipeline = sharp(imageBuffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
     .rotate()
@@ -4939,7 +4987,6 @@ router.get('/photo-magic/health', async (req, res) => {
 router.post('/photo-magic/upload', photoMagicSingle('image'), async (req, res) => {
   try {
     const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
-    await ensurePhotoMagicDirs(store);
 
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No image provided' });
@@ -4950,43 +4997,110 @@ router.post('/photo-magic/upload', photoMagicSingle('image'), async (req, res) =
       return res.status(415).json({ success: false, error: 'Unsupported file type (expected image/*)' });
     }
 
-    let meta = null;
-    try {
-      meta = await sharp(req.file.buffer).metadata();
-    } catch {
-      meta = null;
-    }
-
-    const width = Number(meta?.width || 0);
-    const height = Number(meta?.height || 0);
-    if (!width || !height) {
-      return res.status(400).json({ success: false, error: 'Invalid image (could not read metadata)' });
-    }
-
-    const pixels = width * height;
-    if (Number.isFinite(pixels) && pixels > PHOTO_MAGIC_MAX_IMAGE_PIXELS) {
-      return res.status(413).json({
-        success: false,
-        error: `Image too large (${width}x${height}). Max pixels is ${PHOTO_MAGIC_MAX_IMAGE_PIXELS}.`
-      });
-    }
-
-    const imageId = crypto.randomUUID();
-    const imagePath = getUploadedPhotoPath(store, imageId);
-    await fs.promises.writeFile(imagePath, req.file.buffer);
+    const stored = await storePhotoMagicUploadBuffer({
+      store,
+      buffer: req.file.buffer,
+      filename: req.file.originalname,
+      mime: req.file.mimetype
+    });
 
     return res.json({
       success: true,
-      image_id: imageId,
-      filename: req.file.originalname,
-      size: req.file.size,
-      mime: req.file.mimetype,
-      width,
-      height
+      ...stored,
+      preview_url: buildPhotoMagicSourceUrl(req, store, stored.image_id, stored.filename || 'source.png')
     });
   } catch (error) {
     console.error('Photo magic upload error:', error);
+    res.status(Number(error?.status || 500)).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/photo-magic/source', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    const imageId = String(req.query?.image_id || '').trim();
+    if (!imageId) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Source image not found' });
+    }
+
+    let contentType = 'application/octet-stream';
+    try {
+      const meta = await sharp(imagePath).metadata();
+      const format = String(meta?.format || '').toLowerCase();
+      if (format) contentType = `image/${format === 'jpg' ? 'jpeg' : format}`;
+    } catch {
+      contentType = 'application/octet-stream';
+    }
+
+    const filename = sanitizeDownloadFilename(String(req.query?.filename || ''), 'source.png');
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    fs.createReadStream(imagePath).pipe(res);
+  } catch (error) {
+    console.error('Photo magic source download error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/photo-magic/import-product', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    const imageUrl = String(req.body?.image_url || '').trim();
+    const productName = sanitizeCreativeOsText(req.body?.product_name || req.body?.name, CREATIVE_OS_MAX_PRODUCT_NAME_LENGTH, 'Product photo');
+
+    if (!imageUrl) {
+      return res.status(400).json({ success: false, error: 'image_url is required' });
+    }
+
+    const validatedUrl = await validateCreativeOsImportUrl(imageUrl);
+    const response = await axios.get(validatedUrl, {
+      responseType: 'arraybuffer',
+      timeout: CREATIVE_OS_IMPORT_TIMEOUT_MS,
+      maxRedirects: CREATIVE_OS_IMPORT_MAX_REDIRECTS,
+      maxBodyLength: PHOTO_MAGIC_MAX_UPLOAD_BYTES,
+      maxContentLength: PHOTO_MAGIC_MAX_UPLOAD_BYTES,
+      headers: {
+        Accept: 'image/*',
+        'User-Agent': 'VironaPhotoMagic/1.0 (+https://virona.app)'
+      }
+    });
+
+    const finalUrlRaw = response?.request?.res?.responseUrl || validatedUrl;
+    const finalParsed = new URL(finalUrlRaw);
+    await assertCreativeOsPublicHost(finalParsed.hostname);
+
+    const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
+    if (contentType && !contentType.startsWith('image/')) {
+      return res.status(415).json({ success: false, error: 'Imported URL did not return an image.' });
+    }
+
+    const ext = path.extname(finalParsed.pathname || '').replace(/[^a-z0-9.]/gi, '').toLowerCase() || '.png';
+    const filename = sanitizeDownloadFilename(`${toCreativeOsSlug(productName, 'product-image')}${ext}`, 'product-image.png');
+    const buffer = Buffer.from(response.data);
+
+    const stored = await storePhotoMagicUploadBuffer({
+      store,
+      buffer,
+      filename,
+      mime: contentType || 'image/png'
+    });
+
+    return res.json({
+      success: true,
+      ...stored,
+      source: 'shopify',
+      product_name: productName,
+      preview_url: buildPhotoMagicSourceUrl(req, store, stored.image_id, filename)
+    });
+  } catch (error) {
+    const statusCode = Number(error?.statusCode || error?.status || 500);
+    console.error('Photo magic import product error:', error);
+    res.status(statusCode).json({ success: false, error: error.message });
   }
 });
 
