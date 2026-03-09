@@ -224,7 +224,7 @@ const TOOL_DEFINITIONS = {
   },
   erase: {
     label: 'Object Remover',
-    engine: 'LaMa / SDXL HQ',
+    engine: 'Standard / HD removal',
     description: 'Select objects with AI or paint a mask manually, then remove them cleanly.'
   },
   relight: {
@@ -1364,7 +1364,7 @@ export default function PhotoMagicEditor({ store }) {
   const applyMaskArtifactToCanvas = useCallback(
     async (url, options = {}) => {
       if (!url || !imageSrc) return;
-      const { summary = 'Selection mask routed into clean plate', logMessage = summary, runId = null } = options;
+      const { summary = 'Selection mask routed into object remover', logMessage = summary, runId = null } = options;
 
       setTool('erase');
       setViewportMode('source');
@@ -1393,7 +1393,7 @@ export default function PhotoMagicEditor({ store }) {
       const stats = syncMaskMetrics();
       setLastRenderSummary(summary);
       if (runId != null) {
-        logDebug(runId, 'Clean Plate', 'mask-route', 'success', logMessage, {
+        logDebug(runId, 'Object Remover', 'mask-route', 'success', logMessage, {
           coverage: Number((stats.coverage * 100).toFixed(2)),
           paintedPixels: stats.paintedPixels
         });
@@ -1407,8 +1407,8 @@ export default function PhotoMagicEditor({ store }) {
 
     setError(null);
     setIsRunning(true);
-    const scope = quality === 'hq' ? 'HQ Clean Plate' : 'Clean Plate';
-    const runId = startDebugRun(scope, `${quality === 'hq' ? 'HQ' : 'Standard'} clean plate requested`);
+    const scope = quality === 'hq' ? 'HD Remove' : 'Object Remover';
+    const runId = startDebugRun(scope, `${quality === 'hq' ? 'HD' : 'Standard'} object removal requested`);
     try {
       let maskState = syncMaskMetrics();
       logDebug(runId, scope, 'mask-check', maskState.hasMask ? 'success' : 'running', maskState.hasMask ? 'Mask surface already contains painted or routed pixels' : 'Mask surface is blank', {
@@ -1417,17 +1417,17 @@ export default function PhotoMagicEditor({ store }) {
       });
 
       if (!maskState.hasMask && latestMaskForErase) {
-        logDebug(runId, scope, 'mask-route', 'running', `Auto-loading ${latestMaskSourceLabel || 'latest'} mask into clean plate`);
+        logDebug(runId, scope, 'mask-route', 'running', `Auto-loading ${latestMaskSourceLabel || 'latest'} mask into object remover`);
         await applyMaskArtifactToCanvas(latestMaskForErase, {
-          summary: `${latestMaskSourceLabel || 'Latest'} mask loaded for clean plate`,
-          logMessage: `${latestMaskSourceLabel || 'Latest'} mask copied into the clean plate surface`,
+          summary: `${latestMaskSourceLabel || 'Latest'} mask loaded for object remover`,
+          logMessage: `${latestMaskSourceLabel || 'Latest'} mask copied into the object remover surface`,
           runId
         });
         maskState = syncMaskMetrics();
       }
 
       if (!maskState.hasMask) {
-        throw new Error('Paint a removal mask or route a mask artifact into clean plate first.');
+        throw new Error('Paint a removal mask or route a mask artifact into Object Remover first.');
       }
 
       const maskBlob = await exportMaskBlob();
@@ -1459,8 +1459,8 @@ export default function PhotoMagicEditor({ store }) {
           method: 'POST',
           body: form
         },
-        successMessage: `${quality === 'hq' ? 'HQ' : 'Standard'} clean plate render completed`,
-        failureMessage: 'Clean plate render failed',
+        successMessage: `${quality === 'hq' ? 'HD' : 'Standard'} object removal completed`,
+        failureMessage: 'Object removal failed',
         successDetails: (payload) => ({
           outputReady: Boolean(payload?.url),
           width: payload?.width || null,
@@ -1471,10 +1471,10 @@ export default function PhotoMagicEditor({ store }) {
 
       setEraseUrl(data.url || null);
       setViewportMode('compare');
-      setLastRenderSummary(`${quality === 'hq' ? 'HQ' : 'Standard'} clean plate ready`);
+      setLastRenderSummary(`${quality === 'hq' ? 'HD' : 'Standard'} object removal ready`);
     } catch (nextError) {
       console.error(nextError);
-      const message = nextError?.message || 'Clean plate render failed';
+      const message = nextError?.message || 'Object removal failed';
       setError(message);
       setLastRenderSummary(`Failed: ${message}`);
       logDebug(runId, scope, 'complete', 'failed', message);
@@ -1735,7 +1735,7 @@ export default function PhotoMagicEditor({ store }) {
       },
       {
         id: 'lama',
-        title: 'Standard Clean Plate',
+        title: 'Standard Remove',
         model: standardEraseModel,
         ready: standardEraseReady,
         description: 'Fast object removal for working iterations.',
@@ -1743,7 +1743,7 @@ export default function PhotoMagicEditor({ store }) {
       },
       {
         id: 'sdxl',
-        title: 'HQ Clean Plate',
+        title: 'HD Remove',
         model: 'SDXL inpaint',
         ready: Boolean(hqOk),
         description: 'GPU-backed final cleanup render for high scrutiny output.',
@@ -1867,7 +1867,7 @@ export default function PhotoMagicEditor({ store }) {
         empty: 'Select the area to remove, then run the removal engine.',
         promoteable: true,
         promoteLabel: 'Use as source',
-        promoteStage: quality === 'hq' ? 'HQ clean plate' : 'Clean plate',
+        promoteStage: quality === 'hq' ? 'HD remove' : 'Removed source',
         nextTool: 'relight',
         checker: false,
         primary: true
@@ -2417,16 +2417,6 @@ export default function PhotoMagicEditor({ store }) {
                   ))}
                 </div>
 
-                {/* Floating zoom controls */}
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-2xl border border-white/60 bg-white/75 px-1.5 py-1.5 shadow-xl z-10 pm-hover-lift" style={{ backdropFilter: 'blur(24px)' }}>
-                  <button type="button" className="p-2 text-gray-500 hover:text-gray-900 hover:bg-white rounded-xl transition">
-                    <Wand2 className="h-4 w-4" />
-                  </button>
-                  <div className="px-3 text-[11px] font-bold text-gray-700 font-mono tracking-wider bg-white/50 py-1 rounded-lg">100%</div>
-                  <button type="button" className="p-2 text-gray-500 hover:text-gray-900 hover:bg-white rounded-xl transition">
-                    <Layers3 className="h-4 w-4" />
-                  </button>
-                </div>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-4 border-t border-gray-100 px-5 py-3">
