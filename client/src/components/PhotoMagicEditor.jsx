@@ -166,7 +166,7 @@ function Slider({ label, tooltip, value, onChange, min, max, step = 1, disabled,
 function AccordionSection({ icon: Icon, title, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-2xl border border-gray-100/80 bg-white/70 shadow-sm overflow-hidden transition-all">
+    <div className="rounded-2xl border border-gray-100/80 bg-white/70 shadow-sm transition-all">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -521,7 +521,6 @@ export default function PhotoMagicEditor({ store }) {
   const hqOk = Boolean(health?.photo_magic?.hq?.health?.ok);
   const hqModels = health?.photo_magic?.hq?.health?.payload?.models || {};
   const hqReason = health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_inpaint || null;
-  const expandReady = Boolean(hqConfigured && hqOk && hqModels?.sdxl_expand);
   const standardEraseState = health?.photo_magic?.standard_erase || {};
   const standardEraseReady = Boolean(standardEraseState?.ready ?? lamaReady);
   const standardEraseProvider = String(standardEraseState?.provider || (lamaReady ? 'photo-magic-ai' : 'standard')).trim();
@@ -529,6 +528,19 @@ export default function PhotoMagicEditor({ store }) {
     standardEraseState?.model || (standardEraseProvider === 'replicate' ? 'black-forest-labs/flux-fill-pro' : 'LaMa inpainting')
   ).trim();
   const standardEraseToggleLabel = standardEraseProvider === 'replicate' ? 'Fast (Flux Fill)' : 'Fast (LaMa)';
+  const expandState = health?.photo_magic?.expand || {};
+  const expandReady = Boolean(expandState?.ready ?? (hqConfigured && hqOk && hqModels?.sdxl_expand));
+  const expandProvider = String(expandState?.provider || (hqConfigured ? 'photo-magic-hq' : 'expand')).trim();
+  const expandModel = String(expandState?.model || (expandProvider === 'replicate' ? 'black-forest-labs/flux-fill-pro' : 'SDXL expand')).trim();
+  const enhanceState = health?.photo_magic?.enhance || {};
+  const enhanceProvider = String(enhanceState?.provider || (realEsrganReady ? 'photo-magic-ai' : 'enhance')).trim();
+  const enhanceModel = String(
+    enhanceState?.model || (enhanceProvider === 'replicate' ? 'bria/increase-resolution' : (realEsrganReady ? 'Real-ESRGAN + restoration' : 'Enhancement pipeline'))
+  ).trim();
+  const enhanceUpscaleReady = Boolean(enhanceState?.upscale_ready ?? realEsrganReady);
+  const enhanceFallbackReady = Boolean(enhanceState?.fallback_ready ?? aiConfigured);
+  const enhanceReady = Boolean((enhanceState?.ready ?? false) || enhanceUpscaleReady || enhanceFallbackReady);
+  const enhanceModeReady = enhanceMode === 'upscale' ? enhanceUpscaleReady : enhanceFallbackReady;
 
   const currentMaskOutputId = selectionMaskOutputId || maskOutputId || relightMaskOutputId || expandMaskOutputId || null;
   const latestMaskForErase = selectionMaskUrl || maskUrl || relightMaskUrl || expandMaskUrl || null;
@@ -1678,7 +1690,7 @@ export default function PhotoMagicEditor({ store }) {
       setExpandMaskUrl(data.mask?.url || null);
       setExpandMaskOutputId(data.mask?.output_id || null);
       setViewportMode('compare');
-      setLastRenderSummary(`Canvas expanded to ${data.aspect_ratio || expandAspectRatio}`);
+      setLastRenderSummary(`Canvas expanded to ${data.aspect_ratio || expandAspectRatio}${data.engine ? ` via ${data.engine}` : ''}`);
     } catch (nextError) {
       console.error(nextError);
       const message = nextError?.message || 'Canvas expand failed';
@@ -1760,18 +1772,18 @@ export default function PhotoMagicEditor({ store }) {
       {
         id: 'expand',
         title: 'Canvas Expand',
-        model: 'SDXL expand',
+        model: expandModel,
         ready: expandReady,
         description: 'Outpaint and regenerate scene space around the active source canvas.',
-        error: health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_expand || hqReason || ''
+        error: expandState?.error || health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_expand || hqReason || ''
       },
       {
         id: 'realesrgan',
         title: 'Enhancement',
-        model: 'Real-ESRGAN + restoration',
-        ready: realEsrganReady,
+        model: enhanceModel,
+        ready: enhanceReady,
         description: 'Upscale and recovery passes from the same source chain.',
-        error: aiHealthPayload?.errors?.realesrgan || ''
+        error: enhanceState?.error || aiHealthPayload?.errors?.realesrgan || ''
       }
     ],
     [
@@ -1786,7 +1798,9 @@ export default function PhotoMagicEditor({ store }) {
       hqOk,
       hqReason,
       lamaReady,
-      realEsrganReady,
+      enhanceModel,
+      enhanceReady,
+      enhanceState?.error,
       relightReady,
       rmbg2Ready,
       sam2Ready,
@@ -1908,7 +1922,7 @@ export default function PhotoMagicEditor({ store }) {
         {
           id: 'expand',
           title: 'Extended Canvas',
-          engine: 'SDXL expand',
+          engine: expandProvider === 'replicate' ? 'FLUX Fill' : 'SDXL expand',
           url: expandUrl,
           empty: 'Extend the frame and generate the missing background area.',
           promoteable: true,
@@ -1935,7 +1949,9 @@ export default function PhotoMagicEditor({ store }) {
       {
         id: 'enhance',
         title: 'Enhanced Image',
-        engine: enhanceMode === 'upscale' ? 'Real-ESRGAN' : 'Enhancement pipeline',
+        engine: enhanceMode === 'upscale'
+          ? (enhanceProvider === 'replicate' ? 'BRIA Increase Resolution' : 'Real-ESRGAN')
+          : 'Enhancement pipeline',
         url: enhanceUrl,
         empty: 'Run enhancement to produce a polished render.',
         promoteable: true,
@@ -1946,7 +1962,7 @@ export default function PhotoMagicEditor({ store }) {
         primary: true
       }
     ];
-  }, [cutoutUrl, enhanceMode, enhanceUrl, eraseUrl, expandMaskUrl, expandUrl, maskUrl, quality, relightMaskUrl, relightUrl, selectionCutoutUrl, selectionMaskUrl, selectionMeta?.label, tool]);
+  }, [cutoutUrl, enhanceMode, enhanceProvider, enhanceUrl, eraseUrl, expandMaskUrl, expandProvider, expandUrl, maskUrl, quality, relightMaskUrl, relightUrl, selectionCutoutUrl, selectionMaskUrl, selectionMeta?.label, tool]);
 
   const activeMaskUrl =
     tool === 'erase'
@@ -2417,16 +2433,6 @@ export default function PhotoMagicEditor({ store }) {
                   ))}
                 </div>
 
-                {/* Floating zoom controls */}
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-2xl border border-white/60 bg-white/75 px-1.5 py-1.5 shadow-xl z-10 pm-hover-lift" style={{ backdropFilter: 'blur(24px)' }}>
-                  <button type="button" className="p-2 text-gray-500 hover:text-gray-900 hover:bg-white rounded-xl transition">
-                    <Wand2 className="h-4 w-4" />
-                  </button>
-                  <div className="px-3 text-[11px] font-bold text-gray-700 font-mono tracking-wider bg-white/50 py-1 rounded-lg">100%</div>
-                  <button type="button" className="p-2 text-gray-500 hover:text-gray-900 hover:bg-white rounded-xl transition">
-                    <Layers3 className="h-4 w-4" />
-                  </button>
-                </div>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-4 border-t border-gray-100 px-5 py-3">
@@ -2775,7 +2781,7 @@ export default function PhotoMagicEditor({ store }) {
                   <Slider label="Upscale Factor" value={upscaleFactor} onChange={(e) => setUpscaleFactor(clamp(toNumber(e.target.value, 2), 1, 4))} min={1} max={4} disabled={enhanceMode !== 'upscale'} />
                 </div>
                 <div className="mt-4">
-                  <Button variant="primary" onClick={runEnhance} disabled={!imageId || isRunning || (enhanceMode === 'upscale' && !realEsrganReady)} className="w-full justify-center pm-btn-hover">
+                  <Button variant="primary" onClick={runEnhance} disabled={!imageId || isRunning || !enhanceModeReady} className="w-full justify-center pm-btn-hover">
                     <Zap className="h-4 w-4" />
                     Enhance Image
                   </Button>

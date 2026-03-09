@@ -34,7 +34,17 @@ import {
   removeBgRmbg2
 } from '../services/photoMagicAiClient.js';
 import { eraseSdxl, expandPhotoCanvas, getPhotoMagicHqHealth, isPhotoMagicHqConfigured } from '../services/photoMagicHqClient.js';
-import { eraseFluxFill, getPhotoMagicReplicateConfig, getPhotoMagicReplicateHealth, isPhotoMagicReplicateConfigured } from '../services/photoMagicReplicateClient.js';
+import {
+  enhanceBria,
+  eraseFluxFill,
+  expandFluxFill,
+  getPhotoMagicReplicateConfig,
+  getPhotoMagicReplicateEnhanceConfig,
+  getPhotoMagicReplicateEnhanceHealth,
+  getPhotoMagicReplicateExpandConfig,
+  getPhotoMagicReplicateHealth,
+  isPhotoMagicReplicateConfigured
+} from '../services/photoMagicReplicateClient.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,6 +71,8 @@ const PHOTO_MAGIC_MAX_IMAGE_PIXELS = (() => {
 
 const PHOTO_MAGIC_MASK_BOUNDS_THRESHOLD = 8;
 const PHOTO_MAGIC_REPLICATE_MIN_CROP_DIMENSION = 32;
+const PHOTO_MAGIC_REPLICATE_EXPAND_MAX_SIDE = clampNumber(process.env.PHOTO_MAGIC_REPLICATE_EXPAND_MAX_SIDE || 2048, 512, 4096);
+const PHOTO_MAGIC_REPLICATE_ENHANCE_MAX_SIDE = clampNumber(process.env.PHOTO_MAGIC_REPLICATE_ENHANCE_MAX_SIDE || 2048, 512, 4096);
 
 const photoMagicUpload = multer({
   storage: multer.memoryStorage(),
@@ -429,6 +441,141 @@ async function normalizeReplicateMaskBuffer(maskBuffer, { width, height, dilateP
     width: info.width,
     height: info.height,
     bounds
+  };
+}
+
+function parsePhotoMagicAspectRatio(rawAspectRatio) {
+  const text = String(rawAspectRatio || '4:5').trim();
+  const match = text.match(/^(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)$/);
+  const widthRatio = Number(match?.[1] || 4);
+  const heightRatio = Number(match?.[2] || 5);
+  const safeWidthRatio = Number.isFinite(widthRatio) && widthRatio > 0 ? widthRatio : 4;
+  const safeHeightRatio = Number.isFinite(heightRatio) && heightRatio > 0 ? heightRatio : 5;
+  return {
+    text: `${safeWidthRatio}:${safeHeightRatio}`,
+    value: safeWidthRatio / safeHeightRatio
+  };
+}
+
+function computePhotoMagicExpandLayout(width, height, aspectRatio, anchor = 'center') {
+  const sourceWidth = Math.max(1, Math.round(Number(width) || 1));
+  const sourceHeight = Math.max(1, Math.round(Number(height) || 1));
+  const { text, value } = parsePhotoMagicAspectRatio(aspectRatio);
+  const currentRatio = sourceWidth / sourceHeight;
+  let targetWidth = sourceWidth;
+  let targetHeight = sourceHeight;
+
+  if (Math.abs(currentRatio - value) < 0.0001) {
+    return {
+      aspectRatio: text,
+      sourceWidth,
+      sourceHeight,
+      targetWidth,
+      targetHeight,
+      left: 0,
+      top: 0,
+      expanded: false
+    };
+  }
+
+  if (currentRatio < value) {
+    targetWidth = Math.max(sourceWidth, Math.ceil(sourceHeight * value));
+  } else {
+    targetHeight = Math.max(sourceHeight, Math.ceil(sourceWidth / value));
+  }
+
+  const normalizedAnchor = String(anchor || 'center').trim().toLowerCase();
+  const widthDelta = Math.max(0, targetWidth - sourceWidth);
+  const heightDelta = Math.max(0, targetHeight - sourceHeight);
+
+  let left = Math.round(widthDelta / 2);
+  let top = Math.round(heightDelta / 2);
+
+  if (widthDelta > 0) {
+    if (normalizedAnchor === 'left') left = 0;
+    if (normalizedAnchor === 'right') left = widthDelta;
+  }
+  if (heightDelta > 0) {
+    if (normalizedAnchor === 'top') top = 0;
+    if (normalizedAnchor === 'bottom') top = heightDelta;
+  }
+
+  return {
+    aspectRatio: text,
+    sourceWidth,
+    sourceHeight,
+    targetWidth,
+    targetHeight,
+    left,
+    top,
+    expanded: targetWidth !== sourceWidth || targetHeight !== sourceHeight
+  };
+}
+
+function buildPhotoMagicExpandPrompt(prompt, negativePrompt) {
+  const positive = String(prompt || '').trim();
+  const avoid = String(negativePrompt || '').trim();
+  if (positive && avoid) return `${positive}. Keep the generated extension free of ${avoid}.`;
+  if (positive) return positive;
+  if (avoid) return `Extend the canvas naturally to match the surrounding scene, preserving lighting, texture, shading, and perspective. Keep the generated extension free of ${avoid}.`;
+  return 'Extend the canvas naturally to match the surrounding scene, preserving lighting, texture, shading, and perspective.';
+}
+
+async function buildPhotoMagicExpandAssets(imageBuffer, {
+  aspectRatio = '4:5',
+  anchor = 'center',
+  featherPx = 24,
+  maxSide = PHOTO_MAGIC_REPLICATE_EXPAND_MAX_SIDE
+} = {}) {
+  const preparedSource = await prepareReplicateSourceImageBuffer(imageBuffer, maxSide);
+  const layout = computePhotoMagicExpandLayout(preparedSource.width, preparedSource.height, aspectRatio, anchor);
+
+  if (!layout.expanded) {
+    return {
+      sourceBuffer: preparedSource.buffer,
+      maskBuffer: null,
+      layout,
+      width: preparedSource.width,
+      height: preparedSource.height
+    };
+  }
+
+  const sourceBuffer = await sharp({
+    create: {
+      width: layout.targetWidth,
+      height: layout.targetHeight,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  })
+    .composite([{ input: preparedSource.buffer, left: layout.left, top: layout.top }])
+    .png()
+    .toBuffer();
+
+  const maskRaw = Buffer.alloc(layout.targetWidth * layout.targetHeight, 255);
+  for (let y = 0; y < layout.sourceHeight; y += 1) {
+    const rowStart = ((layout.top + y) * layout.targetWidth) + layout.left;
+    maskRaw.fill(0, rowStart, rowStart + layout.sourceWidth);
+  }
+
+  let maskPipeline = sharp(maskRaw, {
+    raw: {
+      width: layout.targetWidth,
+      height: layout.targetHeight,
+      channels: 1
+    }
+  });
+
+  if (featherPx > 0) {
+    maskPipeline = maskPipeline.blur(Math.max(0.3, Number(featherPx) / 3));
+  }
+
+  return {
+    sourceBuffer,
+    maskBuffer: await maskPipeline.png().toBuffer(),
+    layout,
+    width: layout.targetWidth,
+    height: layout.targetHeight
   };
 }
 
@@ -4678,11 +4825,17 @@ router.get('/photo-magic/health', async (req, res) => {
       ? await getPhotoMagicHqHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
       : null;
     const replicateConfig = getPhotoMagicReplicateConfig();
+    const replicateExpandConfig = getPhotoMagicReplicateExpandConfig();
+    const replicateEnhanceConfig = getPhotoMagicReplicateEnhanceConfig();
     const replicateBaseUrl = getPhotoMagicPublicBaseUrl(req);
     const replicateHealth = isPhotoMagicReplicateConfigured()
       ? await getPhotoMagicReplicateHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
       : null;
+    const replicateEnhanceHealth = isPhotoMagicReplicateConfigured()
+      ? await getPhotoMagicReplicateEnhanceHealth().catch((e) => ({ ok: false, status: 0, payload: { error: e?.message || String(e) } }))
+      : null;
     const replicateReady = Boolean(replicateBaseUrl && replicateHealth?.ok);
+    const replicateEnhanceReady = Boolean(replicateBaseUrl && replicateEnhanceHealth?.ok);
     const standardErase = isPhotoMagicReplicateConfigured()
       ? {
           configured: true,
@@ -4706,6 +4859,58 @@ router.get('/photo-magic/health', async (req, res) => {
           timeout_ms: Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000),
           wait_seconds: null,
           error: aiHealthPayload?.errors?.lama || null
+        };
+    const expandState = isPhotoMagicReplicateConfigured()
+      ? {
+          configured: true,
+          ready: replicateReady,
+          provider: 'replicate',
+          model: replicateExpandConfig.model,
+          prompt: replicateExpandConfig.prompt,
+          timeout_ms: replicateExpandConfig.timeout_ms,
+          wait_seconds: replicateExpandConfig.wait_seconds,
+          health: replicateHealth,
+          error: !replicateBaseUrl
+            ? 'PHOTO_MAGIC_PUBLIC_BASE_URL could not be resolved for Replicate expand.'
+            : (replicateHealth?.ok ? null : (replicateHealth?.payload?.detail || replicateHealth?.payload?.error || 'Replicate expand is not ready.'))
+        }
+      : {
+          configured: hqConfigured,
+          ready: Boolean(hqConfigured && hqOk && hqModels?.sdxl_expand),
+          provider: 'photo-magic-hq',
+          model: 'SDXL expand',
+          prompt: null,
+          timeout_ms: Number(process.env.PHOTO_MAGIC_HQ_TIMEOUT_MS || 600000),
+          wait_seconds: null,
+          error: hqHealth?.payload?.errors?.sdxl_expand || hqReason || null
+        };
+    const enhanceState = isPhotoMagicReplicateConfigured()
+      ? {
+          configured: true,
+          ready: replicateEnhanceReady,
+          provider: 'replicate',
+          model: replicateEnhanceConfig.model,
+          timeout_ms: replicateEnhanceConfig.timeout_ms,
+          wait_seconds: replicateEnhanceConfig.wait_seconds,
+          supported_modes: ['upscale'],
+          upscale_ready: replicateEnhanceReady,
+          fallback_ready: Boolean(aiConfigured && aiHealth?.ok),
+          health: replicateEnhanceHealth,
+          error: !replicateBaseUrl
+            ? 'PHOTO_MAGIC_PUBLIC_BASE_URL could not be resolved for Replicate enhancement.'
+            : (replicateEnhanceHealth?.ok ? null : (replicateEnhanceHealth?.payload?.detail || replicateEnhanceHealth?.payload?.error || 'Replicate enhancement is not ready.'))
+        }
+      : {
+          configured: Boolean(aiConfigured),
+          ready: Boolean(aiConfigured && aiHealth?.ok),
+          provider: 'photo-magic-ai',
+          model: aiModels?.realesrgan ? 'Real-ESRGAN + restoration' : 'Enhancement pipeline',
+          timeout_ms: Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000),
+          wait_seconds: null,
+          supported_modes: ['upscale', 'denoise', 'deblur', 'sharpen', 'low_light'],
+          upscale_ready: Boolean(aiConfigured && aiModels?.realesrgan),
+          fallback_ready: Boolean(aiConfigured && aiHealth?.ok),
+          error: aiHealthPayload?.errors?.realesrgan || null
         };
 
     res.json({
@@ -4739,7 +4944,9 @@ router.get('/photo-magic/health', async (req, res) => {
             model: getPhotoMagicSelectionModelName()
           }
         },
-        standard_erase: standardErase
+        standard_erase: standardErase,
+        expand: expandState,
+        enhance: enhanceState
       }
     });
   } catch (error) {
@@ -5302,13 +5509,6 @@ router.post('/photo-magic/enhance', async (req, res) => {
     const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
     await ensurePhotoMagicDirs(store);
 
-    if (!isPhotoMagicAiConfigured()) {
-      return res.status(503).json({
-        success: false,
-        error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
-      });
-    }
-
     const imageId = String(req.body?.image_id || '').trim();
     const mode = String(req.body?.mode || 'upscale').trim().toLowerCase();
     const supportedModes = new Set(['upscale', 'denoise', 'deblur', 'sharpen', 'low_light']);
@@ -5329,15 +5529,69 @@ router.post('/photo-magic/enhance', async (req, res) => {
     const upscaleFactor = clampNumber(req.body?.upscale_factor ?? req.body?.upscaleFactor ?? 2, 1, 4);
 
     const buf = await fs.promises.readFile(imagePath);
-    const imageBase64 = buf.toString('base64');
+    let result;
 
-    const result = await enhancePhoto({
-      imageBase64,
-      mode,
-      sourceMaxSide,
-      strength,
-      upscaleFactor
-    });
+    if (mode === 'upscale' && isPhotoMagicReplicateConfigured()) {
+      const publicBaseUrl = getPhotoMagicPublicBaseUrl(req);
+      if (!publicBaseUrl) {
+        return res.status(503).json({
+          success: false,
+          error: 'Photo Magic public base URL could not be resolved for Replicate enhancement.'
+        });
+      }
+
+      const sourceAssetId = crypto.randomUUID();
+      const sourceAssetPath = getPhotoMagicOutputPath(store, sourceAssetId, 'png');
+
+      try {
+        const preparedSource = await prepareReplicateSourceImageBuffer(buf, Math.min(sourceMaxSide, PHOTO_MAGIC_REPLICATE_ENHANCE_MAX_SIDE));
+        await fs.promises.writeFile(sourceAssetPath, preparedSource.buffer);
+
+        const { outputUrl } = await enhanceBria({
+          imageUrl: buildPhotoMagicAssetUrl(req, store, sourceAssetId, 'enhance-source.png'),
+          desiredIncrease: upscaleFactor >= 3 ? 4 : 2
+        });
+
+        const outputResponse = await axios.get(outputUrl, {
+          responseType: 'arraybuffer',
+          timeout: Number(process.env.PHOTO_MAGIC_REPLICATE_TIMEOUT_MS || 300000),
+          maxContentLength: PHOTO_MAGIC_MAX_UPLOAD_BYTES * 4
+        });
+
+        const resultBuffer = await sharp(Buffer.from(outputResponse.data), { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+          .png()
+          .toBuffer();
+        const metadata = await sharp(resultBuffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS }).metadata().catch(() => null);
+
+        result = {
+          result_png: resultBuffer.toString('base64'),
+          mode,
+          engine: 'BRIA Increase Resolution',
+          source_width: preparedSource.width,
+          source_height: preparedSource.height,
+          width: metadata?.width ?? null,
+          height: metadata?.height ?? null
+        };
+      } finally {
+        await Promise.allSettled([fs.promises.unlink(sourceAssetPath)]);
+      }
+    } else {
+      if (!isPhotoMagicAiConfigured()) {
+        return res.status(503).json({
+          success: false,
+          error: 'PHOTO_MAGIC_AI_URL is not configured. Deploy the Photo Magic AI service and set PHOTO_MAGIC_AI_URL.'
+        });
+      }
+
+      const imageBase64 = buf.toString('base64');
+      result = await enhancePhoto({
+        imageBase64,
+        mode,
+        sourceMaxSide,
+        strength,
+        upscaleFactor
+      });
+    }
 
     const outId = crypto.randomUUID();
     const outPath = getPhotoMagicOutputPath(store, outId, 'png');
@@ -5460,22 +5714,6 @@ router.post('/photo-magic/expand', async (req, res) => {
     const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
     await ensurePhotoMagicDirs(store);
 
-    if (!isPhotoMagicHqConfigured()) {
-      return res.status(503).json({
-        success: false,
-        error: 'PHOTO_MAGIC_HQ_AI_URL is not configured. Deploy the HQ service and set PHOTO_MAGIC_HQ_AI_URL.'
-      });
-    }
-
-    const health = await getPhotoMagicHqHealth().catch(() => null);
-    if (!health?.ok) {
-      return res.status(503).json({
-        success: false,
-        error: 'Photo Magic HQ service is not ready (check /photo-magic/health)',
-        details: health
-      });
-    }
-
     const imageId = String(req.body?.image_id || '').trim();
     if (!imageId || !isSafeTmpId(imageId)) {
       return res.status(400).json({ success: false, error: 'image_id is required' });
@@ -5487,20 +5725,107 @@ router.post('/photo-magic/expand', async (req, res) => {
     }
 
     const imageBuffer = await fs.promises.readFile(imagePath);
-    const imageBase64 = imageBuffer.toString('base64');
+    const prompt = String(req.body?.prompt || '').trim();
+    const negativePrompt = String(req.body?.negative_prompt ?? req.body?.negativePrompt ?? '').trim();
+    const aspectRatio = String(req.body?.aspect_ratio ?? req.body?.aspectRatio ?? '4:5').trim() || '4:5';
+    const anchor = String(req.body?.anchor || 'center').trim().toLowerCase();
+    const featherPx = clampNumber(req.body?.feather_px ?? req.body?.featherPx ?? 24, 0, 128);
 
-    const result = await expandPhotoCanvas({
-      imageBase64,
-      prompt: String(req.body?.prompt || '').trim(),
-      negativePrompt: String(req.body?.negative_prompt ?? req.body?.negativePrompt ?? '').trim(),
-      aspectRatio: String(req.body?.aspect_ratio ?? req.body?.aspectRatio ?? '4:5').trim() || '4:5',
-      anchor: String(req.body?.anchor || 'center').trim().toLowerCase(),
-      numInferenceSteps: clampNumber(req.body?.num_inference_steps ?? req.body?.numInferenceSteps ?? 24, 5, 80),
-      guidanceScale: clampNumber(req.body?.guidance_scale ?? req.body?.guidanceScale ?? 7.5, 0, 20),
-      strength: clampNumber(req.body?.strength ?? 0.96, 0, 1),
-      seed: clampNumber(req.body?.seed ?? 0, 0, Number.MAX_SAFE_INTEGER),
-      featherPx: clampNumber(req.body?.feather_px ?? req.body?.featherPx ?? 24, 0, 128)
-    });
+    let result;
+    if (isPhotoMagicReplicateConfigured()) {
+      const publicBaseUrl = getPhotoMagicPublicBaseUrl(req);
+      if (!publicBaseUrl) {
+        return res.status(503).json({
+          success: false,
+          error: 'Photo Magic public base URL could not be resolved for Replicate expand.'
+        });
+      }
+
+      const sourceAssetId = crypto.randomUUID();
+      const maskAssetId = crypto.randomUUID();
+      const sourceAssetPath = getPhotoMagicOutputPath(store, sourceAssetId, 'png');
+      const maskAssetPath = getPhotoMagicOutputPath(store, maskAssetId, 'png');
+
+      try {
+        const expandAssets = await buildPhotoMagicExpandAssets(imageBuffer, {
+          aspectRatio,
+          anchor,
+          featherPx,
+          maxSide: PHOTO_MAGIC_REPLICATE_EXPAND_MAX_SIDE
+        });
+
+        if (!expandAssets?.layout?.expanded || !expandAssets?.maskBuffer) {
+          return res.status(400).json({
+            success: false,
+            error: `Source already matches ${aspectRatio}. Choose a different aspect ratio to extend the canvas.`
+          });
+        }
+
+        await fs.promises.writeFile(sourceAssetPath, expandAssets.sourceBuffer);
+        await fs.promises.writeFile(maskAssetPath, expandAssets.maskBuffer);
+
+        const { outputUrl } = await expandFluxFill({
+          imageUrl: buildPhotoMagicAssetUrl(req, store, sourceAssetId, 'expand-source.png'),
+          maskUrl: buildPhotoMagicAssetUrl(req, store, maskAssetId, 'expand-mask.png'),
+          prompt: buildPhotoMagicExpandPrompt(prompt, negativePrompt)
+        });
+
+        const outputResponse = await axios.get(outputUrl, {
+          responseType: 'arraybuffer',
+          timeout: Number(process.env.PHOTO_MAGIC_REPLICATE_TIMEOUT_MS || 300000),
+          maxContentLength: PHOTO_MAGIC_MAX_UPLOAD_BYTES * 4
+        });
+
+        const finalBuffer = await sharp(Buffer.from(outputResponse.data), { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+          .png()
+          .toBuffer();
+
+        result = {
+          result_png: finalBuffer.toString('base64'),
+          mask_png: expandAssets.maskBuffer.toString('base64'),
+          width: expandAssets.layout.targetWidth,
+          height: expandAssets.layout.targetHeight,
+          aspect_ratio: expandAssets.layout.aspectRatio,
+          anchor,
+          engine: 'FLUX Fill'
+        };
+      } finally {
+        await Promise.allSettled([
+          fs.promises.unlink(sourceAssetPath),
+          fs.promises.unlink(maskAssetPath)
+        ]);
+      }
+    } else {
+      if (!isPhotoMagicHqConfigured()) {
+        return res.status(503).json({
+          success: false,
+          error: 'PHOTO_MAGIC_HQ_AI_URL is not configured. Deploy the HQ service and set PHOTO_MAGIC_HQ_AI_URL.'
+        });
+      }
+
+      const health = await getPhotoMagicHqHealth().catch(() => null);
+      if (!health?.ok) {
+        return res.status(503).json({
+          success: false,
+          error: 'Photo Magic HQ service is not ready (check /photo-magic/health)',
+          details: health
+        });
+      }
+
+      const imageBase64 = imageBuffer.toString('base64');
+      result = await expandPhotoCanvas({
+        imageBase64,
+        prompt,
+        negativePrompt,
+        aspectRatio,
+        anchor,
+        numInferenceSteps: clampNumber(req.body?.num_inference_steps ?? req.body?.numInferenceSteps ?? 24, 5, 80),
+        guidanceScale: clampNumber(req.body?.guidance_scale ?? req.body?.guidanceScale ?? 7.5, 0, 20),
+        strength: clampNumber(req.body?.strength ?? 0.96, 0, 1),
+        seed: clampNumber(req.body?.seed ?? 0, 0, Number.MAX_SAFE_INTEGER),
+        featherPx
+      });
+    }
 
     const outId = crypto.randomUUID();
     const outPath = getPhotoMagicOutputPath(store, outId, 'png');
@@ -5526,6 +5851,7 @@ router.post('/photo-magic/expand', async (req, res) => {
       height: result?.height ?? null,
       aspect_ratio: result?.aspect_ratio ?? req.body?.aspect_ratio ?? req.body?.aspectRatio ?? '4:5',
       anchor: result?.anchor ?? req.body?.anchor ?? 'center',
+      engine: result?.engine ?? null,
       output_id: outId,
       mask,
       url: withStoreParam(
