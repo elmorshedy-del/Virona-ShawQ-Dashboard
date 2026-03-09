@@ -5,7 +5,7 @@ import { resolveStoreUrl } from '../services/storeProfileService.js';
 const SESSION_INTELLIGENCE_ADMIN_COOKIE_NAME = 'virona_si_admin';
 const SESSION_INTELLIGENCE_ADMIN_COOKIE_TTL_MS = 12 * 60 * 60 * 1000;
 const SESSION_INTELLIGENCE_PUBLIC_TOKEN_TTL_MS = 30 * 60 * 1000;
-const SESSION_INTELLIGENCE_COOKIE_PATH = '/api/session-intelligence/survey';
+const SESSION_INTELLIGENCE_COOKIE_PATH = '/api/session-intelligence';
 const SESSION_INTELLIGENCE_PUBLIC_TOKEN_SCOPE = 'survey_public';
 const SESSION_INTELLIGENCE_ADMIN_TOKEN_SCOPE = 'survey_admin';
 const SESSION_INTELLIGENCE_SECRET_ENV_KEYS = [

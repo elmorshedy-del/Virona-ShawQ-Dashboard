@@ -301,8 +301,23 @@ app.use('/api/blackbox', blackboxRouter);
 const clientDist = path.join(__dirname, '../client/dist');
 const clientIndexPath = path.join(clientDist, 'index.html');
 const hasClientBuild = fs.existsSync(clientIndexPath);
+const SESSION_INTELLIGENCE_HTML_ACCEPT_MARKERS = ['text/html', 'application/xhtml+xml'];
+
+function shouldIssueSessionIntelligenceAdminCookie(req) {
+  if (!req || req.method !== 'GET') return false;
+  if (req.path.startsWith('/api')) return false;
+  const acceptHeader = String(req.headers?.accept || '').toLowerCase();
+  if (!acceptHeader) return req.path === '/' || !path.extname(req.path);
+  return SESSION_INTELLIGENCE_HTML_ACCEPT_MARKERS.some((marker) => acceptHeader.includes(marker));
+}
 
 if (hasClientBuild) {
+  app.use((req, res, next) => {
+    if (shouldIssueSessionIntelligenceAdminCookie(req)) {
+      issueSessionIntelligenceAdminCookie(req, res);
+    }
+    next();
+  });
   app.use(express.static(clientDist));
 } else {
   console.warn(`[Static] Client build not found at ${clientIndexPath}. Running in API-only mode.`);
@@ -320,7 +335,6 @@ app.get('*', (req, res, next) => {
   // Don't serve the SPA shell for API routes (prevents "Unexpected token <" JSON errors).
   if (req.path.startsWith('/api')) return next();
   if (hasClientBuild) {
-    issueSessionIntelligenceAdminCookie(req, res);
     return res.sendFile(clientIndexPath);
   }
   return res.status(200).send('Virona backend is running. Frontend build is not available on this instance.');
