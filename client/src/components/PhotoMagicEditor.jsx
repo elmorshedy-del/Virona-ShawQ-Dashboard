@@ -166,7 +166,7 @@ function Slider({ label, tooltip, value, onChange, min, max, step = 1, disabled,
 function AccordionSection({ icon: Icon, title, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-2xl border border-gray-100/80 bg-white/70 shadow-sm overflow-hidden transition-all">
+    <div className="rounded-2xl border border-gray-100/80 bg-white/70 shadow-sm transition-all">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -224,7 +224,7 @@ const TOOL_DEFINITIONS = {
   },
   erase: {
     label: 'Object Remover',
-    engine: 'Standard / HD removal',
+    engine: 'LaMa / SDXL HQ',
     description: 'Select objects with AI or paint a mask manually, then remove them cleanly.'
   },
   relight: {
@@ -521,7 +521,6 @@ export default function PhotoMagicEditor({ store }) {
   const hqOk = Boolean(health?.photo_magic?.hq?.health?.ok);
   const hqModels = health?.photo_magic?.hq?.health?.payload?.models || {};
   const hqReason = health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_inpaint || null;
-  const expandReady = Boolean(hqConfigured && hqOk && hqModels?.sdxl_expand);
   const standardEraseState = health?.photo_magic?.standard_erase || {};
   const standardEraseReady = Boolean(standardEraseState?.ready ?? lamaReady);
   const standardEraseProvider = String(standardEraseState?.provider || (lamaReady ? 'photo-magic-ai' : 'standard')).trim();
@@ -529,6 +528,19 @@ export default function PhotoMagicEditor({ store }) {
     standardEraseState?.model || (standardEraseProvider === 'replicate' ? 'black-forest-labs/flux-fill-pro' : 'LaMa inpainting')
   ).trim();
   const standardEraseToggleLabel = standardEraseProvider === 'replicate' ? 'Fast (Flux Fill)' : 'Fast (LaMa)';
+  const expandState = health?.photo_magic?.expand || {};
+  const expandReady = Boolean(expandState?.ready ?? (hqConfigured && hqOk && hqModels?.sdxl_expand));
+  const expandProvider = String(expandState?.provider || (hqConfigured ? 'photo-magic-hq' : 'expand')).trim();
+  const expandModel = String(expandState?.model || (expandProvider === 'replicate' ? 'black-forest-labs/flux-fill-pro' : 'SDXL expand')).trim();
+  const enhanceState = health?.photo_magic?.enhance || {};
+  const enhanceProvider = String(enhanceState?.provider || (realEsrganReady ? 'photo-magic-ai' : 'enhance')).trim();
+  const enhanceModel = String(
+    enhanceState?.model || (enhanceProvider === 'replicate' ? 'bria/increase-resolution' : (realEsrganReady ? 'Real-ESRGAN + restoration' : 'Enhancement pipeline'))
+  ).trim();
+  const enhanceUpscaleReady = Boolean(enhanceState?.upscale_ready ?? realEsrganReady);
+  const enhanceFallbackReady = Boolean(enhanceState?.fallback_ready ?? aiConfigured);
+  const enhanceReady = Boolean((enhanceState?.ready ?? false) || enhanceUpscaleReady || enhanceFallbackReady);
+  const enhanceModeReady = enhanceMode === 'upscale' ? enhanceUpscaleReady : enhanceFallbackReady;
 
   const currentMaskOutputId = selectionMaskOutputId || maskOutputId || relightMaskOutputId || expandMaskOutputId || null;
   const latestMaskForErase = selectionMaskUrl || maskUrl || relightMaskUrl || expandMaskUrl || null;
@@ -1364,7 +1376,7 @@ export default function PhotoMagicEditor({ store }) {
   const applyMaskArtifactToCanvas = useCallback(
     async (url, options = {}) => {
       if (!url || !imageSrc) return;
-      const { summary = 'Selection mask routed into object remover', logMessage = summary, runId = null } = options;
+      const { summary = 'Selection mask routed into clean plate', logMessage = summary, runId = null } = options;
 
       setTool('erase');
       setViewportMode('source');
@@ -1393,7 +1405,7 @@ export default function PhotoMagicEditor({ store }) {
       const stats = syncMaskMetrics();
       setLastRenderSummary(summary);
       if (runId != null) {
-        logDebug(runId, 'Object Remover', 'mask-route', 'success', logMessage, {
+        logDebug(runId, 'Clean Plate', 'mask-route', 'success', logMessage, {
           coverage: Number((stats.coverage * 100).toFixed(2)),
           paintedPixels: stats.paintedPixels
         });
@@ -1407,8 +1419,8 @@ export default function PhotoMagicEditor({ store }) {
 
     setError(null);
     setIsRunning(true);
-    const scope = quality === 'hq' ? 'HD Remove' : 'Object Remover';
-    const runId = startDebugRun(scope, `${quality === 'hq' ? 'HD' : 'Standard'} object removal requested`);
+    const scope = quality === 'hq' ? 'HQ Clean Plate' : 'Clean Plate';
+    const runId = startDebugRun(scope, `${quality === 'hq' ? 'HQ' : 'Standard'} clean plate requested`);
     try {
       let maskState = syncMaskMetrics();
       logDebug(runId, scope, 'mask-check', maskState.hasMask ? 'success' : 'running', maskState.hasMask ? 'Mask surface already contains painted or routed pixels' : 'Mask surface is blank', {
@@ -1417,17 +1429,17 @@ export default function PhotoMagicEditor({ store }) {
       });
 
       if (!maskState.hasMask && latestMaskForErase) {
-        logDebug(runId, scope, 'mask-route', 'running', `Auto-loading ${latestMaskSourceLabel || 'latest'} mask into object remover`);
+        logDebug(runId, scope, 'mask-route', 'running', `Auto-loading ${latestMaskSourceLabel || 'latest'} mask into clean plate`);
         await applyMaskArtifactToCanvas(latestMaskForErase, {
-          summary: `${latestMaskSourceLabel || 'Latest'} mask loaded for object remover`,
-          logMessage: `${latestMaskSourceLabel || 'Latest'} mask copied into the object remover surface`,
+          summary: `${latestMaskSourceLabel || 'Latest'} mask loaded for clean plate`,
+          logMessage: `${latestMaskSourceLabel || 'Latest'} mask copied into the clean plate surface`,
           runId
         });
         maskState = syncMaskMetrics();
       }
 
       if (!maskState.hasMask) {
-        throw new Error('Paint a removal mask or route a mask artifact into Object Remover first.');
+        throw new Error('Paint a removal mask or route a mask artifact into clean plate first.');
       }
 
       const maskBlob = await exportMaskBlob();
@@ -1459,8 +1471,8 @@ export default function PhotoMagicEditor({ store }) {
           method: 'POST',
           body: form
         },
-        successMessage: `${quality === 'hq' ? 'HD' : 'Standard'} object removal completed`,
-        failureMessage: 'Object removal failed',
+        successMessage: `${quality === 'hq' ? 'HQ' : 'Standard'} clean plate render completed`,
+        failureMessage: 'Clean plate render failed',
         successDetails: (payload) => ({
           outputReady: Boolean(payload?.url),
           width: payload?.width || null,
@@ -1471,10 +1483,10 @@ export default function PhotoMagicEditor({ store }) {
 
       setEraseUrl(data.url || null);
       setViewportMode('compare');
-      setLastRenderSummary(`${quality === 'hq' ? 'HD' : 'Standard'} object removal ready`);
+      setLastRenderSummary(`${quality === 'hq' ? 'HQ' : 'Standard'} clean plate ready`);
     } catch (nextError) {
       console.error(nextError);
-      const message = nextError?.message || 'Object removal failed';
+      const message = nextError?.message || 'Clean plate render failed';
       setError(message);
       setLastRenderSummary(`Failed: ${message}`);
       logDebug(runId, scope, 'complete', 'failed', message);
@@ -1678,7 +1690,7 @@ export default function PhotoMagicEditor({ store }) {
       setExpandMaskUrl(data.mask?.url || null);
       setExpandMaskOutputId(data.mask?.output_id || null);
       setViewportMode('compare');
-      setLastRenderSummary(`Canvas expanded to ${data.aspect_ratio || expandAspectRatio}`);
+      setLastRenderSummary(`Canvas expanded to ${data.aspect_ratio || expandAspectRatio}${data.engine ? ` via ${data.engine}` : ''}`);
     } catch (nextError) {
       console.error(nextError);
       const message = nextError?.message || 'Canvas expand failed';
@@ -1735,7 +1747,7 @@ export default function PhotoMagicEditor({ store }) {
       },
       {
         id: 'lama',
-        title: 'Standard Remove',
+        title: 'Standard Clean Plate',
         model: standardEraseModel,
         ready: standardEraseReady,
         description: 'Fast object removal for working iterations.',
@@ -1743,7 +1755,7 @@ export default function PhotoMagicEditor({ store }) {
       },
       {
         id: 'sdxl',
-        title: 'HD Remove',
+        title: 'HQ Clean Plate',
         model: 'SDXL inpaint',
         ready: Boolean(hqOk),
         description: 'GPU-backed final cleanup render for high scrutiny output.',
@@ -1760,18 +1772,18 @@ export default function PhotoMagicEditor({ store }) {
       {
         id: 'expand',
         title: 'Canvas Expand',
-        model: 'SDXL expand',
+        model: expandModel,
         ready: expandReady,
         description: 'Outpaint and regenerate scene space around the active source canvas.',
-        error: health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_expand || hqReason || ''
+        error: expandState?.error || health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_expand || hqReason || ''
       },
       {
         id: 'realesrgan',
         title: 'Enhancement',
-        model: 'Real-ESRGAN + restoration',
-        ready: realEsrganReady,
+        model: enhanceModel,
+        ready: enhanceReady,
         description: 'Upscale and recovery passes from the same source chain.',
-        error: aiHealthPayload?.errors?.realesrgan || ''
+        error: enhanceState?.error || aiHealthPayload?.errors?.realesrgan || ''
       }
     ],
     [
@@ -1786,7 +1798,9 @@ export default function PhotoMagicEditor({ store }) {
       hqOk,
       hqReason,
       lamaReady,
-      realEsrganReady,
+      enhanceModel,
+      enhanceReady,
+      enhanceState?.error,
       relightReady,
       rmbg2Ready,
       sam2Ready,
@@ -1867,7 +1881,7 @@ export default function PhotoMagicEditor({ store }) {
         empty: 'Select the area to remove, then run the removal engine.',
         promoteable: true,
         promoteLabel: 'Use as source',
-        promoteStage: quality === 'hq' ? 'HD remove' : 'Removed source',
+        promoteStage: quality === 'hq' ? 'HQ clean plate' : 'Clean plate',
         nextTool: 'relight',
         checker: false,
         primary: true
@@ -1908,7 +1922,7 @@ export default function PhotoMagicEditor({ store }) {
         {
           id: 'expand',
           title: 'Extended Canvas',
-          engine: 'SDXL expand',
+          engine: expandProvider === 'replicate' ? 'FLUX Fill' : 'SDXL expand',
           url: expandUrl,
           empty: 'Extend the frame and generate the missing background area.',
           promoteable: true,
@@ -1935,7 +1949,9 @@ export default function PhotoMagicEditor({ store }) {
       {
         id: 'enhance',
         title: 'Enhanced Image',
-        engine: enhanceMode === 'upscale' ? 'Real-ESRGAN' : 'Enhancement pipeline',
+        engine: enhanceMode === 'upscale'
+          ? (enhanceProvider === 'replicate' ? 'BRIA Increase Resolution' : 'Real-ESRGAN')
+          : 'Enhancement pipeline',
         url: enhanceUrl,
         empty: 'Run enhancement to produce a polished render.',
         promoteable: true,
@@ -1946,7 +1962,7 @@ export default function PhotoMagicEditor({ store }) {
         primary: true
       }
     ];
-  }, [cutoutUrl, enhanceMode, enhanceUrl, eraseUrl, expandMaskUrl, expandUrl, maskUrl, quality, relightMaskUrl, relightUrl, selectionCutoutUrl, selectionMaskUrl, selectionMeta?.label, tool]);
+  }, [cutoutUrl, enhanceMode, enhanceProvider, enhanceUrl, eraseUrl, expandMaskUrl, expandProvider, expandUrl, maskUrl, quality, relightMaskUrl, relightUrl, selectionCutoutUrl, selectionMaskUrl, selectionMeta?.label, tool]);
 
   const activeMaskUrl =
     tool === 'erase'
@@ -2765,7 +2781,7 @@ export default function PhotoMagicEditor({ store }) {
                   <Slider label="Upscale Factor" value={upscaleFactor} onChange={(e) => setUpscaleFactor(clamp(toNumber(e.target.value, 2), 1, 4))} min={1} max={4} disabled={enhanceMode !== 'upscale'} />
                 </div>
                 <div className="mt-4">
-                  <Button variant="primary" onClick={runEnhance} disabled={!imageId || isRunning || (enhanceMode === 'upscale' && !realEsrganReady)} className="w-full justify-center pm-btn-hover">
+                  <Button variant="primary" onClick={runEnhance} disabled={!imageId || isRunning || !enhanceModeReady} className="w-full justify-center pm-btn-hover">
                     <Zap className="h-4 w-4" />
                     Enhance Image
                   </Button>
