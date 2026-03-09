@@ -8,6 +8,11 @@ const SESSION_INTELLIGENCE_PUBLIC_TOKEN_TTL_MS = 30 * 60 * 1000;
 const SESSION_INTELLIGENCE_COOKIE_PATH = '/api/session-intelligence';
 const SESSION_INTELLIGENCE_PUBLIC_TOKEN_SCOPE = 'survey_public';
 const SESSION_INTELLIGENCE_ADMIN_TOKEN_SCOPE = 'survey_admin';
+const SESSION_INTELLIGENCE_ADMIN_ACCESS_KEY_HEADER = 'x-session-intelligence-admin-key';
+const SESSION_INTELLIGENCE_ADMIN_ACCESS_KEY_ENV_KEYS = [
+  'SESSION_INTELLIGENCE_ADMIN_ACCESS_KEY',
+  'SESSION_INTELLIGENCE_ADMIN_API_KEY'
+];
 const SESSION_INTELLIGENCE_SECRET_ENV_KEYS = [
   'SESSION_INTELLIGENCE_SIGNING_SECRET',
   'SESSION_INTELLIGENCE_ACCESS_SECRET',
@@ -32,6 +37,14 @@ function resolveSigningSecret() {
   }
   if ((process.env.NODE_ENV || '').toLowerCase() !== 'production') {
     return SESSION_INTELLIGENCE_DEV_FALLBACK_SECRET;
+  }
+  return '';
+}
+
+function resolveAdminAccessKey() {
+  for (const key of SESSION_INTELLIGENCE_ADMIN_ACCESS_KEY_ENV_KEYS) {
+    const value = safeString(process.env[key], 400);
+    if (value) return value;
   }
   return '';
 }
@@ -132,6 +145,32 @@ function hashUserAgent(userAgent) {
   return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 24);
 }
 
+function extractAdminAccessKey(req) {
+  const directHeader = safeString(req?.get?.(SESSION_INTELLIGENCE_ADMIN_ACCESS_KEY_HEADER) || req?.headers?.[SESSION_INTELLIGENCE_ADMIN_ACCESS_KEY_HEADER], 400);
+  if (directHeader) return directHeader;
+  const authorization = safeString(req?.get?.('authorization') || req?.headers?.authorization, 800);
+  if (!authorization.toLowerCase().startsWith('bearer ')) return '';
+  return safeString(authorization.slice(7), 400);
+}
+
+function compareSecrets(a, b) {
+  const left = Buffer.from(String(a || ''), 'utf8');
+  const right = Buffer.from(String(b || ''), 'utf8');
+  if (left.length === 0 || left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function validateSessionIntelligenceAdminAccessKey(req) {
+  const configuredKey = resolveAdminAccessKey();
+  if (!configuredKey) return { ok: false, reason: 'Session Intelligence admin key is not configured' };
+  const providedKey = extractAdminAccessKey(req);
+  if (!providedKey) return { ok: false, reason: 'Missing Session Intelligence admin key' };
+  if (!compareSecrets(configuredKey, providedKey)) {
+    return { ok: false, reason: 'Invalid Session Intelligence admin key' };
+  }
+  return { ok: true };
+}
+
 export function issueSessionIntelligenceAdminCookie(req, res) {
   const host = safeString(req?.get?.('host') || req?.headers?.host, 240).toLowerCase();
   const origin = getRequestSelfOrigin(req);
@@ -156,6 +195,11 @@ export function issueSessionIntelligenceAdminCookie(req, res) {
 }
 
 export function validateSessionIntelligenceAdminRequest(req) {
+  const adminKeyValidation = validateSessionIntelligenceAdminAccessKey(req);
+  if (adminKeyValidation.ok) {
+    return { ok: true, authMode: 'admin_key' };
+  }
+
   const selfOrigin = getRequestSelfOrigin(req);
   const originCandidates = getRequestOriginCandidates(req);
   if (!selfOrigin || originCandidates.length === 0 || !originCandidates.includes(selfOrigin)) {

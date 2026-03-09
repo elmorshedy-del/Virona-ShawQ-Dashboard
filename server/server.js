@@ -55,7 +55,6 @@ import { runCampaignIntelligenceDailyTrainer } from './services/campaignIntellig
 import { runCampaignIntelligenceDailyBriefs } from './services/campaignIntelligence/briefScheduler.js';
 import { formatDateAsGmt3 } from './utils/dateUtils.js';
 import { resolveExchangeRateProviders } from './services/exchangeRateConfig.js';
-import { issueSessionIntelligenceAdminCookie } from './utils/sessionIntelligenceSurveyAccess.js';
 import {
   fetchApilayerHistoricalTryToUsdRate,
   fetchCurrencyFreaksTimeseriesTryToUsdRates,
@@ -301,23 +300,7 @@ app.use('/api/blackbox', blackboxRouter);
 const clientDist = path.join(__dirname, '../client/dist');
 const clientIndexPath = path.join(clientDist, 'index.html');
 const hasClientBuild = fs.existsSync(clientIndexPath);
-const SESSION_INTELLIGENCE_HTML_ACCEPT_MARKERS = ['text/html', 'application/xhtml+xml'];
-
-function shouldIssueSessionIntelligenceAdminCookie(req) {
-  if (!req || req.method !== 'GET') return false;
-  if (req.path.startsWith('/api')) return false;
-  const acceptHeader = String(req.headers?.accept || '').toLowerCase();
-  if (!acceptHeader) return req.path === '/' || !path.extname(req.path);
-  return SESSION_INTELLIGENCE_HTML_ACCEPT_MARKERS.some((marker) => acceptHeader.includes(marker));
-}
-
 if (hasClientBuild) {
-  app.use((req, res, next) => {
-    if (shouldIssueSessionIntelligenceAdminCookie(req)) {
-      issueSessionIntelligenceAdminCookie(req, res);
-    }
-    next();
-  });
   app.use(express.static(clientDist));
 } else {
   console.warn(`[Static] Client build not found at ${clientIndexPath}. Running in API-only mode.`);
