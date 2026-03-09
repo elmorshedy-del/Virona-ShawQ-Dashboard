@@ -259,6 +259,11 @@ export function runSessionIntelligenceMigration() {
   `);
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_si_sessions_store_last_event_at
+    ON si_sessions(store, last_event_at DESC, updated_at DESC, created_at DESC)
+  `);
+
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_si_sessions_store_shopper_number
     ON si_sessions(store, shopper_number)
   `);
