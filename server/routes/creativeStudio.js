@@ -3942,7 +3942,8 @@ Rules:
       const gradientTo = parseHexColor(parsed?.gradient_to)?.hex || backgroundColor;
       const isGradient = backgroundStyle === 'horizontal_gradient' || backgroundStyle === 'vertical_gradient';
       const fontSize = Math.max(8, Math.round(safeParseNumber(parsed?.font_size_px, ov.fontSize || 24) || 24));
-      const fontWeight = String(parsed?.font_weight || '').trim().toLowerCase() === 'bold' ? 'bold' : (ov.fontWeight || 'normal');
+      const parsedWeight = String(parsed?.font_weight || '').trim().toLowerCase();
+      const fontWeight = (parsedWeight === 'bold' || parsedWeight === 'normal') ? parsedWeight : (ov.fontWeight || 'normal');
       const fontStyle = String(parsed?.font_style || '').trim().toLowerCase() === 'italic' ? 'italic' : 'normal';
       const borderRadius = Math.max(0, Math.round(safeParseNumber(parsed?.border_radius_px, ov.borderRadius || 0) || 0));
       const refinedOverlay = {
