@@ -725,9 +725,17 @@ function buildCheckoutAttributionOverview(beginEvents, maxItems = DEFAULT_GHOST_
 
   for (const event of beginEvents) {
     const normalized = mapRowForApi(event);
-    if (normalized.attribution_status === 'attributed') attributedCount += 1;
-    if (normalized.attribution_status === 'partial') partialCount += 1;
-    if (normalized.attribution_status === 'missing') missingCount += 1;
+    switch (normalized.attribution_status) {
+      case 'attributed':
+        attributedCount += 1;
+        break;
+      case 'partial':
+        partialCount += 1;
+        break;
+      case 'missing':
+        missingCount += 1;
+        break;
+    }
 
     normalized.attribution_missing_core_fields.forEach((field) => {
       missingCoreCounts.set(field, (missingCoreCounts.get(field) || 0) + 1);
