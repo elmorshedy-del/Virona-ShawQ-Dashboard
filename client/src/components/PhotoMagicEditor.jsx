@@ -352,6 +352,30 @@ const RELIGHT_PRESET_DEFAULTS = {
   rim: { subjectBoost: 0.3, backgroundExposure: -0.22, warmth: 0.06, shadowOpacity: 0.34, shadowBlurPx: 42, shadowOffsetX: -16, shadowOffsetY: 34 }
 };
 
+const AUTO_SHADOW_PRESET = {
+  preset: 'studio',
+  subjectBoost: 0.14,
+  backgroundExposure: -0.02,
+  warmth: 0.04,
+  shadowOpacity: 0.36,
+  shadowBlurPx: 54,
+  shadowOffsetX: 0,
+  shadowOffsetY: 42
+};
+
+const BACKGROUND_PRESET_OPTIONS = [
+  { id: 'clean-white', label: 'Clean White', prompt: 'clean white seamless studio backdrop, soft floor gradient, subtle grounded shadow, premium ecommerce product photography' },
+  { id: 'soft-gray', label: 'Soft Gray', prompt: 'soft light gray paper studio backdrop, realistic floor grounding, diffused commercial lighting, refined ecommerce set' },
+  { id: 'warm-beige', label: 'Warm Beige', prompt: 'warm beige editorial studio background, natural floor grounding, soft premium campaign lighting, clean fashion set' },
+  { id: 'blush-gradient', label: 'Blush Gradient', prompt: 'soft blush to ivory studio gradient background, premium beauty campaign lighting, realistic grounded shadow' },
+  { id: 'mocha-shadow', label: 'Mocha Studio', prompt: 'muted mocha studio sweep background, elegant fashion campaign mood, realistic contact shadow, soft directional light' },
+  { id: 'concrete', label: 'Concrete', prompt: 'minimal polished concrete studio surface and wall, realistic product grounding, soft controlled lighting, premium ecommerce look' },
+  { id: 'marble', label: 'Marble', prompt: 'luxury marble plinth setting with soft neutral studio backdrop, premium editorial lighting, realistic grounded shadow' },
+  { id: 'lifestyle', label: 'Lifestyle', prompt: 'high-end lifestyle interior background with tasteful depth, clean premium styling, realistic grounding and natural light' },
+  { id: 'editorial-dark', label: 'Editorial Dark', prompt: 'dark editorial studio backdrop with subtle spotlight falloff, premium fashion campaign mood, realistic floor grounding' },
+  { id: 'sunlit-window', label: 'Sunlit Window', prompt: 'bright window-lit studio corner, soft sunlight wash, natural grounded shadow, premium catalog photography' }
+];
+
 export default function PhotoMagicEditor({ store }) {
   const [health, setHealth] = useState(null);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
@@ -381,6 +405,9 @@ export default function PhotoMagicEditor({ store }) {
   const [maskUrl, setMaskUrl] = useState(null);
   const [cutoutOutputId, setCutoutOutputId] = useState(null);
   const [maskOutputId, setMaskOutputId] = useState(null);
+  const [backgroundUrl, setBackgroundUrl] = useState(null);
+  const [backgroundPrompt, setBackgroundPrompt] = useState(BACKGROUND_PRESET_OPTIONS[0].prompt);
+  const [backgroundPresetId, setBackgroundPresetId] = useState(BACKGROUND_PRESET_OPTIONS[0].id);
 
   const [selectionPrompt, setSelectionPrompt] = useState('');
   const [selectionCutoutUrl, setSelectionCutoutUrl] = useState(null);
@@ -534,6 +561,12 @@ export default function PhotoMagicEditor({ store }) {
     standardEraseState?.model || (standardEraseProvider === 'replicate' ? 'black-forest-labs/flux-fill-pro' : 'LaMa inpainting')
   ).trim();
   const standardEraseToggleLabel = standardEraseProvider === 'replicate' ? 'Fast (Flux Fill)' : 'Fast (LaMa)';
+  const backgroundState = health?.photo_magic?.background || {};
+  const backgroundReady = Boolean(backgroundState?.ready ?? false);
+  const backgroundProvider = String(backgroundState?.provider || (backgroundReady ? 'replicate' : 'background')).trim();
+  const backgroundModel = String(
+    backgroundState?.model || (backgroundProvider === 'replicate' ? 'black-forest-labs/flux-fill-pro' : 'Background generation')
+  ).trim();
   const expandState = health?.photo_magic?.expand || {};
   const expandReady = Boolean(expandState?.ready ?? (hqConfigured && hqOk && hqModels?.sdxl_expand));
   const expandProvider = String(expandState?.provider || (hqConfigured ? 'photo-magic-hq' : 'expand')).trim();
@@ -922,6 +955,7 @@ export default function PhotoMagicEditor({ store }) {
     setMaskUrl(null);
     setCutoutOutputId(null);
     setMaskOutputId(null);
+    setBackgroundUrl(null);
     setSelectionCutoutUrl(null);
     setSelectionMaskUrl(null);
     setSelectionCutoutOutputId(null);
@@ -1222,6 +1256,7 @@ export default function PhotoMagicEditor({ store }) {
       setMaskUrl(data.mask?.url || null);
       setCutoutOutputId(data.cutout?.output_id || null);
       setMaskOutputId(data.mask?.output_id || null);
+      setBackgroundUrl(null);
       setViewportMode('compare');
       setLastRenderSummary(`Auto cutout ready ${data.width || imageMeta?.width || '?'}x${data.height || imageMeta?.height || '?'}`);
     } catch (nextError) {
@@ -1271,6 +1306,7 @@ export default function PhotoMagicEditor({ store }) {
       setMaskUrl(data.mask?.url || null);
       setCutoutOutputId(data.cutout?.output_id || null);
       setMaskOutputId(data.mask?.output_id || null);
+      setBackgroundUrl(null);
       setViewportMode('compare');
       setLastRenderSummary(`Precision mask ready with ${points.length} guide points`);
     } catch (nextError) {
@@ -1284,6 +1320,129 @@ export default function PhotoMagicEditor({ store }) {
       refreshHealth();
     }
   }, [imageId, logDebug, maskDilatePx, maskFeatherPx, maxSide, points, refreshHealth, requestJson, startDebugRun, store]);
+
+  const applyBackgroundPreset = useCallback((presetId) => {
+    const preset = BACKGROUND_PRESET_OPTIONS.find((item) => item.id === presetId);
+    if (!preset) return;
+    setBackgroundPresetId(preset.id);
+    setBackgroundPrompt(preset.prompt);
+  }, []);
+
+  const runBackgroundReplace = useCallback(async () => {
+    if (!imageId || !maskOutputId) return;
+
+    setError(null);
+    setIsRunning(true);
+    const runId = startDebugRun('Background Studio', `Generating ${backgroundPresetId} background`);
+    try {
+      const data = await requestJson({
+        runId,
+        scope: 'Background Studio',
+        step: 'background',
+        url: withStore('/creative-studio/photo-magic/background', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            mask_output_id: maskOutputId,
+            prompt: backgroundPrompt,
+            max_side: maxSide,
+            mask_dilate_px: maskDilatePx,
+            mask_feather_px: maskFeatherPx
+          })
+        },
+        successMessage: 'Background generation completed',
+        failureMessage: 'Background generation failed',
+        successDetails: (payload) => ({
+          outputReady: Boolean(payload?.url),
+          engine: payload?.engine || null,
+          width: payload?.width || null,
+          height: payload?.height || null
+        })
+      });
+
+      setBackgroundUrl(data.url || null);
+      setViewportMode('compare');
+      setLastRenderSummary(`Background scene ready${data.engine ? ` via ${data.engine}` : ''}`);
+    } catch (nextError) {
+      console.error(nextError);
+      const message = nextError?.message || 'Background generation failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Background Studio', 'complete', 'failed', message);
+    } finally {
+      setIsRunning(false);
+      refreshHealth();
+    }
+  }, [
+    backgroundPresetId,
+    backgroundPrompt,
+    imageId,
+    logDebug,
+    maskDilatePx,
+    maskFeatherPx,
+    maskOutputId,
+    maxSide,
+    refreshHealth,
+    requestJson,
+    startDebugRun,
+    store
+  ]);
+
+  const runGroundShadow = useCallback(async () => {
+    if (!imageId || !maskOutputId) return;
+
+    setError(null);
+    setIsRunning(true);
+    const runId = startDebugRun('Lighting Stage', 'Applying grounding shadow preset');
+    try {
+      const data = await requestJson({
+        runId,
+        scope: 'Lighting Stage',
+        step: 'ground-shadow',
+        url: withStore('/creative-studio/photo-magic/relight', store),
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_id: imageId,
+            mask_output_id: maskOutputId,
+            preset: AUTO_SHADOW_PRESET.preset,
+            subject_boost: AUTO_SHADOW_PRESET.subjectBoost,
+            background_exposure: AUTO_SHADOW_PRESET.backgroundExposure,
+            warmth: AUTO_SHADOW_PRESET.warmth,
+            shadow_opacity: AUTO_SHADOW_PRESET.shadowOpacity,
+            shadow_blur_px: AUTO_SHADOW_PRESET.shadowBlurPx,
+            shadow_offset_x: AUTO_SHADOW_PRESET.shadowOffsetX,
+            shadow_offset_y: AUTO_SHADOW_PRESET.shadowOffsetY
+          })
+        },
+        successMessage: 'Grounding shadow rendered',
+        failureMessage: 'Grounding shadow failed',
+        successDetails: (payload) => ({
+          resultReady: Boolean(payload?.url),
+          maskReady: Boolean(payload?.mask?.url)
+        })
+      });
+
+      setRelightUrl(data.url || null);
+      setRelightMaskUrl(data.mask?.url || null);
+      setRelightMaskOutputId(data.mask?.output_id || null);
+      setViewportMode('compare');
+      setTool('relight');
+      setLastRenderSummary('Grounding shadow ready');
+    } catch (nextError) {
+      console.error(nextError);
+      const message = nextError?.message || 'Grounding shadow failed';
+      setError(message);
+      setLastRenderSummary(`Failed: ${message}`);
+      logDebug(runId, 'Lighting Stage', 'complete', 'failed', message);
+    } finally {
+      setIsRunning(false);
+      refreshHealth();
+    }
+  }, [imageId, logDebug, maskOutputId, refreshHealth, requestJson, startDebugRun, store]);
 
   const runSelect = useCallback(async () => {
     if (!imageId || !selectionPrompt.trim()) return;
@@ -1845,6 +2004,14 @@ export default function PhotoMagicEditor({ store }) {
         error: aiHealthPayload?.errors?.rmbg2 || ''
       },
       {
+        id: 'background',
+        title: 'Background Studio',
+        model: backgroundModel,
+        ready: backgroundReady,
+        description: 'Replace only the background with a styled scene while preserving the current subject.',
+        error: backgroundState?.error || ''
+      },
+      {
         id: 'sam2',
         title: 'Precision Mask',
         model: 'Meta SAM2',
@@ -1907,6 +2074,9 @@ export default function PhotoMagicEditor({ store }) {
       aiHealthPayload?.errors?.relight,
       aiHealthPayload?.errors?.rmbg2,
       aiHealthPayload?.errors?.sam2,
+      backgroundModel,
+      backgroundReady,
+      backgroundState?.error,
       expandReady,
       geminiReady,
       health?.photo_magic?.hq?.health?.payload?.errors?.sdxl_expand,
@@ -1926,7 +2096,7 @@ export default function PhotoMagicEditor({ store }) {
   );
 
   const visibleStack = useMemo(() => {
-    const alwaysShow = new Set(['rmbg2', 'lama', 'select']);
+    const alwaysShow = new Set(['rmbg2', 'background', 'lama', 'select']);
     return connectedStack.filter((item) => alwaysShow.has(item.id) || item.ready);
   }, [connectedStack]);
   const readyCount = visibleStack.filter((item) => item.ready).length;
@@ -1943,7 +2113,7 @@ export default function PhotoMagicEditor({ store }) {
   const stageConfig = TOOL_DEFINITIONS[tool] || TOOL_DEFINITIONS['erase'];
   const outputCards = useMemo(() => {
     if (tool === 'remove_bg') {
-      return [
+      const cards = [
         {
           id: 'cutout',
           title: 'Background Removed',
@@ -1955,20 +2125,39 @@ export default function PhotoMagicEditor({ store }) {
           promoteStage: 'Cutout source',
           nextTool: 'erase',
           checker: true,
-          primary: true
-        },
-        {
-          id: 'mask',
-          title: 'Selection Mask',
-          engine: 'Segmentation mask',
-          url: maskUrl,
-          empty: 'Mask appears after the background removal pass.',
-          promoteable: false,
-          maskAction: maskUrl ? 'Use for removal' : null,
-          checker: false,
-          primary: false
+          primary: !backgroundUrl
         }
       ];
+
+      if (backgroundUrl) {
+        cards.unshift({
+          id: 'background',
+          title: 'Styled Background',
+          engine: backgroundProvider === 'replicate' ? 'FLUX Fill' : 'Background generation',
+          url: backgroundUrl,
+          empty: 'Generate a new background from presets or your own prompt.',
+          promoteable: true,
+          promoteLabel: 'Use as source',
+          promoteStage: 'Background source',
+          nextTool: 'relight',
+          checker: false,
+          primary: true
+        });
+      }
+
+      cards.push({
+        id: 'mask',
+        title: 'Selection Mask',
+        engine: 'Segmentation mask',
+        url: maskUrl,
+        empty: 'Mask appears after the background removal pass.',
+        promoteable: false,
+        maskAction: maskUrl ? 'Use for removal' : null,
+        checker: false,
+        primary: false
+      });
+
+      return cards;
     }
 
     if (tool === 'select' || tool === 'erase') {
@@ -2077,7 +2266,7 @@ export default function PhotoMagicEditor({ store }) {
         primary: true
       }
     ];
-  }, [cutoutUrl, enhanceMode, enhanceProvider, enhanceUrl, eraseUrl, expandMaskUrl, expandProvider, expandUrl, maskUrl, quality, relightMaskUrl, relightUrl, selectionCutoutUrl, selectionMaskUrl, selectionMeta?.label, tool]);
+  }, [backgroundProvider, backgroundUrl, cutoutUrl, enhanceMode, enhanceProvider, enhanceUrl, eraseUrl, expandMaskUrl, expandProvider, expandUrl, maskUrl, quality, relightMaskUrl, relightUrl, selectionCutoutUrl, selectionMaskUrl, selectionMeta?.label, tool]);
 
   const activeMaskUrl =
     tool === 'erase'
@@ -2662,6 +2851,56 @@ export default function PhotoMagicEditor({ store }) {
                         </div>
                       </div>
                     ) : null}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                  <Label>Background Studio</Label>
+                  <div className="mt-2 text-sm text-gray-500">Keep the subject and generate a new background scene from presets or your own prompt.</div>
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    {BACKGROUND_PRESET_OPTIONS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => applyBackgroundPreset(preset.id)}
+                        className={cn(
+                          'rounded-xl border px-3 py-2 text-left text-xs font-medium transition-all',
+                          backgroundPresetId === preset.id
+                            ? 'border-indigo-200 bg-indigo-50 text-indigo-700 shadow-sm'
+                            : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                        )}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Custom Scene Prompt</div>
+                    <Input
+                      value={backgroundPrompt}
+                      onChange={(e) => setBackgroundPrompt(e.target.value)}
+                      placeholder="premium beige studio sweep, soft grounded shadow..."
+                    />
+                  </div>
+                  <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Subject Matte</div>
+                        <div className="mt-0.5 text-sm font-medium text-gray-900">
+                          {maskOutputId ? 'Ready from background removal' : 'Run Remove Background first'}
+                        </div>
+                      </div>
+                      <StatusPill ok={Boolean(maskOutputId)} label={maskOutputId ? 'Ready' : 'Needed'} />
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    <Button variant="primary" onClick={runBackgroundReplace} disabled={!imageId || isRunning || !backgroundReady || !maskOutputId || !backgroundPrompt.trim()} className="w-full justify-center pm-btn-hover">
+                      <Sparkles className="h-4 w-4 pm-sparkle-icon" />
+                      Generate Background
+                    </Button>
+                    <Button variant="secondary" onClick={runGroundShadow} disabled={!imageId || isRunning || !relightReady || !maskOutputId} className="w-full justify-center pm-btn-hover">
+                      <Sunset className="h-4 w-4" />
+                      Add Ground Shadow
+                    </Button>
                   </div>
                 </div>
               </div>

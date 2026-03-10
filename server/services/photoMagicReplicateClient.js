@@ -4,6 +4,7 @@ const REPLICATE_API_BASE_URL = 'https://api.replicate.com/v1';
 const REPLICATE_FILL_MODEL_FALLBACK = 'black-forest-labs/flux-fill-pro';
 const REPLICATE_ENHANCE_MODEL_FALLBACK = 'bria/increase-resolution';
 const REPLICATE_ERASE_DEFAULT_PROMPT = 'reconstruct the masked area naturally to match the surrounding image, preserving texture, lighting, shading, and perspective';
+const REPLICATE_BACKGROUND_DEFAULT_PROMPT = 'premium studio background, natural floor grounding, clean commercial lighting, realistic depth, and seamless subject integration';
 const REPLICATE_EXPAND_DEFAULT_PROMPT = 'extend the canvas naturally to match the surrounding scene, preserving lighting, texture, shading, and perspective';
 
 const REPLICATE_API_TOKEN = String(process.env.REPLICATE_API_TOKEN || '').trim();
@@ -13,6 +14,7 @@ const PHOTO_MAGIC_REPLICATE_TIMEOUT_MS = Number(process.env.PHOTO_MAGIC_REPLICAT
 const PHOTO_MAGIC_REPLICATE_WAIT_SECONDS = Number(process.env.PHOTO_MAGIC_REPLICATE_WAIT_SECONDS || 20);
 const PHOTO_MAGIC_REPLICATE_POLL_INTERVAL_MS = Number(process.env.PHOTO_MAGIC_REPLICATE_POLL_INTERVAL_MS || 1500);
 const PHOTO_MAGIC_REPLICATE_PROMPT = String(process.env.PHOTO_MAGIC_REPLICATE_PROMPT || REPLICATE_ERASE_DEFAULT_PROMPT).trim() || REPLICATE_ERASE_DEFAULT_PROMPT;
+const PHOTO_MAGIC_REPLICATE_BACKGROUND_PROMPT = String(process.env.PHOTO_MAGIC_REPLICATE_BACKGROUND_PROMPT || REPLICATE_BACKGROUND_DEFAULT_PROMPT).trim() || REPLICATE_BACKGROUND_DEFAULT_PROMPT;
 const PHOTO_MAGIC_REPLICATE_EXPAND_PROMPT = String(process.env.PHOTO_MAGIC_REPLICATE_EXPAND_PROMPT || REPLICATE_EXPAND_DEFAULT_PROMPT).trim() || REPLICATE_EXPAND_DEFAULT_PROMPT;
 const PHOTO_MAGIC_REPLICATE_STEPS = Number(process.env.PHOTO_MAGIC_REPLICATE_STEPS || 28);
 const PHOTO_MAGIC_REPLICATE_GUIDANCE = Number(process.env.PHOTO_MAGIC_REPLICATE_GUIDANCE || 3);
@@ -142,6 +144,17 @@ export function getPhotoMagicReplicateExpandConfig() {
   };
 }
 
+export function getPhotoMagicReplicateBackgroundConfig() {
+  return {
+    configured: isPhotoMagicReplicateConfigured(),
+    provider: 'replicate',
+    model: PHOTO_MAGIC_REPLICATE_FILL_MODEL,
+    prompt: PHOTO_MAGIC_REPLICATE_BACKGROUND_PROMPT,
+    timeout_ms: PHOTO_MAGIC_REPLICATE_TIMEOUT_MS,
+    wait_seconds: PHOTO_MAGIC_REPLICATE_WAIT_SECONDS
+  };
+}
+
 export function getPhotoMagicReplicateEnhanceConfig() {
   return {
     configured: isPhotoMagicReplicateConfigured(),
@@ -261,6 +274,28 @@ export async function expandFluxFill({
       image: imageUrl,
       mask: maskUrl,
       prompt: String(prompt || PHOTO_MAGIC_REPLICATE_EXPAND_PROMPT || REPLICATE_EXPAND_DEFAULT_PROMPT).trim() || REPLICATE_EXPAND_DEFAULT_PROMPT,
+      steps: PHOTO_MAGIC_REPLICATE_STEPS,
+      guidance: PHOTO_MAGIC_REPLICATE_GUIDANCE,
+      safety_tolerance: PHOTO_MAGIC_REPLICATE_SAFETY_TOLERANCE,
+      prompt_upsampling: false,
+      output_format: PHOTO_MAGIC_REPLICATE_OUTPUT_FORMAT
+    }
+  });
+}
+
+export async function replaceBackgroundFluxFill({
+  imageUrl,
+  maskUrl,
+  prompt = PHOTO_MAGIC_REPLICATE_BACKGROUND_PROMPT
+} = {}) {
+  if (!imageUrl || !maskUrl) return null;
+
+  return createPrediction({
+    modelRef: PHOTO_MAGIC_REPLICATE_FILL_MODEL,
+    input: {
+      image: imageUrl,
+      mask: maskUrl,
+      prompt: String(prompt || PHOTO_MAGIC_REPLICATE_BACKGROUND_PROMPT || REPLICATE_BACKGROUND_DEFAULT_PROMPT).trim() || REPLICATE_BACKGROUND_DEFAULT_PROMPT,
       steps: PHOTO_MAGIC_REPLICATE_STEPS,
       guidance: PHOTO_MAGIC_REPLICATE_GUIDANCE,
       safety_tolerance: PHOTO_MAGIC_REPLICATE_SAFETY_TOLERANCE,

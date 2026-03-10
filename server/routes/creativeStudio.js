@@ -37,13 +37,15 @@ import { eraseSdxl, expandPhotoCanvas, getPhotoMagicHqHealth, isPhotoMagicHqConf
 import {
   enhanceBria,
   eraseFluxFill,
+  getPhotoMagicReplicateBackgroundConfig,
   expandFluxFill,
   getPhotoMagicReplicateConfig,
   getPhotoMagicReplicateEnhanceConfig,
   getPhotoMagicReplicateEnhanceHealth,
   getPhotoMagicReplicateExpandConfig,
   getPhotoMagicReplicateHealth,
-  isPhotoMagicReplicateConfigured
+  isPhotoMagicReplicateConfigured,
+  replaceBackgroundFluxFill
 } from '../services/photoMagicReplicateClient.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -550,6 +552,35 @@ function buildPhotoMagicExpandPrompt(prompt, negativePrompt) {
   if (positive) return positive;
   if (avoid) return `Extend the canvas naturally to match the surrounding scene, preserving lighting, texture, shading, and perspective. Keep the generated extension free of ${avoid}.`;
   return 'Extend the canvas naturally to match the surrounding scene, preserving lighting, texture, shading, and perspective.';
+}
+
+function buildPhotoMagicBackgroundPrompt(prompt) {
+  const normalized = String(prompt || '').trim();
+  if (normalized) return normalized;
+  return 'Premium studio background with realistic depth, clean commercial lighting, natural floor grounding, and seamless subject integration.';
+}
+
+async function invertReplicateMaskBuffer(maskBuffer, width, height) {
+  const { data, info } = await sharp(maskBuffer, { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+    .resize(width, height, { fit: 'fill', kernel: 'nearest' })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const inverted = Buffer.alloc(info.width * info.height);
+  for (let sourceIndex = 0, targetIndex = 0; sourceIndex < data.length; sourceIndex += info.channels, targetIndex += 1) {
+    const value = data[sourceIndex] || 0;
+    inverted[targetIndex] = 255 - value;
+  }
+
+  return sharp(inverted, {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: 1
+    }
+  })
+    .png()
+    .toBuffer();
 }
 
 async function buildPhotoMagicExpandAssets(imageBuffer, {
@@ -4866,6 +4897,7 @@ router.get('/photo-magic/health', async (req, res) => {
       : null;
     const replicateReady = Boolean(replicateBaseUrl && replicateHealth?.ok);
     const replicateEnhanceReady = Boolean(replicateBaseUrl && replicateEnhanceHealth?.ok);
+    const replicateBackgroundConfig = getPhotoMagicReplicateBackgroundConfig();
     const standardErase = isPhotoMagicReplicateConfigured()
       ? {
           configured: true,
@@ -4889,6 +4921,30 @@ router.get('/photo-magic/health', async (req, res) => {
           timeout_ms: Number(process.env.PHOTO_MAGIC_AI_TIMEOUT_MS || 240000),
           wait_seconds: null,
           error: aiHealthPayload?.errors?.lama || null
+        };
+    const backgroundState = isPhotoMagicReplicateConfigured()
+      ? {
+          configured: true,
+          ready: replicateReady,
+          provider: 'replicate',
+          model: replicateBackgroundConfig.model,
+          prompt: replicateBackgroundConfig.prompt,
+          timeout_ms: replicateBackgroundConfig.timeout_ms,
+          wait_seconds: replicateBackgroundConfig.wait_seconds,
+          health: replicateHealth,
+          error: !replicateBaseUrl
+            ? 'PHOTO_MAGIC_PUBLIC_BASE_URL could not be resolved for Replicate background generation.'
+            : (replicateHealth?.ok ? null : (replicateHealth?.payload?.detail || replicateHealth?.payload?.error || 'Replicate background generation is not ready.'))
+        }
+      : {
+          configured: false,
+          ready: false,
+          provider: 'background',
+          model: null,
+          prompt: null,
+          timeout_ms: null,
+          wait_seconds: null,
+          error: 'REPLICATE_API_TOKEN is required for background generation.'
         };
     const expandState = isPhotoMagicReplicateConfigured()
       ? {
@@ -4975,6 +5031,7 @@ router.get('/photo-magic/health', async (req, res) => {
           }
         },
         standard_erase: standardErase,
+        background: backgroundState,
         expand: expandState,
         enhance: enhanceState
       }
@@ -5801,6 +5858,121 @@ router.post('/photo-magic/relight', async (req, res) => {
     });
   } catch (error) {
     console.error('Photo magic relight error:', error?.payload || error);
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
+  }
+});
+
+router.post('/photo-magic/background', async (req, res) => {
+  try {
+    const store = req.query.store || PHOTO_MAGIC_DEFAULT_STORE;
+    await ensurePhotoMagicDirs(store);
+
+    if (!isPhotoMagicReplicateConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'REPLICATE_API_TOKEN is not configured. Background generation requires Replicate.'
+      });
+    }
+
+    const publicBaseUrl = getPhotoMagicPublicBaseUrl(req);
+    if (!publicBaseUrl) {
+      return res.status(503).json({
+        success: false,
+        error: 'Photo Magic public base URL could not be resolved for background generation.'
+      });
+    }
+
+    const imageId = String(req.body?.image_id || '').trim();
+    if (!imageId || !isSafeTmpId(imageId)) {
+      return res.status(400).json({ success: false, error: 'image_id is required' });
+    }
+
+    const maskOutputId = String(req.body?.mask_output_id || '').trim();
+    if (!maskOutputId || !isSafeTmpId(maskOutputId)) {
+      return res.status(400).json({ success: false, error: 'mask_output_id is required. Run background removal first.' });
+    }
+
+    const imagePath = getUploadedPhotoPath(store, imageId);
+    const maskPath = getPhotoMagicOutputPath(store, maskOutputId, 'png');
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ success: false, error: 'Upload not found (upload again)' });
+    }
+    if (!fs.existsSync(maskPath)) {
+      return res.status(404).json({ success: false, error: 'Subject mask not found. Run background removal again.' });
+    }
+
+    const maxSide = clampNumber(req.body?.max_side ?? req.body?.source_max_side ?? 2048, 256, 8192);
+    const maskDilatePx = clampNumber(req.body?.mask_dilate_px ?? req.body?.maskDilatePx ?? 0, 0, 64);
+    const maskFeatherPx = clampNumber(req.body?.mask_feather_px ?? req.body?.maskFeatherPx ?? 0, 0, 64);
+    const prompt = buildPhotoMagicBackgroundPrompt(req.body?.prompt);
+
+    const imageBuffer = await fs.promises.readFile(imagePath);
+    const maskBuffer = await fs.promises.readFile(maskPath);
+
+    const sourceAssetId = crypto.randomUUID();
+    const maskAssetId = crypto.randomUUID();
+    const sourceAssetPath = getPhotoMagicOutputPath(store, sourceAssetId, 'png');
+    const maskAssetPath = getPhotoMagicOutputPath(store, maskAssetId, 'png');
+
+    try {
+      const preparedSource = await prepareReplicateSourceImageBuffer(imageBuffer, maxSide);
+      const preparedSubjectMask = await normalizeReplicateMaskBuffer(maskBuffer, {
+        width: preparedSource.width,
+        height: preparedSource.height,
+        dilatePx: maskDilatePx,
+        featherPx: maskFeatherPx
+      });
+      const backgroundMaskBuffer = await invertReplicateMaskBuffer(
+        preparedSubjectMask.buffer,
+        preparedSource.width,
+        preparedSource.height
+      );
+
+      await fs.promises.writeFile(sourceAssetPath, preparedSource.buffer);
+      await fs.promises.writeFile(maskAssetPath, backgroundMaskBuffer);
+
+      const { outputUrl } = await replaceBackgroundFluxFill({
+        imageUrl: buildPhotoMagicAssetUrl(req, store, sourceAssetId, 'background-source.png'),
+        maskUrl: buildPhotoMagicAssetUrl(req, store, maskAssetId, 'background-mask.png'),
+        prompt
+      });
+
+      const outputResponse = await axios.get(outputUrl, {
+        responseType: 'arraybuffer',
+        timeout: Number(process.env.PHOTO_MAGIC_REPLICATE_TIMEOUT_MS || 300000),
+        maxContentLength: PHOTO_MAGIC_MAX_UPLOAD_BYTES * 4
+      });
+
+      const finalBuffer = await sharp(Buffer.from(outputResponse.data), { limitInputPixels: PHOTO_MAGIC_MAX_IMAGE_PIXELS })
+        .png()
+        .toBuffer();
+
+      const outId = crypto.randomUUID();
+      const outPath = getPhotoMagicOutputPath(store, outId, 'png');
+      await fs.promises.writeFile(outPath, finalBuffer);
+
+      return res.json({
+        success: true,
+        provider: 'replicate',
+        engine: 'FLUX Fill',
+        prompt,
+        width: preparedSource.width,
+        height: preparedSource.height,
+        output_id: outId,
+        url: withStoreParam(
+          `/api/creative-studio/photo-magic/download?output_id=${encodeURIComponent(outId)}&filename=${encodeURIComponent('background.png')}`,
+          store
+        )
+      });
+    } finally {
+      await Promise.allSettled([
+        fs.promises.unlink(sourceAssetPath),
+        fs.promises.unlink(maskAssetPath)
+      ]);
+    }
+  } catch (error) {
+    console.error('Photo magic background error:', error?.payload || error);
     const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : 500;
     res.status(status).json({ success: false, error: error.message, details: error?.payload || null });
   }
